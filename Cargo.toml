@@ -1,0 +1,13 @@
+[package]
+name = "capyscheme"
+version = "0.1.1"
+edition = "2024"
+
+[dependencies]
+ahash = "0.8.12"
+bitflags = "2.9.1"
+bytemuck = "1.23.0"
+derive_more = { version = "2.0.1", features = ["try_from"] }
+rand = "0.9.1"
+rsgc = { git = "https://codeberg.org/playxe/rsgc.git" }
+simplehash = "0.1.3"
