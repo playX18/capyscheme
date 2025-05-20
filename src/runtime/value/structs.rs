@@ -111,8 +111,8 @@ impl<'gc> RecordTypeDescriptor<'gc> {
             (mutable, name)
         });
 
-        if uid.not() {
-            Ok(Gc::new(
+        let this =if uid.not() {
+            Gc::new(
                 &mc,
                 Self {
                     name,
@@ -122,10 +122,14 @@ impl<'gc> RecordTypeDescriptor<'gc> {
                     opaque,
                     fields,
                 },
-            ))
+            )
         } else {
             todo!("UID generation")
-        }
+        };
+
+        this.set_user_header(TypeCode8::RECORD_TYPE_DESCRIPTOR.into());
+
+        Ok(this)
     }
 
     pub fn name(&self) -> Gc<'gc, Symbol<'gc>> {

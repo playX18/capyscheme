@@ -1,24 +1,18 @@
-use capyscheme::runtime::value::values::Values;
-use capyscheme::runtime::value::Value;
-use capyscheme::runtime::{Context, Scheme};
-use capyscheme::runtime::value::conversions::*;
-
-
-fn foo<'gc>(_: Context<'gc>, x: i32, y: i32) -> (i32, bool) {
-    match x.checked_add(y) {
-        Some(sum) => (sum, false),
-        None => (x.wrapping_add(y), true),
-    }
-}
+use capyscheme::runtime::{Scheme, value::*};
 
 fn main() {
     let scm = Scheme::new();
 
-    scm.enter(|ctx| {
-        let f = foo.into_primitive();
+    let x = vec![9; 32];
 
-        let result = f(ctx, &[Value::new(i32::MAX), Value::new(1)]).unwrap();
-        let (x, y): (i32, bool) = <_>::from_values(ctx, result.downcast::<Values>().iter().copied()).unwrap();
-        println!("result: {}, carry: {}", x, y);
-    })
+    scm.enter(|ctx| {
+        let big = BigInt::from_string(ctx, &(u64::MAX - 1).to_string(), &BigIntBase::DEC).unwrap();
+        let big2 = BigInt::from_u64(ctx, u64::MAX);
+
+        println!(
+            "{} {}",
+            big.to_string(&BigIntBase::DEC),
+            big2.to_string(&BigIntBase::DEC)
+        );
+    });
 }
