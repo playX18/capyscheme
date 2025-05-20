@@ -555,7 +555,7 @@ pub mod values;
 pub mod hash;
 pub mod equiv;
 
-
+pub use number::*;
 pub use hash::*;
 pub use conversions::*;
 pub use lists::*;

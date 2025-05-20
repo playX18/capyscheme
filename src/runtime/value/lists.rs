@@ -394,24 +394,8 @@ impl<'gc> Value<'gc> {
             current_original = current_original.cdr();
         }
 
-        // If original list was improper, its non-pair cdr becomes the cdr of the new list's tail.
-        // However, the problem asks to append an iterator, implying we want a proper list at the end
-        // of the appended iterator items. If the original list is improper, we might choose to
-        // signal an error or handle it differently. For now, let's assume we only append
-        // to proper lists or null. If self is not a pair and not null, it means it's an improper list ending.
-        // The current loop for `current_original` handles proper lists.
-        // If `self` is not a list (e.g. a number), this function's behavior is undefined by typical append.
-        // Let's ensure `self` is a list or null before proceeding with iterator items.
         if !self.is_list() && !self.is_null() {
-            // Or handle error: cannot append to an improper list like this.
-            // For now, returning the original value if it's not a list or null.
-            // If we copied some elements above and then found it's improper,
-            // the `new_head` would contain the copied part.
-            // A more robust solution would be to check `is_list` at the beginning.
-            // However, the prompt implies appending *to* a list.
-            // If `current_original` is not null after the loop, it means `self` was an improper list.
-            // We will effectively ignore the improper tail of `self` and append iterator items
-            // to the proper part we've copied.
+            return new_head;
         }
 
         // Append elements from the iterator
