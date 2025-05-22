@@ -7,15 +7,15 @@ fn main() {
     let x = vec![9; 32];
 
     scm.enter(|ctx| {
-        let mut x = Number::Fixnum(100);
+        let x = Number::Fixnum(67);
+        let y = Number::Fixnum(8);
 
-        for i in 0..1000 {
-            x = Number::mul(ctx, x, (i+1*42).into_number(ctx));
-        }
-        let divided = Number::div(ctx, x, (1000*42).into_number(ctx));
-        println!("x: {}", x);
-        println!("divided: {}", divided);   
+        let z = Number::div(ctx, x, y);
+        println!("z={}, floor(z)={}", z, Number::floor(ctx, z));
 
+        println!("{}", 67.0 / 8.0);
+
+        println!("{}", Number::Flonum(8.375).to_exact(ctx));
     
     });
 }
