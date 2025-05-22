@@ -1,4 +1,5 @@
-use capyscheme::runtime::{Scheme, value::*};
+use capyscheme::runtime::{value::*, Context, Scheme};
+
 
 fn main() {
     let scm = Scheme::new();
@@ -6,12 +7,15 @@ fn main() {
     let x = vec![9; 32];
 
     scm.enter(|ctx| {
-        let big = BigInt::parse(ctx, "1234567890123456789012345678901234567890", &Base::DEC).unwrap();
-        let big2 = BigInt::parse(ctx, "42", &Base::DEC).unwrap();
-        println!("{}", big.to_string_with_options(&Default::default())) ;
-        let big3 = big.times(ctx, big2);
-        
-        println!("{}", big3.to_string_with_options(&Default::default()));
-        println!("{:+#}", &*big3);
+        let mut x = Number::Fixnum(100);
+
+        for i in 0..1000 {
+            x = Number::mul(ctx, x, (i+1*42).into_number(ctx));
+        }
+        let divided = Number::div(ctx, x, (1000*42).into_number(ctx));
+        println!("x: {}", x);
+        println!("divided: {}", divided);   
+
+    
     });
 }
