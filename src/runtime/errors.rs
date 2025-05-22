@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use super::value::Value;
+use super::value::{IntoValue, Value};
 
 /// A Scheme error.
 ///
@@ -99,5 +99,13 @@ impl Violation<'_> {
             },
             _ => self,
         }
+    }
+}
+
+pub type Result<'gc, T> = std::result::Result<T, Value<'gc>>;
+
+impl<'gc> IntoValue<'gc> for Violation<'gc> {
+    fn into_value(self, ctx: super::Context<'gc>) -> Value<'gc> {
+        todo!()
     }
 }

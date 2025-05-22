@@ -1,7 +1,19 @@
-use core::num;
+#![allow(unused_variables)]
+
+
+//! # Numerical tower of Scheme
+//! 
+//! Implements all the math things from Scheme including numerical tower. 
+//! 
+//! # DISCLAIMER
+//! 
+//! THIS FILE IS A BIG MESS. Math works but changes to this file
+//! need to be done with care to not break anything.
+
 use std::{
     borrow::Cow,
     fmt,
+    hash::Hash,
     marker::PhantomData,
     mem::{MaybeUninit, align_of, size_of},
     ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo},
@@ -11,10 +23,10 @@ use std::{
     },
 };
 
-use rand::rand_core::le;
+use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
+use rand::Rng;
 use rsgc::{
     Collect, EnsureGCInfo, GCInfo, GCInfoIndex, GCInfoIndexForT, Gc, Rootable, Trace, Visitor,
-    alloc::array::Array,
     context::Mutation,
     gc::GLOBAL_GC_INFO_TABLE,
     generic_static::Namespace,
@@ -24,7 +36,7 @@ use rsgc::{
 
 use crate::runtime::Context;
 
-use super::{Tagged, TypeCode8, TypeCode16, Value, ValuesNamespace, pure_nan::PURE_NAN_BITS};
+use super::{FromValue, IntoValue, Tagged, TypeCode8, TypeCode16, Value, ValuesNamespace};
 
 pub const DIGIT_BIT: usize = 64;
 pub const DIGIT_MASK: u64 = u64::MAX;
@@ -35,11 +47,6 @@ pub type Digit2X = u128;
 pub type Digit = u64;
 pub type IDigit = i64;
 pub type IDigit2X = i128;
-
-const BN_QUANTUM: usize = 32;
-const BN_STACK_LIMIT: usize = 1024;
-const P_DIGITS: usize = 308;
-const P_EXP10: usize = 22;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Sign {
@@ -72,15 +79,42 @@ impl Sign {
 #[repr(C)]
 pub struct BigInt<'gc> {
     count: u32, // Number of u32 words
-    sign: Sign,
+    negative: bool,
     words: [Digit; 0],              // Flexible array member: data follows here
     _phantom: PhantomData<&'gc ()>, // To ensure 'gc is used
 }
 
+impl<'gc> fmt::Binary for BigInt<'gc> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            write!(
+                f,
+                "0b{}",
+                self.to_string_with_options(&NumberToStringOptions {
+                    base: &Base::BIN,
+                    ..Default::default()
+                })
+            )
+        } else {
+            write!(
+                f,
+                "{}",
+                self.to_string_with_options(&NumberToStringOptions {
+                    base: &Base::BIN,
+                    ..Default::default()
+                })
+            )
+        }
+    }
+}
+
 impl<'gc> fmt::Display for BigInt<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-
-        f.pad_integral(!self.is_negative(), "", &self.to_string_with_options(&Default::default()))
+        f.pad_integral(
+            !self.is_negative(),
+            "",
+            &self.to_string_with_options(&Default::default()),
+        )
     }
 }
 
@@ -116,12 +150,12 @@ impl<'gc> BigInt<'gc> {
     ///
     /// Panics if `num_words` exceeds `u32::MAX`.
     pub fn new<const NORMALIZE: bool>(
-        mc: &Mutation<'gc>,
+        mc: Context<'gc>,
         mut words: &[Digit],
-        sign: Sign,
+        negative: bool,
     ) -> Gc<'gc, Self> {
         if NORMALIZE {
-            while words.len() > 0 && words[words.len() - 1] == 0 {
+            while words.len() > 1 && words[words.len() - 1] == 0 {
                 words = &words[..words.len() - 1]; // Remove trailing zeros
             }
         }
@@ -137,7 +171,7 @@ impl<'gc> BigInt<'gc> {
 
             bigint.as_ptr().write(MaybeUninit::new(BigInt {
                 count: words.len() as u32,
-                sign,
+                negative,
                 words: [],
                 _phantom: PhantomData,
             }));
@@ -158,7 +192,7 @@ impl<'gc> BigInt<'gc> {
     pub fn zeroed<F, E>(
         mc: &Mutation<'gc>,
         count: usize,
-        sign: Sign,
+        negative: bool,
         fill: F,
     ) -> Result<Gc<'gc, Self>, E>
     where
@@ -175,7 +209,7 @@ impl<'gc> BigInt<'gc> {
 
             bigint.as_ptr().write(MaybeUninit::new(BigInt {
                 count: count as _,
-                sign,
+                negative,
                 words: [],
                 _phantom: PhantomData,
             }));
@@ -210,18 +244,12 @@ impl<'gc> BigInt<'gc> {
         unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr(), self.num_words()) }
     }
 
-    unsafe fn raw_slice_mut(&self) -> &mut [Digit] {
-        unsafe {
-            std::slice::from_raw_parts_mut(self.words.as_ptr() as *mut Digit, self.count as usize)
-        }
-    }
-
     pub fn count(&self) -> usize {
         self.count as usize
     }
 
     pub fn flip2sc(&mut self) {
-        let mut count = self.count();
+        let count = self.count();
 
         let mut acc: Digit2X = 1;
 
@@ -232,8 +260,64 @@ impl<'gc> BigInt<'gc> {
         }
     }
 
-    pub fn dup(&self, ctx: Context<'gc>, sign: Sign) -> Gc<'gc, Self> {
-        Self::new::<false>(&ctx, &**self, sign)
+    pub fn dup(&self, ctx: Context<'gc>, negative: bool) -> Gc<'gc, Self> {
+        Self::new::<false>(ctx, &**self, negative)
+    }
+
+    pub fn to_num_bigint(&self) -> NumBigInt {
+        if self.is_zero() {
+            return NumBigInt::from(0);
+        }
+
+        let sign = if self.is_negative() {
+            NumSign::Minus
+        } else {
+            NumSign::Plus
+        };
+
+        let mut bytes = Vec::new();
+        for &word in self.words_slice().iter().rev() {
+            bytes.extend_from_slice(&word.to_be_bytes());
+        }
+        // num_bigint::BigInt::from_bytes_be expects most significant byte first,
+        // and our words are stored least significant first. We also need to handle potential leading zeros in the byte vector if the most significant word is small.
+        // A simple reversal of words_slice and then to_be_bytes for each word handles this naturally.
+
+        // Remove leading zero bytes from the vector, as num-bigint expects this for positive numbers.
+        // For negative numbers, it's more complex due to two's complement, but from_bytes_be handles it.
+        let first_non_zero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+        NumBigInt::from_bytes_be(sign, &bytes[first_non_zero..])
+    }
+
+    pub fn from_num_bigint(ctx: Context<'gc>, num_bigint: &NumBigInt) -> Gc<'gc, Self> {
+        if *num_bigint == NumBigInt::from(0) {
+            return Self::zero(ctx);
+        }
+
+        let (sign, bytes) = num_bigint.to_bytes_be();
+        let negative = match sign {
+            NumSign::Minus => true,
+            _ => false,
+        };
+
+        let mut words = Vec::new();
+        let chunk_size = std::mem::size_of::<Digit>();
+
+        for chunk in bytes.rchunks(chunk_size) {
+            let mut temp_chunk = [0u8; 8];
+
+            let offset = chunk_size - chunk.len();
+            temp_chunk[offset..].copy_from_slice(chunk);
+
+            let mut current_word_val = 0u64;
+            for &byte in temp_chunk.iter() {
+                // Iterate over the 8-byte (or padded) chunk
+                current_word_val = (current_word_val << 8) | (byte as u64);
+            }
+            words.push(current_word_val);
+        }
+
+        Self::new::<true>(ctx, &words, negative)
     }
 }
 
@@ -295,10 +379,15 @@ unsafe impl<'gc> Tagged for BigInt<'gc> {
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct Complex<'gc> {
-    real: Value<'gc>,
-    imag: Value<'gc>,
+    real: Number<'gc>,
+    imag: Number<'gc>,
 }
-
+impl<'gc> Complex<'gc> {
+    pub fn new(ctx: Context<'gc>, real: Number<'gc>, imag: Number<'gc>) -> Gc<'gc, Self> {
+        let complex = Complex { real, imag };
+        Gc::new(&ctx, complex)
+    }
+}
 unsafe impl<'gc> Tagged for Complex<'gc> {
     const TC8: TypeCode8 = TypeCode8::NUMBER;
     const TC16: &'static [TypeCode16] = &[TypeCode16::COMPLEX];
@@ -308,8 +397,22 @@ unsafe impl<'gc> Tagged for Complex<'gc> {
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct Rational<'gc> {
-    numerator: Value<'gc>,
-    denominator: Value<'gc>,
+    numerator: Number<'gc>,
+    denominator: Number<'gc>,
+}
+
+impl<'gc> Rational<'gc> {
+    pub fn new(
+        ctx: Context<'gc>,
+        numerator: Number<'gc>,
+        denominator: Number<'gc>,
+    ) -> Gc<'gc, Self> {
+        let rational = Rational {
+            numerator,
+            denominator,
+        };
+        Gc::new(&ctx, rational)
+    }
 }
 
 unsafe impl<'gc> Tagged for Rational<'gc> {
@@ -409,37 +512,65 @@ const fn loword(x: Digit2X) -> Digit {
 const fn hiword(x: Digit2X) -> Digit {
     (x >> DIGIT_BIT) as Digit
 }
-const fn joinwords(x: Digit, y: Digit) -> Digit2X {
-    ((x as Digit2X) << DIGIT_BIT) | (y as Digit2X)
+const fn joinwords(loword: Digit, hiword: Digit) -> Digit2X {
+    ((hiword as Digit2X) << DIGIT_BIT) | (loword as Digit2X)
 }
 
 impl<'gc> BigInt<'gc> {
-    fn set_zero(&mut self) {
-        self.sign = Sign::Zero;
-        self.count = 0;
-    }
-
     pub fn from_u64(ctx: Context<'gc>, value: u64) -> Gc<'gc, Self> {
         if value == 0 {
-            return BigInt::new::<false>(&ctx, &[], Sign::Zero);
+            return Self::zero(ctx);
         }
 
-        BigInt::new::<false>(&ctx, &[value], Sign::Positive)
+        BigInt::new::<false>(ctx, &[value], false)
     }
 
     pub fn from_i64(ctx: Context<'gc>, value: i64) -> Gc<'gc, Self> {
         if value == 0 {
-            return BigInt::new::<false>(&ctx, &[], Sign::Zero);
+            return Self::zero(ctx);
         }
 
-        let sign = if value < 0 {
-            Sign::Negative
-        } else {
-            Sign::Positive
-        };
         let abs_value = value.wrapping_abs() as u64;
 
-        BigInt::new::<false>(&ctx, &[abs_value], sign)
+        BigInt::new::<false>(ctx, &[abs_value], value < 0)
+    }
+
+    pub fn from_u128(ctx: Context<'gc>, value: u128) -> Gc<'gc, Self> {
+        if value == 0 {
+            return Self::zero(ctx);
+        }
+
+        Self::new::<true>(ctx, &[loword(value), hiword(value)], false)
+    }
+
+    pub fn from_i128(ctx: Context<'gc>, value: i128) -> Gc<'gc, Self> {
+        if value == 0 {
+            return Self::zero(ctx);
+        }
+
+        let abs_value = if value == i128::MIN {
+            i128::MAX as u128 + 1
+        } else {
+            if value < 0 {
+                (-value) as u128
+            } else {
+                value as u128
+            }
+        };
+
+        Self::new::<true>(ctx, &[loword(abs_value), hiword(abs_value)], value < 0)
+    }
+
+    pub fn from_f64(ctx: Context<'gc>, value: f64) -> Gc<'gc, Self> {
+        if value > -1.0 && value < 1.0 {
+            Self::new::<true>(ctx, &[0], value < 0.0)
+        } else if value > -(u64::MAX as f64) && value < u64::MAX as f64 {
+            let absvalue = (-value) as u64;
+
+            Self::new::<false>(ctx, &[absvalue], value < 0.0)
+        } else {
+            todo!()
+        }
     }
 
     pub fn try_as_i64(&self) -> Option<i64> {
@@ -447,17 +578,13 @@ impl<'gc> BigInt<'gc> {
             return None;
         }
 
-        if self.sign.is_zero() {
-            return Some(0);
-        }
-
         let value = self[0];
-        if self.sign.is_negative() && value == i64::MAX as u64 + 1 {
+        if self.negative && value == i64::MAX as u64 + 1 {
             return Some(i64::MIN);
         }
 
         if value <= i64::MAX as u64 {
-            if self.sign.is_negative() {
+            if self.negative {
                 Some(-(value as i64))
             } else {
                 Some(value as i64)
@@ -472,11 +599,45 @@ impl<'gc> BigInt<'gc> {
             return None;
         }
 
-        if self.sign.is_zero() {
+        if self.count() == 0 {
             return Some(0);
         }
 
         let value = self[0];
+        Some(value)
+    }
+
+    pub fn try_as_u128(&self) -> Option<u128> {
+        if self.count() > 2 {
+            return None;
+        }
+
+        if self.count() == 0 {
+            return Some(0);
+        }
+
+        let mut value = 0u128;
+        for i in (0..self.count()).rev() {
+            value <<= DIGIT_BIT;
+            value |= self[i] as u128;
+        }
+        Some(value)
+    }
+
+    pub fn try_as_i128(&self) -> Option<i128> {
+        if self.count() > 2 {
+            return None;
+        }
+
+        if self.count() == 0 {
+            return Some(0);
+        }
+
+        let mut value = 0i128;
+        for i in (0..self.count()).rev() {
+            value <<= DIGIT_BIT;
+            value |= self[i] as i128;
+        }
         Some(value)
     }
 
@@ -491,19 +652,19 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn is_zero(&self) -> bool {
-        self.sign.is_zero()
+        self.count() == 1 && self[0] == 0
     }
 
     pub fn is_one(&self) -> bool {
-        self.count() == 1 && self[0] == 1 && !self.sign.is_negative()
+        self.count() == 1 && self[0] == 1 && !self.negative
     }
 
     pub fn is_negative(&self) -> bool {
-        self.sign.is_negative()
+        self.negative
     }
 
     pub fn is_positive(&self) -> bool {
-        self.sign.is_positive()
+        !self.negative
     }
 
     pub fn negate(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
@@ -511,7 +672,7 @@ impl<'gc> BigInt<'gc> {
             return self;
         }
 
-        self.dup(ctx, self.sign.flip())
+        self.dup(ctx, !self.negative)
     }
 
     pub fn abs(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
@@ -519,8 +680,8 @@ impl<'gc> BigInt<'gc> {
             return self;
         }
 
-        if self.sign.is_negative() {
-            self.dup(ctx, Sign::Positive)
+        if self.negative {
+            self.dup(ctx, false)
         } else {
             self
         }
@@ -545,17 +706,17 @@ impl<'gc> BigInt<'gc> {
             return self;
         }
 
-        if self.sign != rhs.sign {
+        if self.is_negative() != rhs.is_negative() {
             return self.minus(ctx, rhs.negate(ctx));
         }
 
         let (b1, b2) = if self.count() < rhs.count() {
-            (self, rhs)
-        } else {
             (rhs, self)
+        } else {
+            (self, rhs)
         };
 
-        Self::zeroed::<_, ()>(&ctx, b1.count() + 1, self.sign, |result| {
+        Self::zeroed::<_, ()>(&ctx, b1.count() + 1, self.negative, |result| {
             let mut sum: Digit2X = 0;
             let mut off = 0;
             for i in 0..b2.count() {
@@ -579,7 +740,7 @@ impl<'gc> BigInt<'gc> {
             }
 
             result.count = off as u32;
-            result.sign = self.sign;
+            result.negative = self.negative;
             Ok(())
         })
         .unwrap()
@@ -589,7 +750,7 @@ impl<'gc> BigInt<'gc> {
         if rhs.is_zero() {
             return self;
         }
-        if self.sign != rhs.sign {
+        if self.negative != rhs.negative {
             return self.plus(ctx, rhs.negate(ctx));
         }
 
@@ -600,9 +761,9 @@ impl<'gc> BigInt<'gc> {
         }
 
         let sign = if cmp == std::cmp::Ordering::Less {
-            self.sign.flip()
+            !self.negative
         } else {
-            self.sign
+            self.negative
         };
 
         let (b1, b2) = if cmp == std::cmp::Ordering::Less {
@@ -656,7 +817,7 @@ impl<'gc> BigInt<'gc> {
             (self, rhs)
         };
 
-        Self::zeroed(&ctx, b1.count() + b2.count(), self.sign, |res| {
+        Self::zeroed(&ctx, b1.count() + b2.count(), self.negative, |res| {
             for i in 0..b2.count() {
                 let mut sum: Digit2X = 0;
 
@@ -669,10 +830,10 @@ impl<'gc> BigInt<'gc> {
 
                 res[i + b1.count()] = loword(sum);
             }
-            res.sign = if self.sign != rhs.sign {
-                self.sign.flip()
+            res.negative = if self.negative != rhs.negative {
+                !self.negative
             } else {
-                self.sign
+                self.negative
             };
 
             Result::<(), ()>::Ok(())
@@ -685,10 +846,24 @@ impl<'gc> BigInt<'gc> {
 
         *ZERO_BIGINT
             .get_or_init(|| {
-                println!("made zero");
-                let zero = BigInt::new::<false>(&ctx, &[], Sign::Zero);
+                let zero = BigInt::new::<false>(ctx, &[0], false);
+
                 zero.set_user_header(TypeCode16::BIG.into());
-                Global::new(zero)
+                let x = Global::new(zero);
+
+                x
+            })
+            .fetch(&ctx)
+    }
+
+    pub fn one(ctx: Context<'gc>) -> Gc<'gc, Self> {
+        static ONE_BIGINT: OnceLock<Global<Rootable!(Gc<'_, BigInt<'_>>)>> = OnceLock::new();
+
+        *ONE_BIGINT
+            .get_or_init(|| {
+                let one = BigInt::new::<true>(ctx, &[1], true);
+                one.set_user_header(TypeCode16::BIG.into());
+                Global::new(one)
             })
             .fetch(&ctx)
     }
@@ -746,10 +921,7 @@ impl<'gc> BigInt<'gc> {
     /// Converts the `BigInt` to a string in the given base.
     /// `base` is used for digit mapping, `group_sep` and `group_size` for digit grouping,
     /// `force_sign` to always show a sign, `plus_sign` and `minus_sign` for sign strings.
-    pub fn to_string_with_options(
-        &self,
-        options: &NumberToStringOptions<'gc>,
-    ) -> String {
+    pub fn to_string_with_options(&self, options: &NumberToStringOptions<'gc>) -> String {
         let NumberToStringOptions {
             base,
             group_sep,
@@ -792,7 +964,7 @@ impl<'gc> BigInt<'gc> {
 
         let mut res = String::new();
         let mut res_digits = 0;
-        for (i, &digit) in digits.iter().rev().enumerate() {
+        for (_, &digit) in digits.iter().rev().enumerate() {
             if res_digits > 0 && group_size > 0 && res_digits % group_size == 0 {
                 if let Some(sep) = group_sep {
                     res.push_str(sep);
@@ -864,15 +1036,710 @@ impl<'gc> BigInt<'gc> {
             words.pop();
         }
 
-        let sign = if words.is_empty() {
-            Sign::Zero
-        } else if negative {
-            Sign::Negative
-        } else {
-            Sign::Positive
-        };
+        BigInt::new::<true>(ctx, &words, negative)
+    }
 
-        BigInt::new::<true>(&ctx, &words, sign)
+    fn mult_sub(approx: Digit, divis: &[Digit], rem: &mut Vec<Digit>, from: usize) {
+        let mut sum: Digit2X = 0;
+        let mut carry = 0;
+
+        for j in 0..divis.len() {
+            sum += divis[j] as Digit2X * approx as Digit2X;
+            let x = loword(sum) as Digit2X + carry;
+            if (rem[from + j] as Digit2X) < x {
+                rem[from + j] = (BASE + rem[from + j] as Digit2X - x) as Digit;
+                carry = 1;
+            } else {
+                rem[from + j] = (rem[from + j] as Digit2X - x) as Digit;
+                carry = 0;
+            }
+
+            sum = hiword(sum) as Digit2X;
+        }
+    }
+
+    fn sub_if_possible(divis: &[Digit], rem: &mut Vec<Digit>, from: usize) -> bool {
+        let mut i = divis.len();
+        while i > 0 && divis[i - 1] >= rem[from + i - 1] {
+            if divis[i - 1] > rem[from + i - 1] {
+                return false;
+            }
+
+            i -= 1;
+        }
+
+        let mut carry = 0;
+        for j in 0..divis.len() {
+            let x = divis[j] as Digit2X + carry;
+            if (rem[from + j] as Digit2X) < x {
+                rem[from + j] = (BASE + rem[from + j] as Digit2X - x) as Digit;
+                carry = 1;
+            } else {
+                rem[from + j] = (rem[from + j] as Digit2X - x) as Digit;
+                carry = 0;
+            }
+        }
+
+        true
+    }
+
+    pub fn remainder_digit(&self, deno: Digit) -> Digit {
+        let numerator_count = self.len();
+        let mut remainder = 0 as Digit2X;
+
+        for i in (0..numerator_count).rev() {
+            remainder = ((remainder << DIGIT_BIT) | self[i] as Digit2X) % deno as Digit2X;
+        }
+
+        remainder as Digit
+    }
+
+    /// Divides `self` by `rhs` and returns (quotient, remainder) as BigInt.
+    /// Returns (0, self) if rhs > self, or (1, 0) if self == rhs.
+    pub fn div_rem(
+        self: Gc<'gc, Self>,
+        ctx: Context<'gc>,
+        rhs: Gc<'gc, Self>,
+    ) -> (Gc<'gc, Self>, Gc<'gc, Self>) {
+        if rhs.is_zero() {
+            panic!("division by zero");
+        }
+        if rhs.count() > self.count() {
+            return (BigInt::zero(ctx), self);
+        }
+        let neg = self.negative != rhs.negative;
+        if rhs.count() == self.count() {
+            let cmp = self.compare_digits(&rhs);
+            if cmp == std::cmp::Ordering::Equal {
+                return (
+                    BigInt::from_i64(ctx, if neg { -1 } else { 1 }),
+                    BigInt::zero(ctx),
+                );
+            } else if cmp == std::cmp::Ordering::Less {
+                return (BigInt::zero(ctx), self);
+            }
+        }
+
+        // Prepare dividend and divisor buffers (with extra zero for overflow)
+        let mut rem = self.words_slice().to_vec();
+        rem.push(0);
+        let mut divis = rhs.words_slice().to_vec();
+        divis.push(0);
+
+        let mut sizediff = rem.len() as isize - divis.len() as isize;
+        let div = rhs[rhs.len() - 1] as Digit2X + 1;
+        let mut res = vec![0 as Digit; sizediff as usize + 1];
+        let mut divident = rem.len() as isize - 2;
+
+        loop {
+            let mut x = joinwords(rem[divident as usize], rem[divident as usize + 1]);
+            let mut approx = x / div;
+
+            while approx > 0 {
+                res[sizediff as usize] += approx as Digit;
+                Self::mult_sub(approx as _, &divis, &mut rem, sizediff as usize);
+                x = joinwords(rem[divident as usize], rem[divident as usize + 1]);
+                approx = x / div;
+            }
+
+            if Self::sub_if_possible(&divis, &mut rem, sizediff as usize) {
+                res[sizediff as usize] += 1;
+            }
+
+            divident -= 1;
+            sizediff -= 1;
+            if sizediff < 0 {
+                break;
+            }
+        }
+
+        let quotient = BigInt::new::<true>(ctx, &res, neg);
+        let remainder = BigInt::new::<true>(ctx, &rem[..rhs.count()], self.negative);
+
+        (quotient, remainder)
+    }
+
+    pub fn div(self: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+        let (quotient, _) = self.div_rem(ctx, rhs);
+        quotient
+    }
+
+    pub fn div_digit(
+        self: Gc<'gc, Self>,
+        ctx: Context<'gc>,
+        divisor: Digit,
+    ) -> (Gc<'gc, Self>, u128) {
+        if divisor == 0 {
+            panic!("BigInt::div_digit: division by zero");
+        }
+
+        if self.is_zero() {
+            return (BigInt::zero(ctx), 0);
+        }
+
+        if divisor == 1 {
+            return (self.dup(ctx, self.negative), 0);
+        }
+
+        let count = self.count();
+        // quotient_digits will store words from LSW at index 0 to MSW at index count-1
+        let mut quotient_digits = vec![0 as Digit; count];
+
+        let mut remainder: Digit2X = 0; // Digit2X is u128
+
+        // Iterate from MSW (index count-1) down to LSW (index 0)
+        for i in (0..count).rev() {
+            let current_word = self[i]; // self[i] accesses the i-th word (LSW is self[0])
+            // Combine remainder from previous (more significant) step with current word
+            let dividend_part: Digit2X = (remainder << 64) | (current_word as Digit2X);
+
+            quotient_digits[i] = (dividend_part / (divisor as Digit2X)) as Digit;
+            remainder = dividend_part % (divisor as Digit2X);
+        }
+
+        // The sign of the quotient is the same as the original number's sign,
+        // as divisor (u64) is positive.
+        let result_sign = self.negative; // Access field directly
+
+        // BigInt::new with NORMALIZE = true will handle:
+        // 1. Removing leading zeros from quotient_digits (MSW end).
+        // 2. If all quotient_digits are zero, it returns BigInt::zero.
+        (
+            BigInt::new::<true>(ctx, &quotient_digits, result_sign),
+            remainder,
+        )
+    }
+
+    /// Performs a bitwise AND operation between the BigInt and a single Digit.
+    /// The operation is performed on the magnitude of the BigInt.
+    /// The sign of the result is preserved, unless the magnitude becomes zero.
+    pub fn and_digit(self: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
+        if self.is_zero() {
+            return BigInt::zero(ctx);
+        }
+
+        let count = self.count();
+        let mut result_digits = vec![0 as Digit; count];
+
+        // Perform AND only on the first word (least significant)
+        // and keep other words as 0, as `digit` is a single u64.
+        if count > 0 {
+            result_digits[0] = self[0] & digit;
+        }
+        // Higher words of the result will be 0 because we are ANDing with a single Digit.
+        // BigInt::new with NORMALIZE=true will strip these leading zeros.
+
+        BigInt::new::<true>(ctx, &result_digits, self.negative)
+    }
+
+    /// Performs a bitwise OR operation between the BigInt and a single Digit.
+    /// The operation is performed on the magnitude of the BigInt.
+    /// The sign of the result is preserved.
+    pub fn or_digit(self: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
+        let mut result_digits = self.words_slice().to_vec(); // Clone existing words
+
+        if result_digits.is_empty() {
+            // self is zero
+            if digit == 0 {
+                return BigInt::zero(ctx);
+            } else {
+                // Result is just the digit, with positive sign
+                return BigInt::new::<true>(ctx, &[digit], false);
+            }
+        }
+
+        // Perform OR on the first word (least significant)
+        result_digits[0] |= digit;
+
+        BigInt::new::<true>(ctx, &result_digits, self.negative)
+    }
+
+    /// Performs a bitwise XOR operation between the BigInt and a single Digit.
+    /// The operation is performed on the magnitude of the BigInt.
+    /// The sign of the result is preserved.
+    pub fn xor_digit(self: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
+        let mut result_digits = self.words_slice().to_vec(); // Clone existing words
+
+        if result_digits.is_empty() {
+            // self is zero
+            if digit == 0 {
+                return BigInt::zero(ctx);
+            } else {
+                // Result is just the digit, with positive sign
+                return BigInt::new::<true>(ctx, &[digit], false);
+            }
+        }
+
+        // Perform XOR on the first word (least significant)
+        result_digits[0] ^= digit;
+
+        BigInt::new::<true>(ctx, &result_digits, self.negative)
+    }
+
+    pub fn from_2sc(ctx: Context<'gc>, words: &[Digit]) -> Gc<'gc, Self> {
+        if Self::is_most_significant_bit_set(words) {
+            Self::zeroed(&ctx, words.len(), true, |res| {
+                let mut carry = true;
+
+                res.copy_from_slice(words);
+
+                for i in 0..words.len() {
+                    if carry {
+                        (res[i], carry) = (!words[i]).overflowing_add(1);
+                    } else {
+                        res[i] = !res[i];
+                    }
+                }
+
+                while let Some(&0) = res.last() {
+                    res.count -= 1;
+                }
+
+                res.negative = true;
+                Result::<(), ()>::Ok(())
+            })
+            .unwrap()
+        } else {
+            Self::new::<true>(ctx, words, false)
+        }
+    }
+
+    pub fn random<R: Rng>(ctx: Context<'gc>, rng: &mut R, bitwidth: usize) -> Gc<'gc, Self> {
+        let mut words = vec![0; (bitwidth + DIGIT_BIT - 1) / DIGIT_BIT];
+        rng.fill(&mut words[..]);
+        Self::new::<true>(ctx, &words, false)
+    }
+
+    pub fn is_most_significant_bit_set(words: &[Digit]) -> bool {
+        words
+            .last()
+            .map_or(false, |&word| word & (1 << (DIGIT_BIT - 1)) != 0)
+    }
+
+    pub fn twos_complement_size(left: &[Digit], right: &[Digit]) -> usize {
+        (left.len()
+            + if Self::is_most_significant_bit_set(left) {
+                1
+            } else {
+                0
+            })
+        .max(
+            right.len()
+                + if Self::is_most_significant_bit_set(right) {
+                    1
+                } else {
+                    0
+                },
+        )
+    }
+
+    pub fn and(self: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+        let (mut leftcarry, mut rightcarry) = (true, true);
+
+        let size = Self::twos_complement_size(&self, &rhs);
+
+        let mut res = Vec::with_capacity(size);
+
+        for i in 0..size {
+            let mut leftword = if i < self.count() { self[i] } else { 0 };
+
+            if self.is_negative() {
+                if leftcarry {
+                    (leftword, leftcarry) = (!leftword).overflowing_add(1);
+                } else {
+                    leftword = !leftword;
+                }
+            }
+
+            let mut rightword = if i < rhs.count() { rhs[i] } else { 0 };
+
+            if rhs.is_negative() {
+                if rightcarry {
+                    (rightword, rightcarry) = (!rightword).overflowing_add(1);
+                } else {
+                    rightword = !rightword;
+                }
+            }
+
+            res.push(leftword & rightword);
+        }
+
+        Self::from_2sc(ctx, &res)
+    }
+
+    pub fn or(self: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+        let (mut leftcarry, mut rightcarry) = (true, true);
+
+        let size = Self::twos_complement_size(&self, &rhs);
+
+        let mut res = Vec::with_capacity(size);
+
+        for i in 0..size {
+            let mut leftword = if i < self.count() { self[i] } else { 0 };
+
+            if self.is_negative() {
+                if leftcarry {
+                    (leftword, leftcarry) = (!leftword).overflowing_add(1);
+                } else {
+                    leftword = !leftword;
+                }
+            }
+
+            let mut rightword = if i < rhs.count() { rhs[i] } else { 0 };
+
+            if rhs.is_negative() {
+                if rightcarry {
+                    (rightword, rightcarry) = (!rightword).overflowing_add(1);
+                } else {
+                    rightword = !rightword;
+                }
+            }
+
+            res.push(leftword | rightword);
+        }
+
+        Self::from_2sc(ctx, &res)
+    }
+
+    pub fn xor(self: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+        let (mut leftcarry, mut rightcarry) = (true, true);
+
+        let size = Self::twos_complement_size(&self, &rhs);
+
+        let mut res = Vec::with_capacity(size);
+
+        for i in 0..size {
+            let mut leftword = if i < self.count() { self[i] } else { 0 };
+
+            if self.is_negative() {
+                if leftcarry {
+                    (leftword, leftcarry) = (!leftword).overflowing_add(1);
+                } else {
+                    leftword = !leftword;
+                }
+            }
+
+            let mut rightword = if i < rhs.count() { rhs[i] } else { 0 };
+
+            if rhs.is_negative() {
+                if rightcarry {
+                    (rightword, rightcarry) = (!rightword).overflowing_add(1);
+                } else {
+                    rightword = !rightword;
+                }
+            }
+
+            res.push(leftword ^ rightword);
+        }
+
+        Self::from_2sc(ctx, &res)
+    }
+
+    pub fn pow(self: Gc<'gc, Self>, ctx: Context<'gc>, exp: u64) -> Gc<'gc, Self> {
+        let (mut expo, mut radix) = (exp, self);
+        let mut res = Self::one(ctx);
+
+        while expo != 0 {
+            if expo & 1 != 0 {
+                res = res.times(ctx, radix);
+            }
+            expo /= 2;
+            radix = radix.times(ctx, radix);
+        }
+
+        res
+    }
+
+    pub fn gcd(self: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+        if self.is_zero() {
+            return rhs.abs(ctx);
+        }
+        if rhs.is_zero() {
+            return self.abs(ctx);
+        }
+
+        let mut a = self.abs(ctx);
+        let mut b = rhs.abs(ctx);
+
+        while !b.is_zero() {
+            let (q, r) = a.div_rem(ctx, b);
+            a = b;
+            b = r;
+        }
+
+        a
+    }
+
+    pub fn sqrt(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+        if self.is_zero() {
+            return self;
+        }
+        let mut y = self.div_digit(ctx, 2).0;
+        let mut x = self.div(ctx, y);
+        while y > x {
+            let plus = x.plus(ctx, y);
+
+            y = plus.div_digit(ctx, 2).0;
+
+            x = self.div(ctx, y);
+        }
+
+        y
+    }
+
+    pub fn shift_left(self: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+        let swords = shift / DIGIT_BIT;
+        let sbits = shift % DIGIT_BIT;
+
+        let mut res = vec![];
+        res.reserve(self.len() + swords);
+
+        for _ in 0..swords {
+            res.push(0);
+        }
+
+        let mut carry: Digit = 0;
+
+        for &word in self.iter() {
+            res.push((word << sbits) | carry);
+            carry = word >> (DIGIT_BIT - sbits);
+        }
+
+        if carry > 0 {
+            res.push(carry);
+        }
+
+        Self::new::<true>(ctx, &res, self.negative)
+    }
+
+    pub fn shift_right(self: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+        let swords = shift / DIGIT_BIT;
+        let sbits = shift % DIGIT_BIT;
+
+        let mut res = vec![];
+        res.reserve(self.len() - swords);
+
+        let mut carry = 0;
+        let mut i = self.len() - 1;
+
+        while i >= swords {
+            let word = self[i];
+            res.push((word >> sbits) | carry);
+            carry = (word << (DIGIT_BIT - sbits)) & Digit::MAX;
+            i -= 1;
+        }
+
+        let x = Self::new::<true>(ctx, &res, self.negative);
+
+        if self.negative && carry > 0 {
+            x.minus(ctx, Self::one(ctx))
+        } else {
+            x
+        }
+    }
+
+    pub fn shift(self: Gc<'gc, Self>, ctx: Context<'gc>, shift: isize) -> Gc<'gc, Self> {
+        if shift > 0 {
+            self.shift_left(ctx, shift as usize)
+        } else if shift < 0 {
+            self.shift_right(ctx, -shift as usize)
+        } else {
+            self
+        }
+    }
+
+    pub fn bitsize(self: Gc<'gc, Self>) -> usize {
+        if self.is_zero() {
+            return 0;
+        }
+        let mut size = self.count() * DIGIT_BIT;
+        size -= self.leading_zeros();
+        size
+    }
+
+    /// Returns true if the bit at position `n` is set in the two's complement representation.
+    pub fn is_bit_set(&self, n: usize) -> bool {
+        if self.is_zero() {
+            return false;
+        }
+        let nword = n / DIGIT_BIT;
+        let nbit = n % DIGIT_BIT;
+        if nword >= self.count() {
+            // For out-of-bounds bits, return the sign bit (infinite sign extension)
+            return self.negative;
+        }
+        if !self.negative {
+            return (self[nword] & (1 << nbit)) != 0;
+        }
+        // For negative numbers, compute two's complement up to nword
+        let mut carry = true;
+        let mut word = 0;
+        for i in 0..=nword {
+            word = self[i];
+            if carry {
+                let (w, c) = (!word).overflowing_add(1);
+                word = w;
+                carry = c;
+            } else {
+                word = !word;
+            }
+        }
+        (word & (1 << nbit)) != 0
+    }
+
+    /// Sets the bit at position `n` to `value` and returns a new BigInt.
+    /// `value == true` sets the bit, `false` clears it.
+    pub fn set_bit(self: Gc<'gc, Self>, ctx: Context<'gc>, n: usize, value: bool) -> Gc<'gc, Self> {
+        let nword = n / DIGIT_BIT;
+        let nbit = n % DIGIT_BIT;
+        let mut words = self.words_slice().to_vec();
+
+        // Extend words if needed
+        while words.len() <= nword {
+            words.push(0);
+        }
+
+        if !self.negative {
+            if value {
+                words[nword] |= 1 << nbit;
+            } else {
+                words[nword] &= !(1 << nbit);
+            }
+            return BigInt::new::<true>(ctx, &words, false);
+        }
+
+        // Negative case: two's complement logic
+        if Self::is_most_significant_bit_set(&words) {
+            words.push(0);
+        }
+        let mut carry = true;
+        for w in &mut words {
+            if carry {
+                let (v, c) = (!*w).overflowing_add(1);
+                *w = v;
+                carry = c;
+            } else {
+                *w = !*w;
+            }
+        }
+        if value {
+            words[nword] |= 1 << nbit;
+        } else {
+            words[nword] &= !(1 << nbit);
+        }
+        BigInt::from_2sc(ctx, &words)
+    }
+
+    pub fn leading_zeros(&self) -> usize {
+        let mut count = 0;
+        for i in (0..self.count()).rev() {
+            if self[i] == 0 {
+                count += DIGIT_BIT;
+            } else {
+                let mut word = self[i];
+                while word & 1 == 0 {
+                    word >>= 1;
+                    count += 1;
+                }
+                break;
+            }
+        }
+        count
+    }
+
+    pub fn trailing_zeros(&self) -> usize {
+        let mut count = 0;
+        for i in 0..self.count() {
+            if self[i] == 0 {
+                count += DIGIT_BIT;
+            } else {
+                let mut word = self[i];
+                while word & 1 == 0 {
+                    word >>= 1;
+                    count += 1;
+                }
+                break;
+            }
+        }
+        count
+    }
+
+    pub fn leading_ones(&self) -> usize {
+        let mut count = 0;
+        for i in (0..self.count()).rev() {
+            if self[i] == Digit::MAX {
+                count += DIGIT_BIT;
+            } else {
+                let mut word = self[i];
+                while word & 1 == 1 {
+                    word >>= 1;
+                    count += 1;
+                }
+                break;
+            }
+        }
+        count
+    }
+
+    pub fn trailing_ones(&self) -> usize {
+        let mut count = 0;
+        for i in 0..self.count() {
+            if self[i] == Digit::MAX {
+                count += DIGIT_BIT;
+            } else {
+                let mut word = self[i];
+                while word & 1 == 1 {
+                    word >>= 1;
+                    count += 1;
+                }
+                break;
+            }
+        }
+        count
+    }
+
+    pub fn rotate_left(self: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+        let count = self.count();
+        let mut res = vec![0; count];
+        let shift = shift % (count * DIGIT_BIT);
+        let (swords, sbits) = (shift / DIGIT_BIT, shift % DIGIT_BIT);
+
+        for i in 0..count {
+            let next = (i + swords) % count;
+            res[next] |= self[i] << sbits;
+            if i + 1 < count {
+                res[next] |= self[i + 1] >> (DIGIT_BIT - sbits);
+            }
+        }
+
+        BigInt::new::<true>(ctx, &res, self.negative)
+    }
+
+    pub fn rotate_right(self: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
+        let count = self.count();
+        let mut res = vec![0; count];
+        let shift = shift % (count * DIGIT_BIT);
+        let (swords, sbits) = (shift / DIGIT_BIT, shift % DIGIT_BIT);
+
+        for i in 0..count {
+            let prev = (i + count - swords) % count;
+            res[prev] |= self[i] >> sbits;
+            if i > 0 {
+                res[prev] |= self[i - 1] << (DIGIT_BIT - sbits);
+            }
+        }
+
+        BigInt::new::<true>(ctx, &res, self.negative)
+    }
+
+    pub fn rotate(self: Gc<'gc, Self>, ctx: Context<'gc>, shift: isize) -> Gc<'gc, Self> {
+        if shift > 0 {
+            self.rotate_left(ctx, shift as usize)
+        } else if shift < 0 {
+            self.rotate_right(ctx, -shift as usize)
+        } else {
+            self
+        }
     }
 }
 
@@ -985,3 +1852,1752 @@ impl<'gc> Default for NumberToStringOptions<'gc> {
     }
 }
 
+impl<'gc> Hash for BigInt<'gc> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for &word in self.words_slice() {
+            state.write_u64(word);
+        }
+    }
+}
+
+impl<'gc> PartialEq for BigInt<'gc> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl<'gc> Eq for BigInt<'gc> {}
+
+impl<'gc> PartialOrd for BigInt<'gc> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<'gc> Ord for BigInt<'gc> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.negative != other.negative {
+            if self.negative {
+                return std::cmp::Ordering::Less;
+            } else {
+                return std::cmp::Ordering::Greater;
+            }
+        }
+
+        if self.negative {
+            other.compare_digits(self)
+        } else {
+            self.compare_digits(other)
+        }
+    }
+}
+
+impl<'gc> PartialEq<i64> for BigInt<'gc> {
+    fn eq(&self, other: &i64) -> bool {
+        self.try_as_i64() == Some(*other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::Scheme;
+
+    use super::*;
+    #[test]
+    fn test_bigint_cmp() {
+        let scm = Scheme::new();
+
+        scm.enter(|ctx| {
+            let b1 = BigInt::from_u64(ctx, 12345678901234567890);
+            let b2 = BigInt::from_u64(ctx, 12345678901234567890);
+
+            assert_eq!(b1.cmp(&b2), std::cmp::Ordering::Equal);
+
+            let b3 = BigInt::from_u64(ctx, 12345678901234567891);
+
+            assert_eq!(b1.cmp(&b3), std::cmp::Ordering::Less);
+            assert_eq!(b3.cmp(&b1), std::cmp::Ordering::Greater);
+
+            let zero = BigInt::zero(ctx);
+
+            assert_eq!(zero.cmp(&b1), std::cmp::Ordering::Less);
+            assert_eq!(b1.cmp(&zero), std::cmp::Ordering::Greater);
+            assert_eq!(zero.cmp(&zero), std::cmp::Ordering::Equal);
+        });
+    }
+
+    #[test]
+    fn test_bigint_ops() {
+        let scm = Scheme::new();
+
+        scm.enter(|ctx| {
+            let a = BigInt::parse(ctx, "12345678901234567890", &Base::DEC).unwrap();
+            let b = BigInt::parse(ctx, "98765432109876543210", &Base::DEC).unwrap();
+
+            let sum = a.plus(ctx, b);
+            assert_eq!(sum.to_string(), "111111111011111111100");
+
+            let a =
+                BigInt::parse(ctx, "123414124512512356132616532623515231151", &Base::DEC).unwrap();
+            let b = BigInt::parse(ctx, "12412412512356324632651651361561", &Base::DEC).unwrap();
+
+            let (q, r) = a.div_rem(ctx, b);
+            let mul = a.times(ctx, b);
+
+            println!("div: ({q}, {r})");
+            println!("mul: {}", mul.to_string());
+
+            assert_eq!(q.to_string(), "9942799");
+            assert_eq!(r.to_string(), "1797068403931412326117437881912");
+            assert_eq!(
+                mul.to_string(),
+                "1531867023300609762396035507803021632000090312363887487217570791186711"
+            );
+        });
+    }
+}
+
+/// A number type which represents one of the types from numerical tower of Scheme:
+/// - `integer`: represented by `Fixnum` or `BigInt`, `fixnum` is 32-bit integer
+/// used for optimization of value sizes in VM and is a VM detail that might change in the future.
+/// while bigint provides virtually unlimited precision for integer values.
+/// - `flonum`: double precision IEEE 754 floating point number.
+/// - `rational`: a pair of integers representing a rational number.
+/// - `complex`: a pair of numbers representing a complex number.
+#[derive(Clone, Copy)]
+pub enum Number<'gc> {
+    Fixnum(i32),
+    Flonum(f64),
+    BigInt(Gc<'gc, BigInt<'gc>>),
+    Rational(Gc<'gc, Rational<'gc>>),
+    Complex(Gc<'gc, Complex<'gc>>),
+}
+
+unsafe impl<'gc> Trace for Number<'gc> {
+    fn trace(&mut self, tracer: &mut Visitor) {
+        match self {
+            Number::Fixnum(_) => {}
+            Number::Flonum(_) => {}
+            Number::BigInt(b) => b.trace(tracer),
+            Number::Rational(r) => r.trace(tracer),
+            Number::Complex(c) => c.trace(tracer),
+        }
+    }
+}
+
+impl<'gc> IntoValue<'gc> for Number<'gc> {
+    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+        match self {
+            Number::Fixnum(i) => Value::new(i),
+            Number::Flonum(f) => Value::new(f),
+            Number::BigInt(b) => Value::new(b),
+            Number::Rational(r) => Value::new(r),
+            Number::Complex(c) => Value::new(c),
+        }
+    }
+}
+
+impl<'gc> FromValue<'gc> for Number<'gc> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+        if value.is_int32() {
+            Ok(Number::Fixnum(value.as_int32()))
+        } else if value.is::<BigInt>() {
+            Ok(Number::BigInt(value.downcast::<BigInt>()))
+        } else if value.is::<Rational>() {
+            Ok(Number::Rational(value.downcast::<Rational>()))
+        } else if value.is::<Complex>() {
+            Ok(Number::Complex(value.downcast::<Complex>()))
+        } else if value.is_flonum() {
+            Ok(Number::Flonum(value.as_flonum()))
+        } else {
+            Err(value)
+        }
+    }
+}
+
+impl<'gc> Number<'gc> {
+    pub fn exact_integer_to_i32(self) -> Option<i32> {
+        if let Number::Fixnum(i) = self {
+            Some(i)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_i64()
+                .filter(|&v| v >= i32::MIN as i64 && v <= i32::MAX as i64)
+                .map(|v| v as i32)
+        } else {
+            None
+        }
+    }
+
+    pub fn exact_integer_to_u32(self) -> Option<u32> {
+        if let Number::Fixnum(i) = self {
+            Some(i as u32)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_u64()
+                .filter(|&v| v <= u32::MAX as u64)
+                .map(|v| v as u32)
+        } else {
+            None
+        }
+    }
+
+    pub fn exact_integer_to_i64(self) -> Option<i64> {
+        if let Number::Fixnum(i) = self {
+            Some(i as i64)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_i64()
+        } else {
+            None
+        }
+    }
+
+    pub fn exact_integer_to_u64(self) -> Option<u64> {
+        if let Number::Fixnum(i) = self {
+            Some(i as u64)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_u64()
+        } else {
+            None
+        }
+    }
+
+    pub fn exact_integer_to_usize(self) -> Option<usize> {
+        if let Number::Fixnum(i) = self {
+            Some(i as usize)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_u64().map(|v| v as usize)
+        } else {
+            None
+        }
+    }
+
+    pub fn exact_integer_to_f64(self) -> Option<f64> {
+        if let Number::Fixnum(i) = self {
+            Some(i as f64)
+        } else if let Number::BigInt(b) = self {
+            Some(b.as_f64())
+        } else {
+            None
+        }
+    }
+
+    pub fn exact_integer_to_u16(self) -> Option<u16> {
+        self.exact_integer_to_u32()
+            .filter(|&v| v <= u16::MAX as u32)
+            .map(|v| v as u16)
+    }
+
+    pub fn exact_integer_to_u8(self) -> Option<u8> {
+        self.exact_integer_to_u32()
+            .filter(|&v| v <= u8::MAX as u32)
+            .map(|v| v as u8)
+    }
+
+    pub fn exact_integer_to_i16(self) -> Option<i16> {
+        self.exact_integer_to_i32()
+            .filter(|&v| v >= i16::MIN as i32 && v <= i16::MAX as i32)
+            .map(|v| v as i16)
+    }
+
+    pub fn exact_integer_to_i8(self) -> Option<i8> {
+        self.exact_integer_to_i32()
+            .filter(|&v| v >= i8::MIN as i32 && v <= i8::MAX as i32)
+            .map(|v| v as i8)
+    }
+
+    pub fn coerce_exact_integer_to_i32(self) -> i32 {
+        match self {
+            Number::Fixnum(i) => i,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                let v = b[0] as u32;
+                if b.negative { -(v as i32) } else { v as i32 }
+            }
+            _ => panic!("Cannot coerce non-integer to i32"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_u32(self) -> u32 {
+        match self {
+            Number::Fixnum(i) => i as u32,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                b[0] as u32
+            }
+            _ => panic!("Cannot coerce non-integer to u32"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_i64(self) -> i64 {
+        match self {
+            Number::Fixnum(i) => i as i64,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                let v = b[0] as u64;
+                if b.negative { -(v as i64) } else { v as i64 }
+            }
+            _ => panic!("Cannot coerce non-integer to i64"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_u64(self) -> u64 {
+        match self {
+            Number::Fixnum(i) => i as u64,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                b[0] as u64
+            }
+            _ => panic!("Cannot coerce non-integer to u64"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_usize(self) -> usize {
+        match self {
+            Number::Fixnum(i) => i as usize,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                b[0] as usize
+            }
+            _ => panic!("Cannot coerce non-integer to usize"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_isize(self) -> isize {
+        match self {
+            Number::Fixnum(i) => i as isize,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                let v = b[0] as u64;
+                if b.negative {
+                    -(v as isize)
+                } else {
+                    v as isize
+                }
+            }
+            _ => panic!("Cannot coerce non-integer to isize"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_f64(self) -> f64 {
+        match self {
+            Number::Fixnum(i) => i as f64,
+            Number::BigInt(b) => b.as_f64(),
+            _ => panic!("Cannot coerce non-integer to f64"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_u8(self) -> u8 {
+        match self {
+            Number::Fixnum(i) => i as u8,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                b[0] as u8
+            }
+            _ => panic!("Cannot coerce non-integer to u8"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_i8(self) -> i8 {
+        match self {
+            Number::Fixnum(i) => i as i8,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                let v = b[0] as u64;
+                if b.negative { -(v as i8) } else { v as i8 }
+            }
+            _ => panic!("Cannot coerce non-integer to i8"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_u16(self) -> u16 {
+        match self {
+            Number::Fixnum(i) => i as u16,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                b[0] as u16
+            }
+            _ => panic!("Cannot coerce non-integer to u16"),
+        }
+    }
+
+    pub fn coerce_exact_integer_to_i16(self) -> i16 {
+        match self {
+            Number::Fixnum(i) => i as i16,
+            Number::BigInt(b) => {
+                if b.count() == 0 {
+                    return 0;
+                }
+                let v = b[0] as u64;
+                if b.negative { -(v as i16) } else { v as i16 }
+            }
+            _ => panic!("Cannot coerce non-integer to i16"),
+        }
+    }
+
+    pub fn real_to_f64(&self, ctx: Context<'gc>) -> f64 {
+        match self {
+            Number::Fixnum(i) => *i as f64,
+            Number::Flonum(f) => *f,
+            Number::BigInt(b) => b.as_f64(),
+            Number::Rational(r) => r.to_f64(ctx),
+            Number::Complex(c) => {
+                if c.imag.is_zero() {
+                    c.real.real_to_f64(ctx)
+                } else {
+                    panic!("Cannot convert complex number to f64");
+                }
+            }
+        }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        match self {
+            Number::Fixnum(i) => *i == 0,
+            Number::Flonum(f) => *f == 0.0,
+            Number::BigInt(b) => b.is_zero(),
+            Number::Rational(_) => false,
+            Number::Complex(c) => c.imag.is_zero() && c.real.is_zero(),
+        }
+    }
+
+    pub fn is_fixnum(&self) -> bool {
+        matches!(self, Number::Fixnum(_))
+    }
+
+    pub fn is_flonum(&self) -> bool {
+        matches!(self, Number::Flonum(_))
+    }
+
+    pub fn is_bigint(&self) -> bool {
+        matches!(self, Number::BigInt(_))
+    }
+
+    pub fn is_rational(&self) -> bool {
+        matches!(self, Number::Rational(_))
+    }
+
+    pub fn is_complex(&self) -> bool {
+        matches!(self, Number::Complex(_))
+    }
+
+    pub fn inexact_negate(&self, ctx: Context<'gc>) -> Self {
+        match self {
+            Number::Fixnum(i) => Number::Flonum(-(*i as f64)),
+            Number::Flonum(f) => Number::Flonum(-f),
+            Number::BigInt(b) => Number::Flonum(-b.as_f64()),
+            Number::Rational(r) => Number::Flonum(-r.to_f64(ctx)),
+            Number::Complex(c) => {
+                let imag = c.imag.negate(ctx).to_inexact(ctx);
+                let real = c.real.negate(ctx).to_inexact(ctx);
+                Self::Complex(Complex::new(ctx, real, imag))
+            }
+        }
+    }
+
+    pub fn normalize_integer(&self) -> Self {
+        match self {
+            Self::BigInt(n) => n.try_as_i64().map_or_else(
+                || *self,
+                |v| {
+                    if v >= i32::MIN as i64 && v <= i32::MAX as i64 {
+                        Number::Fixnum(v as i32)
+                    } else {
+                        *self
+                    }
+                },
+            ),
+            _ => *self,
+        }
+    }
+
+    pub fn normalize_complex(ctx: Context<'gc>, real: Self, imag: Self) -> Self {
+        assert!(!imag.is_complex());
+        assert!(!real.is_complex());
+
+        if let Number::Fixnum(0) = imag {
+            return real;
+        }
+
+        if let Number::BigInt(b) = imag {
+            if b.is_zero() {
+                return real;
+            }
+        }
+
+        if real.is_flonum() || imag.is_flonum() {
+            return Number::Complex(Complex::new(
+                ctx,
+                real.to_inexact(ctx),
+                imag.to_inexact(ctx),
+            ));
+        }
+
+        Number::Complex(Complex::new(ctx, real, imag))
+    }
+
+    pub fn reduce_fix_fix(ctx: Context<'gc>, nume: i32, deno: i32) -> Self {
+        let mut nume = nume as IDigit;
+        let mut deno = deno as IDigit;
+
+        if deno == 1 {
+            return Number::Fixnum(nume as _);
+        }
+
+        if deno == -1 {
+            return Number::Fixnum(nume as _).negate(ctx);
+        }
+
+        if nume == 0 {
+            return Number::Fixnum(0);
+        }
+
+        if nume == 1 {
+            if deno < 0 {
+                return Number::Rational(Rational::new(
+                    ctx,
+                    (-1i32).into_number(ctx),
+                    (-deno).into_number(ctx),
+                ));
+            }
+
+            return Number::Rational(Rational::new(
+                ctx,
+                1i32.into_number(ctx),
+                deno.into_number(ctx),
+            ));
+        }
+
+        let mut ans_sign = 1;
+
+        if nume < 0 {
+            ans_sign = -ans_sign;
+            nume = -nume;
+        }
+
+        if deno < 0 {
+            ans_sign = -ans_sign;
+            deno = -deno;
+        }
+
+        let mut n1 = nume;
+        let mut n2 = deno;
+
+        while n2 != 0 {
+            let t = n2;
+            n2 = n1 % n2;
+            n1 = t;
+        }
+
+        let gcd = n1;
+
+        if deno == gcd {
+            return (ans_sign * nume / gcd).into_number(ctx);
+        }
+
+        Self::Rational(Rational::new(
+            ctx,
+            (ans_sign * nume / gcd).into_number(ctx),
+            (deno / gcd).into_number(ctx),
+        ))
+    }
+
+    pub fn reduce_fix_big(ctx: Context<'gc>, nume: i32, deno: Gc<'gc, BigInt<'gc>>) -> Self {
+        let mut nume = nume as IDigit;
+        let mut deno = deno.clone();
+        if nume == 0 {
+            return Number::Fixnum(0);
+        }
+
+        if nume == 1 {
+            if deno.is_negative() {
+                return Number::Rational(Rational::new(
+                    ctx,
+                    (-1i32).into_number(ctx),
+                    Self::BigInt(deno).negate(ctx),
+                ));
+            }
+
+            return Number::Rational(Rational::new(
+                ctx,
+                1i32.into_number(ctx),
+                Self::BigInt(deno),
+            ));
+        }
+
+        if nume == -1 {
+            if deno.is_negative() {
+                return Number::Rational(Rational::new(
+                    ctx,
+                    (-1i32).into_number(ctx),
+                    Self::BigInt(deno).negate(ctx),
+                ));
+            }
+
+            return Number::Rational(Rational::new(
+                ctx,
+                (-1i32).into_number(ctx),
+                Self::BigInt(deno),
+            ));
+        }
+
+        let mut ans_sign = 1;
+        if nume < 0 {
+            ans_sign = -ans_sign;
+            nume = -nume;
+        }
+
+        if deno.is_negative() {
+            ans_sign = -ans_sign;
+        }
+
+        let mut n1 = deno.remainder_digit(nume as _) as IDigit;
+        let mut n2 = nume;
+
+        while n2 != 0 {
+            let t = n2;
+            n2 = n1 % n2;
+            n1 = t;
+        }
+
+        let gcd = n1;
+        nume = nume / gcd;
+        if ans_sign < 0 {
+            nume = -nume;
+        }
+
+        let (mut quo, _) = deno.div_digit(ctx, gcd as _);
+        if quo.is_negative() {
+            quo = quo.negate(ctx);
+        }
+
+        let ans_nume = nume.into_number(ctx);
+        let ans_deno = quo.into_number(ctx);
+
+        if matches!(ans_deno, Number::Fixnum(1)) {
+            return ans_nume;
+        }
+
+        Self::Rational(Rational::new(ctx, ans_nume, ans_deno))
+    }
+
+    pub fn reduce_big_fix(ctx: Context<'gc>, nume: Gc<'gc, BigInt<'gc>>, deno: i32) -> Self {
+        let mut nume = nume;
+        let mut deno = deno as IDigit;
+
+        if nume.is_zero() {
+            return Number::Fixnum(0);
+        }
+        if deno == 1 {
+            return Number::BigInt(nume);
+        }
+        if deno == -1 {
+            return Number::BigInt(nume.negate(ctx));
+        }
+
+        let mut ans_sign = 1;
+        if deno < 0 {
+            ans_sign = -ans_sign;
+            deno = -deno;
+        }
+        if nume.is_negative() {
+            ans_sign = -ans_sign;
+            nume = nume.negate(ctx);
+        }
+
+        let mut n1 = nume.remainder_digit(deno as Digit) as IDigit;
+        let mut n2 = deno;
+        while n2 != 0 {
+            let t = n2;
+            n2 = n1 % n2;
+            n1 = t;
+        }
+        let gcd = n1;
+        deno = deno / gcd;
+
+        let (mut quo, _) = nume.div_digit(ctx, gcd as Digit);
+        if ans_sign < 0 {
+            quo = quo.negate(ctx);
+        }
+        let ans_nume = Number::BigInt(quo);
+        let ans_deno = deno.into_number(ctx);
+
+        if let Number::Fixnum(1) = ans_deno {
+            return ans_nume;
+        }
+        Self::Rational(Rational::new(ctx, ans_nume, ans_deno))
+    }
+
+    pub fn reduce(ctx: Context<'gc>, numerator: Self, denominator: Self) -> Self {
+        assert!(matches!(numerator, Number::Fixnum(_) | Number::BigInt(_)));
+        assert!(matches!(denominator, Number::Fixnum(_) | Number::BigInt(_)));
+        if let Number::Fixnum(nume) = numerator {
+            if let Number::Fixnum(deno) = denominator {
+                return Self::reduce_fix_fix(ctx, nume, deno);
+            }
+
+            return Self::reduce_fix_big(ctx, nume, denominator.as_bigint().unwrap());
+        }
+
+        if let Number::Fixnum(deno) = denominator {
+            return Self::reduce_big_fix(ctx, numerator.as_bigint().unwrap(), deno);
+        }
+
+        if matches!(denominator, Number::Fixnum(1)) {
+            return numerator;
+        }
+
+        if matches!(denominator, Number::Fixnum(-1)) {
+            return numerator.negate(ctx);
+        }
+
+        if matches!(numerator, Number::Fixnum(0)) {
+            return Number::Fixnum(0);
+        }
+
+        if matches!(numerator, Number::Fixnum(1)) {
+            if denominator.is_negative() {
+                return Number::Rational(Rational::new(
+                    ctx,
+                    (-1i32).into_number(ctx),
+                    denominator.negate(ctx),
+                ));
+            }
+            return Number::Rational(Rational::new(ctx, 1i32.into_number(ctx), denominator));
+        }
+
+        if matches!(numerator, Number::Fixnum(-1)) {
+            if denominator.is_negative() {
+                return Number::Rational(Rational::new(
+                    ctx,
+                    (-1i32).into_number(ctx),
+                    denominator.negate(ctx),
+                ));
+            }
+            return Number::Rational(Rational::new(ctx, (-1i32).into_number(ctx), denominator));
+        }
+
+        let mut n1 = match numerator {
+            Number::Fixnum(deno) => BigInt::from_i64(ctx, deno as i64),
+            Number::BigInt(b) => b,
+            _ => unreachable!(),
+        };
+        let mut n2 = match denominator {
+            Number::Fixnum(nume) => BigInt::from_i64(ctx, nume as i64),
+            Number::BigInt(b) => b,
+            _ => unreachable!(),
+        };
+        let nume = n1;
+        let deno = n2;
+        let mut ans_sign = 1;
+
+        if n1.is_negative() {
+            ans_sign = -ans_sign;
+            n1 = n1.negate(ctx);
+        }
+
+        if n2.is_negative() {
+            ans_sign = -ans_sign;
+            n2 = n2.negate(ctx);
+        }
+
+        let gcd = n1.gcd(ctx, n2);
+
+        if deno == gcd {
+            let mut res = nume.div(ctx, gcd);
+            if ans_sign < 0 {
+                res = res.negate(ctx);
+            }
+
+            return res.into_number(ctx);
+        }
+
+        let mut res = nume.div(ctx, gcd);
+        if ans_sign < 0 {
+            res = res.negate(ctx);
+        }
+        Self::Rational(Rational::new(
+            ctx,
+            res.into_number(ctx),
+            n2.div(ctx, gcd).into_number(ctx),
+        ))
+    }
+
+    pub fn is_negative(&self) -> bool {
+        match self {
+            Number::Fixnum(i) => *i < 0,
+            Number::Flonum(f) => *f < 0.0,
+            Number::BigInt(b) => b.is_negative(),
+            Number::Rational(r) => r.numerator.is_negative(),
+            Number::Complex(c) => c.real.is_negative() || c.imag.is_negative(),
+        }
+    }
+
+    pub fn negate(&self, ctx: Context<'gc>) -> Self {
+        match self {
+            Number::Fixnum(i) => Number::Fixnum(-*i),
+            Number::Flonum(f) => Number::Flonum(-f),
+            Number::BigInt(b) => Self::BigInt(b.negate(ctx)),
+            Number::Rational(r) => {
+                let nume = r.numerator.negate(ctx);
+                let deno = r.denominator;
+
+                Self::Rational(Rational::new(ctx, nume, deno))
+            }
+            Number::Complex(c) => {
+                let imag = c.imag.negate(ctx);
+                let real = c.real.negate(ctx);
+                Self::Complex(Complex::new(ctx, real, imag))
+            }
+        }
+    }
+
+    pub fn to_inexact(&self, ctx: Context<'gc>) -> Self {
+        match self {
+            Number::Fixnum(i) => Number::Flonum(*i as f64),
+            Number::Flonum(f) => Number::Flonum(*f),
+            Number::BigInt(b) => Number::Flonum(b.as_f64()),
+            Number::Rational(r) => Number::Flonum(r.to_f64(ctx)),
+            Number::Complex(c) => {
+                let real = c.real.to_inexact(ctx);
+                let imag = c.imag.to_inexact(ctx);
+                Number::Complex(Complex::new(ctx, real, imag))
+            }
+        }
+    }
+
+    pub fn as_bigint(&self) -> Option<Gc<'gc, BigInt<'gc>>> {
+        if let Number::BigInt(b) = self {
+            Some(*b)
+        } else {
+            None
+        }
+    }
+
+    pub fn add(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        if let Number::Fixnum(lhs) = lhs {
+            if let Number::Fixnum(rhs) = rhs {
+                match lhs.checked_add(rhs) {
+                    Some(res) => return Number::Fixnum(res),
+                    None => {
+                        return BigInt::from_i64(ctx, lhs as i64 + rhs as i64).into_number(ctx);
+                    }
+                }
+            } else if let Number::Flonum(rhs) = rhs {
+                return Number::Flonum(lhs as f64 + rhs);
+            } else if let Number::BigInt(rhs) = rhs {
+                return BigInt::from_i64(ctx, lhs as i64)
+                    .plus(ctx, rhs)
+                    .into_number(ctx);
+            } else if let Number::Rational(rn) = rhs {
+                return Self::reduce(
+                    ctx,
+                    Self::add(
+                        ctx,
+                        rn.numerator,
+                        Self::mul(ctx, rn.denominator, Self::Fixnum(lhs)),
+                    ),
+                    rn.denominator,
+                );
+            } else if let Number::Complex(cn) = rhs {
+                let real = Self::add(ctx, cn.real, Self::Fixnum(lhs));
+                return Self::Complex(Complex::new(ctx, real, cn.imag));
+            }
+        }
+
+        if let Number::Flonum(lhs) = lhs {
+            if let Number::Fixnum(rhs) = rhs {
+                return Number::Flonum(lhs as f64 + rhs as f64);
+            } else if let Number::Flonum(rhs) = rhs {
+                return Number::Flonum(lhs + rhs);
+            } else if let Number::BigInt(rhs) = rhs {
+                return Number::Flonum(lhs + rhs.as_f64());
+            } else if let Number::Rational(rn) = rhs {
+                return Number::Flonum(lhs + rn.to_f64(ctx));
+            } else if let Number::Complex(cn) = rhs {
+                let real = Self::add(ctx, cn.real, Self::Flonum(lhs));
+                return Self::Complex(Complex::new(ctx, real, cn.imag.to_inexact(ctx)));
+            }
+        }
+
+        if let Number::BigInt(lhs) = lhs {
+            if let Number::Fixnum(rhs) = rhs {
+                return lhs
+                    .plus(ctx, BigInt::from_i64(ctx, rhs as i64))
+                    .into_number(ctx);
+            } else if let Number::Flonum(rhs) = rhs {
+                return Number::Flonum(lhs.as_f64() + rhs);
+            } else if let Number::BigInt(rhs) = rhs {
+                return lhs.plus(ctx, rhs).into_number(ctx);
+            } else if let Number::Rational(rn) = rhs {
+                return Self::reduce(
+                    ctx,
+                    Self::add(
+                        ctx,
+                        rn.numerator,
+                        Self::mul(ctx, rn.denominator, Self::BigInt(lhs)),
+                    ),
+                    rn.denominator,
+                );
+            } else if let Number::Complex(cn) = rhs {
+                let real = Self::add(ctx, cn.real, Self::BigInt(lhs));
+                return Self::Complex(Complex::new(ctx, real, cn.imag));
+            }
+        }
+
+        if let Number::Rational(lhs) = lhs {
+            if let Number::Fixnum(rhs) = rhs {
+                return Self::reduce(
+                    ctx,
+                    Self::add(
+                        ctx,
+                        lhs.numerator,
+                        Self::mul(ctx, lhs.denominator, Self::Fixnum(rhs)),
+                    ),
+                    lhs.denominator,
+                );
+            } else if let Number::Flonum(rhs) = rhs {
+                return Number::Flonum(lhs.to_f64(ctx) + rhs);
+            } else if let Number::BigInt(rhs) = rhs {
+                return Self::reduce(
+                    ctx,
+                    Self::add(
+                        ctx,
+                        lhs.numerator,
+                        Self::mul(ctx, lhs.denominator, Self::BigInt(rhs)),
+                    ),
+                    lhs.denominator,
+                );
+            } else if let Number::Rational(rn) = rhs {
+                return Rational::add(ctx, lhs, rn);
+            } else if let Number::Complex(cn) = rhs {
+                let real = Self::add(ctx, cn.real, Self::Rational(lhs));
+                return Self::Complex(Complex::new(ctx, real, cn.imag));
+            }
+        }
+
+        if let Number::Complex(lhs) = lhs {
+            let real = lhs.real;
+            let imag = lhs.imag;
+
+            if let Number::Fixnum(rhs) = rhs {
+                let real = Self::add(ctx, real, Self::Fixnum(rhs));
+                return Self::Complex(Complex::new(ctx, real, imag));
+            } else if let Number::Flonum(rhs) = rhs {
+                let real = Self::add(ctx, real, Self::Flonum(rhs));
+                return Self::Complex(Complex::new(ctx, real, imag));
+            } else if let Number::BigInt(rhs) = rhs {
+                let real = Self::add(ctx, real, Self::BigInt(rhs));
+                return Self::Complex(Complex::new(ctx, real, imag));
+            } else if let Number::Rational(rn) = rhs {
+                let real = Self::add(ctx, real, Self::Rational(rn));
+                return Self::Complex(Complex::new(ctx, real, imag));
+            } else if let Number::Complex(cn) = rhs {
+                let real = Self::add(ctx, real, cn.real);
+                let imag = Self::add(ctx, imag, cn.imag);
+                return Self::Complex(Complex::new(ctx, real, imag));
+            }
+        }
+
+        unreachable!()
+    }
+
+    pub fn sub(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        match lhs {
+            Number::Fixnum(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    if let Some(res) = lhs.checked_sub(rhs) {
+                        return Number::Fixnum(res);
+                    } else {
+                        return BigInt::from_i64(ctx, lhs as i64 - rhs as i64).into_number(ctx);
+                    }
+                }
+
+                Number::Flonum(rhs) => return Number::Flonum(lhs as f64 - rhs),
+                Number::BigInt(rhs) => {
+                    return BigInt::from_i64(ctx, lhs as i64)
+                        .minus(ctx, rhs)
+                        .into_number(ctx);
+                }
+                Number::Rational(rn) => {
+                    return Self::reduce(
+                        ctx,
+                        Self::sub(
+                            ctx,
+                            Self::mul(ctx, rn.denominator, Self::Fixnum(lhs)),
+                            rn.numerator,
+                        ),
+                        rn.denominator,
+                    );
+                }
+
+                Number::Complex(cn) => {
+                    let real = Self::sub(ctx, Self::Fixnum(lhs), cn.real);
+                    return Self::Complex(Complex::new(ctx, real, cn.imag.negate(ctx)));
+                }
+            },
+
+            Number::Flonum(lhs) => match rhs {
+                Number::Fixnum(rhs) => return Number::Flonum(lhs - rhs as f64),
+                Number::Flonum(rhs) => return Number::Flonum(lhs - rhs),
+                Number::BigInt(rhs) => return Number::Flonum(lhs - rhs.as_f64()),
+                Number::Rational(rn) => return Number::Flonum(lhs - rn.to_f64(ctx)),
+                Number::Complex(cn) => {
+                    let real = Self::sub(ctx, Self::Flonum(lhs), cn.real);
+                    return Self::Complex(Complex::new(ctx, real, cn.imag.inexact_negate(ctx)));
+                }
+            },
+
+            Number::BigInt(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    return lhs
+                        .minus(ctx, BigInt::from_i64(ctx, rhs as i64))
+                        .into_number(ctx);
+                }
+                Number::Flonum(rhs) => return Number::Flonum(lhs.as_f64() - rhs),
+                Number::BigInt(rhs) => {
+                    return lhs.minus(ctx, rhs).into_number(ctx);
+                }
+                Number::Rational(rn) => {
+                    return Self::reduce(
+                        ctx,
+                        Self::sub(
+                            ctx,
+                            rn.numerator,
+                            Self::mul(ctx, rn.denominator, Self::BigInt(lhs)),
+                        ),
+                        rn.denominator,
+                    );
+                }
+                Number::Complex(cn) => {
+                    let real = Self::sub(ctx, Self::BigInt(lhs), cn.real);
+                    return Self::Complex(Complex::new(ctx, real, cn.imag.negate(ctx)));
+                }
+            },
+
+            Number::Rational(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    return Self::reduce(
+                        ctx,
+                        Self::sub(
+                            ctx,
+                            lhs.numerator,
+                            Self::mul(ctx, lhs.denominator, Self::Fixnum(rhs)),
+                        ),
+                        lhs.denominator,
+                    );
+                }
+                Number::Flonum(rhs) => return Number::Flonum(lhs.to_f64(ctx) - rhs),
+                Number::BigInt(rhs) => {
+                    return Self::reduce(
+                        ctx,
+                        Self::sub(
+                            ctx,
+                            lhs.numerator,
+                            Self::mul(ctx, lhs.denominator, Self::BigInt(rhs)),
+                        ),
+                        lhs.denominator,
+                    );
+                }
+                Number::Rational(rn) => {
+                    return Rational::sub(ctx, lhs, rn);
+                }
+                Number::Complex(cn) => {
+                    let real = Self::sub(ctx, cn.real, Self::Rational(lhs));
+                    return Self::Complex(Complex::new(ctx, real, cn.imag.negate(ctx)));
+                }
+            },
+
+            Number::Complex(lhs) => {
+                let real = lhs.real;
+                let imag = lhs.imag;
+
+                match rhs {
+                    Number::Fixnum(rhs) => {
+                        let real = Self::sub(ctx, real, Self::Fixnum(rhs));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::Flonum(rhs) => {
+                        let real = Self::sub(ctx, real, Self::Flonum(rhs));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::BigInt(rhs) => {
+                        let real = Self::sub(ctx, real, Self::BigInt(rhs));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::Rational(rn) => {
+                        let real = Self::sub(ctx, real, Self::Rational(rn));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::Complex(cn) => {
+                        let real = Self::sub(ctx, cn.real, lhs.real);
+                        let imag = Self::sub(ctx, cn.imag, lhs.imag);
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn mul(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        match lhs {
+            Number::Fixnum(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    if let Some(res) = lhs.checked_mul(rhs) {
+                        return Number::Fixnum(res);
+                    } else {
+                        return BigInt::from_i64(ctx, lhs as i64 * rhs as i64).into_number(ctx);
+                    }
+                }
+                Number::Flonum(rhs) => return Number::Flonum(lhs as f64 * rhs),
+                Number::BigInt(rhs) => {
+                    return BigInt::from_i64(ctx, lhs as i64)
+                        .times(ctx, rhs)
+                        .into_number(ctx);
+                }
+                Number::Rational(rn) => {
+                    if matches!(rn.numerator, Number::Fixnum(1)) {
+                        return Self::reduce(ctx, Self::Fixnum(lhs), rn.denominator);
+                    }
+
+                    if matches!(rn.numerator, Number::Fixnum(-1)) {
+                        return Self::reduce(ctx, Self::Fixnum(lhs), rn.denominator).negate(ctx);
+                    }
+
+                    return Self::reduce(
+                        ctx,
+                        Self::mul(ctx, rn.numerator, Self::Fixnum(lhs)),
+                        rn.denominator,
+                    );
+                }
+                Number::Complex(cn) => {
+                    let real = Self::mul(ctx, cn.real, Self::Fixnum(lhs));
+                    let imag = Self::mul(ctx, cn.imag, Self::Fixnum(lhs));
+                    return Self::Complex(Complex::new(ctx, real, imag));
+                }
+            },
+
+            Number::Flonum(lhs) => match rhs {
+                Number::Fixnum(rhs) => return Number::Flonum(lhs * rhs as f64),
+                Number::Flonum(rhs) => return Number::Flonum(lhs * rhs),
+                Number::BigInt(rhs) => return Number::Flonum(lhs * rhs.as_f64()),
+                Number::Rational(rn) => return Number::Flonum(lhs * rn.to_f64(ctx)),
+                Number::Complex(cn) => {
+                    let real = Self::mul(ctx, cn.real, Self::Flonum(lhs));
+                    let imag = Self::mul(ctx, cn.imag, Self::Flonum(lhs));
+                    return Self::Complex(Complex::new(ctx, real, imag));
+                }
+            },
+
+            Number::BigInt(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    return lhs
+                        .times(ctx, BigInt::from_i64(ctx, rhs as i64))
+                        .into_number(ctx);
+                }
+                Number::Flonum(rhs) => return Number::Flonum(lhs.as_f64() * rhs),
+                Number::BigInt(rhs) => {
+                    return lhs.times(ctx, rhs).into_number(ctx);
+                }
+                Number::Complex(cn) => {
+                    let real = Self::mul(ctx, cn.real, Self::BigInt(lhs));
+                    let imag = Self::mul(ctx, cn.imag, Self::BigInt(lhs));
+                    return Self::Complex(Complex::new(ctx, real, imag));
+                }
+
+                Number::Rational(rn) => {
+                    if matches!(rn.numerator, Number::Fixnum(1)) {
+                        return Self::reduce(ctx, Self::BigInt(lhs), rn.denominator);
+                    }
+
+                    if matches!(rn.numerator, Number::Fixnum(-1)) {
+                        return Self::reduce(ctx, Self::BigInt(lhs), rn.denominator).negate(ctx);
+                    }
+
+                    return Self::reduce(
+                        ctx,
+                        Self::mul(ctx, rn.numerator, Self::BigInt(lhs)),
+                        rn.denominator,
+                    );
+                }
+            },
+
+            Number::Rational(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    if matches!(lhs.numerator, Number::Fixnum(1)) {
+                        return Self::reduce(ctx, Self::Fixnum(rhs), lhs.denominator);
+                    }
+
+                    if matches!(lhs.numerator, Number::Fixnum(-1)) {
+                        return Self::reduce(ctx, Self::Fixnum(rhs), lhs.denominator).negate(ctx);
+                    }
+
+                    return Self::reduce(
+                        ctx,
+                        Self::mul(ctx, lhs.numerator, Self::Fixnum(rhs)),
+                        lhs.denominator,
+                    );
+                }
+                Number::Flonum(rhs) => return Number::Flonum(lhs.to_f64(ctx) * rhs),
+                Number::BigInt(rhs) => {
+                    if matches!(lhs.numerator, Number::Fixnum(1)) {
+                        return Self::reduce(ctx, Self::BigInt(rhs), lhs.denominator);
+                    }
+
+                    if matches!(lhs.numerator, Number::Fixnum(-1)) {
+                        return Self::reduce(ctx, Self::BigInt(rhs), lhs.denominator).negate(ctx);
+                    }
+
+                    return Self::reduce(
+                        ctx,
+                        Self::mul(ctx, lhs.numerator, Self::BigInt(rhs)),
+                        lhs.denominator,
+                    );
+                }
+                Number::Rational(rn) => {
+                    return Rational::mul(ctx, lhs, rn);
+                }
+                Number::Complex(cn) => {
+                    let real = Self::mul(ctx, cn.real, Self::Rational(lhs));
+                    let imag = Self::mul(ctx, cn.imag, Self::Rational(lhs));
+                    return Self::Complex(Complex::new(ctx, real, imag));
+                }
+            },
+
+            Number::Complex(lhs) => {
+                let real = lhs.real;
+                let imag = lhs.imag;
+
+                match rhs {
+                    Number::Fixnum(rhs) => {
+                        let real = Self::mul(ctx, real, Self::Fixnum(rhs));
+                        let imag = Self::mul(ctx, imag, Self::Fixnum(rhs));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::Flonum(rhs) => {
+                        let real = Self::mul(ctx, real, Self::Flonum(rhs));
+                        let imag = Self::mul(ctx, imag, Self::Flonum(rhs));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::BigInt(rhs) => {
+                        let real = Self::mul(ctx, real, Self::BigInt(rhs));
+                        let imag = Self::mul(ctx, imag, Self::BigInt(rhs));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::Rational(rn) => {
+                        let real = Self::mul(ctx, real, Self::Rational(rn));
+                        let imag = Self::mul(ctx, imag, Self::Rational(rn));
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                    Number::Complex(cn) => {
+                        let real = Self::sub(
+                            ctx,
+                            Self::mul(ctx, cn.real, lhs.real),
+                            Self::mul(ctx, cn.imag, lhs.imag),
+                        );
+                        let imag = Self::add(
+                            ctx,
+                            Self::mul(ctx, cn.real, lhs.imag),
+                            Self::mul(ctx, cn.imag, lhs.real),
+                        );
+                        return Self::Complex(Complex::new(ctx, real, imag));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn div(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        match lhs {
+            Number::Fixnum(lhs) => {
+                if lhs == 0 {
+                    if rhs.is_exact() {
+                        return Number::Fixnum(0);
+                    }
+
+                    return Self::div(ctx, Self::Flonum(0.0), rhs);
+                }
+
+                match rhs {
+                    Number::Fixnum(rhs) => return Self::reduce_fix_fix(ctx, lhs, rhs),
+                    Number::Flonum(rhs) => return Number::Flonum(lhs as f64 / rhs),
+                    Number::BigInt(rhs) => {
+                        return Self::reduce_fix_big(ctx, lhs, rhs);
+                    }
+
+                    Number::Rational(rhs) => {
+                        return Self::reduce(
+                            ctx,
+                            Self::mul(ctx, rhs.denominator, Self::Fixnum(lhs)),
+                            rhs.numerator,
+                        );
+                    }
+
+                    Number::Complex(rhs) => {
+                        let real = rhs.real;
+                        let imag = rhs.imag;
+                        let r2 =
+                            Self::add(ctx, Self::mul(ctx, real, real), Self::mul(ctx, imag, imag));
+                        return Self::Complex(Complex::new(
+                            ctx,
+                            Self::div(ctx, Self::mul(ctx, real, Self::Fixnum(lhs)), r2),
+                            Self::div(ctx, Self::mul(ctx, imag, Self::Fixnum(lhs)), r2).negate(ctx),
+                        ));
+                    }
+                }
+            }
+
+            Number::Flonum(lhs) => match rhs {
+                Number::Fixnum(rhs) => return Number::Flonum(lhs / rhs as f64),
+                Number::Flonum(rhs) => return Number::Flonum(lhs / rhs),
+                Number::BigInt(rhs) => return Number::Flonum(lhs / rhs.as_f64()),
+                Number::Rational(rhs) => return Number::Flonum(lhs / rhs.to_f64(ctx)),
+                Number::Complex(rhs) => {
+                    let real = rhs.real;
+                    let imag = rhs.imag;
+
+                    let r2 = Self::add(ctx, Self::mul(ctx, real, real), Self::mul(ctx, imag, imag));
+
+                    return Self::Complex(Complex::new(
+                        ctx,
+                        Self::div(ctx, Self::mul(ctx, real, Self::Flonum(lhs)), r2),
+                        Self::div(ctx, Self::mul(ctx, imag, Self::Flonum(lhs)), r2).negate(ctx),
+                    ));
+                }
+            },
+
+            Number::BigInt(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    return Self::reduce_big_fix(ctx, lhs, rhs);
+                }
+                Number::Flonum(rhs) => return Number::Flonum(lhs.as_f64() / rhs),
+                Number::BigInt(rhs) => {
+                    return Self::reduce(ctx, Self::BigInt(lhs), Self::BigInt(rhs));
+                }
+                Number::Rational(rhs) => {
+                    return Self::reduce(
+                        ctx,
+                        Self::mul(ctx, Self::BigInt(lhs), rhs.denominator),
+                        rhs.numerator,
+                    );
+                }
+                Number::Complex(rhs) => {
+                    let real = rhs.real;
+                    let imag = rhs.imag;
+
+                    let r2 = Self::add(ctx, Self::mul(ctx, real, real), Self::mul(ctx, imag, imag));
+
+                    return Self::Complex(Complex::new(
+                        ctx,
+                        Self::div(ctx, Self::mul(ctx, real, Self::BigInt(lhs)), r2),
+                        Self::div(ctx, Self::mul(ctx, imag, Self::BigInt(lhs)), r2).negate(ctx),
+                    ));
+                }
+            },
+
+            Number::Rational(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    return Self::reduce(
+                        ctx,
+                        lhs.numerator,
+                        Self::mul(ctx, lhs.denominator, Self::Fixnum(rhs)),
+                    );
+                }
+                Number::Flonum(rhs) => return Number::Flonum(lhs.to_f64(ctx) / rhs),
+                Number::BigInt(rhs) => {
+                    return Self::reduce(
+                        ctx,
+                        lhs.numerator,
+                        Self::mul(ctx, lhs.denominator, Self::BigInt(rhs)),
+                    );
+                }
+                Number::Rational(rhs) => {
+                    return Rational::div(ctx, lhs, rhs);
+                }
+                Number::Complex(rhs) => {
+                    let real = rhs.real;
+                    let imag = rhs.imag;
+
+                    let r2 = Self::add(ctx, Self::mul(ctx, real, real), Self::mul(ctx, imag, imag));
+
+                    return Self::Complex(Complex::new(
+                        ctx,
+                        Self::div(ctx, Self::mul(ctx, real, lhs.numerator), r2),
+                        Self::mul(
+                            ctx,
+                            Self::div(ctx, Self::mul(ctx, imag, lhs.numerator), r2).negate(ctx),
+                            lhs.denominator,
+                        ),
+                    ));
+                }
+            },
+
+            Number::Complex(lhs) => {
+                let real = lhs.real;
+                let imag = lhs.imag;
+
+                match rhs {
+                    Number::Fixnum(rhs) => {
+                        return Self::Complex(Complex::new(
+                            ctx,
+                            Self::div(ctx, real, Self::Fixnum(rhs)),
+                            Self::div(ctx, imag, Self::Fixnum(rhs)),
+                        ));
+                    }
+
+                    Number::Flonum(rhs) => {
+                        return Self::Complex(Complex::new(
+                            ctx,
+                            Self::div(ctx, real, Self::Flonum(rhs)),
+                            Self::div(ctx, imag, Self::Flonum(rhs)),
+                        ));
+                    }
+
+                    Number::BigInt(rhs) => {
+                        return Self::Complex(Complex::new(
+                            ctx,
+                            Self::div(ctx, real, Self::BigInt(rhs)),
+                            Self::div(ctx, imag, Self::BigInt(rhs)),
+                        ));
+                    }
+
+                    Number::Rational(rhs) => {
+                        let r2 = Self::add(
+                            ctx,
+                            Self::mul(ctx, rhs.numerator, rhs.numerator),
+                            Self::mul(ctx, rhs.denominator, rhs.denominator),
+                        );
+
+                        return Self::Complex(Complex::new(
+                            ctx,
+                            Self::div(ctx, Self::mul(ctx, real, rhs.numerator), r2),
+                            Self::mul(
+                                ctx,
+                                Self::div(ctx, Self::mul(ctx, imag, rhs.numerator), r2).negate(ctx),
+                                rhs.denominator,
+                            ),
+                        ));
+                    }
+
+                    Self::Complex(rhs) => {
+                        let real2 = rhs.real;
+                        let imag2 = rhs.imag;
+                        let r2 = Self::add(
+                            ctx,
+                            Self::mul(ctx, real2, real2),
+                            Self::mul(ctx, imag2, imag2),
+                        );
+                        let real3 = Self::div(
+                            ctx,
+                            Self::add(
+                                ctx,
+                                Self::mul(ctx, real, real2),
+                                Self::mul(ctx, imag, imag2),
+                            ),
+                            r2,
+                        );
+                        let imag3 = Self::div(
+                            ctx,
+                            Self::sub(
+                                ctx,
+                                Self::mul(ctx, imag, real2),
+                                Self::mul(ctx, real, imag2),
+                            ),
+                            r2,
+                        );
+                        return Self::Complex(Complex::new(ctx, real3, imag3));
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn is_exact(&self) -> bool {
+        match self {
+            Self::Fixnum(_) | Self::BigInt(_) | Self::Rational(_) => true,
+            Self::Flonum(_) => false,
+            Self::Complex(c) => c.real.is_exact() && c.imag.is_exact(),
+        }
+    }
+}
+
+impl<'gc> Rational<'gc> {
+    pub fn add(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+        let deno = Number::mul(ctx, lhs.denominator, rhs.denominator);
+        let nume = Number::add(
+            ctx,
+            Number::mul(ctx, lhs.numerator, rhs.denominator),
+            Number::mul(ctx, rhs.numerator, lhs.denominator),
+        );
+
+        Number::reduce(ctx, nume, deno)
+    }
+
+    pub fn mul(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+        let nume = Number::mul(ctx, lhs.numerator, rhs.numerator);
+        let deno = Number::mul(ctx, lhs.denominator, rhs.denominator);
+
+        Number::reduce(ctx, nume, deno)
+    }
+
+    pub fn sub(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+        let deno = Number::mul(ctx, lhs.denominator, rhs.denominator);
+        let nume = Number::sub(
+            ctx,
+            Number::mul(ctx, lhs.numerator, rhs.denominator),
+            Number::mul(ctx, rhs.numerator, lhs.denominator),
+        );
+
+        Number::reduce(ctx, nume, deno)
+    }
+
+    pub fn div(ctx: Context<'gc>, lhs: Gc<'gc, Self>, rhs: Gc<'gc, Self>) -> Number<'gc> {
+        let nume = Number::mul(ctx, lhs.numerator, rhs.denominator);
+        let deno = Number::mul(ctx, lhs.denominator, rhs.numerator);
+
+        Number::reduce(ctx, nume, deno)
+    }
+
+    pub fn to_f64(&self, ctx: Context<'gc>) -> f64 {
+        let mut nume = self.numerator.real_to_f64(ctx);
+        let mut deno = self.denominator.real_to_f64(ctx);
+
+        if nume.is_infinite() || deno.is_infinite() {
+            if nume.is_infinite() && deno.is_infinite() {
+                let nume_bitsize = self.numerator.as_bigint().unwrap().bitsize();
+                let deno_bitsize = self.denominator.as_bigint().unwrap().bitsize();
+                let mut shift = if nume_bitsize > deno_bitsize {
+                    nume_bitsize as isize - 96
+                } else {
+                    deno_bitsize as isize - 96
+                };
+
+                if shift < 1 {
+                    shift = 1;
+                }
+
+                nume = self
+                    .numerator
+                    .as_bigint()
+                    .unwrap()
+                    .shift_right(ctx, shift as _)
+                    .as_f64();
+                deno = self
+                    .denominator
+                    .as_bigint()
+                    .unwrap()
+                    .shift_right(ctx, shift as _)
+                    .as_f64();
+            } else if deno.is_infinite() {
+                let deno_bitsize = self.denominator.as_bigint().unwrap().bitsize();
+                let mut shift = deno_bitsize as isize - 96;
+                if shift < 1 {
+                    shift = 1;
+                }
+
+                nume = libm::ldexp(nume, -(shift as i32));
+                deno = self
+                    .denominator
+                    .as_bigint()
+                    .unwrap()
+                    .shift_right(ctx, shift as _)
+                    .as_f64();
+            } else {
+                let nume_bitsize = self.numerator.as_bigint().unwrap().bitsize();
+                let mut shift = nume_bitsize as isize - 96;
+                if shift < 1 {
+                    shift = 1;
+                }
+
+                nume = self
+                    .numerator
+                    .as_bigint()
+                    .unwrap()
+                    .shift_right(ctx, shift as _)
+                    .as_f64();
+                deno = libm::ldexp(deno, -(shift as i32));
+            }
+        }
+
+        nume / deno
+    }
+}
+
+pub trait IntoNumber<'gc> {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc>;
+}
+
+impl<'gc> IntoNumber<'gc> for i32 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::Fixnum(self)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for i64 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        if self >= i32::MIN as i64 && self <= i32::MAX as i64 {
+            Number::Fixnum(self as i32)
+        } else {
+            Number::BigInt(BigInt::from_i64(ctx, self))
+        }
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for u32 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        if self <= i32::MAX as u32 {
+            Number::Fixnum(self as i32)
+        } else {
+            Number::BigInt(BigInt::from_u64(ctx, self as u64))
+        }
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for u64 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        if self <= i32::MAX as u64 {
+            Number::Fixnum(self as i32)
+        } else {
+            Number::BigInt(BigInt::from_u64(ctx, self))
+        }
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for f64 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::Flonum(self)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for f32 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::Flonum(self as f64)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for u16 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::Fixnum(self as i32)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for u8 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::Fixnum(self as i32)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for i16 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::Fixnum(self as i32)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for i8 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::Fixnum(self as i32)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for usize {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        if self <= i32::MAX as usize {
+            Number::Fixnum(self as i32)
+        } else {
+            Number::BigInt(BigInt::from_u128(ctx, self as u128))
+        }
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for isize {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        if self >= i32::MIN as isize && self <= i32::MAX as isize {
+            Number::Fixnum(self as i32)
+        } else {
+            Number::BigInt(BigInt::from_i128(ctx, self as i128))
+        }
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for u128 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::BigInt(BigInt::from_u128(ctx, self))
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for i128 {
+    fn into_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        Number::BigInt(BigInt::from_i128(ctx, self))
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for Gc<'gc, BigInt<'gc>> {
+    fn into_number(self, _ctx: Context<'gc>) -> Number<'gc> {
+        if let Some(i) = self
+            .try_as_i64()
+            .filter(|&v| v >= i32::MIN as i64 && v <= i32::MAX as i64)
+        {
+            Number::Fixnum(i as i32)
+        } else {
+            Number::BigInt(self)
+        }
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for Gc<'gc, Rational<'gc>> {
+    fn into_number(self, _ctx: Context<'gc>) -> Number<'gc> {
+        Number::Rational(self)
+    }
+}
+
+impl<'gc> IntoNumber<'gc> for Gc<'gc, Complex<'gc>> {
+    fn into_number(self, _ctx: Context<'gc>) -> Number<'gc> {
+        Number::Complex(self)
+    }
+}
+
+impl<'gc> fmt::Display for Number<'gc> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Number::Fixnum(i) => write!(f, "{}", i),
+            Number::Flonum(fl) => write!(f, "{}", fl),
+            Number::BigInt(b) => write!(f, "{}", b),
+            Number::Rational(r) => write!(f, "{}", r),
+            Number::Complex(c) => write!(f, "{}", c),
+        }
+    }
+}
+
+impl<'gc> fmt::Display for Rational<'gc> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.numerator, self.denominator)
+    }
+}
+
+impl<'gc> fmt::Display for Complex<'gc> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.imag.is_zero() {
+            write!(f, "{}", self.real)
+        } else if self.real.is_zero() {
+            write!(f, "{}i", self.imag)
+        } else {
+            write!(f, "{} + {}i", self.real, self.imag)
+        }
+    }
+}

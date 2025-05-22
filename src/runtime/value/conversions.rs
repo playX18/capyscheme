@@ -13,11 +13,11 @@ pub unsafe trait Tagged {
 }
 
 pub trait FromValue<'gc>: Sized {
-    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>>;
+    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>>;
 }
 
 impl<'gc, T: Tagged> FromValue<'gc> for Gc<'gc, T> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
         if value.is::<T>() {
             Ok(value.downcast())
         } else {
@@ -27,7 +27,8 @@ impl<'gc, T: Tagged> FromValue<'gc> for Gc<'gc, T> {
                 expected: type_name::<T>().into(),
                 got: value,
                 args: list!(value),
-            })
+            }
+            .into_value(_ctx))
         }
     }
 }
@@ -36,7 +37,7 @@ impl<'gc, T> FromValue<'gc> for &T
 where
     T: Tagged,
 {
-    fn try_from_value(_: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
         if value.is::<T>() {
             Ok(unsafe { value.desc.ptr.to_raw_address().as_ref() })
         } else {
@@ -46,13 +47,14 @@ where
                 expected: type_name::<T>().into(),
                 got: value,
                 args: list!(value),
-            })
+            }
+            .into_value(_ctx))
         }
     }
 }
 
 impl<'gc> FromValue<'gc> for i32 {
-    fn try_from_value(_: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
         if value.is_int32() {
             Ok(value.as_int32())
         } else {
@@ -62,13 +64,14 @@ impl<'gc> FromValue<'gc> for i32 {
                 expected: "i32".into(),
                 got: value,
                 args: list!(value),
-            })
+            }
+            .into_value(_ctx))
         }
     }
 }
 
 impl<'gc> FromValue<'gc> for f64 {
-    fn try_from_value(_: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
         if value.is_flonum() {
             Ok(value.as_flonum())
         } else {
@@ -78,19 +81,20 @@ impl<'gc> FromValue<'gc> for f64 {
                 expected: "f64".into(),
                 got: value,
                 args: list!(value),
-            })
+            }
+            .into_value(_ctx))
         }
     }
 }
 
 impl<'gc> FromValue<'gc> for bool {
-    fn try_from_value(_: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>> {
+    fn try_from_value(_: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
         Ok(value.raw_i64() != Value::VALUE_FALSE)
     }
 }
 
 impl<'gc> FromValue<'gc> for char {
-    fn try_from_value(_: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
         if value.is_char() {
             Ok(value.char())
         } else {
@@ -100,13 +104,14 @@ impl<'gc> FromValue<'gc> for char {
                 expected: "char".into(),
                 got: value,
                 args: list!(value),
-            })
+            }
+            .into_value(_ctx))
         }
     }
 }
 
 impl<'gc> FromValue<'gc> for () {
-    fn try_from_value(_: Context<'gc>, value: Value<'gc>) -> Result<Self, Violation<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
         if value.is_void() {
             Ok(())
         } else {
@@ -116,7 +121,8 @@ impl<'gc> FromValue<'gc> for () {
                 expected: "()".into(),
                 got: value,
                 args: list!(value),
-            })
+            }
+            .into_value(_ctx))
         }
     }
 }
@@ -332,7 +338,7 @@ pub trait FromValues<'gc>: Sized {
     fn from_values(
         ctx: Context<'gc>,
         values: impl Iterator<Item = Value<'gc>>,
-    ) -> Result<Self, Violation<'gc>>;
+    ) -> Result<Self, Value<'gc>>;
 }
 
 impl<'gc, T: FromValue<'gc>> FromValues<'gc> for T {
@@ -344,7 +350,7 @@ impl<'gc, T: FromValue<'gc>> FromValues<'gc> for T {
     fn from_values(
         ctx: Context<'gc>,
         mut values: impl Iterator<Item = Value<'gc>>,
-    ) -> Result<Self, Violation<'gc>> {
+    ) -> Result<Self, Value<'gc>> {
         if let Some(value) = values.next() {
             T::try_from_value(ctx, value)
         } else {
@@ -353,7 +359,8 @@ impl<'gc, T: FromValue<'gc>> FromValues<'gc> for T {
                 required_min: 1,
                 required_max: Some(1),
                 args: Value::null(),
-            })
+            }
+            .into_value(ctx))
         }
     }
 }
@@ -367,7 +374,7 @@ impl<'gc, T: FromValue<'gc>> FromValues<'gc> for Option<T> {
     fn from_values(
         ctx: Context<'gc>,
         mut values: impl Iterator<Item = Value<'gc>>,
-    ) -> Result<Self, Violation<'gc>> {
+    ) -> Result<Self, Value<'gc>> {
         if let Some(value) = values.next() {
             T::try_from_value(ctx, value).map(Some)
         } else {
@@ -437,7 +444,7 @@ macro_rules! impl_tuple {
             };
 
 
-            fn from_values(ctx: Context<'gc>, mut values: impl Iterator<Item = Value<'gc>>) -> Result<Self, Violation<'gc>> {
+            fn from_values(ctx: Context<'gc>, mut values: impl Iterator<Item = Value<'gc>>) -> Result<Self, Value<'gc>> {
                 Ok((
                     $first::from_values(ctx, &mut values)?,
                     $(
@@ -454,10 +461,7 @@ macro_rules! impl_tuple {
 pub struct Rest<'gc>(pub Value<'gc>);
 
 impl<'gc> Rest<'gc> {
-    pub fn next<T: FromValue<'gc>>(
-        &mut self,
-        ctx: Context<'gc>,
-    ) -> Result<T, Violation<'gc>> {
+    pub fn next<T: FromValue<'gc>>(&mut self, ctx: Context<'gc>) -> Result<T, Value<'gc>> {
         let value = self.0.car();
         self.0 = self.0.cdr();
         T::try_from_value(ctx, value)
@@ -470,7 +474,7 @@ impl<'gc> FromValues<'gc> for Rest<'gc> {
     fn from_values(
         _ctx: Context<'gc>,
         values: impl Iterator<Item = Value<'gc>>,
-    ) -> Result<Self, Violation<'gc>> {
+    ) -> Result<Self, Value<'gc>> {
         Ok(Rest(Value::null().list_append(_ctx, values)))
     }
 }
@@ -525,7 +529,7 @@ impl<'gc> IntoValues<'gc> for Rest<'gc> {
 pub trait IntoSchemeFn<'gc, Args, R> {
     fn into_primitive(
         self,
-    ) -> impl Fn(Context<'gc>, &[Value<'gc>]) -> Result<Value<'gc>, Violation<'gc>>;
+    ) -> impl Fn(Context<'gc>, &[Value<'gc>]) -> Result<Value<'gc>, Value<'gc>>;
 }
 
 macro_rules! impl_fn {
@@ -536,7 +540,7 @@ macro_rules! impl_fn {
         where F: Fn(Context<'gc>) -> Return,
             Return: IntoValues<'gc>,
         {
-            fn into_primitive(self) -> impl Fn(Context<'gc>, &[Value<'gc>]) -> Result<Value<'gc>, Violation<'gc>> {
+            fn into_primitive(self) -> impl Fn(Context<'gc>, &[Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
                 move |ctx, args| {
                     if args.len() != 0 {
                         return Err(Violation::WrongNumberOfArguments {
@@ -544,7 +548,7 @@ macro_rules! impl_fn {
                             required_min: 0,
                             required_max: Some(0),
                             args: Value::null().list_append(ctx, args.iter().copied()),
-                        });
+                        }.into_value(ctx));
                     }
                     let mut values = self(ctx).into_values(ctx);
                     let first = values.next();
@@ -573,7 +577,7 @@ macro_rules! impl_fn {
             F: Fn(Context<'gc>, $first, $($rest,)*) -> Return,
             ($first, $($rest,)*) : FromValues<'gc>,
         {
-            fn into_primitive(self) -> impl Fn(Context<'gc>, &[Value<'gc>]) -> Result<Value<'gc>, Violation<'gc>> {
+            fn into_primitive(self) -> impl Fn(Context<'gc>, &[Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
 
                 move |ctx, args| {
 
@@ -585,7 +589,7 @@ macro_rules! impl_fn {
                             required_min: <($first, $($rest),*)>::ARITY.min,
                             required_max: <($first, $($rest),*)>::ARITY.max,
                             args: Value::null().list_append(ctx, args.iter().copied()),
-                        });
+                        }.into_value(ctx));
                     }
                     let mut values = self(ctx, $first, $($rest),*).into_values(ctx);
 
@@ -605,10 +609,55 @@ macro_rules! impl_fn {
                 }
             }
         }
-        
+
 
         impl_fn!($($rest)*);
     }
 }
 
 impl_fn!(A B C D E F1 G H I J K L M N O P Q R S T U V W X Y Z AA AB AC AD AE AF AG AH AI AJ AK AL AM AN AO AP AQ AR AS AT AU AV AW AX AY AZ);
+
+impl<'gc> IntoValue<'gc> for isize {
+    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+        if self > i32::MAX as isize || self < i32::MIN as isize {
+            return Value::new(BigInt::from_i128(ctx, self as i128));
+        }
+        Value::new(self as i32)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for usize {
+    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+        if self > i32::MAX as usize {
+            return Value::new(BigInt::from_u128(ctx, self as u128));
+        }
+        Value::new(self as i32)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for u64 {
+    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+        if self > i32::MAX as u64 {
+            return Value::new(BigInt::from_u128(ctx, self as u128));
+        }
+        Value::new(self as i32)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for u32 {
+    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+        if self > i32::MAX as u32 {
+            return Value::new(BigInt::from_u128(ctx, self as u128));
+        }
+        Value::new(self as i32)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for i64 {
+    fn into_value(self, ctx: Context<'gc>) -> Value<'gc> {
+        if self > i32::MAX as i64 || self < i32::MIN as i64 {
+            return Value::new(BigInt::from_i128(ctx, self as i128));
+        }
+        Value::new(self as i32)
+    }
+}
