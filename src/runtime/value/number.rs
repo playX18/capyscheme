@@ -2298,7 +2298,6 @@ impl<'gc> Number<'gc> {
         matches!(self, Number::BigInt(_))
     }
 
-
     pub fn is_complex(&self) -> bool {
         matches!(self, Number::Complex(_))
     }
@@ -4063,7 +4062,7 @@ impl<'gc> Number<'gc> {
             Number::Rational(rn) => {
                 let numerator;
                 let denominator;
-                let mut complex;
+                let complex;
                 if rn.numerator.is_negative() {
                     numerator = rn.numerator.negate(ctx);
                     complex = true;
@@ -4557,7 +4556,100 @@ impl<'gc> Number<'gc> {
                 }
             },
 
-            _ => todo!()
+            Number::BigInt(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    if lhs.is_negative() {
+                        return Some(std::cmp::Ordering::Greater);
+                    } else {
+                        return Some(std::cmp::Ordering::Less);
+                    }
+                }
+
+                Number::Flonum(rhs) => {
+                    let d = lhs.as_f64() - rhs;
+                    if d == 0.0 {
+                        return Some(std::cmp::Ordering::Equal);
+                    }
+
+                    if d > 0.0 {
+                        return Some(std::cmp::Ordering::Greater);
+                    } else {
+                        return Some(std::cmp::Ordering::Less);
+                    }
+                }
+
+                Number::BigInt(rhs) => {
+                    return Some(lhs.cmp(&rhs));
+                }
+
+                Number::Rational(rn) => {
+                    let nume = rn.numerator;
+                    let deno = rn.denominator;
+
+                    return Self::compare(ctx, Self::mul(ctx, Self::BigInt(lhs), deno), nume);
+                }
+
+                Number::Complex(rhs) => {
+                    if rhs.imag.is_zero() {
+                        return Self::compare(ctx, Number::BigInt(lhs), rhs.real);
+                    }
+                    None
+                }
+            },
+
+            Number::Rational(lhs) => {
+                let nume = lhs.numerator;
+                let deno = lhs.denominator;
+
+                match rhs {
+                    Number::Fixnum(rhs) => {
+                        return Self::compare(ctx, nume, Self::mul(ctx, Number::Fixnum(rhs), deno));
+                    }
+
+                    Number::Flonum(rhs) => {
+                        let d = lhs.to_f64(ctx) - rhs;
+                        if d == 0.0 {
+                            return Some(std::cmp::Ordering::Equal);
+                        }
+
+                        if d > 0.0 {
+                            return Some(std::cmp::Ordering::Greater);
+                        } else {
+                            return Some(std::cmp::Ordering::Less);
+                        }
+                    }
+
+                    Number::BigInt(rhs) => {
+                        return Self::compare(ctx, nume, Self::mul(ctx, Number::BigInt(rhs), deno));
+                    }
+
+                    Number::Rational(rhs) => {
+                        let nume2 = rhs.numerator;
+                        let deno2 = rhs.denominator;
+
+                        return Self::compare(
+                            ctx,
+                            Self::mul(ctx, nume, deno2),
+                            Self::mul(ctx, nume2, deno),
+                        );
+                    }
+
+                    Number::Complex(cn) => {
+                        if cn.imag.is_zero() {
+                            return Self::compare(ctx, nume, Self::mul(ctx, cn.real, deno));
+                        }
+                        None
+                    }
+                }
+            }
+
+            Number::Complex(lhs) => {
+                if lhs.imag.is_zero() {
+                    return Self::compare(ctx, lhs.real, rhs);
+                }
+
+                None
+            }
         }
     }
 
@@ -4680,7 +4772,7 @@ impl<'gc> Number<'gc> {
         }
     }
 
-    pub fn is_integer(&self) ->bool {
+    pub fn is_integer(&self) -> bool {
         match self {
             Self::Fixnum(_) | Self::BigInt(_) => true,
             Self::Rational(_) => false,
@@ -4742,17 +4834,12 @@ impl<'gc> Number<'gc> {
         match self {
             Self::Fixnum(n) => n & 1 == 0,
             Self::BigInt(n) => n[0] & 1 == 0,
-            Self::Flonum(n) => {
-                n * 0.5 == (n * 0.5).floor()
-            }
+            Self::Flonum(n) => n * 0.5 == (n * 0.5).floor(),
 
             Self::Complex(n) => n.real.is_even(),
             _ => false,
         }
     }
-
-
-
 }
 
 impl<'gc> Rational<'gc> {
