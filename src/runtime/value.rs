@@ -414,6 +414,8 @@ impl TypeCode8 {
     pub const RECORD_TYPE: Self = Self(28);
     pub const RECORD_CONSTRUCTOR_DESCRIPTOR: Self = Self(29);
     pub const ANNOTATION: Self = Self(30);
+
+    pub const TUPLE: Self = Self(31);
     
     pub const UNKNOWN: Self = Self(0xFF);
 }
@@ -556,6 +558,9 @@ pub mod values;
 pub mod hash;
 pub mod equiv;
 pub mod port;
+pub mod map;
+pub mod eq;
+pub mod tuple;
 
 pub use port::*;
 pub use number::*;
@@ -569,6 +574,8 @@ pub use symbols::*;
 pub use variable::*;
 pub use vectors::*;
 pub use weak_set::*;
+pub use map::*;
+pub use tuple::*;
 
 impl<'gc> std::fmt::Pointer for Value<'gc> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

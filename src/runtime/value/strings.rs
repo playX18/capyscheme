@@ -21,6 +21,8 @@ use rsgc::{
     },
 };
 
+use crate::runtime::vm::inherents::Inherent;
+
 use super::{SYMBOL_TC16_INTERNED, Symbol, Tagged, TypeCode8, TypeCode16, Value, ValuesNamespace};
 
 #[repr(C, align(8))]
@@ -715,6 +717,7 @@ impl<'gc> Symbol<'gc> {
         mc: &Mutation<'gc>,
         mut name: Gc<'gc, String<'gc>>,
         hash: u64,
+        inherent: Option<Inherent>,
     ) -> Gc<'gc, Self> {
         let len = name.len();
         let start = name.start.get();
@@ -729,6 +732,7 @@ impl<'gc> Symbol<'gc> {
             Self {
                 stringbuf: buf,
                 hash: Cell::new(hash),
+                inherent: inherent.unwrap_or(Inherent::LAST)
             },
         );
 

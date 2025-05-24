@@ -6,6 +6,7 @@ pub mod errors;
 pub mod value;
 pub mod vmthread;
 pub mod thread;
+pub mod vm;
 
 
 static ONCE: Once = Once::new();
