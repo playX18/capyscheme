@@ -13,14 +13,13 @@ use core::f64;
 use std::{
     borrow::Cow,
     fmt,
-    hash::Hash,
+    hash::{Hash, Hasher},
     iter::Peekable,
     marker::PhantomData,
-    mem::{MaybeUninit, align_of, size_of},
+    mem::{align_of, size_of, MaybeUninit},
     ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo},
     sync::{
-        OnceLock,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicU16, Ordering}, OnceLock
     },
 };
 
@@ -5421,3 +5420,21 @@ impl<'gc> Value<'gc> {
         None
     }
 }
+
+impl<'gc> Hash for Number<'gc> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Number::Fixnum(n) => n.hash(state),
+            Number::Flonum(n) => n.to_bits().hash(state),
+            Number::BigInt(b) => b.hash(state),
+            Number::Rational(r) => {
+                r.numerator.hash(state);
+                r.denominator.hash(state);
+            },
+            Number::Complex(c) => {
+                c.real.hash(state);
+                c.imag.hash(state);
+            }
+        }
+    }
+}   
