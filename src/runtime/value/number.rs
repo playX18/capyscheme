@@ -14,6 +14,7 @@ use std::{
     borrow::Cow,
     fmt,
     hash::Hash,
+    iter::Peekable,
     marker::PhantomData,
     mem::{MaybeUninit, align_of, size_of},
     ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo},
@@ -4477,6 +4478,89 @@ impl<'gc> Number<'gc> {
         }
     }
 
+    pub fn equal(ctx: Context<'gc>, lhs: Self, rhs: Self) -> bool {
+        match lhs {
+            Number::Fixnum(lhs) => match rhs {
+                Number::Fixnum(rhs) => lhs == rhs,
+                Number::Flonum(rhs) => (lhs as f64 - rhs).abs() < f64::EPSILON,
+                Number::BigInt(rhs) => false,
+                Number::Rational(rn) => false,
+                Number::Complex(cn) => {
+                    cn.imag.is_zero() && Self::equal(ctx, Number::Fixnum(lhs), cn.real)
+                }
+            },
+
+            Number::Flonum(lhs) => match rhs {
+                Number::Fixnum(rhs) => (lhs - rhs as f64).abs() < f64::EPSILON,
+                Number::Flonum(rhs) => (lhs - rhs).abs() < f64::EPSILON,
+                Number::BigInt(rhs) => {
+                    if rhs.as_f64() == lhs {
+                        return Self::compare(ctx, Self::Flonum(lhs), Self::BigInt(rhs))
+                            == Some(std::cmp::Ordering::Equal);
+                    }
+
+                    return false;
+                }
+                Number::Rational(rn) => rn.to_f64(ctx) == lhs,
+                Number::Complex(cn) => {
+                    cn.imag.is_zero() && Self::equal(ctx, Number::Flonum(lhs), cn.real)
+                }
+            },
+
+            Number::BigInt(lhs) => match rhs {
+                Number::Fixnum(rhs) => {
+                    return false;
+                }
+
+                Number::Flonum(rhs) => (lhs.as_f64() - rhs).abs() < f64::EPSILON,
+                Number::BigInt(rhs) => lhs == rhs,
+                Number::Rational(rn) => return false,
+                Number::Complex(cn) => {
+                    cn.imag.is_zero() && Self::equal(ctx, Number::BigInt(lhs), cn.real)
+                }
+            },
+
+            Number::Rational(lhs) => {
+                let nume = lhs.numerator;
+                let deno = lhs.denominator;
+
+                match rhs {
+                    Number::Fixnum(rhs) => {
+                        return false;
+                    }
+
+                    Number::Flonum(rhs) => (lhs.to_f64(ctx) - rhs).abs() < f64::EPSILON,
+                    Number::BigInt(rhs) => return false,
+                    Number::Rational(rhs) => {
+                        return Self::equal(ctx, nume, rhs.numerator)
+                            && Self::equal(ctx, deno, rhs.denominator);
+                    }
+
+                    Number::Complex(cn) => {
+                        cn.imag.is_zero() && Self::equal(ctx, Self::Rational(lhs), cn.real)
+                    }
+                }
+            }
+
+            Number::Complex(cn) => {
+                if cn.imag.is_zero() {
+                    return Self::equal(ctx, cn.real, rhs);
+                }
+
+                match rhs {
+                    Number::Complex(cn2) => {
+                        return Self::equal(ctx, cn.real, cn2.real)
+                            && Self::equal(ctx, cn.imag, cn2.imag);
+                    }
+                    Number::Fixnum(_)
+                    | Number::Flonum(_)
+                    | Number::BigInt(_)
+                    | Number::Rational(_) => false,
+                }
+            }
+        }
+    }
+
     pub fn compare(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Option<std::cmp::Ordering> {
         match lhs {
             Number::Fixnum(lhs) => match rhs {
@@ -5116,7 +5200,7 @@ impl<'gc> fmt::Display for Complex<'gc> {
 
 /// Decodes a f64 into (mantissa, exponent, sign).
 /// Returns (mantissa: u64, exponent: i32, sign: i32)
-pub fn decode_double(n: f64) -> (i64, i32, i32) {
+pub const fn decode_double(n: f64) -> (i64, i32, i32) {
     let bits = n.to_bits();
     let mant_bits = bits as i64 & (IEXPT_2N52 - 1);
     let sign_bits = (bits >> 63) as i32;
@@ -5146,3 +5230,104 @@ pub fn decode_double(n: f64) -> (i64, i32, i32) {
     };
     (mant as i64, exp, sign)
 }
+
+pub fn nextfloat(z: f64) -> f64 {
+    let (m, k, sign) = decode_double(z);
+
+    assert!(sign >= 0);
+
+    if m == IEXPT_2N53 - 1 {
+        return libm::ldexp(IEXPT_2N52 as f64, k + 1);
+    }
+
+    libm::ldexp((m + 1) as f64, k)
+}
+
+pub fn prevfloat(z: f64) -> f64 {
+    let (m, k, sign) = decode_double(z);
+
+    assert!(sign >= 0);
+
+    if m == IEXPT_2N52 {
+        return libm::ldexp((IEXPT_2N53 - 1) as f64, k - 1);
+    }
+
+    libm::ldexp((m - 1) as f64, k)
+}
+
+pub fn parse_ubignum<'gc>(
+    ctx: Context<'gc>,
+    s: &mut Peekable<impl Iterator<Item = char>>,
+    radix: u32,
+) -> Gc<'gc, BigInt<'gc>> {
+    if s.peek().is_none() {
+        return BigInt::zero(ctx);
+    }
+    let mut ans = BigInt::zero(ctx);
+    let mut digit_count = 0;
+    while let Some(&c) = s.peek() {
+        if c == '#' {
+            return ans;
+        }
+        let digit;
+        if c >= '0' && c <= '9' {
+            digit = (c as u8) - b'0';
+        } else if c >= 'a' {
+            digit = (c as u8) - b'a' + 10;
+        } else if c >= 'A' {
+            digit = (c as u8) - b'A' + 10;
+        } else {
+            break;
+        }
+
+        digit_count += 1;
+
+        if digit < radix as u8 {
+            ans = ans.times(ctx, BigInt::from_u64(ctx, radix as _));
+            ans = ans.plus(ctx, BigInt::from_u64(ctx, digit as u64));
+            s.next();
+            continue;
+        }
+        break;
+    }
+
+    ans
+}
+
+pub fn parse_uinteger<'gc>(
+    ctx: Context<'gc>,
+    s: &mut Peekable<impl Iterator<Item = char>>,
+    radix: u32,
+) -> Option<Number<'gc>> {
+    if s.peek().is_none() {
+        return None;
+    }
+
+    let mut ans = Number::Fixnum(0);
+    while let Some(&c) = s.peek() {
+        if c == '#' {
+            return Some(ans);
+        }
+        let digit;
+        if c >= '0' && c <= '9' {
+            digit = (c as u8) - b'0';
+        } else if c >= 'a' {
+            digit = (c as u8) - b'a' + 10;
+        } else if c >= 'A' {
+            digit = (c as u8) - b'A' + 10;
+        } else {
+            return None;
+        }
+
+        if digit < radix as u8 {
+            ans = Number::mul(ctx, ans, Number::from_u64(ctx, radix as _));
+            ans = Number::add(ctx, ans, Number::from_u64(ctx, digit as u64));
+            s.next();
+            continue;
+        }
+        return None;
+    }
+    Some(ans)
+}
+
+
