@@ -7,13 +7,14 @@ use std::{
 
 use rsgc::{Collect, Gc, Rootable, context::Mutation, mutator::Global};
 
-use crate::runtime::Context;
+use crate::runtime::{Context, vm::inherents::Inherent};
 
 use super::*;
 use weak_set::WeakSet;
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct Symbol<'gc> {
+    pub(crate) inherent: Inherent,
     pub(super) stringbuf: Gc<'gc, Stringbuf>,
     pub(super) hash: Cell<u64>,
 }
@@ -95,7 +96,7 @@ impl<'gc> Symbol<'gc> {
         if let Some(symbol) = symbol {
             return symbol.downcast();
         } else {
-            let symbol = Self::new(&mc, str, hash);
+            let symbol = Self::new(&mc, str, hash, None);
 
             SYMBOL_TABLE
                 .get()
@@ -119,7 +120,7 @@ impl<'gc> Symbol<'gc> {
         str.hash(&mut hasher);
         let hash = hasher.finish();
 
-        let this = Self::new(mc, str, hash);
+        let this = Self::new(mc, str, hash, None);
 
         this.set_user_header(SYMBOL_TC16_UNINTERNED.into());
 
@@ -131,10 +132,20 @@ impl<'gc> Symbol<'gc> {
         Self::from_string(mc, str)
     }
 
-    pub fn gensym(
-        mc: Context<'gc>,
-        prefix: Option<Gc<'gc, String<'gc>>>,
-    ) -> Gc<'gc, Symbol<'gc>> {
+    pub fn inherent(&self) -> Inherent {
+        self.inherent
+    }
+
+    pub(crate) fn new_inherent(mc: Context<'gc>, str: &str, i: Inherent) -> Gc<'gc, Symbol<'gc>> {
+        let str = String::new(&mc, str, false);
+        let this = Self::from_string(mc, str);
+        unsafe {
+            this.as_ptr().as_mut().inherent = i;
+        }
+        this
+    }
+
+    pub fn gensym(mc: Context<'gc>, prefix: Option<Gc<'gc, String<'gc>>>) -> Gc<'gc, Symbol<'gc>> {
         static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let string = match prefix {
@@ -185,7 +196,7 @@ impl<'gc> std::fmt::Display for Symbol<'gc> {
         }
     }
 }
-/* 
+/*
 #[cfg(test)]
 mod tests {
     use rsgc::Mutator;

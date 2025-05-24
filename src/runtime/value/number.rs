@@ -4478,6 +4478,65 @@ impl<'gc> Number<'gc> {
         }
     }
 
+    pub fn exact_equal(lhs: Self, rhs: Self) -> bool {
+        match lhs {
+            Number::Fixnum(lhs) => match rhs {
+                Number::Fixnum(rhs) => lhs == rhs,
+                _ => false,
+            },
+
+            Number::BigInt(lhs) => match rhs {
+                Number::BigInt(rhs) => lhs == rhs,
+                _ => false,
+            },
+
+            Number::Rational(lhs) => match rhs {
+                Number::Rational(rhs) => {
+                    Self::exact_equal(lhs.numerator, rhs.numerator)
+                        && Self::exact_equal(lhs.denominator, rhs.denominator)
+                }
+                _ => false,
+            },
+
+            _ => false,
+        }
+    }
+
+    pub fn inexact_equal(lhs: Self, rhs: Self) -> bool {
+        match lhs {
+            Number::Flonum(lhs) => match rhs {
+                Number::Flonum(rhs) => {
+                    return lhs.to_bits() == rhs.to_bits();
+                }
+
+                Number::Complex(cn) => {
+                    if cn.imag.is_zero() {
+                        return Self::inexact_equal(Self::Flonum(lhs), cn.real);
+                    } else {
+                        return false;
+                    }
+                }
+
+                _ => false,
+            },
+
+            Number::Complex(cn) => {
+                if cn.imag.is_zero() {
+                    return Self::inexact_equal(cn.real, rhs);
+                }
+
+                match rhs {
+                    Number::Complex(cn2) => {
+                        return Self::inexact_equal(cn.real, cn2.real)
+                            && Self::inexact_equal(cn.imag, cn2.imag);
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     pub fn equal(ctx: Context<'gc>, lhs: Self, rhs: Self) -> bool {
         match lhs {
             Number::Fixnum(lhs) => match rhs {
@@ -5330,4 +5389,35 @@ pub fn parse_uinteger<'gc>(
     Some(ans)
 }
 
+impl<'gc> Value<'gc> {
+    pub fn is_number(self) -> bool {
+        self.is_inline_number()
+            || self.is::<BigInt>()
+            || self.is::<Rational>()
+            || self.is::<Complex>()
+    }
 
+    pub fn number(self) -> Option<Number<'gc>> {
+        if self.is_inline_number() {
+            if self.is_int32() {
+                return Some(Number::Fixnum(self.as_int32()));
+            } else {
+                return Some(Number::Flonum(self.as_flonum()));
+            }
+        }
+
+        if self.is::<BigInt>() {
+            return Some(Number::BigInt(self.downcast()));
+        }
+
+        if self.is::<Rational>() {
+            return Some(Number::Rational(self.downcast()));
+        }
+
+        if self.is::<Complex>() {
+            return Some(Number::Complex(self.downcast()));
+        }
+
+        None
+    }
+}
