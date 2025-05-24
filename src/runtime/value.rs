@@ -413,6 +413,7 @@ impl TypeCode8 {
     pub const RECORD_TYPE_DESCRIPTOR: Self = Self(27);
     pub const RECORD_TYPE: Self = Self(28);
     pub const RECORD_CONSTRUCTOR_DESCRIPTOR: Self = Self(29);
+    pub const ANNOTATION: Self = Self(30);
     
     pub const UNKNOWN: Self = Self(0xFF);
 }
@@ -554,7 +555,9 @@ pub mod weak_set;
 pub mod values;
 pub mod hash;
 pub mod equiv;
+pub mod port;
 
+pub use port::*;
 pub use number::*;
 pub use hash::*;
 pub use conversions::*;
