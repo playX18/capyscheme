@@ -553,6 +553,8 @@ impl<'gc> WeakSet<'gc> {
             },
         );
 
+        weak_set.set_user_header(TypeCode8::WEAKSET.into());
+
         ALL_WEAK_SETS
             .get()
             .unwrap()
@@ -650,7 +652,7 @@ impl FinalizationNotifier for WeakSetNotify {
     fn notify_in_processing(&self) {}
 
     fn schedule(&self) {
-        VM_THREAD.schedule_task(VMThreadTask::VacuumWeakSets);
+        //VM_THREAD.schedule_task(VMThreadTask::VacuumWeakSets);
     }
 }
 

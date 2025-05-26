@@ -53,7 +53,7 @@ impl<'gc> State<'gc> {
 
 /// A Scheme execution environment for current thread.
 pub struct Scheme {
-    mutator: Mutator<Rootable!(State<'_>)>,
+    pub mutator: Mutator<Rootable!(State<'_>)>,
 }
 
 impl Scheme {

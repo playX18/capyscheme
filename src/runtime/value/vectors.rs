@@ -11,7 +11,7 @@ use rsgc::{
     vmkit::prelude::{GCMetadata, TraceCallback},
 };
 
-use crate::runtime::value::TypeCode16;
+use crate::runtime::{value::TypeCode16, Context};
 
 use super::{Tagged, TypeCode8, Value, ValuesNamespace};
 
@@ -83,16 +83,16 @@ impl<'gc> Vector<'gc> {
         }
     }
 
-    pub fn fill(self: Gc<'gc, Self>, mc: &Mutation<'gc>, fill: Value<'gc>) {
-        let vec = Gc::write(mc, self);
+    pub fn fill(self: Gc<'gc, Self>, mc: Context<'gc>, fill: Value<'gc>) {
+        let vec = Gc::write(&mc, self);
 
         for i in 0..vec.len() {
             vec[i].write(fill);
         }
     }
 
-    pub fn copy_from(self: Gc<'gc, Self>, mc: &Mutation<'gc>, other: impl AsRef<[Value<'gc>]>) {
-        let vec = Gc::write(mc, self);
+    pub fn copy_from(self: Gc<'gc, Self>, mc: Context<'gc>, other: impl AsRef<[Value<'gc>]>) {
+        let vec = Gc::write(&mc, self);
         let other = other.as_ref();
 
         assert!(other.len() <= vec.len());
@@ -193,7 +193,7 @@ macro_rules! vector {
             value.into_value($mc)
         }),*];
         let length = slice.len();
-        let vector = $crate::runtime::value::Vector::new($mc, length, Value::null());
+        let vector = $crate::runtime::value::Vector::new(&$mc, length, $crate::runtime::value::Value::unspecified());
         vector.copy_from($mc, slice);
         vector
     }};
@@ -203,12 +203,12 @@ macro_rules! vector {
         let mc = $mc;
         let value = $value;
         let count = $count;
-        let vector = $crate::runtime::value::Vector::new($mc, count, value.into_value($mc));
+        let vector = $crate::runtime::value::Vector::new(&$mc, count, value.into_value($mc));
         vector
     }};
 
     ($mc: expr) => {
-        $crate::runtime::value::Vector::new($mc, 0, Value::null())
+        $crate::runtime::value::Vector::new(&$mc, 0, Value::null())
     };
 }
 
@@ -284,8 +284,8 @@ impl<'gc> ByteVector<'gc> {
         }
     }
 
-    pub fn fill(self: Gc<'gc, Self>, mc: &Mutation<'gc>, fill: u8) {
-        let vec = Gc::write(mc, self);
+    pub fn fill(self: Gc<'gc, Self>, mc: Context<'gc>, fill: u8) {
+        let vec = Gc::write(&mc, self);
         let data_ptr = vec.data.as_ptr() as *mut u8;
         for i in 0..vec.len() {
             unsafe {
@@ -294,8 +294,8 @@ impl<'gc> ByteVector<'gc> {
         }
     }
 
-    pub fn copy_from(self: Gc<'gc, Self>, mc: &Mutation<'gc>, other: impl AsRef<[u8]>) {
-        let vec = Gc::write(mc, self);
+    pub fn copy_from(self: Gc<'gc, Self>, mc: Context<'gc>, other: impl AsRef<[u8]>) {
+        let vec = Gc::write(&mc, self);
         let other = other.as_ref();
 
         assert!(other.len() <= vec.len());

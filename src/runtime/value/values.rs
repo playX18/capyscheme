@@ -1,4 +1,5 @@
 use std::{
+    marker::PhantomData,
     mem::MaybeUninit,
     ops::Index,
     sync::atomic::{AtomicU16, Ordering},
@@ -10,10 +11,13 @@ use rsgc::{
     context::Mutation,
     gc::GLOBAL_GC_INFO_TABLE,
     generic_static::Namespace,
-    vmkit::prelude::{GCMetadata, TraceCallback},
+    vmkit::{
+        mmtk::util::ObjectReference,
+        prelude::{GCMetadata, TraceCallback},
+    },
 };
 
-use crate::runtime::{value::TypeCode16, Context};
+use crate::runtime::{Context, value::TypeCode16};
 
 use super::{ListIterator, Tagged, TypeCode8, Value, ValuesNamespace};
 
@@ -134,8 +138,6 @@ unsafe impl<'gc> Trace for Values<'gc> {
     }
 }
 
-
-
 impl<'gc> std::ops::Deref for Values<'gc> {
     type Target = [Value<'gc>];
 
@@ -225,4 +227,59 @@ macro_rules! values {
     ($mc: expr) => {
         $crate::runtime::value::Values::new($mc, 0, Value::null())
     };
+}
+
+/// A weak value is a value that can be collected by the garbage collector
+/// if there are no strong references to it. Note that immediate
+/// values (like integers, booleans, etc.) are not collected, so
+/// weak values are only applicable to heap-allocated objects.
+#[repr(transparent)]
+pub struct WeakValue<'gc>(pub Value<'gc>);
+
+impl<'gc> Into<Value<'gc>> for WeakValue<'gc> {
+    fn into(self) -> Value<'gc> {
+        self.0
+    }
+}
+
+impl<'gc> From<Value<'gc>> for WeakValue<'gc> {
+    fn from(value: Value<'gc>) -> Self {
+        WeakValue(value)
+    }
+}
+
+impl<'gc> WeakValue<'gc> {
+    pub fn value(&self) -> Value<'gc> {
+        self.0
+    }
+
+    pub fn is_broken(&self) -> bool {
+        self.0.is_bwp()
+    }
+}
+
+unsafe impl<'gc> Trace for WeakValue<'gc> {
+    fn trace(&mut self, visitor: &mut Visitor<'_>) {
+        visitor.register_for_weak_processing();
+    }
+
+    fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {
+        if !self.0.is_cell() {
+            return;
+        }
+
+        let cell: ObjectReference = unsafe { std::mem::transmute(self.0) };
+
+        if cell.is_reachable() {
+            let cell = cell.get_forwarded_object().unwrap_or(cell);
+            self.0 = Value {
+                desc: super::EncodedValueDescriptor {
+                    as_i64: cell.to_raw_address().as_usize() as _,
+                },
+                pd: PhantomData,
+            };
+        } else {
+            self.0 = Value::bwp();
+        }
+    }
 }
