@@ -13,7 +13,8 @@ pub enum VMThreadTask {
     /// any broken weak entries in them. This task is ran in mutator context
     /// thus it won't run until GC is complete.
     VacuumWeakSets,
-    MutatorTask(Box<dyn for<'gc> FnOnce(&Mutation<'gc>) + Send>),
+    VacuumWeakTables,
+    MutatorTask(Box<dyn for<'gc> FnOnce(&'gc Mutation<'gc>) + Send>),
     Task(Box<dyn FnOnce() + Send>),
 
     /// Shutdown the VM thread. This task will cause the thread to exit.
@@ -55,7 +56,12 @@ impl VmThread {
                                 super::value::weak_set::vacuum_weak_sets(mc);
                             });
                         }
-
+                        VMThreadTask::VacuumWeakTables => {
+                            mutator.mutate(|mc, _| {
+                                super::value::weak_table::vacuum_weak_tables(mc);
+                            });
+                        }
+                        
                         VMThreadTask::MutatorTask(task) => {
                             mutator.mutate(|mc, _| {
                                 task(mc);

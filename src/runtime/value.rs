@@ -8,13 +8,15 @@ use std::{convert::Infallible, hash::Hash, marker::PhantomData, sync::atomic::At
 use rsgc::{
     Gc, GcWeak, RSGC, Trace,
     barrier::Write,
-
     define_namespace,
     vmkit::{
         mm::MemoryManager,
-        mmtk::util::ObjectReference,
+        mmtk::{
+            util::{Address, ObjectReference},
+            vm::slot::SimpleSlot,
+        },
         object_model::header::HeapObjectHeader,
-        prelude::{ObjectTracer, VMKitObject},
+        prelude::{ObjectTracer, SlotVisitor, VMKitObject},
     },
 };
 
@@ -105,7 +107,7 @@ pub union EncodedValueDescriptor {
 unsafe impl<'gc> Trace for Value<'gc> {
     fn trace(&mut self, visitor: &mut rsgc::Visitor<'_>) {
         if self.is_cell() && !self.is_empty() {
-            visitor.trace_object(unsafe { self.desc.ptr });
+            visitor.visit_slot(SimpleSlot::from_address(Address::from_mut_ptr(self)));
         }
     }
 
@@ -192,6 +194,14 @@ impl<'gc> Value<'gc> {
 
     pub fn bwp() -> Self {
         Self::from_raw_i64(Self::VALUE_BWP)
+    }
+
+    pub fn empty() -> Self {
+        Self::from_raw_i64(Self::VALUE_EMPTY)
+    }
+
+    pub fn deleted() -> Self {
+        Self::from_raw_i64(Self::VALUE_DELETED)
     }
 
     pub fn is_void(self) -> bool {
@@ -414,9 +424,11 @@ impl TypeCode8 {
     pub const RECORD_TYPE: Self = Self(28);
     pub const RECORD_CONSTRUCTOR_DESCRIPTOR: Self = Self(29);
     pub const ANNOTATION: Self = Self(30);
-
     pub const TUPLE: Self = Self(31);
-    
+
+    pub const ENVIRONMENT: Self = Self(32);
+    pub const WEAK_MAPPING: Self = Self(33);
+
     pub const UNKNOWN: Self = Self(0xFF);
 }
 
@@ -486,8 +498,6 @@ impl From<TypeCode16> for u16 {
     }
 }
 
-
-
 fn typ8(x: ObjectReference) -> TypeCode8 {
     unsafe {
         let header = x
@@ -539,43 +549,44 @@ impl<'gc> Value<'gc> {
     pub fn not(self) -> bool {
         self.raw_i64() == Value::VALUE_FALSE
     }
-
 }
 
 #[macro_use]
 pub mod lists;
 #[macro_use]
 pub mod vectors;
-pub mod proc;
+pub mod conversions;
+pub mod environment;
+pub mod eq;
+pub mod equiv;
+pub mod hash;
+pub mod map;
 pub mod number;
+pub mod port;
+pub mod proc;
 pub mod strings;
 pub mod structs;
 pub mod symbols;
-pub mod variable;
-pub mod conversions;
-pub mod weak_set;
-pub mod values;
-pub mod hash;
-pub mod equiv;
-pub mod port;
-pub mod map;
-pub mod eq;
 pub mod tuple;
+pub mod values;
+pub mod variable;
+pub mod weak_set;
+pub mod weak_table;
 
-pub use port::*;
-pub use number::*;
-pub use hash::*;
 pub use conversions::*;
+pub use environment::*;
+pub use hash::*;
 pub use lists::*;
+pub use number::*;
 pub use proc::*;
 pub use strings::*;
 pub use structs::*;
 pub use symbols::*;
+pub use tuple::*;
 pub use variable::*;
 pub use vectors::*;
 pub use weak_set::*;
-pub use map::*;
-pub use tuple::*;
+pub use weak_table::*;
 
 impl<'gc> std::fmt::Pointer for Value<'gc> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -8,16 +8,15 @@ use std::{
 
 use rsgc::{
     EnsureGCInfo, GCInfo, GCInfoIndex, GCInfoIndexForT, Gc, Trace, Visitor,
-    barrier::{AsRefWrite, IndexWrite, Write},
-    context::Mutation,
-    gc::{GLOBAL_GC_INFO_TABLE, UserHeader},
+    barrier::{AsRefWrite, IndexWrite},
+    gc::GLOBAL_GC_INFO_TABLE,
     generic_static::Namespace,
     vmkit::prelude::{GCMetadata, TraceCallback},
 };
 
 use crate::runtime::{
     Context,
-    value::{Tagged, TypeCode8, TypeCode16, Value, ValuesNamespace},
+    value::{Tagged, TypeCode8, Value, ValuesNamespace},
 };
 
 pub const TUPLE_MAX_LENGTH: usize = u16::MAX as usize;
@@ -26,12 +25,6 @@ pub const TUPLE_MAX_LENGTH: usize = u16::MAX as usize;
 pub struct Tuple<'gc> {
     data: [Value<'gc>; 0],
 }
-
-fn tuple_header(len: usize) -> u32 {
-    let type_code_byte = TypeCode8::TUPLE.0 as u8;
-    (type_code_byte as u32) | ((len as u32) << 8)
-}
-
 fn tuple_length(header: u32) -> usize {
     ((header >> 8) & 0xFFFF) as usize
 }
@@ -206,7 +199,6 @@ fn register_tuple_info(index: &AtomicU16) -> GCInfoIndex {
 
 unsafe impl<'gc> Tagged for Tuple<'gc> {
     const TC8: TypeCode8 = TypeCode8::TUPLE;
-   
 }
 
 #[macro_export]
