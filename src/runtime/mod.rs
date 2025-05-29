@@ -3,6 +3,7 @@ use std::sync::Once;
 use rsgc::context::Mutation;
 
 pub mod errors;
+pub mod fasl;
 pub mod thread;
 pub mod value;
 pub mod vm;

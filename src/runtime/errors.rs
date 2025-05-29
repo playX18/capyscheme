@@ -62,7 +62,7 @@ impl<'gc> std::fmt::Debug for Violation<'gc> {
                 write!(
                     f,
                     "AssertionViolation {{ who: {:?}, message: {:?}, }}",
-                    who, message, 
+                    who, message,
                 )
             }
             Violation::WrongNumberOfArguments {

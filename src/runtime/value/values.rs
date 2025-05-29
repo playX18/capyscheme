@@ -234,6 +234,7 @@ macro_rules! values {
 /// values (like integers, booleans, etc.) are not collected, so
 /// weak values are only applicable to heap-allocated objects.
 #[repr(transparent)]
+#[derive(Copy, Clone)]
 pub struct WeakValue<'gc>(pub Value<'gc>);
 
 impl<'gc> Into<Value<'gc>> for WeakValue<'gc> {
@@ -272,6 +273,11 @@ unsafe impl<'gc> Trace for WeakValue<'gc> {
 
         if cell.is_reachable() {
             let cell = cell.get_forwarded_object().unwrap_or(cell);
+            println!(
+                "cell alive: 0x{:x}->{}",
+                self.0.raw_i64(),
+                cell.to_raw_address()
+            );
             self.0 = Value {
                 desc: super::EncodedValueDescriptor {
                     as_i64: cell.to_raw_address().as_usize() as _,

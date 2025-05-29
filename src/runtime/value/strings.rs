@@ -732,7 +732,7 @@ impl<'gc> Symbol<'gc> {
             Self {
                 stringbuf: buf,
                 hash: Cell::new(hash),
-                inherent: inherent.unwrap_or(Inherent::LAST)
+                inherent: inherent.unwrap_or(Inherent::LAST),
             },
         );
 

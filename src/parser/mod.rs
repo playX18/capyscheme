@@ -1,4 +1,4 @@
-use std::{io::BufRead, iter::Peekable, path::PathBuf};
+use std::{io::BufRead, path::PathBuf};
 
 use rsgc::{Collect, Gc};
 
@@ -102,7 +102,8 @@ pub fn strip_annotations<'gc>(ctx: Context<'gc>, expr: Value<'gc>) -> Value<'gc>
             ctx,
             strip_annotations(ctx, expr.car()),
             strip_annotations(ctx, expr.cdr()),
-        ).into()
+        )
+        .into()
     } else if expr.is::<Vector>() {
         let orig = expr.downcast::<Vector>();
         let v = Vector::new(&ctx, orig.len(), Value::eof());

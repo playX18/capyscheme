@@ -61,7 +61,7 @@ impl VmThread {
                                 super::value::weak_table::vacuum_weak_tables(mc);
                             });
                         }
-                        
+
                         VMThreadTask::MutatorTask(task) => {
                             mutator.mutate(|mc, _| {
                                 task(mc);
