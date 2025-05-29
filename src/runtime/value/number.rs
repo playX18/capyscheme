@@ -16,10 +16,11 @@ use std::{
     hash::{Hash, Hasher},
     iter::Peekable,
     marker::PhantomData,
-    mem::{align_of, size_of, MaybeUninit},
+    mem::{MaybeUninit, align_of, size_of},
     ops::{Deref, DerefMut, Index, IndexMut, Range, RangeFrom, RangeTo},
     sync::{
-        atomic::{AtomicU16, Ordering}, OnceLock
+        OnceLock,
+        atomic::{AtomicU16, Ordering},
     },
 };
 
@@ -326,12 +327,7 @@ impl<'gc> BigInt<'gc> {
 }
 
 unsafe impl<'gc> Trace for BigInt<'gc> {
-    fn trace(&mut self, _visitor: &mut Visitor<'_>) {
-        // `count` and `negative` are primitive types.
-        // `words` are `u32` which are not Gc pointers.
-        // `_phantom` does not need tracing.
-        // Thus, no fields within BigInt itself require tracing by the GC.
-    }
+    fn trace(&mut self, _visitor: &mut Visitor<'_>) {}
 }
 
 unsafe impl<'gc> EnsureGCInfo<'gc> for BigInt<'gc> {
@@ -1191,28 +1187,21 @@ impl<'gc> BigInt<'gc> {
         }
 
         let count = self.count();
-        // quotient_digits will store words from LSW at index 0 to MSW at index count-1
+
         let mut quotient_digits = vec![0 as Digit; count];
 
         let mut remainder: Digit2X = 0; // Digit2X is u128
 
-        // Iterate from MSW (index count-1) down to LSW (index 0)
         for i in (0..count).rev() {
-            let current_word = self[i]; // self[i] accesses the i-th word (LSW is self[0])
-            // Combine remainder from previous (more significant) step with current word
+            let current_word = self[i];
             let dividend_part: Digit2X = (remainder << 64) | (current_word as Digit2X);
 
             quotient_digits[i] = (dividend_part / (divisor as Digit2X)) as Digit;
             remainder = dividend_part % (divisor as Digit2X);
         }
 
-        // The sign of the quotient is the same as the original number's sign,
-        // as divisor (u64) is positive.
-        let result_sign = self.negative; // Access field directly
+        let result_sign = self.negative;
 
-        // BigInt::new with NORMALIZE = true will handle:
-        // 1. Removing leading zeros from quotient_digits (MSW end).
-        // 2. If all quotient_digits are zero, it returns BigInt::zero.
         (
             BigInt::new::<true>(ctx, &quotient_digits, result_sign),
             remainder,
@@ -1230,20 +1219,13 @@ impl<'gc> BigInt<'gc> {
         let count = self.count();
         let mut result_digits = vec![0 as Digit; count];
 
-        // Perform AND only on the first word (least significant)
-        // and keep other words as 0, as `digit` is a single u64.
         if count > 0 {
             result_digits[0] = self[0] & digit;
         }
-        // Higher words of the result will be 0 because we are ANDing with a single Digit.
-        // BigInt::new with NORMALIZE=true will strip these leading zeros.
 
         BigInt::new::<true>(ctx, &result_digits, self.negative)
     }
 
-    /// Performs a bitwise OR operation between the BigInt and a single Digit.
-    /// The operation is performed on the magnitude of the BigInt.
-    /// The sign of the result is preserved.
     pub fn or_digit(self: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
         let mut result_digits = self.words_slice().to_vec(); // Clone existing words
 
@@ -1257,15 +1239,11 @@ impl<'gc> BigInt<'gc> {
             }
         }
 
-        // Perform OR on the first word (least significant)
         result_digits[0] |= digit;
 
         BigInt::new::<true>(ctx, &result_digits, self.negative)
     }
 
-    /// Performs a bitwise XOR operation between the BigInt and a single Digit.
-    /// The operation is performed on the magnitude of the BigInt.
-    /// The sign of the result is preserved.
     pub fn xor_digit(self: Gc<'gc, Self>, ctx: Context<'gc>, digit: Digit) -> Gc<'gc, Self> {
         let mut result_digits = self.words_slice().to_vec(); // Clone existing words
 
@@ -5430,11 +5408,11 @@ impl<'gc> Hash for Number<'gc> {
             Number::Rational(r) => {
                 r.numerator.hash(state);
                 r.denominator.hash(state);
-            },
+            }
             Number::Complex(c) => {
                 c.real.hash(state);
                 c.imag.hash(state);
             }
         }
     }
-}   
+}

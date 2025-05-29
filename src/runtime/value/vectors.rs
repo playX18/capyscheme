@@ -1,5 +1,8 @@
 use std::{
-    marker::PhantomData, mem::MaybeUninit, ops::Index, sync::atomic::{AtomicU16, Ordering}
+    marker::PhantomData,
+    mem::MaybeUninit,
+    ops::{Index, Range},
+    sync::atomic::{AtomicU16, Ordering},
 };
 
 use rsgc::{
@@ -11,7 +14,7 @@ use rsgc::{
     vmkit::prelude::{GCMetadata, TraceCallback},
 };
 
-use crate::runtime::{value::TypeCode16, Context};
+use crate::runtime::{Context, value::TypeCode16};
 
 use super::{Tagged, TypeCode8, Value, ValuesNamespace};
 
@@ -245,7 +248,12 @@ impl<'gc> ByteVector<'gc> {
                 pd: PhantomData,
                 data: [],
             }));
-            let byte_vector_data = byte_vector.as_ptr().as_mut().assume_init_mut().data.as_mut_ptr();
+            let byte_vector_data = byte_vector
+                .as_ptr()
+                .as_mut()
+                .assume_init_mut()
+                .data
+                .as_mut_ptr();
 
             for i in 0..length {
                 byte_vector_data.add(i).write(fill);
@@ -276,7 +284,12 @@ impl<'gc> ByteVector<'gc> {
                 pd: PhantomData,
                 data: [],
             }));
-            let byte_vector_data = byte_vector.as_ptr().as_mut().assume_init_mut().data.as_mut_ptr();
+            let byte_vector_data = byte_vector
+                .as_ptr()
+                .as_mut()
+                .assume_init_mut()
+                .data
+                .as_mut_ptr();
             for (i, value) in iter.enumerate() {
                 byte_vector_data.add(i).write(value);
             }
@@ -309,6 +322,10 @@ impl<'gc> ByteVector<'gc> {
 
     pub fn len(&self) -> usize {
         self.length
+    }
+
+    pub fn mut_bytes(&self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut u8, self.len()) }
     }
 }
 
@@ -344,9 +361,21 @@ impl<'gc> Index<usize> for ByteVector<'gc> {
     }
 }
 
+impl<'gc> Index<Range<usize>> for ByteVector<'gc> {
+    type Output = [u8];
+
+    fn index(&self, range: Range<usize>) -> &Self::Output {
+        assert!(range.start < self.len() && range.end <= self.len());
+        unsafe {
+            std::slice::from_raw_parts(self.data.as_ptr().add(range.start), range.end - range.start)
+        }
+    }
+}
+
 unsafe impl<'gc> EnsureGCInfo<'gc> for ByteVector<'gc> {
     fn ensure_gc_info() -> rsgc::gc::GCInfoIndex {
-        let registered_index = ValuesNamespace::generic_static::<GCInfoIndexForT<ByteVector<'gc>>>();
+        let registered_index =
+            ValuesNamespace::generic_static::<GCInfoIndexForT<ByteVector<'gc>>>();
         let index = registered_index.index.load(Ordering::Relaxed);
 
         if index != 0 {
@@ -381,7 +410,10 @@ fn register_byte_vector_info(index: &AtomicU16) -> GCInfoIndex {
 
 unsafe impl<'gc> Tagged for ByteVector<'gc> {
     const TC8: TypeCode8 = TypeCode8::BYTEVECTOR;
-    const TC16: &'static [TypeCode16] = &[TypeCode16::MUTABLE_BYTEVECTOR, TypeCode16::IMMUTABLE_BYTEVECTOR];
+    const TC16: &'static [TypeCode16] = &[
+        TypeCode16::MUTABLE_BYTEVECTOR,
+        TypeCode16::IMMUTABLE_BYTEVECTOR,
+    ];
 }
 
 #[macro_export]
@@ -407,4 +439,3 @@ macro_rules! bytevector {
         $crate::runtime::value::ByteVector::new($mc, 0, 0u8)
     };
 }
-

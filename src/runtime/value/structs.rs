@@ -111,7 +111,7 @@ impl<'gc> RecordTypeDescriptor<'gc> {
             (mutable, name)
         });
 
-        let this =if uid.not() {
+        let this = if uid.not() {
             Gc::new(
                 &mc,
                 Self {

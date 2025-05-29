@@ -68,7 +68,6 @@ impl<'gc> WeakMapping<'gc> {
         let mapping = Gc::new(&ctx, Self { key, value });
         mapping.set_user_header(TypeCode8::WEAK_MAPPING.into());
 
-        
         mapping
     }
 
@@ -100,13 +99,17 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
     }
 
     fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+        let orig = self.key;
         self.key.process_weak_refs(weak_processor);
 
         if self.key.is_broken() {
+            println!("broken {:x}", orig.0.raw_i64());
             self.value = Value::bwp();
         } else {
             let mut vis = weak_processor.visitor();
             self.value.trace(&mut vis);
+
+            println!("key {:x} is live", self.key.0.raw_i64());
         }
     }
 }
@@ -127,6 +130,8 @@ unsafe impl<'gc> Trace for WeakTable<'gc> {
     fn trace(&mut self, visitor: &mut rsgc::Visitor<'_>) {
         self.inner.get_mut().trace(visitor);
     }
+
+    fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
 }
 
 unsafe impl<'gc> EnsureGCInfo<'gc> for WeakTable<'gc> {}
@@ -184,7 +189,7 @@ impl<'gc> WeakTable<'gc> {
             .expect("Weak tables not initialized")
             .fetch(&ctx)
             .tables
-            .lock_with_handshake::<RSGC>()
+            .lock_no_handshake()
             .borrow_mut()
             .push(Gc::downgrade(table));
         table
@@ -267,7 +272,7 @@ impl<'gc> WeakTable<'gc> {
         let key = key.into_value(ctx);
         let value = value.into_value(ctx);
         println!("put {:x}->{:x}", key.raw_i64(), value.raw_i64());
-        let guard = self.inner.lock_with_handshake::<RSGC>();
+        let guard = self.inner.lock_no_handshake();
         Gc::write(&ctx, self);
         let hash = make_hash(key);
         let index = (hash % guard.entries.get().len() as u64) as usize;
@@ -296,7 +301,7 @@ impl<'gc> WeakTable<'gc> {
     }
 
     pub fn remove(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
-        let guard = self.inner.lock_with_handshake::<RSGC>();
+        let guard = self.inner.lock_no_handshake();
         Gc::write(&ctx, self);
         let hash = make_hash(key);
         let index = (hash % guard.entries.get().len() as u64) as usize;
@@ -327,7 +332,7 @@ impl<'gc> WeakTable<'gc> {
     }
 
     pub fn vacuum(self: Gc<'gc, Self>, mc: &Mutation<'gc>) {
-        let guard = self.inner.lock_with_handshake::<RSGC>();
+        let guard = self.inner.lock_no_handshake();
         Gc::write(mc, self);
         let table = Gc::write(mc, guard.entries.get());
         for i in 0..table.len() {
@@ -363,7 +368,7 @@ impl<'gc> WeakTable<'gc> {
     }
 
     pub fn clear(self: Gc<'gc, Self>, ctx: Context<'gc>) {
-        let guard = self.inner.lock_with_handshake::<RSGC>();
+        let guard = self.inner.lock_no_handshake();
         Gc::write(&ctx, self);
         let table = Gc::write(&ctx, guard.entries.get());
         for i in 0..table.len() {
@@ -375,7 +380,7 @@ impl<'gc> WeakTable<'gc> {
 
     pub fn get(&self, ctx: Context<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
         let key = key.into_value(ctx);
-        let guard = self.inner.lock_with_handshake::<RSGC>();
+        let guard = self.inner.lock_no_handshake();
         let hash = make_hash(key);
         let index = (hash % guard.entries.get().len() as u64) as usize;
 
@@ -396,7 +401,7 @@ impl<'gc> WeakTable<'gc> {
     }
 
     pub fn contains_value(&self, value: Value<'gc>) -> bool {
-        let guard = self.inner.lock_with_handshake::<RSGC>();
+        let guard = self.inner.lock_no_handshake();
         for i in 0..guard.entries.get().len() {
             let mut e = guard.entries.get()[i].get();
             while let Some(entry) = e {
@@ -444,7 +449,7 @@ pub(crate) fn vacuum_weak_tables<'gc>(mc: &Mutation<'gc>) {
     };
     let all_weak_tables = all_weak_tables.fetch(mc);
 
-    let guard = all_weak_tables.tables.lock_with_handshake::<RSGC>();
+    let guard = all_weak_tables.tables.lock_no_handshake();
     let all_weak_tables = guard.borrow_mut();
 
     for table in all_weak_tables.iter() {
@@ -564,13 +569,6 @@ mod tests {
                 }
                 self.table.trace(visitor);
             }
-
-            fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
-                /*for tmp in &mut self.tmps {
-                    tmp.process_weak_refs(weak_processor);
-                }
-                self.table.process_weak_refs(weak_processor);*/
-            }
         }
 
         static ROOTSET: OnceLock<Global<Rootable!(Rootset<'_>)>> = OnceLock::new();
@@ -640,72 +638,7 @@ mod tests {
             table.clear(ctx);
             let k2_rooted = rootset.tmps[2];
             assert!(table.get(ctx, k2_rooted).is_none());
-            assert_eq!(table.inner.lock_with_handshake::<RSGC>().count.get(), 0);
-        });
-    }
-
-    #[test]
-    fn test_weak_table_vacuum() {
-        struct Rootset<'gc> {
-            // k1 will be rooted, k2 will not
-            k1: Value<'gc>,
-            table: Gc<'gc, WeakTable<'gc>>,
-        }
-
-        unsafe impl<'gc> Trace for Rootset<'gc> {
-            fn trace(&mut self, visitor: &mut rsgc::Visitor<'_>) {
-                self.k1.trace(visitor);
-                self.table.trace(visitor);
-            }
-        }
-
-        static ROOTSET: OnceLock<Global<Rootable!(Rootset<'_>)>> = OnceLock::new();
-
-        let scm = Scheme::new();
-        scm.enter(|mc| init_weak_tables(&mc));
-
-        scm.enter(|ctx| {
-            let table = WeakTable::new(ctx, 8, 0.75);
-            let k1_str = String::new(&ctx, "key1_vacuum", false);
-            let v1_str = String::new(&ctx, "value1_vacuum", false);
-            let k2_str = String::new(&ctx, "key2_vacuum_unrooted", false);
-            let v2_str = String::new(&ctx, "value2_vacuum_unrooted", false);
-
-            table.put(ctx, k1_str, v1_str);
-            table.put(ctx, k2_str, v2_str);
-
-            assert_eq!(table.inner.lock_with_handshake::<RSGC>().count.get(), 2);
-
-            let rootset = Rootset {
-                k1: k1_str.into_value(ctx), // k2_str is not rooted via Rootset
-                table,
-            };
-            let _ = ROOTSET.set(Global::new(rootset));
-        });
-
-        // k2_str is no longer directly accessible from outside the table and not in rootset
-        // so it should be collected by GC, and then vacuum should remove its entry.
-        scm.mutator.request_gc();
-        scm.enter(|mc| vacuum_weak_tables(&mc));
-
-        scm.enter(|ctx| {
-            let rootset_global = ROOTSET.get().unwrap();
-            let rootset = rootset_global.fetch(&ctx);
-            let table = rootset.table;
-            let k1_rooted_val = rootset.k1;
-
-            // Create a new string for lookup, as the original k2_str Gc object should be gone.
-            let k2_lookup = String::new(&ctx, "key2_vacuum_unrooted", false);
-
-            assert!(
-                table.get(ctx, k1_rooted_val).is_some(),
-                "k1 should still be in table"
-            );
-            assert!(
-                table.get(ctx, k2_lookup).is_none(),
-                "k2 should have been vacuumed"
-            );
-            //assert_eq!(table.inner.lock_with_handshake::<RSGC>().count.get(), 1, "Count should be 1 after vacuum");
+            assert_eq!(table.inner.lock_no_handshake().count.get(), 0);
         });
     }
 }

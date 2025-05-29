@@ -1,6 +1,3 @@
 use super::Value;
 
-
-impl<'gc> Value<'gc> {
-    
-}
+impl<'gc> Value<'gc> {}

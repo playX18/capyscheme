@@ -14,7 +14,7 @@ unsafe impl<'gc> Trace for Callback<'gc> {
     fn trace(&mut self, visitor: &mut rsgc::Visitor<'_>) {
         match self {
             Self::Procedure(x) => x.trace(visitor),
-            _ => ()
+            _ => (),
         }
     }
 }

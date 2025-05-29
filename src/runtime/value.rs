@@ -16,7 +16,7 @@ use rsgc::{
             vm::slot::SimpleSlot,
         },
         object_model::header::HeapObjectHeader,
-        prelude::{ObjectTracer, SlotVisitor, VMKitObject},
+        prelude::{SlotVisitor, VMKitObject},
     },
 };
 
@@ -35,11 +35,12 @@ pub struct Value<'gc> {
     pd: PhantomData<&'gc ()>,
 }
 
+/* 
 impl<'gc> PartialEq for Value<'gc> {
     fn eq(&self, other: &Self) -> bool {
         self.raw_i64() == other.raw_i64()
     }
-}
+}*/
 
 impl<'gc> Eq for Value<'gc> {}
 
@@ -568,6 +569,7 @@ pub mod strings;
 pub mod structs;
 pub mod symbols;
 pub mod tuple;
+pub mod utf8;
 pub mod values;
 pub mod variable;
 pub mod weak_set;
@@ -583,6 +585,7 @@ pub use strings::*;
 pub use structs::*;
 pub use symbols::*;
 pub use tuple::*;
+pub use utf8::*;
 pub use variable::*;
 pub use vectors::*;
 pub use weak_set::*;
@@ -591,5 +594,13 @@ pub use weak_table::*;
 impl<'gc> std::fmt::Pointer for Value<'gc> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Value({:x})", self.raw_i64())
+    }
+}
+
+impl<'gc, T: Into<Value<'gc>> + Clone> PartialEq<T> for Value<'gc> {
+    fn eq(&self, other: &T) -> bool {
+        let lhs = self.raw_i64();
+        let rhs = other.clone().into().raw_i64();
+        lhs == rhs
     }
 }

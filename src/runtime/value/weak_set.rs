@@ -15,8 +15,6 @@ use rsgc::{
     vmkit::sync::Monitor,
 };
 
-use crate::runtime::vmthread::{VM_THREAD, VMThreadTask};
-
 use super::{Tagged, TypeCode8, Value};
 
 struct WeakEntry<'gc> {
