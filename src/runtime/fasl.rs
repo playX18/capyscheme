@@ -36,5 +36,5 @@ pub enum FaslTag {
 }
 
 pub struct FaslWriter<'gc> {
-    lites: Gc<'gc, HashTable<'gc>>,
+    pub lites: Gc<'gc, HashTable<'gc>>,
 }

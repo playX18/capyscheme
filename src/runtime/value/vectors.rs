@@ -6,11 +6,12 @@ use std::{
 };
 
 use rsgc::{
-    EnsureGCInfo, GCInfo, GCInfoIndex, GCInfoIndexForT, Gc, Trace, Visitor,
+    EnsureGCInfo, GCInfo, GCInfoIndex, GCInfoIndexForT, Gc,  Trace, Visitor,
     barrier::{AsRefWrite, IndexWrite},
     context::Mutation,
     gc::GLOBAL_GC_INFO_TABLE,
     generic_static::Namespace,
+ 
     vmkit::prelude::{GCMetadata, TraceCallback},
 };
 
@@ -291,6 +292,36 @@ impl<'gc> ByteVector<'gc> {
                 .data
                 .as_mut_ptr();
             for (i, value) in iter.enumerate() {
+                byte_vector_data.add(i).write(value);
+            }
+            byte_vector.assume_init()
+        }
+    }
+
+    pub fn from_slice(mc: &Mutation<'gc>, slice: &[u8]) -> Gc<'gc, Self> {
+        let length = slice.len();
+        assert!(length <= BYTE_VECTOR_MAX_LENGTH);
+
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align_unchecked(
+                std::mem::size_of::<Self>() + length * std::mem::size_of::<u8>(),
+                std::mem::align_of::<u8>(),
+            );
+
+            let byte_vector = mc.allocate_with_layout::<Self>(layout);
+
+            byte_vector.as_ptr().write(MaybeUninit::new(ByteVector {
+                length,
+                pd: PhantomData,
+                data: [],
+            }));
+            let byte_vector_data = byte_vector
+                .as_ptr()
+                .as_mut()
+                .assume_init_mut()
+                .data
+                .as_mut_ptr();
+            for (i, &value) in slice.iter().enumerate() {
                 byte_vector_data.add(i).write(value);
             }
             byte_vector.assume_init()

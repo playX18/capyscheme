@@ -95,7 +95,9 @@ unsafe impl<'gc> EnsureGCInfo<'gc> for WeakEntry<'gc> {}
 
 unsafe impl<'gc> Trace for WeakEntry<'gc> {
     fn trace(&mut self, _visitor: &mut rsgc::Visitor<'_>) {
+        println!("Tracing weak entry {:x} to {:x}", self.key.0.raw_i64(), self.value.raw_i64());
         _visitor.register_for_weak_processing();
+        self.next.trace(_visitor);
     }
 
     fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
@@ -109,8 +111,10 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
             let mut vis = weak_processor.visitor();
             self.value.trace(&mut vis);
 
-            println!("key {:x} is live", self.key.0.raw_i64());
+            println!("key {:x} ({:x} is live", self.key.0.raw_i64(), orig.0.raw_i64());
         }
+
+        self.next.process_weak_refs(weak_processor);
     }
 }
 
@@ -382,6 +386,7 @@ impl<'gc> WeakTable<'gc> {
         let key = key.into_value(ctx);
         let guard = self.inner.lock_no_handshake();
         let hash = make_hash(key);
+        println!("hash {:x}->{:x}", key.raw_i64(), hash);
         let index = (hash % guard.entries.get().len() as u64) as usize;
 
         let mut e = guard.entries.get()[index].get();
@@ -483,6 +488,8 @@ pub fn init_weak_tables<'gc>(mc: &Mutation<'gc>) {
 #[cfg(test)]
 mod tests {
 
+    use rsgc::vmkit::threading::Thread;
+
     use crate::runtime::Scheme;
 
     use super::*;
@@ -560,6 +567,7 @@ mod tests {
         struct Rootset<'gc> {
             tmps: Vec<Value<'gc>>,
             table: Gc<'gc, WeakTable<'gc>>,
+            //k1_weak: WeakValue<'gc>,
         }
 
         unsafe impl<'gc> Trace for Rootset<'gc> {
@@ -568,6 +576,16 @@ mod tests {
                     tmp.trace(visitor);
                 }
                 self.table.trace(visitor);
+                //self.k1_weak.trace(visitor);
+            }
+
+            fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+                println!("Processing weak references in rootset");
+                for tmp in &mut self.tmps {
+                    tmp.process_weak_refs(weak_processor);
+                }
+                self.table.process_weak_refs(weak_processor);
+                //self.k1_weak.process_weak_refs(weak_processor);
             }
         }
 
@@ -584,7 +602,7 @@ mod tests {
             let v2 = String::new(&ctx, "value2", false);
             let k3 = String::new(&ctx, "key3", false); // This key will not be rooted
             let v3 = String::new(&ctx, "value3", false);
-
+            println!("put in #{}", Thread::<RSGC>::current().id());
             table.put(ctx, k1, v1);
             table.put(ctx, k2, v2);
             table.put(ctx, k3, v3);
@@ -594,7 +612,9 @@ mod tests {
             assert!(matches!(table.get(ctx, k3), Some(val) if val == v3.into_value(ctx)));
             assert!(table.contains_key(ctx, k1.into_value(ctx)));
             assert!(table.contains_value(v1.into_value(ctx)));
-
+            println!("k1: {:p}, table {:p}", k1, table);
+            assert!(Value::from(table).is_cell());
+            assert!(Value::from(k1).is_cell());
             let rootset = Rootset {
                 tmps: vec![
                     k1.into_value(ctx),
@@ -604,6 +624,7 @@ mod tests {
                     v3.into_value(ctx),
                 ], // k3's value is rooted, but k3 itself is not in tmps
                 table,
+                //k1_weak: WeakValue(k1.into_value(ctx)),
             };
             let _ = ROOTSET.set(Global::new(rootset));
         });
@@ -615,7 +636,10 @@ mod tests {
             let rootset_global = ROOTSET.get().unwrap();
             let rootset = rootset_global.fetch(&ctx);
             let table = rootset.table;
-
+            table.vacuum(&ctx);
+           // assert!(!rootset.k1_weak.is_broken());
+           println!("k1_rooted id: {:x}", Thread::<RSGC>::current().id());
+           
             let k1_rooted = rootset.tmps[0];
             // For k3, its original Gc<String> object might be collected if not otherwise rooted.
             // We create a new string for lookup. The entry should be gone if the key was collected.

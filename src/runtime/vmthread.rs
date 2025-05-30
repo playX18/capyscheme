@@ -14,6 +14,7 @@ pub enum VMThreadTask {
     /// thus it won't run until GC is complete.
     VacuumWeakSets,
     VacuumWeakTables,
+    ClosePorts,
     MutatorTask(Box<dyn for<'gc> FnOnce(&'gc Mutation<'gc>) + Send>),
     Task(Box<dyn FnOnce() + Send>),
 
@@ -47,10 +48,16 @@ impl VmThread {
                     guard.wait_no_handshake();
                 }
                 guard.store(false, Ordering::Relaxed); // Reset the flag
+                drop(guard);
                 // Process all available tasks
                 let mut shutdown_requested = false;
-                while let Ok(task) = receiver.try_recv() {
+                while let Ok(task) = receiver.recv() {
                     match task {
+                        VMThreadTask::ClosePorts => {
+                            mutator.mutate(|mc, _| {
+                                super::value::port::close_ports(mc);
+                            });
+                        }
                         VMThreadTask::VacuumWeakSets => {
                             mutator.mutate(|mc, _| {
                                 super::value::weak_set::vacuum_weak_sets(mc);
