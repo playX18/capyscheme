@@ -1,4 +1,4 @@
-# CapyScheme
+😀# CapyScheme
 
 R6RS/R7RS implementation in Rust.
 

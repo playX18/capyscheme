@@ -15,6 +15,8 @@ use rsgc::{
     vmkit::sync::Monitor,
 };
 
+use crate::runtime::vmthread::{VMThreadTask, VM_THREAD};
+
 use super::{Tagged, TypeCode8, Value};
 
 struct WeakEntry<'gc> {
@@ -650,11 +652,12 @@ impl FinalizationNotifier for WeakSetNotify {
     fn notify_in_processing(&self) {}
 
     fn schedule(&self) {
-        //VM_THREAD.schedule_task(VMThreadTask::VacuumWeakSets);
+        VM_THREAD.schedule_task(VMThreadTask::VacuumWeakSets);
     }
 }
 
 pub(crate) fn vacuum_weak_sets<'gc>(mc: &Mutation<'gc>) {
+    
     if let Some(all_weak_sets) = ALL_WEAK_SETS.get() {
         let all_weak_sets = all_weak_sets.fetch(mc);
         let guard = all_weak_sets.0.lock_no_handshake();

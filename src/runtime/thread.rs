@@ -15,6 +15,10 @@ impl<'gc> Context<'gc> {
     pub fn mutation(self) -> &'gc Mutation<'gc> {
         self.mc
     }
+
+    pub(crate) fn empty(mc: &'gc Mutation<'gc>) -> Self {
+        Self { mc }
+    }
 }
 
 impl<'gc> std::ops::Deref for Context<'gc> {

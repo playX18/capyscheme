@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::borrow::Cow;
 
 use super::value::{IntoValue, Value};
