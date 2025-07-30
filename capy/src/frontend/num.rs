@@ -9,10 +9,15 @@
 //! - Various radixes (binary, octal, decimal, hexadecimal)
 //! - Exactness prefixes (#e, #i)
 use num::{BigInt, BigRational, Num, One, ToPrimitive, Zero};
+use rsgc::Trace;
 use std::{fmt, hash::Hash, rc::Rc};
+
+use crate::runtime::Context;
+use crate::runtime::value::Complex;
 
 /// R6RS Numerical Tower
 #[derive(Debug, Clone, PartialEq)]
+
 pub enum Number {
     ExactFixnum(i64),
     /// Exact integers (arbitrary precision)
@@ -32,8 +37,63 @@ pub enum Number {
         imag: f64,
     },
 }
+unsafe impl Trace for Number {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+        let _ = weak_processor;
+    }
+
+    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+        let _ = visitor;
+    }
+}
+
+use crate::runtime::value::number::Number as RNumber;
 
 impl Number {
+    pub fn to_vm_number<'gc>(self, ctx: Context<'gc>) -> RNumber<'gc> {
+        match self {
+            Number::ExactFixnum(n) => RNumber::from_i64(ctx, n),
+
+            Number::ExactInteger(n) => RNumber::BigInt(
+                crate::runtime::value::number::BigInt::from_num_bigint(ctx, &n),
+            ),
+
+            Number::InexactReal(f) => RNumber::Flonum(f),
+            Number::ExactComplex(c) => {
+                let (real, imag) = c.as_ref();
+                let real = crate::runtime::value::number::BigInt::from_num_bigint(ctx, real);
+                let imag = crate::runtime::value::number::BigInt::from_num_bigint(ctx, imag);
+                let cn = Complex::new(
+                    ctx,
+                    RNumber::BigInt(real).normalize_integer(),
+                    RNumber::BigInt(imag).normalize_integer(),
+                );
+                RNumber::Complex(cn)
+            }
+
+            Number::InexactComplex { real, imag } => {
+                let real = RNumber::Flonum(real);
+                let imag = RNumber::Flonum(imag);
+
+                let cn = Complex::new(ctx, real, imag);
+
+                RNumber::Complex(cn)
+            }
+
+            Number::ExactRational(rational) => {
+                let numerator =
+                    crate::runtime::value::number::BigInt::from_num_bigint(ctx, rational.numer());
+                let denominator =
+                    crate::runtime::value::number::BigInt::from_num_bigint(ctx, rational.denom());
+                let nume = RNumber::BigInt(numerator).normalize_integer();
+                let denom = RNumber::BigInt(denominator).normalize_integer();
+                let rational = crate::runtime::value::number::Rational::new(ctx, nume, denom);
+
+                RNumber::Rational(rational)
+            }
+        }
+    }
+
     pub fn from_uinteger(digits: &String, radix: u32) -> Self {
         let value = BigInt::from_str_radix(digits, radix).unwrap();
         Number::ExactInteger(Rc::new(value))

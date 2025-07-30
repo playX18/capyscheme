@@ -1,33 +1,39 @@
 use tree_sitter::*;
 
-use crate::{
+use super::{
     Error, LexicalError,
-    ast::{Datum, DatumValue, INTERNER, P, Symbol},
+    ast::{Datum, DatumValue},
     number::parse_number,
     source::{SourceId, SourceManager, Span},
 };
+use crate::{
+    frontend::ast::DatumRef,
+    runtime::{
+        Context,
+        value::{Str, Symbol},
+    },
+};
 
-pub struct TreeSitter<'a> {
+pub struct TreeSitter<'a, 'gc> {
     #[allow(dead_code)]
     manager: &'a SourceManager,
     source_id: SourceId,
     text: &'a str,
     tree: Tree,
+    ctx: Context<'gc>,
 }
 
-impl<'a> TreeSitter<'a> {
+impl<'a, 'gc> TreeSitter<'a, 'gc> {
     pub fn root_span(&self) -> Span {
         let root_node = self.tree.root_node();
         Span::new(
             Some(self.source_id()),
             root_node.start_byte(),
             root_node.end_byte(),
-            root_node.start_position(),
-            root_node.end_position(),
         )
     }
 
-    pub fn new(source: SourceId, manager: &'a SourceManager) -> Self {
+    pub fn new(source: SourceId, manager: &'a SourceManager, ctx: Context<'gc>) -> Self {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter::Language::new(tree_sitter_scheme::LANGUAGE))
@@ -40,6 +46,7 @@ impl<'a> TreeSitter<'a> {
             manager,
             text,
             tree,
+            ctx,
         }
     }
 
@@ -53,20 +60,14 @@ impl<'a> TreeSitter<'a> {
     }
 
     pub fn span_for(&self, node: &Node) -> Span {
-        Span::new(
-            Some(self.source_id()),
-            node.start_byte(),
-            node.end_byte(),
-            node.start_position(),
-            node.end_position(),
-        )
+        Span::new(Some(self.source_id()), node.start_byte(), node.end_byte())
     }
 
     /// Parse entire Scheme program and return a vector of `Datum` nodes.
     ///
     /// Does not return `Result` because errors are resolved independently. Run `extract_errors`
     /// on the result of this function to get a list of errors.
-    pub fn parse_program(&self) -> Vec<P<Datum>> {
+    pub fn parse_program(&self) -> Vec<DatumRef<'gc>> {
         let root_node = self.tree.root_node();
         assert_eq!(root_node.kind(), "program", "Root node is not a program");
         let mut cursor = self.tree.walk();
@@ -85,7 +86,7 @@ impl<'a> TreeSitter<'a> {
         node.kind() == "symbol" && self.text_of(node) == symbol
     }
 
-    pub fn parse_node(&self, node: &Node) -> Option<P<Datum>> {
+    pub fn parse_node(&self, node: &Node) -> Option<DatumRef<'gc>> {
         let span = self.span_for(node);
 
         match node.kind() {
@@ -93,24 +94,26 @@ impl<'a> TreeSitter<'a> {
             "string" => {
                 let text = self.text_of(node);
                 return Some(Datum::new_at(
+                    self.ctx,
                     span,
-                    DatumValue::Str(INTERNER.get_or_intern(text)),
+                    DatumValue::Str(Str::new(&self.ctx, text, true)),
                 ));
             }
             "keyword" | "symbol" => {
                 let text = self.text_of(node);
-                return Some(Datum::new_at(span, DatumValue::Symbol(Symbol::new(text))));
+                return Some(Datum::make_symbol(self.ctx, text, Some(span)));
             }
 
             "number" => {
                 let text = self.text_of(node);
                 match parse_number(text) {
                     Ok(number) => {
-                        return Some(Datum::new_at(span, DatumValue::Number(number)));
+                        return Some(Datum::new_at(self.ctx, span, DatumValue::Number(number)));
                     }
 
                     Err(number_error) => {
                         return Some(Datum::new_at(
+                            self.ctx,
                             span,
                             DatumValue::Error {
                                 error: Box::new(Error::lexical(LexicalError::InvalidNumber {
@@ -192,6 +195,7 @@ impl<'a> TreeSitter<'a> {
                         elements.push(tail);
                     }
                     return Some(Datum::new_at(
+                        self.ctx,
                         span,
                         DatumValue::Error {
                             error: Box::new(Error::lexical(LexicalError::ImproperListMultiple {
@@ -205,8 +209,9 @@ impl<'a> TreeSitter<'a> {
                 }
 
                 Some(Datum::make_list_with(
+                    self.ctx,
                     elements,
-                    tail.unwrap_or(Datum::new_at(span, DatumValue::Null)),
+                    tail.unwrap_or(Datum::new_at(self.ctx, span, DatumValue::Null)),
                     Some(span),
                 ))
             }
@@ -218,18 +223,27 @@ impl<'a> TreeSitter<'a> {
                     "#f" => DatumValue::False,
                     _ => unreachable!("Unexpected boolean text: {}", text),
                 };
-                Some(Datum::new_at(span, value))
+                Some(Datum::new_at(self.ctx, span, value))
             }
 
             "quote" => {
                 let children = node.child(1).unwrap();
-                let sym = Datum::new_at(span, DatumValue::Symbol(Symbol::new("quote")));
+                let sym = Datum::new_at(
+                    self.ctx,
+                    span,
+                    DatumValue::Symbol(Symbol::from_str(self.ctx, "quote")),
+                );
 
                 let quoted_value = self.parse_node(&children);
                 if let Some(quoted_value) = quoted_value {
-                    Some(Datum::make_list(vec![sym, quoted_value], Some(span)))
+                    Some(Datum::make_list(
+                        self.ctx,
+                        vec![sym, quoted_value],
+                        Some(span),
+                    ))
                 } else {
                     Some(Datum::new_at(
+                        self.ctx,
                         span,
                         DatumValue::Error {
                             error: Box::new(Error::lexical(LexicalError::InvalidSyntax { span })),
@@ -241,13 +255,22 @@ impl<'a> TreeSitter<'a> {
 
             "unquote" => {
                 let children = node.child(1).unwrap();
-                let sym = Datum::new_at(span, DatumValue::Symbol(Symbol::new("unquote")));
+                let sym = Datum::new_at(
+                    self.ctx,
+                    span,
+                    DatumValue::Symbol(Symbol::from_str(self.ctx, "unquote")),
+                );
 
                 let unquoted_value = self.parse_node(&children);
                 if let Some(unquoted_value) = unquoted_value {
-                    Some(Datum::make_list(vec![sym, unquoted_value], Some(span)))
+                    Some(Datum::make_list(
+                        self.ctx,
+                        vec![sym, unquoted_value],
+                        Some(span),
+                    ))
                 } else {
                     Some(Datum::new_at(
+                        self.ctx,
                         span,
                         DatumValue::Error {
                             error: Box::new(Error::lexical(LexicalError::InvalidSyntax { span })),
@@ -259,13 +282,22 @@ impl<'a> TreeSitter<'a> {
 
             "quasiquote" => {
                 let children = node.child(1).unwrap();
-                let sym = Datum::new_at(span, DatumValue::Symbol(Symbol::new("quasiquote")));
+                let sym = Datum::new_at(
+                    self.ctx,
+                    span,
+                    DatumValue::Symbol(Symbol::new("quasiquote")),
+                );
 
                 let quasiquoted_value = self.parse_node(&children);
                 if let Some(quasiquoted_value) = quasiquoted_value {
-                    Some(Datum::make_list(vec![sym, quasiquoted_value], Some(span)))
+                    Some(Datum::make_list(
+                        self.ctx,
+                        vec![sym, quasiquoted_value],
+                        Some(span),
+                    ))
                 } else {
                     Some(Datum::new_at(
+                        self.ctx,
                         span,
                         DatumValue::Error {
                             error: Box::new(Error::lexical(LexicalError::InvalidSyntax { span })),
@@ -277,13 +309,22 @@ impl<'a> TreeSitter<'a> {
 
             "unquote_splicing" => {
                 let children = node.child(1).unwrap();
-                let sym = Datum::new_at(span, DatumValue::Symbol(Symbol::new("unquote-splicing")));
+                let sym = Datum::new_at(
+                    self.ctx,
+                    span,
+                    DatumValue::Symbol(Symbol::new("unquote-splicing")),
+                );
 
                 let unquoted_value = self.parse_node(&children);
                 if let Some(unquoted_value) = unquoted_value {
-                    Some(Datum::make_list(vec![sym, unquoted_value], Some(span)))
+                    Some(Datum::make_list(
+                        self.ctx,
+                        vec![sym, unquoted_value],
+                        Some(span),
+                    ))
                 } else {
                     Some(Datum::new_at(
+                        self.ctx,
                         span,
                         DatumValue::Error {
                             error: Box::new(Error::lexical(LexicalError::InvalidSyntax { span })),
