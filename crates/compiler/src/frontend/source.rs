@@ -5,10 +5,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use rsgc::Trace;
 use tree_sitter::{Point, Range};
 
 /// A unique identifier for a source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Trace)]
+#[collect(no_drop)]
 pub struct SourceId(NonZeroU32);
 
 impl SourceId {
@@ -116,68 +118,14 @@ impl SourceManager {
 
 /// A span represents a range of bytes in a source file, along with the corresponding start and end points.
 /// It is used to track the location of tokens or other elements in the source code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+#[collect(no_drop)]
 pub struct Span {
     /// Optional source identifier, which can be used to associate
     /// the span with a specific file and its contents.
     pub source_id: Option<SourceId>,
     pub start_byte: usize,
     pub end_byte: usize,
-}
-
-impl chumsky::span::Span for Span {
-    type Offset = usize;
-    type Context = Option<SourceId>;
-
-    fn context(&self) -> Self::Context {
-        self.source_id
-    }
-
-    fn end(&self) -> Self::Offset {
-        self.end_byte
-    }
-
-    fn start(&self) -> Self::Offset {
-        self.start_byte
-    }
-
-    fn to_end(&self) -> Self
-    where
-        Self: Sized,
-    {
-        Self {
-            start_byte: self.end_byte,
-            ..*self
-        }
-    }
-
-    fn new(context: Self::Context, range: std::ops::Range<Self::Offset>) -> Self {
-        Self {
-            source_id: context,
-            start_byte: range.start,
-            end_byte: range.end,
-        }
-    }
-
-    fn union(&self, other: Self) -> Self
-    where
-        Self::Context: PartialEq + core::fmt::Debug,
-        Self::Offset: Ord,
-        Self: Sized,
-    {
-        if self.source_id != other.source_id {
-            panic!(
-                "Cannot union spans from different sources: {:?} and {:?}",
-                self.source_id, other.source_id
-            );
-        }
-
-        Self {
-            source_id: self.source_id,
-            start_byte: self.start_byte.min(other.start_byte),
-            end_byte: self.end_byte.max(other.end_byte),
-        }
-    }
 }
 
 impl Default for Span {
@@ -191,13 +139,7 @@ impl Default for Span {
 }
 
 impl Span {
-    pub fn new(
-        source_id: Option<SourceId>,
-        start_byte: usize,
-        end_byte: usize,
-        _start_point: Point,
-        _end_point: Point,
-    ) -> Self {
+    pub fn new(source_id: Option<SourceId>, start_byte: usize, end_byte: usize) -> Self {
         Self {
             source_id,
             start_byte,
