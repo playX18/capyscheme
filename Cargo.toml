@@ -7,4 +7,7 @@ default-members = ["capy"]
 [workspace.dependencies]
 #rsgc = { git = "https://codeberg.org/playxe/rsgc", branch = "main" }
 
-rsgc = { path = "./RSGC" }
+rsgc = { path = "./RSGC", default-features = false }
+
+[profile.release]
+lto = true

@@ -18,7 +18,7 @@ pub const VECTOR_MAX_LENGTH: usize = u32::MAX as usize;
 #[repr(C, align(8))]
 pub struct Vector<'gc> {
     hdr: ScmHeader,
-    data: [Value<'gc>; 0],
+    pub(crate) data: [Value<'gc>; 0],
 }
 
 fn trace_vector(vec: GCObject, vis: &mut Visitor) {
@@ -66,7 +66,7 @@ impl<'gc> Vector<'gc> {
         let tc = if IMMUTABLE {
             TypeCode16::IMMUTABLE_VECTOR
         } else {
-            TypeCode16::MUTABLE_BYTEVECTOR
+            TypeCode16::MUTABLE_VECTOR
         };
         hdr.set_type_bits(tc.0 as _);
         hdr.word = VectorLengthBits::update(length as u32, hdr.word);
@@ -86,13 +86,16 @@ impl<'gc> Vector<'gc> {
                 vec.data.as_mut_ptr().add(i).write(fill);
             }
 
-            Gc::from_gcobj(alloc)
+            let x = Gc::from_gcobj(alloc);
+
+            x
         }
     }
 
     pub fn from_slice(mc: &Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
         let vector = Self::new::<false>(mc, length, Value::unspecified());
+
         Self::copy_from(vector, slice, mc);
         vector
     }
@@ -157,7 +160,7 @@ impl<'gc> Index<usize> for Vector<'gc> {
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.len(), "Index out of bounds");
-        unsafe { &*self.data.get_unchecked(index) }
+        unsafe { &std::slice::from_raw_parts(self.data.as_ptr(), self.len())[index] }
     }
 }
 

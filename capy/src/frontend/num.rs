@@ -493,7 +493,9 @@ impl<'a> NumberParser<'a> {
         }
 
         // Check for decimal numbers (contains '.' or scientific notation)
-        if remaining.contains('.') || remaining.to_lowercase().contains('e') {
+        if prefix.radix != Radix::Hexadecimal
+            && (remaining.contains('.') || remaining.to_lowercase().contains('e'))
+        {
             return self.parse_decimal_number(prefix);
         }
 
@@ -533,6 +535,7 @@ impl<'a> NumberParser<'a> {
         }
 
         // Parse the integer
+
         let abs_value = BigInt::from_str_radix(digits, radix)
             .map_err(|_| NumberParseError::InvalidFormat(remaining.to_string()))?;
 

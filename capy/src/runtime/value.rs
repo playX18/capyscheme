@@ -20,12 +20,14 @@ use rsgc::{
 /// or any other information. This header is always 64 bits in size and in case of
 /// vectors can be loaded as a valid fixnum value.
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct Value<'gc> {
     desc: EncodedValueDescriptor,
     pd: PhantomData<&'gc ()>,
 }
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub union EncodedValueDescriptor {
     pub as_i64: i64,
     pub as_u64: u64,
@@ -57,6 +59,13 @@ impl<'gc> Value<'gc> {
     pub const fn from_raw_i64(raw: i64) -> Self {
         Self {
             desc: EncodedValueDescriptor { as_i64: raw },
+            pd: PhantomData,
+        }
+    }
+
+    pub const fn from_raw(bits: u64) -> Self {
+        Self {
+            desc: EncodedValueDescriptor { as_u64: bits },
             pd: PhantomData,
         }
     }
@@ -597,7 +606,6 @@ pub mod weak_set;
 pub mod weak_table;
 
 pub use conversions::*;
-pub use environment::*;
 pub use hash::*;
 pub use header::*;
 pub use list::*;
@@ -663,6 +671,8 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                 write!(f, "'()")
             } else if self.is_void() {
                 write!(f, "#<void>")
+            } else if *self == Value::undefined() {
+                write!(f, "#<undefined>")
             } else if self.is_unspecified() {
                 write!(f, "#<unspecified>")
             } else if self.is_eof() {

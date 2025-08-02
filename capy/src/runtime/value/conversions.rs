@@ -92,3 +92,15 @@ impl<'gc> IntoValue<'gc> for &str {
         Value::from_gc(string)
     }
 }
+
+impl<'gc> IntoValue<'gc> for char {
+    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+        Value::from_char(self)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for usize {
+    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+        Number::from_usize(_mc, self).into_value(_mc)
+    }
+}

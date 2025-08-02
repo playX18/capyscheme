@@ -16,7 +16,7 @@ use std::{cell::Cell, sync::OnceLock};
 #[repr(C, align(8))]
 pub(crate) struct Stringbuf {
     hdr: ScmHeader,
-    length: usize,
+    pub(crate) length: usize,
     mutable: Cell<bool>,
     pad: [u8; 7],
     data: [u8; 0],
@@ -191,9 +191,9 @@ fn null_stringbuf<'gc>(mc: &Mutation<'gc>) -> Gc<'gc, Stringbuf> {
 #[collect(no_drop)]
 pub struct Str<'gc> {
     hdr: ScmHeader,
-    stringbuf: Lock<Gc<'gc, Stringbuf>>,
-    start: Cell<usize>,
-    length: usize,
+    pub(crate) stringbuf: Lock<Gc<'gc, Stringbuf>>,
+    pub(crate) start: Cell<usize>,
+    pub(crate) length: usize,
 }
 
 impl<'gc> Str<'gc> {
@@ -207,12 +207,17 @@ impl<'gc> Str<'gc> {
         let str = contents.as_ref();
         let is_ascii = str.is_ascii();
 
+        let len = if is_ascii {
+            str.len()
+        } else {
+            str.chars().count()
+        };
         let buf = if str.len() == 0 {
             null_stringbuf(mc)
         } else if is_ascii {
-            Stringbuf::new(mc, str.len(), false)
+            Stringbuf::new(mc, len, false)
         } else {
-            Stringbuf::new(mc, str.chars().count(), true)
+            Stringbuf::new(mc, len, true)
         };
 
         if str.is_ascii() {
@@ -237,7 +242,7 @@ impl<'gc> Str<'gc> {
                 hdr,
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
-                length: str.len(),
+                length: len,
             },
         )
     }

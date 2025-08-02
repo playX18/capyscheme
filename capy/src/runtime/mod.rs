@@ -4,6 +4,7 @@ pub mod fluids;
 pub mod modules;
 pub mod thread;
 pub mod value;
+pub mod vm;
 pub mod vmthread;
 
 pub(crate) fn init<'gc>(mc: &Mutation<'gc>) {

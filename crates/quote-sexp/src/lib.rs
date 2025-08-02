@@ -1,5 +1,5 @@
 use quote::ToTokens;
-use syn::{parse::Parse, punctuated::Punctuated, Ident};
+use syn::{Ident, parse::Parse, punctuated::Punctuated};
 
 enum SExp {
     Literal(syn::Lit),
@@ -17,10 +17,12 @@ enum SExp {
 
 impl Parse for SExp {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-
         if input.peek(syn::Token![let]) {
             let _ = input.parse::<syn::Token![let]>()?;
-            return Ok(SExp::Symbol(Ident::new("let", proc_macro2::Span::call_site())));
+            return Ok(SExp::Symbol(Ident::new(
+                "let",
+                proc_macro2::Span::call_site(),
+            )));
         }
 
         if input.peek(syn::Token![_]) {
@@ -49,7 +51,6 @@ impl Parse for SExp {
         } else if input.peek(syn::Token![,]) {
             let _ = input.parse::<syn::Token![,]>()?;
             if input.peek(syn::Token![@]) {
-              
                 input.parse::<syn::Token![@]>()?;
                 let expr: syn::Expr = input.parse()?;
                 return Ok(SExp::UnquoteSplicing(expr));
@@ -86,7 +87,6 @@ impl Parse for SExp {
                     append = inner.parse()?;
                     break;
                 } else {
-
                     expressions.push(inner.parse()?);
                 }
             }
@@ -102,15 +102,14 @@ impl Parse for SExp {
 impl ToTokens for SExp {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         match self {
-
             SExp::Quote(quoted) => {
                 let inner = quoted.to_token_stream();
                 tokens.extend(quote::quote! {
                     ::capyc::ast::Datum::make_list(
                         [::capyc::ast::Datum::make_symbol("quote", None), #inner],
-                        None 
+                        None
                     )
-                }); 
+                });
             }
             SExp::Wildcard => {
                 tokens.extend(quote::quote! { ::capyc::ast::Datum::make_symbol("_", None) })
@@ -162,7 +161,7 @@ pub fn quote(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         }
     }.into()
 }
- struct MatchArm {
+struct MatchArm {
     pat: SExp,
     arrow: syn::Token![=>],
     body: syn::Expr,
@@ -185,12 +184,11 @@ impl Parse for MatchArm {
 
 impl Parse for MatchInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        
         let expr: syn::Expr = input.parse()?;
-       
+
         let inner;
         syn::braced!(inner in input);
-        
+
         let arms: Punctuated<MatchArm, syn::Token![,]> =
             inner.parse_terminated(MatchArm::parse, syn::Token![,])?;
         Ok(MatchInput { expr, arms })
@@ -297,15 +295,12 @@ pub fn simple_match(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     let final_kf = quote::quote! { panic!("No match found") };
     let datum = Ident::new("__datum", proc_macro2::Span::call_site());
-    let logic = input.arms.iter().fold(
-        final_kf.clone(),
-        |kf, arm| {
-            let pat = &arm.pat;
-            let body = &arm.body;
-            let kt = body.to_token_stream();
-            simple_match_pat(datum.to_token_stream(), pat, kt, kf)
-        },
-    );
+    let logic = input.arms.iter().fold(final_kf.clone(), |kf, arm| {
+        let pat = &arm.pat;
+        let body = &arm.body;
+        let kt = body.to_token_stream();
+        simple_match_pat(datum.to_token_stream(), pat, kt, kf)
+    });
 
     let expanded = quote::quote! {
         {
@@ -316,4 +311,3 @@ pub fn simple_match(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     expanded.into()
 }
-

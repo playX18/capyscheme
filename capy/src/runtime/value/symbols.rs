@@ -131,6 +131,15 @@ impl<'gc> Symbol<'gc> {
         Self::from_string(mc, str)
     }
 
+    pub fn from_str_uninterned(
+        mc: &Mutation<'gc>,
+        str: &str,
+        prefix_offset: Option<u16>,
+    ) -> Gc<'gc, Symbol<'gc>> {
+        let str = Str::new(&mc, str, false);
+        Self::from_string_uninterned(mc, str, prefix_offset)
+    }
+
     pub fn gensym(mc: Context<'gc>, prefix: Option<Gc<'gc, Str<'gc>>>) -> Gc<'gc, Symbol<'gc>> {
         static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -167,7 +176,6 @@ impl<'gc> Symbol<'gc> {
         if offset == 0 {
             Str::new(&ctx, "", true)
         } else {
-            println!("{}..{}", offset, self.len() - offset as usize);
             self.substring(&ctx, offset as usize, self.len() - offset as usize)
         }
     }

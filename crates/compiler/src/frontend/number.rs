@@ -533,7 +533,8 @@ impl<'a> NumberParser<'a> {
         }
 
         // Parse the integer
-        let abs_value = BigInt::from_str_radix(digits, radix)
+        let digits_ = format!("0x{digits}");
+        let abs_value = BigInt::from_str_radix(&digits_, 16)
             .map_err(|_| NumberParseError::InvalidFormat(remaining.to_string()))?;
 
         let value = if sign == -1 { -abs_value } else { abs_value };

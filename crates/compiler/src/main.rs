@@ -1,5 +1,11 @@
 use capyc::{
-    ast::collect_errors_and_report, cps::{self}, expand::{pass1, Cenv}, il::{self, term::IForm}, parser::TreeSitter, quote, source::*
+    ast::collect_errors_and_report,
+    cps::{self},
+    expand::{Cenv, pass1},
+    il::{self, term::IForm},
+    parser::TreeSitter,
+    quote,
+    source::*,
 };
 use clap::Parser;
 use pretty::BoxAllocator;
@@ -94,9 +100,9 @@ macro_rules! simple_match_pat {
         if let Some((vx, vy)) = $v.try_pair() {
             simple_match_pat!(vx, $x, simple_match_pat!(vy, ($($rest)*), $kt, $kf), $kf)
         } else {
-            $kf 
+            $kf
         }
-    };  
+    };
 
     ($v: expr, (. $x: tt), $kt: expr, $kf: expr) => {
         simple_match_pat!($v, $x, $kf, $kt)
@@ -111,7 +117,7 @@ macro_rules! simple_match_pat {
 use capyc::ast::*;
 fn main() {
 
-    /* 
+    /*
     let args = CommandArgs::parse();
 
     println!("file: {}", args.file.display());
