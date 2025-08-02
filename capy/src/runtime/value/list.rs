@@ -13,6 +13,7 @@ pub struct Pair<'gc> {
 }
 
 impl<'gc> Pair<'gc> {
+    #[inline]
     pub fn new(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
         let mut hdr = ScmHeader::new();
         hdr.set_type_bits(TypeCode8::PAIR.bits() as _);
@@ -25,6 +26,17 @@ impl<'gc> Pair<'gc> {
             },
         );
         pair
+    }
+
+    pub fn new_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
+        mc.allocate(
+            Self {
+                header: ScmHeader::with_type_bits(TypeCode8::PAIR.bits() as _),
+                car,
+                cdr,
+            },
+            rsgc::mmtk::AllocationSemantics::NonMoving,
+        )
     }
 
     pub fn car(&self) -> Value<'gc> {
@@ -449,9 +461,15 @@ impl<'gc> Value<'gc> {
         new_head
     }
 
+    #[inline]
     pub fn cons(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
         let pair = Pair::new(mc, car, cdr);
         Value::from(pair)
+    }
+
+    #[inline]
+    pub fn cons_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
+        Pair::new_nonmoving(mc, car, cdr).into()
     }
 
     pub fn cons_star(mc: Context<'gc>, args: impl AsRef<[Value<'gc>]>) -> Value<'gc> {

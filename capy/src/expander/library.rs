@@ -295,7 +295,6 @@ pub fn read_import<'gc>(ctx: Context<'gc>, spec: Value<'gc>) -> Result<ImportRef
             let mut only = syntax_cddr(ctx, spec);
 
             while !syntax_kind(only, |x| x.is_null()) {
-                println!("{only}");
                 if !syntax_kind(syntax_car(ctx, only), |x| x.is::<Symbol>()) {
                     return Err(Str::new(&ctx, "only must be a symbol", true).into());
                 }

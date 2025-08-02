@@ -1,17 +1,19 @@
-use rsgc::{Mutation, Mutator, Rootable, Trace};
+use rsgc::{Gc, Mutation, Mutator, Rootable, Trace};
 
 use crate::runtime::{
     fluids::DynamicState,
     value::{
-        NativeProc, Return,
+        HashTable, HashTableType, NativeProc, Return,
         Value, /*  Variable, current_environment, current_variable_environment*/
     },
+    vm::VMState,
 };
 
 #[derive(Clone, Copy)]
+#[repr(C)]
 pub struct Context<'gc> {
     mc: &'gc Mutation<'gc>,
-    state: &'gc State<'gc>,
+    pub(crate) state: &'gc State<'gc>,
 }
 
 impl<'gc> Context<'gc> {
@@ -74,6 +76,17 @@ impl<'gc> Context<'gc> {
             todo!()
         }
     }
+
+    pub fn vm(&self) -> &VMState<'gc> {
+        &self.state.vm_state
+    }
+
+    pub fn global_location(self, sym: Value<'gc>) -> Value<'gc> {
+        self.state
+            .globals
+            .get_or_insert(self, sym, |ctx| Value::cons(ctx, Value::undefined(), sym))
+            .1
+    }
 }
 
 impl<'gc> std::ops::Deref for Context<'gc> {
@@ -86,6 +99,8 @@ impl<'gc> std::ops::Deref for Context<'gc> {
 
 pub struct State<'gc> {
     pub(crate) dynamic_state: DynamicState<'gc>,
+    pub(crate) vm_state: VMState<'gc>,
+    pub(crate) globals: Gc<'gc, HashTable<'gc>>,
 }
 
 unsafe impl Trace for State<'_> {
@@ -98,6 +113,8 @@ impl<'gc> State<'gc> {
     pub fn new(mc: &'gc Mutation<'gc>) -> Self {
         Self {
             dynamic_state: DynamicState::new(mc),
+            vm_state: VMState::new(),
+            globals: HashTable::new(mc, HashTableType::Eq, 128, 0.75),
         }
     }
 

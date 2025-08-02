@@ -1,0 +1,142 @@
+use crate::{
+    cps::term::{Atom, Cont, ContRef, Expression, FuncRef, Term, TermRef, Throw},
+    expander::core::LVarRef,
+};
+use hashlink::LinkedHashMap as HashMap;
+use hashlink::LinkedHashSet as HashSet;
+
+type Vars<'gc> = HashSet<LVarRef<'gc>>;
+
+pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarRef<'gc>> {
+    match *term {
+        Term::Let(bind, expr, body) => match expr {
+            Expression::PrimCall(_, args, _) => {
+                let map: Vars = args.iter().copied().filter_map(get_fva).collect();
+                map.union(&get_fvt(body, fv))
+                    .filter(|v| **v != bind)
+                    .copied()
+                    .collect()
+            }
+        },
+
+        Term::Letk(conts, body) => {
+            let map = conts.iter().fold(HashSet::new(), |mut acc, cont| {
+                let free = get_fvc(*cont, fv);
+                fv.cvars.insert(*cont, free.clone());
+                fv.conts.insert(cont.binding(), *cont);
+                acc.extend(free);
+                acc
+            });
+            map.union(&get_fvt(body, fv))
+                .filter(|v| conts.iter().all(|c| c.binding() != **v))
+                .copied()
+                .collect()
+        }
+
+        Term::Fix(funcs, body) => funcs
+            .iter()
+            .fold(HashSet::new(), |mut acc, func| {
+                let free = get_fvf(*func, fv);
+                fv.fvars.insert(*func, free.clone());
+                fv.funcs.insert(func.binding, *func);
+                acc.extend(free);
+                acc
+            })
+            .union(&get_fvt(body, fv))
+            .filter(|v| funcs.iter().all(|f| f.binding != **v))
+            .copied()
+            .collect(),
+
+        Term::Continue(k, args, _) => args
+            .iter()
+            .copied()
+            .filter_map(get_fva)
+            .chain(std::iter::once(k))
+            .collect(),
+        Term::App(func, k, args, _) => {
+            fv.cvals.insert(k);
+            args.iter()
+                .copied()
+                .filter_map(get_fva)
+                .chain(std::iter::once(func).filter_map(get_fva))
+                .chain(std::iter::once(k))
+                .collect()
+        }
+        Term::Throw(throw, _) => match throw {
+            Throw::Throw(key, args) | Throw::Value(key, args) | Throw::ValueAndData(key, args) => {
+                get_fva(key)
+                    .into_iter()
+                    .chain(get_fva(args).into_iter())
+                    .collect()
+            }
+        },
+
+        Term::If(cond, cons, alt, _) => get_fva(cond)
+            .into_iter()
+            .chain(Some(cons).into_iter())
+            .chain(Some(alt).into_iter())
+            .collect(),
+    }
+}
+
+fn get_fva<'gc>(atom: Atom<'gc>) -> Option<LVarRef<'gc>> {
+    match atom {
+        Atom::Local(lvar) => Some(lvar),
+        _ => None,
+    }
+}
+
+fn get_fvc<'gc>(cont: ContRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
+    match *cont {
+        Cont::Local {
+            args,
+            variadic,
+            body,
+            ..
+        } => {
+            let mut map = get_fvt(body, fv);
+            for arg in args.iter().chain(variadic.iter()) {
+                map.remove(arg);
+            }
+            map.remove(&cont.binding());
+            map
+        }
+        _ => HashSet::new(),
+    }
+}
+
+pub fn get_fvf<'gc>(func: FuncRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
+    let mut map = get_fvt(func.body, fv);
+    for arg in func
+        .args
+        .iter()
+        .chain(func.variadic.iter())
+        .chain(std::iter::once(&func.return_cont))
+    {
+        map.remove(arg);
+    }
+    map.remove(&func.binding);
+    map
+}
+
+pub struct FreeVars<'gc> {
+    pub fvars: HashMap<FuncRef<'gc>, Vars<'gc>>,
+    pub cvars: HashMap<ContRef<'gc>, Vars<'gc>>,
+
+    pub funcs: HashMap<LVarRef<'gc>, FuncRef<'gc>>,
+    pub conts: HashMap<LVarRef<'gc>, ContRef<'gc>>,
+    /// Set of continuations that are used as values.
+    pub cvals: HashSet<LVarRef<'gc>>,
+}
+
+impl<'gc> FreeVars<'gc> {
+    pub fn new() -> Self {
+        FreeVars {
+            fvars: HashMap::new(),
+            cvars: HashMap::new(),
+            funcs: HashMap::new(),
+            conts: HashMap::new(),
+            cvals: HashSet::new(),
+        }
+    }
+}

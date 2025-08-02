@@ -58,3 +58,10 @@ unsafe impl<'gc> Trace for NativeProc<'gc> {
         }
     }
 }
+
+#[repr(C)]
+pub struct Closure<'gc> {
+    pub header: ScmHeader,
+    pub code: Address,
+    pub free: Value<'gc>,
+}

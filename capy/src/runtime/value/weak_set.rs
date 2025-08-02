@@ -265,11 +265,6 @@ impl<'gc> WeakSetInner<'gc> {
             }
         }
 
-        println!(
-            "Resizing WeakSet to size index: {}, new size: {}",
-            new_size_index, new_size
-        );
-
         let new_entries = Array::with(mc, new_size, |_, _| Lock::new(WeakEntry::broken()));
 
         let old_entries = this.entries.get();

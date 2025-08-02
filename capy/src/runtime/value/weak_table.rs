@@ -213,7 +213,7 @@ impl<'gc> WeakTable<'gc> {
         let old_capacity = inner.entries.get().len();
         let old_table = inner.entries.get();
 
-        let new_capacity = (old_capacity as f64 * inner.load_factor) as usize;
+        let new_capacity = (old_capacity as f64 / inner.load_factor) as usize;
 
         let new_map = Array::with(&ctx, new_capacity, |_, _| Lock::new(None));
 
@@ -450,6 +450,27 @@ impl<'gc> WeakTable<'gc> {
         }
 
         init
+    }
+
+    pub fn for_each(
+        self: Gc<'gc, Self>,
+        ctx: Context<'gc>,
+        mut f: impl FnMut(Value<'gc>, Value<'gc>),
+    ) {
+        self.vacuum(&ctx);
+
+        let guard = self.inner.lock();
+
+        for k in 0..guard.entries.get().len() {
+            let mut entry = guard.entries.get()[k].get();
+
+            while let Some(e) = entry {
+                if !e.key.is_broken() && !e.value.is_bwp() {
+                    f(e.key.as_value(), e.value);
+                }
+                entry = e.next.get();
+            }
+        }
     }
 }
 

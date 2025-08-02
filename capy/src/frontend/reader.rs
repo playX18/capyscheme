@@ -1,8 +1,10 @@
-use rsgc::{Gc, Trace};
+use rsgc::Trace;
 use tree_sitter::Node;
 
 use crate::{
+    expander::add_source,
     frontend::num::{NumberParseError, parse_number},
+    list,
     runtime::{
         Context,
         value::{ByteVector, IntoValue, ScmHeader, Str, Symbol, Tagged, TypeCode8, Value},
@@ -103,26 +105,16 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         self.source_file
     }
 
-    pub fn annotate(
-        &self,
-        expression: Value<'gc>,
-        stripped: Value<'gc>,
-        node: &Node,
-    ) -> Gc<'gc, Annotation<'gc>> {
+    pub fn annotate(&self, expression: Value<'gc>, node: &Node) {
         let start_point = node.start_position();
-        let end_point = node.end_position();
 
-        Gc::new(
-            &self.ctx,
-            Annotation {
-                header: ScmHeader::with_type_bits(TypeCode8::ANNOTATION.bits() as u16),
-                expression,
-                stripped,
-                source: self.source_file,
-                start_point: (start_point.row as u32, start_point.column as u32),
-                end_point: (end_point.row as u32, end_point.column as u32),
-            },
-        )
+        add_source(
+            self.ctx,
+            expression,
+            self.source_file,
+            start_point.row as i32,
+            start_point.column as i32,
+        );
     }
 
     pub fn text_of(&self, node: &Node) -> &str {
@@ -134,7 +126,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         node.kind() == "symbol" && self.text_of(node) == symbol
     }
 
-    pub fn read_program(&self) -> Result<Vec<(Value<'gc>, Value<'gc>)>, LexicalError<'gc>> {
+    pub fn read_program(&self) -> Result<Vec<Value<'gc>>, LexicalError<'gc>> {
         let root_node = self.tree.root_node();
         assert_eq!(root_node.kind(), "program", "Root node is not a program");
         let mut cursor = self.tree.walk();
@@ -151,17 +143,25 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         &self,
         node: &Node,
         src: ((u32, u32), (u32, u32)),
-        terminator: &str,
+
         typ: CompoundType,
-    ) -> Result<(Value<'gc>, Value<'gc>), LexicalError<'gc>> {
+    ) -> Result<Value<'gc>, LexicalError<'gc>> {
         let mut cursor = node.walk();
-        let mut children = node.children(&mut cursor).skip(1);
+        let mut children = node.children(&mut cursor);
+
+        let terminator = match self.text_of(&children.next().unwrap()) {
+            "(" => ")",
+            "#(" => ")",
+            "#u8(" => ")",
+            "[" => "]",
+            _ => {
+                return Err(LexicalError::InvalidSyntax { span: src.0 });
+            }
+        };
 
         let mut head = Value::null();
-        let mut head_stripped = Value::null();
 
         let mut prev = Value::null();
-        let mut prev_stripped = Value::null();
 
         loop {
             match children.next() {
@@ -175,9 +175,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     x if x == terminator => match typ {
                         CompoundType::Vector => {
                             let vec = Value::list_to_vector(head, self.ctx);
-                            let vec_stripped = Value::list_to_vector(head_stripped, self.ctx);
-                            let annotate = self.annotate(vec.into(), vec_stripped.into(), &child);
-                            return Ok((annotate.into(), vec_stripped.into()));
+
+                            self.annotate(vec.into(), &child);
+                            return Ok(vec.into());
                         }
 
                         CompoundType::Bytevector => {
@@ -187,7 +187,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                             let mut vec = Vec::with_capacity(len);
 
-                            let mut current = head_stripped;
+                            let mut current = head;
 
                             while !current.is_null() {
                                 let byte = current.as_int32();
@@ -198,14 +198,14 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                                 bv.as_slice_mut_unchecked().copy_from_slice(&vec);
                             }
 
-                            let bv_anon = self.annotate(bv.into(), bv.into(), &child);
+                            self.annotate(bv.into(), &child);
 
-                            return Ok((bv_anon.into(), bv.into()));
+                            return Ok(bv.into());
                         }
 
                         CompoundType::List => {
-                            let annotated = self.annotate(head, head_stripped, &child);
-                            return Ok((annotated.into(), head_stripped.into()));
+                            self.annotate(head, &child);
+                            return Ok(head.into());
                         }
                     },
 
@@ -230,39 +230,32 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                                 });
                             }
 
-                            let (tail, tail_stripped) = self.parse_lexeme(&next)?;
+                            let tail = self.parse_lexeme(&next)?;
 
                             if prev.is_pair() {
                                 prev.set_cdr(self.ctx, tail);
-                                prev_stripped.set_cdr(self.ctx, tail_stripped);
                             }
 
-                            return Ok((
-                                self.annotate(head, head_stripped, &next).into(),
-                                head_stripped,
-                            ));
+                            self.annotate(head, &next);
+
+                            return Ok(head);
                         } else {
                             return Err(LexicalError::InvalidSyntax { span: src.0 });
                         }
                     }
 
                     _ => {
-                        let (lexeme, lexeme_stripped) = self.parse_lexeme(&child)?;
+                        let lexeme = self.parse_lexeme(&child)?;
 
                         let new_prev = Value::cons(self.ctx, lexeme, Value::null());
-                        let new_prev_stripped =
-                            Value::cons(self.ctx, lexeme_stripped, Value::null());
 
                         if prev.is_pair() {
                             prev.set_cdr(self.ctx, new_prev);
-                            prev_stripped.set_cdr(self.ctx, new_prev_stripped);
                         }
                         prev = new_prev;
-                        prev_stripped = new_prev_stripped;
 
                         if !head.is_pair() {
                             head = new_prev;
-                            head_stripped = new_prev_stripped;
                         }
 
                         continue;
@@ -272,8 +265,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         }
     }
 
-    fn parse_lexeme(&self, node: &Node) -> Result<(Value<'gc>, Value<'gc>), LexicalError<'gc>> {
+    fn parse_lexeme(&self, node: &Node) -> Result<Value<'gc>, LexicalError<'gc>> {
         let text = self.text_of(node);
+
         let src = (
             (
                 node.start_position().row as u32,
@@ -288,14 +282,15 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         match node.kind() {
             "symbol" => {
                 let symbol = Symbol::from_str(self.ctx, text);
-                let annotated = self.annotate(symbol.into(), symbol.into(), node);
-                Ok((annotated.into(), symbol.into()))
+
+                Ok(symbol.into())
             }
 
             "string" => {
+                let text = &text[1..text.len() - 1];
                 let string = Str::new(&self.ctx, text, false);
-                let annotated = self.annotate(string.into(), string.into(), node);
-                Ok((annotated.into(), string.into()))
+
+                Ok(string.into())
             }
 
             "number" => {
@@ -307,20 +302,102 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     .to_vm_number(self.ctx)
                     .into_value(self.ctx);
 
-                let annotated = self.annotate(n.into(), n.into(), node);
-                Ok((annotated.into(), n.into_value(self.ctx)))
+                Ok(n)
+            }
+
+            "boolean" => {
+                let value = if text == "#t" {
+                    Value::new(true)
+                } else if text == "#f" {
+                    Value::new(false)
+                } else {
+                    return Err(LexicalError::InvalidSyntax { span: src.0 });
+                };
+
+                Ok(value)
+            }
+
+            "quote" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let quote: Value<'gc> = Symbol::from_str(self.ctx, "quote").into();
+                Ok(list!(self.ctx, quote, expr).into())
             }
 
             "list" => {
-                let (list, stripped) =
-                    self.parse_compound_node(node, src, ")", CompoundType::List)?;
-                Ok((list, stripped))
+                let list = self.parse_compound_node(node, src, CompoundType::List)?;
+                Ok(list)
+            }
+
+            "character" => {
+                let rest = text.strip_prefix("#\\").unwrap();
+
+                if let Some(hex_part) = rest.strip_prefix("x") {
+                    let end_of_hex = hex_part
+                        .find(|c: char| !c.is_ascii_hexdigit())
+                        .unwrap_or(hex_part.len());
+
+                    if end_of_hex == 0 {
+                        return Err(LexicalError::InvalidCharacter {
+                            source: src.0,
+                            character: 'x',
+                        });
+                    }
+
+                    let hex_str = &hex_part[..end_of_hex];
+                    let code_point = u32::from_str_radix(hex_str, 16).map_err(|_| {
+                        LexicalError::InvalidCharacter {
+                            source: src.0,
+                            character: 'x',
+                        }
+                    })?;
+                    let ch = char::from_u32(code_point).ok_or_else(|| {
+                        LexicalError::InvalidCharacter {
+                            source: src.0,
+                            character: 'x',
+                        }
+                    })?;
+
+                    return Ok(Value::new(ch).into());
+                }
+
+                const NAMED_CHARS: &[(&str, char)] = &[
+                    ("newline", '\n'),
+                    ("space", ' '),
+                    ("tab", '\t'),
+                    ("return", '\r'),
+                    ("escape", '\u{1B}'),
+                    ("alarm", '\u{07}'),
+                    ("backspace", '\u{08}'),
+                    ("delete", '\u{7F}'),
+                    ("null", '\0'),
+                ];
+
+                for (name, character) in NAMED_CHARS {
+                    if let Some(_) = rest.strip_prefix(name) {
+                        return Ok(Value::new(*character));
+                    }
+                }
+
+                let character =
+                    rest.chars()
+                        .next()
+                        .ok_or_else(|| LexicalError::InvalidCharacter {
+                            source: src.0,
+                            character: ' ',
+                        })?;
+
+                return Ok(Value::new(character).into());
             }
 
             "vector" => {
-                let (vec, stripped) =
-                    self.parse_compound_node(node, src, "]", CompoundType::Vector)?;
-                Ok((vec, stripped))
+                let vec = self.parse_compound_node(node, src, CompoundType::Vector)?;
+                Ok(vec)
             }
 
             _ => Err(LexicalError::InvalidSyntax { span: src.0 }),
