@@ -1,12 +1,15 @@
-use rsgc::{Gc, Mutation, Mutator, Rootable, Trace};
+use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, Write};
 
-use crate::runtime::{
-    fluids::DynamicState,
-    value::{
-        HashTable, HashTableType, NativeProc, Return,
-        Value, /*  Variable, current_environment, current_variable_environment*/
+use crate::{
+    jit::trampoline::TRAMPOLINES,
+    runtime::{
+        fluids::DynamicState,
+        value::{
+            Closure, HashTable, HashTableType, Str,
+            Value, /*  Variable, current_environment, current_variable_environment*/
+        },
+        vm::{VMReturnCode, VMState, exit_continuation},
     },
-    vm::VMState,
 };
 
 #[derive(Clone, Copy)]
@@ -14,6 +17,12 @@ use crate::runtime::{
 pub struct Context<'gc> {
     mc: &'gc Mutation<'gc>,
     pub(crate) state: &'gc State<'gc>,
+}
+
+impl<'gc> From<(&'gc Mutation<'gc>, &'gc State<'gc>)> for Context<'gc> {
+    fn from((mc, state): (&'gc Mutation<'gc>, &'gc State<'gc>)) -> Self {
+        Self { mc, state }
+    }
 }
 
 impl<'gc> Context<'gc> {
@@ -64,16 +73,52 @@ impl<'gc> Context<'gc> {
         proc: Value<'gc>,
         args: impl AsRef<[Value<'gc>]>,
     ) -> Result<Value<'gc>, Value<'gc>> {
-        let _ = proc;
-        let _ = args;
+        if !proc.is::<Closure>() {
+            return Err(proc);
+        }
 
-        if let Some(proc) = proc.try_as::<NativeProc>() {
-            match (proc.proc)(self, args.as_ref(), proc.closure) {
-                Return::Ok(value) => Ok(value),
-                Return::Err(err) => Err(err),
+        let closure = proc.downcast::<Closure>();
+        let entrypoint = closure.code;
+        if closure.is_continuation() {
+            return Err(Value::new(Str::new(
+                &self,
+                "Non-procedure call".to_string(),
+                false,
+            )));
+        }
+        unsafe {
+            Write::assume(&self.vm().proc).write(proc);
+            for &arg in args.as_ref().iter() {
+                self.vm().push_arg(arg);
             }
-        } else {
-            todo!()
+        }
+
+        let k = exit_continuation(self);
+        assert!(k.is::<Closure>());
+        let trampoline = TRAMPOLINES.rust_to_scheme();
+
+        let result = trampoline(&self.mc, &self.state, entrypoint, exit_continuation(self));
+
+        match result.code {
+            VMReturnCode::Return => Ok(result.value),
+            VMReturnCode::Error => Err(result.value),
+            VMReturnCode::NonProcedureCall => Err(Value::new(Str::new(
+                &self,
+                "Non-procedure call".to_string(),
+                false,
+            ))),
+            VMReturnCode::ArgumentMismatch => Err(Value::new(Str::new(
+                &self,
+                "Argument mismatch".to_string(),
+                false,
+            ))),
+            VMReturnCode::Throw => Err(result.value),
+            VMReturnCode::ThrowValue => Err(result.value),
+            VMReturnCode::Yield => {
+                println!("yield requested? {}", self.mc.take_yieldpoint());
+                Ok(result.value)
+            }
+            VMReturnCode::ThrowValueAndData => Err(result.value),
         }
     }
 

@@ -1,46 +1,12 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::OnceLock};
 
+use rsgc::{Global, Rootable};
+
+use super::*;
 use crate::runtime::{Context, value::*};
+pub type PrimitiveProc = for<'gc> extern "C-unwind" fn(ctx: Context<'gc>) -> VMReturn<'gc>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum PrimitiveResult {
-    Error = 0,
-    Return = 1,
-}
-
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct PrimitiveReturn<'gc> {
-    pub result: PrimitiveResult,
-    pub value: Value<'gc>,
-}
-
-impl<'gc> PrimitiveReturn<'gc> {
-    pub const fn new(result: PrimitiveResult, value: Value<'gc>) -> Self {
-        Self { result, value }
-    }
-
-    pub fn is_error(&self) -> bool {
-        self.result == PrimitiveResult::Error
-    }
-
-    pub fn is_return(&self) -> bool {
-        self.result == PrimitiveResult::Return
-    }
-
-    pub const fn ok(value: Value<'gc>) -> Self {
-        Self::new(PrimitiveResult::Return, value)
-    }
-
-    pub const fn error(value: Value<'gc>) -> Self {
-        Self::new(PrimitiveResult::Error, value)
-    }
-}
-
-pub type PrimitiveProc = for<'gc> extern "C-unwind" fn(ctx: Context<'gc>) -> PrimitiveReturn<'gc>;
-
-pub extern "C-unwind" fn cons<'gc>(ctx: Context<'gc>) -> PrimitiveReturn<'gc> {
+pub extern "C-unwind" fn cons<'gc>(ctx: Context<'gc>) -> VMReturn<'gc> {
     let vm = ctx.vm();
 
     if vm.argument_count() != 2 {
@@ -49,7 +15,7 @@ pub extern "C-unwind" fn cons<'gc>(ctx: Context<'gc>) -> PrimitiveReturn<'gc> {
 
     let args = vm.arguments();
 
-    PrimitiveReturn::ok(Value::cons(ctx, args[0], args[1]))
+    VMReturn::ok(Value::cons(ctx, args[0], args[1]))
 }
 
 pub struct PrimitiveLocations<'gc> {
@@ -74,4 +40,24 @@ impl<'gc> PrimitiveLocations<'gc> {
 
         Self { map }
     }
+
+    pub fn get(ctx: Context<'gc>, name: Value<'gc>) -> Option<PrimitiveProc> {
+        let locations = LOCATIONS
+            .get_or_init(|| Global::new(PrimitiveLocations::new(ctx)))
+            .fetch(&ctx);
+        locations.map.get(&name).copied()
+    }
 }
+
+unsafe impl<'gc> Trace for PrimitiveLocations<'gc> {
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+
+    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+        for (key, _) in &mut self.map {
+            let key = key as *const Value<'gc> as *mut Value<'gc>;
+            unsafe { (*key).trace(visitor) };
+        }
+    }
+}
+
+static LOCATIONS: OnceLock<Global<Rootable!(PrimitiveLocations<'_>)>> = OnceLock::new();

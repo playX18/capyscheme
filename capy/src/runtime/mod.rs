@@ -1,5 +1,6 @@
 use rsgc::Mutation;
 
+pub mod fasl;
 pub mod fluids;
 pub mod modules;
 pub mod thread;

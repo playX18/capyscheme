@@ -23,6 +23,7 @@ pub struct ReifyInfo<'gc> {
 pub fn reify<'gc>(func: FuncRef<'gc>) -> ReifyInfo<'gc> {
     let mut fv = FreeVars::new();
     let _ = get_fvf(func, &mut fv);
+    fv.fvars.insert(func, Default::default());
 
     let mut reified = HashSet::new();
 

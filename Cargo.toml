@@ -1,12 +1,11 @@
 [workspace]
 resolver = "3"
 
-members = ["capy", "crates/compiler", "crates/quote-sexp"]
+members = ["capy"]
 default-members = ["capy"]
 
 [workspace.dependencies]
-#rsgc = { git = "https://codeberg.org/playxe/rsgc", branch = "main" }
-
+#rsgc = { git = "https://codeberg.org/playxe/rsgc", branch = "main", default-features = false }
 rsgc = { path = "./RSGC", default-features = false }
 
 [profile.release]

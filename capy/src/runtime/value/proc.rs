@@ -64,4 +64,27 @@ pub struct Closure<'gc> {
     pub header: ScmHeader,
     pub code: Address,
     pub free: Value<'gc>,
+    pub meta: Value<'gc>,
+}
+
+unsafe impl<'gc> Tagged for Closure<'gc> {
+    const TC8: TypeCode8 = TypeCode8::CLOSURE;
+
+    const TC16: &'static [TypeCode16] = &[TypeCode16::CLOSURE_PROC, TypeCode16::CLOSURE_K];
+}
+
+unsafe impl<'gc> Trace for Closure<'gc> {
+    unsafe fn trace(&mut self, vis: &mut Visitor) {
+        vis.trace(&mut self.free);
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+        let _ = weak_processor;
+    }
+}
+
+impl<'gc> Closure<'gc> {
+    pub fn is_continuation(&self) -> bool {
+        self.header.type_bits() == TypeCode16::CLOSURE_K.bits()
+    }
 }
