@@ -196,13 +196,6 @@ impl<'gc> Cont<'gc> {
         }
     }
 
-    pub fn source(&self) -> Value<'gc> {
-        match self {
-            Cont::Local { source, .. } => *source,
-            Cont::Return(_) => Value::new(false),
-        }
-    }
-
     pub fn is_return(&self) -> bool {
         matches!(self, Cont::Return(_))
     }
@@ -339,5 +332,54 @@ impl<'gc> TreeEq for Expression<'gc> {
                 f.tree_eq(g) && args.tree_eq(bargs)
             }
         }
+    }
+}
+
+impl<'gc> Term<'gc> {
+    pub fn source(&self) -> Value<'gc> {
+        match self {
+            Term::Continue(_, _, source) | Term::App(_, _, _, source) => *source,
+            Term::If { .. } => Value::new(false),
+            Term::Letk(_, body) | Term::Fix(_, body) | Term::Let(_, _, body) => body.source(),
+            Term::Throw(_, src) => *src,
+        }
+    }
+}
+
+impl<'gc> Cont<'gc> {
+    pub fn source(&self) -> Value<'gc> {
+        match self {
+            Cont::Local { source, .. } => *source,
+            Cont::Return(_) => Value::new(false),
+        }
+    }
+
+    pub fn make_meta(&self, ctx: Context<'gc>) -> Value<'gc> {
+        match self {
+            Cont::Local { name, source, .. } => Value::cons(ctx, *name, *source),
+            Cont::Return(_) => Value::new(false),
+        }
+    }
+}
+
+impl<'gc> Func<'gc> {
+    pub fn source(&self) -> Value<'gc> {
+        self.source
+    }
+
+    pub fn name(&self) -> Value<'gc> {
+        self.name
+    }
+
+    pub fn binding(&self) -> LVarRef<'gc> {
+        self.binding
+    }
+
+    pub fn return_cont(&self) -> LVarRef<'gc> {
+        self.return_cont
+    }
+
+    pub fn make_meta(&self, ctx: Context<'gc>) -> Value<'gc> {
+        Value::cons(ctx, self.name, self.source)
     }
 }

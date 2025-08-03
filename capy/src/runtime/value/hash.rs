@@ -460,6 +460,10 @@ impl<'gc> HashTable<'gc> {
     pub fn lock(&'gc self) -> rsgc::sync::monitor::MonitorGuard<'gc, InnerHashTable<'gc>> {
         self.inner.lock()
     }
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().count.get()
+    }
 }
 
 pub struct HashTableIter<'gc> {

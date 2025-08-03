@@ -115,8 +115,8 @@ impl<'gc> Vector<'gc> {
         }
     }
 
-    pub fn copy_from(this: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: &Mutation<'gc>) {
-        let vec = Gc::write(mc, this);
+    pub fn copy_from(self: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: &Mutation<'gc>) {
+        let vec = Gc::write(mc, self);
         let other_slice = other.as_ref();
 
         assert!(
@@ -168,14 +168,14 @@ impl<'gc> Index<usize> for Vector<'gc> {
 macro_rules! vector {
     ($mc: expr, $($value: expr),*) => {{
         use $crate::runtime::value::IntoValue;
-        let mc = $mc;
+
         let slice = &[$({
             let value = $value;
             value.into_value($mc)
         }),*];
         let length = slice.len();
-        let vector = $crate::runtime::value::Vector::new(&$mc, length, $crate::runtime::value::Value::unspecified());
-        vector.copy_from($mc, slice);
+        let vector = $crate::runtime::value::Vector::new::<false>(&$mc, length, $crate::runtime::value::Value::unspecified());
+        vector.copy_from(slice, &$mc);
         vector
     }};
 
@@ -256,6 +256,13 @@ impl ByteVector {
 
             Gc::from_gcobj(alloc)
         }
+    }
+
+    pub fn from_slice<'gc>(mc: &Mutation<'gc>, slice: &[u8]) -> Gc<'gc, Self> {
+        let length = slice.len();
+        let byte_vector = Self::new::<false>(mc, length);
+        byte_vector.copy_from(slice);
+        byte_vector
     }
 
     pub fn as_slice(&self) -> &[u8] {

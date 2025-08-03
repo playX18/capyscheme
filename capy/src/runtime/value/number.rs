@@ -358,8 +358,8 @@ unsafe impl<'gc> Tagged for BigInt<'gc> {
 #[derive(Trace)]
 #[collect(no_drop)]
 pub struct Complex<'gc> {
-    real: Number<'gc>,
-    imag: Number<'gc>,
+    pub real: Number<'gc>,
+    pub imag: Number<'gc>,
 }
 
 impl<'gc> Complex<'gc> {
@@ -377,8 +377,8 @@ unsafe impl<'gc> Tagged for Complex<'gc> {
 #[derive(Trace)]
 #[collect(no_drop)]
 pub struct Rational<'gc> {
-    numerator: Number<'gc>,
-    denominator: Number<'gc>,
+    pub numerator: Number<'gc>,
+    pub denominator: Number<'gc>,
 }
 
 impl<'gc> Rational<'gc> {

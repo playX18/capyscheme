@@ -106,6 +106,7 @@ fn get_fvc<'gc>(cont: ContRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
 }
 
 pub fn get_fvf<'gc>(func: FuncRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
+    fv.funcs.insert(func.binding, func);
     let mut map = get_fvt(func.body, fv);
     for arg in func
         .args

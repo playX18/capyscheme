@@ -9,6 +9,7 @@ pub mod optimizer;
 pub mod peval;
 pub mod pretty;
 pub mod reify;
+pub mod sexp;
 pub mod term;
 
 pub use contify::contify;

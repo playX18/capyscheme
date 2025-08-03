@@ -390,7 +390,7 @@ impl TypeCode8 {
     pub const ATOMICBOX: Self = Self(15);
     pub const SYNTAX: Self = Self(16);
     pub const VALUES: Self = Self(17);
-    pub const PROGRAM: Self = Self(18);
+    pub const CLOSURE: Self = Self(18);
     pub const VMCONT: Self = Self(19);
     pub const BYTEVECTOR: Self = Self(20);
     pub const WEAKSET: Self = Self(21);
@@ -470,6 +470,9 @@ impl TypeCode16 {
     pub const UNKNOWN: Self = Self(0xFFFF);
 
     pub const VALUES: Self = Self(TypeCode8::VALUES.0 as u16);
+
+    pub const CLOSURE_PROC: Self = Self(TypeCode8::CLOSURE.0 as u16);
+    pub const CLOSURE_K: Self = Self(TypeCode8::CLOSURE.0 as u16 + 1 * 256);
 
     pub const fn tc8(self) -> TypeCode8 {
         TypeCode8(self.0 as u8)
