@@ -15,7 +15,9 @@ pub mod require;
 
 #[repr(C)]
 pub struct VMState<'gc> {
+    pub fuel: usize,
     pub proc: Value<'gc>,
+    pub k: Value<'gc>,
     pub argc: Cell<usize>,
     pub argv: Address,
 
@@ -60,7 +62,9 @@ impl<'gc> VMState<'gc> {
             let argv = args_start;
 
             VMState {
+                fuel: 0,
                 proc: Value::undefined(),
+                k: Value::undefined(),
                 argc: Cell::new(0),
                 argv,
 

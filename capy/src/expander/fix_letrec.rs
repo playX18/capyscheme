@@ -71,6 +71,23 @@ pub fn free_variables<'gc>(
             }
 
             TermKind::Seq(seq) => seq.iter().for_each(|term| rec(term, set)),
+
+            TermKind::Values(values) => {
+                values.iter().for_each(|v| rec(v, set));
+            }
+
+            TermKind::Receive(formals, opt_formal, producer, consumer) => {
+                rec(producer, set);
+
+                let mut set2 = HashSet::new();
+                rec(consumer, &mut set2);
+                for var in formals.iter().chain(opt_formal.iter()) {
+                    set2.remove(var);
+                }
+
+                set.extend(set2);
+            }
+
             TermKind::Let(l) => {
                 if let LetStyle::Let = l.style {
                     for init in l.rhs.iter() {
@@ -673,6 +690,38 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     Term {
                         source: x.source,
                         kind: TermKind::If(test, cons, alt),
+                    },
+                )
+            }
+
+            TermKind::Values(values) => {
+                let values = values
+                    .iter()
+                    .map(|v| post_order(v, pass))
+                    .collect::<Vec<_>>();
+                Gc::new(
+                    &pass.ctx,
+                    Term {
+                        source: x.source,
+                        kind: TermKind::Values(Array::from_array(&pass.ctx, values)),
+                    },
+                )
+            }
+
+            TermKind::Receive(formals, opt_formals, producer, consumer) => {
+                let producer = post_order(producer, pass);
+                let consumer = post_order(consumer, pass);
+
+                Gc::new(
+                    &pass.ctx,
+                    Term {
+                        source: x.source,
+                        kind: TermKind::Receive(
+                            formals.clone(),
+                            opt_formals.clone(),
+                            producer,
+                            consumer,
+                        ),
                     },
                 )
             }

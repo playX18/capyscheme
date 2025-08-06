@@ -1,14 +1,14 @@
 use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, Write};
 
 use crate::{
-    jit::trampoline::TRAMPOLINES,
+    //jit::trampoline::TRAMPOLINES,
     runtime::{
         fluids::DynamicState,
         value::{
             Closure, HashTable, HashTableType, Str,
             Value, /*  Variable, current_environment, current_variable_environment*/
         },
-        vm::{VMReturnCode, VMState, exit_continuation},
+        //vm::{VMReturnCode, VMState, exit_continuation},
     },
 };
 
@@ -66,7 +66,7 @@ impl<'gc> Context<'gc> {
     pub fn is_top_level_bound(self, sym: impl IntoValue<'gc>) -> bool {
         let env = current_environment(self);
         env.variables.get().contains_key(self, sym.into_value(self))
-    }*/
+    }
 
     pub fn call(
         self,
@@ -124,7 +124,7 @@ impl<'gc> Context<'gc> {
 
     pub fn vm(&self) -> &VMState<'gc> {
         &self.state.vm_state
-    }
+    }*/
 
     pub fn global_location(self, sym: Value<'gc>) -> Value<'gc> {
         self.state
@@ -144,7 +144,7 @@ impl<'gc> std::ops::Deref for Context<'gc> {
 
 pub struct State<'gc> {
     pub(crate) dynamic_state: DynamicState<'gc>,
-    pub(crate) vm_state: VMState<'gc>,
+    //pub(crate) vm_state: VMState<'gc>,
     pub(crate) globals: Gc<'gc, HashTable<'gc>>,
 }
 
@@ -158,7 +158,7 @@ impl<'gc> State<'gc> {
     pub fn new(mc: &'gc Mutation<'gc>) -> Self {
         Self {
             dynamic_state: DynamicState::new(mc),
-            vm_state: VMState::new(),
+
             globals: HashTable::new(mc, HashTableType::Eq, 128, 0.75),
         }
     }

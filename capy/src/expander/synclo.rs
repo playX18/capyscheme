@@ -100,7 +100,7 @@ impl<'gc> Environment<'gc> {
             return base.get(ctx, id);
         } else {
             if id.is::<Symbol>() {
-                let new_name = ctx.call(self.renamer, &[id])?;
+                let new_name = Value::new(false);//ctx.call(self.renamer, &[id])?;
                 self.frame.put(ctx, id, new_name);
                 self.get(ctx, id)
             } else {

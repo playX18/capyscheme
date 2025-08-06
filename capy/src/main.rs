@@ -1,19 +1,21 @@
-use capy::cps::sexp::{CPSDeserializer, CPSSerializer};
-use capy::expander::core::{Cenv, expand, seq};
-use capy::frontend::reader::TreeSitter;
-use capy::runtime::{Scheme, value::*};
+use capy::{
+    expander::{compile_program, read_from_string},
+    runtime::Scheme,
+};
 use pretty::BoxAllocator;
-use rsgc::GarbageCollector;
-use rsgc::alloc::Array;
-use std::io::Write;
 
 fn main() {
     let scm = Scheme::new();
 
     scm.enter(|ctx| {
-        let result = capy::runtime::vm::require::load(ctx, "main.scm").unwrap();
-        println!("Loaded Scheme program: {}", result);
-    });
+        let src = std::fs::read_to_string("main.scm").unwrap();
+        let program = read_from_string(ctx, src, "main.scm").unwrap();
 
-    scm.mutator.collect_garbage();
+        let cps = compile_program(ctx, program).unwrap();
+
+        let doc = cps.pretty::<_, &BoxAllocator>(&BoxAllocator);
+        let stdout = std::io::stdout();
+        doc.1.render(70, &mut stdout.lock()).unwrap();
+        println!();
+    });
 }

@@ -40,6 +40,8 @@ pub struct Denotations<'gc> {
     pub denotation_of_if: Value<'gc>,
     pub denotation_of_quote: Value<'gc>,
     pub denotation_of_set: Value<'gc>,
+    pub denotation_of_values: Value<'gc>,
+    pub denotation_of_receive: Value<'gc>,
 }
 
 static DENOTATIONS: OnceLock<Global<Rootable!(Denotations<'_>)>> = OnceLock::new();
@@ -56,6 +58,8 @@ static_symbols!(
     DENOTATION_OF_IF = "if"
     DENOTATION_OF_QUOTE = "quote"
     DENOTATION_OF_SET = "set!"
+    DENOTATION_OF_VALUES = "values"
+    DENOTATION_OF_RECEIVE = "receive"
 );
 
 pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
@@ -73,6 +77,8 @@ pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
                 denotation_of_if: denotation_of_if(ctx).into(),
                 denotation_of_quote: denotation_of_quote(ctx).into(),
                 denotation_of_set: denotation_of_set(ctx).into(),
+                denotation_of_values: denotation_of_values(ctx).into(),
+                denotation_of_receive: denotation_of_receive(ctx).into(),
             })
         })
         .fetch(&ctx)
@@ -213,6 +219,17 @@ pub enum TermKind<'gc> {
 
     Let(Let<'gc>),
     Fix(Fix<'gc>),
+    /// receive (<formals> . <opt-formal>) <producer> <consumer>:
+    ///
+    /// Execute `<producer>` and bind the result to <formals>, then
+    /// execute `<consumer>` with the bound values.
+    Receive(
+        ArrayRef<'gc, LVarRef<'gc>>,
+        Option<LVarRef<'gc>>,
+        TermRef<'gc>,
+        TermRef<'gc>,
+    ),
+    Values(ArrayRef<'gc, TermRef<'gc>>),
     Proc(ProcRef<'gc>),
 
     Call(TermRef<'gc>, ArrayRef<'gc, TermRef<'gc>>),
@@ -498,6 +515,10 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_let_star(cenv, program)
         } else if proc == cenv.denotations.denotation_of_set {
             expand_set(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_receive {
+            expand_receive(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_values {
+            expand_values(cenv, program)
         } else {
             let proc = expand(cenv, proc)?;
             let mut xs = args;
@@ -1367,6 +1388,81 @@ fn expand_letrec<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     ))
 }
 
+fn expand_receive<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    // (receive (formal ...) producer consumer)
+    if form.list_length() < 4 {
+        return Err(Box::new(CompileError {
+            message: "receive requires at least formals, producer, and consumer".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let formals = form.cadr();
+    let producer = form.caddr();
+    let consumer = form.cadddr();
+
+    let (formals, opt_formal) = collect_formals(cenv.ctx, formals)?;
+
+    let producer_term = expand(cenv, producer)?;
+
+    cenv.new_frame();
+    for lvar in formals.iter().chain(opt_formal.iter()) {
+        cenv.extend(lvar.name, lvar.clone());
+    }
+
+    let consumer_term = expand(cenv, consumer)?;
+    cenv.pop_frame();
+
+    Ok(Gc::new(
+        &cenv.ctx,
+        Term {
+            source: syntax_annotation(cenv.ctx, form),
+            kind: TermKind::Receive(
+                Array::from_array(&cenv.ctx, formals),
+                opt_formal,
+                producer_term,
+                consumer_term,
+            ),
+        },
+    ))
+}
+
+fn expand_values<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    if form.list_length() < 1 {
+        return Err(Box::new(CompileError {
+            message: "values requires at least one value".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let mut values = Vec::new();
+    let mut xs = form.cdr();
+
+    while xs.is_pair() {
+        let value = expand(cenv, xs.car())?;
+        values.push(value);
+        xs = xs.cdr();
+    }
+
+    if !xs.is_null() {
+        return Err(Box::new(CompileError {
+            message: "malformed values form".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    Ok(Gc::new(
+        &cenv.ctx,
+        Term {
+            source: syntax_annotation(cenv.ctx, form),
+            kind: TermKind::Values(Array::from_array(&cenv.ctx, values)),
+        },
+    ))
+}
+
 fn expand_letrec_star<'gc>(
     cenv: &mut Cenv<'gc>,
     form: Value<'gc>,
@@ -1424,6 +1520,47 @@ impl<'gc> Term<'gc> {
         A: 'a + Clone,
     {
         match &self.kind {
+            TermKind::Values(vals) => {
+                let vals_doc =
+                    alloc.intersperse(vals.iter().map(|v| v.pretty(alloc)), alloc.space());
+
+                alloc.text("values ").append(vals_doc).parens().group()
+            }
+            TermKind::Receive(formals, opt_formal, producer, consumer) => {
+                let formals_doc = alloc.intersperse(
+                    formals.iter().map(|f| alloc.text(f.name.to_string())),
+                    alloc.space(),
+                );
+
+                let opt_formal_doc = if let Some(opt) = opt_formal {
+                    alloc.text(opt.name.to_string())
+                } else {
+                    alloc.nil()
+                };
+
+                let formals_doc = if opt_formal.is_some() {
+                    formals_doc + alloc.text(" . ") + opt_formal_doc
+                } else {
+                    formals_doc
+                }
+                .parens()
+                .group();
+
+                let producer_doc = producer.pretty(alloc);
+                let consumer_doc = consumer.pretty(alloc);
+
+                alloc
+                    .text("receive ")
+                    .append(formals_doc)
+                    .append(alloc.line())
+                    .append(producer_doc.nest(1).indent(1))
+                    .append(alloc.line())
+                    .append(consumer_doc.nest(1).indent(1))
+                    .nest(1)
+                    .parens()
+                    .group()
+            }
+
             TermKind::Const(c) => alloc
                 .text("const ")
                 .append(alloc.text(c.to_string()))

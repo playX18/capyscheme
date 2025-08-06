@@ -19,7 +19,7 @@ pub enum Atom<'gc> {
     Constant(Value<'gc>),
     Global(Value<'gc>),
     Local(LVarRef<'gc>),
-    Func(FuncRef<'gc>),
+    Values(ArrayRef<'gc, Atom<'gc>>),
 }
 
 #[derive(Debug, Clone, Copy, Trace)]
@@ -27,7 +27,13 @@ pub enum Atom<'gc> {
 pub enum Term<'gc> {
     Continue(LVarRef<'gc>, Atoms<'gc>, Value<'gc>),
 
-    App(Atom<'gc>, LVarRef<'gc>, Atoms<'gc>, Value<'gc>),
+    App(
+        Atom<'gc>,
+        LVarRef<'gc>,
+        LVarRef<'gc>,
+        Atoms<'gc>,
+        Value<'gc>,
+    ),
 
     If(Atom<'gc>, LVarRef<'gc>, LVarRef<'gc>, [BranchHint; 2]),
 
@@ -67,7 +73,9 @@ pub enum Throw<'gc> {
 #[derive(Debug, Clone, Trace, Copy)]
 #[collect(no_drop)]
 pub enum Expression<'gc> {
-    PrimCall(Value<'gc>, Atoms<'gc>, Value<'gc>),
+    PrimCall(Value<'gc>, Atoms<'gc>, LVarRef<'gc>, Value<'gc>),
+    ValuesAt(Atom<'gc>, usize),
+    ValuesRest(Atom<'gc>, usize),
 }
 
 pub type TermRef<'gc> = Gc<'gc, Term<'gc>>;
@@ -79,6 +87,7 @@ pub struct Func<'gc> {
     pub source: Value<'gc>,
     pub binding: LVarRef<'gc>,
     pub return_cont: LVarRef<'gc>,
+    pub handler_cont: LVarRef<'gc>,
 
     pub args: Vars<'gc>,
     pub variadic: Option<LVarRef<'gc>>,
@@ -94,6 +103,7 @@ impl<'gc> Func<'gc> {
                 source: self.source,
                 binding: self.binding,
                 return_cont: self.return_cont,
+                handler_cont: self.handler_cont,
                 args: self.args,
                 variadic: self.variadic,
                 body,
@@ -251,7 +261,12 @@ impl<'gc> TreeEq for Atom<'gc> {
             (Atom::Constant(a), Atom::Constant(b)) => a.tree_eq(b),
             (Atom::Global(a), Atom::Global(b)) => a.tree_eq(b),
             (Atom::Local(a), Atom::Local(b)) => Gc::ptr_eq(*a, *b),
-
+            (Atom::Values(a), Atom::Values(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                a.iter().zip(b.iter()).all(|(x, y)| x.tree_eq(y))
+            }
             _ => false,
         }
     }
@@ -304,8 +319,8 @@ impl<'gc> TreeEq for Throw<'gc> {
 impl<'gc> TreeEq for Term<'gc> {
     fn tree_eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Term::App(f, k, args, _), Term::App(g, l, bargs, _)) => {
-                f.tree_eq(g) && Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
+            (Term::App(f, k, h, args, _), Term::App(g, l, lh, bargs, _)) => {
+                f.tree_eq(g) && Gc::ptr_eq(*k, *l) && Gc::ptr_eq(*h, *lh) && args.tree_eq(bargs)
             }
             (Term::Continue(k, args, _), Term::Continue(l, bargs, _)) => {
                 Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
@@ -328,9 +343,18 @@ impl<'gc> TreeEq for Term<'gc> {
 impl<'gc> TreeEq for Expression<'gc> {
     fn tree_eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Expression::PrimCall(f, args, _), Expression::PrimCall(g, bargs, _)) => {
-                f.tree_eq(g) && args.tree_eq(bargs)
+            (Expression::PrimCall(f, args, h, _), Expression::PrimCall(g, bargs, gh, _)) => {
+                f.tree_eq(g) && args.tree_eq(bargs) && Gc::ptr_eq(*h, *gh)
             }
+            (Expression::ValuesAt(atom, from), Expression::ValuesAt(batom, bfrom)) => {
+                atom.tree_eq(batom) && *from == *bfrom
+            }
+
+            (Expression::ValuesRest(atom, from), Expression::ValuesRest(batom, bfrom)) => {
+                atom.tree_eq(batom) && *from == *bfrom
+            }
+
+            _ => false,
         }
     }
 }
@@ -338,7 +362,7 @@ impl<'gc> TreeEq for Expression<'gc> {
 impl<'gc> Term<'gc> {
     pub fn source(&self) -> Value<'gc> {
         match self {
-            Term::Continue(_, _, source) | Term::App(_, _, _, source) => *source,
+            Term::Continue(_, _, source) | Term::App(_, _, _, _, source) => *source,
             Term::If { .. } => Value::new(false),
             Term::Letk(_, body) | Term::Fix(_, body) | Term::Let(_, _, body) => body.source(),
             Term::Throw(_, src) => *src,

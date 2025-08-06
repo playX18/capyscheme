@@ -280,6 +280,39 @@ pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef
             }
         }
 
+        TermKind::Values(values) => {
+            let values = values
+                .iter()
+                .map(|v| resolve_primitives(ctx, v.clone()))
+                .collect::<Vec<_>>();
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::Values(Array::from_array(&ctx, values)),
+                },
+            )
+        }
+
+        TermKind::Receive(formals, opt_formal, producer, consumer) => {
+            let producer = resolve_primitives(ctx, *producer);
+            let consumer = resolve_primitives(ctx, *consumer);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::Receive(
+                        formals.clone(),
+                        opt_formal.clone(),
+                        producer,
+                        consumer,
+                    ),
+                },
+            )
+        }
+
         TermKind::Const(_) | TermKind::LRef(_) | TermKind::GRef(_) => term,
 
         TermKind::Define(var, val) => {
