@@ -1,5 +1,5 @@
 use crate::cps::builder::CPSBuilder;
-use crate::cps::term::{Atom, BranchHint, Func, FuncRef, Term, TermRef};
+use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef, Throw};
 use crate::expander::core::{LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef};
 use crate::runtime::Context;
 use crate::runtime::value::{Str, Vector};
@@ -14,20 +14,47 @@ use std::sync::OnceLock;
 pub fn t_k<'a, 'gc>(
     cps: &'a mut CPSBuilder<'gc>,
     form: CoreTermRef<'gc>,
-    fk: Box<dyn FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc> + 'a>,
+    fk: Box<dyn FnOnce(&mut CPSBuilder<'gc>, &[Atom<'gc>]) -> TermRef<'gc> + 'a>,
+    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     let src = form.source;
     match form.kind {
+        TermKind::Values(values) => {
+            with_cps!(cps;
+                @tk* (h) vals = &values;
+                # fk(cps, &vals)
+            )
+        }
+        TermKind::Receive(formals, formals_opt, producer, consumer) => {
+            let consumer_k_var = cps.fresh_variable("consumer");
+
+            let consumer_k = Cont::Local {
+                name: Value::new(false),
+                binding: consumer_k_var,
+                args: formals,
+                variadic: formals_opt,
+                body: t_k(cps, consumer, fk, h),
+                reified: false,
+                source: src,
+            };
+            let letk_body = t_c(cps, producer, consumer_k_var, h);
+
+            let consumer_k = Gc::new(&cps.ctx, consumer_k);
+            Gc::new(
+                &cps.ctx,
+                Term::Letk(Array::from_array(&cps.ctx, &[consumer_k]), letk_body),
+            )
+        }
         TermKind::Const(_) | TermKind::LRef(_) | TermKind::GRef(_) => {
             let atom = m(cps, form);
-            fk(cps, atom)
+            fk(cps, &[atom])
         }
 
         TermKind::Proc(proc) => {
             let tmp = cps.fresh_variable("proc");
 
             let func = cps_func(cps, &proc, tmp);
-            let body = fk(cps, Atom::Local(tmp));
+            let body = fk(cps, &[Atom::Local(tmp)]);
             Gc::new(
                 &cps.ctx,
                 Term::Fix(Array::from_array(&cps.ctx, &[func]), body),
@@ -36,14 +63,14 @@ pub fn t_k<'a, 'gc>(
 
         TermKind::Call(proc, args) => {
             with_cps!(cps;
-                letk after_call (res) = fk(cps, Atom::Local(res));
-                @tk proc = proc;
-                @tk* args = &args;
+                letk after_call (res) = fk(cps, &[Atom::Local(res)]);
+                @tk (h) proc = proc;
+                @tk* (h) args = &args;
                 # {
                     let args = Array::from_array(&cps.ctx, &args);
                     Gc::new(
                         &cps.ctx,
-                        Term::App(proc, after_call, args, src),
+                        Term::App(proc[0], after_call, h, args, src),
                     )
                 }
             )
@@ -54,43 +81,43 @@ pub fn t_k<'a, 'gc>(
             &args,
             Box::new(move |cps, args| {
                 with_cps!(cps;
-
-                    letk r (rv) = fk(cps, Atom::Local(rv));
-                    # if let Some(term) = get_primitive_table(cps.ctx).try_expand(cps, form.source, prim, &args, r) {
+                    letk r (rv) = fk(cps, &[Atom::Local(rv)]);
+                    # if let Some(term) = get_primitive_table(cps.ctx).try_expand(cps, form.source, prim, &args, r, h) {
                         term
                     } else {
                         with_cps!(cps;
-                            let atom = #% prim args... @ src;
+                            let atom = #% prim (h) args... @ src;
                             continue r (Atom::Local(atom))
                         )
                     }
                 )
             }),
+            h,
         ),
 
         TermKind::Define(var, val) => with_cps!(cps;
-            @tk atom = val;
-            let rv = #% "define" (Atom::Global(var), atom) @ form.source;
-            # fk (cps, Atom::Local(rv))
+            @tk (h) atom = val;
+            let rv = #% "define" (h, Atom::Constant(var), atom[0]) @ form.source;
+            # fk (cps, &[Atom::Local(rv)])
         ),
 
         TermKind::GSet(var, val) => with_cps!(cps;
-            @tk atom = val;
-            let rv = #% "gset!" (Atom::Global(var), atom) @ form.source;
-            # fk(cps, Atom::Local(rv))
+            @tk (h) atom = val;
+            let rv = #% "gset!" (h, Atom::Constant(var), atom[0]) @ form.source;
+            # fk(cps, &[Atom::Local(rv)])
         ),
 
         TermKind::Let(let_) => {
             // let* is compiled differently
             if let LetStyle::LetStar = let_.style {
-                let mut cpsed = t_k(cps, let_.body, fk);
+                let mut cpsed = t_k(cps, let_.body, fk, h);
 
                 for (binding, expr) in let_.lhs.iter().zip(let_.rhs.iter()).rev() {
                     let single = Array::from_array(&cps.ctx, &[*binding]);
                     let expr = *expr;
                     cpsed = with_cps!(cps;
                         letk letstar (single...) @ src = cpsed;
-                        @tc (letstar) expr
+                        @tc (letstar, h) expr
                     );
                 }
 
@@ -98,24 +125,24 @@ pub fn t_k<'a, 'gc>(
             } else {
                 let args = let_.lhs;
                 with_cps!(cps;
-                    @tk* aexps = &let_.rhs;
-                    letk r#let(args...) @ src = t_k(cps, let_.body, fk);
+                    @tk* (h) aexps = &let_.rhs;
+                    letk r#let(args...) @ src = t_k(cps, let_.body, fk, h);
                     continue r#let aexps ...
                 )
             }
         }
 
         TermKind::Seq(seq) => with_cps!(cps;
-            @tk* aexps = &seq;
-            # fk(cps, *aexps.last().expect("Sequence should not be empty"))
+            @tk* (h) aexps = &seq;
+            # fk(cps, &[*aexps.last().expect("Sequence should not be empty")])
         ),
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
-            @tk atest = test;
-            letk cont (rv) = fk(cps, Atom::Local(rv));
-            letk kcons () = t_c(cps, cons, cont);
-            letk kalt () = t_c(cps, alt, cont);
-            # Gc::new(&cps.ctx, Term::If(atest, kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
+            @tk (h) atest = test;
+            letk cont (rv) = fk(cps, &[Atom::Local(rv)]);
+            letk kcons () = t_c(cps, cons, cont, h);
+            letk kalt () = t_c(cps, alt, cont, h);
+            # Gc::new(&cps.ctx, Term::If(atest[0], kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
         ),
 
         TermKind::Fix(fix) => {
@@ -129,7 +156,7 @@ pub fn t_k<'a, 'gc>(
                 })
                 .collect::<Vec<_>>();
 
-            let body = t_k(cps, fix.body, fk);
+            let body = t_k(cps, fix.body, fk, h);
 
             Gc::new(
                 &cps.ctx,
@@ -145,6 +172,7 @@ pub fn t_c<'a, 'gc>(
     cps: &'a mut CPSBuilder<'gc>,
     form: CoreTermRef<'gc>,
     k: LVarRef<'gc>,
+    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     let src = form.source;
 
@@ -160,7 +188,7 @@ pub fn t_c<'a, 'gc>(
                 })
                 .collect::<Vec<_>>();
 
-            let body = t_c(cps, fix.body, k);
+            let body = t_c(cps, fix.body, k, h);
             Gc::new(
                 &cps.ctx,
                 Term::Fix(Array::from_array(&cps.ctx, &funcs), body),
@@ -184,9 +212,10 @@ pub fn t_c<'a, 'gc>(
 
         TermKind::Call(proc, args) => {
             with_cps!(cps;
-                @tk* args = &args;
-                @tk proc = proc;
-                proc (k, args ...) @ src
+                @tk* (h) args = &args;
+                @tk (h) proc = proc;
+                # let proc = proc[0];
+                proc (k, h, args ...) @ src
             )
         }
 
@@ -195,40 +224,41 @@ pub fn t_c<'a, 'gc>(
             &args,
             Box::new(move |cps, args| {
                 if let Some(term) =
-                    get_primitive_table(cps.ctx).try_expand(cps, src, prim, &args, k)
+                    get_primitive_table(cps.ctx).try_expand(cps, src, prim, &args, k, h)
                 {
                     return term;
                 }
 
                 with_cps!(cps;
-                    let rv = #% prim args... @ src;
+                    let rv = #% prim (h) args... @ src;
                     continue k (Atom::Local(rv))
                 )
             }),
+            h,
         ),
 
         TermKind::Define(var, val) => with_cps!(cps;
-            @tk atom = val;
-            let rv = #% "define" (Atom::Global(var), atom) @ src;
+            @tk (h) atom = val;
+            let rv = #% "define" (h, Atom::Constant(var), atom[0]) @ src;
             continue k (Atom::Local(rv))
         ),
 
         TermKind::GSet(var, val) => with_cps!(cps;
-            @tk atom = val;
-            let rv = #% "gset!" (Atom::Global(var), atom) @ src;
+            @tk (h) atom = val;
+            let rv = #% "gset!" (h, Atom::Constant(var), atom[0]) @ src;
             continue k (Atom::Local(rv))
         ),
 
         TermKind::Let(let_) => {
             if let LetStyle::LetStar = let_.style {
-                let mut cpsed = t_c(cps, let_.body, k);
+                let mut cpsed = t_c(cps, let_.body, k, h);
 
                 for (binding, expr) in let_.lhs.iter().zip(let_.rhs.iter()).rev() {
                     let single = Array::from_array(&cps.ctx, &[*binding]);
                     let expr = *expr;
                     cpsed = with_cps!(cps;
                         letk letstar (single...) @ src = cpsed;
-                        @tc (letstar) expr
+                        @tc (letstar, h) expr
                     );
                 }
 
@@ -236,24 +266,56 @@ pub fn t_c<'a, 'gc>(
             } else {
                 let args = let_.lhs;
                 with_cps!(cps;
-                    @tk* aexps = &let_.rhs;
-                    letk r#let(args...) @ src = t_c(cps, let_.body, k);
+                    @tk* (h) aexps = &let_.rhs;
+                    letk r#let(args...) @ src = t_c(cps, let_.body, k, h);
+
                     continue r#let aexps ...
                 )
             }
         }
 
         TermKind::Seq(seq) => with_cps!(cps;
-            @tk* aexps = &seq;
-            continue k (*aexps.last().expect("Sequence should not be empty"))
+            @tk* (h) aexps = &seq;
+            # {
+                let args = Array::from_array(&cps.ctx, [*aexps.last().expect("Sequence should not be empty")]);
+                Gc::new(&cps.ctx, Term::Continue(k, args, src))
+            }
         ),
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
-            @tk atest = test;
-            letk kcons () = t_c(cps, cons, k);
-            letk kalt () = t_c(cps, alt, k);
-            # Gc::new(&cps.ctx, Term::If(atest, kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
+            @tk (h) atest = test;
+            letk kcons () = t_c(cps, cons, k, h);
+            letk kalt () = t_c(cps, alt, k, h);
+            # Gc::new(&cps.ctx, Term::If(atest[0], kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
         ),
+
+        TermKind::Receive(formals, formals_opt, producer, consumer) => {
+            let consumer_k_var = cps.fresh_variable("consumer");
+
+            let consumer_k = Cont::Local {
+                name: Value::new(false),
+                binding: consumer_k_var,
+                args: formals,
+                variadic: formals_opt,
+                body: t_c(cps, consumer, k, h),
+                reified: false,
+                source: src,
+            };
+            let letk_body = t_c(cps, producer, consumer_k_var, h);
+
+            let consumer_k = Gc::new(&cps.ctx, consumer_k);
+            Gc::new(
+                &cps.ctx,
+                Term::Letk(Array::from_array(&cps.ctx, &[consumer_k]), letk_body),
+            )
+        }
+
+        TermKind::Values(values) => {
+            with_cps!(cps;
+                @tk* (h) vals = &values;
+                continue k (Atom::Values(Array::from_array(&cps.ctx, &vals)))
+            )
+        }
 
         _ => todo!(),
     }
@@ -273,6 +335,7 @@ pub fn t_k_many<'a, 'gc>(
     builder: &'a mut CPSBuilder<'gc>,
     forms: &'a [CoreTermRef<'gc>],
     fk: Box<dyn FnOnce(&mut CPSBuilder<'gc>, Vec<Atom<'gc>>) -> TermRef<'gc> + 'a>,
+    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     let forms = forms.as_ref();
     if forms.is_empty() {
@@ -286,19 +349,21 @@ pub fn t_k_many<'a, 'gc>(
         *first,
         Box::new(move |builder, first| {
             if rest.is_empty() {
-                fk(builder, vec![first])
+                fk(builder, first.to_vec())
             } else {
                 t_k_many(
                     builder,
                     rest,
                     Box::new(move |builder, rest| {
-                        let mut atoms = vec![first];
-                        atoms.extend(rest);
+                        let mut atoms = first.to_vec();
+                        atoms.extend(rest.to_vec());
                         fk(builder, atoms)
                     }),
+                    h,
                 )
             }
         }),
+        h,
     )
 }
 
@@ -308,8 +373,8 @@ pub fn cps_func<'a, 'gc>(
     binding: LVarRef<'gc>,
 ) -> FuncRef<'gc> {
     let return_cont = builder.fresh_variable("return");
-
-    let body = t_c(builder, proc.body, return_cont);
+    let handler_cont = builder.fresh_variable("handler");
+    let body = t_c(builder, proc.body, return_cont, handler_cont);
 
     Gc::new(
         &builder.ctx,
@@ -319,6 +384,7 @@ pub fn cps_func<'a, 'gc>(
             binding,
             source: proc.source,
             return_cont,
+            handler_cont,
             variadic: proc.variadic,
             body,
         },
@@ -364,6 +430,7 @@ pub type PrimitiveTransformer = for<'a, 'gc, 'b> fn(
     op: Value<'gc>,
     params: &'b [Atom<'gc>],
     k: LVarRef<'gc>,
+    h: LVarRef<'gc>,
 ) -> Option<TermRef<'gc>>;
 
 pub struct PrimitiveTable<'gc> {
@@ -423,9 +490,10 @@ impl<'gc> PrimitiveTable<'gc> {
         prim: Value<'gc>,
         args: &[Atom<'gc>],
         k: LVarRef<'gc>,
+        h: LVarRef<'gc>,
     ) -> Option<TermRef<'gc>> {
         if let Some(transformer) = self.table.get(&prim) {
-            transformer(cps, src, prim, args, k)
+            transformer(cps, src, prim, args, k, h)
         } else {
             None
         }
@@ -435,6 +503,7 @@ impl<'gc> PrimitiveTable<'gc> {
 static_symbols!(
     RAISE_TYPE_ERROR = "raise-type-error"
     RAISE_RANGE_ERROR = "raise-range-error"
+    RAISE_ARITY_ERROR = "raise-arity-error"
 );
 
 pub fn ensure_string<'gc, F>(
@@ -442,6 +511,7 @@ pub fn ensure_string<'gc, F>(
     src: Value<'gc>,
     op: Value<'gc>,
     x: Atom<'gc>,
+    h: LVarRef<'gc>,
     have_length: F,
 ) -> TermRef<'gc>
 where
@@ -460,18 +530,18 @@ where
             throw raise_type_error(cps.ctx), const_not_string; src
         );
         letk k () = with_cps!(cps;
-            let length = #% ".refptr" (x, offset_of!(Str, length) as i32) @ src;
+            let length = #% ".refptr" (h, x, offset_of!(Str, length) as i32) @ src;
             # {
                 have_length(cps, Atom::Local(length))
             }
         );
         letk check_str_typecode (x) = with_cps!(cps;
-            let tc8 = #% ".typecode8" (x) @ src;
-            let str_typecode = #% "u8=" (tc8, Value::new(TypeCode8::STRING.bits() as i32)) @ src;
+            let tc8 = #% ".typecode8" (h, x) @ src;
+            let str_typecode = #% "u8=" (h, tc8, Value::new(TypeCode8::STRING.bits() as i32)) @ src;
             if str_typecode => k | not_string
         );
 
-        let is_immediate = #% ".is-immediate" (x) @ src;
+        let is_immediate = #% ".is-immediate" (h, x) @ src;
         if is_immediate => not_string | check_str_typecode
     )
 }

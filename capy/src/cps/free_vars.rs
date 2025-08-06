@@ -10,8 +10,25 @@ type Vars<'gc> = HashSet<LVarRef<'gc>>;
 pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarRef<'gc>> {
     match *term {
         Term::Let(bind, expr, body) => match expr {
-            Expression::PrimCall(_, args, _) => {
-                let map: Vars = args.iter().copied().filter_map(get_fva).collect();
+            Expression::PrimCall(_, args, h, _) => {
+                let mut map: Vars = args.iter().copied().flat_map(get_fva).collect();
+                map.insert(h);
+                map.union(&get_fvt(body, fv))
+                    .filter(|v| **v != bind)
+                    .copied()
+                    .collect()
+            }
+
+            Expression::ValuesRest(atom, _) => {
+                let map = get_fva(atom).iter().copied().collect::<HashSet<_>>();
+                map.union(&get_fvt(body, fv))
+                    .filter(|v| **v != bind)
+                    .copied()
+                    .collect()
+            }
+
+            Expression::ValuesAt(atom, _) => {
+                let map = get_fva(atom).iter().copied().collect::<HashSet<_>>();
                 map.union(&get_fvt(body, fv))
                     .filter(|v| **v != bind)
                     .copied()
@@ -50,16 +67,19 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
         Term::Continue(k, args, _) => args
             .iter()
             .copied()
-            .filter_map(get_fva)
+            .flat_map(get_fva)
             .chain(std::iter::once(k))
             .collect(),
-        Term::App(func, k, args, _) => {
+
+        Term::App(func, k, h, args, _) => {
             fv.cvals.insert(k);
+            fv.cvals.insert(h);
             args.iter()
                 .copied()
-                .filter_map(get_fva)
-                .chain(std::iter::once(func).filter_map(get_fva))
+                .flat_map(get_fva)
+                .chain(std::iter::once(func).flat_map(get_fva))
                 .chain(std::iter::once(k))
+                .chain(std::iter::once(h))
                 .collect()
         }
         Term::Throw(throw, _) => match throw {
@@ -79,10 +99,11 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
     }
 }
 
-fn get_fva<'gc>(atom: Atom<'gc>) -> Option<LVarRef<'gc>> {
+fn get_fva<'gc>(atom: Atom<'gc>) -> Vec<LVarRef<'gc>> {
     match atom {
-        Atom::Local(lvar) => Some(lvar),
-        _ => None,
+        Atom::Local(lvar) => vec![lvar],
+        Atom::Values(atoms) => atoms.iter().copied().flat_map(get_fva).collect(),
+        _ => Vec::new(),
     }
 }
 

@@ -7,7 +7,7 @@ use crate::runtime::Context;
 
 use super::*;
 pub enum Return<'gc> {
-    Ok(Value<'gc>),
+    Continue(Value<'gc>),
     Err(Value<'gc>),
 }
 
@@ -15,14 +15,24 @@ pub enum Return<'gc> {
 pub struct NativeProc<'gc> {
     pub header: ScmHeader,
     pub closure: Option<ArrayRef<'gc, Value<'gc>>>,
-    pub proc: fn(Context<'gc>, &[Value<'gc>], Option<ArrayRef<'gc, Value<'gc>>>) -> Return<'gc>,
+    pub proc: fn(
+        Context<'gc>,
+        Value<'gc>,
+        &[Value<'gc>],
+        Option<ArrayRef<'gc, Value<'gc>>>,
+    ) -> Return<'gc>,
 }
 
 impl<'gc> NativeProc<'gc> {
     pub fn new(
         ctx: Context<'gc>,
         closure: Option<impl AsRef<[Value<'gc>]>>,
-        proc: fn(Context<'gc>, &[Value<'gc>], Option<ArrayRef<'gc, Value<'gc>>>) -> Return<'gc>,
+        proc: fn(
+            Context<'gc>,
+            Value<'gc>,
+            &[Value<'gc>],
+            Option<ArrayRef<'gc, Value<'gc>>>,
+        ) -> Return<'gc>,
     ) -> Gc<'gc, Self> {
         let closure = closure.map(|c| Array::from_array(&ctx, c.as_ref()));
 
@@ -87,4 +97,30 @@ impl<'gc> Closure<'gc> {
     pub fn is_continuation(&self) -> bool {
         self.header.type_bits() == TypeCode16::CLOSURE_K.bits()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Trace)]
+#[repr(u8)]
+#[collect(no_drop)]
+pub enum NativeTrampolineCode {
+    /// Continue execution from provided continuation.
+    Continue = 0,
+
+    /// Call Scheme code.
+    Call = 1,
+    /// Yield from Scheme code.
+    ///
+    /// Return value is returned to the code that called into Scheme.
+    Yield = 2,
+
+    /// Error. Value contains the error descriptor.
+    Error = 3,
+}
+
+#[derive(Trace, Debug, Clone, Copy)]
+#[repr(C)]
+#[collect(no_drop)]
+pub struct NativeTrampolineReturn<'gc> {
+    pub code: NativeTrampolineCode,
+    pub value: Value<'gc>,
 }

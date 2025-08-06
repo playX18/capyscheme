@@ -20,6 +20,7 @@ const FUNC_RETURN_CONT: usize = 3;
 const FUNC_ARGS: usize = 4;
 const FUNC_VARIADIC: usize = 5;
 const FUNC_BODY: usize = 6;
+const FUNC_HANDLER_CONT: usize = 7;
 
 const CONT_NAME: usize = 0;
 const CONT_BINDING: usize = 1;
@@ -32,6 +33,7 @@ const CONT_SOURCE: usize = 5;
 #[collect(no_drop)]
 pub struct CPSSymbols<'gc> {
     pub continue_: Value<'gc>,
+    pub raise: Value<'gc>,
     pub throw: Value<'gc>,
     pub throw_value: Value<'gc>,
     pub throw_value_and_data: Value<'gc>,
@@ -42,6 +44,8 @@ pub struct CPSSymbols<'gc> {
     pub func: Value<'gc>,
     pub cond: Value<'gc>,
     pub primcall: Value<'gc>,
+    pub values_at: Value<'gc>,
+    pub values_rest: Value<'gc>,
     pub app: Value<'gc>,
     pub global: Value<'gc>,
     pub lref: Value<'gc>,
@@ -92,11 +96,28 @@ impl<'gc> CPSSerializer<'gc> {
 
     pub fn expr(&mut self, expr: Expression<'gc>) -> Value<'gc> {
         match expr {
-            Expression::PrimCall(prim, args, src) => {
+            Expression::PrimCall(prim, args, h, src) => {
                 let atoms = args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>();
                 let args = Vector::from_slice(&self.ctx, &atoms);
-                vector!(self.ctx, self.symbols.primcall, prim, args, src).into()
+                let h = self.lvar(h);
+                vector!(self.ctx, self.symbols.primcall, prim, args, h, src).into()
             }
+
+            Expression::ValuesAt(atom, ix) => vector!(
+                self.ctx,
+                self.symbols.values_at,
+                self.atom(atom),
+                Value::new(ix as i32)
+            )
+            .into(),
+
+            Expression::ValuesRest(atom, from) => vector!(
+                self.ctx,
+                self.symbols.values_rest,
+                self.atom(atom),
+                Value::new(from as i32)
+            )
+            .into(),
         }
     }
 
@@ -140,6 +161,7 @@ impl<'gc> CPSSerializer<'gc> {
         let return_cont = self.lvar(f.return_cont());
         let variadic = f.variadic.map_or(Value::new(false), |v| self.lvar(v));
         let binding = self.lvar(f.binding());
+        let handler = self.lvar(f.handler_cont);
 
         vector!(
             self.ctx,
@@ -150,19 +172,21 @@ impl<'gc> CPSSerializer<'gc> {
             return_cont,
             args,
             variadic,
-            body
+            body,
+            handler
         )
         .into()
     }
 
     pub fn term(&mut self, term: TermRef<'gc>) -> Value<'gc> {
         match *term {
-            Term::App(f, k, args, src) => {
+            Term::App(f, k, h, args, src) => {
                 let args = args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>();
                 let args = Vector::from_slice(&self.ctx, &args);
                 let f = self.atom(f);
                 let k = self.lvar(k);
-                vector!(self.ctx, self.symbols.app, f, k, args, src).into()
+                let h = self.lvar(h);
+                vector!(self.ctx, self.symbols.app, f, k, h, args, src).into()
             }
 
             Term::Continue(k, args, src) => {
@@ -252,6 +276,9 @@ pub fn cps_symbols<'gc>(ctx: Context<'gc>) -> &'gc CPSSymbols<'gc> {
 
             Global::new(CPSSymbols {
                 continue_,
+                raise: Symbol::from_str(ctx, "raise").into(),
+                values_at: Symbol::from_str(ctx, "values-ref").into(),
+                values_rest: Symbol::from_str(ctx, "values&").into(),
                 throw,
                 throw_value,
                 throw_value_and_data,
@@ -324,10 +351,11 @@ impl<'gc> CPSDeserializer<'gc> {
         if vec[0] == self.symbols.primcall {
             let prim = vec[1];
             let args = vec[2].downcast::<Vector>();
-            let src = vec[3];
+            let h = self.lvar(vec[3]);
+            let src = vec[4];
             let args = args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>();
             let args = Array::from_array(&self.ctx, &args);
-            Expression::PrimCall(prim, args, src)
+            Expression::PrimCall(prim, args, h, src)
         } else {
             panic!("Unexpected expression type: {:?}", value);
         }
@@ -384,12 +412,14 @@ impl<'gc> CPSDeserializer<'gc> {
                 Some(self.lvar(func[FUNC_VARIADIC]))
             };
             let body = self.term(func[FUNC_BODY]);
+            let handler_cont = self.lvar(func[FUNC_HANDLER_CONT]);
             FuncRef::new(
                 &self.ctx,
                 Func {
                     name,
                     binding,
                     return_cont,
+                    handler_cont,
                     args,
                     variadic,
                     body,
@@ -407,10 +437,11 @@ impl<'gc> CPSDeserializer<'gc> {
             v if v == self.symbols.app => {
                 let f = self.atom(vec[1]);
                 let k = self.lvar(vec[2]);
-                let args = vec[3].downcast::<Vector>();
+                let h = self.lvar(vec[3]);
+                let args = vec[4].downcast::<Vector>();
                 let args = args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>();
                 let args = Array::from_array(&self.ctx, &args);
-                Term::App(f, k, args, vec[4])
+                Term::App(f, k, h, args, vec[5])
             }
 
             v if v == self.symbols.continue_ => {

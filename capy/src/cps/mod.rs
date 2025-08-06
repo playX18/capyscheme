@@ -2,7 +2,7 @@
 
 pub mod builder;
 pub mod closure;
-pub mod contify;
+//pub mod contify;
 pub mod fold;
 pub mod free_vars;
 pub mod optimizer;
@@ -12,6 +12,5 @@ pub mod reify;
 pub mod sexp;
 pub mod term;
 
-pub use contify::contify;
 pub use optimizer::rewrite_func;
 pub use reify::{ReifyInfo, reify};

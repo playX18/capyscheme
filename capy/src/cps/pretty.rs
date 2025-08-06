@@ -17,7 +17,11 @@ impl<'gc> Atom<'gc> {
             Atom::Constant(value) => alloc.text(format!("{}", value)),
             Atom::Global(value) => alloc.text(format!("(global {})", value)),
             Atom::Local(var) => alloc.text(format!("{}", var.name)),
-            Atom::Func(func) => func.pretty(alloc),
+            Atom::Values(atoms) => {
+                let atoms_doc =
+                    alloc.intersperse(atoms.iter().map(|atom| atom.pretty(alloc)), alloc.space());
+                (alloc.text("values") + alloc.space() + atoms_doc).parens()
+            }
         }
     }
 }
@@ -33,6 +37,7 @@ impl<'gc> Func<'gc> {
             alloc,
             self.name,
             Some(self.return_cont),
+            Some(self.handler_cont),
             self.args.iter().map(|arg| alloc.text(arg.name.to_string())),
             self.variadic.map(|v| alloc.text(v.name.to_string())),
         );
@@ -113,12 +118,14 @@ impl<'gc> Term<'gc> {
             .group()
             .parens(),
 
-            Term::App(f, k, args, _) => {
+            Term::App(f, k, h, args, _) => {
                 let args_doc =
                     alloc.intersperse(args.iter().map(|arg| arg.pretty(alloc)), alloc.space());
                 (f.pretty(alloc)
                     + alloc.space()
                     + alloc.text(k.name.to_string())
+                    + alloc.space()
+                    + alloc.text(h.name.to_string())
                     + if args.is_empty() {
                         alloc.nil()
                     } else {
@@ -204,9 +211,13 @@ impl<'gc> Expression<'gc> {
     {
         match self {
             // #%prim(args...)
-            Expression::PrimCall(prim, args, _) => {
-                let args_doc =
-                    alloc.intersperse(args.iter().map(|arg| arg.pretty(alloc)), alloc.space());
+            Expression::PrimCall(prim, args, h, _) => {
+                let args_doc = alloc.intersperse(
+                    std::iter::once(h)
+                        .map(|h| alloc.text(h.name.to_string()))
+                        .chain(args.iter().map(|arg| arg.pretty(alloc))),
+                    alloc.space(),
+                );
                 (alloc.text("#%")
                     + alloc.text(prim.to_string())
                     + if args.is_empty() {
@@ -217,6 +228,28 @@ impl<'gc> Expression<'gc> {
                     + args_doc)
                     .group()
                     .parens()
+            }
+
+            Expression::ValuesAt(atom, from) => {
+                // (values-ref <atom> <from>)
+                (alloc.text("values-ref")
+                    + alloc.space()
+                    + atom.pretty(alloc)
+                    + alloc.space()
+                    + alloc.text(from.to_string()))
+                .group()
+                .parens()
+            }
+
+            Expression::ValuesRest(atom, from) => {
+                // (values-rest <atom> <from>)
+                (alloc.text("values-rest")
+                    + alloc.space()
+                    + atom.pretty(alloc)
+                    + alloc.space()
+                    + alloc.text(from.to_string()))
+                .group()
+                .parens()
             }
         }
     }
@@ -244,6 +277,7 @@ impl<'gc> Cont<'gc> {
                 let args = name_and_args(
                     alloc,
                     *name,
+                    None,
                     None,
                     args.iter().map(|arg| alloc.text(arg.name.to_string())),
                     variadic.map(|v| alloc.text(v.name.to_string())),
@@ -277,6 +311,7 @@ fn name_and_args<'a, 'gc, D, A>(
     alloc: &'a D,
     name: Value<'gc>,
     k: Option<LVarRef<'gc>>,
+    h: Option<LVarRef<'gc>>,
     args: impl Iterator<Item = DocBuilder<'a, D, A>>,
     variadic: Option<DocBuilder<'a, D, A>>,
 ) -> DocBuilder<'a, D, A>
@@ -290,7 +325,11 @@ where
     } else {
         None
     };
-    let args = k.iter().map(|k| alloc.text(k.name.to_string())).chain(args);
+    let args = k
+        .iter()
+        .map(|k| alloc.text(k.name.to_string()))
+        .chain(h.iter().map(|h| alloc.text(h.name.to_string())))
+        .chain(args);
     let args: Vec<_> = args.collect();
     let is_empty = args.is_empty();
     let args_doc = if !args.is_empty() {

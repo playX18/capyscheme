@@ -1,173 +1,20 @@
 //! Constant-folding for CPS terms.
-//!
 #![allow(dead_code, unused_variables, unused_mut, unused_assignments)]
 
-use rsgc::Gc;
-use rsgc::Global;
-use rsgc::Rootable;
-use rsgc::Trace;
-use rsgc::alloc::Array;
-use rsgc::mmtk::util::Address;
-use rsgc::mmtk::vm::slot::SimpleSlot;
-use rsgc::object::GCObject;
-
-use crate::cps::term::Expression;
-use crate::cps::term::FuncRef;
-use crate::cps::term::Term;
-use crate::cps::term::TermRef;
-use crate::cps::term::Throw;
 use crate::runtime::Context;
 use crate::runtime::value::*;
 use crate::{
     cps::term::Atom,
     runtime::value::{Number, Value},
 };
+use rsgc::Global;
+use rsgc::Rootable;
+use rsgc::Trace;
+use rsgc::mmtk::util::Address;
+use rsgc::mmtk::vm::slot::SimpleSlot;
+use rsgc::object::GCObject;
 use std::collections::HashMap;
 use std::sync::OnceLock;
-
-pub fn fold<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
-    rec(ctx, &mut HashMap::new(), term)
-}
-
-pub fn fold_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> FuncRef<'gc> {
-    let body = fold(ctx, func.body);
-    func.with_body(ctx, body)
-}
-
-fn subst_atom<'gc>(subst: &mut HashMap<Atom<'gc>, Atom<'gc>>, atom: Atom<'gc>) -> Atom<'gc> {
-    subst.get(&atom).cloned().unwrap_or(atom)
-}
-
-fn rec<'gc>(
-    ctx: Context<'gc>,
-    subst: &mut HashMap<Atom<'gc>, Atom<'gc>>,
-    term: TermRef<'gc>,
-) -> TermRef<'gc> {
-    match *term {
-        Term::Let(bind, expr, body) => match expr {
-            Expression::PrimCall(prim, args, src) => {
-                let args = args
-                    .iter()
-                    .map(|arg| subst.get(arg).cloned().unwrap_or(*arg))
-                    .collect::<Vec<_>>();
-
-                if args.iter().all(|arg| matches!(arg, Atom::Constant(_))) {
-                    let table = folding_table(ctx);
-
-                    if let Some(entry) = table.table.get(&prim)
-                        && entry.args == args.len()
-                        && !entry.variadic
-                    {
-                        let args = args
-                            .iter()
-                            .map(|arg| match arg {
-                                Atom::Constant(val) => val.clone(),
-                                _ => unreachable!(),
-                            })
-                            .collect::<Vec<_>>();
-
-                        if let Some(result) = entry.apply(ctx, &args) {
-                            let new_atom = Atom::Constant(result);
-                            subst.insert(Atom::Local(bind), new_atom.clone());
-                        }
-
-                        return rec(ctx, subst, body);
-                    }
-                }
-
-                let args = Array::from_array(&ctx, args);
-
-                Gc::new(
-                    &ctx,
-                    Term::Let(
-                        bind,
-                        Expression::PrimCall(prim, args, src),
-                        rec(ctx, subst, body),
-                    ),
-                )
-            }
-        },
-
-        Term::App(f, k, args, src) => {
-            let args = args
-                .iter()
-                .map(|arg| subst_atom(subst, *arg))
-                .collect::<Vec<_>>();
-
-            Gc::new(
-                &ctx,
-                Term::App(subst_atom(subst, f), k, Array::from_array(&ctx, args), src),
-            )
-        }
-
-        Term::Continue(k, args, src) => {
-            let args = args
-                .iter()
-                .map(|arg| subst_atom(subst, *arg))
-                .collect::<Vec<_>>();
-
-            Gc::new(&ctx, Term::Continue(k, Array::from_array(&ctx, args), src))
-        }
-
-        Term::If(test, kcons, kalt, hint) => {
-            let test = subst_atom(subst, test);
-            if let Atom::Constant(val) = test {
-                let k = if val.as_bool() { kcons } else { kalt };
-
-                return Gc::new(
-                    &ctx,
-                    Term::Continue(k, Array::from_array(&ctx, []), Value::new(false)),
-                );
-            }
-
-            Gc::new(&ctx, Term::If(test, kcons, kalt, hint))
-        }
-
-        Term::Letk(conts, body) => {
-            let body = rec(ctx, subst, body);
-            let conts = conts
-                .iter()
-                .map(|cont| {
-                    let body = rec(ctx, subst, cont.body().unwrap());
-                    cont.with_body(ctx, body)
-                })
-                .collect::<Vec<_>>();
-
-            Gc::new(&ctx, Term::Letk(Array::from_array(&ctx, conts), body))
-        }
-
-        Term::Fix(funcs, body) => {
-            let body = rec(ctx, subst, body);
-            let funcs = funcs
-                .iter()
-                .map(|func| {
-                    let body = rec(ctx, subst, func.body);
-                    func.with_body(ctx, body)
-                })
-                .collect::<Vec<_>>();
-
-            Gc::new(&ctx, Term::Fix(Array::from_array(&ctx, funcs), body))
-        }
-
-        Term::Throw(throw, src) => {
-            let throw = match throw {
-                Throw::Throw(key, args) => {
-                    let key = subst_atom(subst, key);
-                    let args = subst_atom(subst, args);
-                    Throw::Throw(key, args)
-                }
-                Throw::Value(key, subr_and_message) => {
-                    Throw::Value(subst_atom(subst, key), subst_atom(subst, subr_and_message))
-                }
-                Throw::ValueAndData(key, data) => {
-                    Throw::ValueAndData(subst_atom(subst, key), subst_atom(subst, data))
-                }
-            };
-
-            Gc::new(&ctx, Term::Throw(throw, src))
-        }
-    }
-}
 
 pub struct FoldingTable<'gc> {
     table: HashMap<Value<'gc>, FoldingEntry<'gc>>,

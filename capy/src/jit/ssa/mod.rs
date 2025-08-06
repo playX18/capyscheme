@@ -282,44 +282,67 @@ impl<'gc, 'a, 'f> Current<'gc, 'a, 'f> {
         // reified or return continuation: perform a call
         let k = self.atom(Atom::Local(k));
         let args = values;
-        self.push_args(k, &args);
-        if false {
-            let thread_addr = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::new(),
-                self.mc_value,
-                Mutation::THREAD_OFFSET as i32,
-            );
-            let take_yieldpoint = self.builder.ins().load(
-                types::I32,
-                ir::MemFlags::new(),
-                thread_addr,
-                Thread::TAKE_YIELDPOIN_OFFSET as i32,
-            );
+        self.push_args::<true>(k, &args);
 
-            let take_yieldpoint = self
-                .builder
-                .ins()
-                .icmp_imm(IntCC::NotEqual, take_yieldpoint, 0);
-            let undef_value = self
-                .builder
-                .ins()
-                .iconst(types::I64, Value::VALUE_UNDEFINED as i64);
-            let code = self
-                .builder
-                .ins()
-                .iconst(types::I8, VMReturnCode::Yield as i8 as i64);
-            let bb_continue = self.builder.create_block();
-            self.builder.ins().brif(
-                take_yieldpoint,
-                bb_continue,
-                &[],
-                self.exit_block,
-                &[ir::BlockArg::Value(code), ir::BlockArg::Value(undef_value)],
-            );
+        let thread_addr = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::new(),
+            self.mc_value,
+            Mutation::THREAD_OFFSET as i32,
+        );
+        let take_yieldpoint = self.builder.ins().load(
+            types::I32,
+            ir::MemFlags::new(),
+            thread_addr,
+            Thread::TAKE_YIELDPOIN_OFFSET as i32,
+        );
 
-            self.builder.switch_to_block(bb_continue);
-        }
+        let no_yieldpoint = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, take_yieldpoint, 0);
+
+        let bb_continue = self.builder.create_block();
+        let bb_yield = self.builder.create_block();
+
+        self.builder
+            .ins()
+            .brif(no_yieldpoint, bb_continue, &[], bb_yield, &[]);
+
+        self.builder.func.layout.set_cold(bb_yield);
+        self.builder.switch_to_block(bb_yield);
+        let undef_value: ir::Value = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::VALUE_UNDEFINED as i64);
+        let code = self
+            .builder
+            .ins()
+            .iconst(types::I8, VMReturnCode::Yield as i8 as i64);
+
+        /* save continuation, proc set to UNDEFINED
+
+          args should already be on stack
+
+        */
+        self.builder.ins().store(
+            ir::MemFlags::new(),
+            k,
+            self.state_value,
+            offset_of!(State, vm_state) as i32 + offset_of!(VMState, k) as i32,
+        );
+        self.builder.ins().store(
+            ir::MemFlags::new(),
+            undef_value,
+            self.state_value,
+            offset_of!(State, vm_state) as i32 + offset_of!(VMState, proc) as i32,
+        );
+        self.builder.ins().jump(
+            self.exit_block,
+            &[ir::BlockArg::Value(code), ir::BlockArg::Value(undef_value)],
+        );
+
+        self.builder.switch_to_block(bb_continue);
 
         let addr = self.builder.ins().load(
             types::I64,
@@ -335,7 +358,7 @@ impl<'gc, 'a, 'f> Current<'gc, 'a, 'f> {
         )
     }
 
-    pub fn push_args(&mut self, proc: ir::Value, args: &[ir::Value]) {
+    pub fn push_args<const K: bool>(&mut self, proc: ir::Value, args: &[ir::Value]) {
         let state = self.state_value;
         let vm_off = offset_of!(State, vm_state) as i32;
         let argc_off = offset_of!(VMState, argc) as i32;
@@ -360,12 +383,16 @@ impl<'gc, 'a, 'f> Current<'gc, 'a, 'f> {
         self.builder
             .ins()
             .store(ir::MemFlags::new(), argc, state, vm_off + argc_off);
-        self.builder.ins().store(
-            ir::MemFlags::new(),
-            proc,
-            state,
-            vm_off + offset_of!(VMState, proc) as i32,
-        );
+
+        let offset = if K {
+            offset_of!(VMState, k) as i32
+        } else {
+            offset_of!(VMState, proc) as i32
+        };
+
+        self.builder
+            .ins()
+            .store(ir::MemFlags::new(), proc, state, vm_off + offset);
     }
 
     pub fn return_call<const CHECK_CLOS: bool>(
@@ -374,7 +401,7 @@ impl<'gc, 'a, 'f> Current<'gc, 'a, 'f> {
         k: ir::Value,
         args: &[ir::Value],
     ) -> ir::Inst {
-        self.push_args(proc, args);
+        self.push_args::<false>(proc, args);
         if CHECK_CLOS {
             let err_code = self
                 .builder
@@ -424,10 +451,20 @@ impl<'gc, 'a, 'f> Current<'gc, 'a, 'f> {
             Thread::TAKE_YIELDPOIN_OFFSET as i32,
         );
 
-        let take_yieldpoint = self
+        let no_yieldpoint = self
             .builder
             .ins()
-            .icmp_imm(IntCC::NotEqual, take_yieldpoint, 0);
+            .icmp_imm(IntCC::Equal, take_yieldpoint, 0);
+
+        let bb_continue = self.builder.create_block();
+        let bb_yield = self.builder.create_block();
+        self.builder
+            .ins()
+            .brif(no_yieldpoint, bb_continue, &[], bb_yield, &[]);
+
+        self.builder.func.layout.set_cold(bb_yield);
+        self.builder.switch_to_block(bb_yield);
+
         let undef_value = self
             .builder
             .ins()
@@ -436,11 +473,20 @@ impl<'gc, 'a, 'f> Current<'gc, 'a, 'f> {
             .builder
             .ins()
             .iconst(types::I8, VMReturnCode::Yield as i8 as i64);
-        let bb_continue = self.builder.create_block();
-        self.builder.ins().brif(
-            take_yieldpoint,
-            bb_continue,
-            &[],
+
+        self.builder.ins().store(
+            ir::MemFlags::new(),
+            k,
+            self.state_value,
+            offset_of!(State, vm_state) as i32 + offset_of!(VMState, k) as i32,
+        );
+        self.builder.ins().store(
+            ir::MemFlags::new(),
+            proc,
+            self.state_value,
+            offset_of!(State, vm_state) as i32 + offset_of!(VMState, proc) as i32,
+        );
+        self.builder.ins().jump(
             self.exit_block,
             &[ir::BlockArg::Value(code), ir::BlockArg::Value(undef_value)],
         );
@@ -825,7 +871,7 @@ impl<'gc, 'a, 'f> Current<'gc, 'a, 'f> {
                     .iconst(types::I64, location as usize as i64);
 
                 let name = self.atom(Atom::Constant(name));
-                self.push_args(name, &args);
+                self.push_args::<false>(name, &args);
 
                 let call = self.builder.ins().call_indirect(
                     self.sig_prim,

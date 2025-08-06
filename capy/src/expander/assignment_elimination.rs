@@ -47,6 +47,20 @@ fn substitute<'gc>(
     substs: &HashMap<LVarRef<'gc>, LVarRef<'gc>>,
 ) -> TermRef<'gc> {
     match &term.kind {
+        TermKind::Values(values) => {
+            let values = values
+                .iter()
+                .map(|v| substitute(ctx, *v, substs))
+                .collect::<Vec<_>>();
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::Values(Array::from_array(&ctx, &values)),
+                },
+            )
+        }
+
         TermKind::LRef(lvar) => {
             if let Some(new_lvar) = substs.get(lvar) {
                 box_ref(ctx, *new_lvar)
@@ -156,6 +170,24 @@ fn substitute<'gc>(
             )
         }
 
+        TermKind::Receive(formals, opt_formal, producer, consumer) => {
+            let producer = substitute(ctx, *producer, substs);
+            let consumer = substitute(ctx, *consumer, substs);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::Receive(
+                        formals.clone(),
+                        opt_formal.clone(),
+                        producer,
+                        consumer,
+                    ),
+                },
+            )
+        }
+
         TermKind::Proc(proc) => {
             let body = substitute(ctx, proc.body, substs);
 
@@ -225,6 +257,19 @@ fn substitute<'gc>(
 
 fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
     match &term.kind {
+        TermKind::Values(values) => {
+            let values = values
+                .iter()
+                .map(|v| wrap_mutables(ctx, *v))
+                .collect::<Vec<_>>();
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::Values(Array::from_array(&ctx, &values)),
+                },
+            )
+        }
         TermKind::LRef(_) | TermKind::GRef(_) | TermKind::Const(_) => term,
         TermKind::Let(l) => {
             let rhs = l
@@ -293,6 +338,69 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                         rhs: Array::from_array(&ctx, &rhs),
                         body: wrap,
                     }),
+                },
+            )
+        }
+
+        TermKind::Receive(formals, opt_formals, producer, consumer) => {
+            let producer = wrap_mutables(ctx, *producer);
+
+            let mutables = formals
+                .iter()
+                .chain(opt_formals.iter())
+                .filter(|arg| arg.is_mutated())
+                .collect::<Vec<_>>();
+
+            if mutables.is_empty() {
+                let body = wrap_mutables(ctx, *consumer);
+
+                return Gc::new(
+                    &ctx,
+                    Term {
+                        source: term.source,
+                        kind: TermKind::Receive(
+                            formals.clone(),
+                            opt_formals.clone(),
+                            producer,
+                            body,
+                        ),
+                    },
+                );
+            }
+
+            let mut mlhs = Vec::new();
+            let mut mrhs = Vec::new();
+
+            let mut subst = HashMap::new();
+
+            for var in mutables.iter() {
+                let name = Symbol::from_str_uninterned(&ctx, &format!("&{}", var.name), None);
+                let new_var = fresh_lvar(ctx, name.into());
+                mlhs.push(new_var);
+                mrhs.push(pbox(ctx, **var));
+                subst.insert(**var, new_var);
+            }
+
+            let body = wrap_mutables(ctx, substitute(ctx, *consumer, &subst));
+
+            let wrap = Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::Let(Let {
+                        style: LetStyle::Let,
+                        lhs: Array::from_array(&ctx, &mlhs),
+                        rhs: Array::from_array(&ctx, &mrhs),
+                        body,
+                    }),
+                },
+            );
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::Receive(formals.clone(), opt_formals.clone(), producer, wrap),
                 },
             )
         }

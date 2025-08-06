@@ -1,4 +1,6 @@
 use crate::{
+    expander::core::{Cenv, Error, denotation_of_begin},
+    frontend::reader::{LexicalError, TreeSitter},
     list,
     runtime::{Context, value::*},
     static_symbols,
@@ -10,7 +12,7 @@ pub mod assignment_elimination;
 pub mod compile_cps;
 pub mod core;
 pub mod fix_letrec;
-pub mod library;
+//pub mod library;
 pub mod primitives;
 pub mod synclo;
 
@@ -63,4 +65,45 @@ pub fn source_property<'gc>(
     key: Value<'gc>,
 ) -> Option<Value<'gc>> {
     get_source_property(ctx, obj).and_then(|alist| alist.assq(key).map(|pair| pair.cdr()))
+}
+
+pub fn read_from_string<'gc>(
+    ctx: Context<'gc>,
+    source: impl AsRef<str>,
+    filename: impl AsRef<str>,
+) -> Result<Value<'gc>, LexicalError<'gc>> {
+    let filename = Str::new(&ctx, filename, true);
+    let tree_sitter = TreeSitter::new(ctx, source.as_ref(), filename.into());
+    let program = tree_sitter.read_program()?;
+
+    let mut ls = Value::null();
+
+    for expr in program.iter().rev() {
+        ls = Value::cons(ctx, *expr, ls);
+    }
+
+    if program.is_empty() {
+        ls = Value::cons(ctx, Value::undefined(), ls);
+    }
+
+    Ok(Value::cons(ctx, denotation_of_begin(ctx).into(), ls))
+}
+
+pub fn compile_program<'gc>(
+    ctx: Context<'gc>,
+    program: Value<'gc>,
+) -> Result<crate::cps::term::FuncRef<'gc>, Error<'gc>> {
+    let mut cenv = Cenv::toplevel(ctx);
+    let expanded = core::expand(&mut cenv, program)?;
+    let fixed = fix_letrec::fix_letrec(ctx, expanded);
+    let no_mutation = assignment_elimination::eliminate_assignments(ctx, fixed);
+    let primitives = primitives::resolve_primitives(ctx, no_mutation);
+
+    let cps = compile_cps::cps_toplevel(ctx, &[primitives]);
+    let stdout = std::io::stdout();
+    let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+    doc.1.render(70, &mut stdout.lock()).unwrap();
+    println!();
+    let cps = crate::cps::rewrite_func(ctx, cps);
+    Ok(cps)
 }
