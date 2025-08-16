@@ -1,6 +1,13 @@
 (define (main)
-    (define (foo) (values 1 2 3))
-    (receive (x y . z) (foo) x)
-)
+    (define (map f lst)
+        (let loop ((l lst) (acc '()))
+            (if (null? l)
+                    (reverse acc)
+                    (loop (cdr l) (cons (f (car l)) acc)))))
 
-(receive (x y z) (bar) x)
+    (define (fac-iter n acc)
+        (if (zero? n)
+            acc 
+            (fac-iter (- n 1) (* acc n))))
+    (fac-iter 5 1)
+)

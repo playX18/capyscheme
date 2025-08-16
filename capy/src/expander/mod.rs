@@ -1,4 +1,5 @@
 use crate::{
+    cps::contify,
     expander::core::{Cenv, Error, denotation_of_begin},
     frontend::reader::{LexicalError, TreeSitter},
     list,
@@ -100,10 +101,9 @@ pub fn compile_program<'gc>(
     let primitives = primitives::resolve_primitives(ctx, no_mutation);
 
     let cps = compile_cps::cps_toplevel(ctx, &[primitives]);
-    let stdout = std::io::stdout();
-    let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-    doc.1.render(70, &mut stdout.lock()).unwrap();
-    println!();
-    let cps = crate::cps::rewrite_func(ctx, cps);
+
+    let mut cps = crate::cps::rewrite_func(ctx, cps);
+    cps = cps.with_body(ctx, contify::contify(ctx, cps.body));
+    cps = crate::cps::rewrite_func(ctx, cps);
     Ok(cps)
 }

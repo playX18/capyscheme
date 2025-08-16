@@ -288,6 +288,8 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                         let state =
                             state.with_atom_subst(Atom::Local(binding), Atom::Constant(atom));
                         return shrink_tree(body, state);
+                    } else {
+                        println!("can't fold {}", prim);
                     }
                 }
 
@@ -527,9 +529,9 @@ pub fn rewrite_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> FuncRef<'gc> 
     func.with_body(ctx, body)
 }
 
-const FIBONACCI: &[usize] = &[1, 2, 3, 5, 8, 13];
+const FIBONACCI: &[usize] = &[1, 2, 3, 5, 8, 13, 1000];
 
-const LOOP_UNROLL: &[usize] = &[1, 2, 4, 5, 6, 7];
+const LOOP_UNROLL: &[usize] = &[1, 2, 4, 5, 6, 7, 1000];
 
 fn copy_t<'gc>(
     ctx: Context<'gc>,
