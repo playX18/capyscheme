@@ -1,14 +1,10 @@
-use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, Write};
+use rsgc::{Gc, Mutation, Mutator, Rootable, Trace};
 
-use crate::{
-    //jit::trampoline::TRAMPOLINES,
-    runtime::{
-        fluids::DynamicState,
-        value::{
-            Closure, HashTable, HashTableType, Str,
-            Value, /*  Variable, current_environment, current_variable_environment*/
-        },
-        //vm::{VMReturnCode, VMState, exit_continuation},
+use crate::runtime::{
+    fluids::DynamicState,
+    value::{
+        HashTable, HashTableType,
+        Value, /*  Variable, current_environment, current_variable_environment*/
     },
 };
 

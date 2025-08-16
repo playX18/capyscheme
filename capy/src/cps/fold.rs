@@ -133,6 +133,11 @@ macro_rules! folding {
 
 fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
     folding!(ctx;
+        "zero?" => is_zero(ctx, a) {
+            let Some(a) = a.number() else { return None };
+
+            Some(Value::new(a.is_zero()))
+        }
         "+" => plus(ctx, a,b) {
 
             let Some(a) = a.number() else { return None; };
@@ -291,6 +296,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "car" => car(ctx, a) {
+            println!("fold car {a}");
             if a.is_pair() {
                 Some(a.car())
             } else {
@@ -299,6 +305,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "cdr" => cdr(ctx, a) {
+            println!("fold cdr {a}");
             if a.is_pair() {
                 Some(a.cdr())
             } else {
@@ -308,6 +315,13 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "cons" => cons(ctx, a,b) {
             Some(Value::cons(ctx, a, b))
+        }
+        "reverse" => reverse(ctx, ls) {
+            if ls.is_list() {
+                Some(Value::new(ls.list_reverse(ctx)))
+            } else {
+                None
+            }
         }
 
         /*

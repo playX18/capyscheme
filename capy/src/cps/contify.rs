@@ -80,6 +80,7 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
             // (2) Identify contifiable SCCs (each yields (names, common_rc)).
             let cf = fix1.contifiables();
             // (3) Fold: successively contify each qualifying SCC.
+
             cf.iter()
                 .fold(fix1, |fix, (ns, rc)| fix.contify(ns, *rc, ctx))
         }
@@ -93,9 +94,7 @@ impl<'gc> Func<'gc> {
     /// tail-calls (only direct tail calls counted; used to build the
     /// call graph restricted to sibling bindings inside the same `Fix`).
     pub fn tailcalls(&self) -> Set<LVarRef<'gc>> {
-        let mut set = Set::default();
-        self.body.tailcalls(self.return_cont(), &mut set);
-        set
+        self.body.tailcalls(self.return_cont)
     }
 }
 
@@ -103,26 +102,21 @@ impl<'gc> Term<'gc> {
     /// Traverses term and records any `App` whose
     /// continuation equals the given return continuation,
     /// indicating a tail call site.
-    pub fn tailcalls(&self, retc: LVarRef<'gc>, set: &mut Set<LVarRef<'gc>>) {
+    pub fn tailcalls(&self, retc: LVarRef<'gc>) -> Set<LVarRef<'gc>> {
         match self {
-            Self::Let(_, _, body) => body.tailcalls(retc, set),
+            Self::Fix(_, body) | Self::Let(_, _, body) => body.tailcalls(retc),
+
             Self::Letk(ks, body) => {
-                for body in ks
-                    .iter()
-                    .map(|k| k.body().unwrap())
-                    .chain(std::iter::once(*body))
-                {
-                    body.tailcalls(retc, set);
-                }
+                let body_tc = body.tailcalls(retc);
+                ks.iter().fold(body_tc, |mut acc, k| {
+                    acc.extend(k.body().unwrap().tailcalls(retc));
+                    acc
+                })
             }
 
-            Self::App(Atom::Local(f), c, ..) if *c == retc => {
-                set.insert(*f);
-            }
+            Self::App(Atom::Local(f), c, ..) if *c == retc => [*f].into_iter().collect(),
 
-            Self::Fix(_, body) => body.tailcalls(retc, set),
-
-            _ => (),
+            _ => Set::default(),
         }
     }
 
@@ -153,7 +147,7 @@ impl<'gc> Term<'gc> {
                         })
                         .any(|arg| ns.contains(&arg))
                     {
-                        SingleValueSet::Bottom
+                        SingleValueSet::Top
                     } else {
                         body.common_return_cont(ns, ignore)
                     }
@@ -300,7 +294,7 @@ impl<'gc> Term<'gc> {
             .iter()
             .copied()
             .partition(|f| ns.contains(&f.binding()));
-        let contified = to_contify
+        let contified: ArrayRef<'_, ContRef> = to_contify
             .into_iter()
             .map(|f| {
                 // Substitute each function's own (ret, handler) pair with the shared one
@@ -316,7 +310,7 @@ impl<'gc> Term<'gc> {
                         binding: f.binding,
                         args: f.args,
                         variadic: f.variadic,
-                        body: body.subst(ctx, &subst_map),
+                        body: f.body.subst(ctx, &subst_map),
                         source: f.source,
                         reified: false,
                     },
@@ -337,7 +331,7 @@ impl<'gc> Term<'gc> {
                 ctx,
                 &|body| TermRef::new(&ctx, Term::Letk(contified, body)),
                 fix,
-                rc,
+                ns,
             ),
             ns,
             ctx,
@@ -352,11 +346,11 @@ fn push_in<'gc>(
     ctx: Context<'gc>,
     wrap_with_cnts: &dyn Fn(TermRef<'gc>) -> TermRef<'gc>,
     t: TermRef<'gc>,
-    rc: (LVarRef<'gc>, LVarRef<'gc>),
+    ns: &Set<LVarRef<'gc>>,
 ) -> (bool, TermRef<'gc>) {
     match *t {
         Term::Let(name, expr, body) => {
-            let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, rc);
+            let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, ns);
             (pushed, TermRef::new(&ctx, Term::Let(name, expr, body1)))
         }
 
@@ -365,13 +359,13 @@ fn push_in<'gc>(
                 .iter()
                 .copied()
                 .map(|k| {
-                    let (pushed, cbody1) = push_in(ctx, wrap_with_cnts, k.body().unwrap(), rc);
+                    let (pushed, cbody1) = push_in(ctx, wrap_with_cnts, k.body().unwrap(), ns);
 
                     (pushed, k.with_body(ctx, cbody1))
                 })
                 .unzip();
             let ks1 = Array::from_array(&ctx, ks1);
-            let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, rc);
+            let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, ns);
             let pushed_count = pushed as usize + pushed_k.iter().filter(|&&x| x).count();
             // If more than one branch pushed the site, wrap above them
             // so the continuations are in scope for all.
@@ -390,12 +384,12 @@ fn push_in<'gc>(
                 .iter()
                 .copied()
                 .map(|f| {
-                    let (pushed, body1) = push_in(ctx, wrap_with_cnts, f.body, rc);
+                    let (pushed, body1) = push_in(ctx, wrap_with_cnts, f.body, ns);
                     (pushed, f.with_body(ctx, body1))
                 })
                 .unzip();
 
-            let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, rc);
+            let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, ns);
             let pushed_count = pushed as usize + pushed_f.iter().filter(|&&x| x).count();
             assert!(pushed_count <= 1, "More than one pushed function in Fix");
 
@@ -410,7 +404,7 @@ fn push_in<'gc>(
         }
 
         // Anchor: application using the shared return continuation name.
-        Term::App(Atom::Local(f), ..) if f == rc.0 => (true, wrap_with_cnts(t)),
+        Term::App(Atom::Local(f), ..) if ns.contains(&f) => (true, wrap_with_cnts(t)),
 
         _ => (false, t),
     }
@@ -421,9 +415,11 @@ fn push_down<'gc>(
     ctx: Context<'gc>,
     wrap_with_cnts: &dyn Fn(TermRef<'gc>) -> TermRef<'gc>,
     t: TermRef<'gc>,
-    rc: (LVarRef<'gc>, LVarRef<'gc>),
+    ns: &Set<LVarRef<'gc>>,
 ) -> TermRef<'gc> {
-    push_in(ctx, wrap_with_cnts, t, rc).1
+    let res = push_in(ctx, wrap_with_cnts, t, ns);
+    assert!(res.0, "push_in should always push down");
+    res.1
 }
 
 /// Rewrites tail calls (`App`) to contified functions into direct

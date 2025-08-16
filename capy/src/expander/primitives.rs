@@ -91,6 +91,7 @@ make_primitives!(
     (PRIM_CDDDR, "cdddr", true),
     (PRIM_CADDR, "caddr", true),
     (PRIM_CDDDDR, "cddddr", true),
+    (PRIM_REVERSE, "reverse", true),
     (PRIM_CONS, "cons", true),
     (PRIM_CAR_UNCHECKED, "unsafe-car", true),
     (PRIM_CDR_UNCHECKED, "unsafe-cdr", true),
