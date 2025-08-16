@@ -1,5 +1,5 @@
 use crate::cps::builder::CPSBuilder;
-use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef, Throw};
+use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef};
 use crate::expander::core::{LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef};
 use crate::runtime::Context;
 use crate::runtime::value::{Str, Vector};
@@ -194,6 +194,7 @@ pub fn t_c<'a, 'gc>(
                 Term::Fix(Array::from_array(&cps.ctx, &funcs), body),
             )
         }
+
         TermKind::Const(_) | TermKind::LRef(_) | TermKind::GRef(_) => {
             let atom = m(cps, form);
             with_cps!(cps;
