@@ -1,31 +1,42 @@
-//! Reify continuations into first-class values.
-//!
+use rsgc::{Gc, alloc::ArrayRef, barrier, traits::IterGc};
 
-use std::collections::HashSet;
-
-use crate::cps::{
-    free_vars::{FreeVars, get_fvf},
-    term::{ContRef, FuncRef},
+use crate::{
+    cps::{
+        free_vars::{FreeVars, get_fvf},
+        term::{Cont, ContRef, Func, FuncRef},
+    },
+    runtime::Context,
 };
 
 pub struct ReifyInfo<'gc> {
-    pub reified: HashSet<ContRef<'gc>>,
+    pub entrypoint: FuncRef<'gc>,
+    pub functions: ArrayRef<'gc, FuncRef<'gc>>,
+    pub continuations: ArrayRef<'gc, ContRef<'gc>>,
     pub free_vars: FreeVars<'gc>,
 }
 
-/// Reify continuations in the given CPS term.
+/// Reify the code in CPS function.
 ///
-/// This pass does not produce a new term, but rather marks reified continuations as such.
-///
-/// Continuation is considered reified when it is used as value, captured in a closure, or passed to a function that expects
-/// a continuation as an argument. When one continuation is captured by another continuation, it is not reified
-/// unless the capturing continuation is also reified.
-pub fn reify<'gc>(func: FuncRef<'gc>) -> ReifyInfo<'gc> {
+/// This pass collects free variables for each continuation and function, marks continuations that are "reified" (aka allocated on heap)
+/// and also returns all continuations and functions in the program.
+pub fn reify<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ReifyInfo<'gc> {
     let mut fv = FreeVars::new();
     let _ = get_fvf(func, &mut fv);
     fv.fvars.insert(func, Default::default());
 
-    let mut reified = HashSet::new();
+    for (&cont, vars) in fv.cvars.iter() {
+        let wcont = Gc::write(&ctx, cont);
+        barrier::field!(wcont, Cont, free_vars)
+            .unlock()
+            .set(Some(vars.iter().copied().collect_gc(&ctx)));
+    }
+
+    for (&func, vars) in fv.fvars.iter() {
+        let wfunc = Gc::write(&ctx, func);
+        barrier::field!(wfunc, Func, free_vars)
+            .unlock()
+            .set(Some(vars.iter().copied().collect_gc(&ctx)));
+    }
 
     let mut stack = Vec::new();
 
@@ -48,11 +59,11 @@ pub fn reify<'gc>(func: FuncRef<'gc>) -> ReifyInfo<'gc> {
     }
 
     while let Some(cont) = stack.pop() {
-        if reified.contains(&cont) {
+        if cont.reified.get() {
             continue;
         }
 
-        reified.insert(cont);
+        cont.reified.set(true);
 
         let Some(vars) = fv.cvars.get(&cont) else {
             continue;
@@ -66,7 +77,9 @@ pub fn reify<'gc>(func: FuncRef<'gc>) -> ReifyInfo<'gc> {
     }
 
     ReifyInfo {
-        reified,
+        entrypoint: func,
+        functions: fv.funcs.values().copied().collect_gc(&ctx),
+        continuations: fv.conts.values().copied().collect_gc(&ctx),
         free_vars: fv,
     }
 }

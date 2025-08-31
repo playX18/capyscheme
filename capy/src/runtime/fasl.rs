@@ -94,8 +94,8 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
 
         if obj.is::<Vector>() {
             let vec = obj.downcast::<Vector>();
-            for &item in vec.iter() {
-                self.scan(item)?;
+            for item in vec.iter() {
+                self.scan(item.get())?;
             }
             return Ok(());
         }
@@ -177,8 +177,8 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             let vec = obj.downcast::<Vector>();
             self.put8(FASL_TAG_VECTOR)?;
             self.put32(vec.len() as u32)?;
-            for &item in vec.iter() {
-                self.put(item)?;
+            for item in vec.iter() {
+                self.put(item.get())?;
             }
             return Ok(());
         }
@@ -229,6 +229,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
 
         for (key, value) in self.lites.iter() {
             self.put32(value.as_int32() as u32)?;
+
             if key.is::<Symbol>() {
                 let sym = key.downcast::<Symbol>();
 
@@ -301,9 +302,11 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
 
     pub fn read_lites(&mut self) -> io::Result<()> {
         let count = self.read32()? as usize;
+
         for _ in 0..count {
             let id = self.read32()? as i32;
             let tag = self.read8()?;
+
             let key = match tag {
                 FASL_TAG_SYMBOL => {
                     let len = self.read32()? as usize;
@@ -388,6 +391,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             _x @ FASL_TAG_VECTOR => {
                 let count = self.read32()? as usize;
                 let mut vec = Vec::with_capacity(count);
+
                 for _ in 0..count {
                     vec.push(self.read_value()?);
                 }

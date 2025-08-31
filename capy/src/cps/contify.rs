@@ -28,9 +28,13 @@
 //! This pass runs to a fixed point ([`fixedpoint`]) because contification of
 //! one `fix` can expose new opportunities for contification.
 
+use std::cell::Cell;
+
 use rsgc::{
     Gc,
     alloc::{Array, ArrayRef},
+    barrier::Unlock,
+    cell::Lock,
     traits::IterGc,
 };
 
@@ -62,7 +66,7 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
         Term::Letk(ks, body) => {
             let ks = ks
                 .iter()
-                .map(|k| k.with_body(ctx, rec(ctx, k.body().unwrap())))
+                .map(|k| k.with_body(ctx, rec(ctx, k.body())))
                 .collect_gc(&ctx);
             let body = rec(ctx, *body);
             Gc::new(&ctx, Term::Letk(ks, body))
@@ -109,7 +113,7 @@ impl<'gc> Term<'gc> {
             Self::Letk(ks, body) => {
                 let body_tc = body.tailcalls(retc);
                 ks.iter().fold(body_tc, |mut acc, k| {
-                    acc.extend(k.body().unwrap().tailcalls(retc));
+                    acc.extend(k.body().tailcalls(retc));
                     acc
                 })
             }
@@ -159,7 +163,7 @@ impl<'gc> Term<'gc> {
             Self::Letk(ks, body) => ks
                 .iter()
                 .fold(body.common_return_cont(ns, ignore), |acc, k| {
-                    acc.join(k.body().unwrap().common_return_cont(ns, ignore))
+                    acc.join(k.body().common_return_cont(ns, ignore))
                 }),
 
             Self::Fix(funs, body) => {
@@ -305,14 +309,16 @@ impl<'gc> Term<'gc> {
 
                 Gc::new(
                     &ctx,
-                    Cont::Local {
+                    Cont {
                         name: f.name,
                         binding: f.binding,
                         args: f.args,
                         variadic: f.variadic,
                         body: f.body.subst(ctx, &subst_map),
                         source: f.source,
-                        reified: false,
+                        free_vars: Lock::new(None),
+                        reified: Cell::new(false),
+                        handler: Lock::new(rc.1),
                     },
                 )
             })
@@ -359,12 +365,12 @@ fn push_in<'gc>(
                 .iter()
                 .copied()
                 .map(|k| {
-                    let (pushed, cbody1) = push_in(ctx, wrap_with_cnts, k.body().unwrap(), ns);
+                    let (pushed, cbody1) = push_in(ctx, wrap_with_cnts, k.body(), ns);
 
                     (pushed, k.with_body(ctx, cbody1))
                 })
                 .unzip();
-            let ks1 = Array::from_array(&ctx, ks1);
+            let ks1 = Array::from_slice(&ctx, ks1);
             let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, ns);
             let pushed_count = pushed as usize + pushed_k.iter().filter(|&&x| x).count();
             // If more than one branch pushed the site, wrap above them
@@ -399,7 +405,7 @@ fn push_in<'gc>(
 
             (
                 pushed_count == 1,
-                TermRef::new(&ctx, Term::Fix(Array::from_array(&ctx, funs1), body1)),
+                TermRef::new(&ctx, Term::Fix(Array::from_slice(&ctx, funs1), body1)),
             )
         }
 
@@ -450,7 +456,7 @@ fn transform_apps<'gc>(t: TermRef<'gc>, ns: &Set<LVarRef<'gc>>, ctx: Context<'gc
         Term::Letk(ks, body) => {
             let ks = ks
                 .iter()
-                .map(|k| k.with_body(ctx, transform_apps(k.body().unwrap(), ns, ctx)))
+                .map(|k| k.with_body(ctx, transform_apps(k.body(), ns, ctx)))
                 .collect_gc(&ctx);
 
             let body = transform_apps(body, ns, ctx);
@@ -529,16 +535,32 @@ impl<'gc> Atom<'gc> {
 }
 
 impl<'gc> Func<'gc> {
-    pub fn subst(self, ctx: Context<'gc>, subst: &Map<LVarRef<'gc>, LVarRef<'gc>>) -> FuncRef<'gc> {
+    pub fn subst(
+        &self,
+        ctx: Context<'gc>,
+        subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
+    ) -> FuncRef<'gc> {
         let body = self.body.subst(ctx, subst);
         self.with_body(ctx, body)
     }
 }
 
 impl<'gc> Cont<'gc> {
-    pub fn subst(self, ctx: Context<'gc>, subst: &Map<LVarRef<'gc>, LVarRef<'gc>>) -> ContRef<'gc> {
-        let body = self.body().unwrap().subst(ctx, subst);
-        self.with_body(ctx, body)
+    pub fn subst(
+        &self,
+        ctx: Context<'gc>,
+        subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
+    ) -> ContRef<'gc> {
+        let handler = subst
+            .get(&self.handler.get())
+            .copied()
+            .unwrap_or(self.handler.get());
+        let body = self.body().subst(ctx, subst);
+        let k = self.with_body(ctx, body);
+        unsafe {
+            k.handler.unlock_unchecked().set(handler);
+        }
+        k
     }
 }
 
@@ -550,6 +572,7 @@ impl<'gc> Expression<'gc> {
                     .into_iter()
                     .map(|arg| arg.subst(ctx, subst))
                     .collect_gc(&ctx);
+                let h = subst.get(&h).copied().unwrap_or(h);
                 Self::PrimCall(name, args, h, src)
             }
             _ => self,

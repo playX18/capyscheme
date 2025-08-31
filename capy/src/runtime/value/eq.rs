@@ -51,7 +51,7 @@ impl<'gc> Value<'gc> {
             }
 
             for i in 0..a.len() {
-                if !a[i].r5rs_equal(b[i]) {
+                if !a[i].get().r5rs_equal(b[i].get()) {
                     return false;
                 }
             }
@@ -78,6 +78,12 @@ impl<'gc> Value<'gc> {
 
         if self.is::<Str>() && other.is::<Str>() {
             return self.downcast::<Str>().eq(&other.downcast::<Str>());
+        }
+        if self.is::<Boxed>() && other.is::<Boxed>() {
+            return self
+                .downcast::<Boxed>()
+                .val
+                .r5rs_equal(other.downcast::<Boxed>().val);
         }
 
         false

@@ -22,7 +22,10 @@ pub fn free_variables<'gc>(
 
     fn rec<'gc>(expr: &Term<'gc>, set: &mut HashSet<LVarRef<'gc>>) {
         match &expr.kind {
-            TermKind::GRef(_) | TermKind::Const(_) => {}
+            TermKind::ToplevelRef(_)
+            | TermKind::ModuleRef(_, _, _)
+            | TermKind::Const(_)
+            | TermKind::PrimRef(..) => {}
             TermKind::Fix(fix) => {
                 let mut set2 = HashSet::new();
                 for var in fix.lhs.iter() {
@@ -60,7 +63,10 @@ pub fn free_variables<'gc>(
                 args.iter().for_each(|arg| rec(arg, set));
             }
 
-            TermKind::Define(_, val) | TermKind::LSet(_, val) | TermKind::GSet(_, val) => {
+            TermKind::Define(_, val)
+            | TermKind::LSet(_, val)
+            | TermKind::ToplevelSet(_, val)
+            | TermKind::ModuleSet(_, _, _, val) => {
                 rec(val, set);
             }
 
@@ -294,7 +300,7 @@ impl<'gc> Graph<'gc> {
             new_seq.push(body.clone());
         }
 
-        seq(ctx, Array::from_array(&ctx, new_seq))
+        seq(ctx, Array::from_slice(&ctx, new_seq))
     }
 }
 
@@ -334,8 +340,8 @@ fn make_fixes<'gc>(
 
     fix_term(
         ctx,
-        Array::from_array(&ctx, fix_lhs),
-        Array::from_array(&ctx, fix_rhs),
+        Array::from_slice(&ctx, fix_lhs),
+        Array::from_slice(&ctx, fix_rhs),
         body,
     )
 }
@@ -368,8 +374,8 @@ fn fix1<'gc>(
             let_term(
                 pass.ctx,
                 LetStyle::Let,
-                Array::from_array(&pass.ctx, [var]),
-                Array::from_array(&pass.ctx, [init]),
+                Array::from_slice(&pass.ctx, [var]),
+                Array::from_slice(&pass.ctx, [init]),
                 new_fixes,
             )
         } else {
@@ -383,8 +389,8 @@ fn fix1<'gc>(
             let_term(
                 pass.ctx,
                 LetStyle::Let,
-                Array::from_array(&pass.ctx, [var]),
-                Array::from_array(
+                Array::from_slice(&pass.ctx, [var]),
+                Array::from_slice(
                     &pass.ctx,
                     [Gc::new(
                         &pass.ctx,
@@ -423,7 +429,7 @@ fn fix1<'gc>(
                 make_fixes(pass.ctx, span, &pass.graph, &fixes, mutations)
             };
 
-            let lhs = Array::from_array(
+            let lhs = Array::from_slice(
                 &pass.ctx,
                 c.iter()
                     .map(|v| pass.graph[*v].lhs.unwrap())
@@ -551,20 +557,24 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
 
     fn post_order<'gc>(x: &TermRef<'gc>, pass: &mut FixPass<'gc>) -> TermRef<'gc> {
         match &x.kind {
-            TermKind::GRef(_) | TermKind::Const(_) | TermKind::LRef(_) => *x,
+            TermKind::ModuleRef(..)
+            | TermKind::ToplevelRef(..)
+            | TermKind::Const(..)
+            | TermKind::PrimRef(..)
+            | TermKind::LRef(..) => *x,
             TermKind::Seq(seq) => {
                 let seq = seq
                     .iter()
                     .map(|term| post_order(term, pass))
                     .collect::<Vec<_>>();
-                crate::expander::core::seq(pass.ctx, Array::from_array(&pass.ctx, seq))
+                crate::expander::core::seq(pass.ctx, Array::from_slice(&pass.ctx, seq))
             }
             TermKind::PrimCall(prim, args) => {
                 let args = args
                     .iter()
                     .map(|arg| post_order(arg, pass))
                     .collect::<Vec<_>>();
-                let args = Array::from_array(&pass.ctx, args);
+                let args = Array::from_slice(&pass.ctx, args);
                 Gc::new(
                     &pass.ctx,
                     Term {
@@ -598,7 +608,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 fix_term(
                     pass.ctx,
                     fix.lhs,
-                    Array::from_array(&pass.ctx, procedures),
+                    Array::from_slice(&pass.ctx, procedures),
                     body,
                 )
             }
@@ -637,7 +647,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 // sets to unreferenced variables may be replaced
                 // by their expression for side effects
                 let val = post_order(val, pass);
-                let seq = seq(pass.ctx, Array::from_array(&pass.ctx, [val]));
+                let seq = seq(pass.ctx, Array::from_slice(&pass.ctx, [val]));
 
                 seq
             }
@@ -648,7 +658,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     .iter()
                     .map(|arg| post_order(arg, pass))
                     .collect::<Vec<_>>();
-                let args = Array::from_array(&pass.ctx, args);
+                let args = Array::from_slice(&pass.ctx, args);
                 Gc::new(
                     &pass.ctx,
                     Term {
@@ -669,13 +679,25 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 )
             }
 
-            TermKind::GSet(var, val) => {
+            TermKind::ToplevelSet(var, val) => {
                 let val = post_order(val, pass);
                 Gc::new(
                     &pass.ctx,
                     Term {
                         source: x.source,
-                        kind: TermKind::GSet(var.clone(), val),
+                        kind: TermKind::ToplevelSet(var.clone(), val),
+                    },
+                )
+            }
+
+            TermKind::ModuleSet(module, var, public, val) => {
+                let val = post_order(val, pass);
+
+                Gc::new(
+                    &pass.ctx,
+                    Term {
+                        source: x.source,
+                        kind: TermKind::ModuleSet(module.clone(), var.clone(), *public, val),
                     },
                 )
             }
@@ -703,7 +725,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     &pass.ctx,
                     Term {
                         source: x.source,
-                        kind: TermKind::Values(Array::from_array(&pass.ctx, values)),
+                        kind: TermKind::Values(Array::from_slice(&pass.ctx, values)),
                     },
                 )
             }
@@ -751,7 +773,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                         pass.ctx,
                         l.style,
                         l.lhs,
-                        Array::from_array(&pass.ctx, rhs),
+                        Array::from_slice(&pass.ctx, rhs),
                         body,
                     )
                 }

@@ -7,7 +7,7 @@ use std::{
 use rsgc::{
     Gc, Rootable, Trace, Weak, WeakProcessor,
     alloc::array::Array,
-    barrier::{self, Write},
+    barrier::{self, Unlock, Write},
     cell::Lock,
     collection::Visitor,
     finalizer::FinalizationNotify,
@@ -92,7 +92,7 @@ impl<'gc> WeakMapping<'gc> {
 
 struct WeakEntry<'gc> {
     key: WeakValue<'gc>,
-    value: Value<'gc>,
+    value: Lock<Value<'gc>>,
     hash: u64,
     next: Lock<Option<Gc<'gc, WeakEntry<'gc>>>>,
 }
@@ -111,7 +111,7 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
         }
 
         if self.key.is_broken() {
-            self.value = Value::bwp();
+            unsafe { self.value.unlock_unchecked().set(Value::bwp()) };
         } else {
             let mut vis = weak_processor.visitor();
             vis.trace(&mut self.value);
@@ -269,7 +269,7 @@ impl<'gc> WeakTable<'gc> {
             WeakEntry {
                 hash,
                 key: WeakValue::from_value(key),
-                value,
+                value: Lock::new(value),
                 next: Lock::new(e),
             },
         )));
@@ -295,8 +295,10 @@ impl<'gc> WeakTable<'gc> {
 
         while let Some(entry) = e {
             if entry.hash == hash && entry.key.as_value() == key {
-                let old_value = entry.value;
-                barrier::field!(Gc::write(&ctx, entry), WeakEntry, value).write(value);
+                let old_value = entry.value.get();
+                barrier::field!(Gc::write(&ctx, entry), WeakEntry, value)
+                    .unlock()
+                    .set(value);
                 return Some(old_value);
             }
             e = entry.next.get();
@@ -336,7 +338,7 @@ impl<'gc> WeakTable<'gc> {
                 }
                 guard.count.set(guard.count.get() - 1);
                 guard.mod_count.set(guard.mod_count.get() + 1);
-                return Some(entry.value);
+                return Some(entry.value.get());
             }
             prev = Some(entry);
             e = entry.next.get();
@@ -394,7 +396,7 @@ impl<'gc> WeakTable<'gc> {
 
         while let Some(entry) = e {
             if entry.hash == hash && entry.key.as_value() == key {
-                return Some(entry.value);
+                return Some(entry.value.get());
             }
             e = entry.next.get();
         }
@@ -411,7 +413,7 @@ impl<'gc> WeakTable<'gc> {
         for i in 0..guard.entries.get().len() {
             let mut e = guard.entries.get()[i].get();
             while let Some(entry) = e {
-                if entry.value == value {
+                if entry.value.get() == value {
                     return true;
                 }
                 e = entry.next.get();
@@ -435,8 +437,8 @@ impl<'gc> WeakTable<'gc> {
             let mut entry = guard.entries.get()[k].get();
 
             while let Some(e) = entry {
-                if !e.key.is_broken() && !e.value.is_bwp() {
-                    alist = Value::acons(ctx, e.key.as_value(), e.value, alist);
+                if !e.key.is_broken() && !e.value.get().is_bwp() {
+                    alist = Value::acons(ctx, e.key.as_value(), e.value.get(), alist);
                 }
                 entry = e.next.get();
             }
@@ -465,8 +467,8 @@ impl<'gc> WeakTable<'gc> {
             let mut entry = guard.entries.get()[k].get();
 
             while let Some(e) = entry {
-                if !e.key.is_broken() && !e.value.is_bwp() {
-                    f(e.key.as_value(), e.value);
+                if !e.key.is_broken() && !e.value.get().is_bwp() {
+                    f(e.key.as_value(), e.value.get());
                 }
                 entry = e.next.get();
             }

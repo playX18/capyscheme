@@ -1,13 +1,15 @@
-use std::ops::{Deref, Index};
-
+#![allow(dead_code, unused_variables)]
 use easy_bitfield::{BitField, BitFieldTrait};
 use rsgc::{
     Gc, Mutation, WeakProcessor,
     barrier::{AsRefWrite, IndexWrite},
+    cell::Lock,
     collection::Visitor,
     mmtk::AllocationSemantics,
     object::VTable,
 };
+use std::mem::offset_of;
+use std::ops::{Deref, Index};
 
 use crate::runtime::{Context, value::*};
 
@@ -17,8 +19,8 @@ pub const VECTOR_MAX_LENGTH: usize = u32::MAX as usize;
 
 #[repr(C, align(8))]
 pub struct Vector<'gc> {
-    hdr: ScmHeader,
-    pub(crate) data: [Value<'gc>; 0],
+    pub(crate) hdr: ScmHeader,
+    pub(crate) data: [Lock<Value<'gc>>; 0],
 }
 
 fn trace_vector(vec: GCObject, vis: &mut Visitor) {
@@ -34,6 +36,8 @@ fn trace_vector(vec: GCObject, vis: &mut Visitor) {
 fn process_weak_vector(_: GCObject, _: &mut WeakProcessor) {}
 
 impl<'gc> Vector<'gc> {
+    pub const OFFSET_OF_DATA: usize = offset_of!(Vector, data);
+
     pub const VT: &'static VTable = &VTable {
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
@@ -83,7 +87,7 @@ impl<'gc> Vector<'gc> {
 
             vec.hdr = hdr;
             for i in 0..length {
-                vec.data.as_mut_ptr().add(i).write(fill);
+                vec.data.as_mut_ptr().add(i).write(Lock::new(fill));
             }
 
             let x = Gc::from_gcobj(alloc);
@@ -94,24 +98,24 @@ impl<'gc> Vector<'gc> {
 
     pub fn from_slice(mc: &Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
-        let vector = Self::new::<false>(mc, length, Value::unspecified());
+        let vector = Self::new::<false>(mc, length, Value::undefined());
 
         Self::copy_from(vector, slice, mc);
         vector
     }
     pub fn as_slice(&self) -> &[Value<'gc>] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 
     pub unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [Value<'gc>] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
     pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: &Mutation<'gc>) {
         let vec = Gc::write(mc, this);
 
         for i in 0..vec.len() {
-            Value::write(&vec[i], fill);
+            vec[i].unlock().set(fill);
         }
     }
 
@@ -124,15 +128,17 @@ impl<'gc> Vector<'gc> {
             "Cannot copy from vector of different length"
         );
 
-        for (i, value) in other_slice.iter().enumerate() {
-            Value::write(&vec[i], *value);
+        for (i, &value) in other_slice.iter().enumerate() {
+            unsafe {
+                (vec.data.as_ptr() as *mut Value).add(i).write(value);
+            }
         }
     }
 
     pub fn to_list(self: Gc<'gc, Self>, mc: Context<'gc>) -> Value<'gc> {
         let mut list = Value::null();
         for i in (0..self.len()).rev() {
-            list = Value::cons(mc, self[i], list);
+            list = Value::cons(mc, self[i].get(), list);
         }
         list
     }
@@ -147,16 +153,16 @@ impl<'gc> AsRef<[Value<'gc>]> for Vector<'gc> {
 unsafe impl<'gc> AsRefWrite<[Value<'gc>]> for Vector<'gc> {}
 
 impl<'gc> Deref for Vector<'gc> {
-    type Target = [Value<'gc>];
+    type Target = [Lock<Value<'gc>>];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 }
 
 unsafe impl<'gc> IndexWrite<usize> for Vector<'gc> {}
 impl<'gc> Index<usize> for Vector<'gc> {
-    type Output = Value<'gc>;
+    type Output = Lock<Value<'gc>>;
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.len(), "Index out of bounds");
@@ -420,7 +426,7 @@ impl<'gc> Tuple<'gc> {
         let tuple = Gc::write(mc, this);
 
         for i in 0..tuple.len() {
-            Value::write(&tuple[i], fill);
+            // Value::write(&tuple[i], fill);
         }
     }
 
@@ -434,7 +440,7 @@ impl<'gc> Tuple<'gc> {
         );
 
         for (i, value) in other_slice.iter().enumerate() {
-            Value::write(&tuple[i], *value);
+            // Value::write(&tuple[i], *value);
         }
     }
 }

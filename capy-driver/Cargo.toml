@@ -1,0 +1,17 @@
+[package]
+name = "capy-driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+capy = { path = "../capy" }
+pretty = "*"
+libloading = "0.8.8"
+cranelift-object.workspace = true
+target-lexicon.workspace = true
+cranelift-module.workspace = true
+cranelift-codegen.workspace = true
+mimalloc = "*"
+cranelift-jit.workspace = true
+cranelift.workspace = true
+env_logger = "*"

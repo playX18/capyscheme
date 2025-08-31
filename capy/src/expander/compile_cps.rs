@@ -6,7 +6,9 @@ use crate::runtime::value::{Str, Vector};
 use crate::runtime::value::{TypeCode8, Value};
 use crate::{static_symbols, with_cps};
 use rsgc::alloc::array::Array;
+use rsgc::cell::Lock;
 use rsgc::{Gc, Global, Rootable, Trace};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::mem::offset_of;
 use std::sync::OnceLock;
@@ -28,46 +30,126 @@ pub fn t_k<'a, 'gc>(
         TermKind::Receive(formals, formals_opt, producer, consumer) => {
             let consumer_k_var = cps.fresh_variable("consumer");
 
-            let consumer_k = Cont::Local {
+            let consumer_k = Cont {
                 name: Value::new(false),
                 binding: consumer_k_var,
                 args: formals,
                 variadic: formals_opt,
                 body: t_k(cps, consumer, fk, h),
-                reified: false,
+
                 source: src,
+                free_vars: Lock::new(None),
+                reified: Cell::new(false),
+                handler: Lock::new(h),
             };
             let letk_body = t_c(cps, producer, consumer_k_var, h);
 
             let consumer_k = Gc::new(&cps.ctx, consumer_k);
             Gc::new(
                 &cps.ctx,
-                Term::Letk(Array::from_array(&cps.ctx, &[consumer_k]), letk_body),
+                Term::Letk(Array::from_slice(&cps.ctx, &[consumer_k]), letk_body),
             )
         }
-        TermKind::Const(_) | TermKind::LRef(_) | TermKind::GRef(_) => {
+        TermKind::Const(_) | TermKind::LRef(_) => {
             let atom = m(cps, form);
             fk(cps, &[atom])
         }
 
-        TermKind::Proc(proc) => {
-            let tmp = cps.fresh_variable("proc");
+        TermKind::PrimRef(name) => {
+            /*let expr = Expression::PrimRef(name);
 
-            let func = cps_func(cps, &proc, tmp);
-            let body = fk(cps, &[Atom::Local(tmp)]);
-            Gc::new(
-                &cps.ctx,
-                Term::Fix(Array::from_array(&cps.ctx, &[func]), body),
+            let var = cps.fresh_variable("var");
+
+            let body = fk(cps, &[Atom::Local(var)]);
+            Gc::new(&cps.ctx, Term::Let(var, expr, body))*/
+
+            toplevel_box(
+                cps,
+                src,
+                name,
+                true,
+                |cps, var| {
+                    with_cps!(cps;
+                        let val = #% "box-ref" (h, var) @ src;
+                        # fk(cps, &[Atom::Local(val)])
+                    )
+                },
+                h,
+            )
+        }
+
+        TermKind::ToplevelRef(name) => toplevel_box(
+            cps,
+            src,
+            name,
+            true,
+            |cps, var| {
+                with_cps!(cps;
+                    let val = #% "box-ref" (h, var) @ src;
+                    # fk(cps, &[Atom::Local(val)])
+                )
+            },
+            h,
+        ),
+
+        TermKind::ModuleRef(..) => {
+            todo!()
+        }
+
+        TermKind::ToplevelSet(name, exp) => t_k(
+            cps,
+            exp,
+            Box::new(move |cps, atoms| {
+                toplevel_box(
+                    cps,
+                    src,
+                    name,
+                    false,
+                    |cps, var| {
+                        with_cps!(cps;
+                            let _val = #% "set-box!" (h, var, atoms[0]) @ src;
+                            # fk(cps, &[])
+                        )
+                    },
+                    h,
+                )
+            }),
+            h,
+        ),
+
+        TermKind::ModuleSet(..) => {
+            todo!()
+        }
+
+        TermKind::Proc(proc) => {
+            let prev = cps.current_topbox_scope;
+            cps.enter_scope();
+            let id = cps.current_topbox_scope.unwrap();
+            capture_toplevel_scope(
+                cps,
+                src,
+                id,
+                |cps| {
+                    let tmp = cps.fresh_variable("proc");
+                    let func = cps_func(cps, &proc, tmp);
+                    let body = fk(cps, &[Atom::Local(tmp)]);
+                    cps.current_topbox_scope = prev;
+                    Gc::new(
+                        &cps.ctx,
+                        Term::Fix(Array::from_slice(&cps.ctx, &[func]), body),
+                    )
+                },
+                h,
             )
         }
 
         TermKind::Call(proc, args) => {
             with_cps!(cps;
-                letk after_call (res) = fk(cps, &[Atom::Local(res)]);
+                letk (h) after_call (res) = fk(cps, &[Atom::Local(res)]);
                 @tk (h) proc = proc;
                 @tk* (h) args = &args;
                 # {
-                    let args = Array::from_array(&cps.ctx, &args);
+                    let args = Array::from_slice(&cps.ctx, &args);
                     Gc::new(
                         &cps.ctx,
                         Term::App(proc[0], after_call, h, args, src),
@@ -81,7 +163,7 @@ pub fn t_k<'a, 'gc>(
             &args,
             Box::new(move |cps, args| {
                 with_cps!(cps;
-                    letk r (rv) = fk(cps, &[Atom::Local(rv)]);
+                    letk (h) r (rv) = fk(cps, &[Atom::Local(rv)]);
                     # if let Some(term) = get_primitive_table(cps.ctx).try_expand(cps, form.source, prim, &args, r, h) {
                         term
                     } else {
@@ -101,22 +183,16 @@ pub fn t_k<'a, 'gc>(
             # fk (cps, &[Atom::Local(rv)])
         ),
 
-        TermKind::GSet(var, val) => with_cps!(cps;
-            @tk (h) atom = val;
-            let rv = #% "gset!" (h, Atom::Constant(var), atom[0]) @ form.source;
-            # fk(cps, &[Atom::Local(rv)])
-        ),
-
         TermKind::Let(let_) => {
-            // let* is compiled differently
+            // with `let*` each variable binding gets a separate continuation
             if let LetStyle::LetStar = let_.style {
                 let mut cpsed = t_k(cps, let_.body, fk, h);
 
                 for (binding, expr) in let_.lhs.iter().zip(let_.rhs.iter()).rev() {
-                    let single = Array::from_array(&cps.ctx, &[*binding]);
+                    let single = Array::from_slice(&cps.ctx, &[*binding]);
                     let expr = *expr;
                     cpsed = with_cps!(cps;
-                        letk letstar (single...) @ src = cpsed;
+                        letk (h) letstar (single...) @ src = cpsed;
                         @tc (letstar, h) expr
                     );
                 }
@@ -126,7 +202,7 @@ pub fn t_k<'a, 'gc>(
                 let args = let_.lhs;
                 with_cps!(cps;
                     @tk* (h) aexps = &let_.rhs;
-                    letk r#let(args...) @ src = t_k(cps, let_.body, fk, h);
+                    letk (h) r#let(args...) @ src = t_k(cps, let_.body, fk, h);
                     continue r#let aexps ...
                 )
             }
@@ -139,28 +215,40 @@ pub fn t_k<'a, 'gc>(
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
             @tk (h) atest = test;
-            letk cont (rv) = fk(cps, &[Atom::Local(rv)]);
-            letk kcons () = t_c(cps, cons, cont, h);
-            letk kalt () = t_c(cps, alt, cont, h);
+            letk (h) cont (rv) = fk(cps, &[Atom::Local(rv)]);
+            letk (h) kcons () = t_c(cps, cons, cont, h);
+            letk (h) kalt () = t_c(cps, alt, cont, h);
             # Gc::new(&cps.ctx, Term::If(atest[0], kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
         ),
 
         TermKind::Fix(fix) => {
-            let funcs = fix
-                .lhs
-                .iter()
-                .zip(fix.rhs.iter())
-                .map(|(binding, func)| {
-                    let func = cps_func(cps, func, *binding);
-                    func
-                })
-                .collect::<Vec<_>>();
+            let prev = cps.current_topbox_scope;
+            cps.enter_scope();
+            let id = cps.current_topbox_scope.unwrap();
+            capture_toplevel_scope(
+                cps,
+                src,
+                id,
+                |cps| {
+                    let funcs = fix
+                        .lhs
+                        .iter()
+                        .zip(fix.rhs.iter())
+                        .map(|(binding, func)| {
+                            let func = cps_func(cps, func, *binding);
+                            func
+                        })
+                        .collect::<Vec<_>>();
 
-            let body = t_k(cps, fix.body, fk, h);
+                    let body = t_k(cps, fix.body, fk, h);
+                    cps.current_topbox_scope = prev;
 
-            Gc::new(
-                &cps.ctx,
-                Term::Fix(Array::from_array(&cps.ctx, &funcs), body),
+                    Gc::new(
+                        &cps.ctx,
+                        Term::Fix(Array::from_slice(&cps.ctx, &funcs), body),
+                    )
+                },
+                h,
             )
         }
 
@@ -178,37 +266,75 @@ pub fn t_c<'a, 'gc>(
 
     match form.kind {
         TermKind::Fix(fix) => {
-            let funcs = fix
-                .lhs
-                .iter()
-                .zip(fix.rhs.iter())
-                .map(|(binding, func)| {
-                    let func = cps_func(cps, func, *binding);
-                    func
-                })
-                .collect::<Vec<_>>();
+            let prev = cps.current_topbox_scope;
+            cps.enter_scope();
+            let id = cps.current_topbox_scope.unwrap();
+            capture_toplevel_scope(
+                cps,
+                src,
+                id,
+                |cps| {
+                    let funcs = fix
+                        .lhs
+                        .iter()
+                        .zip(fix.rhs.iter())
+                        .map(|(binding, func)| {
+                            let func = cps_func(cps, func, *binding);
+                            func
+                        })
+                        .collect::<Vec<_>>();
 
-            let body = t_c(cps, fix.body, k, h);
-            Gc::new(
-                &cps.ctx,
-                Term::Fix(Array::from_array(&cps.ctx, &funcs), body),
+                    let body = t_c(cps, fix.body, k, h);
+                    cps.current_topbox_scope = prev;
+                    Gc::new(
+                        &cps.ctx,
+                        Term::Fix(Array::from_slice(&cps.ctx, &funcs), body),
+                    )
+                },
+                h,
             )
         }
 
-        TermKind::Const(_) | TermKind::LRef(_) | TermKind::GRef(_) => {
+        TermKind::Const(_) | TermKind::LRef(_) => {
             let atom = m(cps, form);
             with_cps!(cps;
                 continue k (atom)
             )
         }
 
-        TermKind::Proc(proc) => {
-            let tmp = cps.fresh_variable("proc");
+        TermKind::ToplevelRef(..)
+        | TermKind::ToplevelSet(..)
+        | TermKind::ModuleRef(..)
+        | TermKind::ModuleSet(..) => t_k(
+            cps,
+            form,
+            Box::new(|cps, atoms| {
+                with_cps!(cps;
+                    continue k (atoms[0].clone())
+                )
+            }),
+            h,
+        ),
 
-            let func = cps_func(cps, &proc, tmp);
-            let t = with_cps!(cps; continue k (Atom::Local(tmp)));
-            let body = Term::Fix(Array::from_array(&cps.ctx, &[func]), t);
-            Gc::new(&cps.ctx, body)
+        TermKind::Proc(proc) => {
+            let prev = cps.current_topbox_scope;
+            cps.enter_scope();
+            let id = cps.current_topbox_scope.unwrap();
+            capture_toplevel_scope(
+                cps,
+                src,
+                id,
+                |cps| {
+                    let tmp = cps.fresh_variable("proc");
+
+                    let func = cps_func(cps, &proc, tmp);
+                    let t = with_cps!(cps; continue k (Atom::Local(tmp)));
+                    let body = Term::Fix(Array::from_slice(&cps.ctx, &[func]), t);
+                    cps.current_topbox_scope = prev;
+                    Gc::new(&cps.ctx, body)
+                },
+                h,
+            )
         }
 
         TermKind::Call(proc, args) => {
@@ -244,21 +370,15 @@ pub fn t_c<'a, 'gc>(
             continue k (Atom::Local(rv))
         ),
 
-        TermKind::GSet(var, val) => with_cps!(cps;
-            @tk (h) atom = val;
-            let rv = #% "gset!" (h, Atom::Constant(var), atom[0]) @ src;
-            continue k (Atom::Local(rv))
-        ),
-
         TermKind::Let(let_) => {
             if let LetStyle::LetStar = let_.style {
                 let mut cpsed = t_c(cps, let_.body, k, h);
 
                 for (binding, expr) in let_.lhs.iter().zip(let_.rhs.iter()).rev() {
-                    let single = Array::from_array(&cps.ctx, &[*binding]);
+                    let single = Array::from_slice(&cps.ctx, &[*binding]);
                     let expr = *expr;
                     cpsed = with_cps!(cps;
-                        letk letstar (single...) @ src = cpsed;
+                        letk (h) letstar (single...) @ src = cpsed;
                         @tc (letstar, h) expr
                     );
                 }
@@ -268,7 +388,7 @@ pub fn t_c<'a, 'gc>(
                 let args = let_.lhs;
                 with_cps!(cps;
                     @tk* (h) aexps = &let_.rhs;
-                    letk r#let(args...) @ src = t_c(cps, let_.body, k, h);
+                    letk (h) r#let(args...) @ src = t_c(cps, let_.body, k, h);
 
                     continue r#let aexps ...
                 )
@@ -278,43 +398,46 @@ pub fn t_c<'a, 'gc>(
         TermKind::Seq(seq) => with_cps!(cps;
             @tk* (h) aexps = &seq;
             # {
-                let args = Array::from_array(&cps.ctx, [*aexps.last().expect("Sequence should not be empty")]);
+                let args = Array::from_slice(&cps.ctx, [*aexps.last().expect("Sequence should not be empty")]);
                 Gc::new(&cps.ctx, Term::Continue(k, args, src))
             }
         ),
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
             @tk (h) atest = test;
-            letk kcons () = t_c(cps, cons, k, h);
-            letk kalt () = t_c(cps, alt, k, h);
+            letk (h) kcons () = t_c(cps, cons, k, h);
+            letk (h) kalt () = t_c(cps, alt, k, h);
             # Gc::new(&cps.ctx, Term::If(atest[0], kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
         ),
 
         TermKind::Receive(formals, formals_opt, producer, consumer) => {
             let consumer_k_var = cps.fresh_variable("consumer");
 
-            let consumer_k = Cont::Local {
+            let consumer_k = Cont {
                 name: Value::new(false),
                 binding: consumer_k_var,
                 args: formals,
                 variadic: formals_opt,
                 body: t_c(cps, consumer, k, h),
-                reified: false,
+
                 source: src,
+                free_vars: Lock::new(None),
+                reified: Cell::new(false),
+                handler: Lock::new(h),
             };
             let letk_body = t_c(cps, producer, consumer_k_var, h);
 
             let consumer_k = Gc::new(&cps.ctx, consumer_k);
             Gc::new(
                 &cps.ctx,
-                Term::Letk(Array::from_array(&cps.ctx, &[consumer_k]), letk_body),
+                Term::Letk(Array::from_slice(&cps.ctx, &[consumer_k]), letk_body),
             )
         }
 
         TermKind::Values(values) => {
             with_cps!(cps;
                 @tk* (h) vals = &values;
-                continue k (Atom::Values(Array::from_array(&cps.ctx, &vals)))
+                continue k (Atom::Values(Array::from_slice(&cps.ctx, &vals)))
             )
         }
 
@@ -326,7 +449,7 @@ pub fn m<'a, 'gc>(_: &'a mut CPSBuilder<'gc>, form: CoreTermRef<'gc>) -> Atom<'g
     match &form.kind {
         TermKind::Const(c) => Atom::Constant(*c),
         TermKind::LRef(lref) => Atom::Local(*lref),
-        TermKind::GRef(gref) => Atom::Global(*gref),
+
         TermKind::Proc(_) => todo!(),
         _ => unreachable!(),
     }
@@ -388,6 +511,7 @@ pub fn cps_func<'a, 'gc>(
             handler_cont,
             variadic: proc.variadic,
             body,
+            free_vars: Lock::new(None),
         },
     )
 }
@@ -402,7 +526,7 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
             &ctx,
             super::core::Term {
                 source: Value::new(false),
-                kind: TermKind::Seq(Array::from_array(&ctx, forms)),
+                kind: TermKind::Seq(Array::from_slice(&ctx, forms)),
             },
         );
 
@@ -410,7 +534,7 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
     };
 
     let proc = Proc {
-        args: Array::from_array(&ctx, &[]),
+        args: Array::from_slice(&ctx, &[]),
         name: Value::new(false),
         body: form,
         source: Value::new(false),
@@ -456,7 +580,7 @@ static PRIMTABLE: OnceLock<Global<Rootable!(PrimitiveTable<'_>)>> = OnceLock::ne
 
 macro_rules! primitive_transformers {
     ($(
-        $prim: literal => $name : ident ($cps: ident, $src: ident, $op: ident, $args: ident, $k: ident) $b: block
+        $prim: literal => $name : ident ($cps: ident, $src: ident, $op: ident, $args: ident, $k: ident, $h: ident) $b: block
     )*) => {
         #[allow(dead_code, unused_mut, unused_variables)]
         fn make_primitive_table<'gc>(ctx: Context<'gc>) -> HashMap<Value<'gc>, PrimitiveTransformer> {
@@ -464,7 +588,7 @@ macro_rules! primitive_transformers {
             $(
                 table.insert(
                     Value::new(Symbol::from_str(ctx, $prim)),
-                    { fn $name<'gc>($cps: &mut CPSBuilder<'gc>, $src: Value<'gc>, $op: Value<'gc>, $args: &[Atom<'gc>], $k: LVarRef<'gc>) -> Option<TermRef<'gc>> {
+                    { fn $name<'gc>($cps: &mut CPSBuilder<'gc>, $src: Value<'gc>, $op: Value<'gc>, $args: &[Atom<'gc>], $k: LVarRef<'gc>, $h: LVarRef<'gc>) -> Option<TermRef<'gc>> {
                         $b
                     } $name },
                 );
@@ -527,16 +651,16 @@ where
         ],
     );
     with_cps!(cps;
-        letk not_string () = with_cps!(cps;
+        letk (h) not_string () = with_cps!(cps;
             throw raise_type_error(cps.ctx), const_not_string; src
         );
-        letk k () = with_cps!(cps;
+        letk (h) k () = with_cps!(cps;
             let length = #% ".refptr" (h, x, offset_of!(Str, length) as i32) @ src;
             # {
                 have_length(cps, Atom::Local(length))
             }
         );
-        letk check_str_typecode (x) = with_cps!(cps;
+        letk (h) check_str_typecode (x) = with_cps!(cps;
             let tc8 = #% ".typecode8" (h, x) @ src;
             let str_typecode = #% "u8=" (h, tc8, Value::new(TypeCode8::STRING.bits() as i32)) @ src;
             if str_typecode => k | not_string
@@ -585,3 +709,177 @@ primitive_transformers!(
 );
 */
 primitive_transformers!();
+
+pub fn toplevel_box<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    src: Value<'gc>,
+    name: Value<'gc>,
+    bound: bool,
+    have_var: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
+    h: LVarRef<'gc>,
+) -> TermRef<'gc> {
+    match cps.current_topbox_scope {
+        None => {
+            if bound {
+                with_cps!(cps;
+                    let module = #% "current-module" (h,) @ src;
+                    let variable = #% "lookup-bound" (h, Atom::Local(module), Atom::Constant(name)) @ src;
+                    # have_var(cps, Atom::Local(variable))
+                )
+            } else {
+                with_cps!(cps;
+                    let module = #% "current-module" (h,) @ src;
+                    let variable = #% "lookup" (h, Atom::Local(module), Atom::Constant(name)) @ src;
+                    # have_var(cps, Atom::Local(variable))
+                )
+            }
+        }
+
+        Some(scope) => {
+            with_cps!(cps;
+                letk (h) kbox (box_) = have_var(cps, Atom::Local(box_));
+                # cached_toplevel_box(cps, kbox, h, src, (scope as i32).into(), name, bound)
+            )
+        }
+    }
+}
+
+pub fn module_box<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    val_proc: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
+    h: LVarRef<'gc>,
+    module: Value<'gc>,
+    name: Value<'gc>,
+    public: bool,
+    bound: bool,
+    src: Value<'gc>,
+) -> TermRef<'gc> {
+    let _ = bound;
+    with_cps!(cps;
+        letk (h) kbox (var) = val_proc(cps, Atom::Constant(module));
+        # cached_module_box(cps, kbox, h, src, module, name, public,)
+    )
+}
+
+pub fn capture_toplevel_scope<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    src: Value<'gc>,
+    scope_id: u32,
+    fk: impl FnOnce(&mut CPSBuilder<'gc>) -> TermRef<'gc>,
+    h: LVarRef<'gc>,
+) -> TermRef<'gc> {
+    with_cps!(cps;
+        let module = #% "current-module" (h,) @ src;
+        # cache_current_module(cps, fk, h, src, Atom::Constant(Value::new(scope_id as i32)), Atom::Local(module))
+    )
+}
+
+pub fn cached_toplevel_box<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    k: LVarRef<'gc>,
+    h: LVarRef<'gc>,
+    src: Value<'gc>,
+    scope: Value<'gc>,
+    name: Value<'gc>,
+    bound: bool,
+) -> TermRef<'gc> {
+    let cache_key = Value::cons(cps.ctx, scope, name);
+    with_cps!(cps;
+        let cached = #% "cache-ref" (h, cache_key) @ src;
+        let is_heap_obj = #% ".is-heap-object" (h, cached) @ src;
+        letk (h) kinit () = with_cps!(cps;
+            let module = #%"cache-ref" (h, Atom::Constant(scope)) @ src;
+            # reify_lookup(cps, src, module, name, bound, h, |cps, var| {
+                with_cps!(cps;
+                    let _k = #%"cache-set!"(h, cache_key, var) @ src;
+                    continue k(var)
+                )
+            })
+        );
+        letk (h) kok () = with_cps!(cps; continue k (cached));
+        if is_heap_obj => kok | kinit
+    )
+}
+
+pub fn cached_module_box<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    k: LVarRef<'gc>,
+    h: LVarRef<'gc>,
+    src: Value<'gc>,
+    module: Value<'gc>,
+    name: Value<'gc>,
+    public: bool,
+) -> TermRef<'gc> {
+    let cache_key = Value::cons(cps.ctx, module, Value::cons(cps.ctx, name, public.into()));
+
+    with_cps!(cps;
+        let cached = #% "cache-ref" (h, cache_key) @ src;
+        let is_heap_obj = #% ".is-heap-object" (h, cached) @ src;
+        letk (h) kok () = with_cps!(cps; continue k (cached));
+        letk (h) kinit () = if public {
+            with_cps!(cps;
+                let var = #% "lookup-bound-public" (h, Atom::Constant(module), Atom::Constant(name)) @ src;
+                let _k = #% "cache-set!" (h, cache_key, Atom::Local(var)) @ src;
+                continue k (Atom::Local(var))
+            )
+        } else {
+            with_cps!(cps;
+                let var = #% "lookup-bound-private" (h, Atom::Constant(module), Atom::Constant(name)) @ src;
+                let _k = #% "cache-set!" (h, cache_key, Atom::Local(var)) @ src;
+                continue k (Atom::Local(var))
+            )
+        };
+
+        if is_heap_obj => kok | kinit
+    )
+}
+
+pub fn cache_current_module<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    fk: impl FnOnce(&mut CPSBuilder<'gc>) -> TermRef<'gc>,
+    h: LVarRef<'gc>,
+    src: Value<'gc>,
+    scope: Atom<'gc>,
+    module: Atom<'gc>,
+) -> TermRef<'gc> {
+    with_cps!(cps;
+        let _k = #% "cache-set!" (h, scope, module) @ src;
+        # fk(cps)
+    )
+}
+
+pub fn reify_lookup<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    src: Value<'gc>,
+    mod_var: LVarRef<'gc>,
+    name: Value<'gc>,
+    assert_bound: bool,
+    h: LVarRef<'gc>,
+    have_var: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
+) -> TermRef<'gc> {
+    if assert_bound {
+        with_cps!(cps;
+            let variable = #%"lookup-bound" (h, Atom::Local(mod_var), Atom::Constant(name)) @ src;
+            #have_var(cps, Atom::Local(variable))
+        )
+    } else {
+        with_cps!(cps;
+            let variable = #%"lookup" (h, Atom::Local(mod_var), Atom::Constant(name)) @ src;
+            #have_var(cps, Atom::Local(variable))
+        )
+    }
+}
+
+pub fn reify_resolve_module<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    k: LVarRef<'gc>,
+    h: LVarRef<'gc>,
+    src: Value<'gc>,
+    module: Value<'gc>,
+    public: bool,
+) -> TermRef<'gc> {
+    with_cps!(cps;
+        let resolved = #% "resolve-module" (h, Atom::Constant(public.into()), Atom::Constant(module)) @ src;
+        continue k (resolved)
+    )
+}

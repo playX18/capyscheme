@@ -1,188 +1,275 @@
-use std::{cell::Cell, sync::OnceLock};
-
-use rsgc::{Gc, Global, Rootable, Trace, mmtk::util::Address};
-
-use crate::{
-    jit::trampoline::TRAMPOLINES,
-    runtime::{
-        Context,
-        value::{Closure, ScmHeader, TypeCode16, Value},
-    },
+use std::{
+    marker::PhantomData,
+    ops::{FromResidual, Try},
 };
 
-pub mod primitive;
-pub mod require;
+use crate::runtime::{
+    Context,
+    value::{Closure, IntoValues, NativeReturn, PROCEDURES, ReturnCode, TypeCode16, Value, Vector},
+    vm::trampolines::get_trampoline_into_scheme,
+};
+use rsgc::{Gc, Trace};
 
-#[repr(C)]
-pub struct VMState<'gc> {
-    pub fuel: usize,
-    pub proc: Value<'gc>,
-    pub k: Value<'gc>,
-    pub argc: Cell<usize>,
-    pub argv: Address,
+pub mod errors;
+pub mod libraries;
+pub mod load;
+pub mod throw;
+pub mod thunks;
+pub mod trampolines;
 
-    pub args_start: Address,
-    pub args_size: usize,
-}
-unsafe impl<'gc> Trace for VMState<'gc> {
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+pub fn call_scheme<'gc>(
+    ctx: Context<'gc>,
+    rator: Value<'gc>,
+    args: &[Value<'gc>],
+) -> VMResult<'gc> {
+    if !rator.is::<Closure>() {
+        return VMResult::Err(rator);
+    }
 
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
-        visitor.trace(&mut self.proc);
+    let procs = PROCEDURES.fetch(&ctx);
 
-        for i in 0..self.argc.get() {
-            unsafe {
-                let addr = self.argv.sub(i * size_of::<Value>()).as_mut_ref::<Value>();
-                visitor.trace(addr);
+    let retk = procs.register_static_cont_closure(ctx, default_retk);
+    let reth = procs.register_static_cont_closure(ctx, default_reth);
+
+    let rands = ctx.state().runstack.get();
+    unsafe {
+        rands.store(retk);
+        rands.add(size_of::<Value>()).store(reth);
+        for (i, arg) in args.iter().enumerate() {
+            rands.add((i + 2) * size_of::<Value>()).store(*arg);
+        }
+
+        ctx.state()
+            .runstack
+            .set(rands.add((args.len() + 2) * size_of::<Value>()));
+    }
+
+    let num_rands = args.len() + 2;
+
+    let f = get_trampoline_into_scheme().to_ptr::<()>();
+
+    unsafe {
+        let f: extern "C-unwind" fn(
+            &Context,
+            Value<'gc>,
+            *const Value<'gc>,
+            usize,
+        ) -> NativeReturn<'gc> = std::mem::transmute(f);
+
+        let val = f(&ctx, rator, rands.to_ptr(), num_rands);
+
+        match val.code {
+            ReturnCode::Continue => unreachable!("cannot continue into native code"),
+            ReturnCode::ReturnErr => VMResult::Err(val.value),
+            ReturnCode::ReturnOk => VMResult::Ok(val.value),
+            ReturnCode::Yield => {
+                ctx.state
+                    .saved_call
+                    .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
+                VMResult::Yield
             }
         }
     }
 }
 
-const ARGS_SIZE: usize = 8192;
+extern "C-unwind" fn default_retk<'gc>(
+    ctx: &Context<'gc>,
+    _rator: Value<'gc>,
+    rands: *const Value<'gc>,
+    num_rands: usize,
+) -> NativeReturn<'gc> {
+    let value = if num_rands == 0 {
+        Value::undefined()
+    } else if num_rands == 1 {
+        unsafe { *rands }
+    } else {
+        let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
+        Vector::from_slice(&ctx, args).into()
+    };
 
-impl<'gc> VMState<'gc> {
-    pub fn new() -> Self {
-        unsafe {
-            let args_start = libc::mmap(
-                std::ptr::null_mut(),
-                ARGS_SIZE * size_of::<Value>(),
-                libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-                -1,
-                0,
+    NativeReturn {
+        code: ReturnCode::ReturnOk,
+        value,
+    }
+}
+
+extern "C-unwind" fn default_reth<'gc>(
+    _ctx: &Context<'gc>,
+    _rator: Value<'gc>,
+    rands: *const Value<'gc>,
+    num_rands: usize,
+) -> NativeReturn<'gc> {
+    println!("error occured");
+    unsafe {
+        let slice = std::slice::from_raw_parts(rands, num_rands);
+        if !slice.is_empty() {
+            println!(
+                "irritants: {}",
+                slice
+                    .iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
-
-            if args_start == libc::MAP_FAILED {
-                panic!("Failed to allocate memory for VMState arguments");
-            }
-
-            let args_start = Address::from_ptr(args_start as *mut u8);
-            let args_size = ARGS_SIZE * size_of::<Value>();
-            let argv = args_start;
-
-            VMState {
-                fuel: 0,
-                proc: Value::undefined(),
-                k: Value::undefined(),
-                argc: Cell::new(0),
-                argv,
-
-                args_start: args_start,
-                args_size: args_size,
-            }
         }
     }
-
-    pub fn argument_count(&self) -> usize {
-        self.argc.get()
-    }
-
-    pub fn arguments(&self) -> &[Value<'gc>] {
-        unsafe { std::slice::from_raw_parts(self.argv.to_ptr::<Value>(), self.argc.get()) }
-    }
-
-    pub(crate) fn push_arg(&self, arg: Value<'gc>) {
-        if self.argc.get() >= 8192 {
-            panic!("Too many arguments passed to VMState");
-        }
-        unsafe {
-            let addr = self.argv.add(self.argc.get() * size_of::<Value>());
-            addr.store(arg);
-        }
-        self.argc.set(self.argc.get() + 1);
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn reset_args(&mut self) {
-        self.argc.set(0);
+    NativeReturn {
+        code: ReturnCode::ReturnErr,
+        value: Value::new(false),
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum VMReturnCode {
-    Error = 0,
-    Return = 1,
-
-    NonProcedureCall,
-    /// Mismatched arguments.
-    ///
-    /// Expects return value to be an integer indicating the number of arguments expected where
-    /// negative integer means the number of arguments is at least the absolute value of the integer.
-    ArgumentMismatch,
+/// A VM execution result.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Trace)]
+#[collect(no_drop)]
+pub enum VMResult<'gc> {
+    /// VM executed succsefully and value was returned.
+    Ok(Value<'gc>),
+    /// VM executed, but error was thrown.
+    Err(Value<'gc>),
+    /// VM execution was suspended. Caller into the VM is responsible for leaving `Scheme::enter` call temporarily.
     Yield,
-    Throw,
-    ThrowValue,
-    /// Expects `VMReturn::value` to be a cons of `value` and `data`.
-    ThrowValueAndData,
 }
 
-#[repr(C)]
-pub struct VMReturn<'gc> {
-    pub code: VMReturnCode,
-    pub value: Value<'gc>,
-}
-
-impl<'gc> VMReturn<'gc> {
-    pub fn new(code: VMReturnCode, value: Value<'gc>) -> Self {
-        VMReturn { code, value }
-    }
-
-    pub fn is_error(&self) -> bool {
-        self.code == VMReturnCode::Error
-    }
-
-    pub fn is_return(&self) -> bool {
-        self.code == VMReturnCode::Return
-    }
-
-    pub fn ok(value: Value<'gc>) -> Self {
-        VMReturn::new(VMReturnCode::Return, value)
-    }
-
-    pub fn error(val: Value<'gc>) -> Self {
-        VMReturn::new(VMReturnCode::Error, val)
-    }
-
-    pub fn non_procedure_call(proc: Value<'gc>) -> Self {
-        VMReturn::new(VMReturnCode::NonProcedureCall, proc)
-    }
-
-    pub fn throw(value: Value<'gc>) -> Self {
-        VMReturn::new(VMReturnCode::Throw, value)
-    }
-
-    pub fn throw_value_and_data(key_and_subr_and_messages: Value<'gc>) -> Self {
-        VMReturn::new(VMReturnCode::ThrowValueAndData, key_and_subr_and_messages)
-    }
-
-    pub fn throw_value(value: Value<'gc>) -> Self {
-        VMReturn::new(VMReturnCode::ThrowValue, value)
-    }
-
-    pub fn yield_value(value: Value<'gc>) -> Self {
-        VMReturn::new(VMReturnCode::Yield, value)
+impl<'gc> FromResidual<Value<'gc>> for VMResult<'gc> {
+    fn from_residual(residual: Value<'gc>) -> Self {
+        Self::Err(residual)
     }
 }
 
-static EXIT_CONTINUATION: OnceLock<Global<Rootable!(Value<'_>)>> = OnceLock::new();
+impl<'gc> Try for VMResult<'gc> {
+    type Output = Value<'gc>;
+    type Residual = Value<'gc>;
 
-pub fn exit_continuation<'gc>(ctx: Context<'gc>) -> Value<'gc> {
-    *EXIT_CONTINUATION
-        .get_or_init(|| {
-            let code = TRAMPOLINES.exit_continuation();
-            let closure = Gc::new(
-                &ctx,
-                Closure {
-                    code: Address::from_ptr(code as *const ()),
-                    header: ScmHeader::with_type_bits(TypeCode16::CLOSURE_K.bits() as _),
-                    free: Value::null(),
-                    meta: Value::new(false),
-                },
-            );
+    fn from_output(output: Self::Output) -> Self {
+        Self::Ok(output)
+    }
 
-            Global::new(closure.into())
-        })
-        .fetch(&ctx)
+    fn branch(self) -> std::ops::ControlFlow<Self::Residual, Self::Output> {
+        match self {
+            VMResult::Ok(v) => std::ops::ControlFlow::Continue(v),
+            VMResult::Err(e) => std::ops::ControlFlow::Break(e),
+            VMResult::Yield => panic!("cannot use `?` operator on `VMResult::Yield`"),
+        }
+    }
+}
+
+pub struct NativeCallContext<'a, 'gc, R: IntoValues<'gc> = Value<'gc>> {
+    pub ctx: Context<'gc>,
+    rator: Value<'gc>,
+    rands: &'a [Value<'gc>],
+
+    retk: Value<'gc>,
+    reth: Value<'gc>,
+    return_data: PhantomData<R>,
+}
+
+impl<'a, 'gc, R: IntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
+    pub unsafe fn from_raw(
+        ctx: &Context<'gc>,
+        rator: Value<'gc>,
+        rands: *const Value<'gc>,
+        num_rands: usize,
+        retk: Value<'gc>,
+        reth: Value<'gc>,
+    ) -> Self {
+        Self {
+            ctx: *ctx,
+            rator,
+            rands: unsafe { std::slice::from_raw_parts(rands, num_rands) },
+            reth,
+            retk,
+            return_data: PhantomData,
+        }
+    }
+
+    pub fn rands(&self) -> &[Value<'gc>] {
+        self.rands
+    }
+
+    pub fn rator(&self) -> Value<'gc> {
+        self.rator
+    }
+
+    pub fn is_continuation(&self) -> bool {
+        self.rator.has_typ16(TypeCode16::CLOSURE_K)
+    }
+
+    pub fn return_(self, values: R) -> NativeCallReturn<'gc> {
+        let values = values.into_values(self.ctx);
+        NativeCallReturn {
+            ret: self.ctx.return_call(self.retk, values, None),
+        }
+    }
+
+    pub fn error(
+        self,
+        key: Value<'gc>,
+        subr: &str,
+        message: &str,
+        args: Value<'gc>,
+        rest: Value<'gc>,
+    ) -> NativeCallReturn<'gc> {
+        NativeCallReturn {
+            ret: errors::error(
+                self.ctx, key, subr, message, args, rest, self.retk, self.reth,
+            ),
+        }
+    }
+
+    pub fn throw(self, key: Value<'gc>, args: Value<'gc>) -> NativeCallReturn<'gc> {
+        let throw = throw::throw(self.ctx, key, args, self.retk, self.reth);
+
+        NativeCallReturn { ret: throw }
+    }
+
+    pub fn return_call(self, proc: Value<'gc>, args: &[Value<'gc>]) -> NativeCallReturn<'gc> {
+        if !proc.has_typ16(TypeCode16::CLOSURE_PROC) {
+            return self.non_applicable(proc);
+        }
+        NativeCallReturn {
+            ret: self
+                .ctx
+                .return_call(proc, args.iter().copied(), Some([self.retk, self.reth])),
+        }
+    }
+
+    pub fn call(
+        self,
+        proc: Value<'gc>,
+        args: &[Value<'gc>],
+        retk: Value<'gc>,
+        reth: Value<'gc>,
+    ) -> NativeCallReturn<'gc> {
+        if !proc.has_typ16(TypeCode16::CLOSURE_PROC) {
+            return self.non_applicable(proc);
+        }
+
+        if !retk.has_typ16(TypeCode16::CLOSURE_K) {
+            return self.non_continuation(retk);
+        }
+
+        if !reth.has_typ16(TypeCode16::CLOSURE_K) {
+            return self.non_continuation(reth);
+        }
+
+        NativeCallReturn {
+            ret: self
+                .ctx
+                .return_call(proc, args.iter().copied(), Some([retk, reth])),
+        }
+    }
+}
+
+/// A native call return value. Just an opaque wrapper over [`NativeReturn`]
+/// to enforce proper usage in safe code.
+#[repr(transparent)]
+pub struct NativeCallReturn<'gc> {
+    ret: NativeReturn<'gc>,
+}
+
+impl<'gc> NativeCallReturn<'gc> {
+    pub fn into_inner(self) -> NativeReturn<'gc> {
+        self.ret
+    }
 }

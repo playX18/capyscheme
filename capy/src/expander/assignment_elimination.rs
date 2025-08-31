@@ -56,7 +56,7 @@ fn substitute<'gc>(
                 &ctx,
                 Term {
                     source: term.source,
-                    kind: TermKind::Values(Array::from_array(&ctx, &values)),
+                    kind: TermKind::Values(Array::from_slice(&ctx, &values)),
                 },
             )
         }
@@ -127,7 +127,7 @@ fn substitute<'gc>(
                     )
                 })
                 .collect::<Vec<_>>();
-            let procs = Array::from_array(&ctx, &procs);
+            let procs = Array::from_slice(&ctx, &procs);
             let body = substitute(ctx, fix.body, substs);
 
             Gc::new(
@@ -152,7 +152,7 @@ fn substitute<'gc>(
                     value
                 })
                 .collect::<Vec<_>>();
-            let rhs = Array::from_array(&ctx, &rhs);
+            let rhs = Array::from_slice(&ctx, &rhs);
 
             let body = substitute(ctx, l.body, substs);
 
@@ -214,7 +214,7 @@ fn substitute<'gc>(
                 .iter()
                 .map(|t| substitute(ctx, *t, substs))
                 .collect::<Vec<_>>();
-            let terms = Array::from_array(&ctx, &terms);
+            let terms = Array::from_slice(&ctx, &terms);
 
             Gc::new(
                 &ctx,
@@ -239,19 +239,34 @@ fn substitute<'gc>(
             )
         }
 
-        TermKind::GSet(var, val) => {
+        TermKind::ToplevelSet(var, val) => {
             let val = substitute(ctx, *val, substs);
 
             Gc::new(
                 &ctx,
                 Term {
                     source: term.source,
-                    kind: TermKind::GSet(*var, val),
+                    kind: TermKind::ToplevelSet(*var, val),
                 },
             )
         }
 
-        TermKind::Const(_) | TermKind::GRef(_) => term,
+        TermKind::ModuleSet(module, var, public, val) => {
+            let val = substitute(ctx, *val, substs);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::ModuleSet(*module, *var, *public, val),
+                },
+            )
+        }
+
+        TermKind::Const(_)
+        | TermKind::ToplevelRef(_)
+        | TermKind::ModuleRef(_, _, _)
+        | TermKind::PrimRef(_) => term,
     }
 }
 
@@ -266,11 +281,15 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 &ctx,
                 Term {
                     source: term.source,
-                    kind: TermKind::Values(Array::from_array(&ctx, &values)),
+                    kind: TermKind::Values(Array::from_slice(&ctx, &values)),
                 },
             )
         }
-        TermKind::LRef(_) | TermKind::GRef(_) | TermKind::Const(_) => term,
+        TermKind::LRef(_)
+        | TermKind::ToplevelRef(_)
+        | TermKind::ModuleRef(_, _, _)
+        | TermKind::PrimRef(_)
+        | TermKind::Const(_) => term,
         TermKind::Let(l) => {
             let rhs = l
                 .rhs
@@ -295,7 +314,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                         kind: TermKind::Let(Let {
                             style: l.style,
                             lhs: l.lhs.clone(),
-                            rhs: Array::from_array(&ctx, &rhs),
+                            rhs: Array::from_slice(&ctx, &rhs),
                             body,
                         }),
                     },
@@ -321,8 +340,8 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     source: term.source,
                     kind: TermKind::Let(Let {
                         style: LetStyle::Let,
-                        lhs: Array::from_array(&ctx, &mlhs),
-                        rhs: Array::from_array(&ctx, &mrhs),
+                        lhs: Array::from_slice(&ctx, &mlhs),
+                        rhs: Array::from_slice(&ctx, &mrhs),
                         body,
                     }),
                 },
@@ -335,7 +354,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     kind: TermKind::Let(Let {
                         style: l.style,
                         lhs: l.lhs.clone(),
-                        rhs: Array::from_array(&ctx, &rhs),
+                        rhs: Array::from_slice(&ctx, &rhs),
                         body: wrap,
                     }),
                 },
@@ -389,8 +408,8 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     source: term.source,
                     kind: TermKind::Let(Let {
                         style: LetStyle::Let,
-                        lhs: Array::from_array(&ctx, &mlhs),
-                        rhs: Array::from_array(&ctx, &mrhs),
+                        lhs: Array::from_slice(&ctx, &mlhs),
+                        rhs: Array::from_slice(&ctx, &mrhs),
                         body,
                     }),
                 },
@@ -439,7 +458,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     )
                 })
                 .collect::<Vec<_>>();
-            let procs = Array::from_array(&ctx, &procs);
+            let procs = Array::from_slice(&ctx, &procs);
             let body = wrap_mutables(ctx, fix.body);
 
             Gc::new(
@@ -475,14 +494,26 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             )
         }
 
-        TermKind::GSet(var, val) => {
+        TermKind::ToplevelSet(var, val) => {
             let val = wrap_mutables(ctx, *val);
 
             Gc::new(
                 &ctx,
                 Term {
                     source: term.source,
-                    kind: TermKind::GSet(*var, val),
+                    kind: TermKind::ToplevelSet(*var, val),
+                },
+            )
+        }
+
+        TermKind::ModuleSet(module, var, public, val) => {
+            let val = wrap_mutables(ctx, *val);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: term.source,
+                    kind: TermKind::ModuleSet(*module, *var, *public, val),
                 },
             )
         }
@@ -526,7 +557,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 .iter()
                 .map(|t| wrap_mutables(ctx, *t))
                 .collect::<Vec<_>>();
-            let terms = Array::from_array(&ctx, &terms);
+            let terms = Array::from_slice(&ctx, &terms);
 
             Gc::new(
                 &ctx,
@@ -571,8 +602,8 @@ fn wrap_mutables_case<'gc>(
     let let_ = let_term(
         ctx,
         LetStyle::Let,
-        Array::from_array(&ctx, mlhs),
-        Array::from_array(&ctx, mrhs),
+        Array::from_slice(&ctx, mlhs),
+        Array::from_slice(&ctx, mrhs),
         body,
     );
 

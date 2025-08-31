@@ -128,7 +128,7 @@ impl<'gc> Hash for EqualHash<'gc> {
         } else if val.is::<Vector>() {
             let v = val.downcast::<Vector<'gc>>();
             for i in 0..v.len() {
-                v[i].hash(state);
+                v[i].get().hash(state);
             }
         } else if val.is::<Pair>() {
             let p = val.downcast::<Pair>();
@@ -147,7 +147,7 @@ impl<'gc> Hash for EqualHash<'gc> {
 #[collect(no_drop)]
 struct Entry<'gc> {
     key: Value<'gc>,
-    value: Value<'gc>,
+    value: Lock<Value<'gc>>,
     hash: u64,
     next: Lock<Option<Gc<'gc, Entry<'gc>>>>,
 }
@@ -173,7 +173,9 @@ impl<'gc> HashTable<'gc> {
         load_factor: f64,
     ) -> Gc<'gc, Self> {
         let initial_capacity = initial_capacity.min(1);
-
+        let initial_capacity = (initial_capacity == 0)
+            .then_some(8)
+            .unwrap_or(initial_capacity);
         if load_factor <= 0.0 {
             panic!("Load factor must be greater than 0.0");
         }
@@ -257,7 +259,7 @@ impl<'gc> HashTable<'gc> {
             Entry {
                 hash,
                 key,
-                value,
+                value: Lock::new(value),
                 next: Lock::new(e),
             },
         )));
@@ -283,8 +285,10 @@ impl<'gc> HashTable<'gc> {
 
         while let Some(entry) = e {
             if entry.hash == hash && guard.typ.equal(entry.key, key) {
-                let old_value = entry.value;
-                barrier::field!(Gc::write(&ctx, entry), Entry, value).write(value);
+                let old_value = entry.value.get();
+                barrier::field!(Gc::write(&ctx, entry), Entry, value)
+                    .unlock()
+                    .set(value);
                 return Some(old_value);
             }
             e = entry.next.get();
@@ -324,7 +328,7 @@ impl<'gc> HashTable<'gc> {
                 }
                 guard.count.set(guard.count.get() - 1);
                 guard.mod_count.set(guard.mod_count.get() + 1);
-                return Some(entry.value);
+                return Some(entry.value.get());
             }
             prev = Some(entry);
             e = entry.next.get();
@@ -347,6 +351,9 @@ impl<'gc> HashTable<'gc> {
     pub fn get(&self, ctx: Context<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
         let key = key.into_value(ctx);
         let guard = self.inner.lock();
+        if guard.table.get().len() == 0 {
+            return None;
+        }
         let hash = guard.typ.hash(key);
         let index = (hash % guard.table.get().len() as u64) as usize;
 
@@ -354,7 +361,7 @@ impl<'gc> HashTable<'gc> {
 
         while let Some(entry) = e {
             if entry.hash == hash && guard.typ.equal(entry.key, key) {
-                return Some(entry.value);
+                return Some(entry.value.get());
             }
             e = entry.next.get();
         }
@@ -382,7 +389,7 @@ impl<'gc> HashTable<'gc> {
 
         while let Some(entry) = e {
             if entry.hash == hash && guard.typ.equal(entry.key, key) {
-                return (false, entry.value);
+                return (false, entry.value.get());
             }
             e = entry.next.get();
         }
@@ -409,7 +416,7 @@ impl<'gc> HashTable<'gc> {
         for i in 0..guard.table.get().len() {
             let mut e = guard.table.get()[i].get();
             while let Some(entry) = e {
-                if entry.value == value {
+                if entry.value.get() == value {
                     return true;
                 }
                 e = entry.next.get();
@@ -476,17 +483,22 @@ impl<'gc> Iterator for HashTableIter<'gc> {
     type Item = (Value<'gc>, Value<'gc>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while self.index < self.table.len() {
-            if let Some(entry) = &self.entry {
-                let result = (entry.key, entry.value);
-                self.entry = entry.next.get();
-                return Some(result);
-            } else {
-                self.entry = self.table[self.index].get();
+        if let Some(node) = self.entry {
+            self.entry = node.next.get();
+        }
+
+        if self.entry.is_none() {
+            while let Some(bucket) = self.table.get(self.index) {
                 self.index += 1;
+
+                if let Some(head) = bucket.get() {
+                    self.entry = Some(head);
+                    break;
+                }
             }
         }
-        None
+
+        self.entry.map(|node| (node.key, node.value.get()))
     }
 }
 

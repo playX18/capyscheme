@@ -1,9 +1,10 @@
-#![feature(arbitrary_self_types)]
+#![feature(arbitrary_self_types, try_trait_v2)]
 //pub mod compiler;
 pub mod cps;
 pub mod expander;
 pub mod frontend;
 //pub mod jit;
+pub mod compiler;
 pub mod runtime;
 pub mod utils;
 

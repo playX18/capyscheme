@@ -15,7 +15,7 @@ impl<'gc> Atom<'gc> {
     {
         match self {
             Atom::Constant(value) => alloc.text(format!("{}", value)),
-            Atom::Global(value) => alloc.text(format!("(global {})", value)),
+
             Atom::Local(var) => alloc.text(format!("{}", var.name)),
             Atom::Values(atoms) => {
                 let atoms_doc =
@@ -218,38 +218,15 @@ impl<'gc> Expression<'gc> {
                         .chain(args.iter().map(|arg| arg.pretty(alloc))),
                     alloc.space(),
                 );
-                (alloc.text("#%")
-                    + alloc.text(prim.to_string())
-                    + if args.is_empty() {
-                        alloc.nil()
-                    } else {
-                        alloc.space()
-                    }
-                    + args_doc)
+                (alloc.text("#%") + alloc.text(prim.to_string()) + alloc.space() + args_doc)
                     .group()
                     .parens()
             }
 
-            Expression::ValuesAt(atom, from) => {
-                // (values-ref <atom> <from>)
-                (alloc.text("values-ref")
-                    + alloc.space()
-                    + atom.pretty(alloc)
-                    + alloc.space()
-                    + alloc.text(from.to_string()))
-                .group()
-                .parens()
-            }
-
-            Expression::ValuesRest(atom, from) => {
-                // (values-rest <atom> <from>)
-                (alloc.text("values-rest")
-                    + alloc.space()
-                    + atom.pretty(alloc)
-                    + alloc.space()
-                    + alloc.text(from.to_string()))
-                .group()
-                .parens()
+            Expression::PrimRef(prim) => {
+                (alloc.text("#%") + alloc.space() + alloc.text(prim.to_string()))
+                    .group()
+                    .parens()
             }
         }
     }
@@ -264,7 +241,7 @@ impl<'gc> Cont<'gc> {
     {
         // (cont <name> (<args...>) . <body>)
         match self {
-            Cont::Local {
+            Cont {
                 name,
                 binding,
                 args,
@@ -293,8 +270,6 @@ impl<'gc> Cont<'gc> {
                 .group()
                 .parens()
             }
-
-            Cont::Return(_) => alloc.text("return").parens(),
         }
     }
 }
