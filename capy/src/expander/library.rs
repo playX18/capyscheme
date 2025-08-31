@@ -90,7 +90,7 @@ pub fn make_library<'gc>(ctx: Context<'gc>, spec: Value<'gc>) -> LibraryRef<'gc>
             name: spec,
             environment: env,
             exports: HashTable::new(&ctx, HashTableType::Eq, 32, 0.75).into(),
-            imports: Array::from_array(&ctx, &[]),
+            imports: Array::from_slice(&ctx, &[]),
             body: Value::null(),
         },
     );

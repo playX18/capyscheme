@@ -1,10 +1,12 @@
+use crate::cps::Set;
 use crate::expander::core::{Fix, Let, Proc, Term, TermKind, TermRef, call_term, prim_call_term};
 use crate::runtime::Context;
+use crate::runtime::modules::{Module, resolve_module};
 use crate::{runtime::value::Value, static_symbols};
-use rsgc::alloc::array::Array;
+use rsgc::traits::IterGc;
 use rsgc::{Gc, Trace};
 use rsgc::{Rootable, global::Global};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 #[derive(Trace)]
@@ -33,6 +35,7 @@ impl<'gc> Primitive<'gc> {
 #[collect(no_drop)]
 pub struct Primitives<'gc> {
     pub set: HashMap<Value<'gc>, Primitive<'gc>>,
+    pub interesting_variables: HashSet<Value<'gc>>,
 }
 
 macro_rules! make_primitives {
@@ -59,8 +62,16 @@ macro_rules! make_primitives {
                     set.insert(name.into(), primitive);
                 )*
 
-                Global::new(Primitives {
+                let module = $crate::runtime::modules::root_module(ctx);
 
+                let mut vars = HashSet::<$crate::runtime::value::Value>::new();
+                $(
+                    let var = module.ensure_local_variable(ctx, $crate::runtime::value::Symbol::from_str(ctx, $l).into());
+                    vars.insert(var.into());
+                )*
+
+                Global::new(Primitives {
+                    interesting_variables: vars,
                     set
                 })
             }).fetch(&ctx)
@@ -70,52 +81,26 @@ macro_rules! make_primitives {
 
 make_primitives!(
     (PRIM_DEFINE, "define", true),
-    (PRIM_GSET, "gset!", true),
     (PRIM_BOXREF, "box-ref", true),
     (PRIM_BOXSET, "set-box!", true),
-    (PRIM_BOXREF_UNCHECKED, "unsafe-box-ref", false),
-    (PRIM_BOXSET_UNCHECKED, "unsafe-set-box!", true),
     (PRIM_BOX, "box", false),
     (PRIM_BOXP, "box?", false),
     (PRIM_SET_CAR, "set-car!", true),
     (PRIM_SET_CDR, "set-cdr!", true),
     (PRIM_CAR, "car", true),
     (PRIM_CDR, "cdr", true),
-    (PRIM_CADR, "cadr", true),
-    (PRIM_CDDR, "cddr", true),
-    (PRIM_CDAR, "cdar", true),
-    (PRIM_CAAR, "caar", true),
-    (PRIM_CAAAR, "caaar", true),
-    (PRIM_CADAR, "cadar", true),
-    (PRIM_CDDAR, "cddar", true),
-    (PRIM_CDDDR, "cdddr", true),
-    (PRIM_CADDR, "caddr", true),
-    (PRIM_CDDDDR, "cddddr", true),
-    (PRIM_REVERSE, "reverse", true),
     (PRIM_CONS, "cons", true),
-    (PRIM_CAR_UNCHECKED, "unsafe-car", true),
-    (PRIM_CDR_UNCHECKED, "unsafe-cdr", true),
     (PRIM_NULLP, "null?", false),
     (PRIM_PAIRP, "pair?", false),
-    (PRIM_APPEND, "append", true),
     (PRIM_LIST, "list", false),
-    (PRIM_LISTP, "list?", false),
     (PRIM_VECTOR, "vector", false),
     (PRIM_VECTORP, "vector?", false),
     (PRIM_VECTOR_REF, "vector-ref", true),
     (PRIM_VECTOR_SET, "vector-set!", true),
-    (PRIM_VECTOR_REF_UNCHECKED, "unsafe-vector-ref", true),
-    (PRIM_VECTOR_SET_UNCHECKED, "unsafe-vector-set!", true),
-    (PRIM_STRING, "string", false),
     (PRIM_STRINGP, "string?", false),
     (PRIM_STRING_LENGTH, "string-length", true),
     (PRIM_STRING_REF, "string-ref", true),
     (PRIM_STRING_SET, "string-set!", true),
-    (PRIM_STRING_REF_UNCHECKED, "unsafe-string-ref", false),
-    (PRIM_STRING_SET_UNCHECKED, "unsafe-string-set!", false),
-    (PRIM_STRING_LENGTH_UNCHECKED, "unsafe-string-length", false),
-    (PRIM_STRING_TO_SYMBOL, "string->symbol", true),
-    (PRIM_SYMBOL_TO_STRING, "symbol->string", true),
     (PRIM_NOT, "not", false),
     (PRIM_BOOLEANP, "boolean?", false),
     (PRIM_SYMBOLP, "symbol?", false),
@@ -164,10 +149,10 @@ make_primitives!(
     (PRIM_FLONUM_GT, "flonum>", true),
     (PRIM_FLONUM_GE, "flonum>=", true),
     /* low-level primitives */
-    (PRIM_ALLOC, "alloc", false),
     (PRIM_TYPECODE8, ".typecode8", false),
     (PRIM_TYPECODE16, ".typecode16", false),
     (PRIM_IS_IMMEDIATE, ".is-immediate", false),
+    (PRIM_IS_HEAP_OBJECT, ".is-heap-object", false),
     (PRIM_IS_CELL, ".is-cell", false),
     (PRIM_ICONST8, ".iconst", false),
     (PRIM_ICONST16, ".iconst16", false),
@@ -256,11 +241,14 @@ make_primitives!(
     (PRIM_U32_TO_FIX, "u32->value", true),
     (PRIM_U64_TO_VALUE, "u64->value", true),
     (PRIM_USIZE_TO_VALUE, "usize->value", true),
-    (PRIM_CALLCC, "call/cc", true),
-    (PRIM_ERROR, "error", true),
-    (PRIM_THROW, "throw", true)
+    (PRIM_LOOKUP, "lookup", true),
+    (PRIM_LOOKUP_BOUND, "lookup-bound", true),
+    (PRIM_CURRENT_MODULE, "current-module", true),
+    (PRIM_CACHE_REF, "cache-ref", true),
+    (PRIM_CACHE_SET, "cache-set!", true)
 );
 
+/*
 /// Given a term, resolve all calls to primitives in it.
 pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
     match &term.kind {
@@ -270,7 +258,7 @@ pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef
                 .map(|arg| resolve_primitives(ctx, arg.clone()))
                 .collect::<Vec<_>>();
 
-            if let TermKind::GRef(var) = proc.kind
+            if let TermKind::ToplevelRef(var) = proc.kind
                 && primitives(ctx).set.contains_key(&var)
             {
                 prim_call_term(ctx, var, &args, term.source)
@@ -291,7 +279,7 @@ pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef
                 &ctx,
                 Term {
                     source: term.source,
-                    kind: TermKind::Values(Array::from_array(&ctx, values)),
+                    kind: TermKind::Values(Array::from_slice(&ctx, values)),
                 },
             )
         }
@@ -354,7 +342,7 @@ pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef
                     source: term.source,
                     kind: TermKind::Fix(Fix {
                         lhs: fix.lhs,
-                        rhs: Array::from_array(&ctx, rhs),
+                        rhs: Array::from_slice(&ctx, rhs),
                         body,
                     }),
                 },
@@ -380,7 +368,7 @@ pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef
                     kind: TermKind::Let(Let {
                         style: let_term.style,
                         lhs: let_term.lhs.clone(),
-                        rhs: Array::from_array(&ctx, rhs),
+                        rhs: Array::from_slice(&ctx, rhs),
                         body,
                     }),
                 },
@@ -431,7 +419,7 @@ pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef
                 &ctx,
                 Term {
                     source: term.source,
-                    kind: TermKind::Seq(Array::from_array(&ctx, seq)),
+                    kind: TermKind::Seq(Array::from_slice(&ctx, seq)),
                 },
             )
         }
@@ -467,5 +455,292 @@ pub fn resolve_primitives<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef
                 },
             )
         }
+    }
+}
+*/
+
+pub fn resolve_primitives<'gc>(
+    ctx: Context<'gc>,
+    t: TermRef<'gc>,
+    m: Gc<'gc, Module<'gc>>,
+) -> TermRef<'gc> {
+    let _ = primitives(ctx);
+    let mut resolver = Resolver::new(ctx, t, m);
+    rec(&mut resolver, ctx, t)
+}
+
+fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+    match t.kind {
+        TermKind::ToplevelRef(name) => {
+            if !r.local_definitions.contains(&name)
+                && r.m.variable(ctx, name).map_or(false, |var| {
+                    primitives(ctx).interesting_variables.contains(&var.into())
+                })
+            {
+                Gc::new(
+                    &ctx,
+                    Term {
+                        source: t.source,
+                        kind: TermKind::PrimRef(name),
+                    },
+                )
+            } else {
+                t
+            }
+        }
+
+        TermKind::ModuleRef(module, name, public) => {
+            let Some(module) = resolve_module(ctx, module, false, true) else {
+                return t;
+            };
+
+            let i = if public {
+                module.public_interface.get().unwrap_or(module)
+            } else {
+                module
+            };
+
+            let Some(v) = i.variable(ctx, name) else {
+                return t;
+            };
+
+            if primitives(ctx).interesting_variables.contains(&v.into()) {
+                Gc::new(
+                    &ctx,
+                    Term {
+                        source: t.source,
+                        kind: TermKind::PrimRef(name),
+                    },
+                )
+            } else {
+                t
+            }
+        }
+
+        TermKind::Call(proc, args) => {
+            let proc = rec(r, ctx, proc);
+            let args = args.iter().map(|arg| rec(r, ctx, *arg)).collect::<Vec<_>>();
+            if let TermKind::PrimRef(name) = proc.kind {
+                prim_call_term(ctx, name, &args, t.source)
+            } else {
+                call_term(ctx, proc, &args, t.source)
+            }
+        }
+
+        TermKind::Const(_) => t,
+        TermKind::Define(name, val) => {
+            let val = rec(r, ctx, val);
+
+            return Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::Define(name, val),
+                },
+            );
+        }
+
+        TermKind::Fix(fix) => {
+            let rhs = fix
+                .rhs
+                .iter()
+                .map(|p| {
+                    let body = rec(r, ctx, p.body);
+                    Gc::new(
+                        &ctx,
+                        Proc {
+                            name: p.name,
+                            body,
+                            args: p.args,
+                            variadic: p.variadic,
+                            source: p.source,
+                        },
+                    )
+                })
+                .collect_gc(&ctx);
+            let body = rec(r, ctx, fix.body);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::Fix(Fix {
+                        body,
+                        rhs,
+                        lhs: fix.lhs,
+                    }),
+                },
+            )
+        }
+
+        TermKind::If(test, cons, alt) => {
+            let test = rec(r, ctx, test);
+            let cons = rec(r, ctx, cons);
+            let alt = rec(r, ctx, alt);
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::If(test, cons, alt),
+                },
+            )
+        }
+
+        TermKind::LRef(_) => t,
+        TermKind::LSet(var, val) => {
+            let val = rec(r, ctx, val);
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::LSet(var, val),
+                },
+            )
+        }
+
+        TermKind::Let(l) => {
+            let rhs = l.rhs.iter().map(|v| rec(r, ctx, *v)).collect_gc(&ctx);
+            let lhs = l.lhs;
+            let style = l.style;
+            let body = rec(r, ctx, l.body);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::Let(Let {
+                        lhs,
+                        rhs,
+                        body,
+                        style,
+                    }),
+                },
+            )
+        }
+
+        TermKind::ModuleSet(module, name, public, exp) => {
+            let exp = rec(r, ctx, exp);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::ModuleSet(module, name, public, exp),
+                },
+            )
+        }
+
+        TermKind::PrimCall(name, args) => {
+            let args = args.iter().map(|arg| rec(r, ctx, *arg)).collect_gc(&ctx);
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::PrimCall(name, args),
+                },
+            )
+        }
+
+        TermKind::PrimRef(_) => t,
+        TermKind::Proc(p) => {
+            let body = rec(r, ctx, p.body);
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::Proc(Gc::new(
+                        &ctx,
+                        Proc {
+                            name: p.name,
+                            body,
+                            args: p.args,
+                            variadic: p.variadic,
+                            source: p.source,
+                        },
+                    )),
+                },
+            )
+        }
+
+        TermKind::Receive(args, variadic, receiver, producer) => {
+            let receiver = rec(r, ctx, receiver);
+            let producer = rec(r, ctx, producer);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::Receive(args, variadic, receiver, producer),
+                },
+            )
+        }
+
+        TermKind::Seq(seq) => {
+            let seq = seq.iter().map(|t| rec(r, ctx, *t)).collect_gc(&ctx);
+
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::Seq(seq),
+                },
+            )
+        }
+
+        TermKind::ToplevelSet(var, val) => {
+            let val = rec(r, ctx, val);
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::ToplevelSet(var, val),
+                },
+            )
+        }
+
+        TermKind::Values(vals) => {
+            let vals = vals.iter().map(|v| rec(r, ctx, *v)).collect_gc(&ctx);
+            Gc::new(
+                &ctx,
+                Term {
+                    source: t.source,
+                    kind: TermKind::Values(vals),
+                },
+            )
+        }
+    }
+}
+
+struct Resolver<'gc> {
+    local_definitions: Set<Value<'gc>>,
+    m: Gc<'gc, Module<'gc>>,
+}
+
+impl<'gc> Resolver<'gc> {
+    fn new(_ctx: Context<'gc>, t: TermRef<'gc>, m: Gc<'gc, Module<'gc>>) -> Self {
+        let mut local_definitions = Set::default();
+
+        collect_local_definitions(t, &mut local_definitions);
+
+        Resolver {
+            local_definitions,
+            m,
+        }
+    }
+}
+
+fn collect_local_definitions<'gc>(x: TermRef<'gc>, set: &mut Set<Value<'gc>>) {
+    match x.kind {
+        TermKind::Define(var, _) => {
+            set.insert(var);
+        }
+
+        TermKind::Seq(seq) => {
+            for exp in seq.iter() {
+                collect_local_definitions(*exp, set);
+            }
+        }
+
+        _ => (),
     }
 }

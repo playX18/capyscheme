@@ -1,5 +1,5 @@
 use crate::{
-    cps::term::{Atom, Cont, ContRef, Expression, FuncRef, Term, TermRef, Throw},
+    cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef, Throw},
     expander::core::LVarRef,
 };
 use hashlink::LinkedHashMap as HashMap;
@@ -19,21 +19,7 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
                     .collect()
             }
 
-            Expression::ValuesRest(atom, _) => {
-                let map = get_fva(atom).iter().copied().collect::<HashSet<_>>();
-                map.union(&get_fvt(body, fv))
-                    .filter(|v| **v != bind)
-                    .copied()
-                    .collect()
-            }
-
-            Expression::ValuesAt(atom, _) => {
-                let map = get_fva(atom).iter().copied().collect::<HashSet<_>>();
-                map.union(&get_fvt(body, fv))
-                    .filter(|v| **v != bind)
-                    .copied()
-                    .collect()
-            }
+            _ => HashSet::new(),
         },
 
         Term::Letk(conts, body) => {
@@ -108,36 +94,26 @@ fn get_fva<'gc>(atom: Atom<'gc>) -> Vec<LVarRef<'gc>> {
 }
 
 fn get_fvc<'gc>(cont: ContRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
-    match *cont {
-        Cont::Local {
-            args,
-            variadic,
-            body,
-            ..
-        } => {
-            let mut map = get_fvt(body, fv);
-            for arg in args.iter().chain(variadic.iter()) {
-                map.remove(arg);
-            }
-            map.remove(&cont.binding());
-            map
-        }
-        _ => HashSet::new(),
+    let mut map = get_fvt(cont.body, fv);
+    map.insert(cont.handler.get());
+
+    for arg in cont.args.iter().chain(cont.variadic.iter()) {
+        map.remove(arg);
     }
+    map.remove(&cont.binding);
+    assert!(map.contains(&cont.handler.get()));
+    map
 }
 
 pub fn get_fvf<'gc>(func: FuncRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
     fv.funcs.insert(func.binding, func);
     let mut map = get_fvt(func.body, fv);
-    for arg in func
-        .args
-        .iter()
-        .chain(func.variadic.iter())
-        .chain(std::iter::once(&func.return_cont))
-    {
+    for arg in func.args.iter().chain(func.variadic.iter()) {
         map.remove(arg);
     }
-    map.remove(&func.binding);
+    map.remove(&func.return_cont);
+    map.remove(&func.handler_cont);
+
     map
 }
 

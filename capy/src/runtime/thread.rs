@@ -1,17 +1,19 @@
-use rsgc::{Gc, Mutation, Mutator, Rootable, Trace};
+use std::cell::Cell;
+
+use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
 
 use crate::runtime::{
     fluids::DynamicState,
     value::{
-        HashTable, HashTableType,
-        Value, /*  Variable, current_environment, current_variable_environment*/
+        NativeReturn, ReturnCode, SavedCall, Value, init_symbols, init_weak_sets, init_weak_tables,
     },
+    vm::{VMResult, call_scheme},
 };
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Context<'gc> {
-    mc: &'gc Mutation<'gc>,
+    pub(crate) mc: &'gc Mutation<'gc>,
     pub(crate) state: &'gc State<'gc>,
 }
 
@@ -33,100 +35,52 @@ impl<'gc> Context<'gc> {
     pub fn state(&self) -> &'gc State<'gc> {
         self.state
     }
-    /*
-    pub fn lookup_current_environment(self, sym: impl IntoValue<'gc>) -> Option<Value<'gc>> {
-        let env = current_environment(self);
 
-        env.variables
-            .get()
-            .get(self, sym.into_value(self))
-            .map(|v| v.downcast::<Variable>().get())
+    pub fn has_suspended_call(&self) -> bool {
+        self.state.saved_call.get().is_some()
     }
 
-    pub fn intern_current_environment(self, sym: impl IntoValue<'gc>, value: Value<'gc>) {
-        let vars = current_variable_environment(self);
+    pub fn resume_suspended_call(&self) -> VMResult<'gc> {
+        let call = self
+            .state
+            .saved_call
+            .replace(None)
+            .expect("No suspended call");
 
-        let (inserted, var) = vars.get_or_insert(self, sym.into_value(self), |ctx| {
-            Variable::new(ctx, value).into()
-        });
-
-        if !inserted {
-            var.downcast::<Variable>().set(self, value);
-        }
+        call_scheme(*self, call.rator, &call.rands)
     }
 
-    pub fn set_top_level_value(self, sym: impl IntoValue<'gc>, value: Value<'gc>) {
-        self.intern_current_environment(sym, value);
-    }
-
-    pub fn is_top_level_bound(self, sym: impl IntoValue<'gc>) -> bool {
-        let env = current_environment(self);
-        env.variables.get().contains_key(self, sym.into_value(self))
-    }
-
-    pub fn call(
-        self,
-        proc: Value<'gc>,
-        args: impl AsRef<[Value<'gc>]>,
-    ) -> Result<Value<'gc>, Value<'gc>> {
-        if !proc.is::<Closure>() {
-            return Err(proc);
-        }
-
-        let closure = proc.downcast::<Closure>();
-        let entrypoint = closure.code;
-        if closure.is_continuation() {
-            return Err(Value::new(Str::new(
-                &self,
-                "Non-procedure call".to_string(),
-                false,
-            )));
-        }
+    pub fn return_call(
+        &self,
+        rator: Value<'gc>,
+        rands: impl IntoIterator<Item = Value<'gc>>,
+        conts: Option<[Value<'gc>; 2]>,
+    ) -> NativeReturn<'gc> {
+        let rands_ptr = self.state.runstack.get().to_mut_ptr::<Value>();
+        let disp = if conts.is_some() { 2 } else { 0 };
         unsafe {
-            Write::assume(&self.vm().proc).write(proc);
-            for &arg in args.as_ref().iter() {
-                self.vm().push_arg(arg);
+            if let Some(conts) = conts {
+                *rands_ptr = conts[0];
+                *(rands_ptr.add(1)) = conts[1];
             }
+            let mut count = 0;
+            for (i, rand) in rands.into_iter().enumerate() {
+                *rands_ptr.add(disp + i) = rand;
+                count += 1;
+            }
+
+            self.state
+                .runstack
+                .set(Address::from_ptr(rands_ptr.add(count)));
+            self.state.call_data.rands.set(rands_ptr);
+            self.state.call_data.num_rands.set(count + disp);
+            self.state.call_data.rator.set(rator);
         }
 
-        let k = exit_continuation(self);
-        assert!(k.is::<Closure>());
-        let trampoline = TRAMPOLINES.rust_to_scheme();
-
-        let result = trampoline(&self.mc, &self.state, entrypoint, exit_continuation(self));
-
-        match result.code {
-            VMReturnCode::Return => Ok(result.value),
-            VMReturnCode::Error => Err(result.value),
-            VMReturnCode::NonProcedureCall => Err(Value::new(Str::new(
-                &self,
-                "Non-procedure call".to_string(),
-                false,
-            ))),
-            VMReturnCode::ArgumentMismatch => Err(Value::new(Str::new(
-                &self,
-                "Argument mismatch".to_string(),
-                false,
-            ))),
-            VMReturnCode::Throw => Err(result.value),
-            VMReturnCode::ThrowValue => Err(result.value),
-            VMReturnCode::Yield => {
-                println!("yield requested? {}", self.mc.take_yieldpoint());
-                Ok(result.value)
-            }
-            VMReturnCode::ThrowValueAndData => Err(result.value),
+        NativeReturn {
+            code: ReturnCode::Continue,
+            value: Value::new(false),
         }
-    }
-
-    pub fn vm(&self) -> &VMState<'gc> {
-        &self.state.vm_state
-    }*/
-
-    pub fn global_location(self, sym: Value<'gc>) -> Value<'gc> {
-        self.state
-            .globals
-            .get_or_insert(self, sym, |ctx| Value::cons(ctx, Value::undefined(), sym))
-            .1
     }
 }
 
@@ -138,24 +92,73 @@ impl<'gc> std::ops::Deref for Context<'gc> {
     }
 }
 
+/// Hardcoded limit for runstack to not make calls too slow and runstack too large.
+const RUNSTACK_SIZE: usize = 4096;
+
 pub struct State<'gc> {
     pub(crate) dynamic_state: DynamicState<'gc>,
-    //pub(crate) vm_state: VMState<'gc>,
-    pub(crate) globals: Gc<'gc, HashTable<'gc>>,
+    pub(crate) runstack: Cell<Address>,
+    pub(crate) runstack_start: Address,
+    pub(crate) call_data: CallData<'gc>,
+    pub(crate) saved_call: Cell<Option<Gc<'gc, SavedCall<'gc>>>>,
+}
+
+#[repr(C)]
+pub struct CallData<'gc> {
+    pub rator: Cell<Value<'gc>>,
+    pub rands: Cell<*mut Value<'gc>>,
+    pub num_rands: Cell<usize>,
+}
+
+unsafe impl<'gc> Trace for CallData<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+        visitor.trace(&mut self.rator);
+        unsafe {
+            if !self.rands.get().is_null() {
+                for i in 0..self.num_rands.get() {
+                    (*self.rands.get().add(i)).trace(visitor);
+                }
+            }
+        }
+    }
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+        let _ = weak_processor;
+    }
 }
 
 unsafe impl Trace for State<'_> {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
 
-    unsafe fn trace(&mut self, _visitor: &mut rsgc::collection::Visitor) {}
+    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+        visitor.trace(&mut self.dynamic_state);
+
+        let runstack = unsafe {
+            std::slice::from_raw_parts_mut(
+                self.runstack_start.to_mut_ptr::<Value>(),
+                (self.runstack.get() - self.runstack_start) / size_of::<Value>(),
+            )
+        };
+
+        for value in runstack {
+            visitor.trace(value);
+        }
+    }
 }
 
 impl<'gc> State<'gc> {
     pub fn new(mc: &'gc Mutation<'gc>) -> Self {
+        let (runstack_start, _runstack_end) = make_fresh_runstack();
         Self {
             dynamic_state: DynamicState::new(mc),
+            runstack: Cell::new(runstack_start),
 
-            globals: HashTable::new(mc, HashTableType::Eq, 128, 0.75),
+            runstack_start,
+            call_data: CallData {
+                rator: Cell::new(Value::undefined()),
+                rands: Cell::new(std::ptr::null_mut()),
+                num_rands: Cell::new(0),
+            },
+            saved_call: Cell::new(None),
         }
     }
 
@@ -173,15 +176,64 @@ impl Scheme {
     where
         F: for<'gc> FnOnce(Context<'gc>) -> T,
     {
-        self.mutator.mutate(|mc, state| f(state.context(mc)))
+        let (result, should_gc) = self.mutator.mutate(|mc, state| {
+            let result = f(state.context(mc));
+
+            (result, mc.take_yieldpoint() != 0)
+        });
+
+        if should_gc {
+            self.mutator.collect_garbage();
+        }
+
+        result
     }
 
     pub fn new() -> Self {
         Self {
-            mutator: Mutator::new(|mc| {
-                super::init(mc);
-                State::new(mc)
-            }),
+            mutator: {
+                let m = Mutator::new(|mc| {
+                    init_weak_sets(&mc);
+                    init_weak_tables(&mc);
+                    init_symbols(&mc);
+
+                    State::new(mc)
+                });
+                m.mutate(|mc, state: &mut State<'_>| {
+                    super::init(state.context(mc));
+                });
+                m
+            },
         }
+    }
+}
+
+impl<'gc> Drop for State<'gc> {
+    fn drop(&mut self) {
+        unsafe {
+            let layout = std::alloc::Layout::from_size_align(
+                RUNSTACK_SIZE * std::mem::size_of::<Value>(),
+                std::mem::align_of::<Value>(),
+            )
+            .unwrap();
+            std::alloc::dealloc(self.runstack_start.to_mut_ptr() as *mut u8, layout);
+        }
+    }
+}
+
+fn make_fresh_runstack() -> (Address, Address) {
+    let layout = std::alloc::Layout::from_size_align(
+        RUNSTACK_SIZE * std::mem::size_of::<Value>(),
+        std::mem::align_of::<Value>(),
+    )
+    .unwrap();
+    unsafe {
+        let ptr = std::alloc::alloc(layout) as *mut Value;
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        let start = Address::from_ptr(ptr);
+        let end = Address::from_ptr(ptr.add(RUNSTACK_SIZE));
+        (start, end)
     }
 }

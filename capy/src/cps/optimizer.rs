@@ -8,8 +8,18 @@ use crate::{
     runtime::{Context, value::Value},
     utils::fixedpoint,
 };
-use rsgc::{Gc, alloc::array::Array};
-use std::collections::{HashMap, HashSet};
+use pretty::BoxAllocator;
+use rsgc::{
+    Gc,
+    alloc::{ArrayRef, array::Array},
+    barrier,
+    cell::Lock,
+    traits::IterGc,
+};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+};
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 struct Count {
@@ -90,7 +100,7 @@ impl<'gc> State<'gc> {
     fn with_continuations(&mut self, conts: &[ContRef<'gc>]) -> &mut Self {
         for cont in conts {
             match &**cont {
-                Cont::Local { binding, .. } | Cont::Return(binding) => {
+                Cont { binding, .. } => {
                     self.cenv.insert(*binding, cont.clone());
                 }
             }
@@ -152,6 +162,7 @@ fn census<'gc>(term: TermRef<'gc>) -> HashMap<LVarRef<'gc>, Count> {
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
     ) {
         let curr_count = census.get(&name).copied().unwrap_or_default();
+
         census.insert(
             name,
             Count {
@@ -212,13 +223,7 @@ fn census<'gc>(term: TermRef<'gc>) -> HashMap<LVarRef<'gc>, Count> {
                         inc_val_use_n(h, census, rhs);
                     }
 
-                    Expression::ValuesAt(atom, _) => {
-                        inc_val_use_a(atom, census, rhs);
-                    }
-
-                    Expression::ValuesRest(atom, _) => {
-                        inc_val_use_a(atom, census, rhs);
-                    }
+                    _ => (),
                 }
 
                 add_to_census(body, census, rhs);
@@ -226,7 +231,7 @@ fn census<'gc>(term: TermRef<'gc>) -> HashMap<LVarRef<'gc>, Count> {
 
             Term::Letk(ks, body) => {
                 for k in ks.iter() {
-                    rhs.insert(k.binding(), k.body().expect("letk body"));
+                    rhs.insert(k.binding(), k.body());
                 }
 
                 add_to_census(body, census, rhs);
@@ -288,17 +293,15 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                         let state =
                             state.with_atom_subst(Atom::Local(binding), Atom::Constant(atom));
                         return shrink_tree(body, state);
-                    } else {
-                        println!("can't fold {}", prim);
                     }
                 }
 
-                let atoms = Array::from_array(&state.ctx, args);
+                let atoms = Array::from_slice(&state.ctx, args);
                 let body = shrink_tree(body, state);
 
-                if !prim_def.is_impure() && state.is_dead(binding) {
+                /*if !prim_def.is_impure() && state.is_dead(binding) {
                     return body;
-                }
+                }*/
 
                 Gc::new(
                     &state.ctx,
@@ -306,28 +309,11 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                 )
             }
 
-            Expression::ValuesAt(atom, ix) => {
-                let atom = state.atom_subst.get(&atom).cloned().unwrap_or(atom);
-                if let Atom::Values(values) = atom {
-                    if let Some(&value) = values.get(ix) {
-                        let state = state.with_atom_subst(Atom::Local(binding), value);
-                        return shrink_tree(body, state);
-                    }
-                }
-
+            Expression::PrimRef(name) => {
                 let body = shrink_tree(body, state);
                 return Gc::new(
                     &state.ctx,
-                    Term::Let(binding, Expression::ValuesAt(atom, ix), body),
-                );
-            }
-
-            Expression::ValuesRest(atom, from) => {
-                let atom = state.atom_subst.get(&atom).cloned().unwrap_or(atom);
-                let body = shrink_tree(body, state);
-                return Gc::new(
-                    &state.ctx,
-                    Term::Let(binding, Expression::ValuesRest(atom, from), body),
+                    Term::Let(binding, Expression::PrimRef(name), body),
                 );
             }
         },
@@ -339,41 +325,22 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                     if state.is_dead(cont.binding()) {
                         return None;
                     }
+                    let body = shrink_tree(cont.body, state);
 
-                    let Cont::Local {
-                        name,
-                        binding,
-                        body,
-                        args,
-                        variadic,
-                        source,
-                        reified,
-                    } = **cont
-                    else {
-                        panic!("BUG: invalid letk")
-                    };
+                    let newh = state.var_subst.get(&cont.handler.get()).copied();
+                    if let Some(h) = newh {
+                        let wcont = Gc::write(&state.ctx, *cont);
+                        barrier::field!(wcont, Cont, handler).unlock().set(h);
+                    }
 
-                    let body = shrink_tree(body, state);
-
-                    Some(Gc::new(
-                        &state.ctx,
-                        Cont::Local {
-                            name,
-                            binding,
-                            body,
-                            args,
-                            variadic,
-                            source,
-                            reified,
-                        },
-                    ))
+                    Some(cont.with_body(state.ctx, body))
                 })
                 .collect::<Vec<_>>();
             if conts.is_empty() {
                 return shrink_tree(body, state);
             }
 
-            let conts = Array::from_array(&state.ctx, conts);
+            let conts = Array::from_slice(&state.ctx, conts);
             let body = shrink_tree(body, state);
             Gc::new(&state.ctx, Term::Letk(conts, body))
         }
@@ -383,9 +350,9 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                 .iter()
                 .copied()
                 .filter_map(|func| {
-                    if state.is_dead(func.binding) {
+                    /*if state.is_dead(func.binding) {
                         return None;
-                    }
+                    }*/
 
                     let body = shrink_tree(func.body, state);
                     Some(func.with_body(state.ctx, body))
@@ -396,7 +363,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                 return shrink_tree(body, state);
             }
 
-            let funcs = Array::from_array(&state.ctx, funcs);
+            let funcs = Array::from_slice(&state.ctx, funcs);
             let body = shrink_tree(body, state);
             Gc::new(&state.ctx, Term::Fix(funcs, body))
         }
@@ -407,14 +374,14 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                 .substitute_atoms(args_prev.iter().copied())
                 .collect::<Vec<_>>();
 
-            let args = Array::from_array(&state.ctx, args);
+            let args = Array::from_slice(&state.ctx, args);
             if let Some(k) = state.cenv.get(&k).copied()
                 && k.args().len() == args.len()
                 && k.variadic().is_none()
             {
                 let state = state.with_vars_to_atoms(&k.args(), &args);
 
-                shrink_tree(k.body().unwrap(), state)
+                shrink_tree(k.body(), state)
             } else {
                 Gc::new(&state.ctx, Term::Continue(k, args, src))
             }
@@ -435,7 +402,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
             let args = state
                 .substitute_atoms(args_prev.iter().copied())
                 .collect::<Vec<_>>();
-            let args = Array::from_array(&state.ctx, args);
+            let args = Array::from_slice(&state.ctx, args);
 
             let fun = state.atom_subst.get(&fun).cloned().unwrap_or(fun);
 
@@ -445,7 +412,8 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                     if fun.args.len() == args.len() && fun.variadic.is_none() {
                         let state = state
                             .with_vars_to_atoms(&fun.args, &args)
-                            .with_c_subst(fun.return_cont, retc);
+                            .with_c_subst(fun.return_cont, retc)
+                            .with_c_subst(fun.handler_cont, rete);
 
                         return shrink_tree(fun.body, state);
                     }
@@ -465,7 +433,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
 
                 return Gc::new(
                     &state.ctx,
-                    Term::Continue(k, Array::from_array(&state.ctx, []), Value::new(false)),
+                    Term::Continue(k, Array::from_slice(&state.ctx, []), Value::new(false)),
                 );
             }
 
@@ -519,8 +487,11 @@ pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
 }
 
 pub fn rewrite<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
+    let doc = term.pretty::<_, ()>(&BoxAllocator);
+
     let simplified_tree = fixedpoint(term, None)(|term| shrink(ctx, *term));
     let max_size = size(simplified_tree) * 3 / 2;
+
     fixedpoint(simplified_tree, Some(8))(|term| inline(ctx, *term, max_size))
 }
 
@@ -529,9 +500,9 @@ pub fn rewrite_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> FuncRef<'gc> 
     func.with_body(ctx, body)
 }
 
-const FIBONACCI: &[usize] = &[1, 2, 3, 5, 8, 13, 1000];
+const FIBONACCI: &[usize] = &[1, 2, 3, 5, 8, 13];
 
-const LOOP_UNROLL: &[usize] = &[1, 2, 4, 5, 6, 7, 1000];
+const LOOP_UNROLL: &[usize] = &[1, 2, 4, 5, 6, 7];
 
 fn copy_t<'gc>(
     ctx: Context<'gc>,
@@ -540,47 +511,28 @@ fn copy_t<'gc>(
     subc: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
 ) -> TermRef<'gc> {
     match *term {
-        Term::Let(binding, expr, body) => match expr {
-            Expression::PrimCall(prim, args, h, source) => {
-                let binding1 = binding.copy(ctx);
-                let args = args
-                    .iter()
-                    .map(|a| subv.get(a).cloned().unwrap_or(*a))
-                    .collect::<Vec<_>>();
-                let atoms = Array::from_array(&ctx, args);
-                subv.insert(Atom::Local(binding), Atom::Local(binding1));
-                let h = subc.get(&h).copied().unwrap_or_else(|| h);
-                let body = copy_t(ctx, body, subv, subc);
-                Gc::new(
-                    &ctx,
-                    Term::Let(binding1, Expression::PrimCall(prim, atoms, h, source), body),
-                )
-            }
+        Term::Let(binding, expr, body) => {
+            let binding1 = binding.copy(ctx);
+            subv.insert(Atom::Local(binding), Atom::Local(binding1));
+            let body1 = copy_t(ctx, body, subv, subc);
+            let expr = match expr {
+                Expression::PrimCall(prim, args, h, source) => {
+                    let args = args
+                        .iter()
+                        .map(|a| subv.get(a).cloned().unwrap_or_else(|| *a))
+                        .collect::<Vec<_>>();
+                    let atoms = Array::from_slice(&ctx, args);
 
-            Expression::ValuesAt(atom, from) => {
-                let binding1 = binding.copy(ctx);
-                let atom = subv.get(&atom).cloned().unwrap_or(atom);
-                subv.insert(Atom::Local(binding), Atom::Local(binding1));
-                let body = copy_t(ctx, body, subv, subc);
+                    let h = subc.get(&h).copied().unwrap_or_else(|| h);
 
-                Gc::new(
-                    &ctx,
-                    Term::Let(binding1, Expression::ValuesAt(atom, from), body),
-                )
-            }
+                    Expression::PrimCall(prim, atoms, h, source)
+                }
 
-            Expression::ValuesRest(atom, from) => {
-                let binding1 = binding.copy(ctx);
-                let atom = subv.get(&atom).cloned().unwrap_or(atom);
-                subv.insert(Atom::Local(binding), Atom::Local(binding1));
-                let body = copy_t(ctx, body, subv, subc);
+                _ => expr,
+            };
 
-                Gc::new(
-                    &ctx,
-                    Term::Let(binding1, Expression::ValuesRest(atom, from), body),
-                )
-            }
-        },
+            Gc::new(&ctx, Term::Let(binding1, expr, body1))
+        }
 
         Term::Letk(conts, body) => {
             let names = conts.iter().map(|c| c.binding()).collect::<Vec<_>>();
@@ -599,7 +551,7 @@ fn copy_t<'gc>(
                 .map(|cont| copy_c(ctx, *cont, subv, &mut subc1))
                 .collect::<Vec<_>>();
 
-            let conts = Array::from_array(&ctx, conts);
+            let conts = Array::from_slice(&ctx, conts);
 
             let body = copy_t(ctx, body, subv, &mut subc1);
 
@@ -623,7 +575,7 @@ fn copy_t<'gc>(
                 .iter()
                 .map(|func| copy_f(ctx, *func, &mut subv1, subc))
                 .collect::<Vec<_>>();
-            let funcs = Array::from_array(&ctx, funcs);
+            let funcs = Array::from_slice(&ctx, funcs);
 
             let body = copy_t(ctx, body, &mut subv1, subc);
 
@@ -635,7 +587,7 @@ fn copy_t<'gc>(
                 .iter()
                 .map(|a| subv.get(a).cloned().unwrap_or(*a))
                 .collect::<Vec<_>>();
-            let args = Array::from_array(&ctx, args);
+            let args = Array::from_slice(&ctx, args);
 
             let cont = subc.get(&cont).copied().unwrap_or(cont);
 
@@ -681,7 +633,7 @@ fn copy_t<'gc>(
                 .iter()
                 .map(|a| subv.get(a).cloned().unwrap_or(*a))
                 .collect::<Vec<_>>();
-            let args = Array::from_array(&ctx, args);
+            let args = Array::from_slice(&ctx, args);
 
             Gc::new(&ctx, Term::App(fun, retc, rete, args, src))
         }
@@ -715,18 +667,24 @@ fn copy_c<'gc>(
     }
 
     let binding = subc[&cont.binding()];
-    let args1 = Array::from_array(&ctx, args1);
-    let body = copy_t(ctx, cont.body().unwrap(), subv1, subc);
+    let args1 = Array::from_slice(&ctx, args1);
+    let body = copy_t(ctx, cont.body(), subv1, subc);
+    let handler = subc
+        .get(&cont.handler.get())
+        .copied()
+        .unwrap_or(cont.handler.get());
     Gc::new(
         &ctx,
-        Cont::Local {
+        Cont {
             name: cont.name(),
             binding,
             body,
             args: args1,
             variadic: var1,
             source: cont.source(),
-            reified: cont.is_reified(),
+            free_vars: Lock::new(cont.free_vars.get()),
+            reified: Cell::new(cont.reified.get()),
+            handler: Lock::new(handler),
         },
     )
 }
@@ -766,10 +724,11 @@ fn copy_f<'gc>(
             handler_cont: rete1,
             name: fun.name,
             binding,
-            args: Array::from_array(&ctx, args1),
+            args: Array::from_slice(&ctx, args1),
             variadic: var1,
             body,
             source: fun.source,
+            free_vars: Lock::new(fun.free_vars.get()),
         },
     )
 }
@@ -780,42 +739,37 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
 
     match *term {
         Term::Let(name, exp, body) => {
+            let exp = match exp {
+                Expression::PrimCall(prim, args, handler, src) => {
+                    let args = args
+                        .iter()
+                        .map(|arg| state.atom_subst.get(arg).copied().unwrap_or(*arg))
+                        .collect_gc(&state.ctx);
+
+                    let handler = state.var_subst.get(&handler).copied().unwrap_or(handler);
+                    Expression::PrimCall(prim, args, handler, src)
+                }
+
+                _ => exp,
+            };
             let body = inline_t(state, body, cnt_limit);
             Gc::new(&state.ctx, Term::Let(name, exp, body))
         }
 
         Term::Letk(conts, body) => {
             let conts = conts.iter().copied().map(|cnt| {
-                let Cont::Local {
-                    name,
-                    binding,
-                    body,
-                    args,
-                    variadic,
-                    source,
-                    reified,
-                } = *cnt
-                else {
-                    panic!("BUG: expected local continuation");
-                };
-                let orig = body;
-                let body = inline_t(state, body, cnt_limit);
-                let newk = Gc::new(
-                    &state.ctx,
-                    Cont::Local {
-                        name,
-                        binding,
-                        body,
-                        args,
-                        variadic,
-                        source,
-                        reified,
-                    },
-                );
+                let orig = cnt.body;
+                if let Some(new_h) = state.var_subst.get(&cnt.handler.get()).copied() {
+                    let wcont = Gc::write(&state.ctx, cnt);
+                    barrier::field!(wcont, Cont, handler).unlock().set(new_h);
+                }
+
+                let body = inline_t(state, cnt.body, cnt_limit);
+                let newk = cnt.with_body(state.ctx, body);
 
                 let my_size = size(orig);
                 let dont = my_size > cnt_limit
-                    || (my_size > loop_limit && census(body).contains_key(&binding));
+                    || (my_size > loop_limit && census(body).contains_key(&cnt.binding));
                 (newk, if dont { None } else { Some(newk) })
             });
 
@@ -824,7 +778,7 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
             let s =
                 state.with_continuations(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
             let body = inline_t(s, body, cnt_limit);
-            let i_ks = Array::from_array(&state.ctx, i_ks);
+            let i_ks = Array::from_slice(&state.ctx, i_ks);
             Gc::new(&state.ctx, Term::Letk(i_ks, body))
         }
 
@@ -834,19 +788,7 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
                 .copied()
                 .map(|func| {
                     let nbody = inline_t(state, func.body, cnt_limit);
-                    let newf = Gc::new(
-                        &state.ctx,
-                        Func {
-                            return_cont: func.return_cont,
-                            handler_cont: func.handler_cont,
-                            name: func.name,
-                            binding: func.binding,
-                            args: func.args,
-                            variadic: func.variadic,
-                            body: nbody,
-                            source: func.source,
-                        },
-                    );
+                    let newf = func.with_body(state.ctx, nbody);
 
                     let my_size = size(func.body);
                     let dont = my_size > fun_limit
@@ -859,15 +801,14 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
             let (i_fs, to_inline): (Vec<_>, Vec<_>) = funcs.into_iter().unzip();
             let s = state.with_functions(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
             let body = inline_t(s, body, cnt_limit);
-            let ifs = Array::from_array(&state.ctx, i_fs);
+            let ifs = Array::from_slice(&state.ctx, i_fs);
             Gc::new(&state.ctx, Term::Fix(ifs, body))
         }
 
         Term::Continue(cnt, args, src) => {
-            let args = state
+            let args: ArrayRef<_> = state
                 .substitute_atoms(args.iter().copied())
-                .collect::<Vec<_>>();
-            let args = Array::from_array(&state.ctx, args);
+                .collect_gc(&state.ctx);
 
             if let Atom::Local(cnt) = state
                 .atom_subst
@@ -883,13 +824,8 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
                             .zip(args.iter())
                             .map(|(arg, val)| (Atom::Local(*arg), *val))
                             .collect::<HashMap<_, _>>();
-                        assert!(!matches!(*new_cnt, Cont::Return(_)));
-                        return copy_t(
-                            state.ctx,
-                            new_cnt.body().unwrap(),
-                            &mut subst,
-                            &mut HashMap::new(),
-                        );
+
+                        return copy_t(state.ctx, new_cnt.body(), &mut subst, &mut HashMap::new());
                     }
                 }
             }
@@ -936,7 +872,7 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
             let args = state
                 .substitute_atoms(args.iter().copied())
                 .collect::<Vec<_>>();
-            let args = Array::from_array(&state.ctx, args);
+            let args = Array::from_slice(&state.ctx, args);
 
             if let Atom::Local(new_fun) = state.atom_subst.get(&fun).copied().unwrap_or(fun) {
                 if let Some(func) = state.fenv.get(&new_fun) {
@@ -947,6 +883,7 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
                             .zip(args.iter())
                             .map(|(arg, val)| (Atom::Local(*arg), *val))
                             .collect::<HashMap<_, _>>();
+
                         let mut subc = HashMap::new();
                         subc.insert(func.return_cont, retc);
                         subc.insert(func.handler_cont, rete);
@@ -970,6 +907,8 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
 }
 
 pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -> TermRef<'gc> {
+    let doc = term.pretty::<_, ()>(&BoxAllocator);
+
     for i in 0..FIBONACCI.len() {
         if size(term) > max_size {
             return term;
@@ -987,9 +926,7 @@ pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -
 pub fn size<'gc>(term: TermRef<'gc>) -> usize {
     match *term {
         Term::Let(_, _, body) => 1 + size(body),
-        Term::Letk(conts, body) => {
-            conts.iter().map(|c| size(c.body().unwrap())).sum::<usize>() + size(body)
-        }
+        Term::Letk(conts, body) => conts.iter().map(|c| size(c.body())).sum::<usize>() + size(body),
 
         Term::Fix(funcs, body) => funcs.iter().map(|f| size(f.body)).sum::<usize>() + size(body),
 

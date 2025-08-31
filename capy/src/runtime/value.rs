@@ -1,12 +1,9 @@
-use std::{fmt, hash::Hash, marker::PhantomData, sync::atomic::AtomicI64};
+use std::{fmt, hash::Hash, marker::PhantomData};
 
 use rsgc::{
-    Gc, Mutation, Trace,
+    Gc, Mutation, ObjectSlot, Trace,
     barrier::Write,
-    mmtk::{
-        util::Address,
-        vm::{SlotVisitor, slot::SimpleSlot},
-    },
+    mmtk::{util::Address, vm::SlotVisitor},
     object::GCObject,
 };
 
@@ -83,7 +80,7 @@ unsafe impl<'gc> Trace for Value<'gc> {
     unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
         unsafe {
             if self.is_cell() && !self.is_empty() {
-                visitor.visit_slot(SimpleSlot::from_address(Address::from_mut_ptr(
+                visitor.visit_slot(ObjectSlot::from_address(Address::from_mut_ptr(
                     &mut self.desc.ptr,
                 )));
             }
@@ -355,6 +352,7 @@ impl<'gc> PartialEq<Value<'gc>> for WeakValue<'gc> {
 
 /// 8 bit type codes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(transparent)]
 pub struct TypeCode8(u8);
 
 impl TypeCode8 {
@@ -411,13 +409,14 @@ impl TypeCode8 {
     pub const DYNAMIC_STATE: Self = Self(34);
 
     pub const MODULE: Self = Self(35);
-    pub const RIB: Self = Self(36);
+    pub const BOX: Self = Self(36);
 
     pub const IDENTIFIER: Self = Self(37);
     pub const LVAR: Self = Self(38);
     pub const SYNCLO: Self = Self(39);
     pub const EXPANDER: Self = Self(40);
     pub const NATIVE_PROCEDURE: Self = Self(41);
+    pub const CACHE_CELL: Self = Self(42);
 
     pub const UNKNOWN: Self = Self(0xFF);
 }
@@ -435,6 +434,7 @@ impl From<TypeCode8> for u8 {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[repr(transparent)]
 pub struct TypeCode16(pub u16);
 
 impl Into<u32> for TypeCode16 {
@@ -473,6 +473,9 @@ impl TypeCode16 {
 
     pub const CLOSURE_PROC: Self = Self(TypeCode8::CLOSURE.0 as u16);
     pub const CLOSURE_K: Self = Self(TypeCode8::CLOSURE.0 as u16 + 1 * 256);
+
+    pub const NATIVE_PROC: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16);
+    pub const NATIVE_K: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16 + 1 * 256);
 
     pub const fn tc8(self) -> TypeCode8 {
         TypeCode8(self.0 as u8)
@@ -550,13 +553,6 @@ impl<'gc> Value<'gc> {
         }
     }
 
-    pub fn write(self: &Write<Self>, value: Self) {
-        unsafe {
-            let atomic: &'gc AtomicI64 = std::mem::transmute(self);
-            atomic.store(value.raw_i64(), std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-
     pub fn not(self) -> bool {
         self.raw_i64() == Self::VALUE_FALSE
     }
@@ -603,6 +599,7 @@ pub mod list;
 pub mod number;
 pub mod proc;
 pub mod string;
+pub mod structure;
 pub mod symbols;
 pub mod vector;
 pub mod weak_set;
@@ -615,12 +612,13 @@ pub use list::*;
 pub use number::*;
 pub use proc::*;
 pub use string::*;
+pub use structure::*;
 pub use symbols::*;
 pub use vector::*;
 pub use weak_set::*;
 pub use weak_table::*;
 
-use crate::frontend::reader::Annotation;
+use crate::{frontend::reader::Annotation, runtime::Context};
 
 impl<'gc> fmt::Pointer for Value<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -656,7 +654,7 @@ unsafe impl Trace for GlobalValue {
     unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
         let value = Value::from_raw_i64(self.0 as i64);
         if value.is_cell() {
-            visitor.visit_slot(SimpleSlot::from_address(Address::from_mut_ptr(&mut self.0)));
+            visitor.visit_slot(ObjectSlot::from_address(Address::from_mut_ptr(&mut self.0)));
         }
     }
 
@@ -711,7 +709,7 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                     if i > 0 {
                         write!(f, " ")?;
                     }
-                    write!(f, "{}", v[i])?;
+                    write!(f, "{}", v[i].get())?;
                 }
                 write!(f, ")")
             } else if self.is::<ByteVector>() {
@@ -768,4 +766,65 @@ fn format_list_contents<'gc>(f: &mut fmt::Formatter<'_>, list: Value<'gc>) -> fm
     } else {
         write!(f, " . {cdr}")
     }
+}
+
+#[derive(Trace)]
+#[collect(no_drop)]
+pub struct ValueEqual<'gc>(pub Value<'gc>);
+
+impl<'gc> PartialEq for ValueEqual<'gc> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.r5rs_equal(other.0)
+    }
+}
+
+impl<'gc> Eq for ValueEqual<'gc> {}
+
+impl<'gc> std::hash::Hash for ValueEqual<'gc> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let val = self.0;
+        if val.is_pair() {
+            ValueEqual(val.car()).hash(state);
+            ValueEqual(val.cdr()).hash(state);
+        } else if val.is::<Vector>() {
+            for val in val.downcast::<Vector>().iter() {
+                ValueEqual(val.get()).hash(state);
+            }
+        } else if val.is::<Str>() {
+            let v = val.downcast::<Str>();
+
+            v.hash(state);
+        } else if val.is::<ByteVector>() {
+            let v = val.downcast::<ByteVector>();
+
+            v.hash(state);
+        } else if val.is::<Boxed>() {
+            ValueEqual(val.downcast::<Boxed>().val).hash(state);
+        } else {
+            val.hash(state);
+        }
+    }
+}
+
+#[derive(Trace)]
+#[collect(no_drop)]
+pub struct Boxed<'gc> {
+    pub header: ScmHeader,
+    pub val: Value<'gc>,
+}
+
+impl<'gc> Boxed<'gc> {
+    pub fn new(ctx: Context<'gc>, val: Value<'gc>) -> Gc<'gc, Self> {
+        Gc::new(
+            &ctx,
+            Self {
+                header: ScmHeader::with_type_bits(TypeCode8::BOX.bits() as _),
+                val,
+            },
+        )
+    }
+}
+
+unsafe impl<'gc> Tagged for Boxed<'gc> {
+    const TC8: TypeCode8 = TypeCode8::BOX;
 }

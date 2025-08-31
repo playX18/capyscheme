@@ -1,10 +1,14 @@
-use std::sync::{
-    Arc, LazyLock,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
+use std::{
+    mem::transmute,
+    sync::{
+        Arc, LazyLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError},
+    },
+    time::Duration,
 };
 
-use rsgc::{Mutation, Mutator, Rootable, sync::monitor::Monitor};
+use rsgc::{GarbageCollector, Mutation, Mutator, Rootable, mmtk, sync::monitor::Monitor};
 
 pub enum VMThreadTask {
     /// Vacuum weak sets. This task will walk all live weak sets and remove
@@ -43,44 +47,62 @@ impl VmThread {
                 // Wait until there's work or a shutdown signal.
                 let mut guard = thread_pair.lock();
                 while !guard.load(Ordering::Relaxed) {
-                    guard.wait();
+                    guard.wait_for(Duration::from_millis(100));
+                    mutator.mutate(|mc, _| {
+                        mmtk::memory_manager::gc_poll(&GarbageCollector::get().mmtk, unsafe {
+                            transmute(mc.thread())
+                        });
+                    })
                 }
                 guard.store(false, Ordering::Relaxed); // Reset the flag
                 drop(guard);
+
                 // Process all available tasks
                 let mut shutdown_requested = false;
-                while let Ok(task) = receiver.recv() {
-                    match task {
-                        VMThreadTask::ClosePorts => {
-                            /*mutator.mutate(|mc, _| {
-                                super::value::port::close_ports(mc);
-                            });*/
-                        }
-                        VMThreadTask::VacuumWeakSets => {
+                loop {
+                    match receiver.recv_timeout(Duration::from_millis(100)) {
+                        Ok(task) => match task {
+                            VMThreadTask::ClosePorts => {
+                                /*mutator.mutate(|mc, _| {
+                                    super::value::port::close_ports(mc);
+                                });*/
+                            }
+                            VMThreadTask::VacuumWeakSets => {
+                                mutator.mutate(|mc, _| {
+                                    super::value::weak_set::vacuum_weak_sets(mc);
+                                });
+                            }
+                            VMThreadTask::VacuumWeakTables => {
+                                mutator.mutate(|mc, _| {
+                                    super::value::weak_table::vacuum_weak_tables(mc);
+                                });
+                            }
+
+                            VMThreadTask::MutatorTask(task) => {
+                                mutator.mutate(|mc, _| {
+                                    task(mc);
+                                });
+                            }
+
+                            VMThreadTask::Task(task) => {
+                                task();
+                            }
+
+                            VMThreadTask::Shutdown => {
+                                shutdown_requested = true;
+                                break; // Exit task processing loop
+                            }
+                        },
+                        Err(RecvTimeoutError::Timeout) => {
                             mutator.mutate(|mc, _| {
-                                super::value::weak_set::vacuum_weak_sets(mc);
-                            });
-                        }
-                        VMThreadTask::VacuumWeakTables => {
-                            mutator.mutate(|mc, _| {
-                                super::value::weak_table::vacuum_weak_tables(mc);
+                                mmtk::memory_manager::gc_poll(
+                                    &GarbageCollector::get().mmtk,
+                                    unsafe { transmute(mc.thread()) },
+                                );
                             });
                         }
 
-                        VMThreadTask::MutatorTask(task) => {
-                            mutator.mutate(|mc, _| {
-                                task(mc);
-                            });
-                        }
-
-                        VMThreadTask::Task(task) => {
-                            task();
-                        }
-
-                        VMThreadTask::Shutdown => {
-                            shutdown_requested = true;
-                            break; // Exit task processing loop
-                        }
+                        Err(_) => break,
                     }
                 }
 

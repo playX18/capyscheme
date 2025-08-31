@@ -1,6 +1,6 @@
-use std::hash::Hash;
+use std::{cell::Cell, hash::Hash};
 
-use rsgc::{Gc, Trace, alloc::array::ArrayRef};
+use rsgc::{Gc, Trace, alloc::array::ArrayRef, cell::Lock};
 
 use crate::{
     expander::core::{LVar, LVarRef},
@@ -17,9 +17,18 @@ pub type Funcs<'gc> = ArrayRef<'gc, FuncRef<'gc>>;
 #[collect(no_drop)]
 pub enum Atom<'gc> {
     Constant(Value<'gc>),
-    Global(Value<'gc>),
     Local(LVarRef<'gc>),
     Values(ArrayRef<'gc, Atom<'gc>>),
+}
+
+impl<'gc> std::fmt::Display for Atom<'gc> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant(c) => write!(f, "{}", c),
+            Self::Local(l) => write!(f, "{}", l.name),
+            Self::Values(_) => write!(f, "(values ...)"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Trace)]
@@ -74,13 +83,12 @@ pub enum Throw<'gc> {
 #[collect(no_drop)]
 pub enum Expression<'gc> {
     PrimCall(Value<'gc>, Atoms<'gc>, LVarRef<'gc>, Value<'gc>),
-    ValuesAt(Atom<'gc>, usize),
-    ValuesRest(Atom<'gc>, usize),
+    PrimRef(Value<'gc>),
 }
 
 pub type TermRef<'gc> = Gc<'gc, Term<'gc>>;
 
-#[derive(Trace, Debug, Clone, Copy)]
+#[derive(Trace, Debug, Clone)]
 #[collect(no_drop)]
 pub struct Func<'gc> {
     pub name: Value<'gc>,
@@ -92,10 +100,12 @@ pub struct Func<'gc> {
     pub args: Vars<'gc>,
     pub variadic: Option<LVarRef<'gc>>,
     pub body: TermRef<'gc>,
+
+    pub free_vars: Lock<Option<Vars<'gc>>>,
 }
 
 impl<'gc> Func<'gc> {
-    pub fn with_body(self, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
+    pub fn with_body(&self, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
         Gc::new(
             &ctx,
             Func {
@@ -107,6 +117,7 @@ impl<'gc> Func<'gc> {
                 args: self.args,
                 variadic: self.variadic,
                 body,
+                free_vars: Lock::new(self.free_vars.get()),
             },
         )
     }
@@ -131,19 +142,18 @@ impl<'gc> Hash for Func<'gc> {
 
 pub type FuncRef<'gc> = Gc<'gc, Func<'gc>>;
 
-#[derive(Debug, Clone, Trace, Copy)]
+#[derive(Debug, Clone, Trace)]
 #[collect(no_drop)]
-pub enum Cont<'gc> {
-    Local {
-        name: Value<'gc>,
-        binding: LVarRef<'gc>,
-        args: Vars<'gc>,
-        variadic: Option<LVarRef<'gc>>,
-        body: TermRef<'gc>,
-        source: Value<'gc>,
-        reified: bool,
-    },
-    Return(LVarRef<'gc>),
+pub struct Cont<'gc> {
+    pub name: Value<'gc>,
+    pub binding: LVarRef<'gc>,
+    pub args: Vars<'gc>,
+    pub variadic: Option<LVarRef<'gc>>,
+    pub body: TermRef<'gc>,
+    pub source: Value<'gc>,
+    pub free_vars: Lock<Option<Vars<'gc>>>,
+    pub reified: Cell<bool>,
+    pub handler: Lock<LVarRef<'gc>>,
 }
 
 impl<'gc> PartialEq for Cont<'gc> {
@@ -165,75 +175,40 @@ impl<'gc> Hash for Cont<'gc> {
 
 impl<'gc> Cont<'gc> {
     pub fn args(&self) -> Vars<'gc> {
-        match self {
-            Cont::Local { args, .. } => *args,
-            Cont::Return(_) => unreachable!(),
-        }
+        self.args
     }
 
     pub fn variadic(&self) -> Option<LVarRef<'gc>> {
-        match self {
-            Cont::Local { variadic, .. } => *variadic,
-            Cont::Return(_) => None,
-        }
-    }
-
-    pub fn is_reified(&self) -> bool {
-        match self {
-            Cont::Local { reified, .. } => *reified,
-            _ => true,
-        }
+        self.variadic
     }
 
     pub fn binding(&self) -> LVarRef<'gc> {
-        match self {
-            Cont::Local { binding, .. } => *binding,
-            Cont::Return(binding) => *binding,
-        }
+        self.binding
     }
 
     pub fn name(&self) -> Value<'gc> {
-        match self {
-            Cont::Local { name, .. } => *name,
-            Cont::Return(_) => Value::new(false),
-        }
+        self.name
     }
 
-    pub fn body(&self) -> Option<TermRef<'gc>> {
-        match self {
-            Cont::Local { body, .. } => Some(*body),
-            Cont::Return(_) => None,
-        }
+    pub fn body(&self) -> TermRef<'gc> {
+        self.body
     }
 
-    pub fn is_return(&self) -> bool {
-        matches!(self, Cont::Return(_))
-    }
-
-    pub fn with_body(self, ctx: Context<'gc>, body: TermRef<'gc>) -> Gc<'gc, Cont<'gc>> {
-        match self {
-            Cont::Local {
-                name,
-                binding,
-                args,
-                variadic,
-                source,
-                reified,
-                ..
-            } => Gc::new(
-                &ctx,
-                Cont::Local {
-                    name,
-                    binding,
-                    args,
-                    variadic,
-                    body,
-                    source,
-                    reified,
-                },
-            ),
-            _ => Gc::new(&ctx, self),
-        }
+    pub fn with_body(&self, ctx: Context<'gc>, body: TermRef<'gc>) -> Gc<'gc, Cont<'gc>> {
+        Gc::new(
+            &ctx,
+            Self {
+                name: self.name,
+                binding: self.binding,
+                args: self.args,
+                variadic: self.variadic,
+                body,
+                source: self.source,
+                free_vars: Lock::new(self.free_vars.get()),
+                reified: Cell::new(self.reified.get()),
+                handler: Lock::new(self.handler.get()),
+            },
+        )
     }
 }
 
@@ -259,7 +234,7 @@ impl<'gc> TreeEq for Atom<'gc> {
     fn tree_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Atom::Constant(a), Atom::Constant(b)) => a.tree_eq(b),
-            (Atom::Global(a), Atom::Global(b)) => a.tree_eq(b),
+
             (Atom::Local(a), Atom::Local(b)) => Gc::ptr_eq(*a, *b),
             (Atom::Values(a), Atom::Values(b)) => {
                 if a.len() != b.len() {
@@ -346,13 +321,7 @@ impl<'gc> TreeEq for Expression<'gc> {
             (Expression::PrimCall(f, args, h, _), Expression::PrimCall(g, bargs, gh, _)) => {
                 f.tree_eq(g) && args.tree_eq(bargs) && Gc::ptr_eq(*h, *gh)
             }
-            (Expression::ValuesAt(atom, from), Expression::ValuesAt(batom, bfrom)) => {
-                atom.tree_eq(batom) && *from == *bfrom
-            }
-
-            (Expression::ValuesRest(atom, from), Expression::ValuesRest(batom, bfrom)) => {
-                atom.tree_eq(batom) && *from == *bfrom
-            }
+            (Expression::PrimRef(f), Expression::PrimRef(g)) => f.tree_eq(g),
 
             _ => false,
         }
@@ -372,17 +341,11 @@ impl<'gc> Term<'gc> {
 
 impl<'gc> Cont<'gc> {
     pub fn source(&self) -> Value<'gc> {
-        match self {
-            Cont::Local { source, .. } => *source,
-            Cont::Return(_) => Value::new(false),
-        }
+        self.source
     }
 
     pub fn make_meta(&self, ctx: Context<'gc>) -> Value<'gc> {
-        match self {
-            Cont::Local { name, source, .. } => Value::cons(ctx, *name, *source),
-            Cont::Return(_) => Value::new(false),
-        }
+        Value::cons(ctx, self.name, self.source)
     }
 }
 

@@ -243,6 +243,8 @@ impl<'gc> Index<usize> for Cache<'gc> {
 
 unsafe impl<'gc> IndexWrite<usize> for Cache<'gc> {}
 
+#[derive(Trace)]
+#[collect(no_drop)]
 pub struct DynamicState<'gc> {
     thread_local_values: Gc<'gc, HashTable<'gc>>,
     values: Lock<Gc<'gc, WeakTable<'gc>>>,
@@ -422,9 +424,9 @@ fn copy_value_table<'gc>(
         ctx,
         move |key, value, _| {
             ret.put(ctx, key, value);
-            Value::undefined()
+            Value::void()
         },
-        Value::undefined(),
+        Value::void(),
     );
     ret
 }
@@ -452,8 +454,10 @@ macro_rules! fluid {
                 [<$name: snake>](ctx).get(ctx)
             }
 
-            $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) {
+            $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) -> $crate::runtime::value::Value<'gc> {
+                let old = [<get_ $name: snake>](ctx);
                 [<$name: snake>](ctx).set(ctx, value);
+                old
             }
 
         }
@@ -486,4 +490,25 @@ macro_rules! fluid {
     };
 
     () => {}
+}
+
+#[macro_export]
+macro_rules! global {
+    ($($v: vis $name: ident <$l: lifetime>: $t: ty = ($ctx: ident) $init: expr;)*) => {
+        $(
+            paste::paste!{
+                $v static [<$name: upper>]: std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!($l => $t)>> = std::sync::OnceLock::new();
+
+                $v fn [<$name: snake>]<$l>($ctx: $crate::runtime::Context<$l>) -> &$l $t {
+                   &[<$name: upper>]
+                        .get_or_init(|| {
+                            let init: $t = $init;
+                            $crate::rsgc::global::Global::new(init)
+                        }).fetch(&$ctx)
+                }
+
+
+            }
+        )*
+    };
 }

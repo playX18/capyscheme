@@ -1,4 +1,4 @@
-use rsgc::{Trace, barrier};
+use rsgc::{Trace, barrier, cell::Lock};
 
 use crate::runtime::Context;
 
@@ -8,8 +8,8 @@ use super::*;
 #[repr(C, align(8))]
 pub struct Pair<'gc> {
     pub header: ScmHeader,
-    pub car: Value<'gc>,
-    pub cdr: Value<'gc>,
+    pub car: Lock<Value<'gc>>,
+    pub cdr: Lock<Value<'gc>>,
 }
 
 impl<'gc> Pair<'gc> {
@@ -21,8 +21,8 @@ impl<'gc> Pair<'gc> {
             &mc,
             Self {
                 header: hdr,
-                car,
-                cdr,
+                car: Lock::new(car),
+                cdr: Lock::new(cdr),
             },
         );
         pair
@@ -32,27 +32,31 @@ impl<'gc> Pair<'gc> {
         mc.allocate(
             Self {
                 header: ScmHeader::with_type_bits(TypeCode8::PAIR.bits() as _),
-                car,
-                cdr,
+                car: Lock::new(car),
+                cdr: Lock::new(cdr),
             },
             rsgc::mmtk::AllocationSemantics::NonMoving,
         )
     }
 
     pub fn car(&self) -> Value<'gc> {
-        self.car
+        self.car.get()
     }
 
     pub fn cdr(&self) -> Value<'gc> {
-        self.cdr
+        self.cdr.get()
     }
 
     pub fn set_car(self: Gc<'gc, Self>, mc: Context<'gc>, value: Value<'gc>) {
-        barrier::field!(Gc::write(&mc, self), Pair, car).write(value);
+        barrier::field!(Gc::write(&mc, self), Pair, car)
+            .unlock()
+            .set(value);
     }
 
     pub fn set_cdr(self: Gc<'gc, Self>, mc: Context<'gc>, value: Value<'gc>) {
-        barrier::field!(Gc::write(&mc, self), Pair, cdr).write(value);
+        barrier::field!(Gc::write(&mc, self), Pair, cdr)
+            .unlock()
+            .set(value);
     }
 
     pub fn caar(&self) -> Value<'gc> {
@@ -174,23 +178,27 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn car(&self) -> Value<'gc> {
-        self.downcast::<Pair>().car
+        self.downcast::<Pair>().car()
     }
 
     pub fn cdr(&self) -> Value<'gc> {
-        self.downcast::<Pair>().cdr
+        self.downcast::<Pair>().cdr()
     }
 
     pub fn set_car(self, mc: Context<'gc>, value: Value<'gc>) {
         let pair = self.downcast::<Pair>();
 
-        barrier::field!(Gc::write(&mc, pair), Pair, car).write(value);
+        barrier::field!(Gc::write(&mc, pair), Pair, car)
+            .unlock()
+            .set(value);
     }
 
     pub fn set_cdr(self, mc: Context<'gc>, value: Value<'gc>) {
         let pair = self.downcast::<Pair>();
 
-        barrier::field!(Gc::write(&mc, pair), Pair, cdr).write(value);
+        barrier::field!(Gc::write(&mc, pair), Pair, cdr)
+            .unlock()
+            .set(value);
     }
 
     pub fn caar(&self) -> Value<'gc> {
@@ -385,7 +393,7 @@ impl<'gc> Value<'gc> {
         let mut index = 0;
 
         while current.is_pair() {
-            Gc::write(&mc, vector)[index].write(current.car());
+            Gc::write(&mc, vector)[index].unlock().set(current.car());
             index += 1;
             current = current.cdr();
         }

@@ -3,7 +3,7 @@ use crate::{
     expander::core::{Cenv, Error, denotation_of_begin},
     frontend::reader::{LexicalError, TreeSitter},
     list,
-    runtime::{Context, value::*},
+    runtime::{Context, modules::Module, value::*},
     static_symbols,
 };
 use rsgc::{Gc, Global, Rootable};
@@ -13,7 +13,6 @@ pub mod assignment_elimination;
 pub mod compile_cps;
 pub mod core;
 pub mod fix_letrec;
-//pub mod library;
 pub mod primitives;
 pub mod synclo;
 
@@ -93,17 +92,18 @@ pub fn read_from_string<'gc>(
 pub fn compile_program<'gc>(
     ctx: Context<'gc>,
     program: Value<'gc>,
+    env: Gc<'gc, Module<'gc>>,
 ) -> Result<crate::cps::term::FuncRef<'gc>, Error<'gc>> {
     let mut cenv = Cenv::toplevel(ctx);
     let expanded = core::expand(&mut cenv, program)?;
     let fixed = fix_letrec::fix_letrec(ctx, expanded);
     let no_mutation = assignment_elimination::eliminate_assignments(ctx, fixed);
-    let primitives = primitives::resolve_primitives(ctx, no_mutation);
+    let primitives = primitives::resolve_primitives(ctx, no_mutation, env);
 
     let cps = compile_cps::cps_toplevel(ctx, &[primitives]);
 
     let mut cps = crate::cps::rewrite_func(ctx, cps);
     cps = cps.with_body(ctx, contify::contify(ctx, cps.body));
-    cps = crate::cps::rewrite_func(ctx, cps);
+
     Ok(cps)
 }

@@ -11,8 +11,8 @@ use rsgc::Global;
 use rsgc::Rootable;
 use rsgc::Trace;
 use rsgc::mmtk::util::Address;
-use rsgc::mmtk::vm::slot::SimpleSlot;
 use rsgc::object::GCObject;
+use rsgc::ptr::ObjectSlot;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -36,19 +36,9 @@ impl<'gc> FoldingTable<'gc> {
                         _ => unreachable!(),
                     })
                     .collect::<Vec<_>>();
-                let res = entry.apply(ctx, &args);
-                if let Some(res) = res {
-                    println!(
-                        "folded {}({}) -> {}",
-                        prim,
-                        args.iter()
-                            .map(|a| a.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        res
-                    );
-                }
-                return res;
+                let result = entry.apply(ctx, &args)?;
+
+                return Some(result);
             }
         }
 
@@ -296,7 +286,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "car" => car(ctx, a) {
-            println!("fold car {a}");
+
             if a.is_pair() {
                 Some(a.car())
             } else {
@@ -305,7 +295,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "cdr" => cdr(ctx, a) {
-            println!("fold cdr {a}");
+
             if a.is_pair() {
                 Some(a.cdr())
             } else {
@@ -577,7 +567,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset.as_int32() as isize;
                 addr.store(value.bits() as u64);
-                let slot = SimpleSlot::from_address(addr);
+                let slot = ObjectSlot::from_address(addr);
                 ctx.mutation().raw_object_reference_write_post(a.as_cell_raw(), slot, GCObject::NULL);
             }
             Some(Value::undefined())
