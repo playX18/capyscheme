@@ -1,11 +1,24 @@
-(define (plus . args)
-    (let loop ([acc (car args)]
-               [rest (cdr args)])
-      (if (null? rest)
-          acc
-          (loop (+ acc (car rest)) (cdr rest)))))
+(define record-type-vtable 
+    (let ((s (make-vtable (string-append standard-vtable-fields "pwpwpwpwpwpw") #f)))
+        (set-struct-vtable-name! s 'record-type)
+        s))
 
-(set! + plus)
+(define (record-type? obj)
+    (if (struct? obj)
+        (eq? record-type-vtable (struct-vtable obj))
+        #f))
 
-(let ([x +])
-    (x 1 2 3))
+(define (record-type-name rtd)
+    (struct-ref rtd vtable-offset-user))
+
+(define (record-type-fields rtd)
+    (struct-ref rtd (+ 1 vtable-offset-user)))
+
+(define (record-type-constructor rtd)
+    (struct-ref rtd (+ 2 vtable-offset-user)))
+
+(define (record-type-properties rtd)
+    (struct-ref rtd (+ 3 vtable-offset-user)))
+
+(define (record-type-parents rtd)
+    (struct-ref rtd (+ 4 vtable-offset-user)))

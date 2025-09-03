@@ -205,6 +205,7 @@ dependencies = [
  "libc",
  "libloading",
  "libm",
+ "log",
  "num",
  "num-bigint",
  "paste",
@@ -979,7 +980,7 @@ dependencies = [
 [[package]]
 name = "mmtk"
 version = "0.31.0"
-source = "git+https://github.com/mmtk/mmtk-core#6eb1328bfce34a7e0fc4b84fd0b65a849b083e0e"
+source = "git+https://github.com/mmtk/mmtk-core?rev=f0b992cf4710b00a84c280f2a11679d39e35e872#f0b992cf4710b00a84c280f2a11679d39e35e872"
 dependencies = [
  "atomic",
  "atomic-traits",
@@ -1018,7 +1019,7 @@ dependencies = [
 [[package]]
 name = "mmtk-macros"
 version = "0.31.0"
-source = "git+https://github.com/mmtk/mmtk-core#6eb1328bfce34a7e0fc4b84fd0b65a849b083e0e"
+source = "git+https://github.com/mmtk/mmtk-core?rev=f0b992cf4710b00a84c280f2a11679d39e35e872#f0b992cf4710b00a84c280f2a11679d39e35e872"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",

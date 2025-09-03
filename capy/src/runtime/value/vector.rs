@@ -271,7 +271,7 @@ impl ByteVector {
         byte_vector
     }
 
-    pub fn as_slice(&self) -> &[u8] {
+    pub fn as_slice<'gc>(self: Gc<'gc, Self>) -> &'gc [u8] {
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len) }
     }
 
@@ -306,7 +306,7 @@ impl ByteVector {
 
 impl<'gc> AsRef<[u8]> for ByteVector {
     fn as_ref(&self) -> &[u8] {
-        self.as_slice()
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len) }
     }
 }
 

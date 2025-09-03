@@ -2,7 +2,7 @@ use crate::{
     list,
     runtime::{
         Context,
-        value::{IntoValues, NativeReturn, Str, Value},
+        value::{NativeReturn, Str, TryIntoValues, Value},
         vm::{NativeCallContext, NativeCallReturn},
     },
     static_symbols,
@@ -39,7 +39,7 @@ static_symbols!(
     MISC_ERROR = "misc-error"
 );
 
-impl<'a, 'gc, R: IntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
+impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     pub fn wrong_type_arg(
         self,
         subr: &str,

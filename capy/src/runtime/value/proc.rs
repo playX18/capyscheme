@@ -276,77 +276,156 @@ pub struct SavedCall<'gc> {
     pub rands: ArrayRef<'gc, Value<'gc>>,
 }
 
+#[macro_export]
 macro_rules! native_fn {
-    ($v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block) => {
+    ($register_fn: ident: $($v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
         paste::paste! {
-            $v extern "C-unwind" fn [<c_ $name _raw>] <$gc>(
-                ctx: &$crate::runtime::prelude::Context<$gc>,
-                rator: $crate::runtime::prelude::Value<$gc>,
-                rands: *const $crate::runtime::prelude::Value<$gc>,
-                num_rands: usize,
-                retk: $crate::runtime::prelude::Value<$gc>,
-                reth: $crate::runtime::prelude::Value<$gc>
-            ) -> $crate::runtime::prelude::NativeReturn<'gc> {
-                unsafe {
-                    let nctx = $crate::runtime::prelude::NativeCallContext::<$ret>::from_raw(
-                        ctx,
-                        rator,
-                        rands,
-                        num_rands,
-                        retk,
-                        reth
-                    );
+            $(
+                #[allow(unused_parens)]
+                $v extern "C-unwind" fn [<c_ $name _raw>] <$gc>(
+                    ctx: &$crate::runtime::prelude::Context<$gc>,
+                    rator: $crate::runtime::prelude::Value<$gc>,
+                    rands: *const $crate::runtime::prelude::Value<$gc>,
+                    num_rands: usize,
+                    retk: $crate::runtime::prelude::Value<$gc>,
+                    reth: $crate::runtime::prelude::Value<$gc>
+                ) -> $crate::runtime::prelude::NativeReturn<'gc> {
+                    unsafe {
+                        let rands_ = std::slice::from_raw_parts(rands, num_rands);
+                        let nctx = $crate::runtime::prelude::NativeCallContext::<$ret>::from_raw(
+                            ctx,
+                            rator,
+                            rands,
+                            num_rands,
+                            retk,
+                            reth
+                        );
 
-                    type Args<$gc> = ($($arg_ty),*);
+                        type Args<$gc> = ($($arg_ty),*);
 
 
-                    let arity = <Args<$gc> as $crate::runtime::prelude::FromValues>::ARITY;
+                        let arity = <Args<$gc> as $crate::runtime::prelude::FromValues>::ARITY;
 
-                    if !arity.is_valid(num_rands) {
-                        todo!("arity mismatch")
+                        if !arity.is_valid(num_rands) {
+                            todo!("arity mismatch")
+                        }
+
+                        let ($($arg),+): ($($arg_ty),*) = match <($($arg_ty),*) as $crate::runtime::prelude::FromValues>::from_values(nctx.ctx, &mut 0, rands_) {
+                            Ok(args) => args,
+                            Err(_) => unreachable!("Checked beforehand")
+                        };
+
+                        let return_value = $name(nctx, $($arg),*);
+
+                        return_value.into_inner()
                     }
 
-                    let ($($arg),+): ($($arg_ty),*) = match <($($arg_ty),*)>::from_values(nctx.ctx, nctx.rands().iter().copied()) {
-                        Ok(args) => args,
-                        Err(_) => unreachable!("Checked beforehand")
-                    };
 
-                    let return_value = $name(nctx, $($arg),*);
-
-                    return_value.into_inner()
                 }
 
 
+                $v static [<STATIC_ $name: upper _ CLOSURE>]: ::std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!(
+                    $crate::runtime::prelude::ClosureRef<'_>
+                )>> = ::std::sync::OnceLock::new();
+
+                $v fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
+                    *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
+                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _raw>]))
+                    })
+                        .fetch(&ctx)
+                }
+
+                $v fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
+                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _raw>], vars)
+                }
+
+                $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
+                    $b
+                }
+
+                static [<$name: upper _LOC>]: ::std::sync::OnceLock<$crate::rsgc::global::Global< $crate::rsgc::Rootable!($crate::runtime::prelude::VariableRef<'_>) >> = ::std::sync::OnceLock::new();
+
+                pub fn [<$name _loc>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> Option<$crate::runtime::prelude::VariableRef<'gc>> {
+                    [<$name: upper _LOC>].get().map(|g| *g.fetch(&ctx))
+                }
+        )*
+
+            fn $register_fn<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) {
+                $(
+                    let closure = [<get_ $name _static_closure>](ctx);
+                    let _ = [<$name:upper _LOC>].set($crate::rsgc::global::Global::new($crate::runtime::modules::define(ctx, $l, closure.into())));
+                )*
             }
-
-
-            $v static [<STATIC_ $name: upper _ CLOSURE>]: ::std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!(
-                $crate::runtime::prelude::ClosureRef<'_>
-            )>> = ::std::sync::OnceLock::new();
-
-            $v fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
-                *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
-                    $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _raw>]))
-                })
-                    .fetch(&ctx)
-            }
-
-            $v fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
-                $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _raw>], vars)
-            }
-
-            $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
-                $b
-            }
-
 
         }
     };
 }
 
-native_fn!(
-    pub ("plus") fn plus<'gc>(nctx, x: i32, y: i32) -> i32 {
+#[macro_export]
+macro_rules! native_cont {
+    ($($v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
+        paste::paste! {
+            $(
+                $v extern "C-unwind" fn [<c_ $name _rawk>] <$gc>(
+                    ctx: &$crate::runtime::prelude::Context<$gc>,
+                    rator: $crate::runtime::prelude::Value<$gc>,
+                    rands: *const $crate::runtime::prelude::Value<$gc>,
+                    num_rands: usize,
 
-        nctx.return_(x + y)
-    }
-);
+                ) -> $crate::runtime::prelude::NativeReturn<'gc> {
+                    unsafe {
+                        let rands_ = std::slice::from_raw_parts(rands, num_rands);
+                        let nctx = $crate::runtime::prelude::NativeCallContext::<$ret>::from_raw(
+                            ctx,
+                            rator,
+                            rands,
+                            num_rands,
+
+                        );
+
+                        type Args<$gc> = ($($arg_ty),*);
+
+
+                        let arity = <Args<$gc> as $crate::runtime::prelude::FromValues>::ARITY;
+
+                        if !arity.is_valid(num_rands) {
+                            todo!("arity mismatch")
+                        }
+
+                        let ($($arg),+): ($($arg_ty),*) = match <($($arg_ty),*)>::from_values(nctx.ctx, &mut 0, rands_) {
+                            Ok(args) => args,
+                            Err(_) => unreachable!("Checked beforehand")
+                        };
+
+                        let return_value = $name(nctx, $($arg),*);
+
+                        return_value.into_inner()
+                    }
+
+
+                }
+
+
+                $v static [<STATIC_ $name: upper _ CLOSURE>]: ::std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!(
+                    $crate::runtime::prelude::ClosureRef<'_>
+                )>> = ::std::sync::OnceLock::new();
+
+                $v fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
+                    *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
+                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _rawk>]))
+                    })
+                        .fetch(&ctx)
+                }
+
+                $v fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
+                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _rawk>], vars)
+                }
+
+                $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
+                    $b
+                }
+        )*
+
+        }
+    };
+}

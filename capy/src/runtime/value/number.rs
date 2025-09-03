@@ -647,6 +647,10 @@ impl<'gc> BigInt<'gc> {
         !self.negative()
     }
 
+    pub fn is_odd(&self) -> bool {
+        (self[0] & 1) != 0
+    }
+
     pub fn negate(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
         if this.is_zero() {
             return this;
@@ -1404,6 +1408,32 @@ impl<'gc> BigInt<'gc> {
         Self::from_2sc(ctx, &res)
     }
 
+    pub fn not(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+        let size = if Self::is_most_significant_bit_set(&this) {
+            this.count() + 1
+        } else {
+            this.count()
+        };
+
+        let mut res = Vec::with_capacity(size);
+
+        let mut carry = true;
+
+        for i in 0..size {
+            let mut word = if i < this.count() { this[i] } else { 0 };
+
+            if carry {
+                (word, carry) = (!word).overflowing_add(1);
+            } else {
+                word = !word;
+            }
+
+            res.push(word);
+        }
+
+        Self::from_2sc(ctx, &res)
+    }
+
     pub fn pow(this: Gc<'gc, Self>, ctx: Context<'gc>, exp: u64) -> Gc<'gc, Self> {
         let (mut expo, mut radix) = (exp, this);
         let mut res = Self::one(ctx);
@@ -1524,6 +1554,20 @@ impl<'gc> BigInt<'gc> {
         let mut size = this.count() * DIGIT_BIT;
         size -= this.leading_zeros();
         size
+    }
+
+    pub fn first_bit_set(&self) -> i32 {
+        if self.is_zero() {
+            return -1;
+        }
+        let mut pos = 0;
+        for word in self.words_slice() {
+            if *word != 0 {
+                return pos + word.trailing_zeros() as i32;
+            }
+            pos += DIGIT_BIT as i32;
+        }
+        -1
     }
 
     /// Returns true if the bit at position `n` is set in the two's complement representation.
@@ -4585,6 +4629,13 @@ impl<'gc> Number<'gc> {
         }
     }
 
+    pub fn is_nan(&self) -> bool {
+        match self {
+            Number::Flonum(f) => f.is_nan(),
+            _ => false,
+        }
+    }
+
     pub fn compare(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Option<std::cmp::Ordering> {
         match lhs {
             Number::Fixnum(lhs) => match rhs {
@@ -5385,6 +5436,140 @@ impl<'gc> Hash for Number<'gc> {
                 c.real.hash(state);
                 c.imag.hash(state);
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Trace)]
+#[collect(no_drop)]
+pub enum ExactInteger<'gc> {
+    Fixnum(i32),
+    BigInt(Gc<'gc, BigInt<'gc>>),
+}
+
+impl<'gc> ExactInteger<'gc> {
+    pub fn to_number(self, ctx: Context<'gc>) -> Number<'gc> {
+        match self {
+            Self::Fixnum(n) => Number::Fixnum(n),
+            Self::BigInt(b) => Number::BigInt(b),
+        }
+    }
+
+    pub fn bitor(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        match lhs {
+            Self::Fixnum(l) => match rhs {
+                Self::Fixnum(r) => Self::Fixnum(l | r),
+                Self::BigInt(r) => {
+                    let res = BigInt::or_digit(r, ctx, l as u64);
+                    Self::BigInt(res)
+                }
+            },
+
+            Self::BigInt(l) => match rhs {
+                Self::Fixnum(r) => {
+                    let res = BigInt::or_digit(l, ctx, r as u64);
+                    Self::BigInt(res)
+                }
+                Self::BigInt(r) => {
+                    let res = BigInt::or(l, ctx, r);
+                    Self::BigInt(res)
+                }
+            },
+        }
+    }
+
+    pub fn bitand(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        match lhs {
+            Self::Fixnum(l) => match rhs {
+                Self::Fixnum(r) => Self::Fixnum(l & r),
+                Self::BigInt(r) => {
+                    let res = BigInt::and_digit(r, ctx, l as u64);
+                    Self::BigInt(res)
+                }
+            },
+
+            Self::BigInt(l) => match rhs {
+                Self::Fixnum(r) => {
+                    let res = BigInt::and_digit(l, ctx, r as u64);
+                    Self::BigInt(res)
+                }
+                Self::BigInt(r) => {
+                    let res = BigInt::and(l, ctx, r);
+                    Self::BigInt(res)
+                }
+            },
+        }
+    }
+
+    pub fn bitxor(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        match lhs {
+            Self::Fixnum(l) => match rhs {
+                Self::Fixnum(r) => Self::Fixnum(l ^ r),
+                Self::BigInt(r) => {
+                    let res = BigInt::xor_digit(r, ctx, l as u64);
+                    Self::BigInt(res)
+                }
+            },
+
+            Self::BigInt(l) => match rhs {
+                Self::Fixnum(r) => {
+                    let res = BigInt::xor_digit(l, ctx, r as u64);
+                    Self::BigInt(res)
+                }
+                Self::BigInt(r) => {
+                    let res = BigInt::xor(l, ctx, r);
+                    Self::BigInt(res)
+                }
+            },
+        }
+    }
+
+    pub fn bitnot(ctx: Context<'gc>, n: Self) -> Self {
+        match n {
+            Self::Fixnum(n) => Self::Fixnum(!n),
+            Self::BigInt(b) => {
+                let res = BigInt::not(b, ctx);
+                Self::BigInt(res)
+            }
+        }
+    }
+
+    pub fn is_bit_set(ctx: Context<'gc>, n: Self, bit: u32) -> bool {
+        match n {
+            Self::Fixnum(n) => {
+                if bit >= 32 {
+                    return false;
+                }
+
+                (n & (1 << bit)) != 0
+            }
+            Self::BigInt(b) => b.is_bit_set(bit as usize),
+        }
+    }
+
+    pub fn first_bit_set(ctx: Context<'gc>, n: Self) -> i32 {
+        match n {
+            Self::Fixnum(n) => {
+                if n == 0 {
+                    return -1;
+                }
+
+                n.trailing_zeros() as i32
+            }
+            Self::BigInt(b) => {
+                if b.is_zero() {
+                    return -1;
+                }
+
+                b.first_bit_set() as i32
+            }
+        }
+    }
+
+    pub fn is_negative(&self) -> bool {
+        match self {
+            Self::Fixnum(n) => *n < 0,
+            Self::BigInt(b) => b.is_negative(),
         }
     }
 }

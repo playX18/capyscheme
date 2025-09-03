@@ -1,4 +1,10 @@
 #![allow(dead_code, unused_variables)]
+use crate::runtime::{
+    Context,
+    fasl::FASLReader,
+    modules::Module,
+    value::{Boxed, Closure, SavedCall, ScmHeader, TypeCode8, TypeCode16, Value, Vector},
+};
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
     runtime::value::{IntoValue, Number},
@@ -10,14 +16,9 @@ use rsgc::{
     mmtk::{AllocationSemantics, util::Address},
     object::VTable,
 };
-use std::{alloc::Layout, cmp::Ordering};
+use std::{alloc::Layout, cmp::Ordering, sync::atomic::AtomicUsize};
 
-use crate::runtime::{
-    Context,
-    fasl::FASLReader,
-    modules::Module,
-    value::{Boxed, Closure, SavedCall, ScmHeader, TypeCode8, TypeCode16, Value, Vector},
-};
+pub static NCLOSURES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -341,11 +342,13 @@ thunks! {
         nfree: usize,
         is_cont: bool
     ) -> Value<'gc> {
+        NCLOSURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let free = if nfree == 0 {
             Value::new(false)
         } else {
             Vector::new::<false>(&ctx, nfree, Value::undefined()).into()
         };
+        //log::info!("make-closure {nfree}, code={func:p}");
 
         let clos = Closure {
             header: ScmHeader::with_type_bits(if is_cont {
@@ -383,6 +386,7 @@ thunks! {
     ) -> Gc<'gc, SavedCall<'gc>> {
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
 
+        println!("Triggering GC, {} closures", NCLOSURES.load(std::sync::atomic::Ordering::Relaxed));
         let arr = Array::from_slice(&ctx, args);
 
         Gc::new(&ctx, SavedCall { rands: arr, rator })

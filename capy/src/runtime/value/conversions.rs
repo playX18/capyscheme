@@ -15,6 +15,35 @@ pub trait IntoValue<'gc> {
     fn into_value(self, mc: Context<'gc>) -> Value<'gc>;
 }
 
+impl<'gc> FromValue<'gc> for Value<'gc> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+        Ok(value)
+    }
+}
+
+pub trait TryIntoValue<'gc> {
+    fn try_into_value(self, mc: Context<'gc>) -> Result<Value<'gc>, Value<'gc>>;
+}
+/*
+impl<'gc, T, E> TryIntoValue<'gc> for Result<T, E>
+where
+    T: TryIntoValue<'gc>,
+    E: TryIntoValue<'gc>,
+{
+    fn try_into_value(self, mc: Context<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        match self {
+            Ok(v) => v.try_into_value(mc),
+            Err(e) => e.try_into_value(mc),
+        }
+    }
+}*/
+
+impl<'gc, T: IntoValue<'gc>> TryIntoValue<'gc> for T {
+    default fn try_into_value(self, _mc: Context<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        Ok(self.into_value(_mc))
+    }
+}
+
 pub trait FromValue<'gc>: Sized {
     fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>>;
 }
@@ -29,9 +58,59 @@ impl<'gc> FromValue<'gc> for i32 {
     }
 }
 
+impl<'gc> FromValue<'gc> for usize {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+        let Some(n) = value.number() else { todo!() };
+
+        n.exact_integer_to_usize().ok_or_else(|| todo!())
+    }
+}
+
+impl<'gc> FromValue<'gc> for u64 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+        let Some(n) = value.number() else { todo!() };
+
+        n.exact_integer_to_u64().ok_or_else(|| todo!())
+    }
+}
+
+impl<'gc, T: Tagged> FromValue<'gc> for Gc<'gc, T> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+        if value.is::<T>() {
+            Ok(value.downcast::<T>())
+        } else {
+            todo!()
+        }
+    }
+}
+
 impl<'gc> IntoValue<'gc> for Value<'gc> {
     fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
         self
+    }
+}
+
+impl<'gc> IntoValue<'gc> for usize {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_usize(mc, self).into_value(mc)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for u64 {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_u64(mc, self).into_value(mc)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for u32 {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_u32(mc, self).into_value(mc)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for () {
+    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+        Value::undefined()
     }
 }
 
@@ -55,7 +134,7 @@ impl<'gc> Into<Value<'gc>> for bool {
 
 impl<'gc> Into<Value<'gc>> for () {
     fn into(self) -> Value<'gc> {
-        Value::null()
+        Value::undefined()
     }
 }
 
@@ -89,12 +168,6 @@ impl<'gc> IntoValue<'gc> for bool {
     }
 }
 
-impl<'gc> IntoValue<'gc> for () {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
-        Value::null()
-    }
-}
-
 impl<'gc> IntoValue<'gc> for &str {
     fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
         let string = Str::new(&mc, self, false);
@@ -109,12 +182,6 @@ impl<'gc> IntoValue<'gc> for char {
     }
 }
 
-impl<'gc> IntoValue<'gc> for usize {
-    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
-        Number::from_usize(_mc, self).into_value(_mc)
-    }
-}
-
 pub struct Arity {
     pub min: usize,
     pub max: Option<usize>,
@@ -126,7 +193,7 @@ impl Arity {
     }
 }
 
-pub trait FromValues<'gc>: Sized {
+pub trait FromValues<'gc, 'a>: Sized {
     const ARITY: Arity = Arity {
         min: 1,
         max: Some(1),
@@ -134,30 +201,35 @@ pub trait FromValues<'gc>: Sized {
 
     fn from_values(
         ctx: Context<'gc>,
-        values: impl Iterator<Item = Value<'gc>>,
+        pos: &mut usize,
+        values: &'a [Value<'gc>],
     ) -> Result<Self, Value<'gc>>;
 }
 
-impl<'gc, T: FromValue<'gc>> FromValues<'gc> for T {
+impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for T {
     fn from_values(
         ctx: Context<'gc>,
-        mut values: impl Iterator<Item = Value<'gc>>,
+        pos: &mut usize,
+        values: &'a [Value<'gc>],
     ) -> Result<T, Value<'gc>> {
-        if let Some(value) = values.next() {
-            T::try_from_value(ctx, value)
+        if let Some(value) = values.get(*pos) {
+            *pos += 1;
+            T::try_from_value(ctx, *value)
         } else {
             todo!()
         }
     }
 }
 
-impl<'gc, T: FromValue<'gc>> FromValues<'gc> for Option<T> {
+impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for Option<T> {
     fn from_values(
         ctx: Context<'gc>,
-        mut values: impl Iterator<Item = Value<'gc>>,
+        pos: &mut usize,
+        values: &'a [Value<'gc>],
     ) -> Result<Self, Value<'gc>> {
-        if let Some(value) = values.next() {
-            T::try_from_value(ctx, value).map(Some)
+        if let Some(value) = values.get(*pos) {
+            *pos += 1;
+            T::try_from_value(ctx, *value).map(Some)
         } else {
             Ok(None)
         }
@@ -184,21 +256,37 @@ macro_rules! impl_tuple {
             }
         }
 
-        impl<'gc, $first $(,$rest)*> FromValues<'gc> for ($first, $($rest,)*)
+        impl<'gc, $first $(,$rest)*> TryIntoValues<'gc> for ($first, $($rest,)*)
         where
-            $first: FromValues<'gc>,
-            $($rest: FromValues<'gc>,)*
+            $first: TryIntoValue<'gc>,
+            $($rest: TryIntoValue<'gc>,)*
+        {
+            #[allow(non_snake_case)]
+            fn try_into_values(
+                self,
+                ctx: Context<'gc>,
+            ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
+                let ($first, $($rest,)*) = self;
+                Ok(std::iter::once($first.try_into_value(ctx)?)
+                    $(.chain(std::iter::once($rest.try_into_value(ctx)?)))*)
+            }
+        }
+
+        impl<'gc, 'a, $first $(,$rest)*> FromValues<'gc, 'a> for ($first, $($rest,)*)
+        where
+            $first: FromValues<'gc, 'a>,
+            $($rest: FromValues<'gc, 'a>,)*
         {
             #[allow(unused_mut, unused_assignments, unused_variables)]
             // Do our best at statically checking that tuple arity is correct
             // and tuple can be constructed from the values.
             const ARITY: Arity = {
-                let first = <$first as FromValues<'gc>>::ARITY;
+                let first = <$first as FromValues<'gc, 'a>>::ARITY;
                 let mut min = first.min;
                 let mut max = first.max;
                 let mut prev_was_optional = first.min == 0; // True if the first argument is Option-like (min arity 0)
                 $(
-                    let rest = <$rest as FromValues<'gc>>::ARITY; // Arity of the current $rest element
+                    let rest = <$rest as FromValues<'gc, 'a>>::ARITY; // Arity of the current $rest element
                     let current_is_optional = rest.min == 0; // True if current argument is Option-like
 
                     // Check if an optional argument is followed by a non-optional (required) one
@@ -225,11 +313,11 @@ macro_rules! impl_tuple {
             };
 
 
-            fn from_values(ctx: Context<'gc>, mut values: impl Iterator<Item = Value<'gc>>) -> Result<Self, Value<'gc>> {
+            fn from_values(ctx: Context<'gc>, pos: &mut usize, values: &'a [Value<'gc>]) -> Result<Self, Value<'gc>> {
                 Ok((
-                    $first::from_values(ctx, &mut values)?,
+                    $first::from_values(ctx, pos, values)?,
                     $(
-                        $rest::from_values(ctx, &mut values)?,
+                        $rest::from_values(ctx, pos, values)?,
                     )*
                 ))
             }
@@ -239,24 +327,14 @@ macro_rules! impl_tuple {
     }
 }
 
-pub struct Rest<'gc>(pub Value<'gc>);
-
-impl<'gc> Rest<'gc> {
-    pub fn next<T: FromValue<'gc>>(&mut self, ctx: Context<'gc>) -> Result<T, Value<'gc>> {
-        let value = self.0.car();
-        self.0 = self.0.cdr();
-        T::try_from_value(ctx, value)
-    }
-}
-
-impl<'gc> FromValues<'gc> for Rest<'gc> {
+impl<'gc, 'a> FromValues<'gc, 'a> for &'a [Value<'gc>] {
     const ARITY: Arity = Arity { min: 0, max: None };
-
     fn from_values(
         _ctx: Context<'gc>,
-        values: impl Iterator<Item = Value<'gc>>,
+        pos: &mut usize,
+        values: &'a [Value<'gc>],
     ) -> Result<Self, Value<'gc>> {
-        Ok(Rest(Value::null().list_append(_ctx, values)))
+        Ok(&values[*pos..])
     }
 }
 
@@ -269,5 +347,33 @@ pub trait IntoValues<'gc> {
 impl<'gc, T: IntoValue<'gc>> IntoValues<'gc> for T {
     fn into_values(self, ctx: Context<'gc>) -> impl Iterator<Item = Value<'gc>> {
         std::iter::once(self.into_value(ctx))
+    }
+}
+
+pub trait TryIntoValues<'gc> {
+    fn try_into_values(
+        self,
+        ctx: Context<'gc>,
+    ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>>;
+}
+
+impl<'gc, T: TryIntoValue<'gc>> TryIntoValues<'gc> for T {
+    fn try_into_values(
+        self,
+        ctx: Context<'gc>,
+    ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
+        Ok(std::iter::once(self.try_into_value(ctx)?))
+    }
+}
+
+impl<'gc, T: TryIntoValues<'gc>, E: IntoValue<'gc>> TryIntoValues<'gc> for Result<T, E> {
+    fn try_into_values(
+        self,
+        ctx: Context<'gc>,
+    ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
+        match self {
+            Ok(v) => v.try_into_values(ctx),
+            Err(e) => Err(e.into_value(ctx)),
+        }
     }
 }

@@ -499,7 +499,7 @@ macro_rules! global {
             paste::paste!{
                 $v static [<$name: upper>]: std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!($l => $t)>> = std::sync::OnceLock::new();
 
-                $v fn [<$name: snake>]<$l>($ctx: $crate::runtime::Context<$l>) -> &$l $t {
+                $v fn [<$name: lower>]<$l>($ctx: $crate::runtime::Context<$l>) -> &$l $t {
                    &[<$name: upper>]
                         .get_or_init(|| {
                             let init: $t = $init;
