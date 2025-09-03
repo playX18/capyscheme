@@ -38,7 +38,6 @@ fn main() {
                 println!("Error loading file: {}", err);
             }
         }
-
         false
     });
 

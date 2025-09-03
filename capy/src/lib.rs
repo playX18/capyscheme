@@ -1,4 +1,4 @@
-#![feature(arbitrary_self_types, try_trait_v2)]
+#![feature(arbitrary_self_types, try_trait_v2, min_specialization)]
 //pub mod compiler;
 pub mod cps;
 pub mod expander;

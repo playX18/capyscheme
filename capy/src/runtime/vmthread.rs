@@ -48,11 +48,11 @@ impl VmThread {
                 let mut guard = thread_pair.lock();
                 while !guard.load(Ordering::Relaxed) {
                     guard.wait_for(Duration::from_millis(100));
-                    mutator.mutate(|mc, _| {
+                    /*mutator.mutate(|mc, _| {
                         mmtk::memory_manager::gc_poll(&GarbageCollector::get().mmtk, unsafe {
                             transmute(mc.thread())
                         });
-                    })
+                    })*/
                 }
                 guard.store(false, Ordering::Relaxed); // Reset the flag
                 drop(guard);

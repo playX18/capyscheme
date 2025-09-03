@@ -5,17 +5,22 @@ use std::{
 
 use crate::runtime::{
     Context,
-    value::{Closure, IntoValues, NativeReturn, PROCEDURES, ReturnCode, TypeCode16, Value, Vector},
+    value::{
+        Closure, NativeReturn, PROCEDURES, ReturnCode, TryIntoValues, TypeCode16, Value, Vector,
+    },
     vm::trampolines::get_trampoline_into_scheme,
 };
 use rsgc::{Gc, Trace};
 
+pub mod arith;
 pub mod errors;
 pub mod libraries;
 pub mod load;
+pub mod strings;
 pub mod throw;
 pub mod thunks;
 pub mod trampolines;
+pub mod vector;
 
 pub fn call_scheme<'gc>(
     ctx: Context<'gc>,
@@ -154,7 +159,7 @@ impl<'gc> Try for VMResult<'gc> {
     }
 }
 
-pub struct NativeCallContext<'a, 'gc, R: IntoValues<'gc> = Value<'gc>> {
+pub struct NativeCallContext<'a, 'gc, R: TryIntoValues<'gc> = Value<'gc>> {
     pub ctx: Context<'gc>,
     rator: Value<'gc>,
     rands: &'a [Value<'gc>],
@@ -164,7 +169,7 @@ pub struct NativeCallContext<'a, 'gc, R: IntoValues<'gc> = Value<'gc>> {
     return_data: PhantomData<R>,
 }
 
-impl<'a, 'gc, R: IntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
+impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     pub unsafe fn from_raw(
         ctx: &Context<'gc>,
         rator: Value<'gc>,
@@ -196,7 +201,14 @@ impl<'a, 'gc, R: IntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     }
 
     pub fn return_(self, values: R) -> NativeCallReturn<'gc> {
-        let values = values.into_values(self.ctx);
+        let values = match values.try_into_values(self.ctx) {
+            Ok(values) => values,
+            Err(err) => {
+                return NativeCallReturn {
+                    ret: self.ctx.return_call(self.reth, [err], None),
+                };
+            }
+        };
         NativeCallReturn {
             ret: self.ctx.return_call(self.retk, values, None),
         }

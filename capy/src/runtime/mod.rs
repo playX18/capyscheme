@@ -12,15 +12,26 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
 
     vm::load::init_load_path(mc);
     vm::load::init(mc);
+    vm::arith::init(mc);
+    runtime::value::init_structs(mc);
+    vm::strings::init_strings(mc);
+    vm::vector::init_vectors(mc);
     let _ = crate::expander::primitives::primitives(mc);
 }
 
 pub use thread::*;
 
-use crate::runtime::vmthread::VM_THREAD;
+use crate::runtime::{self, vmthread::VM_THREAD};
 
 pub mod prelude {
+    use crate::runtime::modules::Variable;
+
     pub use super::thread::Context;
     pub use super::value::*;
     pub use super::vm::*;
+    use rsgc::Gc;
+    pub use rsgc::Rootable;
+    pub use rsgc::Trace;
+    pub use rsgc::global::Global;
+    pub type VariableRef<'gc> = Gc<'gc, Variable<'gc>>;
 }
