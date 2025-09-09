@@ -1,4 +1,11 @@
-#![feature(arbitrary_self_types, try_trait_v2, min_specialization)]
+#![allow(internal_features)]
+#![feature(
+    arbitrary_self_types,
+    try_trait_v2,
+    link_llvm_intrinsics,
+    min_specialization,
+    portable_simd
+)]
 //pub mod compiler;
 pub mod cps;
 pub mod expander;

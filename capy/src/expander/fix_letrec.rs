@@ -3,7 +3,7 @@ use std::{
     rc::Rc,
 };
 
-use rsgc::{Gc, alloc::array::Array};
+use rsgc::{Gc, alloc::array::Array, cell::Lock};
 
 use crate::{
     expander::core::{
@@ -22,7 +22,7 @@ pub fn free_variables<'gc>(
 
     fn rec<'gc>(expr: &Term<'gc>, set: &mut HashSet<LVarRef<'gc>>) {
         match &expr.kind {
-            TermKind::ToplevelRef(_)
+            TermKind::ToplevelRef(_, _)
             | TermKind::ModuleRef(_, _, _)
             | TermKind::Const(_)
             | TermKind::PrimRef(..) => {}
@@ -63,9 +63,9 @@ pub fn free_variables<'gc>(
                 args.iter().for_each(|arg| rec(arg, set));
             }
 
-            TermKind::Define(_, val)
+            TermKind::Define(_, _, val)
             | TermKind::LSet(_, val)
-            | TermKind::ToplevelSet(_, val)
+            | TermKind::ToplevelSet(_, _, val)
             | TermKind::ModuleSet(_, _, _, val) => {
                 rec(val, set);
             }
@@ -353,7 +353,7 @@ fn fix1<'gc>(
     fixes: &mut Vec<VertexId>,
     body: TermRef<'gc>,
 ) -> TermRef<'gc> {
-    let span = body.source;
+    let span = body.source.get();
 
     if scc.len() == 1 {
         let b = scc[0];
@@ -395,7 +395,7 @@ fn fix1<'gc>(
                     [Gc::new(
                         &pass.ctx,
                         Term {
-                            source: span,
+                            source: span.into(),
                             kind: TermKind::Const(Value::undefined()),
                         },
                     )],
@@ -527,7 +527,7 @@ fn fixing_letrec<'gc>(
 
     let (fixes, body) = fixing(pass, &sccs, body, in_order);
 
-    make_fixes(pass.ctx, body.source, &pass.graph, &fixes, body)
+    make_fixes(pass.ctx, body.source(), &pass.graph, &fixes, body)
 }
 
 /// Fixes letrec expressions in the given term.
@@ -578,7 +578,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
+                        source: Lock::new(x.source()),
                         kind: TermKind::PrimCall(prim.clone(), args),
                     },
                 )
@@ -618,7 +618,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
+                        source: Lock::new(x.source()),
                         kind: TermKind::Proc(Gc::new(
                             &pass.ctx,
                             Proc {
@@ -639,7 +639,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                     return Gc::new(
                         &pass.ctx,
                         Term {
-                            source: x.source,
+                            source: Lock::new(x.source()),
                             kind: TermKind::LSet(var.clone(), val),
                         },
                     );
@@ -662,30 +662,30 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
+                        source: Lock::new(x.source()),
                         kind: TermKind::Call(proc, args),
                     },
                 )
             }
 
-            TermKind::Define(var, val) => {
+            TermKind::Define(module, var, val) => {
                 let val = post_order(val, pass);
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
-                        kind: TermKind::Define(var.clone(), val),
+                        source: Lock::new(x.source()),
+                        kind: TermKind::Define(*module, var.clone(), val),
                     },
                 )
             }
 
-            TermKind::ToplevelSet(var, val) => {
+            TermKind::ToplevelSet(module, var, val) => {
                 let val = post_order(val, pass);
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
-                        kind: TermKind::ToplevelSet(var.clone(), val),
+                        source: Lock::new(x.source()),
+                        kind: TermKind::ToplevelSet(*module, var.clone(), val),
                     },
                 )
             }
@@ -696,7 +696,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
+                        source: Lock::new(x.source()),
                         kind: TermKind::ModuleSet(module.clone(), var.clone(), *public, val),
                     },
                 )
@@ -710,7 +710,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
+                        source: Lock::new(x.source()),
                         kind: TermKind::If(test, cons, alt),
                     },
                 )
@@ -724,7 +724,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
+                        source: Lock::new(x.source()),
                         kind: TermKind::Values(Array::from_slice(&pass.ctx, values)),
                     },
                 )
@@ -737,7 +737,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 Gc::new(
                     &pass.ctx,
                     Term {
-                        source: x.source,
+                        source: Lock::new(x.source()),
                         kind: TermKind::Receive(
                             formals.clone(),
                             opt_formals.clone(),

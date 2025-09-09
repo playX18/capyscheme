@@ -44,5 +44,9 @@ native_fn! {
         nctx.return_(Ok(value))
     }
 
+    pub ("tuple") fn tuple<'gc>(nctx, values: &'gc [Value<'gc>]) -> Value<'gc> {
+        let v = Tuple::from_slice(&nctx.ctx, values);
 
+        nctx.return_(v.into())
+    }
 }

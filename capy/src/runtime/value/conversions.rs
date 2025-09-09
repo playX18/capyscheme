@@ -2,7 +2,68 @@ use super::*;
 use crate::runtime::Context;
 use rsgc::Gc;
 
+pub enum ConversionError<'gc> {
+    TypeMismatch {
+        pos: usize,
+        expected: &'static str,
+        found: Value<'gc>,
+    },
+    ArityMismatch {
+        pos: usize,
+        expected: Arity,
+        found: usize,
+    },
+}
+
+impl<'gc> ConversionError<'gc> {
+    pub fn with_appended_pos(self, offset: usize) -> Self {
+        match self {
+            Self::TypeMismatch {
+                pos,
+                expected,
+                found,
+            } => Self::TypeMismatch {
+                pos: pos + offset,
+                expected,
+                found,
+            },
+            Self::ArityMismatch {
+                pos,
+                expected,
+                found,
+            } => Self::ArityMismatch {
+                pos: pos + offset,
+                expected,
+                found,
+            },
+        }
+    }
+    pub fn type_mismatch(pos: usize, expected: &'static str, found: Value<'gc>) -> Self {
+        Self::TypeMismatch {
+            pos,
+            expected,
+            found,
+        }
+    }
+
+    pub fn arity_mismatch(pos: usize, expected: Arity, found: usize) -> Self {
+        Self::ArityMismatch {
+            pos,
+            expected,
+            found,
+        }
+    }
+
+    pub fn pos(&self) -> usize {
+        match self {
+            Self::TypeMismatch { pos, .. } => *pos,
+            Self::ArityMismatch { pos, .. } => *pos,
+        }
+    }
+}
+
 pub unsafe trait Tagged {
+    const TYPE_NAME: &'static str;
     const TC8: TypeCode8;
     const TC16: &[TypeCode16] = &[];
 
@@ -16,7 +77,7 @@ pub trait IntoValue<'gc> {
 }
 
 impl<'gc> FromValue<'gc> for Value<'gc> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         Ok(value)
     }
 }
@@ -45,41 +106,49 @@ impl<'gc, T: IntoValue<'gc>> TryIntoValue<'gc> for T {
 }
 
 pub trait FromValue<'gc>: Sized {
-    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>>;
+    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>>;
+}
+
+impl<'gc> FromValue<'gc> for bool {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        Ok(value != Value::new(false))
+    }
 }
 
 impl<'gc> FromValue<'gc> for i32 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is_int32() {
             return Ok(value.as_int32());
         } else {
-            todo!()
+            return Err(ConversionError::type_mismatch(0, "i32", value));
         }
     }
 }
 
 impl<'gc> FromValue<'gc> for usize {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         let Some(n) = value.number() else { todo!() };
 
-        n.exact_integer_to_usize().ok_or_else(|| todo!())
+        n.exact_integer_to_usize()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "usize", value))
     }
 }
 
 impl<'gc> FromValue<'gc> for u64 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         let Some(n) = value.number() else { todo!() };
 
-        n.exact_integer_to_u64().ok_or_else(|| todo!())
+        n.exact_integer_to_u64()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "u64", value))
     }
 }
 
 impl<'gc, T: Tagged> FromValue<'gc> for Gc<'gc, T> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is::<T>() {
             Ok(value.downcast::<T>())
         } else {
-            todo!()
+            Err(ConversionError::type_mismatch(0, T::TYPE_NAME, value))
         }
     }
 }
@@ -203,7 +272,7 @@ pub trait FromValues<'gc, 'a>: Sized {
         ctx: Context<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
-    ) -> Result<Self, Value<'gc>>;
+    ) -> Result<Self, ConversionError<'gc>>;
 }
 
 impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for T {
@@ -211,28 +280,52 @@ impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for T {
         ctx: Context<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
-    ) -> Result<T, Value<'gc>> {
+    ) -> Result<T, ConversionError<'gc>> {
         if let Some(value) = values.get(*pos) {
             *pos += 1;
             T::try_from_value(ctx, *value)
         } else {
-            todo!()
+            Err(ConversionError::ArityMismatch {
+                pos: *pos,
+                expected: T::ARITY,
+                found: values.len() - *pos,
+            })
         }
     }
 }
 
 impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for Option<T> {
+    const ARITY: Arity = Arity {
+        min: 0,
+        max: Some(1),
+    };
     fn from_values(
         ctx: Context<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
-    ) -> Result<Self, Value<'gc>> {
+    ) -> Result<Self, ConversionError<'gc>> {
         if let Some(value) = values.get(*pos) {
             *pos += 1;
-            T::try_from_value(ctx, *value).map(Some)
+            T::try_from_value(ctx, *value)
+                .map(Some)
+                .map_err(|e| e.with_appended_pos(*pos - 1))
         } else {
             Ok(None)
         }
+    }
+}
+
+impl<'gc, 'a> FromValues<'gc, 'a> for () {
+    const ARITY: Arity = Arity {
+        min: 0,
+        max: Some(0),
+    };
+    fn from_values(
+        _ctx: Context<'gc>,
+        _pos: &mut usize,
+        _values: &'a [Value<'gc>],
+    ) -> Result<Self, ConversionError<'gc>> {
+        Ok(())
     }
 }
 
@@ -313,13 +406,23 @@ macro_rules! impl_tuple {
             };
 
 
-            fn from_values(ctx: Context<'gc>, pos: &mut usize, values: &'a [Value<'gc>]) -> Result<Self, Value<'gc>> {
-                Ok((
-                    $first::from_values(ctx, pos, values)?,
+            fn from_values(ctx: Context<'gc>, pos: &mut usize, values: &'a [Value<'gc>]) -> Result<Self, ConversionError<'gc>> {
+
+                paste::paste! { let x = *pos;
+                    let [<_ $first: lower>] = $first::from_values(ctx, pos, values)
+                        .map_err(|e| e.with_appended_pos(x))?;
                     $(
-                        $rest::from_values(ctx, pos, values)?,
+                        let x = *pos;
+                        let [<_ $rest: lower>] = $rest::from_values(ctx, pos, values)
+                            .map_err(|e| e.with_appended_pos(x))?;
                     )*
-                ))
+                    Ok((
+                        [<_ $first: lower>],
+                        $(
+                            [<_ $rest: lower>],
+                        )*
+                    ))
+                }
             }
         }
 
@@ -333,7 +436,7 @@ impl<'gc, 'a> FromValues<'gc, 'a> for &'a [Value<'gc>] {
         _ctx: Context<'gc>,
         pos: &mut usize,
         values: &'a [Value<'gc>],
-    ) -> Result<Self, Value<'gc>> {
+    ) -> Result<Self, ConversionError<'gc>> {
         Ok(&values[*pos..])
     }
 }
@@ -375,5 +478,14 @@ impl<'gc, T: TryIntoValues<'gc>, E: IntoValue<'gc>> TryIntoValues<'gc> for Resul
             Ok(v) => v.try_into_values(ctx),
             Err(e) => Err(e.into_value(ctx)),
         }
+    }
+}
+
+impl<'gc> TryIntoValues<'gc> for &[Value<'gc>] {
+    fn try_into_values(
+        self,
+        _ctx: Context<'gc>,
+    ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
+        Ok(self.iter().copied())
     }
 }

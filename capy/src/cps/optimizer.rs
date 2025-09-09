@@ -429,7 +429,11 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
             let test = state.atom_subst.get(&test).cloned().unwrap_or(test);
 
             if let Atom::Constant(test) = test {
-                let k = if test.as_bool() { kcons } else { kalt };
+                let k = if test != Value::new(false) {
+                    kcons
+                } else {
+                    kalt
+                };
 
                 return Gc::new(
                     &state.ctx,

@@ -23,6 +23,7 @@ use std::{
 
 use easy_bitfield::{BitField, BitFieldTrait};
 use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
+
 use rand::Rng;
 use rsgc::{
     Gc, Rootable, Trace,
@@ -35,7 +36,7 @@ use rsgc::{
 
 use crate::runtime::{
     Context,
-    value::{ScmHeader, TypeBits},
+    value::{ConversionError, ScmHeader, TypeBits},
 };
 
 use super::{FromValue, IntoValue, Tagged, TypeCode8, TypeCode16, Value};
@@ -85,6 +86,7 @@ impl Sign {
 type BigIntCount = BitField<u64, u32, { TypeBits::NEXT_BIT }, 32, false>;
 type BigIntNegative = BitField<u64, bool, { BigIntCount::NEXT_BIT }, 1, false>;
 
+#[inline(always)]
 fn make_header(count: u32, negative: bool) -> ScmHeader {
     let mut hdr = ScmHeader::new();
     hdr.set_type_bits(TypeCode16::BIG.bits());
@@ -204,9 +206,10 @@ impl<'gc> BigInt<'gc> {
         BigIntNegative::decode(self.header.word)
     }
 
+    #[inline]
     pub fn zeroed<F, E>(
         mc: &Mutation<'gc>,
-        count: usize,
+        mut count: usize,
         negative: bool,
         fill: F,
     ) -> Result<Gc<'gc, Self>, E>
@@ -233,6 +236,14 @@ impl<'gc> BigInt<'gc> {
             bigint_data_ptr.write_bytes(0, count);
 
             fill(&mut *bigint.as_mut_ptr())?;
+            while bigint_data_ptr.add(count - 1).read() == 0 && count > 1 {
+                // Remove trailing zeros
+
+                count -= 1;
+            }
+            (*bigint.as_mut_ptr()).header.word =
+                BigIntCount::update(count as _, (*bigint.as_mut_ptr()).header.word);
+
             Ok(bigint.assume_init())
         }
     }
@@ -353,6 +364,7 @@ unsafe impl<'gc> Tagged for BigInt<'gc> {
     const TC8: TypeCode8 = TypeCode8::NUMBER;
     const TC16: &'static [TypeCode16] = &[TypeCode16::BIG];
     const ONLY_TC16: bool = true;
+    const TYPE_NAME: &'static str = "bigint";
 }
 
 #[derive(Trace)]
@@ -372,6 +384,7 @@ unsafe impl<'gc> Tagged for Complex<'gc> {
     const TC8: TypeCode8 = TypeCode8::NUMBER;
     const TC16: &'static [TypeCode16] = &[TypeCode16::COMPLEX];
     const ONLY_TC16: bool = true;
+    const TYPE_NAME: &'static str = "complex";
 }
 
 #[derive(Trace)]
@@ -399,20 +412,21 @@ unsafe impl<'gc> Tagged for Rational<'gc> {
     const TC8: TypeCode8 = TypeCode8::NUMBER;
     const TC16: &'static [TypeCode16] = &[TypeCode16::RATIONAL];
     const ONLY_TC16: bool = true;
+    const TYPE_NAME: &'static str = "rational";
 }
 
 impl<'gc> Index<usize> for BigInt<'gc> {
     type Output = Digit;
 
     fn index(&self, index: usize) -> &Self::Output {
-        assert!(index < self.count() as usize);
+        debug_assert!(index < self.count() as usize);
         unsafe { &*(self.words.as_ptr().add(index) as *const Digit) }
     }
 }
 
 impl<'gc> IndexMut<usize> for BigInt<'gc> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        assert!(index < self.count() as usize);
+        debug_assert!(index < self.count() as usize);
         unsafe { &mut *(self.words.as_mut_ptr().add(index) as *mut Digit) }
     }
 }
@@ -795,13 +809,43 @@ impl<'gc> BigInt<'gc> {
             return Self::zero(ctx);
         }
 
-        let (b1, b2) = if this.count() < rhs.count() {
-            (rhs, this)
+        let mut lhs = this;
+        let mut rhs = rhs;
+
+        if lhs.count() < rhs.count() {
+            std::mem::swap(&mut lhs, &mut rhs);
+        }
+
+        // Use Karatsuba for larger numbers, simple multiplication for smaller ones
+        const KARATSUBA_THRESHOLD: usize = 32;
+        if this.count().min(rhs.count()) >= KARATSUBA_THRESHOLD {
+            Self::mul_karatsuba(lhs, rhs, ctx)
         } else {
-            (this, rhs)
+            Self::mul_simple(lhs, rhs, ctx)
+        }
+    }
+
+    pub fn bits(&self) -> usize {
+        if self.is_zero() {
+            return 0;
+        }
+
+        let zeros: usize = self.last().unwrap().leading_zeros() as usize;
+        self.len() * DIGIT_BIT - zeros
+    }
+
+    pub fn mul_simple(a: Gc<'gc, Self>, b: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+        if a.is_zero() || b.is_zero() {
+            return Self::zero(ctx);
+        }
+
+        let (b1, b2) = if a.count() < b.count() {
+            (b, a)
+        } else {
+            (a, b)
         };
 
-        Self::zeroed(&ctx, b1.count() + b2.count(), this.negative(), |res| {
+        Self::zeroed(&ctx, b1.count() + b2.count(), a.negative(), |res| {
             for i in 0..b2.count() {
                 let mut sum: Digit2X = 0;
 
@@ -814,11 +858,12 @@ impl<'gc> BigInt<'gc> {
 
                 res[i + b1.count()] = loword(sum);
             }
+
             res.header.word = BigIntNegative::update(
-                if this.negative() != rhs.negative() {
-                    !this.negative()
+                if a.negative() != b.negative() {
+                    !a.negative()
                 } else {
-                    this.negative()
+                    a.negative()
                 },
                 res.header.word,
             );
@@ -826,6 +871,85 @@ impl<'gc> BigInt<'gc> {
             Result::<(), ()>::Ok(())
         })
         .unwrap()
+    }
+
+    /// Karatsuba multiplication algorithm for large integers
+    /// Complexity: O(n^log₂3) ≈ O(n^1.585) vs O(n²) for simple multiplication
+    pub fn mul_karatsuba(a: Gc<'gc, Self>, b: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+        if a.is_zero() || b.is_zero() {
+            return Self::zero(ctx);
+        }
+
+        // Use simple multiplication for small numbers (threshold can be tuned)
+        const KARATSUBA_THRESHOLD: usize = 2;
+        if a.count().min(b.count()) <= KARATSUBA_THRESHOLD {
+            return Self::mul_simple(a, b, ctx);
+        }
+
+        // Make both numbers the same length by padding with zeros
+        let max_len = a.count().max(b.count());
+        let half = (max_len + 1) / 2;
+
+        // Split numbers: a = a1 * B^half + a0, b = b1 * B^half + b0
+        // where B = 2^DIGIT_BIT
+        let (a0, a1) = a.split_at(ctx, half);
+        let (b0, b1) = b.split_at(ctx, half);
+
+        // Three recursive multiplications:
+        // z0 = a0 * b0
+        // z2 = a1 * b1
+        // z1 = (a0 + a1) * (b0 + b1) - z0 - z2
+        let z0 = Self::mul_karatsuba(a0, b0, ctx);
+        let z2 = Self::mul_karatsuba(a1, b1, ctx);
+
+        // Calculate (a0 + a1) and (b0 + b1)
+        let a_sum = Self::plus(a0, ctx, a1);
+        let b_sum = Self::plus(b0, ctx, b1);
+        let z1_temp = Self::mul_karatsuba(a_sum, b_sum, ctx);
+
+        // z1 = z1_temp - z0 - z2
+        let z1 = Self::minus(Self::minus(z1_temp, ctx, z0), ctx, z2);
+
+        // Combine results: result = z2 * B^(2*half) + z1 * B^half + z0
+        let z2_shifted = Self::shift_left_words(z2, ctx, 2 * half);
+        let z1_shifted = Self::shift_left_words(z1, ctx, half);
+
+        let result = Self::plus(Self::plus(z2_shifted, ctx, z1_shifted), ctx, z0);
+
+        // Set the correct sign
+        let result_negative = a.negative() != b.negative();
+        if result.negative() != result_negative {
+            Self::new::<true>(ctx, &*result, result_negative)
+        } else {
+            result
+        }
+    }
+
+    /// Shift a BigInt left by n words (multiply by B^n where B = 2^DIGIT_BIT)
+    fn shift_left_words(num: Gc<'gc, Self>, ctx: Context<'gc>, n: usize) -> Gc<'gc, Self> {
+        if n == 0 || num.is_zero() {
+            return num;
+        }
+
+        let mut result_words = vec![0u64; n];
+        result_words.extend_from_slice(&*num);
+
+        Self::new::<true>(ctx, &result_words, num.negative())
+    }
+
+    pub fn split_at(
+        self: Gc<'gc, Self>,
+        ctx: Context<'gc>,
+        n: usize,
+    ) -> (Gc<'gc, Self>, Gc<'gc, Self>) {
+        let n = n.min(self.len());
+        let right = &self[n..];
+        let left = &self[..n];
+
+        (
+            BigInt::new::<true>(ctx, left, self.negative()),
+            BigInt::new::<true>(ctx, right, self.negative()),
+        )
     }
 
     pub fn zero(ctx: Context<'gc>) -> Gc<'gc, Self> {
@@ -1490,7 +1614,7 @@ impl<'gc> BigInt<'gc> {
         let swords = shift / DIGIT_BIT;
         let sbits = shift % DIGIT_BIT;
 
-        let mut res = vec![];
+        /*let mut res = vec![];
         res.reserve(this.len() + swords);
 
         for _ in 0..swords {
@@ -1508,7 +1632,32 @@ impl<'gc> BigInt<'gc> {
             res.push(carry);
         }
 
-        Self::new::<true>(ctx, &res, this.negative())
+        Self::new::<true>(ctx, &res, this.negative())*/
+
+        Self::zeroed(&ctx, this.len() + swords + 1, this.negative(), |res| {
+            for i in 0..swords {
+                res[i] = 0;
+            }
+
+            let mut carry: Digit = 0;
+            let mut offset = swords;
+
+            for &word in this.iter() {
+                res[offset] = (word << sbits) | carry;
+                carry = word >> (DIGIT_BIT - sbits);
+                offset += 1;
+            }
+
+            if carry > 0 {
+                res[offset] = carry;
+                offset += 1;
+            }
+
+            res.header.word = BigIntCount::update(offset as u32, res.header.word);
+
+            Result::<(), ()>::Ok(())
+        })
+        .unwrap()
     }
 
     pub fn shift_right(this: Gc<'gc, Self>, ctx: Context<'gc>, shift: usize) -> Gc<'gc, Self> {
@@ -2015,7 +2164,7 @@ impl<'gc> IntoValue<'gc> for Number<'gc> {
 }
 
 impl<'gc> FromValue<'gc> for Number<'gc> {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, Value<'gc>> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is_int32() {
             Ok(Number::Fixnum(value.as_int32()))
         } else if value.is::<BigInt>() {
@@ -2027,7 +2176,11 @@ impl<'gc> FromValue<'gc> for Number<'gc> {
         } else if value.is_flonum() {
             Ok(Number::Flonum(value.as_flonum()))
         } else {
-            Err(value)
+            Err(ConversionError::TypeMismatch {
+                pos: 0,
+                expected: "number",
+                found: value,
+            })
         }
     }
 }
@@ -2974,8 +3127,12 @@ impl<'gc> Number<'gc> {
                 }
                 Number::Flonum(rhs) => return Number::Flonum(lhs as f64 * rhs),
                 Number::BigInt(rhs) => {
-                    return BigInt::times(BigInt::from_i64(ctx, lhs as i64), ctx, rhs)
-                        .into_number(ctx);
+                    probe::probe!(mul_bigint, start);
+                    let res =
+                        BigInt::times(BigInt::from_i64(ctx, lhs as i64), ctx, rhs).into_number(ctx);
+                    probe::probe!(mul_bigint, end);
+
+                    res
                 }
                 Number::Rational(rn) => {
                     if matches!(rn.numerator, Number::Fixnum(1)) {

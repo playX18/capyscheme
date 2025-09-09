@@ -24,6 +24,7 @@ pub struct Symbol<'gc> {
 unsafe impl<'gc> Tagged for Symbol<'gc> {
     const TC16: &'static [super::TypeCode16] = &[SYMBOL_TC16_INTERNED, SYMBOL_TC16_UNINTERNED];
     const TC8: TypeCode8 = TypeCode8::SYMBOL;
+    const TYPE_NAME: &'static str = "symbol";
 }
 
 pub const SYMBOL_TC16_UNINTERNED: TypeCode16 =

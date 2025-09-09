@@ -1,4 +1,7 @@
-use std::cell::Cell;
+use std::{
+    cell::{Cell, UnsafeCell},
+    sync::atomic::AtomicUsize,
+};
 
 use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
 
@@ -7,7 +10,7 @@ use crate::runtime::{
     value::{
         NativeReturn, ReturnCode, SavedCall, Value, init_symbols, init_weak_sets, init_weak_tables,
     },
-    vm::{VMResult, call_scheme},
+    vm::{VMResult, call_scheme, debug},
 };
 
 #[derive(Clone, Copy)]
@@ -47,7 +50,7 @@ impl<'gc> Context<'gc> {
             .replace(None)
             .expect("No suspended call");
 
-        call_scheme(*self, call.rator, &call.rands)
+        call_scheme(*self, call.rator, call.rands.iter().copied())
     }
 
     pub fn return_call(
@@ -99,8 +102,15 @@ pub struct State<'gc> {
     pub(crate) dynamic_state: DynamicState<'gc>,
     pub(crate) runstack: Cell<Address>,
     pub(crate) runstack_start: Address,
+    /// Nest level of this thread. If it's larger than 1, it means
+    /// that this thread is currently having 2 or more nested calls into Scheme.
+    ///
+    /// In that case, some operations (primarily GC) won't be allowed.
+    pub(crate) nest_level: AtomicUsize,
     pub(crate) call_data: CallData<'gc>,
     pub(crate) saved_call: Cell<Option<Gc<'gc, SavedCall<'gc>>>>,
+    pub(crate) shadow_stack: UnsafeCell<debug::ShadowStack<'gc>>,
+    pub(crate) last_ret_addr: Cell<Address>,
 }
 
 #[repr(C)]
@@ -142,6 +152,15 @@ unsafe impl Trace for State<'_> {
         for value in runstack {
             visitor.trace(value);
         }
+
+        unsafe {
+            let stack = &mut *self.shadow_stack.get();
+
+            stack.for_each_mut(|frame| {
+                visitor.trace(&mut frame.rator);
+                visitor.trace(&mut frame.rands);
+            });
+        }
     }
 }
 
@@ -149,15 +168,17 @@ impl<'gc> State<'gc> {
     pub fn new(mc: &'gc Mutation<'gc>) -> Self {
         let (runstack_start, _runstack_end) = make_fresh_runstack();
         Self {
+            shadow_stack: UnsafeCell::new(debug::ShadowStack::new(128)),
             dynamic_state: DynamicState::new(mc),
             runstack: Cell::new(runstack_start),
-
+            nest_level: AtomicUsize::new(0),
             runstack_start,
             call_data: CallData {
                 rator: Cell::new(Value::undefined()),
                 rands: Cell::new(std::ptr::null_mut()),
                 num_rands: Cell::new(0),
             },
+            last_ret_addr: Cell::new(Address::ZERO),
             saved_call: Cell::new(None),
         }
     }

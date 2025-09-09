@@ -112,8 +112,9 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
 
     pub fn put_list(&mut self, mut obj: Value<'gc>) -> io::Result<()> {
         let mut count = 0;
+
         while obj.is_pair() {
-            self.push(obj);
+            self.push(obj.car());
             obj = obj.cdr();
             count += 1;
         }
@@ -124,7 +125,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         } else {
             self.put8(FASL_TAG_DLIST)?;
             self.put32(count as u32)?;
-            self.push(obj);
+            self.put(obj)?;
         }
 
         while count > 0 {
@@ -340,6 +341,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     ));
                 }
             };
+
             self.lites.put(self.ctx, Value::new(id as i32), key);
         }
         Ok(())
@@ -347,6 +349,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
 
     pub fn read_value(&mut self) -> io::Result<Value<'gc>> {
         let tag = self.read8()?;
+
         match tag {
             _x @ FASL_TAG_FIXNUM => {
                 let value = self.read32()? as i32;
@@ -369,7 +372,6 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             _x @ FASL_TAG_PLIST => {
                 let count = self.read32()? as usize;
                 let mut lst = Value::null();
-
                 for _ in 0..count {
                     lst = Value::cons(self.ctx, self.read_value()?, lst);
                 }
@@ -451,6 +453,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
 
             _x @ FASL_TAG_LOOKUP => {
                 let uid = self.read32()? as i32;
+
                 if let Some(value) = self.lites.get(self.ctx, Value::new(uid)) {
                     return Ok(value);
                 } else {

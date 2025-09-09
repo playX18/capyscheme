@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rsgc::alloc::array::Array;
+use rsgc::{alloc::array::Array, cell::Lock};
 
 use super::*;
 use crate::{
@@ -55,7 +55,7 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Values(Array::from_slice(&ctx, &values)),
                 },
             )
@@ -75,7 +75,7 @@ fn substitute<'gc>(
                 return Gc::new(
                     &ctx,
                     Term {
-                        source: term.source,
+                        source: Lock::new(term.source()),
                         kind: TermKind::LSet(*lvar, value),
                     },
                 );
@@ -91,7 +91,7 @@ fn substitute<'gc>(
                 .map(|arg| substitute(ctx, *arg, substs))
                 .collect::<Vec<_>>();
 
-            call_term(ctx, proc, args, term.source)
+            call_term(ctx, proc, args, term.source())
         }
 
         TermKind::PrimCall(prim, args) => {
@@ -100,12 +100,12 @@ fn substitute<'gc>(
                 .map(|arg| substitute(ctx, *arg, substs))
                 .collect::<Vec<_>>();
 
-            prim_call_term(ctx, *prim, args, term.source)
+            prim_call_term(ctx, *prim, args, term.source())
         }
 
-        TermKind::Define(var, val) => {
+        TermKind::Define(module, var, val) => {
             let val = substitute(ctx, *val, substs);
-            define(ctx, *var, val, term.source)
+            define(ctx, *module, *var, val, term.source())
         }
 
         TermKind::Fix(fix) => {
@@ -133,7 +133,7 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Fix(Fix {
                         body,
                         lhs: fix.lhs,
@@ -159,7 +159,7 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Let(Let {
                         style: l.style,
                         lhs: l.lhs,
@@ -177,7 +177,7 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Receive(
                         formals.clone(),
                         opt_formal.clone(),
@@ -194,7 +194,7 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Proc(Gc::new(
                         &ctx,
                         Proc {
@@ -219,7 +219,7 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Seq(terms),
                 },
             )
@@ -233,20 +233,20 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::If(test, cons, alt),
                 },
             )
         }
 
-        TermKind::ToplevelSet(var, val) => {
+        TermKind::ToplevelSet(module, var, val) => {
             let val = substitute(ctx, *val, substs);
 
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
-                    kind: TermKind::ToplevelSet(*var, val),
+                    source: Lock::new(term.source()),
+                    kind: TermKind::ToplevelSet(*module, *var, val),
                 },
             )
         }
@@ -257,14 +257,14 @@ fn substitute<'gc>(
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::ModuleSet(*module, *var, *public, val),
                 },
             )
         }
 
         TermKind::Const(_)
-        | TermKind::ToplevelRef(_)
+        | TermKind::ToplevelRef(_, _)
         | TermKind::ModuleRef(_, _, _)
         | TermKind::PrimRef(_) => term,
     }
@@ -280,13 +280,13 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Values(Array::from_slice(&ctx, &values)),
                 },
             )
         }
         TermKind::LRef(_)
-        | TermKind::ToplevelRef(_)
+        | TermKind::ToplevelRef(_, _)
         | TermKind::ModuleRef(_, _, _)
         | TermKind::PrimRef(_)
         | TermKind::Const(_) => term,
@@ -310,7 +310,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 return Gc::new(
                     &ctx,
                     Term {
-                        source: term.source,
+                        source: Lock::new(term.source()),
                         kind: TermKind::Let(Let {
                             style: l.style,
                             lhs: l.lhs.clone(),
@@ -337,7 +337,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             let wrap = Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Let(Let {
                         style: LetStyle::Let,
                         lhs: Array::from_slice(&ctx, &mlhs),
@@ -350,7 +350,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Let(Let {
                         style: l.style,
                         lhs: l.lhs.clone(),
@@ -376,7 +376,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 return Gc::new(
                     &ctx,
                     Term {
-                        source: term.source,
+                        source: Lock::new(term.source()),
                         kind: TermKind::Receive(
                             formals.clone(),
                             opt_formals.clone(),
@@ -405,7 +405,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             let wrap = Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Let(Let {
                         style: LetStyle::Let,
                         lhs: Array::from_slice(&ctx, &mlhs),
@@ -418,7 +418,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Receive(formals.clone(), opt_formals.clone(), producer, wrap),
                 },
             )
@@ -431,12 +431,12 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 .map(|arg| wrap_mutables(ctx, *arg))
                 .collect::<Vec<_>>();
 
-            call_term(ctx, proc, args, term.source)
+            call_term(ctx, proc, args, term.source())
         }
 
-        TermKind::Define(var, val) => {
+        TermKind::Define(module, var, val) => {
             let val = wrap_mutables(ctx, *val);
-            define(ctx, *var, val, term.source)
+            define(ctx, *module, *var, val, term.source())
         }
 
         TermKind::Fix(fix) => {
@@ -464,7 +464,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Fix(Fix {
                         body,
                         lhs: fix.lhs,
@@ -479,7 +479,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Proc(Gc::new(
                         &ctx,
                         Proc {
@@ -494,14 +494,14 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             )
         }
 
-        TermKind::ToplevelSet(var, val) => {
+        TermKind::ToplevelSet(module, var, val) => {
             let val = wrap_mutables(ctx, *val);
 
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
-                    kind: TermKind::ToplevelSet(*var, val),
+                    source: Lock::new(term.source()),
+                    kind: TermKind::ToplevelSet(*module, *var, val),
                 },
             )
         }
@@ -512,7 +512,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::ModuleSet(*module, *var, *public, val),
                 },
             )
@@ -526,7 +526,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::If(test, cons, alt),
                 },
             )
@@ -537,7 +537,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::LSet(*var, value),
                 },
             )
@@ -549,7 +549,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                 .map(|arg| wrap_mutables(ctx, *arg))
                 .collect::<Vec<_>>();
 
-            prim_call_term(ctx, *prim, args, term.source)
+            prim_call_term(ctx, *prim, args, term.source())
         }
 
         TermKind::Seq(seq) => {
@@ -562,7 +562,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             Gc::new(
                 &ctx,
                 Term {
-                    source: term.source,
+                    source: Lock::new(term.source()),
                     kind: TermKind::Seq(terms),
                 },
             )

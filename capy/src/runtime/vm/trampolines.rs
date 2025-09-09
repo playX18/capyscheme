@@ -83,6 +83,7 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
     let num_rands = builder.block_params(entry)[2];
 
     builder.switch_to_block(entry);
+    let ret_addr = builder.ins().get_return_address(types::I64);
     let ctx = builder.ins().get_pinned_reg(types::I64);
 
     let retk = builder
@@ -127,6 +128,12 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
         MemFlags::new(),
         ctx,
         offset_of!(RtCtx, state) as i32,
+    );
+    builder.ins().store(
+        MemFlags::new(),
+        ret_addr,
+        state,
+        offset_of!(State, last_ret_addr) as i32,
     );
     builder.ins().store(
         MemFlags::new(),

@@ -58,6 +58,7 @@ unsafe impl<'gc> Trace for WeakMapping<'gc> {
 
 unsafe impl<'gc> Tagged for WeakMapping<'gc> {
     const TC8: TypeCode8 = TypeCode8::WEAK_MAPPING;
+    const TYPE_NAME: &'static str = "#<weak-mapping>";
 }
 
 impl<'gc> WeakMapping<'gc> {
@@ -478,6 +479,7 @@ impl<'gc> WeakTable<'gc> {
 
 unsafe impl<'gc> Tagged for WeakTable<'gc> {
     const TC8: TypeCode8 = TypeCode8::WEAKTABLE;
+    const TYPE_NAME: &'static str = "#<weak-table>";
 }
 
 struct AllWeakTables<'gc> {

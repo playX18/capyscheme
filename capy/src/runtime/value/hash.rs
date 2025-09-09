@@ -528,6 +528,7 @@ impl<'gc> Iterator for HashTableValues<'gc> {
 
 unsafe impl<'gc> Tagged for HashTable<'gc> {
     const TC8: TypeCode8 = TypeCode8::HASHTABLE;
+    const TYPE_NAME: &'static str = "#<hashtable>";
 }
 
 pub const fn u64_hash(mut key: u64) -> u64 {

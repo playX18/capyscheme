@@ -4,6 +4,8 @@ use pretty::{DocAllocator, DocBuilder};
 use rsgc::{
     Gc, Global, Rootable, Trace,
     alloc::array::{Array, ArrayRef},
+    barrier,
+    cell::Lock,
 };
 
 use crate::{
@@ -38,11 +40,14 @@ pub struct Denotations<'gc> {
     pub denotation_of_lambda: Value<'gc>,
     pub denotation_of_case_lambda: Value<'gc>,
     pub denotation_of_begin: Value<'gc>,
+    pub denotation_of_cond: Value<'gc>,
     pub denotation_of_if: Value<'gc>,
     pub denotation_of_quote: Value<'gc>,
     pub denotation_of_set: Value<'gc>,
     pub denotation_of_values: Value<'gc>,
     pub denotation_of_receive: Value<'gc>,
+    pub denotation_of_and: Value<'gc>,
+    pub denotation_of_or: Value<'gc>,
 }
 
 static DENOTATIONS: OnceLock<Global<Rootable!(Denotations<'_>)>> = OnceLock::new();
@@ -61,12 +66,18 @@ static_symbols!(
     DENOTATION_OF_SET = "set!"
     DENOTATION_OF_VALUES = "values"
     DENOTATION_OF_RECEIVE = "receive"
+    DENOTATION_OF_COND = "cond"
+    DENOTATION_OF_AND = "and"
+    DENOTATION_OF_OR = "or"
 );
 
 pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
     &*DENOTATIONS
         .get_or_init(|| {
             Global::new(Denotations {
+                denotation_of_and: denotation_of_and(ctx).into(),
+                denotation_of_cond: denotation_of_cond(ctx).into(),
+                denotation_of_or: denotation_of_or(ctx).into(),
                 denotation_of_define: denotation_of_define(ctx).into(),
                 denotation_of_let: denotation_of_let(ctx).into(),
                 denotation_of_let_star: denotation_of_let_star(ctx).into(),
@@ -199,11 +210,26 @@ impl<'gc> Hash for LVar<'gc> {
 
 pub type LVarRef<'gc> = Gc<'gc, LVar<'gc>>;
 
-#[derive(Trace, Debug, Clone)]
+#[derive(Trace, Debug)]
 #[collect(no_drop)]
 pub struct Term<'gc> {
-    pub source: Value<'gc>,
+    pub source: Lock<Value<'gc>>,
     pub kind: TermKind<'gc>,
+}
+
+impl<'gc> Term<'gc> {
+    pub fn source(&self) -> Value<'gc> {
+        self.source.get()
+    }
+}
+
+impl<'gc> Clone for Term<'gc> {
+    fn clone(&self) -> Self {
+        Term {
+            source: Lock::new(self.source.get()),
+            kind: self.kind,
+        }
+    }
 }
 
 pub type TermRef<'gc> = Gc<'gc, Term<'gc>>;
@@ -229,11 +255,11 @@ pub enum TermKind<'gc> {
     ),
 
     /// Equivalent to `(module-ref (current-module) <name>)`
-    ToplevelRef(Value<'gc>),
+    ToplevelRef(Value<'gc>, Value<'gc>),
     /// Equivalent to `(module-set! (current-module) <name> <value> #f)`
-    ToplevelSet(Value<'gc>, TermRef<'gc>),
+    ToplevelSet(Value<'gc>, Value<'gc>, TermRef<'gc>),
 
-    Define(Value<'gc>, TermRef<'gc>),
+    Define(Value<'gc>, Value<'gc>, TermRef<'gc>),
 
     If(TermRef<'gc>, TermRef<'gc>, TermRef<'gc>),
     Seq(ArrayRef<'gc, TermRef<'gc>>),
@@ -301,7 +327,7 @@ pub fn constant<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> TermRef<'gc> {
     Gc::new(
         &ctx,
         Term {
-            source: Value::new(false),
+            source: Lock::new(false.into()),
             kind: TermKind::Const(value),
         },
     )
@@ -312,7 +338,7 @@ pub fn lref<'gc>(ctx: Context<'gc>, lvar: LVarRef<'gc>) -> TermRef<'gc> {
     Gc::new(
         &ctx,
         Term {
-            source: Value::new(false),
+            source: Lock::new(false.into()),
             kind: TermKind::LRef(lvar),
         },
     )
@@ -323,7 +349,7 @@ pub fn lset<'gc>(ctx: Context<'gc>, lvar: LVarRef<'gc>, value: TermRef<'gc>) -> 
     Gc::new(
         &ctx,
         Term {
-            source: Value::new(false),
+            source: Lock::new(false.into()),
             kind: TermKind::LSet(lvar, value),
         },
     )
@@ -333,7 +359,7 @@ pub fn gref<'gc>(ctx: Context<'gc>, name: Value<'gc>, sourcev: Value<'gc>) -> Te
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
+            source: Lock::new(sourcev),
             kind: TermKind::GRef(name),
         },
     )
@@ -348,7 +374,7 @@ pub fn gset<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
+            source: Lock::new(sourcev),
             kind: TermKind::GSet(name, value),
         },
     )
@@ -365,7 +391,7 @@ pub fn module_ref<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
+            source: Lock::new(sourcev),
             kind: TermKind::ModuleRef(module, name, public),
         },
     )
@@ -382,24 +408,30 @@ pub fn module_set<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
+            source: Lock::new(sourcev),
             kind: TermKind::ModuleSet(module, name, public, exp),
         },
     )
 }
 
-pub fn toplevel_ref<'gc>(ctx: Context<'gc>, name: Value<'gc>, sourcev: Value<'gc>) -> TermRef<'gc> {
+pub fn toplevel_ref<'gc>(
+    ctx: Context<'gc>,
+    module: Value<'gc>,
+    name: Value<'gc>,
+    sourcev: Value<'gc>,
+) -> TermRef<'gc> {
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
-            kind: TermKind::ToplevelRef(name),
+            source: Lock::new(sourcev),
+            kind: TermKind::ToplevelRef(module, name),
         },
     )
 }
 
 pub fn toplevel_set<'gc>(
     ctx: Context<'gc>,
+    module: Value<'gc>,
     name: Value<'gc>,
     exp: TermRef<'gc>,
     sourcev: Value<'gc>,
@@ -407,14 +439,15 @@ pub fn toplevel_set<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
-            kind: TermKind::ToplevelSet(name, exp),
+            source: Lock::new(sourcev),
+            kind: TermKind::ToplevelSet(module, name, exp),
         },
     )
 }
 
 pub fn define<'gc>(
     ctx: Context<'gc>,
+    module: Value<'gc>,
     name: Value<'gc>,
     value: TermRef<'gc>,
     sourcev: Value<'gc>,
@@ -422,8 +455,8 @@ pub fn define<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
-            kind: TermKind::Define(name, value),
+            source: Lock::new(sourcev),
+            kind: TermKind::Define(module, name, value),
         },
     )
 }
@@ -437,7 +470,7 @@ pub fn if_term<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: Value::new(false),
+            source: Lock::new(false.into()),
             kind: TermKind::If(test, then_branch, else_branch),
         },
     )
@@ -447,7 +480,7 @@ pub fn seq<'gc>(ctx: Context<'gc>, terms: ArrayRef<'gc, TermRef<'gc>>) -> TermRe
     Gc::new(
         &ctx,
         Term {
-            source: Value::new(false),
+            source: Lock::new(false.into()),
             kind: TermKind::Seq(terms),
         },
     )
@@ -463,7 +496,7 @@ pub fn let_term<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: Value::new(false),
+            source: Lock::new(false.into()),
             kind: TermKind::Let(Let {
                 style,
                 lhs,
@@ -483,7 +516,7 @@ pub fn fix_term<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: Value::new(false),
+            source: Lock::new(false.into()),
             kind: TermKind::Fix(Fix { lhs, rhs, body }),
         },
     )
@@ -500,7 +533,7 @@ pub fn proc_term<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source,
+            source: Lock::new(source),
             kind: TermKind::Proc(Gc::new(
                 &ctx,
                 Proc {
@@ -525,7 +558,7 @@ pub fn call_term<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
+            source: Lock::new(sourcev),
             kind: TermKind::Call(proc, args),
         },
     )
@@ -541,7 +574,7 @@ pub fn prim_call_term<'gc>(
     Gc::new(
         &ctx,
         Term {
-            source: sourcev,
+            source: Lock::new(sourcev),
             kind: TermKind::PrimCall(proc, args),
         },
     )
@@ -555,13 +588,35 @@ pub struct CompileError<'gc> {
     pub sourcev: Value<'gc>,
 }
 
+impl<'gc> CompileError<'gc> {
+    pub fn to_string(&self) -> String {
+        let mut s = String::new();
+        s.push_str(&self.message);
+        if !self.irritants.is_empty() {
+            s.push_str("\nIrritants:");
+            for irritant in &self.irritants {
+                s.push_str(&format!("\n  {}", irritant));
+            }
+        }
+
+        s.push_str(&format!("\nAt: {}", self.sourcev));
+
+        s
+    }
+}
+
 pub type Error<'gc> = Box<CompileError<'gc>>;
 
 pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
     if let Some(_) = program.try_as::<Symbol>() {
         match cenv.get(program) {
             Some(lvar) => Ok(lref(cenv.ctx, lvar)),
-            None => Ok(toplevel_ref(cenv.ctx, program, Value::new(false))),
+            None => Ok(toplevel_ref(
+                cenv.ctx,
+                Value::new(false),
+                program,
+                Value::new(false),
+            )),
         }
     } else if program.is_pair() {
         let _source = get_source_property(cenv.ctx, program);
@@ -572,8 +627,14 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_quote(cenv, program)
         } else if proc == cenv.denotations.denotation_of_begin {
             expand_begin(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_cond {
+            expand_cond(cenv, program)
         } else if proc == cenv.denotations.denotation_of_if {
             expand_if(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_and {
+            expand_and(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_or {
+            expand_or(cenv, program)
         } else if proc == cenv.denotations.denotation_of_define {
             if cenv.frames.is_some() {
                 return Err(Box::new(CompileError {
@@ -628,22 +689,19 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
         };
 
         term.map(|term| {
-            /*let termw = Gc::write(&cenv.ctx, term);
-            unsafe {
-                std::ptr::write(
-                    &termw.source as *const _ as *mut Value<'gc>,
-                    source.unwrap_or(Value::new(false)),
-                );
-            }
-            //barrier::field!(termw, Term, source).(source.unwrap_or(Value::new(false)));
-            */
+            let termw = Gc::write(&cenv.ctx, term);
+
+            barrier::field!(termw, Term, source)
+                .unlock()
+                .set(_source.unwrap_or(Value::new(false)));
+
             term
         })
     } else {
         Ok(Gc::new(
             &cenv.ctx,
             Term {
-                source: syntax_annotation(cenv.ctx, program),
+                source: Lock::new(syntax_annotation(cenv.ctx, program)),
                 kind: TermKind::Const(program),
             },
         ))
@@ -678,7 +736,13 @@ fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
     let value = expand(cenv, form.caddr())?;
     let name = form.cadr();
     let source = syntax_annotation(cenv.ctx, form);
-    Ok(toplevel_set(cenv.ctx, name, value, source))
+    Ok(toplevel_set(
+        cenv.ctx,
+        Value::new(false),
+        name,
+        value,
+        source,
+    ))
 }
 
 fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -720,13 +784,14 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             let proc_term = Gc::new(
                 &cenv.ctx,
                 Term {
-                    source: syntax_annotation(cenv.ctx, form),
+                    source: Lock::new(syntax_annotation(cenv.ctx, form)),
                     kind: TermKind::Proc(proc),
                 },
             );
 
             return Ok(define(
                 cenv.ctx,
+                Value::new(false),
                 name,
                 proc_term,
                 syntax_annotation(cenv.ctx, form),
@@ -738,6 +803,7 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
 
             Ok(define(
                 cenv.ctx,
+                Value::new(false),
                 name,
                 term,
                 syntax_annotation(cenv.ctx, form),
@@ -760,7 +826,7 @@ fn expand_quote<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'
     Ok(Gc::new(
         &cenv.ctx,
         Term {
-            source: syntax_annotation(cenv.ctx, form),
+            source: Lock::new(syntax_annotation(cenv.ctx, form)),
             kind: TermKind::Const(datum),
         },
     ))
@@ -779,7 +845,7 @@ fn expand_if<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
         let alternative = Gc::new(
             &cenv.ctx,
             Term {
-                source: Value::new(false),
+                source: Lock::new(false.into()),
                 kind: TermKind::Const(Value::undefined()),
             },
         );
@@ -792,6 +858,116 @@ fn expand_if<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
             sourcev: syntax_annotation(cenv.ctx, form),
         }))
     }
+}
+
+fn expand_and<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    let mut exprs = Vec::new();
+    let mut current = form.cdr();
+    while current.is_pair() {
+        exprs.push(current.car());
+        current = current.cdr();
+    }
+
+    if !current.is_null() {
+        return Err(Box::new(CompileError {
+            message: "malformed and expression".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    if exprs.is_empty() {
+        // (and) => #t
+        return Ok(constant(cenv.ctx, Value::new(true)));
+    }
+
+    if exprs.len() == 1 {
+        // (and e1) => e1
+        return expand(cenv, exprs[0]);
+    }
+
+    // (and e1 e2 ... en) => (let ((t e1)) (if t (and e2 ... en) #f))
+    let mut it = exprs.into_iter().rev();
+    let last_expr = it.next().unwrap(); // Safe due to len check
+    let mut result = expand(cenv, last_expr)?;
+
+    let false_branch = constant(cenv.ctx, Value::new(false));
+
+    for expr in it {
+        let test_term = expand(cenv, expr)?;
+        let temp_lvar = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "and-tmp").into());
+
+        let if_branch = if_term(
+            cenv.ctx,
+            lref(cenv.ctx, temp_lvar.clone()),
+            result,
+            false_branch,
+        );
+
+        result = let_term(
+            cenv.ctx,
+            LetStyle::Let,
+            Array::from_slice(&cenv.ctx, &[temp_lvar]),
+            Array::from_slice(&cenv.ctx, &[test_term]),
+            if_branch,
+        );
+    }
+
+    Ok(result)
+}
+
+fn expand_or<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    let mut exprs = Vec::new();
+    let mut current = form.cdr();
+    while current.is_pair() {
+        exprs.push(current.car());
+        current = current.cdr();
+    }
+
+    if !current.is_null() {
+        return Err(Box::new(CompileError {
+            message: "malformed or expression".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    if exprs.is_empty() {
+        // (or) => #f
+        return Ok(constant(cenv.ctx, Value::new(false)));
+    }
+
+    if exprs.len() == 1 {
+        // (or e1) => e1
+        return expand(cenv, exprs[0]);
+    }
+
+    // (or e1 e2 ... en) => (let ((t e1)) (if t t (or e2 ... en)))
+    let mut it = exprs.into_iter().rev();
+    let last_expr = it.next().unwrap(); // Safe due to len check
+    let mut result = expand(cenv, last_expr)?;
+
+    for expr in it {
+        let test_term = expand(cenv, expr)?;
+        let temp_lvar = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "or-tmp").into());
+
+        let if_branch = if_term(
+            cenv.ctx,
+            lref(cenv.ctx, temp_lvar.clone()),
+            lref(cenv.ctx, temp_lvar.clone()),
+            result,
+        );
+
+        result = let_term(
+            cenv.ctx,
+            LetStyle::Let,
+            Array::from_slice(&cenv.ctx, &[temp_lvar]),
+            Array::from_slice(&cenv.ctx, &[test_term]),
+            if_branch,
+        );
+    }
+
+    Ok(result)
 }
 
 fn expand_begin<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -1042,7 +1218,7 @@ fn finalize_body<'gc>(
                 rhs.push(Gc::new(
                     &cenv.ctx,
                     Term {
-                        source: syntax_annotation(cenv.ctx, body),
+                        source: Lock::new(syntax_annotation(cenv.ctx, body)),
                         kind: TermKind::Proc(proc),
                     },
                 ));
@@ -1199,7 +1375,7 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     Ok(Gc::new(
         &cenv.ctx,
         Term {
-            source: syntax_annotation(cenv.ctx, form),
+            source: Lock::new(syntax_annotation(cenv.ctx, form)),
             kind: TermKind::Proc(proc),
         },
     ))
@@ -1272,7 +1448,7 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
         let proc_term = Gc::new(
             &cenv.ctx,
             Term {
-                source: syntax_annotation(cenv.ctx, form),
+                source: Lock::new(syntax_annotation(cenv.ctx, form)),
                 kind: TermKind::Proc(proc),
             },
         );
@@ -1500,7 +1676,7 @@ fn expand_receive<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef
     Ok(Gc::new(
         &cenv.ctx,
         Term {
-            source: syntax_annotation(cenv.ctx, form),
+            source: Lock::new(syntax_annotation(cenv.ctx, form)),
             kind: TermKind::Receive(
                 Array::from_slice(&cenv.ctx, formals),
                 opt_formal,
@@ -1540,7 +1716,7 @@ fn expand_values<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     Ok(Gc::new(
         &cenv.ctx,
         Term {
-            source: syntax_annotation(cenv.ctx, form),
+            source: Lock::new(syntax_annotation(cenv.ctx, form)),
             kind: TermKind::Values(Array::from_slice(&cenv.ctx, values)),
         },
     ))
@@ -1593,6 +1769,143 @@ fn expand_letrec_star<'gc>(
         Array::from_slice(&cenv.ctx, val_terms),
         body_term,
     ))
+}
+
+fn expand_cond<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    if form.list_length() < 2 {
+        return Err(Box::new(CompileError {
+            message: "cond requires at least one clause".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let mut clauses = Vec::new();
+    let mut current = form.cdr();
+
+    // Collect all clauses
+    while current.is_pair() {
+        let clause = current.car();
+        if !clause.is_pair() {
+            return Err(Box::new(CompileError {
+                message: "cond clause must be a list".to_string(),
+                irritants: vec![clause],
+                sourcev: syntax_annotation(cenv.ctx, form),
+            }));
+        }
+        clauses.push(clause);
+        current = current.cdr();
+    }
+
+    if !current.is_null() {
+        return Err(Box::new(CompileError {
+            message: "malformed cond expression".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    // Process clauses from last to first
+    let mut result = constant(cenv.ctx, Value::undefined()); // Default else case
+
+    for clause in clauses.into_iter().rev() {
+        let test = clause.car();
+        let body = clause.cdr();
+
+        if test.is::<Symbol>() && test == Symbol::from_str(cenv.ctx, "else").into() {
+            // (else expr ...)
+            if body.is_null() {
+                return Err(Box::new(CompileError {
+                    message: "else clause cannot be empty".to_string(),
+                    irritants: vec![clause],
+                    sourcev: syntax_annotation(cenv.ctx, form),
+                }));
+            }
+
+            if body.cdr().is_null() {
+                // Single expression
+                result = expand(cenv, body.car())?;
+            } else {
+                // Multiple expressions - wrap in begin
+                let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+                result = expand(cenv, begin_form)?;
+            }
+        } else if body.is_null() {
+            // (test) - return test value if true
+            let test_term = expand(cenv, test)?;
+            let temp_lvar = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "cond-tmp").into());
+
+            let if_branch = if_term(
+                cenv.ctx,
+                lref(cenv.ctx, temp_lvar.clone()),
+                lref(cenv.ctx, temp_lvar.clone()),
+                result,
+            );
+
+            result = let_term(
+                cenv.ctx,
+                LetStyle::Let,
+                Array::from_slice(&cenv.ctx, &[temp_lvar]),
+                Array::from_slice(&cenv.ctx, &[test_term]),
+                if_branch,
+            );
+        } else if body.is_pair()
+            && body.car().is::<Symbol>()
+            && body.car() == Symbol::from_str(cenv.ctx, "=>").into()
+        {
+            // (test => proc)
+            if body.list_length() != 2 {
+                return Err(Box::new(CompileError {
+                    message: "=> clause must have exactly one procedure".to_string(),
+                    irritants: vec![clause],
+                    sourcev: syntax_annotation(cenv.ctx, form),
+                }));
+            }
+
+            let proc_expr = body.cadr();
+            let test_term = expand(cenv, test)?;
+            let proc_term = expand(cenv, proc_expr)?;
+            let temp_lvar = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "cond-tmp").into());
+
+            let call_term = call_term(
+                cenv.ctx,
+                proc_term,
+                vec![lref(cenv.ctx, temp_lvar.clone())],
+                syntax_annotation(cenv.ctx, clause),
+            );
+
+            let if_branch = if_term(
+                cenv.ctx,
+                lref(cenv.ctx, temp_lvar.clone()),
+                call_term,
+                result,
+            );
+
+            result = let_term(
+                cenv.ctx,
+                LetStyle::Let,
+                Array::from_slice(&cenv.ctx, &[temp_lvar]),
+                Array::from_slice(&cenv.ctx, &[test_term]),
+                if_branch,
+            );
+        } else {
+            // (test expr ...)
+            let test_term = expand(cenv, test)?;
+
+            let consequent = if body.cdr().is_null() {
+                // Single expression
+                expand(cenv, body.car())?
+            } else {
+                // Multiple expressions - wrap in begin
+                let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+                expand(cenv, begin_form)?
+            };
+
+            result = if_term(cenv.ctx, test_term, consequent, result);
+        }
+    }
+
+    Ok(result)
 }
 
 impl<'gc> Term<'gc> {
@@ -1707,7 +2020,7 @@ impl<'gc> Term<'gc> {
                     .group()
             }
 
-            TermKind::Define(var, exp) => {
+            TermKind::Define(_module, var, exp) => {
                 let var_doc = alloc.text(var.to_string());
                 let exp_doc = exp.pretty(alloc);
 
@@ -1778,13 +2091,13 @@ impl<'gc> Term<'gc> {
                     .group()
             }
 
-            TermKind::ToplevelRef(name) => alloc
+            TermKind::ToplevelRef(_, name) => alloc
                 .text("toplevel-ref")
                 .append(format!(" {name}"))
                 .parens()
                 .group(),
 
-            TermKind::ToplevelSet(name, exp) => {
+            TermKind::ToplevelSet(_, name, exp) => {
                 let exp_doc = exp.pretty(alloc);
                 alloc
                     .text("toplevel-set")

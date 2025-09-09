@@ -677,4 +677,5 @@ pub fn init_weak_sets<'gc>(mc: &Mutation<'gc>) {
 
 unsafe impl<'gc> Tagged for WeakSet<'gc> {
     const TC8: super::TypeCode8 = TypeCode8::WEAKSET;
+    const TYPE_NAME: &'static str = "#<weak-set>";
 }
