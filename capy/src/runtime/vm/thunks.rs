@@ -2,8 +2,12 @@
 use crate::runtime::{
     Context,
     fasl::FASLReader,
-    modules::Module,
-    value::{Boxed, Closure, SavedCall, ScmHeader, TypeCode8, TypeCode16, Value, Vector},
+    modules::{Module, root_module},
+    value::{
+        Boxed, Closure, Pair, SavedCall, ScmHeader, Str, Symbol, Tuple, TypeCode8, TypeCode16,
+        Value, Vector,
+    },
+    vm::{VMResult, call_scheme, debug},
 };
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
@@ -14,11 +18,9 @@ use rsgc::{
     Gc,
     alloc::Array,
     mmtk::{AllocationSemantics, util::Address},
-    object::VTable,
+    object::{VTable, VTableOf},
 };
-use std::{alloc::Layout, cmp::Ordering, sync::atomic::AtomicUsize};
-
-pub static NCLOSURES: AtomicUsize = AtomicUsize::new(0);
+use std::{alloc::Layout, cmp::Ordering};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -228,7 +230,8 @@ thunks! {
         ctx: &Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
-        println!("wrong number of args");
+        println!("wrong number of args: {}", subr);
+        crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
         todo!()
     }
 
@@ -252,6 +255,8 @@ thunks! {
         ctx: &Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
+        println!("non applicable: {}", subr);
+        crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
         todo!()
     }
 
@@ -267,6 +272,7 @@ thunks! {
         ctx: &Context<'gc>,
         value: Value<'gc>
     ) -> Value<'gc> {
+
         Boxed::new(*ctx, value).into()
     }
 
@@ -336,19 +342,25 @@ thunks! {
         crate::runtime::modules::current_module(*ctx).get(*ctx)
     }
 
+    pub fn set_current_module(ctx: &Context<'gc>, module: Value<'gc>) -> Value<'gc> {
+        crate::runtime::modules::set_current_module(*ctx, module);
+        Value::undefined()
+    }
+
     pub fn make_closure(
         ctx: &Context<'gc>,
         func: *const u8,
         nfree: usize,
-        is_cont: bool
+        is_cont: bool,
+        meta: Value<'gc>
     ) -> Value<'gc> {
-        NCLOSURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+  //      NCLOSURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let free = if nfree == 0 {
             Value::new(false)
         } else {
             Vector::new::<false>(&ctx, nfree, Value::undefined()).into()
         };
-        //log::info!("make-closure {nfree}, code={func:p}");
+//        println!("make-closure {nfree}, code={func:p}, cont={}, meta={}", is_cont, meta);
 
         let clos = Closure {
             header: ScmHeader::with_type_bits(if is_cont {
@@ -358,7 +370,7 @@ thunks! {
             }),
             code: Address::from_ptr(func),
             free,
-            meta: Value::new(false),
+            meta,
         };
 
         Gc::new(&ctx, clos).into()
@@ -384,9 +396,9 @@ thunks! {
         rands: *const Value<'gc>,
         num_rands: usize
     ) -> Gc<'gc, SavedCall<'gc>> {
+
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
 
-        println!("Triggering GC, {} closures", NCLOSURES.load(std::sync::atomic::Ordering::Relaxed));
         let arr = Array::from_slice(&ctx, args);
 
         Gc::new(&ctx, SavedCall { rands: arr, rator })
@@ -449,11 +461,14 @@ thunks! {
     }
 
     pub fn plus(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+        println!("plus {a} {b}");
         let Some(a) = a.number() else {
+            println!("not a number {a}");
             todo!()
         };
 
         let Some(b) = b.number() else {
+            println!("not a number {b}");
             todo!()
         };
 
@@ -671,4 +686,125 @@ thunks! {
         ThunkResult { code: 0, value: num.negate(*ctx).into_value(*ctx) }
     }
 
+    pub fn debug_trace(ctx: &Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize) -> () {
+        let ip = unsafe { returnaddress(0) };
+        let rands = unsafe { std::slice::from_raw_parts(rands, num_rands).to_vec() };
+        let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta: Value::new(false) };
+        unsafe {
+            (*ctx.state.shadow_stack.get()).push(frame);
+        }
+    }
+
+}
+
+#[unsafe(no_mangle)]
+pub static BOX_VTABLE: &'static VTable = &VTableOf::<Boxed>::VT;
+#[unsafe(no_mangle)]
+pub static PAIR_VTABLE: &'static VTable = &VTableOf::<Pair>::VT;
+#[unsafe(no_mangle)]
+pub static VECTOR_VTABLE: &'static VTable = &Vector::VT;
+#[unsafe(no_mangle)]
+pub static TUPLE_VTABLE: &'static VTable = &Tuple::VT;
+
+unsafe extern "C" {
+    #[link_name = "llvm.returnaddress"]
+    fn returnaddress(_: i32) -> *const u8;
+}
+
+pub fn make_assertion_violation<'gc>(
+    ctx: &Context<'gc>,
+    who: Value<'gc>,
+    message: Value<'gc>,
+    irritants: &[Value<'gc>],
+) -> Value<'gc> {
+    let args = std::iter::once(who)
+        .chain(std::iter::once(message))
+        .chain(irritants.iter().cloned())
+        .collect::<Vec<_>>();
+
+    let assertion_violation = root_module(*ctx)
+        .get(
+            *ctx,
+            Symbol::from_str(*ctx, ".make-assertion-violation").into(),
+        )
+        .expect("pre boot code");
+
+    match call_scheme(*ctx, assertion_violation, args) {
+        VMResult::Ok(val) => val,
+        VMResult::Err(err) => err,
+        VMResult::Yield => unreachable!(),
+    }
+}
+
+pub fn make_error<'gc>(
+    ctx: &Context<'gc>,
+    who: Value<'gc>,
+    message: Value<'gc>,
+    irritants: &[Value<'gc>],
+) -> Value<'gc> {
+    let args = std::iter::once(who)
+        .chain(std::iter::once(message))
+        .chain(irritants.iter().cloned())
+        .collect::<Vec<_>>();
+
+    let error = root_module(*ctx)
+        .get(*ctx, Symbol::from_str(*ctx, ".make-error").into())
+        .expect("pre boot code");
+
+    match call_scheme(*ctx, error, args) {
+        VMResult::Ok(val) => val,
+        VMResult::Err(err) => err,
+        VMResult::Yield => unreachable!(),
+    }
+}
+
+pub fn make_io_error<'gc>(
+    ctx: &Context<'gc>,
+    who: &str,
+    message: Value<'gc>,
+    irritants: &[Value<'gc>],
+) -> Value<'gc> {
+    let who = Symbol::from_str(*ctx, who).into();
+    let args = std::iter::once(who)
+        .chain(std::iter::once(message))
+        .chain(irritants.iter().cloned())
+        .collect::<Vec<_>>();
+
+    let io_error = root_module(*ctx)
+        .get(*ctx, Symbol::from_str(*ctx, ".make-io-error").into())
+        .unwrap_or_else(|| {
+            panic!(
+                "pre boot code, who={who}, message={message}, irritants={:?}",
+                irritants
+            )
+        });
+
+    match call_scheme(*ctx, io_error, args) {
+        VMResult::Ok(val) => val,
+        VMResult::Err(err) => err,
+        VMResult::Yield => unreachable!(),
+    }
+}
+
+pub fn make_lexical_violation<'gc>(
+    ctx: &Context<'gc>,
+    who: &str,
+    message: impl AsRef<str>,
+) -> Value<'gc> {
+    let who = Symbol::from_str(*ctx, who).into();
+    let message: Value = Str::new(&ctx, message, true).into();
+    let args = vec![who, message];
+
+    let lexical_violation = root_module(*ctx)
+        .get(
+            *ctx,
+            Symbol::from_str(*ctx, ".make-lexical-violation").into(),
+        )
+        .unwrap_or_else(|| panic!("pre boot code, who={who}, message={message}",));
+
+    match call_scheme(*ctx, lexical_violation, args) {
+        VMResult::Ok(val) => val,
+        VMResult::Err(err) => err,
+        VMResult::Yield => unreachable!(),
+    }
 }

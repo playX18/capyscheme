@@ -28,6 +28,7 @@ const STRINGBUF_TC16_NARROW: TypeCode16 = TypeCode16(TypeCode8::STRINGBUF.bits()
 unsafe impl Tagged for Stringbuf {
     const TC16: &[TypeCode16] = &[STRINGBUF_TC16_WIDE, STRINGBUF_TC16_NARROW];
     const TC8: TypeCode8 = TypeCode8::STRINGBUF;
+    const TYPE_NAME: &'static str = "#<stringbuf>";
 }
 
 unsafe impl Trace for Stringbuf {
@@ -567,6 +568,7 @@ impl<'gc> Str<'gc> {
 unsafe impl<'gc> Tagged for Str<'gc> {
     const TC16: &'static [TypeCode16] = &[TypeCode16::STRING, TypeCode16::IMMUTABLE_STRING];
     const TC8: TypeCode8 = TypeCode8::STRING;
+    const TYPE_NAME: &'static str = "string";
 }
 
 fn compare_strings<'gc>(

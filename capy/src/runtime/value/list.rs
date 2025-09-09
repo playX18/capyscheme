@@ -170,6 +170,7 @@ impl<'gc> Pair<'gc> {
 
 unsafe impl<'gc> Tagged for Pair<'gc> {
     const TC8: TypeCode8 = TypeCode8::PAIR;
+    const TYPE_NAME: &'static str = "pair";
 }
 
 impl<'gc> Value<'gc> {
@@ -325,6 +326,35 @@ impl<'gc> Value<'gc> {
             None
         } else {
             Some(current.car())
+        }
+    }
+
+    pub fn safe_list_length(self) -> Option<usize> {
+        if !self.is_list() {
+            return None;
+        }
+        let mut slow = self;
+        let mut fast = self;
+        let mut len = 0;
+
+        loop {
+            if !fast.is_pair() {
+                return Some(len);
+            }
+            fast = fast.cdr();
+            len += 1;
+
+            if !fast.is_pair() {
+                return Some(len);
+            }
+            fast = fast.cdr();
+            slow = slow.cdr();
+            len += 1;
+
+            if fast == slow {
+                // Cycle detected
+                return None;
+            }
         }
     }
 

@@ -1,6 +1,9 @@
-use crate::runtime::{
-    Context,
-    value::{HashTable, ScmHeader, Tagged, TypeBits, TypeCode8, Value, WeakTable},
+use crate::{
+    native_fn,
+    runtime::{
+        Context,
+        value::{HashTable, ScmHeader, Tagged, TypeBits, TypeCode8, Value, WeakTable},
+    },
 };
 use easy_bitfield::{BitField, BitFieldTrait};
 use rsgc::{
@@ -412,6 +415,7 @@ impl<'gc> Fluid<'gc> {
 
 unsafe impl<'gc> Tagged for Fluid<'gc> {
     const TC8: TypeCode8 = TypeCode8::FLUID;
+    const TYPE_NAME: &'static str = "fluid";
 }
 
 fn copy_value_table<'gc>(
@@ -497,8 +501,10 @@ macro_rules! global {
     ($($v: vis $name: ident <$l: lifetime>: $t: ty = ($ctx: ident) $init: expr;)*) => {
         $(
             paste::paste!{
+                #[allow(unused)]
                 $v static [<$name: upper>]: std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!($l => $t)>> = std::sync::OnceLock::new();
 
+                #[allow(unused)]
                 $v fn [<$name: lower>]<$l>($ctx: $crate::runtime::Context<$l>) -> &$l $t {
                    &[<$name: upper>]
                         .get_or_init(|| {
@@ -511,4 +517,62 @@ macro_rules! global {
             }
         )*
     };
+}
+
+native_fn!(
+    register_fluid_fns:
+
+    pub ("make-fluid") fn make_fluid<'gc>(nctx, default_value: Option<Value<'gc>>) -> Value<'gc> {
+        let default_value = default_value.unwrap_or(Value::new(false));
+
+        let fluid = Fluid::new(&nctx.ctx, default_value);
+
+        nctx.return_(fluid.into())
+    }
+
+    pub ("make-thread-local-fluid") fn make_thread_local_fluid<'gc>(nctx, default_value: Option<Value<'gc>>) -> Value<'gc> {
+        let default_value = default_value.unwrap_or(Value::new(false));
+
+        let fluid = Fluid::new_thread_local(&nctx.ctx, default_value);
+
+        nctx.return_(fluid.into())
+    }
+
+    pub ("fluid?") fn is_fluid<'gc>(nctx, obj: Value<'gc>) -> Value<'gc> {
+        nctx.return_(Value::new(obj.is::<Fluid>()))
+    }
+
+    pub ("fluid-thread-local?") fn is_fluid_thread_local<'gc>(nctx, obj: Value<'gc>) -> Value<'gc> {
+        if !obj.is::<Fluid>() {
+            todo!()
+        }
+
+        let fluid = obj.downcast::<Fluid>();
+        nctx.return_(Value::new(fluid.is_thread_local()))
+    }
+
+    pub ("fluid-ref") fn fluid_ref<'gc>(nctx, fluid: Value<'gc>) -> Value<'gc> {
+        if !fluid.is::<Fluid>() {
+            todo!()
+        }
+
+        let fluid = fluid.downcast::<Fluid>();
+        let value = fluid.get(nctx.ctx);
+        nctx.return_(value)
+    }
+
+    pub ("fluid-set!") fn fluid_set<'gc>(nctx, fluid: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
+        if !fluid.is::<Fluid>() {
+            todo!()
+        }
+
+        let fluid = fluid.downcast::<Fluid>();
+        let old_value = fluid.get(nctx.ctx);
+        fluid.set(nctx.ctx, value);
+        nctx.return_(old_value)
+    }
+);
+
+pub(crate) fn init_fluids<'gc>(ctx: Context<'gc>) {
+    register_fluid_fns(ctx);
 }

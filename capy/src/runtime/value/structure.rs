@@ -472,6 +472,7 @@ fn set_vtable_access_fields<'gc>(ctx: Context<'gc>, vt: StructRef<'gc>) {
 
 unsafe impl<'gc> Tagged for Struct<'gc> {
     const TC8: TypeCode8 = TypeCode8::RECORD;
+    const TYPE_NAME: &'static str = "struct";
 }
 
 global!(
@@ -550,7 +551,7 @@ native_fn!(
         if !vtable.is_vtable() {
             todo!()
         }
-
+        println!("vtable_size={}, init.len()={}", vtable.vtable_size(), init.len());
         if vtable.vtable_size() != init.len() {
             todo!()
         }

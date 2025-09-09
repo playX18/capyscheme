@@ -1,0 +1,191 @@
+use rsgc::{Gc, Trace};
+
+use crate::{
+    expander::{get_source_property, source_properties, sym_column, sym_filename, sym_line},
+    list, native_fn,
+    runtime::{
+        Context,
+        value::{Pair, ScmHeader, Tagged, TypeCode8, Value, Vector},
+    },
+};
+
+#[derive(Trace)]
+#[collect(no_drop)]
+pub struct Syntax<'gc> {
+    header: ScmHeader,
+    expr: Value<'gc>,
+    wrap: Value<'gc>,
+    module: Value<'gc>,
+    source: Value<'gc>,
+}
+
+impl<'gc> Syntax<'gc> {
+    pub fn new(
+        ctx: Context<'gc>,
+        expr: Value<'gc>,
+        wrap: Value<'gc>,
+        module: Value<'gc>,
+        source: Value<'gc>,
+    ) -> Gc<'gc, Self> {
+        Gc::new(
+            &ctx,
+            Self {
+                header: ScmHeader::with_type_bits(TypeCode8::SYNTAX.bits() as _),
+                expr,
+                wrap,
+                module,
+                source,
+            },
+        )
+    }
+
+    pub fn expr(&self) -> Value<'gc> {
+        self.expr
+    }
+
+    pub fn wrap(&self) -> Value<'gc> {
+        self.wrap
+    }
+
+    pub fn module(&self) -> Value<'gc> {
+        self.module
+    }
+
+    pub fn source(&self) -> Value<'gc> {
+        self.source
+    }
+}
+
+unsafe impl<'gc> Tagged for Syntax<'gc> {
+    const TC8: TypeCode8 = TypeCode8::SYNTAX;
+    const TYPE_NAME: &'static str = "#<syntax>";
+}
+
+native_fn!(
+    register_syntax_fns:
+    pub ("syntax?") fn is_syntax<'gc>(nctx, v: Value<'gc>) -> bool {
+        nctx.return_(v.is::<Syntax<'gc>>())
+    }
+
+    pub ("make-syntax") fn make_syntax<'gc>(
+        nctx,
+        exp: Value<'gc>,
+        wrap: Value<'gc>,
+        module: Value<'gc>,
+        source: Option<Value<'gc>>
+    ) -> Value<'gc> {
+        let source = source.unwrap_or_else(|| {
+            datum_sourcev(nctx.ctx, exp)
+        });
+
+        let syntax = Syntax::new(nctx.ctx, exp, wrap, module, source);
+
+        nctx.return_(syntax.into())
+    }
+
+    pub ("syntax-expression") fn syntax_expression<'gc>(
+        nctx,
+        syntax: Gc<'gc, Syntax<'gc>>
+    ) -> Value<'gc> {
+        nctx.return_(syntax.expr)
+    }
+
+    pub ("syntax-wrap") fn syntax_wrap<'gc>(
+        nctx,
+        syntax: Gc<'gc, Syntax<'gc>>
+    ) -> Value<'gc> {
+        nctx.return_(syntax.wrap)
+    }
+
+    pub ("syntax-module") fn syntax_module<'gc>(
+        nctx,
+        syntax: Gc<'gc, Syntax<'gc>>
+    ) -> Value<'gc> {
+        nctx.return_(syntax.module)
+    }
+
+    pub ("syntax-source") fn syntax_source<'gc>(
+        nctx,
+        syntax: Gc<'gc, Syntax<'gc>>
+    ) -> Value<'gc> {
+        let src = syntax.source;
+        let src = if src.is::<Vector>() {
+            sourcev_to_props(nctx.ctx, src)
+        } else {
+            src
+        };
+
+        nctx.return_(src)
+    }
+
+    pub ("syntax-sourcev") fn syntax_sourcev<'gc>(
+        nctx,
+        syntax: Gc<'gc, Syntax<'gc>>
+    ) -> Value<'gc> {
+        let src = syntax.source;
+        let src = if src.is_null() || src.is::<Pair>() {
+            props_to_sourcev(nctx.ctx, src)
+        } else {
+            src
+        };
+        nctx.return_(src)
+    }
+);
+
+pub(crate) fn init_syntax<'gc>(ctx: Context<'gc>) {
+    register_syntax_fns(ctx);
+}
+
+pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    let Some(props) = get_source_property(ctx, obj) else {
+        return Value::new(false);
+    };
+
+    if props.is_pair() {
+        let filename = props
+            .assq(sym_filename(ctx).into())
+            .unwrap_or(Value::new(false));
+        let line = props
+            .assq(sym_line(ctx).into())
+            .unwrap_or(Value::new(false));
+        let column = props
+            .assq(sym_column(ctx).into())
+            .unwrap_or(Value::new(false));
+        Vector::from_slice(&ctx, &[filename, line, column]).into()
+    } else {
+        Value::new(false)
+    }
+}
+
+pub fn props_to_sourcev<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
+    if props.is_null() || !props.is_pair() {
+        return Value::new(false);
+    }
+
+    let filename = props
+        .assq(sym_filename(ctx).into())
+        .map(|pair| pair.cdr())
+        .unwrap_or(Value::new(false));
+    let line = props
+        .assq(sym_line(ctx).into())
+        .map(|pair| pair.cdr())
+        .unwrap_or(Value::new(false));
+    let column = props
+        .assq(sym_column(ctx).into())
+        .map(|pair| pair.cdr())
+        .unwrap_or(Value::new(false));
+
+    Vector::from_slice(&ctx, &[filename, line, column]).into()
+}
+pub fn sourcev_to_props<'gc>(ctx: Context<'gc>, sourcev: Value<'gc>) -> Value<'gc> {
+    if sourcev.is::<Vector>() {
+        let vec = sourcev.downcast::<Vector>();
+        if vec.len() == 3 {
+            let filename_cell = Value::cons(ctx, sym_filename(ctx).into(), vec[0].get());
+            let line_cell = Value::cons(ctx, sym_line(ctx).into(), vec[1].get());
+            let column_cell = Value::cons(ctx, sym_column(ctx).into(), vec[2].get());
+            return list!(ctx, filename_cell, line_cell, column_cell);
+        }
+    }
+    Value::new(false)
+}

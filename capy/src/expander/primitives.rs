@@ -3,6 +3,7 @@ use crate::expander::core::{Fix, Let, Proc, Term, TermKind, TermRef, call_term, 
 use crate::runtime::Context;
 use crate::runtime::modules::{Module, resolve_module};
 use crate::{runtime::value::Value, static_symbols};
+use rsgc::cell::Lock;
 use rsgc::traits::IterGc;
 use rsgc::{Gc, Trace};
 use rsgc::{Rootable, global::Global};
@@ -95,12 +96,12 @@ make_primitives!(
     (PRIM_LIST, "list", false),
     (PRIM_VECTOR, "vector", false),
     (PRIM_VECTORP, "vector?", false),
-    (PRIM_VECTOR_REF, "vector-ref", true),
-    (PRIM_VECTOR_SET, "vector-set!", true),
+    //(PRIM_VECTOR_REF, "vector-ref", true),
+    // (PRIM_VECTOR_SET, "vector-set!", true),
     (PRIM_STRINGP, "string?", false),
-    (PRIM_STRING_LENGTH, "string-length", true),
-    (PRIM_STRING_REF, "string-ref", true),
-    (PRIM_STRING_SET, "string-set!", true),
+    //(PRIM_STRING_LENGTH, "string-length", true),
+    //(PRIM_STRING_REF, "string-ref", true),
+    //(PRIM_STRING_SET, "string-set!", true),
     (PRIM_NOT, "not", false),
     (PRIM_BOOLEANP, "boolean?", false),
     (PRIM_SYMBOLP, "symbol?", false),
@@ -127,11 +128,6 @@ make_primitives!(
     (PRIM_FIXNUMP, "fixnum?", false),
     (PRIM_FLONUMP, "flonum?", false),
     (PRIM_ZERO, "zero?", true),
-    (PRIM_LT, "<", true),
-    (PRIM_LE, "<=", true),
-    (PRIM_GT, ">", true),
-    (PRIM_GE, ">=", true),
-    (PRIM_EQ, "=", true),
     (PRIM_PLUS, "+", true),
     (PRIM_MINUS, "-", true),
     (PRIM_MULTIPLY, "*", true),
@@ -245,7 +241,13 @@ make_primitives!(
     (PRIM_LOOKUP_BOUND, "lookup-bound", true),
     (PRIM_CURRENT_MODULE, "current-module", true),
     (PRIM_CACHE_REF, "cache-ref", true),
-    (PRIM_CACHE_SET, "cache-set!", true)
+    (PRIM_CACHE_SET, "cache-set!", true),
+    (PRIM_TUPLE, "tuple", false),
+    (PRIM_MAKE_TUPLE, "make-tuple", false),
+    (PRIM_TUPLE_SIZE, "tuple-size", false),
+    (PRIM_TUPLE_REF, "tuple-ref", false),
+    (PRIM_TUPLE_SET, "tuple-set!", false),
+    (PRIM_IS_TUPLE, "tuple?", false)
 );
 
 /*
@@ -471,7 +473,7 @@ pub fn resolve_primitives<'gc>(
 
 fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     match t.kind {
-        TermKind::ToplevelRef(name) => {
+        TermKind::ToplevelRef(_, name) => {
             if !r.local_definitions.contains(&name)
                 && r.m.variable(ctx, name).map_or(false, |var| {
                     primitives(ctx).interesting_variables.contains(&var.into())
@@ -480,7 +482,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
                 Gc::new(
                     &ctx,
                     Term {
-                        source: t.source,
+                        source: Lock::new(t.source()),
                         kind: TermKind::PrimRef(name),
                     },
                 )
@@ -508,7 +510,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
                 Gc::new(
                     &ctx,
                     Term {
-                        source: t.source,
+                        source: Lock::new(t.source()),
                         kind: TermKind::PrimRef(name),
                     },
                 )
@@ -521,21 +523,21 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             let proc = rec(r, ctx, proc);
             let args = args.iter().map(|arg| rec(r, ctx, *arg)).collect::<Vec<_>>();
             if let TermKind::PrimRef(name) = proc.kind {
-                prim_call_term(ctx, name, &args, t.source)
+                prim_call_term(ctx, name, &args, t.source())
             } else {
-                call_term(ctx, proc, &args, t.source)
+                call_term(ctx, proc, &args, t.source())
             }
         }
 
         TermKind::Const(_) => t,
-        TermKind::Define(name, val) => {
+        TermKind::Define(module, name, val) => {
             let val = rec(r, ctx, val);
 
             return Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
-                    kind: TermKind::Define(name, val),
+                    source: Lock::new(t.source()),
+                    kind: TermKind::Define(module, name, val),
                 },
             );
         }
@@ -563,7 +565,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::Fix(Fix {
                         body,
                         rhs,
@@ -580,7 +582,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::If(test, cons, alt),
                 },
             )
@@ -592,7 +594,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::LSet(var, val),
                 },
             )
@@ -607,7 +609,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::Let(Let {
                         lhs,
                         rhs,
@@ -624,7 +626,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::ModuleSet(module, name, public, exp),
                 },
             )
@@ -635,7 +637,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::PrimCall(name, args),
                 },
             )
@@ -647,7 +649,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::Proc(Gc::new(
                         &ctx,
                         Proc {
@@ -669,7 +671,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::Receive(args, variadic, receiver, producer),
                 },
             )
@@ -681,19 +683,19 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::Seq(seq),
                 },
             )
         }
 
-        TermKind::ToplevelSet(var, val) => {
+        TermKind::ToplevelSet(module, var, val) => {
             let val = rec(r, ctx, val);
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
-                    kind: TermKind::ToplevelSet(var, val),
+                    source: Lock::new(t.source()),
+                    kind: TermKind::ToplevelSet(module, var, val),
                 },
             )
         }
@@ -703,7 +705,7 @@ fn rec<'gc>(r: &mut Resolver<'gc>, ctx: Context<'gc>, t: TermRef<'gc>) -> TermRe
             Gc::new(
                 &ctx,
                 Term {
-                    source: t.source,
+                    source: Lock::new(t.source()),
                     kind: TermKind::Values(vals),
                 },
             )
@@ -731,7 +733,7 @@ impl<'gc> Resolver<'gc> {
 
 fn collect_local_definitions<'gc>(x: TermRef<'gc>, set: &mut Set<Value<'gc>>) {
     match x.kind {
-        TermKind::Define(var, _) => {
+        TermKind::Define(_, var, _) => {
             set.insert(var);
         }
 

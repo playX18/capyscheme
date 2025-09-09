@@ -332,6 +332,7 @@ unsafe impl<'gc> Tagged for Vector<'gc> {
     const TC16: &'static [TypeCode16] =
         &[TypeCode16::IMMUTABLE_VECTOR, TypeCode16::MUTABLE_BYTEVECTOR];
     const TC8: TypeCode8 = TypeCode8::VECTOR;
+    const TYPE_NAME: &'static str = "vector";
 }
 
 unsafe impl<'gc> Tagged for ByteVector {
@@ -341,14 +342,15 @@ unsafe impl<'gc> Tagged for ByteVector {
         TypeCode16::MUTABLE_BYTEVECTOR,
     ];
     const TC8: TypeCode8 = TypeCode8::BYTEVECTOR;
+    const TYPE_NAME: &'static str = "bytevector";
 }
 
-type TupleLengthBits = BitField<u64, u32, { TypeBits::NEXT_BIT }, 32, false>;
+pub(crate) type TupleLengthBits = BitField<u64, u32, { TypeBits::NEXT_BIT }, 32, false>;
 
 #[repr(C, align(8))]
 pub struct Tuple<'gc> {
-    hdr: ScmHeader,
-    data: [Value<'gc>; 0],
+    pub(crate) hdr: ScmHeader,
+    pub(crate) data: [Lock<Value<'gc>>; 0],
 }
 
 fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
@@ -365,6 +367,7 @@ fn process_weak_tuple(_: GCObject, _: &mut WeakProcessor) {}
 
 unsafe impl<'gc> Tagged for Tuple<'gc> {
     const TC8: TypeCode8 = TypeCode8::TUPLE;
+    const TYPE_NAME: &'static str = "tuple";
 }
 
 impl<'gc> Tuple<'gc> {
@@ -415,18 +418,18 @@ impl<'gc> Tuple<'gc> {
     }
 
     pub fn as_slice(&self) -> &[Value<'gc>] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 
     pub unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [Value<'gc>] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
     pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: &Mutation<'gc>) {
         let tuple = Gc::write(mc, this);
 
         for i in 0..tuple.len() {
-            // Value::write(&tuple[i], fill);
+            tuple[i].unlock().set(fill);
         }
     }
 
@@ -440,7 +443,7 @@ impl<'gc> Tuple<'gc> {
         );
 
         for (i, value) in other_slice.iter().enumerate() {
-            // Value::write(&tuple[i], *value);
+            tuple[i].unlock().set(*value);
         }
     }
 }
@@ -452,7 +455,7 @@ impl<'gc> AsRef<[Value<'gc>]> for Tuple<'gc> {
 }
 
 impl<'gc> Deref for Tuple<'gc> {
-    type Target = [Value<'gc>];
+    type Target = [Lock<Value<'gc>>];
 
     fn deref(&self) -> &Self::Target {
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
@@ -460,11 +463,11 @@ impl<'gc> Deref for Tuple<'gc> {
 }
 
 impl<'gc> Index<usize> for Tuple<'gc> {
-    type Output = Value<'gc>;
+    type Output = Lock<Value<'gc>>;
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.len(), "Index out of bounds");
-        unsafe { &*self.data.get_unchecked(index) }
+        unsafe { &*self.data.as_ptr().add(index) }
     }
 }
 

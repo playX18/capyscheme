@@ -3,7 +3,7 @@
 use rsgc::{Gc, Trace};
 
 use crate::{
-    expander::{get_source_property, sym_column, sym_filename, sym_line},
+    expander::get_source_property,
     fluid,
     frontend::reader::Annotation,
     runtime::{
@@ -23,6 +23,7 @@ pub struct Expander<'gc> {
 
 unsafe impl<'gc> Tagged for Expander<'gc> {
     const TC8: TypeCode8 = TypeCode8::EXPANDER;
+    const TYPE_NAME: &'static str = "expander";
 }
 
 pub type ExpanderRef<'gc> = Gc<'gc, Expander<'gc>>;
@@ -56,6 +57,7 @@ pub struct Environment<'gc> {
 
 unsafe impl<'gc> Tagged for Environment<'gc> {
     const TC8: TypeCode8 = TypeCode8::ENVIRONMENT;
+    const TYPE_NAME: &'static str = "environment";
 }
 
 pub type EnvironmentRef<'gc> = Gc<'gc, Environment<'gc>>;
@@ -100,7 +102,7 @@ impl<'gc> Environment<'gc> {
             return base.get(ctx, id);
         } else {
             if id.is::<Symbol>() {
-                let new_name = Value::new(false);//ctx.call(self.renamer, &[id])?;
+                let new_name = Value::new(false); //ctx.call(self.renamer, &[id])?;
                 self.frame.put(ctx, id, new_name);
                 self.get(ctx, id)
             } else {
@@ -135,6 +137,7 @@ pub struct SyntacticClosure<'gc> {
 
 unsafe impl<'gc> Tagged for SyntacticClosure<'gc> {
     const TC8: TypeCode8 = TypeCode8::SYNCLO;
+    const TYPE_NAME: &'static str = "syntactic-closure";
 }
 
 pub type SyntacticClosureRef<'gc> = Gc<'gc, SyntacticClosure<'gc>>;
@@ -241,7 +244,7 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     };
 
     if props.is_pair() {
-        let filename = props
+        /*let filename = props
             .assq(sym_filename(ctx).into())
             .unwrap_or(Value::new(false));
         let line = props
@@ -250,7 +253,8 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
         let column = props
             .assq(sym_column(ctx).into())
             .unwrap_or(Value::new(false));
-        Vector::from_slice(&ctx, &[filename, line, column]).into()
+        Vector::from_slice(&ctx, &[filename, line, column]).into()*/
+        props
     } else {
         Value::new(false)
     }

@@ -19,7 +19,7 @@ pub fn t_k<'a, 'gc>(
     fk: Box<dyn FnOnce(&mut CPSBuilder<'gc>, &[Atom<'gc>]) -> TermRef<'gc> + 'a>,
     h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
-    let src = form.source;
+    let src = form.source();
     match form.kind {
         TermKind::Values(values) => {
             with_cps!(cps;
@@ -78,7 +78,7 @@ pub fn t_k<'a, 'gc>(
             )
         }
 
-        TermKind::ToplevelRef(name) => toplevel_box(
+        TermKind::ToplevelRef(_, name) => toplevel_box(
             cps,
             src,
             name,
@@ -96,7 +96,7 @@ pub fn t_k<'a, 'gc>(
             todo!()
         }
 
-        TermKind::ToplevelSet(name, exp) => t_k(
+        TermKind::ToplevelSet(_, name, exp) => t_k(
             cps,
             exp,
             Box::new(move |cps, atoms| {
@@ -108,7 +108,7 @@ pub fn t_k<'a, 'gc>(
                     |cps, var| {
                         with_cps!(cps;
                             let _val = #% "set-box!" (h, var, atoms[0]) @ src;
-                            # fk(cps, &[])
+                            # fk(cps, &[Atom::Constant(Value::undefined())])
                         )
                     },
                     h,
@@ -164,7 +164,7 @@ pub fn t_k<'a, 'gc>(
             Box::new(move |cps, args| {
                 with_cps!(cps;
                     letk (h) r (rv) = fk(cps, &[Atom::Local(rv)]);
-                    # if let Some(term) = get_primitive_table(cps.ctx).try_expand(cps, form.source, prim, &args, r, h) {
+                    # if let Some(term) = get_primitive_table(cps.ctx).try_expand(cps, form.source(), prim, &args, r, h) {
                         term
                     } else {
                         with_cps!(cps;
@@ -177,9 +177,9 @@ pub fn t_k<'a, 'gc>(
             h,
         ),
 
-        TermKind::Define(var, val) => with_cps!(cps;
+        TermKind::Define(_, var, val) => with_cps!(cps;
             @tk (h) atom = val;
-            let rv = #% "define" (h, Atom::Constant(var), atom[0]) @ form.source;
+            let rv = #% "define" (h, Atom::Constant(var), atom[0]) @ form.source();
             # fk (cps, &[Atom::Local(rv)])
         ),
 
@@ -262,7 +262,7 @@ pub fn t_c<'a, 'gc>(
     k: LVarRef<'gc>,
     h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
-    let src = form.source;
+    let src = form.source();
 
     match form.kind {
         TermKind::Fix(fix) => {
@@ -364,7 +364,7 @@ pub fn t_c<'a, 'gc>(
             h,
         ),
 
-        TermKind::Define(var, val) => with_cps!(cps;
+        TermKind::Define(_, var, val) => with_cps!(cps;
             @tk (h) atom = val;
             let rv = #% "define" (h, Atom::Constant(var), atom[0]) @ src;
             continue k (Atom::Local(rv))
@@ -437,7 +437,7 @@ pub fn t_c<'a, 'gc>(
         TermKind::Values(values) => {
             with_cps!(cps;
                 @tk* (h) vals = &values;
-                continue k (Atom::Values(Array::from_slice(&cps.ctx, &vals)))
+                continue k vals ...
             )
         }
 
@@ -522,10 +522,16 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
     } else if forms.is_empty() {
         panic!("Cannot compile an empty program to CPS")
     } else {
+        let source = forms
+            .iter()
+            .find(|f| f.source() != Value::new(false))
+            .map(|f| f.source())
+            .unwrap_or(Value::new(false));
+
         let seq = Gc::new(
             &ctx,
             super::core::Term {
-                source: Value::new(false),
+                source: Lock::new(source),
                 kind: TermKind::Seq(Array::from_slice(&ctx, forms)),
             },
         );
@@ -537,7 +543,7 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
         args: Array::from_slice(&ctx, &[]),
         name: Value::new(false),
         body: form,
-        source: Value::new(false),
+        source: form.source(),
         variadic: None,
     };
 
@@ -787,16 +793,17 @@ pub fn cached_toplevel_box<'gc>(
     with_cps!(cps;
         let cached = #% "cache-ref" (h, cache_key) @ src;
         let is_heap_obj = #% ".is-heap-object" (h, cached) @ src;
+        letk (h) merge (cached) = with_cps!(cps; continue k (cached));
         letk (h) kinit () = with_cps!(cps;
             let module = #%"cache-ref" (h, Atom::Constant(scope)) @ src;
             # reify_lookup(cps, src, module, name, bound, h, |cps, var| {
                 with_cps!(cps;
                     let _k = #%"cache-set!"(h, cache_key, var) @ src;
-                    continue k(var)
+                    continue merge(var)
                 )
             })
         );
-        letk (h) kok () = with_cps!(cps; continue k (cached));
+        letk (h) kok () = with_cps!(cps; continue merge (cached));
         if is_heap_obj => kok | kinit
     )
 }

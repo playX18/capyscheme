@@ -712,6 +712,18 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                     write!(f, "{}", v[i].get())?;
                 }
                 write!(f, ")")
+            } else if self.is::<Tuple>() {
+                let v = self.downcast::<Tuple>();
+
+                write!(f, "#t(")?;
+
+                for i in 0..v.len() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{}", v[i].get())?;
+                }
+                write!(f, ")")
             } else if self.is::<ByteVector>() {
                 let bv = self.downcast::<ByteVector>();
 
@@ -735,6 +747,13 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                     an.start_point.0 + 1,
                     an.start_point.1
                 )
+            } else if self.is::<Closure>() {
+                let clo = self.downcast::<Closure>();
+                if clo.is_continuation() {
+                    write!(f, "#<continuation {:p}>", clo)
+                } else {
+                    write!(f, "#<closure {:p}>", clo)
+                }
             } else {
                 write!(f, "Value({:x})", self.raw_i64())
             }
@@ -827,4 +846,5 @@ impl<'gc> Boxed<'gc> {
 
 unsafe impl<'gc> Tagged for Boxed<'gc> {
     const TC8: TypeCode8 = TypeCode8::BOX;
+    const TYPE_NAME: &'static str = "box";
 }

@@ -101,6 +101,7 @@ prim!(
     },
 
     "box" => make_box(ssa, args, _h) {
+        println!("make-box???");
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let call = ssa.builder.ins().call(ssa.thunks.make_box, &[ctx, arg]);
@@ -124,11 +125,17 @@ prim!(
         PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound, &[ctx, module, name], handler))
     },
 
-    "current-module" => current_module(ssa, _args, _h) {
+    "current-module" => current_module(ssa, args, _h) {
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let call = ssa.builder.ins().call(ssa.thunks.current_module, &[ctx]);
+        if let Some(module) = args.get(0) {
+            let module = ssa.atom(*module);
+            let call = ssa.builder.ins().call(ssa.thunks.set_current_module, &[ctx, module]);
+            PrimValue::Value(ssa.builder.inst_results(call)[0])
+        } else {
+            let call = ssa.builder.ins().call(ssa.thunks.current_module, &[ctx]);
 
-        PrimValue::Value(ssa.builder.inst_results(call)[0])
+            PrimValue::Value(ssa.builder.inst_results(call)[0])
+        }
     },
 
     "define" => define(ssa, args, _h) {
@@ -143,9 +150,13 @@ prim!(
 
 
     "not" => not(ssa, args, _h) {
-        let val = ssa.atom_for_cond(args[0]);
+        let val = ssa.atom(args[0]);
+        let false_ = ssa.builder.ins().iconst(types::I64, Value::new(false).bits() as i64);
+        let val = ssa.builder.ins().icmp(IntCC::Equal, val, false_);
 
-        PrimValue::Comparison(ssa.builder.ins().bnot(val))
+
+
+        PrimValue::Comparison(val)
     },
 
     "box" => box_(ssa, args, _h) {
@@ -161,7 +172,7 @@ prim!(
         let res = ssa.builder.inst_results(call)[0];
         let val = ssa.atom(args[0]);
         ssa.builder.ins().store(ir::MemFlags::trusted(), val, res, offset_of!(Boxed, val) as i32);
-        PrimValue::Value(val)
+        PrimValue::Value(res)
     },
 
     "box?" => is_box(ssa, args, _h) {
@@ -408,6 +419,9 @@ prim!(
         PrimValue::Value(acc)
     },
 
+
+
+
     "zero?" => is_zero(ssa, args, _h) {
         if args.is_empty() {
             return PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64));
@@ -450,6 +464,85 @@ prim!(
         let pair = ssa.atom(args[0]);
 
         PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), pair, offset_of!(Pair, cdr) as i32))
+    },
+
+    "tuple" => tuple(ssa, args, _h) {
+        let mut hdr = ScmHeader::with_type_bits(TypeCode8::TUPLE.bits() as _);
+        hdr.word |= TupleLengthBits::encode(args.len() as _);
+
+        let size = size_of::<Tuple>() as i64 + args.len() as i64 * size_of::<Value>() as i64;
+
+        let size = ssa.builder.ins().iconst(types::I64, size);
+        let vt = ssa.import_static("TUPLE_VTABLE", types::I64);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let tc8 = ssa.builder.ins().iconst(types::I8, TypeCode8::TUPLE.bits() as i64);
+        let call = ssa.builder.ins().call(ssa.thunks.alloc_tc8, &[ctx, vt, tc8, size]);
+        let tuple = ssa.builder.inst_results(call)[0];
+        let hdr = ssa.builder.ins().iconst(types::I64, hdr.word as i64);
+        ssa.builder.ins().store(ir::MemFlags::trusted(), hdr, tuple, offset_of!(Tuple, hdr) as i32);
+        for (i, arg) in args.iter().enumerate() {
+            let val = ssa.atom(*arg);
+            ssa.builder.ins().store(ir::MemFlags::trusted(), val, tuple, offset_of!(Tuple, data) as i32 + i as i32 * size_of::<Value>() as i32);
+        }
+        PrimValue::Value(tuple)
+    },
+
+    "make-tuple" => make_tuple(ssa, args, _h) {
+        let len = ssa.atom(args[0]);
+        let len = ssa.builder.ins().ireduce(types::I32, len);
+
+        let hdr = ScmHeader::with_type_bits(TypeCode8::TUPLE.bits() as _);
+
+        let hdr = ssa.builder.ins().iconst(types::I64, hdr.word as i64);
+        let size = ssa.builder.ins().imul_imm(len, size_of::<Value>() as i64);
+        let size = ssa.builder.ins().iadd_imm(size, size_of::<Tuple>() as i64);
+        let size = ssa.builder.ins().uextend(types::I64, size);
+        let vt = ssa.import_static("TUPLE_VTABLE", types::I64);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let tc8 = ssa.builder.ins().iconst(types::I8, TypeCode8::TUPLE.bits() as i64);
+        let call = ssa.builder.ins().call(ssa.thunks.alloc_tc8, &[ctx, vt, tc8, size]);
+        let tuple = ssa.builder.inst_results(call)[0];
+
+        let len = ssa.builder.ins().uextend(types::I64, len);
+        let len = ssa.builder.ins().band_imm(len, TupleLengthBits::mask() as i64);
+        let len = ssa.builder.ins().ishl_imm(len, TupleLengthBits::shift() as i64);
+        let hdr = ssa.builder.ins().bor(hdr, len);
+        ssa.builder.ins().store(ir::MemFlags::trusted(), hdr, tuple, offset_of!(Tuple, hdr) as i32);
+        PrimValue::Value(tuple)
+    },
+
+    "tuple-ref" => tuple_ref(ssa, args, _h) {
+        let tuple = ssa.atom(args[0]);
+        let ix = ssa.atom(args[1]);
+
+        let ix = ssa.builder.ins().ireduce(types::I32, ix);
+        let offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+        let offset = ssa.builder.ins().iadd_imm(offset, offset_of!(Tuple, data) as i32 as i64);
+        let offset = ssa.builder.ins().uextend(types::I64, offset);
+        let addr = ssa.builder.ins().iadd(tuple, offset);
+        PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0))
+    },
+
+    "tuple-set!" => tuple_set(ssa, args, _h) {
+        let tuple = ssa.atom(args[0]);
+        let ix = ssa.atom(args[1]);
+        let value = ssa.atom(args[2]);
+
+        let ix = ssa.builder.ins().ireduce(types::I32, ix);
+        let offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
+        let offset = ssa.builder.ins().iadd_imm(offset, offset_of!(Tuple, data) as i32 as i64);
+        let offset = ssa.builder.ins().uextend(types::I64, offset);
+        let addr = ssa.builder.ins().iadd(tuple, offset);
+        ssa.builder.ins().store(ir::MemFlags::trusted(), value, addr, 0);
+        PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64))
+    },
+
+    "tuple?" => is_tuple(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+        let res = ssa.has_typ8(val, TypeCode8::TUPLE.bits());
+
+        PrimValue::Comparison(res)
     }
 
 );

@@ -1,5 +1,6 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{borrow::Cow, collections::HashMap, sync::LazyLock};
 
+use easy_bitfield::{BitField, BitFieldTrait};
 use rsgc::{Global, Rootable, alloc::ArrayRef, collection::Visitor, sync::monitor::Monitor};
 
 use crate::runtime::{
@@ -29,14 +30,22 @@ pub type NativeContinuation<'gc> = extern "C-unwind" fn(
     num_rands: usize,
 ) -> NativeReturn<'gc>;
 
+pub type ClosureNativeFlag = BitField<u64, bool, { TypeBits::NEXT_BIT }, 1, false>;
+pub type ClosureContinuationFlag = BitField<u64, bool, { TypeBits::NEXT_BIT + 1 }, 1, false>;
 #[repr(C)]
 pub struct NativeProc {
     pub header: ScmHeader,
     pub proc: Address,
+    pub loc: NativeLocation,
 }
 
 impl NativeProc {
-    pub fn new<'gc>(ctx: Context<'gc>, proc: Address, is_k: bool) -> Gc<'gc, Self> {
+    pub fn new<'gc>(
+        ctx: Context<'gc>,
+        proc: Address,
+        is_k: bool,
+        loc: NativeLocation,
+    ) -> Gc<'gc, Self> {
         let tc = if is_k {
             TypeCode16::NATIVE_K
         } else {
@@ -47,6 +56,7 @@ impl NativeProc {
             NativeProc {
                 header: ScmHeader::with_type_bits(tc.0),
                 proc,
+                loc,
             },
         )
     }
@@ -55,6 +65,7 @@ impl NativeProc {
 unsafe impl Tagged for NativeProc {
     const TC8: TypeCode8 = TypeCode8::NATIVE_PROCEDURE;
     const TC16: &[TypeCode16] = &[TypeCode16::NATIVE_PROC, TypeCode16::NATIVE_K];
+    const TYPE_NAME: &'static str = "native-procedure";
 }
 
 unsafe impl Trace for NativeProc {
@@ -100,12 +111,45 @@ impl<'gc> Closure<'gc> {
             },
         )
     }
+
+    pub fn new_native(
+        ctx: Context<'gc>,
+        code: Address,
+        free: &[Value<'gc>],
+        is_cont: bool,
+    ) -> Gc<'gc, Self> {
+        let free = if free.is_empty() {
+            Value::new(false)
+        } else {
+            Vector::from_slice(&ctx, free).into()
+        };
+
+        let mut header = ScmHeader::with_type_bits(if is_cont {
+            TypeCode16::CLOSURE_K.0
+        } else {
+            TypeCode16::CLOSURE_PROC.0
+        });
+
+        header.word |= ClosureNativeFlag::encode(true);
+
+        Gc::new(
+            &ctx,
+            Self {
+                header,
+                code,
+                free,
+                meta: Value::new(false),
+            },
+        )
+    }
 }
 
 unsafe impl<'gc> Tagged for Closure<'gc> {
     const TC8: TypeCode8 = TypeCode8::CLOSURE;
 
     const TC16: &'static [TypeCode16] = &[TypeCode16::CLOSURE_PROC, TypeCode16::CLOSURE_K];
+
+    const TYPE_NAME: &'static str = "procedure";
 }
 
 unsafe impl<'gc> Trace for Closure<'gc> {
@@ -134,6 +178,7 @@ impl<'gc> Procedures<'gc> {
         &self,
         ctx: Context<'gc>,
         f: NativeContinuation<'gc>,
+        loc: NativeLocation,
     ) -> Gc<'gc, NativeProc> {
         let mut registered = self.registered.lock();
 
@@ -142,20 +187,25 @@ impl<'gc> Procedures<'gc> {
             return registered.clone();
         }
 
-        let proc = NativeProc::new(ctx, addr, true);
+        let proc = NativeProc::new(ctx, addr, true, loc);
         registered.insert(addr, proc);
 
         proc
     }
 
-    pub fn register_procedure(&self, ctx: Context<'gc>, f: NativeFn<'gc>) -> Gc<'gc, NativeProc> {
+    pub fn register_procedure(
+        &self,
+        ctx: Context<'gc>,
+        f: NativeFn<'gc>,
+        loc: NativeLocation,
+    ) -> Gc<'gc, NativeProc> {
         let mut registered = self.registered.lock();
         let addr = Address::from_ptr(f as *const ());
         if let Some(registered) = registered.get(&addr) {
             return registered.clone();
         }
 
-        let proc = NativeProc::new(ctx, addr, false);
+        let proc = NativeProc::new(ctx, addr, false, loc);
         registered.insert(addr, proc);
 
         proc
@@ -165,12 +215,13 @@ impl<'gc> Procedures<'gc> {
         &self,
         ctx: Context<'gc>,
         f: NativeFn<'gc>,
+        loc: NativeLocation,
     ) -> Gc<'gc, Closure<'gc>> {
         let mut closures = self.static_closures.lock();
         if let Some(clos) = closures.get(&Address::from_ptr(f as *const ())) {
             return clos.clone();
         }
-        let proc = self.register_procedure(ctx, f);
+        let proc = self.register_procedure(ctx, f, loc);
 
         let clos = Closure::new(ctx, get_trampoline_from_scheme(), &[proc.into()], false);
 
@@ -183,12 +234,13 @@ impl<'gc> Procedures<'gc> {
         &self,
         ctx: Context<'gc>,
         f: NativeContinuation<'gc>,
+        loc: NativeLocation,
     ) -> Gc<'gc, Closure<'gc>> {
         let mut closures = self.static_closures.lock();
         if let Some(clos) = closures.get(&Address::from_ptr(f as *const ())) {
             return clos.clone();
         }
-        let proc = self.register_continuation(ctx, f);
+        let proc = self.register_continuation(ctx, f, loc);
 
         let clos = Closure::new(ctx, get_cont_trampoline_from_scheme(), &[proc.into()], true);
 
@@ -202,8 +254,9 @@ impl<'gc> Procedures<'gc> {
         ctx: Context<'gc>,
         f: NativeFn<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
+        loc: NativeLocation,
     ) -> Gc<'gc, Closure<'gc>> {
-        let proc = self.register_procedure(ctx, f);
+        let proc = self.register_procedure(ctx, f, loc);
         let mut fv = Vec::with_capacity(1);
         fv.push(proc.into());
         for val in free_vars.into_iter() {
@@ -217,8 +270,9 @@ impl<'gc> Procedures<'gc> {
         ctx: Context<'gc>,
         f: NativeContinuation<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
+        loc: NativeLocation,
     ) -> Gc<'gc, Closure<'gc>> {
-        let proc = self.register_continuation(ctx, f);
+        let proc = self.register_continuation(ctx, f, loc);
         let mut fv = Vec::with_capacity(1);
         fv.push(proc.into());
         for val in free_vars.into_iter() {
@@ -278,9 +332,17 @@ pub struct SavedCall<'gc> {
 
 #[macro_export]
 macro_rules! native_fn {
-    ($register_fn: ident: $($v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
+    ($register_fn: ident: $(
+        $(#[$m: meta])*
+        $v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
         paste::paste! {
             $(
+                pub const [<$name: upper _DOC>]: $crate::runtime::value::proc::NativeLocation = $crate::runtime::value::proc::NativeLocation {
+                    file: ::std::borrow::Cow::Borrowed(file!()),
+                    name: ::std::borrow::Cow::Borrowed($l),
+                    line: line!(),
+                };
+                $(#[$m])*
                 #[allow(unused_parens)]
                 $v extern "C-unwind" fn [<c_ $name _raw>] <$gc>(
                     ctx: &$crate::runtime::prelude::Context<$gc>,
@@ -307,20 +369,31 @@ macro_rules! native_fn {
                         let arity = <Args<$gc> as $crate::runtime::prelude::FromValues>::ARITY;
 
                         if !arity.is_valid(num_rands) {
-                            todo!("arity mismatch")
+                            let rands = nctx.rands().to_vec();
+                            return nctx.wrong_number_of_arguments_violation(
+                                $l,
+                                arity.min,
+                                arity.max,
+                                num_rands,
+                                &rands
+                            ).into_inner();
                         }
 
-                        let ($($arg),+): ($($arg_ty),*) = match <($($arg_ty),*) as $crate::runtime::prelude::FromValues>::from_values(nctx.ctx, &mut 0, rands_) {
+                        let ($($arg),*): ($($arg_ty),*) = match <($($arg_ty),*) as $crate::runtime::prelude::FromValues>::from_values(nctx.ctx, &mut 0, rands_) {
                             Ok(args) => args,
-                            Err(_) => unreachable!("Checked beforehand")
+                            Err(err) => return nctx.conversion_error($l, err).into_inner()
                         };
 
                         let return_value = $name(nctx, $($arg),*);
 
                         return_value.into_inner()
                     }
+                }
 
-
+                $(#[$m])*
+                #[inline(always)]
+                $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
+                    $b
                 }
 
 
@@ -330,18 +403,16 @@ macro_rules! native_fn {
 
                 $v fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
-                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _raw>]))
+                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _raw>], [<$name: upper _DOC>].clone()))
                     })
                         .fetch(&ctx)
                 }
 
                 $v fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
-                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _raw>], vars)
+                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _raw>], vars, [<$name: upper _DOC>].clone())
                 }
 
-                $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
-                    $b
-                }
+
 
                 static [<$name: upper _LOC>]: ::std::sync::OnceLock<$crate::rsgc::global::Global< $crate::rsgc::Rootable!($crate::runtime::prelude::VariableRef<'_>) >> = ::std::sync::OnceLock::new();
 
@@ -359,14 +430,33 @@ macro_rules! native_fn {
 
         }
     };
-}
+    (@get_docs ($($docs:tt)*) #[doc = $doc: literal] $(#[$rest:meta])*) => {
+        native_fn!(@get_docs ($($docs)* $doc,) $(#[$rest])*)
+    };
 
+    (@get_docs ($($docs:tt)*) $other: meta $(#[$rest:meta])*) => {
+        native_fn!(@get_docs ($($docs)*) $(#[$rest])*)
+    };
+
+    (@get_docs ($($docs:tt)*)) => {
+        $($docs)*
+    };
+}
 #[macro_export]
 macro_rules! native_cont {
-    ($($v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
+    ($register_fn: ident: $(
+        $(#[$m: meta])*
+        $v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
         paste::paste! {
             $(
-                $v extern "C-unwind" fn [<c_ $name _rawk>] <$gc>(
+                pub const [<$name: upper _DOC>]: $crate::runtime::value::proc::NativeLocation = $crate::runtime::value::proc::NativeLocation {
+                    file: ::std::borrow::Cow::Borrowed(file!()),
+                    name: ::std::borrow::Cow::Borrowed($l),
+                    line: line!(),
+                };
+                $(#[$m])*
+                #[allow(unused_parens)]
+                $v extern "C-unwind" fn [<c_ $name _raw>] <$gc>(
                     ctx: &$crate::runtime::prelude::Context<$gc>,
                     rator: $crate::runtime::prelude::Value<$gc>,
                     rands: *const $crate::runtime::prelude::Value<$gc>,
@@ -380,7 +470,8 @@ macro_rules! native_cont {
                             rator,
                             rands,
                             num_rands,
-
+                            $crate::runtime::prelude::Value::new(false),
+                            $crate::runtime::prelude::Value::new(false)
                         );
 
                         type Args<$gc> = ($($arg_ty),*);
@@ -392,7 +483,7 @@ macro_rules! native_cont {
                             todo!("arity mismatch")
                         }
 
-                        let ($($arg),+): ($($arg_ty),*) = match <($($arg_ty),*)>::from_values(nctx.ctx, &mut 0, rands_) {
+                        let ($($arg),*): ($($arg_ty),*) = match <($($arg_ty),*) as $crate::runtime::prelude::FromValues>::from_values(nctx.ctx, &mut 0, rands_) {
                             Ok(args) => args,
                             Err(_) => unreachable!("Checked beforehand")
                         };
@@ -401,8 +492,12 @@ macro_rules! native_cont {
 
                         return_value.into_inner()
                     }
+                }
 
-
+                $(#[$m])*
+                #[inline(always)]
+                $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
+                    $b
                 }
 
 
@@ -412,20 +507,59 @@ macro_rules! native_cont {
 
                 $v fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
-                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _rawk>]))
+                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_cont_closure(ctx, [<c_ $name _raw>], [<$name: upper _DOC>].clone()))
                     })
                         .fetch(&ctx)
                 }
 
                 $v fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
-                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _rawk>], vars)
+                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_cont_closure(ctx, [<c_ $name _raw>], vars, [<$name: upper _DOC>].clone())
                 }
 
-                $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
-                    $b
+
+
+                static [<$name: upper _LOC>]: ::std::sync::OnceLock<$crate::rsgc::global::Global< $crate::rsgc::Rootable!($crate::runtime::prelude::VariableRef<'_>) >> = ::std::sync::OnceLock::new();
+
+                pub fn [<$name _loc>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> Option<$crate::runtime::prelude::VariableRef<'gc>> {
+                    [<$name: upper _LOC>].get().map(|g| *g.fetch(&ctx))
                 }
         )*
 
+            fn $register_fn<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) {
+                $(
+                    let closure = [<get_ $name _static_closure>](ctx);
+                    let _ = [<$name:upper _LOC>].set($crate::rsgc::global::Global::new($crate::runtime::modules::define(ctx, $l, closure.into())));
+                )*
+            }
+
         }
     };
+    (@get_docs ($($docs:tt)*) #[doc = $doc: literal] $(#[$rest:meta])*) => {
+        native_fn!(@get_docs ($($docs)* $doc,) $(#[$rest])*)
+    };
+
+    (@get_docs ($($docs:tt)*) $other: meta $(#[$rest:meta])*) => {
+        native_fn!(@get_docs ($($docs)*) $(#[$rest])*)
+    };
+
+    (@get_docs ($($docs:tt)*)) => {
+        $($docs)*
+    };
+}
+
+#[derive(Clone)]
+pub struct NativeLocation {
+    pub file: Cow<'static, str>,
+    pub name: Cow<'static, str>,
+    pub line: u32,
+}
+
+impl NativeLocation {
+    pub fn unknown() -> Self {
+        Self {
+            file: Cow::Borrowed("<unknown>"),
+            name: Cow::Borrowed("<unknown>"),
+            line: 0,
+        }
+    }
 }

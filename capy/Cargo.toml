@@ -32,6 +32,12 @@ libloading.workspace = true
 sha3 = "0.10.8"
 hex = "*"
 log = "0.4.27"
+gimli = "0.32.2"
+target-lexicon.workspace = true
+object = "0.37.3"
+addr2line = "0.25.0"
+memmap2 = "0.9.8"
+probe = "0.5.1"
 
 [lib]
 crate-type = ["dylib"]

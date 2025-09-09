@@ -14,7 +14,6 @@ cranelift-module = "0.123.1"
 cranelift-object = "0.123.1"
 libloading = "0.8.8"
 target-lexicon = "*"
-cc = "*"
 
 [profile.release]
 lto = true
