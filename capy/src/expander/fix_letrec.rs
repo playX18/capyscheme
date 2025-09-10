@@ -414,7 +414,7 @@ fn fix1<'gc>(
         if c.is_empty() {
             // <var_l,init_l> if init is a lambda expression and
             // var is unassigned
-            fixes.extend(l);
+            fixes.append(&mut l);
             return body;
         } else {
             if in_order {
@@ -475,7 +475,12 @@ fn fixing<'gc>(
 fn rec_deps(vs: &[VertexId], pass: &mut FixPass) {
     for &v in vs.iter() {
         for &w in vs.iter() {
-            pass.graph.add_edge(w, v);
+            if w != v
+                && free_variables(pass.graph[v].rhs.unwrap(), &mut pass.fv_cache)
+                    .contains(&pass.graph[w].lhs.unwrap())
+            {
+                pass.graph.add_edge(w, v);
+            }
         }
     }
 }
