@@ -255,8 +255,9 @@ thunks! {
         ctx: &Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
-        println!("non applicable: {}", subr);
+
         crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
+         println!("non applicable: {}", subr);
         todo!()
     }
 
