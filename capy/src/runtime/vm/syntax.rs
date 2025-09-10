@@ -5,7 +5,7 @@ use crate::{
     list, native_fn,
     runtime::{
         Context,
-        value::{Pair, ScmHeader, Tagged, TypeCode8, Value, Vector},
+        value::{Closure, Pair, ScmHeader, Tagged, TypeCode8, Value, Vector},
     },
 };
 
@@ -130,6 +130,55 @@ native_fn!(
         };
         nctx.return_(src)
     }
+
+    pub ("make-syntax-transformer") fn make_syntax_transformer<'gc>(
+        nctx,
+        typ: Value<'gc>,
+        name: Value<'gc>,
+        binding: Value<'gc>
+    ) -> Value<'gc> {
+        let transformer = SyntaxTransformer::new(nctx.ctx, name, typ, binding);
+        nctx.return_(transformer.into())
+    }
+
+    pub ("macro?") fn is_macro<'gc>(
+        nctx,
+        v: Value<'gc>
+    ) -> bool {
+        nctx.return_(v.is::<SyntaxTransformer<'gc>>())
+    }
+
+    pub ("macro-name") fn macro_name<'gc>(
+        nctx,
+        macro_: Gc<'gc, SyntaxTransformer<'gc>>
+    ) -> Value<'gc> {
+        nctx.return_(macro_.name())
+    }
+
+    pub ("macro-transformer") fn macro_transformer<'gc>(
+        nctx,
+        macro_: Gc<'gc, SyntaxTransformer<'gc>>
+    ) -> Value<'gc> {
+        if macro_.binding().is::<Closure>() {
+            nctx.return_(macro_.binding())
+        } else {
+            nctx.return_(Value::new(false))
+        }
+    }
+
+    pub ("macro-binding") fn macro_binding<'gc>(
+        nctx,
+        macro_: Gc<'gc, SyntaxTransformer<'gc>>
+    ) -> Value<'gc> {
+        nctx.return_(macro_.binding())
+    }
+
+    pub ("macro-type") fn macro_type<'gc>(
+        nctx,
+        macro_: Gc<'gc, SyntaxTransformer<'gc>>
+    ) -> Value<'gc> {
+        nctx.return_(macro_.typ())
+    }
 );
 
 pub(crate) fn init_syntax<'gc>(ctx: Context<'gc>) {
@@ -188,4 +237,49 @@ pub fn sourcev_to_props<'gc>(ctx: Context<'gc>, sourcev: Value<'gc>) -> Value<'g
         }
     }
     Value::new(false)
+}
+
+#[derive(Trace)]
+#[collect(no_drop)]
+pub struct SyntaxTransformer<'gc> {
+    header: ScmHeader,
+    name: Value<'gc>,
+    typ: Value<'gc>,
+    binding: Value<'gc>,
+}
+
+impl<'gc> SyntaxTransformer<'gc> {
+    pub fn new(
+        ctx: Context<'gc>,
+        name: Value<'gc>,
+        typ: Value<'gc>,
+        binding: Value<'gc>,
+    ) -> Gc<'gc, Self> {
+        Gc::new(
+            &ctx,
+            Self {
+                header: ScmHeader::with_type_bits(TypeCode8::SYNCLO.bits() as _),
+                name,
+                typ,
+                binding,
+            },
+        )
+    }
+
+    pub fn name(&self) -> Value<'gc> {
+        self.name
+    }
+
+    pub fn typ(&self) -> Value<'gc> {
+        self.typ
+    }
+
+    pub fn binding(&self) -> Value<'gc> {
+        self.binding
+    }
+}
+
+unsafe impl<'gc> Tagged for SyntaxTransformer<'gc> {
+    const TC8: TypeCode8 = TypeCode8::SYNCLO;
+    const TYPE_NAME: &'static str = "#<syntax-transformer>";
 }
