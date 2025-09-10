@@ -9,6 +9,16 @@
                         (if (zero? rib)
                             (vector-ref (car env) offset)
                             (loop (- rib 1) (cdr env))))))]
+        [(lset? expr)
+            (let* ([address (interpret/var-address (lset-variable expr) env)]
+                   [rib (car address)]
+                   [offset (cdr address)]
+                   [val-proc (interpret/preprocess (lset-value expr) env)])
+                (lambda (env0)
+                    (let loop ([rib rib] [env env0])
+                        (if (zero? rib)
+                            (vector-set! (car env) offset (val-proc env0))
+                            (loop (- rib 1) (cdr env))))))]
         [(constant? expr)
             (lambda (env) (constant-value expr))]
         [(application? expr)
@@ -19,7 +29,8 @@
                         (if (null? rands)
                             (apply (rator env0) (reverse vals))
                             (loop (cdr rands) (cons ((car rands) env0) vals))))))]
-        [toplevel-ref? expr
+        [(proc? expr) (interpret/lambda expr env)]
+        [(toplevel-ref? expr)
             (let ([name (toplevel-ref-name expr)]
                   [var #f])
                 (lambda (env)
@@ -93,6 +104,104 @@
 
 
 
+(define (interpret/lambda expr env)
+    (define (listify x)
+        (cond ((pair? x) (cons (car x) (listify (cdr x))))
+            ((null? x) x)
+            (else (list x))))
+
+    (define (fixed-args x n)
+        (if (pair? x)
+            (fixed-args (cdr x) (+ n 1))
+            n))
+(let* ((args  (proc-args expr))
+         (body  (proc-body expr))
+         (nenv  (interpret/extend-env env (cons '&self (listify args))))
+         (exprs (interpret/preprocess body nenv)))
+    (cond ((pair? args)
+           (let ((tail0 (cdr args)))
+             (cond ((pair? tail0)
+                    (let ((tail1 (cdr tail0)))
+                      (cond ((pair? tail1)
+                             (let ((tail2 (cdr tail1)))
+                               (cond ((pair? tail2)
+                                      (let ((tail3 (cdr tail2)))
+                                        (cond ((pair? tail3)
+                                               (if (list? tail3)
+                                                   (interpret/lambda-n (length args) exprs )
+                                                   (interpret/lambda-dot (fixed-args args 0) exprs)))
+                                              ((null? tail3) (interpret/lambda4 exprs))
+                                              (else (interpret/lambda-dot (fixed-args args 0) exprs)))))
+                                     ((null? tail2) (interpret/lambda3 exprs))
+                                     (else (interpret/lambda-dot (fixed-args args 0) exprs)))))
+                            ((null? tail1) (interpret/lambda2 exprs))
+                            (else (interpret/lambda-dot (fixed-args args 0) exprs)))))
+                   ((null? tail0) (interpret/lambda1 exprs))
+                   (else (interpret/lambda-dot (fixed-args args 0) exprs)))))
+          ((null? args) (interpret/lambda0 exprs))
+          (else (interpret/lambda-dot (fixed-args args 0) exprs)))))
+
+(define (interpret/lambda-n n body)
+    (lambda (env)
+        (letrec ([self
+            (lambda args
+                (if (< (length args) n)
+                    (assertion-violation 'lambda "wrong number of arguments" (length args))
+                    (body (cons (list->vector (cons self args)) env))))])
+            self)))
+
+(define (interpret/lambda-dot n body)
+    (lambda (env)
+        (letrec ([self 
+            (lambda args 
+                (let ([v (make-vector (+ n 2) #f)]
+                      [limit (+ n 1)])
+                    (vectoer-set! v 0 self)
+                    (let loop ([argnum 1]
+                               [argtail args])
+                        (cond 
+                            [(= argnum limit)
+                                (vector-set! v argnum argtail)
+                                (body (cons v env))]
+                            [(pair? argtail)
+                                (vector-set! v argnum (car argtail))
+                                (loop (+ argnum 1) (cdr argtail))]
+                            [else (assertion-violation 'lambda "wrong number of arguments" (length args))]))))])
+            self)))
+
+(define (interpret/lambda0 body)
+    (lambda (env)
+        (letrec ([self 
+            (lambda ()
+                (body (cons (vector self) env)))])
+            self)))
+(define (interpret/lambda1 body)
+    (lambda (env)
+        (letrec ([self 
+            (lambda (arg1)
+                (body (cons (vector self arg1) env)))])
+            self)))
+(define (interpret/lambda2 body)
+    (lambda (env)
+        (letrec ([self 
+            (lambda (arg1 arg2)
+                (body (cons (vector self arg1 arg2) env)))])
+            self)))
+
+(define (interpret/lambda3 body)
+    (lambda (env)
+        (letrec ([self 
+            (lambda (arg1 arg2 arg3)
+                (body (cons (vector self arg1 arg2 arg3) env)))])
+            self)))
+
+(define (interpret/lambda4 body)
+    (lambda (env)
+        (letrec ([self 
+            (lambda (arg1 arg2 arg3 arg4)
+                (body (cons (vector self arg1 arg2 arg3 arg4) env)))])
+            self)))
+
 (define (interpret/var-address name env)
     (let r-loop ([env env] [i 0])
         (if (null? env)
@@ -103,13 +212,32 @@
                     [(eq? (car rib) name) (cons i j)]
                     [else (a-loop (cdr rib) (+ j 1))])))))
 
+(define (interpret/extend-env env names)
+  (cons names env))
 
-(define check 
-    (make-application #f 
-        (make-toplevel-ref #f 'mod '+)
-        (list (make-constant #f 1)
-              (make-constant #f 2)
-              (make-constant #f 3))))
-(define clos (interpret/preprocess check '()))
 
-(print "interp=" (clos '()))
+(define code 
+    (make-let #f 'letrec 
+        '(loop)
+        (list (make-proc #f
+                '(i)
+                (make-if #f
+                    (make-application #f 
+                        (make-toplevel-ref #f #f '=)
+                        (list (make-lref #f 'i)
+                            (make-constant #f 100)))
+                    (make-lref #f 'i)
+                    (make-application #f 
+                        (make-lref #f 'loop)
+                        (list (make-application #f 
+                            (make-toplevel-ref #f #f '+)
+                            (list (make-lref #f 'i)
+                                (make-constant #f 1))))))
+                    '()))
+        (make-application #f (make-lref #f 'loop) (list (make-constant #f 0)))))
+(print "code=" code)
+(define clos (interpret/preprocess code '()))
+
+(define (primitive-eval exp)
+    ((interpret/preprocess exp '()) '()))
+

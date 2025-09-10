@@ -274,6 +274,9 @@
           (tuple-ref obj k)
           (assertion-violation "record accessor" (wrong-type-argument-message (format "record of type ~a" (rtd-name rtd)) obj))))))
 
+(define (wrong-type-argument-message . args) args)
+(define (format msg . rest) msg)
+
 (define make-mutator
   (lambda (rtd k)
     (lambda (obj datum)
@@ -284,8 +287,8 @@
 
 (define (make-predicate rtd)
   (lambda (obj)
-    (or (eq? rtd (tuple-ref obj 0))
-        (rtd-ancestor? rtd (tuple-ref obj 0)))))
+    (and (tuple? obj) (or (eq? rtd (tuple-ref obj 0))
+        (rtd-ancestor? rtd (tuple-ref obj 0))))))
 
 (define (record-constructor desc)
   (or (record-constructor-descriptor? desc)

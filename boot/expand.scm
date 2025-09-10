@@ -13,8 +13,7 @@
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&lref rtd rcd)))
 
-(define (lref? obj)
-    (and (term? obj) (rtd-ancestor? (record-type-rtd &lref) (record-rtd obj))))
+(define lref? (record-predicate (record-type-rtd &lref)))
 (define lref-variable (record-accessor (record-type-rtd &lref) 0))
 (define make-lref (record-constructor (record-type-rcd &lref)))
 
@@ -58,8 +57,7 @@
     (let* ([rtd (make-record-type-descriptor '&toplevel-ref (record-type-rtd &term) #f #f #f '#((immutable mod) (immutable name)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&toplevel-ref rtd rcd)))
-(define (toplevel-ref? obj)
-    (and (term? obj) (rtd-ancestor? (record-type-rtd &toplevel-ref) (record-rtd obj))))
+(define toplevel-ref? (record-predicate (record-type-rtd &toplevel-ref)))
 (define toplevel-ref-mod (record-accessor (record-type-rtd &toplevel-ref) 0))
 (define toplevel-ref-name (record-accessor (record-type-rtd &toplevel-ref) 1))
 (define make-toplevel-ref (record-constructor (record-type-rcd &toplevel-ref)))
@@ -179,17 +177,22 @@
 (define constant-value (record-accessor (record-type-rtd &constant) 0))
 (define make-constant (record-constructor (record-type-rcd &constant)))
 
+(define &void 
+    (let* ([rtd (make-record-type-descriptor '&void (record-type-rtd &term) #f #f #f '#())]
+           [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
+        (make-record-type '&void rtd rcd)))
+(define void? (record-predicate (record-type-rtd &void)))
+(define make-void (record-constructor (record-type-rcd &void)))
+
 (define &proc 
-    (let* ([rtd (make-record-type-descriptor '&proc (record-type-rtd &term) #f #f #f '#((immutable name) (immutable args) (immutable variadic) (immutable body)))]
+    (let* ([rtd (make-record-type-descriptor '&proc (record-type-rtd &term) #f #f #f '#((immutable args) (immutable body) (immutable meta)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&proc rtd rcd)))
 
-(define (proc? obj)
-    (and (term? obj) (rtd-ancestor? (record-type-rtd &proc) (record-rtd obj))))
-(define proc-name (record-accessor (record-type-rtd &proc) 0))
-(define proc-args (record-accessor (record-type-rtd &proc) 1))
-(define proc-variadic (record-accessor (record-type-rtd &proc) 2))
-(define proc-body (record-accessor (record-type-rtd &proc) 3))
+(define proc? (record-predicate (record-type-rtd &proc)))
+(define proc-args (record-accessor (record-type-rtd &proc) 0))
+(define proc-body (record-accessor (record-type-rtd &proc) 1))
+(define proc-meta (record-accessor (record-type-rtd &proc) 2))
 (define make-proc (record-constructor (record-type-rcd &proc)))
 
 (define &values 
