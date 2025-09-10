@@ -350,9 +350,9 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                 .iter()
                 .copied()
                 .filter_map(|func| {
-                    /*if state.is_dead(func.binding) {
+                    if state.is_dead(func.binding) {
                         return None;
-                    }*/
+                    }
 
                     let body = shrink_tree(func.body, state);
                     Some(func.with_body(state.ctx, body))
