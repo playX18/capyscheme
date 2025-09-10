@@ -98,7 +98,7 @@ impl<'gc> Func<'gc> {
     /// tail-calls (only direct tail calls counted; used to build the
     /// call graph restricted to sibling bindings inside the same `Fix`).
     pub fn tailcalls(&self) -> Set<LVarRef<'gc>> {
-        self.body.tailcalls(self.return_cont)
+        self.body.tailcalls(self.return_cont, self.handler_cont)
     }
 }
 
@@ -106,19 +106,21 @@ impl<'gc> Term<'gc> {
     /// Traverses term and records any `App` whose
     /// continuation equals the given return continuation,
     /// indicating a tail call site.
-    pub fn tailcalls(&self, retc: LVarRef<'gc>) -> Set<LVarRef<'gc>> {
+    pub fn tailcalls(&self, retc: LVarRef<'gc>, reth: LVarRef<'gc>) -> Set<LVarRef<'gc>> {
         match self {
-            Self::Fix(_, body) | Self::Let(_, _, body) => body.tailcalls(retc),
+            Self::Fix(_, body) | Self::Let(_, _, body) => body.tailcalls(retc, reth),
 
             Self::Letk(ks, body) => {
-                let body_tc = body.tailcalls(retc);
+                let body_tc = body.tailcalls(retc, reth);
                 ks.iter().fold(body_tc, |mut acc, k| {
-                    acc.extend(k.body().tailcalls(retc));
+                    acc.extend(k.body().tailcalls(retc, reth));
                     acc
                 })
             }
 
-            Self::App(Atom::Local(f), c, ..) if *c == retc => [*f].into_iter().collect(),
+            Self::App(Atom::Local(f), c, h, ..) if *c == retc && *h == reth => {
+                [*f].into_iter().collect()
+            }
 
             _ => Set::default(),
         }
@@ -243,6 +245,15 @@ impl<'gc> Term<'gc> {
                 .intersection(&names)
                 .cloned()
                 .collect::<Vec<_>>();
+            println!(
+                "tailcalls of {}: {}",
+                fun.name,
+                tailcalls
+                    .iter()
+                    .map(|n| n.name.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             let from = node_map[&fun.binding()];
             for to_fun in tailcalls {
                 if let Some(&to) = node_map.get(&to_fun) {
@@ -261,7 +272,18 @@ impl<'gc> Term<'gc> {
                     .map(|&node| graph[node])
                     .collect::<Set<LVarRef<'_>>>();
                 let c = match self.common_return_cont(&ns, None) {
-                    SingleValueSet::Singleton(val) => Some(val),
+                    SingleValueSet::Singleton(val) => {
+                        println!(
+                            "SCCs {} common return cont ({}, {})",
+                            ns.iter()
+                                .map(|n| n.name.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            val.0.name,
+                            val.1.name
+                        );
+                        Some(val)
+                    }
                     _ => None,
                 };
 
@@ -306,7 +328,17 @@ impl<'gc> Term<'gc> {
                     [(f.return_cont(), rc.0), (f.handler_cont, rc.1)]
                         .into_iter()
                         .collect();
-
+                println!(
+                    "cont handler {}->{} for {}, subst map: {}",
+                    f.handler_cont.name,
+                    rc.1.name,
+                    f.binding.name,
+                    subst_map
+                        .iter()
+                        .map(|(k, v)| format!("{}->{}", k.name, v.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
                 Gc::new(
                     &ctx,
                     Cont {
@@ -482,7 +514,14 @@ impl<'gc> Term<'gc> {
             }
 
             Self::Letk(ks, body) => {
-                let ks = ks.iter().map(|k| k.subst(ctx, subst)).collect_gc(&ctx);
+                let ks = ks
+                    .iter()
+                    .map(|k| {
+                        let k = k.subst(ctx, subst);
+
+                        k
+                    })
+                    .collect_gc(&ctx);
                 let body = body.subst(ctx, subst);
                 TermRef::new(&ctx, Self::Letk(ks, body))
             }
@@ -551,10 +590,12 @@ impl<'gc> Cont<'gc> {
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> ContRef<'gc> {
+        let old = self.handler.get();
         let handler = subst
             .get(&self.handler.get())
             .copied()
             .unwrap_or(self.handler.get());
+        println!("contify: handler {}->{}", old.name, handler.name);
         let body = self.body().subst(ctx, subst);
         let k = self.with_body(ctx, body);
         unsafe {
