@@ -77,6 +77,7 @@ pub fn compile_file<'gc>(
 ) -> Result<FuncRef<'gc>, Value<'gc>> {
     let module = env.unwrap_or_else(|| *root_module(ctx));
     let file = file.as_ref();
+    println!(";; Compiling file: {}", file.display());
     let file_in = std::fs::File::open(file).map_err(|e| {
         make_io_error(
             &ctx,
@@ -129,15 +130,10 @@ pub fn compile_file<'gc>(
     il = primitives::resolve_primitives(ctx, il, module);
 
     let mut cps = compile_cps::cps_toplevel(ctx, &[il]);
+
     cps = crate::cps::rewrite_func(ctx, cps);
+    let orig = cps;
     cps = cps.with_body(ctx, contify(ctx, cps.body));
-    if log::log_enabled!(log::Level::Debug) {
-        let mut buf = Vec::new();
-        let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        log::debug!("CPS after contification:");
-        doc.render(80, &mut buf).unwrap();
-        log::debug!("{}", String::from_utf8(buf).unwrap());
-    }
 
     Ok(cps)
 }
