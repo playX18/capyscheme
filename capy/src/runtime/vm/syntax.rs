@@ -5,7 +5,7 @@ use crate::{
     list, native_fn,
     runtime::{
         Context,
-        value::{Closure, Pair, ScmHeader, Tagged, TypeCode8, Value, Vector},
+        value::{Closure, Pair, ScmHeader, Str, Tagged, Tuple, TypeCode8, Value, Vector},
     },
 };
 
@@ -133,8 +133,8 @@ native_fn!(
 
     pub ("make-syntax-transformer") fn make_syntax_transformer<'gc>(
         nctx,
-        typ: Value<'gc>,
         name: Value<'gc>,
+        typ: Value<'gc>,
         binding: Value<'gc>
     ) -> Value<'gc> {
         let transformer = SyntaxTransformer::new(nctx.ctx, name, typ, binding);
@@ -187,6 +187,31 @@ native_fn!(
         let src = datum_sourcev(nctx.ctx, obj);
         nctx.return_(src)
 
+    }
+
+    pub ("self-evaluating?") fn is_self_evaluating<'gc>(
+        nctx,
+        obj: Value<'gc>
+    ) -> bool {
+        nctx.return_(
+            obj.is_immediate()
+            || obj.is_pair()
+            || obj.is::<Vector>()
+            || obj.is::<Str>()
+            || obj.is::<Closure>()
+            || obj.is::<Syntax>()
+            || obj.is::<Tuple>()
+            || obj.is_number()
+        )
+    }
+
+    pub ("source-properties") fn source_properties_of<'gc>(
+        nctx,
+        obj: Value<'gc>
+    ) -> Value<'gc> {
+        let props = get_source_property(nctx.ctx, obj).unwrap_or(Value::new(false));
+
+        nctx.return_(props)
     }
 );
 

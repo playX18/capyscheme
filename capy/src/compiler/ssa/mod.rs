@@ -83,7 +83,7 @@ impl<'gc> ModuleBuilder<'gc> {
     pub fn compile(&mut self) {
         let sig = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
         for (i, &func) in self.reify_info.functions.iter().enumerate() {
-            let name = format!("fn{}:{}", i, func.name);
+            let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
             let func_id = self
                 .module
                 .declare_function(&name, Linkage::Local, &sig)
@@ -101,7 +101,7 @@ impl<'gc> ModuleBuilder<'gc> {
             .filter(|c| c.reified.get())
             .enumerate()
         {
-            let name = format!("cont{}:{}", i, cont.binding.name);
+            let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
             let cont_id = self
                 .module
                 .declare_function(&name, Linkage::Local, &sig)
@@ -116,7 +116,7 @@ impl<'gc> ModuleBuilder<'gc> {
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
-            let name = format!("fn{}:{}", i, func.name);
+            let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
             let func_debug_cx = self.debug_context.define_function(func, &name);
 
             let func_id = self.func_for_func.get(&func).copied().unwrap();
@@ -138,7 +138,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         for (i, &cont) in conts.iter().filter(|c| c.reified.get()).enumerate() {
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
-            let name = format!("fn{}:{}", i, cont.name);
+            let name = format!("fn{}:{}:{}", i, cont.name, cont.binding.name);
             let func_debug_cx = self.debug_context.define_cont(cont, &name);
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);

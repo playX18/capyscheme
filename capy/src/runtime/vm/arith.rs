@@ -2,10 +2,7 @@ use std::cmp::Ordering;
 
 use crate::{
     native_fn,
-    runtime::{
-        Context,
-        value::{Number, Value},
-    },
+    runtime::{Context, prelude::*},
 };
 
 native_fn!(
@@ -387,6 +384,17 @@ native_fn!(
 
     pub ("number?") fn is_number<'gc>(nctx, w: Value<'gc>) -> bool {
         nctx.return_(w.is_number())
+    }
+
+    pub ("number->string") fn number_to_string<'gc>(nctx, n: Number<'gc>, base: Option<u8>) -> Gc<'gc, Str<'gc>> {
+        let base = base.unwrap_or(10);
+        let ctx = nctx.ctx;
+        if base < 2 || base > 36 {
+            return nctx.wrong_argument_violation("number->string", "base must be in range 2 to 36", Some(base.into_value(ctx)), Some(1), 2, &[n.into_value(ctx), base.into_value(ctx)]);
+        }
+
+        let s = Str::new(&ctx, n.to_string_radix(base), false);
+        nctx.return_(s)
     }
 );
 

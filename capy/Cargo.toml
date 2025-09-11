@@ -38,6 +38,7 @@ object = "0.37.3"
 addr2line = "0.25.0"
 memmap2 = "0.9.8"
 probe = "0.5.1"
+lexical = { version = "7.0.4", features = ["power-of-two"] }
 
 [lib]
 crate-type = ["dylib"]

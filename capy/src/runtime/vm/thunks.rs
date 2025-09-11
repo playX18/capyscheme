@@ -7,7 +7,7 @@ use crate::runtime::{
         Boxed, Closure, Pair, SavedCall, ScmHeader, Str, Symbol, Tuple, TypeCode8, TypeCode16,
         Value, Vector,
     },
-    vm::{VMResult, call_scheme, debug},
+    vm::{VMResult, call_scheme, debug, libraries::lookup_scheme_location},
 };
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
@@ -462,7 +462,7 @@ thunks! {
     }
 
     pub fn plus(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
-        println!("plus {a} {b}");
+
         let Some(a) = a.number() else {
             println!("not a number {a}");
             todo!()
@@ -690,8 +690,11 @@ thunks! {
     pub fn debug_trace(ctx: &Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize) -> () {
         let ip = unsafe { returnaddress(0) };
         let rands = unsafe { std::slice::from_raw_parts(rands, num_rands).to_vec() };
-        let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta: Value::new(false) };
+
         unsafe {
+            //let loc = lookup_scheme_location(*ctx, ip as u64);
+            //  println!("CALL {:?} rands=({})", loc, rands.iter().map(|v| format!("{:?}", v)).collect::<Vec<String>>().join(", "));
+            let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta: Value::new(false) };
             (*ctx.state.shadow_stack.get()).push(frame);
         }
     }

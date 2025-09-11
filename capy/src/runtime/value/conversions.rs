@@ -143,6 +143,25 @@ impl<'gc> FromValue<'gc> for u64 {
     }
 }
 
+impl<'gc> FromValue<'gc> for u8 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        let Some(n) = value.number() else {
+            return Err(ConversionError::TypeMismatch {
+                pos: 0,
+                expected: "number",
+                found: value,
+            });
+        };
+
+        n.exact_integer_to_u8()
+            .ok_or_else(|| ConversionError::TypeMismatch {
+                pos: 0,
+                expected: "u8",
+                found: value,
+            })
+    }
+}
+
 impl<'gc, T: Tagged> FromValue<'gc> for Gc<'gc, T> {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is::<T>() {
@@ -174,6 +193,18 @@ impl<'gc> IntoValue<'gc> for u64 {
 impl<'gc> IntoValue<'gc> for u32 {
     fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
         Number::from_u32(mc, self).into_value(mc)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for u16 {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_u16(self).into_value(mc)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for u8 {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_u8(self).into_value(mc)
     }
 }
 
