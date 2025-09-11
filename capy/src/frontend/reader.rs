@@ -152,6 +152,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
     }
 
     pub fn annotate(&self, expression: Value<'gc>, node: &Node) {
+        if expression.is_immediate() || expression.is_number() {
+            return;
+        }
         let start_point = node.start_position();
 
         add_source(
