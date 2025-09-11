@@ -5730,3 +5730,85 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 }
+
+fn i32_to_raidx(n: i32, radix: u8) -> String {
+    if n == 0 {
+        return "0".to_string();
+    }
+    // Use a character map for digits.
+    const CHARS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+    // Handle negative numbers.
+    let is_negative = n < 0;
+    // Work with the absolute value as a u32.
+    // This is safe because i32::MIN.abs() fits in u32.
+    let mut num = if is_negative {
+        // Safely get the absolute value
+        n.unsigned_abs()
+    } else {
+        n as u32
+    };
+
+    let mut result = String::new();
+
+    while num > 0 {
+        let remainder = (num % radix as u32) as usize;
+        result.push(CHARS[remainder] as char);
+        num /= radix as u32;
+    }
+
+    // The result string is built in reverse, so we need to reverse it.
+    let mut final_string: String = result.chars().rev().collect();
+
+    // Prepend the negative sign if necessary.
+    if is_negative {
+        final_string.insert(0, '-');
+    }
+
+    final_string
+}
+
+impl<'gc> Number<'gc> {
+    pub fn to_string_radix(self, base: u8) -> String {
+        match self {
+            Self::Fixnum(n) => i32_to_raidx(n, base),
+            Self::Flonum(n) => {
+                lexical::to_string_with_options::<f64, { lexical::format::STANDARD }>(
+                    n,
+                    &lexical::WriteFloatOptions::from_radix(base),
+                )
+            }
+
+            Self::BigInt(n) => {
+                let opts = NumberToStringOptions {
+                    base: match base {
+                        2 => &Base::BIN,
+                        8 => &Base::OCT,
+                        10 => &Base::DEC,
+                        16 => &Base::HEX,
+                        _ => &Base::DEC,
+                    },
+                    force_sign: false,
+                    group_sep: None,
+                    group_size: 0,
+                    minus_sign: "-".into(),
+                    plus_sign: "+".into(),
+                };
+
+                n.to_string_with_options(&opts)
+            }
+
+            Self::Rational(rn) => {
+                let nume = rn.numerator.to_string_radix(base);
+                let denom = rn.denominator.to_string_radix(base);
+                format!("{}/{}", nume, denom)
+            }
+
+            Self::Complex(c) => {
+                let real = c.real.to_string_radix(base);
+                let imag = c.imag.to_string_radix(base);
+                format!("{} + {}i", real, imag)
+            }
+        }
+    }
+}

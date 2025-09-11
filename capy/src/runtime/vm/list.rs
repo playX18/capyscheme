@@ -11,6 +11,14 @@ pub fn init_lists<'gc>(ctx: Context<'gc>) {
 native_fn!(
     register_list_fns:
 
+    pub ("pair?") fn pairp<'gc>(nctx, value: Value<'gc>) -> Result<bool, Value<'gc>> {
+        nctx.return_(Ok(value.is_pair()))
+    }
+
+    pub ("list?") fn listp<'gc>(nctx, value: Value<'gc>) -> Result<bool, Value<'gc>> {
+        nctx.return_(Ok(value.is_list()))
+    }
+
     pub ("length") fn length<'gc>(nctx, ls: Value<'gc>) -> Result<usize, Value<'gc>> {
         if !ls.is_list() {
             print_stacktraces_impl(nctx.ctx);
@@ -55,6 +63,7 @@ native_fn!(
 
     pub ("car") fn car<'gc>(nctx, pair: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
+            crate::runtime::vm::debug::print_stacktraces_impl(nctx.ctx);
             todo!("not a list: {pair}");
         }
         nctx.return_(Ok(pair.car()))

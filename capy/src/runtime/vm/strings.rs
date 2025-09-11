@@ -40,6 +40,34 @@ native_fn!(
         nctx.return_(s)
     }
 
+    pub ("symbol-append") fn symbol_append<'gc>(nctx, syms: &'gc [Value<'gc>]) -> Result<Gc<'gc, Symbol<'gc>>, Value<'gc>> {
+        if syms.len() == 0 {
+            let s = Symbol::from_str(nctx.ctx, "");
+            return nctx.return_(Ok(s));
+        }
+
+        if syms.len() == 1 {
+            if !syms[0].is::<Symbol>() {
+                todo!()
+            }
+
+            return nctx.return_(Ok(syms[0].downcast::<Symbol>()));
+        }
+
+
+        let mut buffer = String::new();
+
+        for sym in syms.iter() {
+            if !sym.is::<Symbol>() {
+                todo!()
+            }
+
+            buffer.push_str(&sym.downcast::<Symbol>().to_string());
+        }
+        let s = Ok(Symbol::from_str(nctx.ctx, &buffer));
+        nctx.return_(s)
+    }
+
     pub ("symbol->string") fn symbol_to_string<'gc>(nctx, sym: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Str<'gc>> {
         let s = sym.to_str(&nctx.ctx);
         nctx.return_(s)

@@ -136,6 +136,34 @@ pub fn compile_file<'gc>(
 
     cps = cps.with_body(ctx, contify(ctx, cps.body));
 
+    if true {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open("cps.scm")
+            .expect("Failed to open file");
+
+        let mut writer = std::io::BufWriter::new(file);
+        let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+        doc.1.render(70, &mut writer).unwrap();
+        writeln!(writer, "").unwrap();
+        writer.flush().unwrap();
+
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open("tree.scm")
+            .expect("Failed to open file");
+
+        let mut writer = std::io::BufWriter::new(file);
+        let doc = il.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+        doc.1.render(70, &mut writer).unwrap();
+        writeln!(writer, "").unwrap();
+        writer.flush().unwrap();
+    }
+
     Ok(cps)
 }
 

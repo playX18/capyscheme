@@ -40,7 +40,7 @@ pub mod prelude {
     pub use super::thread::Context;
     pub use super::value::*;
     pub use super::vm::{self, NativeCallContext, NativeCallReturn, call_scheme};
-    use rsgc::Gc;
+    pub use rsgc::Gc;
     pub use rsgc::Rootable;
     pub use rsgc::Trace;
     pub use rsgc::global::Global;

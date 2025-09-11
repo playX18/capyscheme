@@ -466,6 +466,11 @@ prim!(
         PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), pair, offset_of!(Pair, cdr) as i32))
     },
 
+    ".breakpoint" => breakpoint(ssa, _args, _h) {
+        ssa.builder.ins().debugtrap();
+        PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::new(true).bits() as i64))
+    },
+
     "tuple" => tuple(ssa, args, _h) {
         let mut hdr = ScmHeader::with_type_bits(TypeCode8::TUPLE.bits() as _);
         hdr.word |= TupleLengthBits::encode(args.len() as _);

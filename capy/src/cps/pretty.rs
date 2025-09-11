@@ -160,7 +160,7 @@ impl<'gc> Term<'gc> {
                 + (alloc.text(var.name.to_string()) + alloc.space() + expr.pretty(alloc))
                     .brackets()
                 + alloc.hardline()
-                + next.pretty(alloc).nest(2))
+                + next.pretty(alloc))
             .group()
             .parens(),
 

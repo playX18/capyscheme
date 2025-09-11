@@ -755,7 +755,7 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                     write!(f, "#<closure {:p}>", clo)
                 }
             } else {
-                write!(f, "Value({:x})", self.raw_i64())
+                write!(f, "{:p} with tc={}", self, self.typ16().bits())
             }
         }
     }

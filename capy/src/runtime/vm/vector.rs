@@ -23,6 +23,9 @@ native_fn! {
         let len = vec.len().into_value(nctx.ctx);
         nctx.return_(len)
     }
+    pub ("vector?") fn vector_p<'gc>(nctx, value: Value<'gc>) -> bool {
+        nctx.return_(value.is::<Vector>())
+    }
 
     pub ("vector-ref") fn vector_ref<'gc>(nctx, vec: Gc<'gc, Vector<'gc>>, k: usize) -> Result<Value<'gc>, Value<'gc>> {
         if k >= vec.len() {

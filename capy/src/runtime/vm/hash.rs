@@ -177,4 +177,11 @@ native_fn!(
 
         nctx.return_(ht.into())
     }
+
+    pub ("hash") fn hash<'gc>(nctx, value: Value<'gc>, bound: Option<u64>) -> Value<'gc> {
+        let hash = value.hash_equal() % bound.unwrap_or(u64::MAX);
+        let hash = hash.into_value(nctx.ctx);
+
+        nctx.return_(hash)
+    }
 );
