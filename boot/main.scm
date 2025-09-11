@@ -1,25 +1,25 @@
 
 (define (member key alist)
   (let loop ([alist alist])
-    (if (null? alist) 
+    (if (null? alist)
         #f
-        (if (equal? key (car alist)) 
+        (if (equal? key (car alist))
             alist
             (loop (cdr alist))))))
 
 (define (memq key alist)
   (let loop ([alist alist])
-    (if (null? alist) 
+    (if (null? alist)
         #f
-        (if (eq? key (car alist)) 
+        (if (eq? key (car alist))
             alist
             (loop (cdr alist))))))
 
 (define (memv key alist)
   (let loop ([alist alist])
-    (if (null? alist) 
+    (if (null? alist)
         #f
-        (if (eqv? key (car alist)) 
+        (if (eqv? key (car alist))
             alist
             (loop (cdr alist))))))
 (define (assq key alist)
@@ -28,6 +28,8 @@
       (if (eq? key (caar alist))
           (car alist)
           (assq key (cdr alist)))))
+(define (alist? x)
+  (and (list? x) (every1 pair? x)))
 (define (assoc key alist)
   (if (null? alist)
       #f
@@ -41,9 +43,9 @@
           (car alist)
           (assv key (cdr alist)))))
 
-(define (assq-ref key alist . opt)
+(define (assq-ref alist key)
   (let ((pair (assq key alist)))
-    (if pair (cdr pair) (if (null? opt) #f (car opt)))))
+    (if (pair? pair) (cdr pair) #f)))
 
 (define every1
   (lambda (pred lst)
@@ -66,7 +68,7 @@
 
 (define any1
   (lambda (pred lst)
-    (if (null? lst) #f 
+    (if (null? lst) #f
       (let ([r (pred (car lst))])
         (if r r (any1 pred (cdr lst)))))))
 
@@ -133,12 +135,12 @@
   (let ([f (make-fluid init)]
         [conv (if (null? converter) (lambda (x) x)  (car converter))])
       (lambda args
-        (if (null? args) 
+        (if (null? args)
             (fluid-ref f)
             (let ([old (fluid-ref f)])
               (fluid-set! f (conv (car args)))
               old)))))
-          
+
 
 (define (make-rtd name parent uid sealed? opaque? fields)
     (tuple 'type:record-type-descriptor name parent uid sealed? opaque? fields))
@@ -164,7 +166,7 @@
 
 (define (rtd-inherited-field-count rtd)
   (let loop ([rtd (rtd-parent rtd)] [count 0])
-    (if rtd 
+    (if rtd
       (loop (rtd-parent rtd) (+ count (length (rtd-fields rtd))))
       count)))
 
@@ -201,13 +203,13 @@
 
 (define (make-record-type-descriptor name parent uid sealed? opaque? fields)
   (let ([opaque? (or opaque? (and parent (rtd-opaque? parent)))]
-        [fields 
+        [fields
           (map (lambda (field)
             (if (eq? (car field) 'mutable)
               (cons #t (cadr field))
               (cons #f (cadr field)))
           ) (vector->list fields))])
-        
+
     (make-rtd name parent uid sealed? opaque? fields)))
 
 
@@ -227,24 +229,24 @@
   (tuple-ref rcd 4))
 
 
-(define default-protocol 
+(define default-protocol
   (lambda (rtd)
     (let ([parent (rtd-parent rtd)])
-     
-      (if parent 
+
+      (if parent
         (let ([parent-field-count (rtd-total-field-count parent)])
           (lambda (p)
-         
+
             (lambda field-values
               (receive (parent-field-values this-field-values) (split-at field-values parent-field-count)
                 (apply (apply p parent-field-values) this-field-values)))))
         (lambda (p)
-          (lambda field-values 
-             (apply p field-values))))))) 
+          (lambda field-values
+             (apply p field-values)))))))
 
 (define (make-simple-conser desc rtd argc)
   ((rcd-protocol desc)
-    (lambda field-values 
+    (lambda field-values
       (apply tuple rtd field-values))))
 
 (define (make-nested-conser desc rtd argc)
@@ -252,10 +254,10 @@
     ((let loop ([desc desc])
       (if (rcd-parent desc)
         (let ([parent (rcd-parent desc)])
-          (lambda extra-field-values 
-            (lambda protocol-args 
-              (lambda this-field-values 
-                (apply 
+          (lambda extra-field-values
+            (lambda protocol-args
+              (lambda this-field-values
+                (apply
                   ((rcd-protocol parent) (apply (loop parent) (append this-field-values extra-field-values)))
                   protocol-args)))))
         (lambda extra-field-values
@@ -266,9 +268,9 @@
 (define (make-record-constructor-descriptor rtd parent protocol)
   (let ([custom-protocol? (and protocol #t)]
         [protocol (or protocol (default-protocol rtd))]
-        [parent 
-          (or parent 
-            (if (rtd-parent rtd) 
+        [parent
+          (or parent
+            (if (rtd-parent rtd)
               (make-record-constructor-descriptor (rtd-parent rtd) #f #f)
               #f))])
       (make-rcd rtd protocol custom-protocol? parent)))
@@ -309,19 +311,19 @@
       (make-simple-conser desc rtd (length (rtd-fields rtd))))))
 
 
-(define (record-predicate rtd) 
+(define (record-predicate rtd)
   (or (record-type-descriptor? rtd)
         (assertion-violation 'record-predicate (wrong-type-argument-message "record-type-descriptor" rtd)))
   (make-predicate rtd))
 
-(define (record-accessor rtd k) 
+(define (record-accessor rtd k)
   (or (record-type-descriptor? rtd)
         (assertion-violation 'record-accssor (wrong-type-argument-message "record-type-descriptor" rtd) (list rtd k)))
   (or (< -1 k (length (rtd-fields rtd)))
       (assertion-violation 'record-accssor "field index out of range"))
   (make-accessor rtd (flat-field-offset rtd k)))
 
-(define (record-mutator rtd k) 
+(define (record-mutator rtd k)
   (or (record-type-descriptor? rtd)
         (assertion-violation 'record-mutator (wrong-type-argument-message "record-type-descriptor" rtd) (list rtd k)))
   (or (< -1 k (length (rtd-fields rtd)))
@@ -336,37 +338,37 @@
 
 (define (record-type? obj)
   (and (tuple? obj) (eq? (tuple-ref obj 0) 'type:record-type)))
-(define (record-type-rcd obj) 
+(define (record-type-rcd obj)
   (or (record-type? obj)
         (assertion-violation 'record-type-rcd (wrong-type-argument-message "record-type" obj)))
   (tuple-ref obj 3))
-(define (record-type-rtd obj) 
+(define (record-type-rtd obj)
   (or (record-type? obj)
         (assertion-violation 'record-type-rtd (wrong-type-argument-message "record-type" obj)))
   (tuple-ref obj 2))
 (define (record? obj)
-  (and 
+  (and
     (tuple? obj)
     (record-type-descriptor? (tuple-ref obj 0))))
 (define (record-rtd obj)
   (if (record? obj)
     (tuple-ref obj 0)
-    (assertion-violation 
-      'record-rtd 
-      (format "expected a record, but got ~r" obj) obj)))  
+    (assertion-violation
+      'record-rtd
+      (format "expected a record, but got ~r" obj) obj)))
 
-(define &condition 
+(define &condition
   (let* ([rtd (make-record-type-descriptor '&condition #f #f #f #f '#())]
          [rcd (make-record-constructor-descriptor rtd #f #f)])
     (make-record-type '&condition rtd rcd)))
 
 (define (compound-condition-component obj) (tuple-ref obj 1))
 
-(define condition 
-  (lambda components 
-    (tuple 
+(define condition
+  (lambda components
+    (tuple
       'type:condition
-      (apply append 
+      (apply append
         (map (lambda (component) (simple-conditions component)) components)))))
 
 (define (compound-condition? obj)
@@ -390,24 +392,24 @@
     (if (simple-condition? obj)
       (rtd-ancestor? rtd (record-rtd obj))
       (if (compound-condition? obj)
-        (any1 (lambda (c) (rtd-ancestor? rtd (record-rtd c))) (compound-condition-component obj)) 
+        (any1 (lambda (c) (rtd-ancestor? rtd (record-rtd c))) (compound-condition-component obj))
       #f))))
 
 (define (condition-accessor rtd proc)
   (define wrong-type
     (lambda (rtd obj)
-      (assertion-violation 
+      (assertion-violation
         "condition accessor"
         (format "expected condition of a subtype of ~s, but got ~r" rtd obj) rtd obj)))
 
   (or (rtd-ancestor? (record-type-rtd &condition) rtd)
-      (assertion-violation 
-        'condition-accessor 
+      (assertion-violation
+        'condition-accessor
         (format "expected record-type-descriptor of a subtype of &condition, but got ~s" rtd) rtd proc))
   (lambda (obj)
-    
+
     (if (simple-condition? obj)
-      (begin 
+      (begin
         (or (rtd-ancestor? rtd (record-rtd obj)) (wrong-type rtd obj))
         (proc obj))
       (if (compound-condition? obj)
@@ -417,7 +419,7 @@
 
 
 
-(define &message 
+(define &message
   (let ([rtd (make-record-type-descriptor '&message (record-type-rtd &condition) #f #f #f '#((immutable message)))])
     (let ([rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)])
       (make-record-type '&message rtd rcd))))
@@ -633,19 +635,19 @@
 (define no-nans-violation? (condition-predicate (record-type-rtd &no-nans)))
 
 
-(define current-exception-handler 
+(define current-exception-handler
   (let ([f (make-thread-local-fluid #f)])
     (lambda args
-      (if (null? args) 
+      (if (null? args)
           (fluid-ref f)
           (let ([old (fluid-ref f)])
             (fluid-set! f (car args))
             old)))))
 
-(define parent-exception-handler 
+(define parent-exception-handler
   (let ([f (make-thread-local-fluid #f)])
     (lambda args
-      (if (null? args) 
+      (if (null? args)
           (fluid-ref f)
           (let ([old (fluid-ref f)])
             (fluid-set! f (car args))
@@ -655,7 +657,7 @@
 (define *here*
   (let ([f (make-thread-local-fluid (list #f))])
     (lambda args
-      (if (null? args) 
+      (if (null? args)
           (fluid-ref f)
           (let ([old (fluid-ref f)])
             (fluid-set! f (car args))
@@ -667,15 +669,15 @@
     (define (reroot-loop there)
         (if (eq? there (*here*))
             #f
-            (begin 
-         
+            (begin
+
                 (reroot-loop (cdr there))
                 (let ([old-pair (car there)])
                     (let ([before (car old-pair)] [after (cdr old-pair)])
                         (set-car! (*here*) (cons after before))
                         (set-cdr! (*here*) there)
                         (set-car! there #f)
-                        (set-cdr! there '()) 
+                        (set-cdr! there '())
                         (*here* there)
                         (before)
                     )))))
@@ -697,7 +699,7 @@
 (define (call-with-current-continuation proc)
   (let ([here (*here*)])
     (.call/cc-unsafe (lambda (cont)
-      (proc (lambda results 
+      (proc (lambda results
         (reroot! here)
         (apply cont results)))))))
 
@@ -708,10 +710,10 @@
 
 (define *basic-exception-handlers* (list unhandled-exception-error))
 
-(define *current-exception-handlers* 
+(define *current-exception-handlers*
   (let ([f (make-thread-local-fluid *basic-exception-handlers*)])
     (lambda args
-      (if (null? args) 
+      (if (null? args)
           (fluid-ref f)
           (let ([old (fluid-ref f)])
             (fluid-set! f (car args))
@@ -726,10 +728,10 @@
 
 (define (with-exception-handler handler thunk)
   (let* ([previous-handlers (*current-exception-handlers*)]
-        [new-handlers (if handler 
+        [new-handlers (if handler
                           (cons handler previous-handlers)
                           previous-handlers)])
-    (dynamic-wind 
+    (dynamic-wind
       (lambda ()
         (*current-exception-handlers* new-handlers))
       (lambda() (.with-handler handler thunk))
@@ -740,13 +742,29 @@
 (define (assertion-violation who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
-      (raise 
-        (apply 
+      (raise
+        (apply
           condition
-          (filter 
-            values 
-            (list 
+          (filter
+            values
+            (list
               (make-assertion-violation)
+              (and who (make-who-condition who))
+              (make-message-condition message)
+              (make-irritants-condition irritants)))))
+      #f)
+    #f))
+
+(define (syntax-violation who message . irritants)
+  (if (or (not who) (string? who) (symbol? who))
+    (if (string? message)
+      (raise
+        (apply
+          condition
+          (filter
+            values
+            (list
+              (make-syntax-violation)
               (and who (make-who-condition who))
               (make-message-condition message)
               (make-irritants-condition irritants)))))
@@ -756,12 +774,12 @@
 (define (error who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
-      (raise 
-        (apply 
+      (raise
+        (apply
           condition
-          (filter 
-            values 
-            (list 
+          (filter
+            values
+            (list
               (make-error)
               (and who (make-who-condition who))
               (make-message-condition message)
@@ -771,12 +789,12 @@
 (define (implementation-restriction-violation who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
-      (raise 
-        (apply 
+      (raise
+        (apply
           condition
-          (filter 
-            values 
-            (list 
+          (filter
+            values
+            (list
               (make-implementation-restriction-violation)
               (and who (make-who-condition who))
               (make-message-condition message)
@@ -796,15 +814,15 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (and (pair? irritants) (make-irritants-condition irritants))))))))
-(define .make-i/o-error 
+(define .make-i/o-error
   (lambda (who message . irritants)
     (if (or (not who) (string? who) (symbol? who))
       (if (string? message)
-        (apply 
+        (apply
           condition
-          (filter 
-            values 
-            (list 
+          (filter
+            values
+            (list
               (make-i/o-error)
               (and who (make-who-condition who))
               (make-message-condition message)
@@ -816,11 +834,11 @@
 (define (.make-assertion-violation who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
-      (apply 
+      (apply
         condition
-        (filter 
-          values 
-          (list 
+        (filter
+          values
+          (list
             (make-assertion-violation)
             (and who (make-who-condition who))
             (make-message-condition message)
@@ -831,11 +849,11 @@
 (define (.make-error who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
-      (apply 
+      (apply
         condition
-        (filter 
-          values 
-          (list 
+        (filter
+          values
+          (list
             (make-error)
             (and who (make-who-condition who))
             (make-message-condition message)
@@ -846,11 +864,11 @@
 (define (.make-implementation-restriction-violation who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
-      (apply 
+      (apply
         condition
-        (filter 
-          values 
-          (list 
+        (filter
+          values
+          (list
             (make-implementation-restriction-violation)
             (and who (make-who-condition who))
             (make-message-condition message)
@@ -859,12 +877,12 @@
     #f))
 
 (define (lexical-violation who . message)
-  (raise 
-    (apply 
+  (raise
+    (apply
       condition
-      (filter 
-        values 
-        (list 
+      (filter
+        values
+        (list
           (make-lexical-violation)
           (and who (make-who-condition who))
           (and (pair? message) (make-message-condition (car message))))))))
@@ -872,11 +890,11 @@
 (define .make-lexical-violation
   (lambda (who . message)
     (if (or (not who) (string? who) (symbol? who))
-      (apply 
+      (apply
         condition
-        (filter 
-          values 
-          (list 
+        (filter
+          values
+          (list
             (make-lexical-violation)
             (and who (make-who-condition who))
             (and (pair? message) (make-message-condition (car message))))))
@@ -903,7 +921,7 @@
   (or (fn m v)
     (let loop ([pos (module-uses m)])
       (if (null? pos)
-        #f 
+        #f
         (or (fn (car pos) v)
           (loop (cdr pos)))))))
 
@@ -932,12 +950,12 @@
 (define (save-module-excursion thunk)
   (let ([inner-module (current-module)]
         [outer-module #f])
-    (dynamic-wind 
+    (dynamic-wind
       (lambda ()
         (set! outer-module (current-module))
         (current-module inner-module)
         (set! inner-module #f))
-      thunk 
+      thunk
       (lambda ()
         (set! inner-module (current-module))
         (current-module outer-module)
@@ -965,7 +983,7 @@
 (define (module-use! module interface)
   (if (not (or (eq? module interface)
                (memq interface (module-uses module))))
-    (begin 
+    (begin
       (set-module-uses! module (append (module-uses module) (list interface)))
       (core-hash-clear! (module-import-obarray module)))))
 
@@ -976,25 +994,32 @@
                   (reverse out)
                   (loop (cdr in)
                     (let ([iface (car in)])
-                      (if (or (memq iface cur) (memq iface out)) 
-                        out 
+                      (if (or (memq iface cur) (memq iface out))
+                        out
                         (cons iface out))))))])
-                        
+
     (set-module-uses! module (append cur new))
     (core-hash-clear! (module-import-obarray module))))
 
+(define (module-define! module name value)
+    (let ([variable (module-local-variable module name)])
+        (if variable
+            (begin
+                (variable-set! variable value))
+            (let ([variable (make-variable value)])
+                (module-add! module name variable)))))
 
 
 (define (nested-ref root names)
   (if (null? names)
-    root 
+    root
     (let loop ([cur root]
                [head (car names)]
                [tail (cdr names)])
       (if (null? tail)
         (module-ref cur head #f)
         (let ([cur (module-ref-submodule cur head)])
-          (and cur 
+          (and cur
             (loop cur (car tail) (cdr tail))))))))
 
 (define (nested-set! root names val)
@@ -1004,7 +1029,7 @@
     (if (null? tail)
         (module-set! cur head val)
         (let ((cur (module-ref-submodule cur head)))
-          (if (not cur) 
+          (if (not cur)
               (assertion-violation 'nested-set! "failed to resolve module" names)
               (loop cur (car tail) (cdr tail)))))))
 
@@ -1100,20 +1125,20 @@
     (set-module-declarative! m #f)
     m))
 
-(define resolve-module 
+(define resolve-module
   (let ([root (make-module)])
     (set-module-name! root '())
     (module-define-submodule! root 'capy the-root-module)
     (lambda (name autoload ensure)
       (let ([already (nested-ref-module root name)])
-        (if (and already 
+        (if (and already
                  (or (not autoload) (module-public-interface already)))
           already
           (if autoload
-            (begin 
+            (begin
               (try-module-autoload name)
               (resolve-module name #f ensure))
-            (or already 
+            (or already
               (and ensure
                 (make-modules-in root name)))))))))
 
@@ -1147,7 +1172,7 @@
       (let ((n (cons p m)))
         (set! autoloads-done (delete! n autoloads-done))
         (set! autoloads-in-progress (delete! n autoloads-in-progress)))))
-  
+
 (define (try-module-autoload module-name)
   (let* ([reverse-name (reverse module-name)]
          [name (symbol->string (car reverse-name))]
@@ -1157,18 +1182,18 @@
             (string-append (symbol->string elt) "/"))
             dir-hint-module-name))])
     (resolve-module dir-hint-module-name #f #t)
-    
+
     (and (not (autoload-done-or-in-progress? dir-hint name))
          (let ([didit #f])
-          (dynamic-wind 
+          (dynamic-wind
             (lambda () (autoload-in-progress! dir-hint name))
             (lambda ()
               (save-module-excursion
                 (lambda ()
                   (current-module (make-fresh-user-module))
-                
+
                   (call/cc (lambda (return)
-                    (with-exception-handler 
+                    (with-exception-handler
                       (lambda (_x) (return #f))
                       (lambda ()
                         (load (string-append dir-hint name))
@@ -1181,24 +1206,24 @@
   (let* ([mod (resolve-module name #t #f)]
          [iface (and mod (module-public-interface mod))])
     (if (not iface)
-      (assertion-violation 'resolve-interface "no code for module" name))     
+      (assertion-violation 'resolve-interface "no code for module" name))
     (if (and (not select) (null? hide))
       iface
       #f)))
 
-      
-(define (define-module* 
+
+(define (define-module*
   name
   filename
   imports
-  exports 
+  exports
   replacements
   re-exports
   re-export-replacements
   autoloads)
   (define (list-of pred lst)
     (or (null? lst) (and (pred (car lst)) (list-of pred (cdr lst)))))
-  
+
   (define (valid-import? x)
     (list? x))
   (define (valid-export? x)
@@ -1208,7 +1233,7 @@
 
   (let ([module (resolve-module name #f #t)])
     (beautify-user-module! module)
-    (if filename 
+    (if filename
       (set-module-filename! module filename))
     (if (not (list-of valid-import? imports))
       (assertion-violation 'define-module "invalid imports" imports))
@@ -1256,8 +1281,12 @@
   (receive results (producer)
     (apply consumer results)))
 
+(define (cadr x) (car (cdr x)))
+(define (cddr x) (cdr (cdr x)))
+(define (cdar x) (cdr (car x)))
+(define (caar x) (car (car x)))
+
 (load "boot/eval.scm")
 (load "boot/expand.scm")
 (load "boot/interpreter.scm")
 (load "boot/psyntax.scm")
-

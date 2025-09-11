@@ -1,5 +1,5 @@
 
-(define &term 
+(define &term
     (let* ([rtd (make-record-type-descriptor '&term #f #f #f #f '#((immutable sourcev)))]
            [rcd (make-record-constructor-descriptor rtd #f #f)])
         (make-record-type '&term rtd rcd)))
@@ -8,7 +8,7 @@
     (and (record? obj) (rtd-ancestor? (record-type-rtd &term) (record-rtd obj))))
 
 (define term-src (record-accessor (record-type-rtd &term) 0))
-(define &lref 
+(define &lref
     (let* ([rtd (make-record-type-descriptor '&lref (record-type-rtd &term) #f #f #f '#((immutable variable) (immutable sym)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&lref rtd rcd)))
@@ -18,19 +18,19 @@
 (define lref-sym (record-accessor (record-type-rtd &lref) 1))
 (define make-lref (record-constructor (record-type-rcd &lref)))
 
-(define &lset 
-    (let* ([rtd (make-record-type-descriptor '&lset (record-type-rtd &term) #f #f #f '#((immutable variable) (immutable value) (immutable sym)))]
+(define &lset
+    (let* ([rtd (make-record-type-descriptor '&lset (record-type-rtd &term) #f #f #f '#((immutable variable) (immutable sym) (immutable value)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&lset rtd rcd)))
 
 (define (lset? obj)
     (and (term? obj) (rtd-ancestor? (record-type-rtd &lset) (record-rtd obj))))
 (define lset-variable (record-accessor (record-type-rtd &lset) 0))
-(define lset-value (record-accessor (record-type-rtd &lset) 1))
-(define lset-sym (record-accessor (record-type-rtd &lset) 2))
+(define lset-value (record-accessor (record-type-rtd &lset) 2))
+(define lset-sym (record-accessor (record-type-rtd &lset) 1))
 (define make-lset (record-constructor (record-type-rcd &lset)))
 
-(define &module-ref 
+(define &module-ref
     (let* ([rtd (make-record-type-descriptor '&module-ref (record-type-rtd &term) #f #f #f '#((immutable module) (immutable name) (immutable public?)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&module-ref rtd rcd)))
@@ -42,7 +42,7 @@
 (define module-ref-public? (record-accessor (record-type-rtd &module-ref) 2))
 (define make-module-ref (record-constructor (record-type-rcd &module-ref)))
 
-(define &module-set 
+(define &module-set
     (let* ([rtd (make-record-type-descriptor '&module-set (record-type-rtd &term) #f #f #f '#((immutable module) (immutable name) (immutable public?) (immutable value)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&module-set rtd rcd)))
@@ -55,7 +55,7 @@
 (define module-set-value (record-accessor (record-type-rtd &module-set) 3))
 (define make-module-set (record-constructor (record-type-rcd &module-set)))
 
-(define &toplevel-ref 
+(define &toplevel-ref
     (let* ([rtd (make-record-type-descriptor '&toplevel-ref (record-type-rtd &term) #f #f #f '#((immutable mod) (immutable name)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&toplevel-ref rtd rcd)))
@@ -64,7 +64,7 @@
 (define toplevel-ref-name (record-accessor (record-type-rtd &toplevel-ref) 1))
 (define make-toplevel-ref (record-constructor (record-type-rcd &toplevel-ref)))
 
-(define &toplevel-set 
+(define &toplevel-set
     (let* ([rtd (make-record-type-descriptor '&toplevel-set (record-type-rtd &term) #f #f #f '#((immutable mod) (immutable name) (immutable value)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&toplevel-set rtd rcd)))
@@ -76,7 +76,7 @@
 (define toplevel-set-value (record-accessor (record-type-rtd &toplevel-set) 2))
 (define make-toplevel-set (record-constructor (record-type-rcd &toplevel-set)))
 
-(define &toplevel-define 
+(define &toplevel-define
     (let* ([rtd (make-record-type-descriptor '&toplevel-define (record-type-rtd &term) #f #f #f '#((immutable mod) (immutable name) (immutable value)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&toplevel-define rtd rcd)))
@@ -87,7 +87,7 @@
 (define toplevel-define-value (record-accessor (record-type-rtd &toplevel-define) 2))
 (define make-toplevel-define (record-constructor (record-type-rcd &toplevel-define)))
 
-(define &if 
+(define &if
     (let* ([rtd (make-record-type-descriptor '&if (record-type-rtd &term) #f #f #f '#((immutable test) (immutable then) (immutable else)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&if rtd rcd)))
@@ -99,7 +99,7 @@
 (define if-else (record-accessor (record-type-rtd &if) 2))
 (define make-if (record-constructor (record-type-rcd &if)))
 
-(define &let 
+(define &let
     (let* ([rtd (make-record-type-descriptor '&let (record-type-rtd &term) #f #f #f '#((immutable style) (immutable ids) (immutable lhs) (immutable rhs) (immutable body)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&let rtd rcd)))
@@ -113,7 +113,7 @@
 (define let-body (record-accessor (record-type-rtd &let) 4))
 (define make-let (record-constructor (record-type-rcd &let)))
 
-(define &fix 
+(define &fix
     (let* ([rtd (make-record-type-descriptor '&fix (record-type-rtd &term) #f #f #f '#((immutable bindings) (immutable body)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&fix rtd rcd)))
@@ -125,7 +125,7 @@
 (define fix-body (record-accessor (record-type-rtd &fix) 1))
 (define make-fix (record-constructor (record-type-rcd &fix)))
 
-(define &receive 
+(define &receive
     (let* ([rtd (make-record-type-descriptor '&receive (record-type-rtd &term) #f #f #f '#((immutable vars) (immutable variadic) (immutable producer) (immutable consumer)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&receive rtd rcd)))
@@ -138,7 +138,7 @@
 (define receive-consumer (record-accessor (record-type-rtd &receive) 3))
 (define make-receive (record-constructor (record-type-rcd &receive)))
 
-(define &application 
+(define &application
     (let* ([rtd (make-record-type-descriptor '&application (record-type-rtd &term) #f #f #f '#((immutable operator) (immutable operands)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&application rtd rcd)))
@@ -149,7 +149,7 @@
 (define application-operands (record-accessor (record-type-rtd &application) 1))
 (define make-application (record-constructor (record-type-rcd &application)))
 
-(define &primcall 
+(define &primcall
     (let* ([rtd (make-record-type-descriptor '&primcall (record-type-rtd &term) #f #f #f '#((immutable prim) (immutable args)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&primcall rtd rcd)))
@@ -160,7 +160,7 @@
 (define primcall-args (record-accessor (record-type-rtd &primcall) 1))
 (define make-primcall (record-constructor (record-type-rcd &primcall)))
 
-(define &primref 
+(define &primref
     (let* ([rtd (make-record-type-descriptor '&primref (record-type-rtd &term) #f #f #f '#((immutable prim)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&primref rtd rcd)))
@@ -171,7 +171,7 @@
 (define make-primref (record-constructor (record-type-rcd &primref)))
 
 
-(define &constant 
+(define &constant
     (let* ([rtd (make-record-type-descriptor '&constant (record-type-rtd &term) #f #f #f '#((immutable value)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&constant rtd rcd)))
@@ -180,14 +180,14 @@
 (define constant-value (record-accessor (record-type-rtd &constant) 0))
 (define make-constant (record-constructor (record-type-rcd &constant)))
 
-(define &void 
+(define &void
     (let* ([rtd (make-record-type-descriptor '&void (record-type-rtd &term) #f #f #f '#())]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&void rtd rcd)))
 (define void? (record-predicate (record-type-rtd &void)))
 (define make-void (record-constructor (record-type-rcd &void)))
 
-(define &proc 
+(define &proc
     (let* ([rtd (make-record-type-descriptor '&proc (record-type-rtd &term) #f #f #f '#((immutable args) (immutable body) (immutable meta) (immutable ids)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&proc rtd rcd)))
@@ -199,7 +199,7 @@
 (define proc-ids (record-accessor (record-type-rtd &proc) 3))
 (define make-proc (record-constructor (record-type-rcd &proc)))
 
-(define &values 
+(define &values
     (let* ([rtd (make-record-type-descriptor '&values (record-type-rtd &term) #f #f #f '#((immutable values)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&values rtd rcd)))
@@ -209,7 +209,7 @@
 (define values-values (record-accessor (record-type-rtd &values) 0))
 (define make-values (record-constructor (record-type-rcd &values)))
 
-(define &sequence 
+(define &sequence
     (let* ([rtd (make-record-type-descriptor '&sequence (record-type-rtd &term) #f #f #f '#((immutable head) (immutable tail)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&sequence rtd rcd)))
@@ -228,3 +228,11 @@
 
 (define (letrec*? expr)
     (and (let? expr) (eq? (let-style expr) 'letrec*)))
+
+(define &void
+    (let* ([rtd (make-record-type-descriptor '&void (record-type-rtd &term) #f #f #f '#())]
+           [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
+        (make-record-type '&void rtd rcd)))
+
+(define void? (record-predicate (record-type-rtd &void)))
+(define make-void (record-constructor (record-type-rcd &void)))
