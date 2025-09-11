@@ -101,7 +101,7 @@ prim!(
     },
 
     "box" => make_box(ssa, args, _h) {
-        println!("make-box???");
+
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let call = ssa.builder.ins().call(ssa.thunks.make_box, &[ctx, arg]);

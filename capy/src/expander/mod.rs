@@ -13,7 +13,7 @@ pub mod assignment_elimination;
 pub mod compile_cps;
 pub mod core;
 pub mod fix_letrec;
-pub mod letrectify;
+//pub mod letrectify;
 pub mod primitives;
 pub mod synclo;
 

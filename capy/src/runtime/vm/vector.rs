@@ -13,8 +13,8 @@ native_fn! {
         nctx.return_(v.into())
     }
 
-    pub ("make-vector") fn make_vector<'gc>(nctx, nelems: usize, init: Value<'gc>) -> Value<'gc> {
-        let v = Vector::new::<false>(&nctx.ctx, nelems, init);
+    pub ("make-vector") fn make_vector<'gc>(nctx, nelems: usize, init: Option<Value<'gc>>) -> Value<'gc> {
+        let v = Vector::new::<false>(&nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
 
         nctx.return_(v.into())
     }

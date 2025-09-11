@@ -1,7 +1,7 @@
 use rsgc::{Gc, Trace};
 
 use crate::{
-    expander::{get_source_property, source_properties, sym_column, sym_filename, sym_line},
+    expander::{get_source_property, sym_column, sym_filename, sym_line},
     list, native_fn,
     runtime::{
         Context,
@@ -178,6 +178,15 @@ native_fn!(
         macro_: Gc<'gc, SyntaxTransformer<'gc>>
     ) -> Value<'gc> {
         nctx.return_(macro_.typ())
+    }
+
+    pub ("datum-sourcev") fn datum_sourcev_fn<'gc>(
+        nctx,
+        obj: Value<'gc>
+    ) -> Value<'gc> {
+        let src = datum_sourcev(nctx.ctx, obj);
+        nctx.return_(src)
+
     }
 );
 

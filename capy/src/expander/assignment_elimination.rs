@@ -113,7 +113,7 @@ fn substitute<'gc>(
                 .rhs
                 .iter()
                 .map(|proc| {
-                    let body = substitute(ctx, fix.body, substs);
+                    let body = substitute(ctx, proc.body, substs);
 
                     Gc::new(
                         &ctx,

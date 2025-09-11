@@ -202,6 +202,7 @@ impl<'gc> Graph<'gc> {
         let vertex = self.add_empty_vertex();
         self[vertex].lhs = Some(lhs);
         self[vertex].rhs = Some(rhs);
+
         vertex
     }
 
@@ -423,10 +424,11 @@ fn fix1<'gc>(
 
             // <var_c, init_c> otherwise.
             let body = {
-                let mut fixes = fixes.clone();
-                fixes.append(&mut l);
+                let mut fixes_ = fixes.clone();
+                fixes_.append(&mut l);
+                fixes.clear();
                 let mutations = pass.graph.make_mutations(pass.ctx, &c, body);
-                make_fixes(pass.ctx, span, &pass.graph, &fixes, mutations)
+                make_fixes(pass.ctx, span, &pass.graph, &fixes_, mutations)
             };
 
             let lhs = Array::from_slice(
@@ -528,7 +530,8 @@ fn fixing_letrec<'gc>(
         rec_deps_in_order(&vertices, pass);
     }
 
-    let sccs = pass.graph.tarjan_sccs();
+    let mut sccs = pass.graph.tarjan_sccs();
+    sccs.reverse();
 
     let (fixes, body) = fixing(pass, &sccs, body, in_order);
 

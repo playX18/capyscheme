@@ -1,4 +1,4 @@
-use std::{cell::Cell, mem::offset_of};
+use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 
 use rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
@@ -40,8 +40,6 @@ pub enum ModuleKind {
     CustomInterface,
 }
 
-#[derive(Trace)]
-#[collect(no_drop)]
 #[repr(C)]
 pub struct Module<'gc> {
     pub header: ScmHeader,
@@ -57,9 +55,32 @@ pub struct Module<'gc> {
     pub submodules: Gc<'gc, HashTable<'gc>>,
     pub filename: Lock<Value<'gc>>,
     pub public_interface: Lock<Option<Gc<'gc, Self>>>,
-    pub next_unique_id: Lock<Value<'gc>>,
+    pub next_unique_id: AtomicUsize,
     pub replacements: Lock<Value<'gc>>,
     pub inlinable_exports: Lock<Value<'gc>>,
+}
+
+unsafe impl<'gc> Trace for Module<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+        unsafe {
+            self.obarray.trace(visitor);
+            self.uses.trace(visitor);
+            self.binder.trace(visitor);
+            self.transformer.trace(visitor);
+            self.name.trace(visitor);
+            self.version.trace(visitor);
+            self.import_obarray.trace(visitor);
+            self.submodules.trace(visitor);
+            self.filename.trace(visitor);
+            self.public_interface.trace(visitor);
+            self.replacements.trace(visitor);
+            self.inlinable_exports.trace(visitor);
+        }
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+        let _ = weak_processor;
+    }
 }
 
 impl<'gc> Module<'gc> {
@@ -85,7 +106,7 @@ impl<'gc> Module<'gc> {
                 submodules: HashTable::new(&ctx, HashTableType::Eq, 0, 0.75),
                 filename: Lock::new(Value::new(false)),
                 inlinable_exports: Lock::new(Value::new(false)),
-                next_unique_id: Lock::new(Value::new(0i32)),
+                next_unique_id: AtomicUsize::new(0),
                 public_interface: Lock::new(None),
                 replacements: Lock::new(Value::new(false)),
             },
@@ -801,7 +822,8 @@ native_fn!(
     }
 
     pub ("module-next-unique-id") fn module_next_unique_id<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.next_unique_id.get())
+        let val = module.next_unique_id.load(std::sync::atomic::Ordering::SeqCst).into_value(nctx.ctx);
+        nctx.return_(val)
     }
 
     pub ("module-replacements") fn module_replacements<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
@@ -873,10 +895,8 @@ native_fn!(
         nctx.return_(Value::undefined())
     }
 
-    pub ("set-module-next-unique-id!") fn set_module_next_unique_id<'gc>(nctx, module: Gc<'gc, Module<'gc>>, next_unique_id: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, next_unique_id)
-            .unlock()
-            .set(next_unique_id);
+    pub ("set-module-next-unique-id!") fn set_module_next_unique_id<'gc>(nctx, module: Gc<'gc, Module<'gc>>, next_unique_id: usize) -> Value<'gc> {
+        module.next_unique_id.store(next_unique_id, std::sync::atomic::Ordering::SeqCst);
         nctx.return_(Value::undefined())
     }
 
@@ -996,6 +1016,21 @@ native_fn!(
         nctx.return_(Value::undefined())
     }
 
+    pub ("module-gensym") fn module_gensym<'gc>(nctx, id: Option<Gc<'gc, Str<'gc>>>, m: Option<Gc<'gc ,Module<'gc>>>) -> Value<'gc> {
+        let id = id.map(|x| x.to_string()).unwrap_or_else(|| " mg".to_owned());
+        let m = m.unwrap_or_else(|| current_module(nctx.ctx).get(nctx.ctx).downcast());
+        let unique_id = m.next_unique_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let sym = format!("{}-{}-{}", id, m.name.get().hash_equal(), unique_id);
+        let str = Str::new(&nctx.ctx, sym, true);
+        let sym = Symbol::gensym(nctx.ctx, Some(str));
+        nctx.return_(sym.into())
+    }
+
+    pub ("module-generate-unique-id!") fn module_generate_unique_id<'gc>(nctx, m: Option<Gc<'gc ,Module<'gc>>>) -> usize {
+        let m = m.unwrap_or_else(|| current_module(nctx.ctx).get(nctx.ctx).downcast());
+        let unique_id = m.next_unique_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        nctx.return_(unique_id)
+    }
 );
 
 global!(

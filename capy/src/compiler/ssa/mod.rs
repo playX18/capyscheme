@@ -153,7 +153,14 @@ impl<'gc> ModuleBuilder<'gc> {
             ssa.builder.finalize();
 
             let func_debug_cx = ssa.func_debug_cx;
-            self.module.define_function(func_id, &mut context).unwrap();
+            self.module
+                .define_function(func_id, &mut context)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "error when compiling continuation {}: {}",
+                        cont.binding.name, err
+                    )
+                });
             func_debug_cx.finalize(&mut self.debug_context, func_id, &context);
             self.module.clear_context(&mut context);
         }

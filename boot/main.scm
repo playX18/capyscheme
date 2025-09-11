@@ -1,7 +1,4 @@
 
-(define (acons key datum alist)
-  (cons (cons key datum) alist))
-
 (define (member key alist)
   (let loop ([alist alist])
     (if (null? alist) 
@@ -43,6 +40,10 @@
       (if (eqv? key (caar alist))
           (car alist)
           (assv key (cdr alist)))))
+
+(define (assq-ref key alist . opt)
+  (let ((pair (assq key alist)))
+    (if pair (cdr pair) (if (null? opt) #f (car opt)))))
 
 (define every1
   (lambda (pred lst)
@@ -110,7 +111,16 @@
         (cons a b))
       (if (null? x) '()
         (assertion-violation 'map "expected a proper list" x))))
-  (map1 f x))
+  (define (map2 f x y)
+    (if (and (pair? x) (pair? y))
+      (let* ([a (f (car x) (car y))]
+             [b (map2 f (cdr x) (cdr y))])
+        (cons a b))
+      (if (or (null? x) (null? y)) '()
+        (assertion-violation 'map "expected proper lists" (list x y)))))
+  (if (null? rest)
+    (map1 f x)
+    (map2 f x (car rest))))
 
 (define (for-each proc lst)
   (let loop ([lst lst])
@@ -1242,7 +1252,12 @@
       (assertion-violation 'use "failed to resolve module" mif-args))) module-iface-args)])
     (module-use-interfaces! (current-module) interfaces)))
 
+(define (call-with-values producer consumer)
+  (receive results (producer)
+    (apply consumer results)))
+
 (load "boot/eval.scm")
 (load "boot/expand.scm")
 (load "boot/interpreter.scm")
 (load "boot/psyntax.scm")
+

@@ -125,6 +125,7 @@ pub fn compile_file<'gc>(
 
     let mut il = crate::expander::core::expand(&mut env, ls)
         .map_err(|err| make_lexical_violation(&ctx, "compile-file", err.to_string()))?;
+
     il = fix_letrec(ctx, il);
     il = assignment_elimination::eliminate_assignments(ctx, il);
     il = primitives::resolve_primitives(ctx, il, module);
@@ -132,7 +133,7 @@ pub fn compile_file<'gc>(
     let mut cps = compile_cps::cps_toplevel(ctx, &[il]);
 
     cps = crate::cps::rewrite_func(ctx, cps);
-    let orig = cps;
+
     cps = cps.with_body(ctx, contify(ctx, cps.body));
 
     Ok(cps)

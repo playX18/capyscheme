@@ -1162,7 +1162,7 @@ fn finalize_body<'gc>(
 
     for def in defs {
         match def {
-            Define::Lambda(name, formals, variadic, body) => {
+            Define::Lambda(name, formals, variadic, def_body) => {
                 let name = vars.get(&name).unwrap().clone();
                 let formals = formals
                     .into_iter()
@@ -1199,7 +1199,7 @@ fn finalize_body<'gc>(
                     cenv.extend(variadic.name, variadic.clone());
                 }
 
-                let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, body))?;
+                let body_term = expand_body(cenv, def_body, syntax_annotation(cenv.ctx, def_body))?;
 
                 cenv.pop_frame();
 
@@ -1210,7 +1210,7 @@ fn finalize_body<'gc>(
                         args: Array::from_slice(&cenv.ctx, formals),
                         variadic,
                         body: body_term,
-                        source: syntax_annotation(cenv.ctx, body),
+                        source: syntax_annotation(cenv.ctx, def_body),
                     },
                 );
 
@@ -1218,7 +1218,7 @@ fn finalize_body<'gc>(
                 rhs.push(Gc::new(
                     &cenv.ctx,
                     Term {
-                        source: Lock::new(syntax_annotation(cenv.ctx, body)),
+                        source: Lock::new(syntax_annotation(cenv.ctx, def_body)),
                         kind: TermKind::Proc(proc),
                     },
                 ));
@@ -1231,6 +1231,7 @@ fn finalize_body<'gc>(
 
                 let val_term = expand(cenv, val)?;
                 lhs.push(lvar);
+
                 rhs.push(val_term);
             }
         }
