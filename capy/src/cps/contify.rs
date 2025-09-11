@@ -245,15 +245,7 @@ impl<'gc> Term<'gc> {
                 .intersection(&names)
                 .cloned()
                 .collect::<Vec<_>>();
-            println!(
-                "tailcalls of {}: {}",
-                fun.name,
-                tailcalls
-                    .iter()
-                    .map(|n| n.name.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+
             let from = node_map[&fun.binding()];
             for to_fun in tailcalls {
                 if let Some(&to) = node_map.get(&to_fun) {
@@ -272,18 +264,7 @@ impl<'gc> Term<'gc> {
                     .map(|&node| graph[node])
                     .collect::<Set<LVarRef<'_>>>();
                 let c = match self.common_return_cont(&ns, None) {
-                    SingleValueSet::Singleton(val) => {
-                        println!(
-                            "SCCs {} common return cont ({}, {})",
-                            ns.iter()
-                                .map(|n| n.name.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            val.0.name,
-                            val.1.name
-                        );
-                        Some(val)
-                    }
+                    SingleValueSet::Singleton(val) => Some(val),
                     _ => None,
                 };
 
@@ -328,17 +309,7 @@ impl<'gc> Term<'gc> {
                     [(f.return_cont(), rc.0), (f.handler_cont, rc.1)]
                         .into_iter()
                         .collect();
-                println!(
-                    "cont handler {}->{} for {}, subst map: {}",
-                    f.handler_cont.name,
-                    rc.1.name,
-                    f.binding.name,
-                    subst_map
-                        .iter()
-                        .map(|(k, v)| format!("{}->{}", k.name, v.name))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+
                 Gc::new(
                     &ctx,
                     Cont {
@@ -430,10 +401,6 @@ fn push_in<'gc>(
             let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, ns);
             let pushed_count = pushed as usize + pushed_f.iter().filter(|&&x| x).count();
             assert!(pushed_count <= 1, "More than one pushed function in Fix");
-
-            if funs1.is_empty() {
-                return (pushed_count == 1, body1);
-            }
 
             (
                 pushed_count == 1,
@@ -590,12 +557,12 @@ impl<'gc> Cont<'gc> {
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> ContRef<'gc> {
-        let old = self.handler.get();
+        
         let handler = subst
             .get(&self.handler.get())
             .copied()
             .unwrap_or(self.handler.get());
-        println!("contify: handler {}->{}", old.name, handler.name);
+
         let body = self.body().subst(ctx, subst);
         let k = self.with_body(ctx, body);
         unsafe {

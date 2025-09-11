@@ -219,21 +219,23 @@
 (define code 
     (make-let #f 'letrec 
         '(loop)
+        '(loop)
         (list (make-proc #f
                 '(i)
                 (make-if #f
                     (make-application #f 
                         (make-toplevel-ref #f #f '=)
-                        (list (make-lref #f 'i)
+                        (list (make-lref #f 'i 'i)
                             (make-constant #f 100)))
-                    (make-lref #f 'i)
+                    (make-lref #f 'i 'i)
                     (make-application #f 
-                        (make-lref #f 'loop)
+                        (make-lref #f 'loop 'loop)
                         (list (make-application #f 
                             (make-toplevel-ref #f #f '+)
-                            (list (make-lref #f 'i)
+                            (list (make-lref #f 'i 'i)
                                 (make-constant #f 1))))))
-                    '()))
+                '()
+                '(i)))
         (make-application #f (make-lref #f 'loop) (list (make-constant #f 0)))))
 (print "code=" code)
 (define clos (interpret/preprocess code '()))

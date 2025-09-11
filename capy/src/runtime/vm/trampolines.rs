@@ -7,7 +7,8 @@ use crate::runtime::{CallData, Context as RtCtx, value::ReturnCode};
 use std::{mem::offset_of, sync::LazyLock};
 
 use cranelift::prelude::{
-    AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, types,
+    AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, IntCC, MemFlags, TrapCode,
+    types,
 };
 use cranelift_codegen::{
     Context,
@@ -135,6 +136,8 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
         state,
         offset_of!(State, last_ret_addr) as i32,
     );
+    let c = builder.ins().icmp_imm(IntCC::UnsignedLessThan, state, 100);
+    builder.ins().trapnz(c, TrapCode::HEAP_OUT_OF_BOUNDS);
     builder.ins().store(
         MemFlags::new(),
         rands,
@@ -268,6 +271,7 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
         native_data,
         offset_of!(NativeProc, proc) as i32,
     );
+
     //  builder.ins().debugtrap();
     let state = builder.ins().load(
         types::I64,
@@ -275,6 +279,8 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
         ctx,
         offset_of!(RtCtx, state) as i32,
     );
+    let c = builder.ins().icmp_imm(IntCC::UnsignedLessThan, state, 100);
+    builder.ins().trapnz(c, TrapCode::HEAP_OUT_OF_BOUNDS);
     builder.ins().store(
         MemFlags::new(),
         rands,

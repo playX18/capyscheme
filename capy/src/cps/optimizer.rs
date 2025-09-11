@@ -8,7 +8,7 @@ use crate::{
     runtime::{Context, value::Value},
     utils::fixedpoint,
 };
-use pretty::BoxAllocator;
+
 use rsgc::{
     Gc,
     alloc::{ArrayRef, array::Array},
@@ -61,7 +61,7 @@ impl<'gc> State<'gc> {
     fn applied_once(&self, var: LVarRef<'gc>) -> bool {
         self.census
             .get(&var)
-            .map_or(false, |count| count.applied == 1)
+            .map_or(false, |count| count.applied == 1 && count.as_value == 0)
     }
 
     fn with_atom_subst(&mut self, from: Atom<'gc>, to: Atom<'gc>) -> &mut Self {
@@ -319,7 +319,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
         },
 
         Term::Letk(conts, body) => {
-            let conts = conts
+            let (inlined, not_inlined) = conts
                 .iter()
                 .filter_map(|cont| {
                     if state.is_dead(cont.binding()) {
@@ -335,12 +335,16 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
 
                     Some(cont.with_body(state.ctx, body))
                 })
-                .collect::<Vec<_>>();
-            if conts.is_empty() {
+                .collect::<Vec<_>>()
+                .into_iter()
+                .partition::<Vec<_>, _>(|&cont| state.applied_once(cont.binding()));
+
+            let state = state.with_continuations(&inlined);
+            if not_inlined.is_empty() {
                 return shrink_tree(body, state);
             }
 
-            let conts = Array::from_slice(&state.ctx, conts);
+            let conts = Array::from_slice(&state.ctx, not_inlined);
             let body = shrink_tree(body, state);
             Gc::new(&state.ctx, Term::Letk(conts, body))
         }
@@ -491,9 +495,8 @@ pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
 }
 
 pub fn rewrite<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
-    let doc = term.pretty::<_, ()>(&BoxAllocator);
-
     let simplified_tree = fixedpoint(term, None)(|term| shrink(ctx, *term));
+    //simplified_tree
     let max_size = size(simplified_tree) * 3 / 2;
 
     fixedpoint(simplified_tree, Some(8))(|term| inline(ctx, *term, max_size))
@@ -911,8 +914,6 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
 }
 
 pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -> TermRef<'gc> {
-    let doc = term.pretty::<_, ()>(&BoxAllocator);
-
     for i in 0..FIBONACCI.len() {
         if size(term) > max_size {
             return term;

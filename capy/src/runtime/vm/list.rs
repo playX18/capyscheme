@@ -146,6 +146,12 @@ native_fn!(
 
         nctx.return_(Ok(res))
     }
+
+    pub ("acons") fn acons<'gc>(nctx, key: Value<'gc>, datum: Value<'gc>, alist: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        let pair = Value::cons(nctx.ctx, key, datum);
+        let res = Value::cons(nctx.ctx, pair, alist);
+        nctx.return_(Ok(res))
+    }
 );
 
 fn append_impl<'gc>(ctx: Context<'gc>, mut ls1: Value<'gc>, ls2: Value<'gc>) -> Option<Value<'gc>> {

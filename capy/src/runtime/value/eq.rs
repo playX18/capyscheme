@@ -88,4 +88,28 @@ impl<'gc> Value<'gc> {
 
         false
     }
+
+    pub fn hash_equal(self) -> u64 {
+        let mut hash = simplehash::CityHasher64::new();
+        self.hash_equal_(&mut hash);
+        hash.finish_raw()
+    }
+
+    fn hash_equal_<H: std::hash::Hasher>(self, hasher: &mut H) {
+        if self.is_immediate() {
+            hasher.write_u64(self.bits());
+        } else if self.is_pair() {
+            hasher.write_u8(0x0);
+            self.car().hash_equal_(hasher);
+            self.cdr().hash_equal_(hasher);
+        } else if self.is::<Vector>() {
+            let v = self.downcast::<Vector>();
+            for i in 0..v.len() {
+                hasher.write_u8(0x1);
+                v[i].get().hash_equal_(hasher);
+            }
+        } else {
+            <Self as std::hash::Hash>::hash(&self, hasher);
+        }
+    }
 }

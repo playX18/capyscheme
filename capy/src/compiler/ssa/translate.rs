@@ -55,11 +55,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         if self.is_self_reference(var) {
             return self.rator;
         }
-        match *self
-            .variables
-            .get(&var)
-            .unwrap_or_else(|| panic!("{}@{:p} var not found", var.name, var))
-        {
+        match *self.variables.get(&var).unwrap_or_else(|| {
+            panic!(
+                "{}@{:p} var not found when compiling {}",
+                var.name,
+                var,
+                match self.target {
+                    ContOrFunc::Func(f) => f.binding.name,
+                    ContOrFunc::Cont(c) => c.binding.name,
+                }
+            )
+        }) {
             VarDef::Comparison(val) => {
                 let true_ = self.builder.ins().iconst(types::I64, Value::VALUE_TRUE);
                 let false_ = self.builder.ins().iconst(types::I64, Value::VALUE_FALSE);
