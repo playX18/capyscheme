@@ -6,6 +6,7 @@ use rsgc::{
     alloc::array::{Array, ArrayRef},
     barrier,
     cell::Lock,
+    traits::IterGc,
 };
 
 use crate::{
@@ -1807,7 +1808,7 @@ fn expand_cond<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'g
     }
 
     // Process clauses from last to first
-    let mut result = constant(cenv.ctx, Value::undefined()); // Default else case
+    /*let mut result = constant(cenv.ctx, Value::undefined()); // Default else case
 
     for clause in clauses.into_iter().rev() {
         let test = clause.car();
@@ -1904,9 +1905,63 @@ fn expand_cond<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'g
 
             result = if_term(cenv.ctx, test_term, consequent, result);
         }
+    }*/
+
+    expand_clause(cenv, form, &clauses)
+}
+
+fn expand_clause<'gc>(
+    cenv: &mut Cenv<'gc>,
+    form: Value<'gc>,
+    clauses: &[Value<'gc>],
+) -> Result<TermRef<'gc>, Error<'gc>> {
+    if clauses.is_empty() {
+        return Ok(constant(cenv.ctx, Value::undefined()));
     }
 
-    Ok(result)
+    let clause = clauses[0];
+    let rest = &clauses[1..];
+
+    let else_branch = expand_clause(cenv, form, rest)?;
+
+    let test = clause.car();
+    let body = clause.cdr();
+
+    if test.is::<Symbol>() && test == Symbol::from_str(cenv.ctx, "else").into() {
+        if body.is_null() {
+            return Err(Box::new(CompileError {
+                message: "else clause cannot be empty".to_string(),
+                irritants: vec![clause],
+                sourcev: syntax_annotation(cenv.ctx, form),
+            }));
+        }
+
+        if body.cdr().is_null() {
+            return expand(cenv, body.car());
+        } else {
+            let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+            return expand(cenv, begin_form);
+        }
+    } else {
+        let test_form = expand(cenv, test)?;
+        let binding = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "cond-test-tmp").into());
+
+        let lbody = if body.is_null() {
+            lref(cenv.ctx, binding)
+        } else {
+            let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+            expand(cenv, begin_form)?
+        };
+
+        let if_ = if_term(cenv.ctx, lref(cenv.ctx, binding), lbody, else_branch);
+        Ok(let_term(
+            cenv.ctx,
+            LetStyle::Let,
+            [binding].into_iter().collect_gc(&cenv.ctx),
+            [test_form].into_iter().collect_gc(&cenv.ctx),
+            if_,
+        ))
+    }
 }
 
 impl<'gc> Term<'gc> {

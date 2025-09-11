@@ -208,10 +208,14 @@ pub fn t_k<'a, 'gc>(
             }
         }
 
-        TermKind::Seq(seq) => with_cps!(cps;
-            @tk* (h) aexps = &seq;
-            # fk(cps, &[*aexps.last().expect("Sequence should not be empty")])
-        ),
+        TermKind::Seq(seq) => {
+            let last = *seq.last().unwrap();
+            let before = &seq[..seq.len() - 1];
+            with_cps!(cps;
+                @tk* (h) _aexps = &before;
+                # t_k(cps, last, fk, h)
+            )
+        }
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
             @tk (h) atest = test;
@@ -395,13 +399,22 @@ pub fn t_c<'a, 'gc>(
             }
         }
 
-        TermKind::Seq(seq) => with_cps!(cps;
+        TermKind::Seq(seq) =>
+        /*with_cps!(cps;
             @tk* (h) aexps = &seq;
             # {
                 let args = Array::from_slice(&cps.ctx, [*aexps.last().expect("Sequence should not be empty")]);
                 Gc::new(&cps.ctx, Term::Continue(k, args, src))
             }
-        ),
+        ),*/
+        {
+            let last = *seq.last().unwrap();
+            let before = &seq[..seq.len() - 1];
+            with_cps!(cps;
+                @tk* (h) _aexps = before;
+                @tc (k, h) last
+            )
+        }
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
             @tk (h) atest = test;
