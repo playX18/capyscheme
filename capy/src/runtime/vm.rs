@@ -20,6 +20,8 @@ pub mod base;
 pub mod debug;
 pub mod errors;
 pub mod eval;
+pub mod records;
+pub mod expand;
 pub mod hash;
 pub mod io;
 pub mod libraries;
