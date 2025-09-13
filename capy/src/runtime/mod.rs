@@ -35,7 +35,7 @@ use crate::runtime::{self, vmthread::VM_THREAD};
 
 #[allow(ambiguous_glob_imports)]
 pub mod prelude {
-    use crate::runtime::modules::Variable;
+    use crate::runtime::modules::*;
 
     pub use super::thread::Context;
     pub use super::value::*;

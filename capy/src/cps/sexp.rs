@@ -328,6 +328,7 @@ impl<'gc> CPSDeserializer<'gc> {
             let lvar = LVarRef::new(
                 &self.ctx,
                 LVar {
+                    id: Value::new(false),
                     name: value,
                     set_count: Cell::new(0),
                     ref_count: Cell::new(0),

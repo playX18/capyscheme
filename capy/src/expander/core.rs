@@ -175,6 +175,7 @@ impl<'gc> Frame<'gc> {
 #[collect(no_drop)]
 pub struct LVar<'gc> {
     pub name: Value<'gc>,
+    pub id: Value<'gc>,
     pub set_count: Cell<u32>,
     pub ref_count: Cell<u32>,
 }
@@ -186,6 +187,7 @@ impl<'gc> LVar<'gc> {
         Gc::new(
             &ctx,
             LVar {
+                id: self.id,
                 name: name.into(),
                 set_count: Cell::new(self.set_count.get()),
                 ref_count: Cell::new(self.ref_count.get()),
@@ -714,6 +716,7 @@ pub fn fresh_lvar<'gc>(ctx: Context<'gc>, name: Value<'gc>) -> LVarRef<'gc> {
         &ctx,
         LVar {
             name,
+            id: Value::new(false),
             set_count: Cell::new(0),
             ref_count: Cell::new(0),
         },
@@ -1172,6 +1175,7 @@ fn finalize_body<'gc>(
                             &cenv.ctx,
                             LVar {
                                 name: sym,
+                                id: Value::new(false),
                                 set_count: Cell::new(0),
                                 ref_count: Cell::new(0),
                             },
@@ -1184,6 +1188,7 @@ fn finalize_body<'gc>(
                         &cenv.ctx,
                         LVar {
                             name: sym,
+                            id: Value::new(false),
                             set_count: Cell::new(0),
                             ref_count: Cell::new(0),
                         },
@@ -1306,6 +1311,7 @@ fn collect_formals<'gc>(
             &ctx,
             LVar {
                 name: arg,
+                id: Value::new(false),
                 set_count: Cell::new(0),
                 ref_count: Cell::new(0),
             },
@@ -1319,6 +1325,7 @@ fn collect_formals<'gc>(
             &ctx,
             LVar {
                 name: current,
+                id: Value::new(false),
                 set_count: Cell::new(0),
                 ref_count: Cell::new(0),
             },
