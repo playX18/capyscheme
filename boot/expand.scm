@@ -14,7 +14,7 @@
         (make-record-type '&lref rtd rcd)))
 
 (define lref? (record-predicate (record-type-rtd &lref)))
-(define lref-variable (record-accessor (record-type-rtd &lref) 0))
+(define lref-name (record-accessor (record-type-rtd &lref) 0))
 (define lref-sym (record-accessor (record-type-rtd &lref) 1))
 (define make-lref (record-constructor (record-type-rcd &lref)))
 
@@ -25,7 +25,7 @@
 
 (define (lset? obj)
     (and (term? obj) (rtd-ancestor? (record-type-rtd &lset) (record-rtd obj))))
-(define lset-variable (record-accessor (record-type-rtd &lset) 0))
+(define lset-name (record-accessor (record-type-rtd &lset) 0))
 (define lset-value (record-accessor (record-type-rtd &lset) 2))
 (define lset-sym (record-accessor (record-type-rtd &lset) 1))
 (define make-lset (record-constructor (record-type-rcd &lset)))
@@ -114,26 +114,29 @@
 (define make-let (record-constructor (record-type-rcd &let)))
 
 (define &fix
-    (let* ([rtd (make-record-type-descriptor '&fix (record-type-rtd &term) #f #f #f '#((immutable bindings) (immutable body)))]
+    (let* ([rtd (make-record-type-descriptor '&fix (record-type-rtd &term) #f #f #f '#((immutable ids) (immutable lhs) (immutable rhs) (immutable body)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&fix rtd rcd)))
 
 (define (fix? obj )
     (and (term? obj) (rtd-ancestor? (record-type-rtd &fix) (record-rtd obj))))
 
-(define fix-bindings (record-accessor (record-type-rtd &fix) 0))
-(define fix-body (record-accessor (record-type-rtd &fix) 1))
+(define fix-ids (record-accessor (record-type-rtd &fix) 0))
+(define fix-lhs (record-accessor (record-type-rtd &fix) 1))
+(define fix-rhs (record-accessor (record-type-rtd &fix) 2))
+(define fix-body (record-accessor (record-type-rtd &fix) 3))
+
 (define make-fix (record-constructor (record-type-rcd &fix)))
 
 (define &receive
-    (let* ([rtd (make-record-type-descriptor '&receive (record-type-rtd &term) #f #f #f '#((immutable vars) (immutable variadic) (immutable producer) (immutable consumer)))]
+    (let* ([rtd (make-record-type-descriptor '&receive (record-type-rtd &term) #f #f #f '#((immutable ids) (immutable vars) (immutable producer) (immutable consumer)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
         (make-record-type '&receive rtd rcd)))
 
 (define (receive? obj)
     (and (term? obj) (rtd-ancestor? (record-type-rtd &receive) (record-rtd obj))))
-(define receive-vars (record-accessor (record-type-rtd &receive) 0))
-(define receive-variadic (record-accessor (record-type-rtd &receive) 1))
+(define receive-ids (record-accessor (record-type-rtd &receive) 0))
+(define receive-vars (record-accessor (record-type-rtd &receive) 1))
 (define receive-producer (record-accessor (record-type-rtd &receive) 2))
 (define receive-consumer (record-accessor (record-type-rtd &receive) 3))
 (define make-receive (record-constructor (record-type-rcd &receive)))

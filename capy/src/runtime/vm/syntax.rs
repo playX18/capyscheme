@@ -227,12 +227,15 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     if props.is_pair() {
         let filename = props
             .assq(sym_filename(ctx).into())
+            .map(|pair| pair.cdr())
             .unwrap_or(Value::new(false));
         let line = props
             .assq(sym_line(ctx).into())
+            .map(|pair| pair.cdr())
             .unwrap_or(Value::new(false));
         let column = props
             .assq(sym_column(ctx).into())
+            .map(|pair| pair.cdr())
             .unwrap_or(Value::new(false));
         Vector::from_slice(&ctx, &[filename, line, column]).into()
     } else {

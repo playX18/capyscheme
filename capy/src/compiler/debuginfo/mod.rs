@@ -13,7 +13,7 @@ use gimli::{AArch64, Encoding, Format, LineEncoding, Register, RiscV, RunTimeEnd
 
 use crate::cps::ReifyInfo;
 use crate::cps::term::{ContRef, FuncRef};
-use crate::runtime::value::Value;
+use crate::runtime::value::{Value, Vector};
 
 pub(crate) struct DebugContext<'gc> {
     endian: RunTimeEndian,
@@ -217,10 +217,9 @@ impl<'gc> DebugContext<'gc> {
             return (self.add_file(span), 0, 0);
         }
 
-        let filename = span.car().cdr();
-
-        let line = span.cdr().car().cdr().as_int32() as u64;
-        let column = span.cddr().car().cdr().as_int32() as u64;
+        let filename = span.downcast::<Vector>()[0].get();
+        let line = span.downcast::<Vector>()[1].get().as_int32() as u64;
+        let column = span.downcast::<Vector>()[2].get().as_int32() as u64;
 
         (self.add_file(filename), line + 1, column + 1)
     }

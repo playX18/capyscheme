@@ -151,7 +151,7 @@
                                                     (cond is_heap_obj135 => kok142 | kinit138))))))))
                                              (cond res42 => kcons44 | kalt47)))))
                                        (res12 after_call41 handler40 x)))])
-                                  (let [atom8230 (#%box handler2 #<undefined>)]
+                                  (let [atom8256 (#%box handler2 #<undefined>)]
                                     (let [module147 (#%current-module handler2)]
                                     (let [_k148 (#%cache-set! handler2 1 module147)]
                                     (fix ([same-marks?
@@ -285,7 +285,7 @@
                                           (cond atom279 => kcons175 | kalt176)))))])
                                     (letk
                                          ((cont after_call299 (res300)
-                                           (let [atom8200 (#%set-box! handler2 atom8230 res300)]
+                                           (let [atom8226 (#%set-box! handler2 atom8256 res300)]
                                            (let [module306 (#%current-module handler2)]
                                            (let [_k307 (#%cache-set! handler2 2 module306)]
                                            (fix ([valid-bound-ids?
@@ -3720,11 +3720,11 @@
                                                (fix ([proc6191
                                                (lambda (return6192 handler6193 x)
                                                  (strip return6192 handler6193 x))])
-                                               (let [cached8191 (#%cache-ref handler2 (79 . syntax->datum))]
-                                                 (let [is_heap_obj8192 (#%.is-heap-object handler2 cached8191)]
+                                               (let [cached8217 (#%cache-ref handler2 (79 . syntax->datum))]
+                                                 (let [is_heap_obj8218 (#%.is-heap-object handler2 cached8217)]
                                                  (letk
-                                                    ((cont merge8193 (cached8194)
-                                                      (let [_val6196 (#%set-box! handler2 cached8194 proc6191)]
+                                                    ((cont merge8219 (cached8220)
+                                                      (let [_val6196 (#%set-box! handler2 cached8220 proc6191)]
                                                       (let [module6197 (#%current-module handler2)]
                                                       (let [_k6198 (#%cache-set! handler2 80 module6197)]
                                                       (fix ([proc6199
@@ -5157,11 +5157,11 @@
                                                                          (res12 after_call7331 handler6201 e))))
                                                                     (cond atom7342 => kcons7329 | kalt7330))))))
                                                               (cond atom7343 => kcons7323 | kalt7325))))))))])
-                                                      (let [cached8182 (#%cache-ref handler2 (80 . $sc-dispatch))]
-                                                        (let [is_heap_obj8183 (#%.is-heap-object handler2 cached8182)]
+                                                      (let [cached8208 (#%cache-ref handler2 (80 . $sc-dispatch))]
+                                                        (let [is_heap_obj8209 (#%.is-heap-object handler2 cached8208)]
                                                         (letk
-                                                           ((cont merge8184 (cached8185)
-                                                             (let [_val7346 (#%set-box! handler2 cached8185 proc6199)]
+                                                           ((cont merge8210 (cached8211)
+                                                             (let [_val7346 (#%set-box! handler2 cached8211 proc6199)]
                                                              (let [module7347 (#%current-module handler2)]
                                                              (let [_k7348 (#%cache-set! handler2 88 module7347)]
                                                              (fix ([proc7349
@@ -5180,11 +5180,11 @@
                                                                             (continue return7350 false)))
                                                                         (cond res739' => kcons741' | kalt745')))))
                                                                   (res12 after_call738' handler7351 x)))])
-                                                             (let [cached8173 (#%cache-ref handler2 (88 . identifier?))]
-                                                               (let [is_heap_obj8174 (#%.is-heap-object handler2 cached8173)]
+                                                             (let [cached8199 (#%cache-ref handler2 (88 . identifier?))]
+                                                               (let [is_heap_obj8200 (#%.is-heap-object handler2 cached8199)]
                                                                (letk
-                                                                  ((cont merge8175 (cached8176)
-                                                                    (let [_val7354 (#%set-box! handler2 cached8176 proc7349)]
+                                                                  ((cont merge8201 (cached8202)
+                                                                    (let [_val7354 (#%set-box! handler2 cached8202 proc7349)]
                                                                     (let [module7355 (#%current-module handler2)]
                                                                     (let [_k7356 (#%cache-set! handler2 89 module7355)]
                                                                     (fix ([proc7357
@@ -5407,11 +5407,11 @@
                                                                              ((cont kalt7529 ()
                                                                                (continue cont7424 ('()))))
                                                                            (cond id => kcons7528 | kalt7529)))))))])
-                                                                    (let [cached8164 (#%cache-ref handler2 (89 . datum->syntax))]
-                                                                      (let [is_heap_obj8165 (#%.is-heap-object handler2 cached8164)]
+                                                                    (let [cached8190 (#%cache-ref handler2 (89 . datum->syntax))]
+                                                                      (let [is_heap_obj8191 (#%.is-heap-object handler2 cached8190)]
                                                                       (letk
-                                                                         ((cont merge8166 (cached8167)
-                                                                           (let [_val7532 (#%set-box! handler2 cached8167 proc7357)]
+                                                                         ((cont merge8192 (cached8193)
+                                                                           (let [_val7532 (#%set-box! handler2 cached8193 proc7357)]
                                                                            (let [module7533 (#%current-module handler2)]
                                                                            (let [_k7534 (#%cache-set! handler2 91 module7533)]
                                                                            (fix ([proc7535
@@ -5545,11 +5545,11 @@
                                                                                              (cond res739' => kcons741' | kalt745')))))
                                                                                        (res12 after_call738' handler7537 x)))))
                                                                                   (cond is_heap_obj7594 => kok7601 | kinit7597)))))))])
-                                                                           (let [cached8155 (#%cache-ref handler2 (91 . free-identifier=?))]
-                                                                             (let [is_heap_obj8156 (#%.is-heap-object handler2 cached8155)]
+                                                                           (let [cached8181 (#%cache-ref handler2 (91 . free-identifier=?))]
+                                                                             (let [is_heap_obj8182 (#%.is-heap-object handler2 cached8181)]
                                                                              (letk
-                                                                                ((cont merge8157 (cached8158)
-                                                                                  (let [_val7604 (#%set-box! handler2 cached8158 proc7535)]
+                                                                                ((cont merge8183 (cached8184)
+                                                                                  (let [_val7604 (#%set-box! handler2 cached8184 proc7535)]
                                                                                   (let [module7605 (#%current-module handler2)]
                                                                                   (let [_k7606 (#%cache-set! handler2 92 module7605)]
                                                                                   (fix ([proc7607
@@ -5729,11 +5729,11 @@
                                                                                                     (cond res739' => kcons741' | kalt745')))))
                                                                                               (res12 after_call738' handler7609 x)))))
                                                                                          (cond is_heap_obj7666 => kok7673 | kinit7669)))))))])
-                                                                                  (let [cached8146 (#%cache-ref handler2 (92 . bound-identifier=?))]
-                                                                                    (let [is_heap_obj8147 (#%.is-heap-object handler2 cached8146)]
+                                                                                  (let [cached8172 (#%cache-ref handler2 (92 . bound-identifier=?))]
+                                                                                    (let [is_heap_obj8173 (#%.is-heap-object handler2 cached8172)]
                                                                                     (letk
-                                                                                       ((cont merge8148 (cached8149)
-                                                                                         (let [_val7676 (#%set-box! handler2 cached8149 proc7607)]
+                                                                                       ((cont merge8174 (cached8175)
+                                                                                         (let [_val7676 (#%set-box! handler2 cached8175 proc7607)]
                                                                                          (let [module7677 (#%current-module handler2)]
                                                                                          (let [_k7678 (#%cache-set! handler2 93 module7677)]
                                                                                          (fix ([proc7679
@@ -7133,11 +7133,11 @@
                                                                                                             (val7941' cont7851 handler7681 rest))))
                                                                                                         (cond is_heap_obj7943 => kok7950 | kinit7946)))))))
                                                                                                   (cond atom7951 => kcons7937 | kalt7938)))))))))])
-                                                                                         (let [cached8137 (#%cache-ref handler2 (93 . macroexpand))]
-                                                                                           (let [is_heap_obj8138 (#%.is-heap-object handler2 cached8137)]
+                                                                                         (let [cached8163 (#%cache-ref handler2 (93 . macroexpand))]
+                                                                                           (let [is_heap_obj8164 (#%.is-heap-object handler2 cached8163)]
                                                                                            (letk
-                                                                                              ((cont merge8139 (cached8140)
-                                                                                                (let [_val7954 (#%set-box! handler2 cached8140 proc7679)]
+                                                                                              ((cont merge8165 (cached8166)
+                                                                                                (let [_val7954 (#%set-box! handler2 cached8166 proc7679)]
                                                                                                 (letk
                                                                                                    ((cont after_call7955 (res7956)
                                                                                                      (letk
@@ -7149,395 +7149,426 @@
                                                                                                                     (let [rv7963 (#%define handler2 tree res7962)]
                                                                                                                     (letk
                                                                                                                        ((cont after_call7964 (res7965)
-                                                                                                                         (let [rv7966 (#%define handler2 closure res7965)]
                                                                                                                          (letk
-                                                                                                                            ((cont after_call7967 (res7968)
-                                                                                                                              (let [cached7972 (#%cache-ref handler2 (93 . print))]
-                                                                                                                              (let [is_heap_obj7973 (#%.is-heap-object handler2 cached7972)]
+                                                                                                                            ((cont after_call7966 (res7967)
+                                                                                                                              (let [rv7968 (#%define handler2 closure res7967)]
                                                                                                                               (letk
-                                                                                                                                 ((cont kinit7976 ()
-                                                                                                                                   (let [module7977 (#%cache-ref handler2 93)]
-                                                                                                                                   (let [variable7978 (#%lookup-bound handler2 module7977 print)]
-                                                                                                                                   (let [_k7979 (#%cache-set! handler2 (93 . print) variable7978)]
-                                                                                                                                   (let [val7971' (#%box-ref handler2 variable7978)]
-                                                                                                                                   (val7971' return1 handler2 res7968)))))))
+                                                                                                                                 ((cont after_call7969 (res7970)
+                                                                                                                                   (let [cached7974 (#%cache-ref handler2 (93 . print))]
+                                                                                                                                   (let [is_heap_obj7975 (#%.is-heap-object handler2 cached7974)]
+                                                                                                                                   (letk
+                                                                                                                                      ((cont kinit7978 ()
+                                                                                                                                        (let [module7979 (#%cache-ref handler2 93)]
+                                                                                                                                        (let [variable7980 (#%lookup-bound handler2 module7979 print)]
+                                                                                                                                        (let [_k7981 (#%cache-set! handler2 (93 . print) variable7980)]
+                                                                                                                                        (let [val7973' (#%box-ref handler2 variable7980)]
+                                                                                                                                        (val7973' return1 handler2 res7970)))))))
+                                                                                                                                    (letk
+                                                                                                                                       ((cont kok7982 ()
+                                                                                                                                         (let [val7973' (#%box-ref handler2 cached7974)]
+                                                                                                                                         (val7973' return1 handler2 res7970))))
+                                                                                                                                     (cond is_heap_obj7975 => kok7982 | kinit7978)))))))
+                                                                                                                               (let [cached7986 (#%cache-ref handler2 (93 . closure))]
+                                                                                                                               (let [is_heap_obj7987 (#%.is-heap-object handler2 cached7986)]
                                                                                                                                (letk
-                                                                                                                                  ((cont kok7980 ()
-                                                                                                                                    (let [val7971' (#%box-ref handler2 cached7972)]
-                                                                                                                                    (val7971' return1 handler2 res7968))))
-                                                                                                                                (cond is_heap_obj7973 => kok7980 | kinit7976)))))))
-                                                                                                                          (let [cached7984 (#%cache-ref handler2 (93 . closure))]
-                                                                                                                          (let [is_heap_obj7985 (#%.is-heap-object handler2 cached7984)]
+                                                                                                                                  ((cont kinit7990 ()
+                                                                                                                                    (let [module7991 (#%cache-ref handler2 93)]
+                                                                                                                                    (let [variable7992 (#%lookup-bound handler2 module7991 closure)]
+                                                                                                                                    (let [_k7993 (#%cache-set! handler2 (93 . closure) variable7992)]
+                                                                                                                                    (let [val7985' (#%box-ref handler2 variable7992)]
+                                                                                                                                    (val7985' after_call7969 handler2 '())))))))
+                                                                                                                                (letk
+                                                                                                                                   ((cont kok7994 ()
+                                                                                                                                     (let [val7985' (#%box-ref handler2 cached7986)]
+                                                                                                                                     (val7985' after_call7969 handler2 '()))))
+                                                                                                                                 (cond is_heap_obj7987 => kok7994 | kinit7990)))))))))
+                                                                                                                          (let [cached8010 (#%cache-ref handler2 (93 . interpret/preprocess))]
+                                                                                                                          (let [is_heap_obj8011 (#%.is-heap-object handler2 cached8010)]
                                                                                                                           (letk
-                                                                                                                             ((cont kinit7988 ()
-                                                                                                                               (let [module7989 (#%cache-ref handler2 93)]
-                                                                                                                               (let [variable7990 (#%lookup-bound handler2 module7989 closure)]
-                                                                                                                               (let [_k7991 (#%cache-set! handler2 (93 . closure) variable7990)]
-                                                                                                                               (let [val7983' (#%box-ref handler2 variable7990)]
-                                                                                                                               (val7983' after_call7967 handler2 '())))))))
+                                                                                                                             ((cont merge8012 (cached8013)
+                                                                                                                               (let [val7997 (#%box-ref handler2 cached8013)]
+                                                                                                                               (let [cached8001 (#%cache-ref handler2 (93 . tree))]
+                                                                                                                               (let [is_heap_obj8002 (#%.is-heap-object handler2 cached8001)]
+                                                                                                                               (letk
+                                                                                                                                  ((cont kinit8005 ()
+                                                                                                                                    (let [module8006 (#%cache-ref handler2 93)]
+                                                                                                                                    (let [variable8007 (#%lookup-bound handler2 module8006 tree)]
+                                                                                                                                    (let [_k8008 (#%cache-set! handler2 (93 . tree) variable8007)]
+                                                                                                                                    (let [val8000' (#%box-ref handler2 variable8007)]
+                                                                                                                                    (val7997 after_call7966 handler2 val8000' '())))))))
+                                                                                                                                (letk
+                                                                                                                                   ((cont kok8009 ()
+                                                                                                                                     (let [val8000' (#%box-ref handler2 cached8001)]
+                                                                                                                                     (val7997 after_call7966 handler2 val8000' '()))))
+                                                                                                                                 (cond is_heap_obj8002 => kok8009 | kinit8005))))))))
                                                                                                                            (letk
-                                                                                                                              ((cont kok7992 ()
-                                                                                                                                (let [val7983' (#%box-ref handler2 cached7984)]
-                                                                                                                                (val7983' after_call7967 handler2 '()))))
-                                                                                                                            (cond is_heap_obj7985 => kok7992 | kinit7988)))))))))
-                                                                                                                     (let [cached8008 (#%cache-ref handler2 (93 . interpret/preprocess))]
-                                                                                                                     (let [is_heap_obj8009 (#%.is-heap-object handler2 cached8008)]
+                                                                                                                              ((cont kinit8014 ()
+                                                                                                                                (let [module8015 (#%cache-ref handler2 93)]
+                                                                                                                                (let [variable8016 (#%lookup-bound handler2 module8015 interpret/preprocess)]
+                                                                                                                                (let [_k8017 (#%cache-set! handler2 (93 . interpret/preprocess) variable8016)]
+                                                                                                                                (continue merge8012 variable8016))))))
+                                                                                                                            (letk
+                                                                                                                               ((cont kok8018 ()
+                                                                                                                                 (continue merge8012 cached8010)))
+                                                                                                                             (cond is_heap_obj8011 => kok8018 | kinit8014)))))))))
+                                                                                                                     (let [cached8034 (#%cache-ref handler2 (93 . pretty-print-ir))]
+                                                                                                                     (let [is_heap_obj8035 (#%.is-heap-object handler2 cached8034)]
                                                                                                                      (letk
-                                                                                                                        ((cont merge8010 (cached8011)
-                                                                                                                          (let [val7995 (#%box-ref handler2 cached8011)]
-                                                                                                                          (let [cached7999 (#%cache-ref handler2 (93 . tree))]
-                                                                                                                          (let [is_heap_obj8000 (#%.is-heap-object handler2 cached7999)]
+                                                                                                                        ((cont merge8036 (cached8037)
+                                                                                                                          (let [val8021 (#%box-ref handler2 cached8037)]
+                                                                                                                          (let [cached8025 (#%cache-ref handler2 (93 . tree))]
+                                                                                                                          (let [is_heap_obj8026 (#%.is-heap-object handler2 cached8025)]
                                                                                                                           (letk
-                                                                                                                             ((cont kinit8003 ()
-                                                                                                                               (let [module8004 (#%cache-ref handler2 93)]
-                                                                                                                               (let [variable8005 (#%lookup-bound handler2 module8004 tree)]
-                                                                                                                               (let [_k8006 (#%cache-set! handler2 (93 . tree) variable8005)]
-                                                                                                                               (let [val7998' (#%box-ref handler2 variable8005)]
-                                                                                                                               (val7995 after_call7964 handler2 val7998' '())))))))
+                                                                                                                             ((cont kinit8029 ()
+                                                                                                                               (let [module8030 (#%cache-ref handler2 93)]
+                                                                                                                               (let [variable8031 (#%lookup-bound handler2 module8030 tree)]
+                                                                                                                               (let [_k8032 (#%cache-set! handler2 (93 . tree) variable8031)]
+                                                                                                                               (let [val8024' (#%box-ref handler2 variable8031)]
+                                                                                                                               (val8021 after_call7964 handler2 val8024')))))))
                                                                                                                            (letk
-                                                                                                                              ((cont kok8007 ()
-                                                                                                                                (let [val7998' (#%box-ref handler2 cached7999)]
-                                                                                                                                (val7995 after_call7964 handler2 val7998' '()))))
-                                                                                                                            (cond is_heap_obj8000 => kok8007 | kinit8003))))))))
+                                                                                                                              ((cont kok8033 ()
+                                                                                                                                (let [val8024' (#%box-ref handler2 cached8025)]
+                                                                                                                                (val8021 after_call7964 handler2 val8024'))))
+                                                                                                                            (cond is_heap_obj8026 => kok8033 | kinit8029))))))))
                                                                                                                       (letk
-                                                                                                                         ((cont kinit8012 ()
-                                                                                                                           (let [module8013 (#%cache-ref handler2 93)]
-                                                                                                                           (let [variable8014 (#%lookup-bound handler2 module8013 interpret/preprocess)]
-                                                                                                                           (let [_k8015 (#%cache-set! handler2 (93 . interpret/preprocess) variable8014)]
-                                                                                                                           (continue merge8010 variable8014))))))
+                                                                                                                         ((cont kinit8038 ()
+                                                                                                                           (let [module8039 (#%cache-ref handler2 93)]
+                                                                                                                           (let [variable8040 (#%lookup-bound handler2 module8039 pretty-print-ir)]
+                                                                                                                           (let [_k8041 (#%cache-set! handler2 (93 . pretty-print-ir) variable8040)]
+                                                                                                                           (continue merge8036 variable8040))))))
                                                                                                                        (letk
-                                                                                                                          ((cont kok8016 ()
-                                                                                                                            (continue merge8010 cached8008)))
-                                                                                                                        (cond is_heap_obj8009 => kok8016 | kinit8012))))))))))
-                                                                                                                (let [cached8020 (#%cache-ref handler2 (93 . macroexpand))]
-                                                                                                                (let [is_heap_obj8021 (#%.is-heap-object handler2 cached8020)]
+                                                                                                                          ((cont kok8042 ()
+                                                                                                                            (continue merge8036 cached8034)))
+                                                                                                                        (cond is_heap_obj8035 => kok8042 | kinit8038))))))))))
+                                                                                                                (let [cached8046 (#%cache-ref handler2 (93 . macroexpand))]
+                                                                                                                (let [is_heap_obj8047 (#%.is-heap-object handler2 cached8046)]
                                                                                                                 (letk
-                                                                                                                   ((cont kinit8024 ()
-                                                                                                                     (let [module8025 (#%cache-ref handler2 93)]
-                                                                                                                     (let [variable8026 (#%lookup-bound handler2 module8025 macroexpand)]
-                                                                                                                     (let [_k8027 (#%cache-set! handler2 (93 . macroexpand) variable8026)]
-                                                                                                                     (let [val8019' (#%box-ref handler2 variable8026)]
-                                                                                                                     (val8019' after_call7961 handler2 (if 1 2 3))))))))
+                                                                                                                   ((cont kinit8050 ()
+                                                                                                                     (let [module8051 (#%cache-ref handler2 93)]
+                                                                                                                     (let [variable8052 (#%lookup-bound handler2 module8051 macroexpand)]
+                                                                                                                     (let [_k8053 (#%cache-set! handler2 (93 . macroexpand) variable8052)]
+                                                                                                                     (let [val8045' (#%box-ref handler2 variable8052)]
+                                                                                                                     (val8045' after_call7961 handler2 (if 1 2 3))))))))
                                                                                                                  (letk
-                                                                                                                    ((cont kok8028 ()
-                                                                                                                      (let [val8019' (#%box-ref handler2 cached8020)]
-                                                                                                                      (val8019' after_call7961 handler2 (if 1 2 3)))))
-                                                                                                                  (cond is_heap_obj8021 => kok8028 | kinit8024))))))))
-                                                                                                           (let [module8029 (#%current-module handler2)]
-                                                                                                           (let [_k8030 (#%cache-set! handler2 96 module8029)]
-                                                                                                           (fix ([proc8031
-                                                                                                           (lambda (return8032 handler8033 e r w s mod)
+                                                                                                                    ((cont kok8054 ()
+                                                                                                                      (let [val8045' (#%box-ref handler2 cached8046)]
+                                                                                                                      (val8045' after_call7961 handler2 (if 1 2 3)))))
+                                                                                                                  (cond is_heap_obj8047 => kok8054 | kinit8050))))))))
+                                                                                                           (let [module8055 (#%current-module handler2)]
+                                                                                                           (let [_k8056 (#%cache-set! handler2 96 module8055)]
+                                                                                                           (fix ([proc8057
+                                                                                                           (lambda (return8058 handler8059 e r w s mod)
                                                                                                              (letk
-                                                                                                                  ((cont letstar8123 (tmp-1)
+                                                                                                                  ((cont letstar8149 (tmp-1)
                                                                                                                     (letk
-                                                                                                                       ((cont kcons8034 ()
-                                                                                                                         (let [module8035 (#%current-module handler8033)]
-                                                                                                                         (let [_k8036 (#%cache-set! handler8033 97 module8035)]
-                                                                                                                         (fix ([proc8037
-                                                                                                                         (lambda (return8038 handler8039 test then)
+                                                                                                                       ((cont kcons8060 ()
+                                                                                                                         (let [module8061 (#%current-module handler8059)]
+                                                                                                                         (let [_k8062 (#%cache-set! handler8059 97 module8061)]
+                                                                                                                         (fix ([proc8063
+                                                                                                                         (lambda (return8064 handler8065 test then)
                                                                                                                            (letk
-                                                                                                                                ((cont after_call8040 (res8041)
+                                                                                                                                ((cont after_call8066 (res8067)
                                                                                                                                   (letk
-                                                                                                                                     ((cont after_call8042 (res8043)
+                                                                                                                                     ((cont after_call8068 (res8069)
                                                                                                                                        (letk
-                                                                                                                                          ((cont after_call8044 (res8045)
-                                                                                                                                            (let [cached5410' (#%cache-ref handler8039 (25 . make-if))]
-                                                                                                                                            (let [is_heap_obj5411' (#%.is-heap-object handler8039 cached5410')]
+                                                                                                                                          ((cont after_call8070 (res8071)
+                                                                                                                                            (let [cached5410' (#%cache-ref handler8065 (25 . make-if))]
+                                                                                                                                            (let [is_heap_obj5411' (#%.is-heap-object handler8065 cached5410')]
                                                                                                                                             (letk
                                                                                                                                                ((cont kinit5414' ()
-                                                                                                                                                 (let [module5415' (#%cache-ref handler8039 25)]
-                                                                                                                                                 (let [variable5416' (#%lookup-bound handler8039 module5415' make-if)]
-                                                                                                                                                 (let [_k5417' (#%cache-set! handler8039 (25 . make-if) variable5416')]
-                                                                                                                                                 (let [val5409'' (#%box-ref handler8039 variable5416')]
-                                                                                                                                                 (val5409'' return8038 handler8039 s res8041 res8043 res8045)))))))
+                                                                                                                                                 (let [module5415' (#%cache-ref handler8065 25)]
+                                                                                                                                                 (let [variable5416' (#%lookup-bound handler8065 module5415' make-if)]
+                                                                                                                                                 (let [_k5417' (#%cache-set! handler8065 (25 . make-if) variable5416')]
+                                                                                                                                                 (let [val5409'' (#%box-ref handler8065 variable5416')]
+                                                                                                                                                 (val5409'' return8064 handler8065 s res8067 res8069 res8071)))))))
                                                                                                                                              (letk
                                                                                                                                                 ((cont kok5418' ()
-                                                                                                                                                  (let [val5409'' (#%box-ref handler8039 cached5410')]
-                                                                                                                                                  (val5409'' return8038 handler8039 s res8041 res8043 res8045))))
+                                                                                                                                                  (let [val5409'' (#%box-ref handler8065 cached5410')]
+                                                                                                                                                  (val5409'' return8064 handler8065 s res8067 res8069 res8071))))
                                                                                                                                               (cond is_heap_obj5411' => kok5418' | kinit5414')))))))
-                                                                                                                                        (let [cached8049 (#%cache-ref handler8039 (97 . no-source))]
-                                                                                                                                        (let [is_heap_obj8050 (#%.is-heap-object handler8039 cached8049)]
+                                                                                                                                        (let [cached8075 (#%cache-ref handler8065 (97 . no-source))]
+                                                                                                                                        (let [is_heap_obj8076 (#%.is-heap-object handler8065 cached8075)]
                                                                                                                                         (letk
-                                                                                                                                           ((cont kinit8053 ()
-                                                                                                                                             (let [module8054 (#%cache-ref handler8039 97)]
-                                                                                                                                             (let [variable8055 (#%lookup-bound handler8039 module8054 no-source)]
-                                                                                                                                             (let [_k8056 (#%cache-set! handler8039 (97 . no-source) variable8055)]
-                                                                                                                                             (let [val8048' (#%box-ref handler8039 variable8055)]
-                                                                                                                                             (let [cached4654' (#%cache-ref handler8039 (25 . make-void))]
-                                                                                                                                             (let [is_heap_obj4655' (#%.is-heap-object handler8039 cached4654')]
+                                                                                                                                           ((cont kinit8079 ()
+                                                                                                                                             (let [module8080 (#%cache-ref handler8065 97)]
+                                                                                                                                             (let [variable8081 (#%lookup-bound handler8065 module8080 no-source)]
+                                                                                                                                             (let [_k8082 (#%cache-set! handler8065 (97 . no-source) variable8081)]
+                                                                                                                                             (let [val8074' (#%box-ref handler8065 variable8081)]
+                                                                                                                                             (let [cached4654' (#%cache-ref handler8065 (25 . make-void))]
+                                                                                                                                             (let [is_heap_obj4655' (#%.is-heap-object handler8065 cached4654')]
                                                                                                                                              (letk
                                                                                                                                                 ((cont kinit4658' ()
-                                                                                                                                                  (let [module4659' (#%cache-ref handler8039 25)]
-                                                                                                                                                  (let [variable4660' (#%lookup-bound handler8039 module4659' make-void)]
-                                                                                                                                                  (let [_k4661' (#%cache-set! handler8039 (25 . make-void) variable4660')]
-                                                                                                                                                  (let [val4653'' (#%box-ref handler8039 variable4660')]
-                                                                                                                                                  (val4653'' after_call8044 handler8039 val8048')))))))
+                                                                                                                                                  (let [module4659' (#%cache-ref handler8065 25)]
+                                                                                                                                                  (let [variable4660' (#%lookup-bound handler8065 module4659' make-void)]
+                                                                                                                                                  (let [_k4661' (#%cache-set! handler8065 (25 . make-void) variable4660')]
+                                                                                                                                                  (let [val4653'' (#%box-ref handler8065 variable4660')]
+                                                                                                                                                  (val4653'' after_call8070 handler8065 val8074')))))))
                                                                                                                                               (letk
                                                                                                                                                  ((cont kok4662' ()
-                                                                                                                                                   (let [val4653'' (#%box-ref handler8039 cached4654')]
-                                                                                                                                                   (val4653'' after_call8044 handler8039 val8048'))))
+                                                                                                                                                   (let [val4653'' (#%box-ref handler8065 cached4654')]
+                                                                                                                                                   (val4653'' after_call8070 handler8065 val8074'))))
                                                                                                                                                (cond is_heap_obj4655' => kok4662' | kinit4658')))))))))))
                                                                                                                                          (letk
-                                                                                                                                            ((cont kok8057 ()
-                                                                                                                                              (let [val8048' (#%box-ref handler8039 cached8049)]
-                                                                                                                                              (let [cached4654' (#%cache-ref handler8039 (25 . make-void))]
-                                                                                                                                              (let [is_heap_obj4655' (#%.is-heap-object handler8039 cached4654')]
+                                                                                                                                            ((cont kok8083 ()
+                                                                                                                                              (let [val8074' (#%box-ref handler8065 cached8075)]
+                                                                                                                                              (let [cached4654' (#%cache-ref handler8065 (25 . make-void))]
+                                                                                                                                              (let [is_heap_obj4655' (#%.is-heap-object handler8065 cached4654')]
                                                                                                                                               (letk
                                                                                                                                                  ((cont kinit4658' ()
-                                                                                                                                                   (let [module4659' (#%cache-ref handler8039 25)]
-                                                                                                                                                   (let [variable4660' (#%lookup-bound handler8039 module4659' make-void)]
-                                                                                                                                                   (let [_k4661' (#%cache-set! handler8039 (25 . make-void) variable4660')]
-                                                                                                                                                   (let [val4653'' (#%box-ref handler8039 variable4660')]
-                                                                                                                                                   (val4653'' after_call8044 handler8039 val8048')))))))
+                                                                                                                                                   (let [module4659' (#%cache-ref handler8065 25)]
+                                                                                                                                                   (let [variable4660' (#%lookup-bound handler8065 module4659' make-void)]
+                                                                                                                                                   (let [_k4661' (#%cache-set! handler8065 (25 . make-void) variable4660')]
+                                                                                                                                                   (let [val4653'' (#%box-ref handler8065 variable4660')]
+                                                                                                                                                   (val4653'' after_call8070 handler8065 val8074')))))))
                                                                                                                                                (letk
                                                                                                                                                   ((cont kok4662' ()
-                                                                                                                                                    (let [val4653'' (#%box-ref handler8039 cached4654')]
-                                                                                                                                                    (val4653'' after_call8044 handler8039 val8048'))))
+                                                                                                                                                    (let [val4653'' (#%box-ref handler8065 cached4654')]
+                                                                                                                                                    (val4653'' after_call8070 handler8065 val8074'))))
                                                                                                                                                 (cond is_heap_obj4655' => kok4662' | kinit4658'))))))))
-                                                                                                                                          (cond is_heap_obj8050 => kok8057 | kinit8053))))))))
-                                                                                                                                   (expand after_call8042 handler8039 then r w mod))))
-                                                                                                                              (expand after_call8040 handler8039 test r w mod)))])
-                                                                                                                         (let [cached8061 (#%cache-ref handler8033 (97 . apply))]
-                                                                                                                           (let [is_heap_obj8062 (#%.is-heap-object handler8033 cached8061)]
+                                                                                                                                          (cond is_heap_obj8076 => kok8083 | kinit8079))))))))
+                                                                                                                                   (expand after_call8068 handler8065 then r w mod))))
+                                                                                                                              (expand after_call8066 handler8065 test r w mod)))])
+                                                                                                                         (let [cached8087 (#%cache-ref handler8059 (97 . apply))]
+                                                                                                                           (let [is_heap_obj8088 (#%.is-heap-object handler8059 cached8087)]
                                                                                                                            (letk
-                                                                                                                              ((cont kinit8065 ()
-                                                                                                                                (let [module8066 (#%cache-ref handler8033 97)]
-                                                                                                                                (let [variable8067 (#%lookup-bound handler8033 module8066 apply)]
-                                                                                                                                (let [_k8068 (#%cache-set! handler8033 (97 . apply) variable8067)]
-                                                                                                                                (let [val8060' (#%box-ref handler8033 variable8067)]
-                                                                                                                                (val8060' return8032 handler8033 proc8037 tmp-1)))))))
+                                                                                                                              ((cont kinit8091 ()
+                                                                                                                                (let [module8092 (#%cache-ref handler8059 97)]
+                                                                                                                                (let [variable8093 (#%lookup-bound handler8059 module8092 apply)]
+                                                                                                                                (let [_k8094 (#%cache-set! handler8059 (97 . apply) variable8093)]
+                                                                                                                                (let [val8086' (#%box-ref handler8059 variable8093)]
+                                                                                                                                (val8086' return8058 handler8059 proc8063 tmp-1)))))))
                                                                                                                             (letk
-                                                                                                                               ((cont kok8069 ()
-                                                                                                                                 (let [val8060' (#%box-ref handler8033 cached8061)]
-                                                                                                                                 (val8060' return8032 handler8033 proc8037 tmp-1))))
-                                                                                                                             (cond is_heap_obj8062 => kok8069 | kinit8065))))))))))
+                                                                                                                               ((cont kok8095 ()
+                                                                                                                                 (let [val8086' (#%box-ref handler8059 cached8087)]
+                                                                                                                                 (val8086' return8058 handler8059 proc8063 tmp-1))))
+                                                                                                                             (cond is_heap_obj8088 => kok8095 | kinit8091))))))))))
                                                                                                                      (letk
-                                                                                                                        ((cont kalt8070 ()
+                                                                                                                        ((cont kalt8096 ()
                                                                                                                           (letk
-                                                                                                                             ((cont after_call8071 (res8072)
+                                                                                                                             ((cont after_call8097 (res8098)
                                                                                                                                (letk
-                                                                                                                                  ((cont kcons8074 ()
-                                                                                                                                    (let [module8075 (#%current-module handler8033)]
-                                                                                                                                    (let [_k8076 (#%cache-set! handler8033 98 module8075)]
-                                                                                                                                    (fix ([proc8077
-                                                                                                                                    (lambda (return8078 handler8079 test then else)
+                                                                                                                                  ((cont kcons8100 ()
+                                                                                                                                    (let [module8101 (#%current-module handler8059)]
+                                                                                                                                    (let [_k8102 (#%cache-set! handler8059 98 module8101)]
+                                                                                                                                    (fix ([proc8103
+                                                                                                                                    (lambda (return8104 handler8105 test then else)
                                                                                                                                       (letk
-                                                                                                                                           ((cont after_call8080 (res8081)
+                                                                                                                                           ((cont after_call8106 (res8107)
                                                                                                                                              (letk
-                                                                                                                                                ((cont after_call8082 (res8083)
+                                                                                                                                                ((cont after_call8108 (res8109)
                                                                                                                                                   (letk
-                                                                                                                                                     ((cont after_call8084 (res8085)
-                                                                                                                                                       (let [cached5410' (#%cache-ref handler8079 (25 . make-if))]
-                                                                                                                                                       (let [is_heap_obj5411' (#%.is-heap-object handler8079 cached5410')]
+                                                                                                                                                     ((cont after_call8110 (res8111)
+                                                                                                                                                       (let [cached5410' (#%cache-ref handler8105 (25 . make-if))]
+                                                                                                                                                       (let [is_heap_obj5411' (#%.is-heap-object handler8105 cached5410')]
                                                                                                                                                        (letk
                                                                                                                                                           ((cont kinit5414' ()
-                                                                                                                                                            (let [module5415' (#%cache-ref handler8079 25)]
-                                                                                                                                                            (let [variable5416' (#%lookup-bound handler8079 module5415' make-if)]
-                                                                                                                                                            (let [_k5417' (#%cache-set! handler8079 (25 . make-if) variable5416')]
-                                                                                                                                                            (let [val5409'' (#%box-ref handler8079 variable5416')]
-                                                                                                                                                            (val5409'' return8078 handler8079 s res8081 res8083 res8085)))))))
+                                                                                                                                                            (let [module5415' (#%cache-ref handler8105 25)]
+                                                                                                                                                            (let [variable5416' (#%lookup-bound handler8105 module5415' make-if)]
+                                                                                                                                                            (let [_k5417' (#%cache-set! handler8105 (25 . make-if) variable5416')]
+                                                                                                                                                            (let [val5409'' (#%box-ref handler8105 variable5416')]
+                                                                                                                                                            (val5409'' return8104 handler8105 s res8107 res8109 res8111)))))))
                                                                                                                                                         (letk
                                                                                                                                                            ((cont kok5418' ()
-                                                                                                                                                             (let [val5409'' (#%box-ref handler8079 cached5410')]
-                                                                                                                                                             (val5409'' return8078 handler8079 s res8081 res8083 res8085))))
+                                                                                                                                                             (let [val5409'' (#%box-ref handler8105 cached5410')]
+                                                                                                                                                             (val5409'' return8104 handler8105 s res8107 res8109 res8111))))
                                                                                                                                                          (cond is_heap_obj5411' => kok5418' | kinit5414')))))))
-                                                                                                                                                   (expand after_call8084 handler8079 else r w mod))))
-                                                                                                                                              (expand after_call8082 handler8079 then r w mod))))
-                                                                                                                                         (expand after_call8080 handler8079 test r w mod)))])
-                                                                                                                                    (let [cached8089 (#%cache-ref handler8033 (98 . apply))]
-                                                                                                                                      (let [is_heap_obj8090 (#%.is-heap-object handler8033 cached8089)]
+                                                                                                                                                   (expand after_call8110 handler8105 else r w mod))))
+                                                                                                                                              (expand after_call8108 handler8105 then r w mod))))
+                                                                                                                                         (expand after_call8106 handler8105 test r w mod)))])
+                                                                                                                                    (let [cached8115 (#%cache-ref handler8059 (98 . apply))]
+                                                                                                                                      (let [is_heap_obj8116 (#%.is-heap-object handler8059 cached8115)]
                                                                                                                                       (letk
-                                                                                                                                         ((cont kinit8093 ()
-                                                                                                                                           (let [module8094 (#%cache-ref handler8033 98)]
-                                                                                                                                           (let [variable8095 (#%lookup-bound handler8033 module8094 apply)]
-                                                                                                                                           (let [_k8096 (#%cache-set! handler8033 (98 . apply) variable8095)]
-                                                                                                                                           (let [val8088' (#%box-ref handler8033 variable8095)]
-                                                                                                                                           (val8088' return8032 handler8033 proc8077 res8072)))))))
+                                                                                                                                         ((cont kinit8119 ()
+                                                                                                                                           (let [module8120 (#%cache-ref handler8059 98)]
+                                                                                                                                           (let [variable8121 (#%lookup-bound handler8059 module8120 apply)]
+                                                                                                                                           (let [_k8122 (#%cache-set! handler8059 (98 . apply) variable8121)]
+                                                                                                                                           (let [val8114' (#%box-ref handler8059 variable8121)]
+                                                                                                                                           (val8114' return8058 handler8059 proc8103 res8098)))))))
                                                                                                                                        (letk
-                                                                                                                                          ((cont kok8097 ()
-                                                                                                                                            (let [val8088' (#%box-ref handler8033 cached8089)]
-                                                                                                                                            (val8088' return8032 handler8033 proc8077 res8072))))
-                                                                                                                                        (cond is_heap_obj8090 => kok8097 | kinit8093))))))))))
+                                                                                                                                          ((cont kok8123 ()
+                                                                                                                                            (let [val8114' (#%box-ref handler8059 cached8115)]
+                                                                                                                                            (val8114' return8058 handler8059 proc8103 res8098))))
+                                                                                                                                        (cond is_heap_obj8116 => kok8123 | kinit8119))))))))))
                                                                                                                                 (letk
-                                                                                                                                   ((cont kalt8098 ()
-                                                                                                                                     (let [cached8102 (#%cache-ref handler8033 (96 . syntax-violation))]
-                                                                                                                                     (let [is_heap_obj8103 (#%.is-heap-object handler8033 cached8102)]
+                                                                                                                                   ((cont kalt8124 ()
+                                                                                                                                     (let [cached8128 (#%cache-ref handler8059 (96 . syntax-violation))]
+                                                                                                                                     (let [is_heap_obj8129 (#%.is-heap-object handler8059 cached8128)]
                                                                                                                                      (letk
-                                                                                                                                        ((cont kinit8106 ()
-                                                                                                                                          (let [module8107 (#%cache-ref handler8033 96)]
-                                                                                                                                          (let [variable8108 (#%lookup-bound handler8033 module8107 syntax-violation)]
-                                                                                                                                          (let [_k8109 (#%cache-set! handler8033 (96 . syntax-violation) variable8108)]
-                                                                                                                                          (let [val8101' (#%box-ref handler8033 variable8108)]
-                                                                                                                                          (val8101' return8032 handler8033 false source expression failed to match any pattern e)))))))
+                                                                                                                                        ((cont kinit8132 ()
+                                                                                                                                          (let [module8133 (#%cache-ref handler8059 96)]
+                                                                                                                                          (let [variable8134 (#%lookup-bound handler8059 module8133 syntax-violation)]
+                                                                                                                                          (let [_k8135 (#%cache-set! handler8059 (96 . syntax-violation) variable8134)]
+                                                                                                                                          (let [val8127' (#%box-ref handler8059 variable8134)]
+                                                                                                                                          (val8127' return8058 handler8059 false source expression failed to match any pattern e)))))))
                                                                                                                                       (letk
-                                                                                                                                         ((cont kok8110 ()
-                                                                                                                                           (let [val8101' (#%box-ref handler8033 cached8102)]
-                                                                                                                                           (val8101' return8032 handler8033 false source expression failed to match any pattern e))))
-                                                                                                                                       (cond is_heap_obj8103 => kok8110 | kinit8106)))))))
-                                                                                                                                 (cond res8072 => kcons8074 | kalt8098)))))
-                                                                                                                           (let [cached8114 (#%cache-ref handler8033 (96 . $sc-dispatch))]
-                                                                                                                           (let [is_heap_obj8115 (#%.is-heap-object handler8033 cached8114)]
+                                                                                                                                         ((cont kok8136 ()
+                                                                                                                                           (let [val8127' (#%box-ref handler8059 cached8128)]
+                                                                                                                                           (val8127' return8058 handler8059 false source expression failed to match any pattern e))))
+                                                                                                                                       (cond is_heap_obj8129 => kok8136 | kinit8132)))))))
+                                                                                                                                 (cond res8098 => kcons8100 | kalt8124)))))
+                                                                                                                           (let [cached8140 (#%cache-ref handler8059 (96 . $sc-dispatch))]
+                                                                                                                           (let [is_heap_obj8141 (#%.is-heap-object handler8059 cached8140)]
                                                                                                                            (letk
-                                                                                                                              ((cont kinit8118 ()
-                                                                                                                                (let [module8119 (#%cache-ref handler8033 96)]
-                                                                                                                                (let [variable8120 (#%lookup-bound handler8033 module8119 $sc-dispatch)]
-                                                                                                                                (let [_k8121 (#%cache-set! handler8033 (96 . $sc-dispatch) variable8120)]
-                                                                                                                                (let [val8113' (#%box-ref handler8033 variable8120)]
-                                                                                                                                (val8113' after_call8071 handler8033 e (_ any any any))))))))
+                                                                                                                              ((cont kinit8144 ()
+                                                                                                                                (let [module8145 (#%cache-ref handler8059 96)]
+                                                                                                                                (let [variable8146 (#%lookup-bound handler8059 module8145 $sc-dispatch)]
+                                                                                                                                (let [_k8147 (#%cache-set! handler8059 (96 . $sc-dispatch) variable8146)]
+                                                                                                                                (let [val8139' (#%box-ref handler8059 variable8146)]
+                                                                                                                                (val8139' after_call8097 handler8059 e (_ any any any))))))))
                                                                                                                             (letk
-                                                                                                                               ((cont kok8122 ()
-                                                                                                                                 (let [val8113' (#%box-ref handler8033 cached8114)]
-                                                                                                                                 (val8113' after_call8071 handler8033 e (_ any any any)))))
-                                                                                                                             (cond is_heap_obj8115 => kok8122 | kinit8118))))))))
-                                                                                                                      (cond tmp-1 => kcons8034 | kalt8070)))))
-                                                                                                                (let [cached8127 (#%cache-ref handler8033 (96 . $sc-dispatch))]
-                                                                                                                (let [is_heap_obj8128 (#%.is-heap-object handler8033 cached8127)]
+                                                                                                                               ((cont kok8148 ()
+                                                                                                                                 (let [val8139' (#%box-ref handler8059 cached8140)]
+                                                                                                                                 (val8139' after_call8097 handler8059 e (_ any any any)))))
+                                                                                                                             (cond is_heap_obj8141 => kok8148 | kinit8144))))))))
+                                                                                                                      (cond tmp-1 => kcons8060 | kalt8096)))))
+                                                                                                                (let [cached8153 (#%cache-ref handler8059 (96 . $sc-dispatch))]
+                                                                                                                (let [is_heap_obj8154 (#%.is-heap-object handler8059 cached8153)]
                                                                                                                 (letk
-                                                                                                                   ((cont kinit8131 ()
-                                                                                                                     (let [module8132 (#%cache-ref handler8033 96)]
-                                                                                                                     (let [variable8133 (#%lookup-bound handler8033 module8132 $sc-dispatch)]
-                                                                                                                     (let [_k8134 (#%cache-set! handler8033 (96 . $sc-dispatch) variable8133)]
-                                                                                                                     (let [val8126' (#%box-ref handler8033 variable8133)]
-                                                                                                                     (val8126' letstar8123 handler8033 e (_ any any))))))))
+                                                                                                                   ((cont kinit8157 ()
+                                                                                                                     (let [module8158 (#%cache-ref handler8059 96)]
+                                                                                                                     (let [variable8159 (#%lookup-bound handler8059 module8158 $sc-dispatch)]
+                                                                                                                     (let [_k8160 (#%cache-set! handler8059 (96 . $sc-dispatch) variable8159)]
+                                                                                                                     (let [val8152' (#%box-ref handler8059 variable8159)]
+                                                                                                                     (val8152' letstar8149 handler8059 e (_ any any))))))))
                                                                                                                  (letk
-                                                                                                                    ((cont kok8135 ()
-                                                                                                                      (let [val8126' (#%box-ref handler8033 cached8127)]
-                                                                                                                      (val8126' letstar8123 handler8033 e (_ any any)))))
-                                                                                                                  (cond is_heap_obj8128 => kok8135 | kinit8131)))))))])
-                                                                                                           (global-extend after_call7959 handler2 core if proc8031)))))))
+                                                                                                                    ((cont kok8161 ()
+                                                                                                                      (let [val8152' (#%box-ref handler8059 cached8153)]
+                                                                                                                      (val8152' letstar8149 handler8059 e (_ any any)))))
+                                                                                                                  (cond is_heap_obj8154 => kok8161 | kinit8157)))))))])
+                                                                                                           (global-extend after_call7959 handler2 core if proc8057)))))))
                                                                                                       (global-extend after_call7957 handler2 begin begin '()))))
                                                                                                  (global-extend after_call7955 handler2 define define '())))))
                                                                                             (letk
-                                                                                               ((cont kinit8141 ()
-                                                                                                 (let [module8142 (#%cache-ref handler2 93)]
-                                                                                                 (let [variable8143 (#%lookup handler2 module8142 macroexpand)]
-                                                                                                 (let [_k8144 (#%cache-set! handler2 (93 . macroexpand) variable8143)]
-                                                                                                 (continue merge8139 variable8143))))))
+                                                                                               ((cont kinit8167 ()
+                                                                                                 (let [module8168 (#%cache-ref handler2 93)]
+                                                                                                 (let [variable8169 (#%lookup handler2 module8168 macroexpand)]
+                                                                                                 (let [_k8170 (#%cache-set! handler2 (93 . macroexpand) variable8169)]
+                                                                                                 (continue merge8165 variable8169))))))
                                                                                              (letk
-                                                                                                ((cont kok8145 ()
-                                                                                                  (continue merge8139 cached8137)))
-                                                                                              (cond is_heap_obj8138 => kok8145 | kinit8141))))))))))))
+                                                                                                ((cont kok8171 ()
+                                                                                                  (continue merge8165 cached8163)))
+                                                                                              (cond is_heap_obj8164 => kok8171 | kinit8167))))))))))))
                                                                                      (letk
-                                                                                        ((cont kinit8150 ()
-                                                                                          (let [module8151 (#%cache-ref handler2 92)]
-                                                                                          (let [variable8152 (#%lookup handler2 module8151 bound-identifier=?)]
-                                                                                          (let [_k8153 (#%cache-set! handler2 (92 . bound-identifier=?) variable8152)]
-                                                                                          (continue merge8148 variable8152))))))
+                                                                                        ((cont kinit8176 ()
+                                                                                          (let [module8177 (#%cache-ref handler2 92)]
+                                                                                          (let [variable8178 (#%lookup handler2 module8177 bound-identifier=?)]
+                                                                                          (let [_k8179 (#%cache-set! handler2 (92 . bound-identifier=?) variable8178)]
+                                                                                          (continue merge8174 variable8178))))))
                                                                                       (letk
-                                                                                         ((cont kok8154 ()
-                                                                                           (continue merge8148 cached8146)))
-                                                                                       (cond is_heap_obj8147 => kok8154 | kinit8150))))))))))))
+                                                                                         ((cont kok8180 ()
+                                                                                           (continue merge8174 cached8172)))
+                                                                                       (cond is_heap_obj8173 => kok8180 | kinit8176))))))))))))
                                                                               (letk
-                                                                                 ((cont kinit8159 ()
-                                                                                   (let [module8160 (#%cache-ref handler2 91)]
-                                                                                   (let [variable8161 (#%lookup handler2 module8160 free-identifier=?)]
-                                                                                   (let [_k8162 (#%cache-set! handler2 (91 . free-identifier=?) variable8161)]
-                                                                                   (continue merge8157 variable8161))))))
+                                                                                 ((cont kinit8185 ()
+                                                                                   (let [module8186 (#%cache-ref handler2 91)]
+                                                                                   (let [variable8187 (#%lookup handler2 module8186 free-identifier=?)]
+                                                                                   (let [_k8188 (#%cache-set! handler2 (91 . free-identifier=?) variable8187)]
+                                                                                   (continue merge8183 variable8187))))))
                                                                                (letk
-                                                                                  ((cont kok8163 ()
-                                                                                    (continue merge8157 cached8155)))
-                                                                                (cond is_heap_obj8156 => kok8163 | kinit8159))))))))))))
+                                                                                  ((cont kok8189 ()
+                                                                                    (continue merge8183 cached8181)))
+                                                                                (cond is_heap_obj8182 => kok8189 | kinit8185))))))))))))
                                                                        (letk
-                                                                          ((cont kinit8168 ()
-                                                                            (let [module8169 (#%cache-ref handler2 89)]
-                                                                            (let [variable8170 (#%lookup handler2 module8169 datum->syntax)]
-                                                                            (let [_k8171 (#%cache-set! handler2 (89 . datum->syntax) variable8170)]
-                                                                            (continue merge8166 variable8170))))))
+                                                                          ((cont kinit8194 ()
+                                                                            (let [module8195 (#%cache-ref handler2 89)]
+                                                                            (let [variable8196 (#%lookup handler2 module8195 datum->syntax)]
+                                                                            (let [_k8197 (#%cache-set! handler2 (89 . datum->syntax) variable8196)]
+                                                                            (continue merge8192 variable8196))))))
                                                                         (letk
-                                                                           ((cont kok8172 ()
-                                                                             (continue merge8166 cached8164)))
-                                                                         (cond is_heap_obj8165 => kok8172 | kinit8168))))))))))))
+                                                                           ((cont kok8198 ()
+                                                                             (continue merge8192 cached8190)))
+                                                                         (cond is_heap_obj8191 => kok8198 | kinit8194))))))))))))
                                                                 (letk
-                                                                   ((cont kinit8177 ()
-                                                                     (let [module8178 (#%cache-ref handler2 88)]
-                                                                     (let [variable8179 (#%lookup handler2 module8178 identifier?)]
-                                                                     (let [_k8180 (#%cache-set! handler2 (88 . identifier?) variable8179)]
-                                                                     (continue merge8175 variable8179))))))
+                                                                   ((cont kinit8203 ()
+                                                                     (let [module8204 (#%cache-ref handler2 88)]
+                                                                     (let [variable8205 (#%lookup handler2 module8204 identifier?)]
+                                                                     (let [_k8206 (#%cache-set! handler2 (88 . identifier?) variable8205)]
+                                                                     (continue merge8201 variable8205))))))
                                                                  (letk
-                                                                    ((cont kok8181 ()
-                                                                      (continue merge8175 cached8173)))
-                                                                  (cond is_heap_obj8174 => kok8181 | kinit8177))))))))))))
+                                                                    ((cont kok8207 ()
+                                                                      (continue merge8201 cached8199)))
+                                                                  (cond is_heap_obj8200 => kok8207 | kinit8203))))))))))))
                                                          (letk
-                                                            ((cont kinit8186 ()
-                                                              (let [module8187 (#%cache-ref handler2 80)]
-                                                              (let [variable8188 (#%lookup handler2 module8187 $sc-dispatch)]
-                                                              (let [_k8189 (#%cache-set! handler2 (80 . $sc-dispatch) variable8188)]
-                                                              (continue merge8184 variable8188))))))
+                                                            ((cont kinit8212 ()
+                                                              (let [module8213 (#%cache-ref handler2 80)]
+                                                              (let [variable8214 (#%lookup handler2 module8213 $sc-dispatch)]
+                                                              (let [_k8215 (#%cache-set! handler2 (80 . $sc-dispatch) variable8214)]
+                                                              (continue merge8210 variable8214))))))
                                                           (letk
-                                                             ((cont kok8190 ()
-                                                               (continue merge8184 cached8182)))
-                                                           (cond is_heap_obj8183 => kok8190 | kinit8186))))))))))))
+                                                             ((cont kok8216 ()
+                                                               (continue merge8210 cached8208)))
+                                                           (cond is_heap_obj8209 => kok8216 | kinit8212))))))))))))
                                                   (letk
-                                                     ((cont kinit8195 ()
-                                                       (let [module8196 (#%cache-ref handler2 79)]
-                                                       (let [variable8197 (#%lookup handler2 module8196 syntax->datum)]
-                                                       (let [_k8198 (#%cache-set! handler2 (79 . syntax->datum) variable8197)]
-                                                       (continue merge8193 variable8197))))))
+                                                     ((cont kinit8221 ()
+                                                       (let [module8222 (#%cache-ref handler2 79)]
+                                                       (let [variable8223 (#%lookup handler2 module8222 syntax->datum)]
+                                                       (let [_k8224 (#%cache-set! handler2 (79 . syntax->datum) variable8223)]
+                                                       (continue merge8219 variable8223))))))
                                                    (letk
-                                                      ((cont kok8199 ()
-                                                        (continue merge8193 cached8191)))
-                                                    (cond is_heap_obj8192 => kok8199 | kinit8195))))))))))))))))))
-                                       (let [cached8221 (#%cache-ref handler2 (1 . make-fluid))]
-                                       (let [is_heap_obj8222 (#%.is-heap-object handler2 cached8221)]
+                                                      ((cont kok8225 ()
+                                                        (continue merge8219 cached8217)))
+                                                    (cond is_heap_obj8218 => kok8225 | kinit8221))))))))))))))))))
+                                       (let [cached8247 (#%cache-ref handler2 (1 . make-fluid))]
+                                       (let [is_heap_obj8248 (#%.is-heap-object handler2 cached8247)]
                                        (letk
-                                          ((cont merge8223 (cached8224)
-                                            (let [val8203 (#%box-ref handler2 cached8224)]
-                                            (let [module8204 (#%current-module handler2)]
-                                            (let [_k8205 (#%cache-set! handler2 99 module8204)]
-                                            (fix ([proc8206
-                                            (lambda (return8207 handler8208 k)
-                                              (let [cached8212 (#%cache-ref handler8208 (99 . assertion-violation))]
-                                                (let [is_heap_obj8213 (#%.is-heap-object handler8208 cached8212)]
+                                          ((cont merge8249 (cached8250)
+                                            (let [val8229 (#%box-ref handler2 cached8250)]
+                                            (let [module8230 (#%current-module handler2)]
+                                            (let [_k8231 (#%cache-set! handler2 99 module8230)]
+                                            (fix ([proc8232
+                                            (lambda (return8233 handler8234 k)
+                                              (let [cached8238 (#%cache-ref handler8234 (99 . assertion-violation))]
+                                                (let [is_heap_obj8239 (#%.is-heap-object handler8234 cached8238)]
                                                 (letk
-                                                   ((cont kinit8216 ()
-                                                     (let [module8217 (#%cache-ref handler8208 99)]
-                                                     (let [variable8218 (#%lookup-bound handler8208 module8217 assertion-violation)]
-                                                     (let [_k8219 (#%cache-set! handler8208 (99 . assertion-violation) variable8218)]
-                                                     (let [val8211' (#%box-ref handler8208 variable8218)]
-                                                     (val8211' return8207 handler8208 transformer-environment called outside the dynamic extent of a syntax transformer)))))))
+                                                   ((cont kinit8242 ()
+                                                     (let [module8243 (#%cache-ref handler8234 99)]
+                                                     (let [variable8244 (#%lookup-bound handler8234 module8243 assertion-violation)]
+                                                     (let [_k8245 (#%cache-set! handler8234 (99 . assertion-violation) variable8244)]
+                                                     (let [val8237' (#%box-ref handler8234 variable8244)]
+                                                     (val8237' return8233 handler8234 transformer-environment called outside the dynamic extent of a syntax transformer)))))))
                                                  (letk
-                                                    ((cont kok8220 ()
-                                                      (let [val8211' (#%box-ref handler8208 cached8212)]
-                                                      (val8211' return8207 handler8208 transformer-environment called outside the dynamic extent of a syntax transformer))))
-                                                  (cond is_heap_obj8213 => kok8220 | kinit8216))))))])
-                                            (val8203 after_call299 handler2 proc8206)))))))
+                                                    ((cont kok8246 ()
+                                                      (let [val8237' (#%box-ref handler8234 cached8238)]
+                                                      (val8237' return8233 handler8234 transformer-environment called outside the dynamic extent of a syntax transformer))))
+                                                  (cond is_heap_obj8239 => kok8246 | kinit8242))))))])
+                                            (val8229 after_call299 handler2 proc8232)))))))
                                         (letk
-                                           ((cont kinit8225 ()
-                                             (let [module8226 (#%cache-ref handler2 1)]
-                                             (let [variable8227 (#%lookup-bound handler2 module8226 make-fluid)]
-                                             (let [_k8228 (#%cache-set! handler2 (1 . make-fluid) variable8227)]
-                                             (continue merge8223 variable8227))))))
+                                           ((cont kinit8251 ()
+                                             (let [module8252 (#%cache-ref handler2 1)]
+                                             (let [variable8253 (#%lookup-bound handler2 module8252 make-fluid)]
+                                             (let [_k8254 (#%cache-set! handler2 (1 . make-fluid) variable8253)]
+                                             (continue merge8249 variable8253))))))
                                          (letk
-                                            ((cont kok8229 ()
-                                              (continue merge8223 cached8221)))
-                                          (cond is_heap_obj8222 => kok8229 | kinit8225))))))))))))))))
-                              (let [module8231 (#%current-module handler2)]
-                              (let [variable8232 (#%lookup-bound handler2 module8231 module-ref)]
-                              (let [val8233 (#%box-ref handler2 variable8232)]
-                              (let [atom8236 (#%current-module handler2)]
-                              (val8233 after_call21 handler2 atom8236 syntax-sourcev))))))))
-                         (let [module8237 (#%current-module handler2)]
-                         (let [variable8238 (#%lookup-bound handler2 module8237 module-ref)]
-                         (let [val8239 (#%box-ref handler2 variable8238)]
-                         (let [atom8242 (#%current-module handler2)]
-                         (val8239 after_call19 handler2 atom8242 syntax-module))))))))
-                    (let [module8243 (#%current-module handler2)]
-                    (let [variable8244 (#%lookup-bound handler2 module8243 module-ref)]
-                    (let [val8245 (#%box-ref handler2 variable8244)]
-                    (let [atom8248 (#%current-module handler2)]
-                    (val8245 after_call17 handler2 atom8248 syntax-wrap))))))))
-               (let [module8249 (#%current-module handler2)]
-               (let [variable8250 (#%lookup-bound handler2 module8249 module-ref)]
-               (let [val8251 (#%box-ref handler2 variable8250)]
-               (let [atom8254 (#%current-module handler2)]
-               (val8251 after_call15 handler2 atom8254 syntax-expression))))))))
-          (let [module8255 (#%current-module handler2)]
-          (let [variable8256 (#%lookup-bound handler2 module8255 module-ref)]
-          (let [val8257 (#%box-ref handler2 variable8256)]
-          (let [atom8260 (#%current-module handler2)]
-          (val8257 after_call13 handler2 atom8260 make-syntax))))))))
-     (let [module8261 (#%current-module handler2)]
-     (let [variable8262 (#%lookup-bound handler2 module8261 module-ref)]
-     (let [val8263 (#%box-ref handler2 variable8262)]
-     (let [atom8266 (#%current-module handler2)]
-     (val8263 after_call11 handler2 atom8266 syntax?)))))))))))))))
+                                            ((cont kok8255 ()
+                                              (continue merge8249 cached8247)))
+                                          (cond is_heap_obj8248 => kok8255 | kinit8251))))))))))))))))
+                              (let [module8257 (#%current-module handler2)]
+                              (let [variable8258 (#%lookup-bound handler2 module8257 module-ref)]
+                              (let [val8259 (#%box-ref handler2 variable8258)]
+                              (let [atom8262 (#%current-module handler2)]
+                              (val8259 after_call21 handler2 atom8262 syntax-sourcev))))))))
+                         (let [module8263 (#%current-module handler2)]
+                         (let [variable8264 (#%lookup-bound handler2 module8263 module-ref)]
+                         (let [val8265 (#%box-ref handler2 variable8264)]
+                         (let [atom8268 (#%current-module handler2)]
+                         (val8265 after_call19 handler2 atom8268 syntax-module))))))))
+                    (let [module8269 (#%current-module handler2)]
+                    (let [variable8270 (#%lookup-bound handler2 module8269 module-ref)]
+                    (let [val8271 (#%box-ref handler2 variable8270)]
+                    (let [atom8274 (#%current-module handler2)]
+                    (val8271 after_call17 handler2 atom8274 syntax-wrap))))))))
+               (let [module8275 (#%current-module handler2)]
+               (let [variable8276 (#%lookup-bound handler2 module8275 module-ref)]
+               (let [val8277 (#%box-ref handler2 variable8276)]
+               (let [atom8280 (#%current-module handler2)]
+               (val8277 after_call15 handler2 atom8280 syntax-expression))))))))
+          (let [module8281 (#%current-module handler2)]
+          (let [variable8282 (#%lookup-bound handler2 module8281 module-ref)]
+          (let [val8283 (#%box-ref handler2 variable8282)]
+          (let [atom8286 (#%current-module handler2)]
+          (val8283 after_call13 handler2 atom8286 make-syntax))))))))
+     (let [module8287 (#%current-module handler2)]
+     (let [variable8288 (#%lookup-bound handler2 module8287 module-ref)]
+     (let [val8289 (#%box-ref handler2 variable8288)]
+     (let [atom8292 (#%current-module handler2)]
+     (val8289 after_call11 handler2 atom8292 syntax?)))))))))))))))

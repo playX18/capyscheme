@@ -1,7 +1,7 @@
 use capy::runtime::{
     Scheme,
     modules::{current_module, root_module},
-    vm::{VMResult, call_scheme, debug::print_stacktraces_impl, load::load_thunk_in_vicinity},
+    vm::{VMResult, call_scheme,load::load_thunk_in_vicinity},
 };
 
 //#[global_allocator]

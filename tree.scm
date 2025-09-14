@@ -3174,6 +3174,7 @@
                          (const source expression failed to match any pattern)
                          (lref tmp)))))))))))))))))))))
  (define tree (call (toplevel-ref macroexpand) (const (if 1 2 3))))
+ (call (toplevel-ref pretty-print-ir) (toplevel-ref tree))
  (define closure (call (toplevel-ref interpret/preprocess) (toplevel-ref tree)
   (const '())))
  (call (toplevel-ref print) (call (toplevel-ref closure) (const '()))))
