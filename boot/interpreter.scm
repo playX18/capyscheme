@@ -1,7 +1,7 @@
 (define (interpret/preprocess expr env)
     (cond
         [(lref? expr)
-            (let* ([address (interpret/var-address (lref-variable expr) env)]
+            (let* ([address (interpret/var-address (lref-sym expr) env)]
                    [rib (car address)]
                    [offset (cdr address)])
                 (lambda (env0)
@@ -10,7 +10,7 @@
                             (vector-ref (car env) offset)
                             (loop (- rib 1) (cdr env))))))]
         [(lset? expr)
-            (let* ([address (interpret/var-address (lset-variable expr) env)]
+            (let* ([address (interpret/var-address (lset-sym expr) env)]
                    [rib (car address)]
                    [offset (cdr address)]
                    [val-proc (interpret/preprocess (lset-value expr) env)])
@@ -247,8 +247,6 @@
                 '()
                 '(i)))
         (make-application #f (make-lref #f 'loop) (list (make-constant #f 0)))))
-(print "code=" code)
-(define clos (interpret/preprocess code '()))
 
 (define (primitive-eval exp)
     ((interpret/preprocess exp '()) '()))

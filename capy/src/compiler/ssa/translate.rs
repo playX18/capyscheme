@@ -653,6 +653,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn term(&mut self, term: TermRef<'gc>) {
+        
         self.set_debug_loc(term.source());
         match &*term {
             Term::Let(var, expr, next) => {

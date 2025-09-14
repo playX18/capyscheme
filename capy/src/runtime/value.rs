@@ -254,7 +254,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_int32(self) -> i32 {
-        assert!(self.is_int32());
+        assert!(self.is_int32(), "not an int32: {}", self);
         self.raw_i64() as i32
     }
 

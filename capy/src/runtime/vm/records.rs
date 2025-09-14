@@ -12,12 +12,13 @@ static_symbols!(
     SYM_TYPE_RECORD = "type:record-type"
 );
 
-const RTD_TYPE: usize = 0;
-const RTD_PARENT: usize = 1;
-const RTD_UID: usize = 2;
-const RTD_SEALED: usize = 3;
-const RTD_OPAQUE: usize = 4;
-const RTD_FIELDS: usize = 5;
+pub const RTD_TYPE: usize = 0;
+pub const RTD_NAME: usize = 1;
+pub const RTD_PARENT: usize = 2;
+pub const RTD_UID: usize = 3;
+pub const RTD_SEALED: usize = 4;
+pub const RTD_OPAQUE: usize = 5;
+pub const RTD_FIELDS: usize = 6;
 
 
 
@@ -54,6 +55,7 @@ impl<'gc> Value<'gc> {
     pub fn rtd_ancestor(&self, ctx: Context<'gc>, parent: Value<'gc>) -> bool {
         let mut rtd = *self;
         loop {
+            
             if rtd == parent {
                 return true;
             }
@@ -67,9 +69,15 @@ impl<'gc> Value<'gc> {
         }
     }
 
+    pub fn record_type_rtd(&self, ctx: Context<'gc>) -> Value<'gc> {
+        assert!(self.is_record_type(ctx));
+        self.downcast::<Tuple>()[2].get()
+    }
+
     pub fn is_record_of(&self, ctx: Context<'gc>, rtd: Value<'gc>) -> bool {
         self.is::<Tuple>()
             && (self.downcast::<Tuple>()[0].get() == rtd
-        || rtd.rtd_ancestor(ctx, self.downcast::<Tuple>()[0].get()))
+        || self.downcast::<Tuple>()[0].get().rtd_ancestor(ctx, rtd))
     }
+    
 }

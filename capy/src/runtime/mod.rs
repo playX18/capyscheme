@@ -26,6 +26,7 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::hash::init_hash(mc);
     vm::syntax::init_syntax(mc);
     vm::memoize::init_memoize(mc);
+    vm::expand::init_expand(mc);
     let _ = crate::expander::primitives::primitives(mc);
 }
 

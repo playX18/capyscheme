@@ -988,6 +988,8 @@
     )
 
 (define tree (macroexpand '(if 1 2 3)))
+(pretty-print-ir tree)
 (define closure (interpret/preprocess tree '()))
 
 (print (closure '()))
+

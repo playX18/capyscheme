@@ -137,7 +137,7 @@ fn load_file_section<'input>(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 mod imp {
     use std::{
         fs::File,
