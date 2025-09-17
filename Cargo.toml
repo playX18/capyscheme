@@ -14,7 +14,16 @@ cranelift-module = "0.123.1"
 cranelift-object = "0.123.1"
 libloading = "0.8.8"
 target-lexicon = "*"
+addr2line = "*"
+gimli = "*"
+object = "*"
+cfg-if = "1.0.0"
+libc = "*"
 
 [profile.release]
 lto = true
-debug = true
+debug = false
+incremental = false
+
+[profile.dev]
+incremental = false

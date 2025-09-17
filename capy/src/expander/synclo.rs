@@ -7,7 +7,8 @@ use crate::{
     fluid,
     frontend::reader::Annotation,
     runtime::{
-        value::{HashTable, ScmHeader, Str, Symbol, Tagged, TypeCode8, Value, Vector}, Context
+        Context,
+        value::{HashTable, ScmHeader, Str, Symbol, Tagged, TypeCode8, Value, Vector},
     },
 };
 

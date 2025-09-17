@@ -182,6 +182,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
         let mut result = Vec::new();
         for child in root_node.children(&mut cursor) {
+            if child.kind() == "comment" {
+                continue;
+            }
             result.push(self.parse_lexeme(&child)?);
         }
 
@@ -294,6 +297,9 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     }
 
                     _ => {
+                        if child.kind() == "comment" {
+                            continue;
+                        }
                         let lexeme = self.parse_lexeme(&child)?;
 
                         let new_prev = Value::cons(self.ctx, lexeme, Value::null());
@@ -329,6 +335,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         );
 
         match node.kind() {
+            "comment" => Ok(Value::null()),
             "symbol" => {
                 let symbol = Symbol::from_str(self.ctx, text);
 

@@ -1,4 +1,10 @@
-#![allow(internal_features)]
+#![allow(
+    clippy::type_complexity,
+    internal_features,
+    clippy::new_without_default,
+    clippy::from_over_into,
+    clippy::not_unsafe_ptr_arg_deref
+)]
 #![feature(
     arbitrary_self_types,
     try_trait_v2,

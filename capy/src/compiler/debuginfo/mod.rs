@@ -1,18 +1,20 @@
 use std::collections::HashMap;
 
-use cranelift_codegen::MachSrcLoc;
 use cranelift_codegen::binemit::CodeOffset;
-use cranelift_codegen::ir::{Endianness, SourceLoc};
+use cranelift_codegen::ir::{Endianness, SourceLoc, ValueLabel};
 use cranelift_codegen::isa::TargetIsa;
+use cranelift_codegen::{LabelValueLoc, MachSrcLoc};
 use cranelift_module::FuncId;
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, Expression, FileId, LineProgram, LineString,
     Range, RangeList, Sections, UnitEntryId, Writer,
 };
 use gimli::{AArch64, Encoding, Format, LineEncoding, Register, RiscV, RunTimeEndian, X86_64};
+use hashlink::LinkedHashSet;
 
 use crate::cps::ReifyInfo;
 use crate::cps::term::{ContRef, FuncRef};
+use crate::expander::core::LVarRef;
 use crate::runtime::value::{Value, Vector};
 
 pub(crate) struct DebugContext<'gc> {
@@ -22,13 +24,17 @@ pub(crate) struct DebugContext<'gc> {
     unit_range_list: RangeList,
     created_files: HashMap<Value<'gc>, FileId>,
     stack_pointer_register: Register,
+    value_type: UnitEntryId,
+    usize_type: UnitEntryId,
 }
 
-pub(crate) struct FunctionDebugContext {
+pub(crate) struct FunctionDebugContext<'gc> {
     entry_id: UnitEntryId,
 
     srcloc: (FileId, u64, u64),
     source_loc_set: HashMap<SourceLoc, (FileId, u64, u64)>,
+    lvar_to_label: HashMap<LVarRef<'gc>, (ValueLabel, Option<SourceLoc>)>,
+    label_to_lvar: HashMap<ValueLabel, LVarRef<'gc>>,
 }
 
 impl<'gc> DebugContext<'gc> {
@@ -93,12 +99,40 @@ impl<'gc> DebugContext<'gc> {
             );
         }
 
+        let value_type_id = dwarf.unit.add(dwarf.unit.root(), gimli::DW_TAG_base_type);
+        let value_type = dwarf.unit.get_mut(value_type_id);
+        let val_type_name = dwarf.strings.add("ScmValue");
+        value_type.set(gimli::DW_AT_name, AttributeValue::StringRef(val_type_name));
+        value_type.set(gimli::DW_AT_byte_size, AttributeValue::Udata(8));
+        value_type.set(
+            gimli::DW_AT_encoding,
+            AttributeValue::Encoding(gimli::DW_ATE_unsigned),
+        );
+
+        let usize_type_id = dwarf.unit.add(dwarf.unit.root(), gimli::DW_TAG_base_type);
+        let usize_type = dwarf.unit.get_mut(usize_type_id);
+        let usize_type_name = dwarf.strings.add("usize");
+        usize_type.set(
+            gimli::DW_AT_name,
+            AttributeValue::StringRef(usize_type_name),
+        );
+        usize_type.set(
+            gimli::DW_AT_byte_size,
+            AttributeValue::Udata(isa.frontend_config().pointer_bytes() as u64),
+        );
+        usize_type.set(
+            gimli::DW_AT_encoding,
+            AttributeValue::Encoding(gimli::DW_ATE_unsigned),
+        );
+
         Self {
             endian,
             dwarf,
             unit_range_list: RangeList(Vec::new()),
             created_files: HashMap::new(),
             stack_pointer_register,
+            value_type: value_type_id,
+            usize_type: usize_type_id,
         }
     }
 
@@ -106,7 +140,7 @@ impl<'gc> DebugContext<'gc> {
         &mut self,
         func: FuncRef<'gc>,
         linkage_name: &str,
-    ) -> FunctionDebugContext {
+    ) -> FunctionDebugContext<'gc> {
         let (file_id, line, column) = self.get_span_loc(func.source());
 
         let scope = self.dwarf.unit.root();
@@ -151,7 +185,8 @@ impl<'gc> DebugContext<'gc> {
 
         FunctionDebugContext {
             entry_id,
-
+            lvar_to_label: HashMap::new(),
+            label_to_lvar: HashMap::new(),
             srcloc: (file_id, line, column),
             source_loc_set: HashMap::new(),
         }
@@ -161,7 +196,7 @@ impl<'gc> DebugContext<'gc> {
         &mut self,
         func: ContRef<'gc>,
         linkage_name: &str,
-    ) -> FunctionDebugContext {
+    ) -> FunctionDebugContext<'gc> {
         let (file_id, line, column) = self.get_span_loc(func.source());
 
         let scope = self.dwarf.unit.root();
@@ -206,6 +241,8 @@ impl<'gc> DebugContext<'gc> {
 
         FunctionDebugContext {
             entry_id,
+            label_to_lvar: HashMap::new(),
+            lvar_to_label: HashMap::new(),
 
             srcloc: (file_id, line, column),
             source_loc_set: HashMap::new(),
@@ -298,12 +335,14 @@ impl<'gc> DebugContext<'gc> {
     }
 }
 
-impl FunctionDebugContext {
-    pub(crate) fn create_debug_lines<'gc>(
+impl<'gc> FunctionDebugContext<'gc> {
+    pub(crate) fn create_debug_lines(
         &mut self,
         debug_context: &mut DebugContext<'gc>,
         func_id: FuncId,
         context: &cranelift_codegen::Context,
+        free_vars: &LinkedHashSet<LVarRef<'gc>>,
+        isa: &dyn TargetIsa,
     ) -> CodeOffset {
         let create_row_for_span =
             |debug_context: &mut DebugContext, source_loc: (FileId, u64, u64)| {
@@ -354,6 +393,132 @@ impl FunctionDebugContext {
             AttributeValue::Udata(u64::from(func_end)),
         );
 
+        for (&label, ranges) in mcr.value_labels_ranges.iter() {
+            let locations = ranges
+                .iter()
+                .map(|range| {
+                    let data = match range.loc {
+                        LabelValueLoc::Reg(reg) => {
+                            let reg = isa
+                                .map_regalloc_reg_to_dwarf(reg)
+                                .expect("Cannot map register to DWARF register");
+                            let mut expr = Expression::new();
+                            gimli::write::Expression::op_reg(&mut expr, gimli::Register(reg));
+                            expr
+                        }
+
+                        LabelValueLoc::CFAOffset(offset) => {
+                            let mut expr = Expression::new();
+                            let sp_reg = debug_context.stack_pointer_register;
+                            gimli::write::Expression::op_reg(&mut expr, sp_reg);
+                            gimli::write::Expression::op_plus_uconst(&mut expr, offset as u64);
+                            expr
+                        }
+                    };
+
+                    gimli::write::Location::StartEnd {
+                        begin: address_for_func_at(func_id, range.start as i64),
+                        end: address_for_func_at(func_id, range.end as i64),
+                        data,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            let location_list = gimli::write::LocationList(locations);
+            let location_list_id = debug_context.dwarf.unit.locations.add(location_list);
+            let lbl = label.as_bits();
+            let var_id = debug_context
+                .dwarf
+                .unit
+                .add(self.entry_id, gimli::DW_TAG_variable);
+            let var = debug_context.dwarf.unit.get_mut(var_id);
+
+            if lbl == 0 {
+                let rator = debug_context.dwarf.strings.add("@rator");
+                var.set(gimli::DW_AT_name, AttributeValue::StringRef(rator));
+                var.set(
+                    gimli::DW_AT_type,
+                    AttributeValue::UnitRef(debug_context.value_type),
+                );
+                var.set(
+                    gimli::DW_AT_decl_file,
+                    AttributeValue::FileIndex(Some(self.srcloc.0)),
+                );
+                var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                var.set(
+                    gimli::DW_AT_decl_column,
+                    AttributeValue::Udata(self.srcloc.2),
+                );
+                var.set(gimli::DW_AT_location, AttributeValue::Udata(self.srcloc.2));
+            } else if lbl == 1 {
+                let nrands = debug_context.dwarf.strings.add("@nargs");
+
+                var.set(gimli::DW_AT_name, AttributeValue::StringRef(nrands));
+
+                var.set(
+                    gimli::DW_AT_type,
+                    AttributeValue::UnitRef(debug_context.usize_type),
+                );
+                var.set(
+                    gimli::DW_AT_decl_file,
+                    AttributeValue::FileIndex(Some(self.srcloc.0)),
+                );
+                var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                var.set(
+                    gimli::DW_AT_decl_column,
+                    AttributeValue::Udata(self.srcloc.2),
+                );
+                var.set(gimli::DW_AT_location, AttributeValue::Udata(self.srcloc.2));
+            } else if lbl == 2 {
+                let val_type = debug_context.value_type;
+
+                let rands = debug_context.dwarf.strings.add("@rands");
+                var.set(gimli::DW_AT_name, AttributeValue::StringRef(rands));
+                var.set(gimli::DW_AT_type, AttributeValue::UnitRef(val_type));
+                var.set(
+                    gimli::DW_AT_decl_file,
+                    AttributeValue::FileIndex(Some(self.srcloc.0)),
+                );
+                var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                var.set(
+                    gimli::DW_AT_decl_column,
+                    AttributeValue::Udata(self.srcloc.2),
+                );
+            } else {
+                let var_ref = self.label_to_lvar[&label];
+                let name = debug_context.dwarf.strings.add(var_ref.name.to_string());
+                var.set(gimli::DW_AT_name, AttributeValue::StringRef(name));
+                var.set(
+                    gimli::DW_AT_type,
+                    AttributeValue::UnitRef(debug_context.value_type),
+                );
+                if let Some(srcloc) = self.lvar_to_label[&var_ref].1 {
+                    let (file_id, line, column) = self.source_loc_set[&srcloc];
+                    var.set(
+                        gimli::DW_AT_decl_file,
+                        AttributeValue::FileIndex(Some(file_id)),
+                    );
+                    var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
+                    var.set(gimli::DW_AT_decl_column, AttributeValue::Udata(column));
+                } else {
+                    var.set(
+                        gimli::DW_AT_decl_file,
+                        AttributeValue::FileIndex(Some(self.srcloc.0)),
+                    );
+                    var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                    var.set(
+                        gimli::DW_AT_decl_column,
+                        AttributeValue::Udata(self.srcloc.2),
+                    );
+                }
+
+                var.set(
+                    gimli::DW_AT_location,
+                    AttributeValue::LocationListRef(location_list_id),
+                );
+            }
+        }
+
         func_end
     }
 
@@ -363,13 +528,30 @@ impl FunctionDebugContext {
         src
     }
 
-    pub(crate) fn finalize<'gc>(
+    pub(crate) fn add_variable(&mut self, var: LVarRef<'gc>, src: Option<SourceLoc>) -> ValueLabel {
+        if let Some((label, _)) = self.lvar_to_label.get(&var) {
+            *label
+        } else {
+            let label = ValueLabel::from_u32(self.lvar_to_label.len() as u32 + 4);
+            self.lvar_to_label.insert(var, (label, src));
+            self.label_to_lvar.insert(label, var);
+            label
+        }
+    }
+
+    pub(crate) fn internal_variable(&mut self, ix: u32) -> ValueLabel {
+        ValueLabel::from_u32(ix)
+    }
+
+    pub(crate) fn finalize(
         mut self,
         debug_context: &mut DebugContext<'gc>,
         func_id: FuncId,
         context: &cranelift_codegen::Context,
+        free_vars: &LinkedHashSet<LVarRef<'gc>>,
+        isa: &dyn TargetIsa,
     ) {
-        let end = self.create_debug_lines(debug_context, func_id, context);
+        let end = self.create_debug_lines(debug_context, func_id, context, free_vars, isa);
 
         debug_context.unit_range_list.0.push(Range::StartLength {
             begin: address_for_func(func_id),
@@ -390,6 +572,15 @@ fn address_for_func(func_id: FuncId) -> Address {
     Address::Symbol {
         symbol: symbol as usize,
         addend: 0,
+    }
+}
+
+fn address_for_func_at(func_id: FuncId, addend: i64) -> Address {
+    let symbol = func_id.as_u32();
+
+    Address::Symbol {
+        symbol: symbol as usize,
+        addend,
     }
 }
 

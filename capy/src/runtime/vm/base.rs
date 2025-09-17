@@ -22,7 +22,7 @@ native_fn!(
     }
 
     pub (".return-error") fn return_error<'gc>(nctx, err: Value<'gc>) -> () {
-        unsafe { nctx.return_error(err) }
+        nctx.return_error(err)
     }
 
     pub ("values") fn values<'gc>(nctx, args: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {

@@ -61,7 +61,7 @@ impl<'gc> TreeEq for Value<'gc> {
     }
 }
 
-impl<'gc, T: TreeEq + Trace> TreeEq for Array<T> {
+impl<T: TreeEq + Trace> TreeEq for Array<T> {
     fn tree_eq(&self, other: &Self) -> bool {
         if self.len() != other.len() {
             return false;
@@ -70,7 +70,7 @@ impl<'gc, T: TreeEq + Trace> TreeEq for Array<T> {
     }
 }
 
-impl<'gc, T: TreeEq> TreeEq for Option<T> {
+impl<T: TreeEq> TreeEq for Option<T> {
     fn tree_eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Some(a), Some(b)) => a.tree_eq(b),

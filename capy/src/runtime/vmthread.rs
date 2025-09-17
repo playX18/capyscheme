@@ -97,7 +97,11 @@ impl VmThread {
                             mutator.mutate(|mc, _| {
                                 mmtk::memory_manager::gc_poll(
                                     &GarbageCollector::get().mmtk,
-                                    unsafe { transmute(mc.thread()) },
+                                    unsafe {
+                                        transmute::<_, rsgc::mmtk::util::VMMutatorThread>(
+                                            mc.thread(),
+                                        )
+                                    },
                                 );
                             });
                         }

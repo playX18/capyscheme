@@ -1,9 +1,6 @@
 use crate::{
     native_fn,
-    runtime::{
-        prelude::*,
-        vm::{debug::print_stacktraces_impl, libraries::lookup_scheme_location},
-    },
+    runtime::{prelude::*, vm::debug::print_stacktraces_impl},
 };
 
 pub(crate) fn init_eval<'gc>(ctx: Context<'gc>) {
@@ -18,10 +15,7 @@ native_fn!(
             print_stacktraces_impl(nctx.ctx);
             todo!("can only apply closures, got: {rator}");
         }
-        if rator.downcast::<Closure>().is_continuation() {
-            let loc = lookup_scheme_location(nctx.ctx, rator.downcast::<Closure>().code.as_usize() as u64);
-            println!("{loc:?}, meta: {}", rator.downcast::<Closure>().meta);
-        }
+
         if rands.len() == 0 {
             return nctx.return_call(rator, &[]);
         }

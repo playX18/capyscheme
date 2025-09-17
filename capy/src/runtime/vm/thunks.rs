@@ -7,7 +7,7 @@ use crate::runtime::{
         Boxed, Closure, Pair, SavedCall, ScmHeader, Str, Symbol, Tuple, TypeCode8, TypeCode16,
         Value, Vector,
     },
-    vm::{VMResult, call_scheme, debug, },
+    vm::{VMResult, call_scheme, debug},
 };
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},

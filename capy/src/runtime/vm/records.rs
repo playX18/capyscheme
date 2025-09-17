@@ -1,8 +1,7 @@
-//! Helpers to work with Scheme records from Rust. 
-//! 
+//! Helpers to work with Scheme records from Rust.
+//!
 //! This module does not on its own expose any functions to Scheme code but
 //! merely provides utilities for other parts of the VM to work with records.
-
 
 use crate::{runtime::prelude::*, static_symbols};
 
@@ -20,15 +19,16 @@ pub const RTD_SEALED: usize = 4;
 pub const RTD_OPAQUE: usize = 5;
 pub const RTD_FIELDS: usize = 6;
 
-
-
 impl<'gc> Value<'gc> {
     pub fn is_recod_type_descriptor(&self, ctx: Context<'gc>) -> bool {
         self.is::<Tuple>() && self.downcast::<Tuple>()[0].get() == sym_type_rtd(ctx).into()
     }
 
     pub fn is_record(&self, ctx: Context<'gc>) -> bool {
-        self.is::<Tuple>() && self.downcast::<Tuple>()[0].get().is_recod_type_descriptor(ctx)
+        self.is::<Tuple>()
+            && self.downcast::<Tuple>()[0]
+                .get()
+                .is_recod_type_descriptor(ctx)
     }
 
     pub fn is_record_constructor_descriptor(&self, ctx: Context<'gc>) -> bool {
@@ -55,7 +55,6 @@ impl<'gc> Value<'gc> {
     pub fn rtd_ancestor(&self, ctx: Context<'gc>, parent: Value<'gc>) -> bool {
         let mut rtd = *self;
         loop {
-            
             if rtd == parent {
                 return true;
             }
@@ -77,7 +76,6 @@ impl<'gc> Value<'gc> {
     pub fn is_record_of(&self, ctx: Context<'gc>, rtd: Value<'gc>) -> bool {
         self.is::<Tuple>()
             && (self.downcast::<Tuple>()[0].get() == rtd
-        || self.downcast::<Tuple>()[0].get().rtd_ancestor(ctx, rtd))
+                || self.downcast::<Tuple>()[0].get().rtd_ancestor(ctx, rtd))
     }
-    
 }

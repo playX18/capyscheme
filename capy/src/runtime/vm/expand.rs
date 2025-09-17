@@ -2,7 +2,12 @@ use std::{cell::Cell, collections::HashMap};
 
 use rsgc::{alloc::Array, cell::Lock};
 
-use crate::{expander::core::{self, LVar, LVarRef, Term, TermKind, TermRef}, global, native_fn, runtime::{modules::root_module, prelude::*}, static_symbols};
+use crate::{
+    expander::core::{self, LVar, LVarRef, Term, TermKind, TermRef},
+    global, native_fn,
+    runtime::{modules::root_module, prelude::*},
+    static_symbols,
+};
 
 static_symbols!(
     SYM_TERM = "&term"
@@ -69,7 +74,7 @@ global!(
     };
 
     pub loc_toplevel_set_type<'gc>: VariableRef<'gc> = (ctx) {
-        
+
         root_module(ctx).variable(ctx, sym_toplevel_set(ctx).into()).unwrap()
     };
 
@@ -269,7 +274,10 @@ const TOPLEVEL_DEFINE_NAME: usize = TERM_SOURCEV + 2;
 const TOPLEVEL_DEFINE_VALUE: usize = TERM_SOURCEV + 3;
 
 pub fn is_toplevel_define<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_toplevel_define_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        loc_toplevel_define_type(ctx).get().record_type_rtd(ctx),
+    )
 }
 
 pub fn toplevel_define_mod<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -392,7 +400,6 @@ pub fn receive_vars<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_receive(ctx, v));
     v.downcast::<Tuple>()[RECEIVE_VARS].get()
 }
-
 
 pub fn receive_producer<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_receive(ctx, v));
@@ -565,10 +572,13 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let Some(var) = self.lvars.get(&sym) else {
                 return Err(t);
             };
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::LRef(*var),
-            }));
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::LRef(*var),
+                },
+            ));
         } else if is_lset(self.ctx, t) {
             let sym = lset_sym(self.ctx, t);
             let Some(var) = self.lvars.get(&sym).cloned() else {
@@ -576,21 +586,30 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             };
             let value = lset_value(self.ctx, t);
             let value = self.convert(value)?;
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::LSet(var, value),
-            }));
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::LSet(var, value),
+                },
+            ));
         } else if is_constant(self.ctx, t) {
             let value = constant_value(self.ctx, t);
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Const(value),
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Const(value),
+                },
+            ));
         } else if is_void(self.ctx, t) {
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Const(Value::undefined()),
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Const(Value::undefined()),
+                },
+            ));
         } else if is_application(self.ctx, t) {
             let op = self.convert(application_operator(self.ctx, t))?;
             let mut ls = application_operands(self.ctx, t);
@@ -604,11 +623,14 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             }
 
             let args = Array::from_slice(&self.ctx, &args);
-            
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Call(op, args)
-            }))
+
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Call(op, args),
+                },
+            ));
         } else if is_primcall(self.ctx, t) {
             let prim = primcall_prim(self.ctx, t);
             let mut ls = primcall_args(self.ctx, t);
@@ -620,64 +642,92 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 ls = ls.cdr();
             }
             let args = Array::from_slice(&self.ctx, &args);
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::PrimCall(prim, args)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::PrimCall(prim, args),
+                },
+            ));
         } else if is_primref(self.ctx, t) {
             let name = primref_name(self.ctx, t);
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::PrimRef(name)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::PrimRef(name),
+                },
+            ));
         } else if is_module_ref(self.ctx, t) {
             let module = module_ref_module(self.ctx, t);
             let name = module_ref_name(self.ctx, t);
             let public = module_ref_public(self.ctx, t);
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::ModuleRef(module, name, public)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::ModuleRef(module, name, public),
+                },
+            ));
         } else if is_module_set(self.ctx, t) {
             let module = module_set_module(self.ctx, t);
             let name = module_set_name(self.ctx, t);
             let public = module_set_public(self.ctx, t);
             let value = self.convert(module_set_value(self.ctx, t)).map_err(|_| t)?;
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::ModuleSet(module, name, public, value)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::ModuleSet(module, name, public, value),
+                },
+            ));
         } else if is_toplevel_ref(self.ctx, t) {
             let module = toplevel_ref_mod(self.ctx, t);
             let name = toplevel_ref_name(self.ctx, t);
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::ToplevelRef(module, name)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::ToplevelRef(module, name),
+                },
+            ));
         } else if is_toplevel_set(self.ctx, t) {
             let module = toplevel_set_mod(self.ctx, t);
             let name = toplevel_set_name(self.ctx, t);
-            let value = self.convert(toplevel_set_value(self.ctx, t)).map_err(|_| t)?;
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::ToplevelSet(module, name, value)
-            }))
+            let value = self
+                .convert(toplevel_set_value(self.ctx, t))
+                .map_err(|_| t)?;
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::ToplevelSet(module, name, value),
+                },
+            ));
         } else if is_toplevel_define(self.ctx, t) {
             let module = toplevel_define_mod(self.ctx, t);
             let name = toplevel_define_name(self.ctx, t);
-            let value = self.convert(toplevel_define_value(self.ctx, t)).map_err(|_| t)?;
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Define(module, name, value)
-            }))
+            let value = self
+                .convert(toplevel_define_value(self.ctx, t))
+                .map_err(|_| t)?;
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Define(module, name, value),
+                },
+            ));
         } else if is_if(self.ctx, t) {
             let cond = self.convert(if_cond(self.ctx, t)).map_err(|_| t)?;
             let then = self.convert(if_then(self.ctx, t)).map_err(|_| t)?;
             let els = self.convert(if_else(self.ctx, t)).map_err(|_| t)?;
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::If(cond, then, els)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::If(cond, then, els),
+                },
+            ));
         } else if is_let(self.ctx, t) {
             let style = match let_style(self.ctx, t) {
                 v if v == sym_let_(self.ctx).into() => core::LetStyle::Let,
@@ -693,25 +743,27 @@ impl<'gc> ScmTermToRsTerm<'gc> {
 
             let mut ls_ids = ids;
             let mut ls_lhs = lhs;
-           
+
             let mut lvars = Vec::new();
             let mut exprs = Vec::new();
             while ls_ids.is_pair() {
                 let id = ls_ids.car();
                 let lhs = ls_lhs.car();
-  
-                let lvar = Gc::new(&self.ctx, LVar {
-                    name: id,
-                    id: lhs,
-                    set_count: Cell::new(0),
-                    ref_count: Cell::new(0),
-                });
+
+                let lvar = Gc::new(
+                    &self.ctx,
+                    LVar {
+                        name: id,
+                        id: lhs,
+                        set_count: Cell::new(0),
+                        ref_count: Cell::new(0),
+                    },
+                );
                 self.lvars.insert(id, lvar);
                 lvars.push(lvar);
                 exprs.push(rhs);
                 ls_ids = ls_ids.cdr();
                 ls_lhs = ls_lhs.cdr();
-                
             }
 
             let mut rhs = Vec::new();
@@ -723,15 +775,18 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let rhs = Array::from_slice(&self.ctx, &rhs);
             let body = self.convert(body).map_err(|_| t)?;
 
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Let(core::Let {
-                    style,
-                    lhs,
-                    rhs,
-                    body,
-                })
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Let(core::Let {
+                        style,
+                        lhs,
+                        rhs,
+                        body,
+                    }),
+                },
+            ));
         } else if is_fix(self.ctx, t) {
             let ids = fix_ids(self.ctx, t);
             let lhs = fix_lhs(self.ctx, t);
@@ -740,25 +795,27 @@ impl<'gc> ScmTermToRsTerm<'gc> {
 
             let mut ls_ids = ids;
             let mut ls_lhs = lhs;
-           
+
             let mut lvars = Vec::new();
             let mut exprs = Vec::new();
             while ls_ids.is_pair() {
                 let id = ls_ids.car();
                 let lhs = ls_lhs.car();
-  
-                let lvar = Gc::new(&self.ctx, LVar {
-                    name: id,
-                    id: lhs,
-                    set_count: Cell::new(0),
-                    ref_count: Cell::new(0),
-                });
+
+                let lvar = Gc::new(
+                    &self.ctx,
+                    LVar {
+                        name: id,
+                        id: lhs,
+                        set_count: Cell::new(0),
+                        ref_count: Cell::new(0),
+                    },
+                );
                 self.lvars.insert(lhs, lvar);
                 lvars.push(lvar);
                 exprs.push(rhs);
                 ls_ids = ls_ids.cdr();
                 ls_lhs = ls_lhs.cdr();
-                
             }
 
             let mut rhs = Vec::new();
@@ -766,76 +823,89 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 let TermKind::Proc(proc) = self.convert(expr).map_err(|_| t)?.kind else {
                     return Err(t);
                 };
-                
+
                 rhs.push(proc);
             }
             let lhs = Array::from_slice(&self.ctx, &lvars);
             let rhs = Array::from_slice(&self.ctx, &rhs);
             let body = self.convert(body).map_err(|_| t)?;
 
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Fix(core::Fix {
-                    lhs,
-                    rhs,
-                    body,
-                })
-            }));
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Fix(core::Fix { lhs, rhs, body }),
+                },
+            ));
         } else if is_proc(self.ctx, t) {
             let args = proc_args(self.ctx, t);
             let body = proc_body(self.ctx, t);
             let meta = proc_meta(self.ctx, t);
             let ids = proc_ids(self.ctx, t);
 
-            let name = meta.assq(sym_name(self.ctx).into()).unwrap_or(Value::new(false));
+            let name = meta
+                .assq(sym_name(self.ctx).into())
+                .unwrap_or(Value::new(false));
 
             let mut ls_args = args;
             let mut ls_ids = ids;
             let mut lvars = Vec::new();
-            
+
             while ls_args.is_pair() {
                 let arg = ls_args.car();
                 let id = ls_ids.car();
-  
-                let lvar = Gc::new(&self.ctx, LVar {
-                    name: if name != Value::new(false) { name } else { arg },
-                    id,
-                    set_count: Cell::new(0),
-                    ref_count: Cell::new(0),
-                });
+
+                let lvar = Gc::new(
+                    &self.ctx,
+                    LVar {
+                        name: if name != Value::new(false) { name } else { arg },
+                        id,
+                        set_count: Cell::new(0),
+                        ref_count: Cell::new(0),
+                    },
+                );
                 self.lvars.insert(arg, lvar);
                 lvars.push(lvar);
                 ls_args = ls_args.cdr();
                 ls_ids = ls_ids.cdr();
-                
             }
-            
+
             let variadic = if !ls_args.is_null() {
                 let arg = ls_args;
                 let id = ls_ids.car();
-                let lvar = Gc::new(&self.ctx, LVar {
-                    name: id,
-                    id: arg,
-                    set_count: Cell::new(0),
-                    ref_count: Cell::new(0),
-                });
+                let lvar = Gc::new(
+                    &self.ctx,
+                    LVar {
+                        name: id,
+                        id: arg,
+                        set_count: Cell::new(0),
+                        ref_count: Cell::new(0),
+                    },
+                );
                 self.lvars.insert(arg, lvar);
                 Some(lvar)
-
-            } else { None };
+            } else {
+                None
+            };
 
             let body = self.convert(body).map_err(|_| t)?;
 
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Proc(Gc::new(&self.ctx, core::Proc {
-                    source,
-                    args: Array::from_slice(&self.ctx, &lvars),
-                    variadic,
-                    body,
-                    name,
-                }))
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Proc(Gc::new(
+                        &self.ctx,
+                        core::Proc {
+                            source,
+                            args: Array::from_slice(&self.ctx, &lvars),
+                            variadic,
+                            body,
+                            name,
+                        },
+                    )),
+                },
+            ));
         } else if is_receive(self.ctx, t) {
             let mut ids = receive_ids(self.ctx, t);
             let mut vars = receive_vars(self.ctx, t);
@@ -846,12 +916,15 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             while ids.is_pair() {
                 let id = ids.car();
                 let var = vars.car();
-                let lvar = Gc::new(&self.ctx, LVar {
-                    name: id,
-                    id: var,
-                    set_count: Cell::new(0),
-                    ref_count: Cell::new(0),
-                });
+                let lvar = Gc::new(
+                    &self.ctx,
+                    LVar {
+                        name: id,
+                        id: var,
+                        set_count: Cell::new(0),
+                        ref_count: Cell::new(0),
+                    },
+                );
                 self.lvars.insert(var, lvar);
                 lvars.push(lvar);
                 ids = ids.cdr();
@@ -861,23 +934,36 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let variadic = if !ids.is_null() {
                 let id = ids.car();
                 let var = vars.car();
-                let lvar = Gc::new(&self.ctx, LVar {
-                    name: id,
-                    id: var,
-                    set_count: Cell::new(0),
-                    ref_count: Cell::new(0),
-                });
+                let lvar = Gc::new(
+                    &self.ctx,
+                    LVar {
+                        name: id,
+                        id: var,
+                        set_count: Cell::new(0),
+                        ref_count: Cell::new(0),
+                    },
+                );
                 self.lvars.insert(var, lvar);
                 Some(lvar)
-            } else { None };
+            } else {
+                None
+            };
 
             let producer = self.convert(producer).map_err(|_| t)?;
             let consumer = self.convert(consumer).map_err(|_| t)?;
 
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Receive(Array::from_slice(&self.ctx, &lvars), variadic, producer, consumer)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Receive(
+                        Array::from_slice(&self.ctx, &lvars),
+                        variadic,
+                        producer,
+                        consumer,
+                    ),
+                },
+            ));
         } else if is_values(self.ctx, t) {
             let mut ls = values_values(self.ctx, t);
             let len = ls.list_length();
@@ -887,14 +973,17 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 vals.push(v);
                 ls = ls.cdr();
             }
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Values(Array::from_slice(&self.ctx, &vals))
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Values(Array::from_slice(&self.ctx, &vals)),
+                },
+            ));
         } else if is_sequence(self.ctx, t) {
             let mut seq = Vec::new();
             seq.push(self.convert(sequence_head(self.ctx, t)).map_err(|_| t)?);
-            
+
             let mut tail = sequence_tail(self.ctx, t);
             while is_sequence(self.ctx, tail) {
                 seq.push(self.convert(sequence_head(self.ctx, tail)).map_err(|_| t)?);
@@ -902,10 +991,13 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             }
             seq.push(self.convert(tail).map_err(|_| t)?);
             let seq = Array::from_slice(&self.ctx, &seq);
-            return Ok(Gc::new(&self.ctx, Term {
-                source: Lock::new(source),
-                kind: TermKind::Seq(seq)
-            }))
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::Seq(seq),
+                },
+            ));
         } else {
             todo!()
         }

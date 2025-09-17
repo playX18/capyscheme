@@ -196,6 +196,7 @@ prim!(
     },
 
     "cons" => cons(ssa, args, _h) {
+        assert!(args.len() == 2, "cons expects 2 arguments, got: {:?}", args);
         let car = ssa.atom(args[0]);
         let cdr = ssa.atom(args[1]);
 
@@ -492,29 +493,6 @@ prim!(
         PrimValue::Value(tuple)
     },
 
-    "make-tuple" => make_tuple(ssa, args, _h) {
-        let len = ssa.atom(args[0]);
-        let len = ssa.builder.ins().ireduce(types::I32, len);
-
-        let hdr = ScmHeader::with_type_bits(TypeCode8::TUPLE.bits() as _);
-
-        let hdr = ssa.builder.ins().iconst(types::I64, hdr.word as i64);
-        let size = ssa.builder.ins().imul_imm(len, size_of::<Value>() as i64);
-        let size = ssa.builder.ins().iadd_imm(size, size_of::<Tuple>() as i64);
-        let size = ssa.builder.ins().uextend(types::I64, size);
-        let vt = ssa.import_static("TUPLE_VTABLE", types::I64);
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let tc8 = ssa.builder.ins().iconst(types::I8, TypeCode8::TUPLE.bits() as i64);
-        let call = ssa.builder.ins().call(ssa.thunks.alloc_tc8, &[ctx, vt, tc8, size]);
-        let tuple = ssa.builder.inst_results(call)[0];
-
-        let len = ssa.builder.ins().uextend(types::I64, len);
-        let len = ssa.builder.ins().band_imm(len, TupleLengthBits::mask() as i64);
-        let len = ssa.builder.ins().ishl_imm(len, TupleLengthBits::shift() as i64);
-        let hdr = ssa.builder.ins().bor(hdr, len);
-        ssa.builder.ins().store(ir::MemFlags::trusted(), hdr, tuple, offset_of!(Tuple, hdr) as i32);
-        PrimValue::Value(tuple)
-    },
 
     "tuple-ref" => tuple_ref(ssa, args, _h) {
         let tuple = ssa.atom(args[0]);

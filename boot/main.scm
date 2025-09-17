@@ -47,6 +47,13 @@
   (let ((pair (assq key alist)))
     (if (pair? pair) (cdr pair) #f)))
 
+(define (append-map proc lst)
+  (if (null? lst) '()
+    (let ((res (proc (car lst))))
+      (if (null? res)
+          (append-map proc (cdr lst))
+          (append res (append-map proc (cdr lst)))))))
+
 (define every1
   (lambda (pred lst)
     (or (null? lst)
@@ -1285,8 +1292,14 @@
 (define (cddr x) (cdr (cdr x)))
 (define (cdar x) (cdr (car x)))
 (define (caar x) (car (car x)))
+(define (caddr x) (car (cdr (cdr x))))
+(define (cdddr x) (cdr (cdr (cdr x))))
 
-(load "boot/eval.scm")
+
 (load "boot/expand.scm")
 (load "boot/interpreter.scm")
 (load "boot/psyntax.scm")
+(load "boot/iosys.scm")
+(load "boot/portio.scm")
+(load "boot/synclo.scm")
+(load "boot/eval.scm")

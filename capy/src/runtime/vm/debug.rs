@@ -3,7 +3,6 @@ use crate::{
     runtime::{
         Context,
         value::{Closure, Value},
-        vm::libraries::lookup_scheme_location,
     },
 };
 
@@ -108,48 +107,58 @@ native_fn!(
 pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
     let state = ctx.state();
     let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
+    backtrace::trace(|_| {
+        shadow_stack.for_each_mut(|frame| {
+            let mut loc = None;
+            backtrace::resolve(frame.ip as _, |symbol| {
+                loc = Some((
+                    symbol.filename().map(|f| f.to_string_lossy().to_string()),
+                    symbol.lineno(),
+                    symbol.colno(),
+                ));
+            });
 
-    shadow_stack.for_each_mut(|frame| {
-        let loc = lookup_scheme_location(ctx, frame.ip - 1);
+            let mut buf = String::new();
 
-        let mut buf = String::new();
+            if let Some(loc) = loc {
+                buf.push_str("  at ");
+                if let Some(file) = loc.0 {
+                    buf.push_str(&file);
+                } else {
+                    buf.push_str("<unknown file>");
+                }
+                if let Some(line) = loc.1 {
+                    buf.push(':');
+                    buf.push_str(&line.to_string());
+                }
+                if let Some(col) = loc.2 {
+                    buf.push(':');
+                    buf.push_str(&col.to_string());
+                }
+            }
 
-        if let Some(loc) = loc {
-            buf.push_str("  at ");
-            if let Some(file) = loc.0 {
-                buf.push_str(&file);
+            buf.push_str(" in ");
+            if frame.rator.is::<Closure>() {
+                let clos = frame.rator.downcast::<Closure>();
+                if clos.meta.is_list() {
+                    buf.push_str(&clos.meta.car().to_string());
+                } else {
+                    buf.push_str(&format!("<closure {:p}> ", clos,));
+                }
             } else {
-                buf.push_str("<unknown file>");
+                buf.push_str(&frame.rator.to_string());
             }
-            if let Some(line) = loc.1 {
-                buf.push(':');
-                buf.push_str(&line.to_string());
+            buf.push('(');
+            for (i, rand) in frame.rands.iter().enumerate() {
+                if i > 0 {
+                    buf.push_str(", ");
+                }
+                buf.push_str(&rand.to_string());
             }
-            if let Some(col) = loc.2 {
-                buf.push(':');
-                buf.push_str(&col.to_string());
-            }
-        }
+            buf.push(')');
+            println!("{}", buf);
+        });
 
-        buf.push_str(" in ");
-        if frame.rator.is::<Closure>() {
-            let clos = frame.rator.downcast::<Closure>();
-            if clos.meta.is_list() {
-                buf.push_str(&clos.meta.car().to_string());
-            } else {
-                buf.push_str(&format!("<closure {:p}> ", clos,));
-            }
-        } else {
-            buf.push_str(&frame.rator.to_string());
-        }
-        buf.push('(');
-        for (i, rand) in frame.rands.iter().enumerate() {
-            if i > 0 {
-                buf.push_str(", ");
-            }
-            buf.push_str(&rand.to_string());
-        }
-        buf.push(')');
-        println!("{}", buf);
+        false
     });
 }

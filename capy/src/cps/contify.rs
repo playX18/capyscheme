@@ -254,23 +254,21 @@ impl<'gc> Term<'gc> {
             }
         }
 
-        // Run Tarjan to obtain SCCs; each SCC is a candidate group.
-        let sccs = petgraph::algo::tarjan_scc(&graph);
+        // Run SCC algorithm; each SCC is a candidate group.
+        let sccs = petgraph::algo::kosaraju_scc(&graph);
 
         sccs.into_iter()
-            .map(|scc| {
+            .filter_map(|scc| {
                 let ns = scc
                     .iter()
                     .map(|&node| graph[node])
                     .collect::<Set<LVarRef<'_>>>();
-                let c = match self.common_return_cont(&ns, None) {
-                    SingleValueSet::Singleton(val) => Some(val),
-                    _ => None,
-                };
 
-                c.map(|x| (ns, x))
+                match self.common_return_cont(&ns, None) {
+                    SingleValueSet::Singleton(val) => Some((ns, val)),
+                    _ => None,
+                }
             })
-            .flatten()
             .collect()
     }
 
@@ -481,14 +479,7 @@ impl<'gc> Term<'gc> {
             }
 
             Self::Letk(ks, body) => {
-                let ks = ks
-                    .iter()
-                    .map(|k| {
-                        let k = k.subst(ctx, subst);
-
-                        k
-                    })
-                    .collect_gc(&ctx);
+                let ks = ks.iter().map(|k| k.subst(ctx, subst)).collect_gc(&ctx);
                 let body = body.subst(ctx, subst);
                 TermRef::new(&ctx, Self::Letk(ks, body))
             }
@@ -501,19 +492,19 @@ impl<'gc> Term<'gc> {
 
             Self::App(func, k, h, args, src) => {
                 let func = func.subst(ctx, subst);
-                let k = subst.get(&*k).copied().unwrap_or(*k);
-                let h = subst.get(&*h).copied().unwrap_or(*h);
+                let k = subst.get(k).copied().unwrap_or(*k);
+                let h = subst.get(h).copied().unwrap_or(*h);
                 let args = args
-                    .into_iter()
+                    .iter()
                     .map(|arg| arg.subst(ctx, subst))
                     .collect_gc(&ctx);
                 TermRef::new(&ctx, Self::App(func, k, h, args, *src))
             }
 
             Self::Continue(k, args, src) => {
-                let k = subst.get(&*k).copied().unwrap_or(*k);
+                let k = subst.get(k).copied().unwrap_or(*k);
                 let args = args
-                    .into_iter()
+                    .iter()
                     .map(|arg| arg.subst(ctx, subst))
                     .collect_gc(&ctx);
                 TermRef::new(&ctx, Self::Continue(k, args, *src))
@@ -521,8 +512,8 @@ impl<'gc> Term<'gc> {
 
             Self::If(test, kcons, kalt, hint) => {
                 let test = test.subst(ctx, subst);
-                let kcons = subst.get(&*kcons).copied().unwrap_or(*kcons);
-                let kalt = subst.get(&*kalt).copied().unwrap_or(*kalt);
+                let kcons = subst.get(kcons).copied().unwrap_or(*kcons);
+                let kalt = subst.get(kalt).copied().unwrap_or(*kalt);
                 TermRef::new(&ctx, Self::If(test, kcons, kalt, *hint))
             }
 
@@ -557,7 +548,6 @@ impl<'gc> Cont<'gc> {
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> ContRef<'gc> {
-        
         let handler = subst
             .get(&self.handler.get())
             .copied()
@@ -577,7 +567,7 @@ impl<'gc> Expression<'gc> {
         match self {
             Self::PrimCall(name, args, h, src) => {
                 let args = args
-                    .into_iter()
+                    .iter()
                     .map(|arg| arg.subst(ctx, subst))
                     .collect_gc(&ctx);
                 let h = subst.get(&h).copied().unwrap_or(h);

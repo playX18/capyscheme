@@ -20,7 +20,6 @@ pub mod base;
 pub mod debug;
 pub mod errors;
 pub mod eval;
-pub mod records;
 pub mod expand;
 pub mod hash;
 pub mod io;
@@ -28,6 +27,7 @@ pub mod libraries;
 pub mod list;
 pub mod load;
 pub mod memoize;
+pub mod records;
 pub mod strings;
 pub mod syntax;
 pub mod throw;
@@ -115,7 +115,7 @@ extern "C-unwind" fn default_retk<'gc>(
         unsafe { *rands }
     } else {
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-        Vector::from_slice(&ctx, args).into()
+        Vector::from_slice(ctx, args).into()
     };
 
     NativeReturn {
@@ -197,6 +197,11 @@ pub struct NativeCallContext<'a, 'gc, R: TryIntoValues<'gc> = Value<'gc>> {
 }
 
 impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
+    /// Construct native call context from raw parts.
+    ///
+    /// # Safety
+    ///
+    /// Rands must be a valid pointer created by runtime, not arbitrary pointer.
     pub unsafe fn from_raw(
         ctx: &Context<'gc>,
         rator: Value<'gc>,
@@ -241,7 +246,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
-    pub unsafe fn return_error(self, err: Value<'gc>) -> NativeCallReturn<'gc> {
+    pub fn return_error(self, err: Value<'gc>) -> NativeCallReturn<'gc> {
         NativeCallReturn {
             ret: NativeReturn {
                 code: ReturnCode::ReturnErr,
@@ -274,6 +279,11 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
+    /// Perform call into `proc` with `args`, using `retk` and `reth` as return and error continuations.
+    ///
+    /// # Safety
+    ///
+    /// No type-checks are performed nor arity checks.
     pub unsafe fn return_call_unsafe(
         self,
         retk: Value<'gc>,
@@ -288,6 +298,11 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
+    /// Continue to a continuation `cont` with `args`.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because continuations can be misused easily.
     pub unsafe fn continue_to(
         self,
         cont: Value<'gc>,

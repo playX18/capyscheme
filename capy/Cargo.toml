@@ -34,11 +34,14 @@ hex = "*"
 log = "0.4.27"
 gimli = "0.32.2"
 target-lexicon.workspace = true
-object = "0.37.3"
+object = { version = "0.37.3", features = ["macho"] }
 addr2line = "0.25.0"
 memmap2 = "0.9.8"
 probe = "0.5.1"
 lexical = { version = "7.0.4", features = ["power-of-two"] }
+findshlibs = "0.10.2"
+backtrace = "0.3.75"
+which = "8.0.0"
 
 [lib]
 crate-type = ["dylib"]

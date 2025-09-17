@@ -70,7 +70,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let true_ = self.builder.ins().iconst(types::I64, Value::VALUE_TRUE);
                 let false_ = self.builder.ins().iconst(types::I64, Value::VALUE_FALSE);
 
-                self.builder.ins().select(val, true_, false_)
+                let val = self.builder.ins().select(val, true_, false_);
+                self.debug_local(var, val);
+                val
             }
             VarDef::Free(ix) => {
                 let free = self.builder.ins().load(
@@ -79,12 +81,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     self.rator,
                     offset_of!(Closure, free) as i32,
                 );
-                self.builder.ins().load(
+                let value = self.builder.ins().load(
                     types::I64,
                     ir::MemFlags::trusted().with_can_move(),
                     free,
                     Vector::OFFSET_OF_DATA as i32 + (ix * 8) as i32,
-                )
+                );
+                value
             }
 
             VarDef::Value(val) => val,
@@ -143,21 +146,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             rands = self.builder.ins().iadd_imm(rands, 16);
             num_rands = self.builder.ins().iadd_imm(num_rands, -2);
 
+            self.debug_local(func.return_cont, retk);
+            self.debug_local(func.handler_cont, reth);
+
             self.variables.insert(func.return_cont, VarDef::Value(retk));
             self.variables
                 .insert(func.handler_cont, VarDef::Value(reth));
         }
 
         if params.len() != 0 {
-            for (i, param) in params.iter().enumerate() {
-                let value = self.builder.ins().load(
-                    types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
-                    rands,
-                    (i * 8) as i32,
-                );
-                self.variables.insert(*param, VarDef::Value(value));
-            }
             if let Some(rest) = rest {
                 let not_enough = self.builder.ins().icmp_imm(
                     IntCC::UnsignedLessThan,
@@ -183,6 +180,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 }
                 self.builder.switch_to_block(succ);
                 {
+                    for (i, param) in params.iter().enumerate() {
+                        let value = self.builder.ins().load(
+                            types::I64,
+                            ir::MemFlags::trusted().with_can_move(),
+                            rands,
+                            (i * 8) as i32,
+                        );
+                        self.variables.insert(*param, VarDef::Value(value));
+                        self.debug_local(*param, value);
+                    }
+
                     let need_cons = self.builder.ins().icmp_imm(
                         IntCC::NotEqual,
                         num_rands,
@@ -219,6 +227,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     {
                         let ls = self.builder.block_params(succ)[0];
                         self.variables.insert(rest, VarDef::Value(ls));
+                        self.debug_local(rest, ls);
                     }
                 }
             } else {
@@ -244,6 +253,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     self.continue_to(error_handler, &[err]);
                 }
                 self.builder.switch_to_block(succ);
+                for (i, param) in params.iter().enumerate() {
+                    let value = self.builder.ins().load(
+                        types::I64,
+                        ir::MemFlags::trusted().with_can_move(),
+                        rands,
+                        (i * 8) as i32,
+                    );
+                    self.variables.insert(*param, VarDef::Value(value));
+                    self.debug_local(*param, value);
+                }
             }
         } else {
             if let Some(rest) = rest {
@@ -277,6 +296,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let ls = self.builder.block_params(succ)[0];
                     self.variables.insert(rest, VarDef::Value(ls));
+                    self.debug_local(rest, ls);
                 }
             } else {
                 let succ = self.builder.create_block();
@@ -539,6 +559,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .ins()
                 .call(self.thunks.make_closure, &[ctx, addr, nfree, is_cont, meta]);
             let clos = self.builder.inst_results(clos)[0];
+            self.debug_local_with_source(func.binding, clos, func.source);
             self.variables.insert(func.binding, VarDef::Value(clos));
         }
 
@@ -587,7 +608,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .ins()
                 .call(self.thunks.make_closure, &[ctx, addr, nfree, is_cont, meta]);
             let clos = self.builder.inst_results(clos)[0];
-
+            self.debug_local_with_source(cont.binding, clos, cont.source);
             self.variables.insert(cont.binding, VarDef::Value(clos));
         }
 
@@ -626,6 +647,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         while let Some(cont) = self.to_generate.pop() {
             let block = self.block_for_cont(cont);
             self.builder.switch_to_block(block);
+            self.set_debug_loc(cont.source());
             self.term(cont.body);
         }
 
@@ -649,11 +671,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
             let source_loc = self.func_debug_cx.add_dbg_loc(file_id, line, column);
             self.builder.set_srcloc(source_loc);
+            self.srcloc = Some(source_loc);
         }
     }
 
     pub fn term(&mut self, term: TermRef<'gc>) {
-        
         self.set_debug_loc(term.source());
         match &*term {
             Term::Let(var, expr, next) => {
@@ -691,7 +713,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let num_rands = rands.len() + 2;
                 let num_rands = self.builder.ins().iconst(types::I64, num_rands as i64);
 
-                let code = self.get_callee_code(rator, *reth);
+                let err_handler = self.default_error_handler();
+                let code = self.get_callee_code(rator, err_handler);
 
                 let retk = self.var(*retk);
                 let reth = self.var(*reth);
@@ -756,6 +779,24 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
             _ => todo!(),
         }
+    }
+
+    pub fn maybe_known_function(&mut self, rator: Atom<'gc>) -> Option<ir::FuncRef> {
+        let Atom::Local(var) = rator else {
+            return None;
+        };
+
+        let func = *self.module_builder.reify_info.free_vars.funcs.get(&var)?;
+        let id = self
+            .module_builder
+            .func_for_func
+            .get(&func)
+            .expect("must be defined");
+
+        self.module_builder
+            .module
+            .declare_func_in_func(*id, &mut self.builder.func)
+            .into()
     }
 
     pub fn check_yield(&mut self, rator: ir::Value, rands: ir::Value, num_rands: ir::Value) {

@@ -29,7 +29,7 @@ pub fn free_variables<'gc>(
             TermKind::Fix(fix) => {
                 let mut set2 = HashSet::new();
                 for var in fix.lhs.iter() {
-                    set2.insert(var.clone());
+                    set2.insert(*var);
                 }
 
                 for proc in fix.rhs.iter() {
@@ -97,7 +97,7 @@ pub fn free_variables<'gc>(
             TermKind::Let(l) => {
                 if let LetStyle::Let = l.style {
                     for init in l.rhs.iter() {
-                        rec(&init, set);
+                        rec(init, set);
                     }
 
                     let mut set2 = HashSet::new();
@@ -111,7 +111,7 @@ pub fn free_variables<'gc>(
                 } else {
                     let mut set2 = HashSet::new();
                     for init in l.rhs.iter() {
-                        rec(&init, &mut set2);
+                        rec(init, &mut set2);
                     }
 
                     rec(&l.body, &mut set2);
