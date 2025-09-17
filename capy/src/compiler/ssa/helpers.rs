@@ -426,6 +426,29 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.block_params(on_success)[0]
     }
 
+    pub fn debug_local(&mut self, lvar: LVarRef<'gc>, val: ir::Value) {
+        let srcloc = self.srcloc;
+        let label = self.func_debug_cx.add_variable(lvar, srcloc);
+        self.builder.set_val_label(val, label);
+    }
+
+    pub fn get_srcloc(&mut self, src: Value<'gc>) -> Option<ir::SourceLoc> {
+        if src != Value::new(false) {
+            let (file_id, line, column) = self.module_builder.debug_context.get_span_loc(src);
+
+            let source_loc = self.func_debug_cx.add_dbg_loc(file_id, line, column);
+            Some(source_loc)
+        } else {
+            None
+        }
+    }
+
+    pub fn debug_local_with_source(&mut self, lvar: LVarRef<'gc>, val: ir::Value, src: Value<'gc>) {
+        let srcloc = self.get_srcloc(src);
+        let label = self.func_debug_cx.add_variable(lvar, srcloc);
+        self.builder.set_val_label(val, label);
+    }
+
     /// Given CPS function, construct metadata value for it.
     pub fn meta_for_func(&mut self, f: FuncRef<'gc>) -> ir::Value {
         let name = if f.name == Value::new(false) {

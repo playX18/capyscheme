@@ -15,7 +15,10 @@ use crate::{
         primitives::resolve_primitives, synclo::syntax_annotation,
     },
     runtime::{
-        modules::{root_module, Module}, value::{Symbol, Value}, vm::syntax::props_to_sourcev, Context
+        Context,
+        modules::{Module, root_module},
+        value::{Symbol, Value},
+        vm::syntax::props_to_sourcev,
     },
     static_symbols,
 };
@@ -620,7 +623,8 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             )),
         }
     } else if program.is_pair() {
-        let _source = get_source_property(cenv.ctx, program).map(|source| props_to_sourcev(cenv.ctx, source));
+        let _source =
+            get_source_property(cenv.ctx, program).map(|source| props_to_sourcev(cenv.ctx, source));
         let proc = program.car();
         let args = program.cdr();
 

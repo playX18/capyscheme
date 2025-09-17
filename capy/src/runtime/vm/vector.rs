@@ -52,4 +52,56 @@ native_fn! {
 
         nctx.return_(v.into())
     }
+
+    pub ("make-tuple") fn make_tuple<'gc>(nctx, nelems: usize, init: Option<Value<'gc>>) -> Value<'gc> {
+        let v = Tuple::new(&nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
+
+        nctx.return_(v.into())
+    }
+
+
+
+    pub ("make-bytevector") fn make_bytevector<'gc>(nctx, nelems: usize, init: Option<u8>) -> Value<'gc> {
+        let v = ByteVector::new::<false>(&nctx.ctx, nelems);
+        if let Some(b) = init {
+            v.fill(b);
+        }
+        nctx.return_(v.into())
+    }
+
+    pub ("bytevector-length") fn bytevector_length<'gc>(nctx, bv: Gc<'gc, ByteVector>) -> Value<'gc> {
+        let len = bv.len().into_value(nctx.ctx);
+        nctx.return_(len)
+    }
+
+    pub ("bytevector?") fn bytevector_p<'gc>(nctx, value: Value<'gc>) -> bool {
+        nctx.return_(value.is::<ByteVector>())
+    }
+
+    pub ("bytevector-u8-ref") fn bytevector_u8_ref<'gc>(nctx, bv: Gc<'gc, ByteVector>, k: usize) -> Result<u8, Value<'gc>> {
+        if k >= bv.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation("bytevector-u8-ref", "index out of bounds", Some(k.into_value(ctx)), Some(1), 2, &[bv.into(), k.into_value(ctx)]);
+        }
+
+        let v = bv[k];
+
+        nctx.return_(Ok(v))
+    }
+
+    pub ("bytevector-u8-set!") fn bytevector_u8_set<'gc>(nctx, bv: Gc<'gc, ByteVector>, k: usize, value: u8) -> Result<u8, Value<'gc>> {
+        if k >= bv.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation("bytevector-u8-set!", "index out of bounds", Some(k.into_value(ctx)), Some(1), 3, &[bv.into(), k.into_value(ctx), value.into_value(ctx)]);
+        }
+
+        unsafe {
+            bv.as_slice_mut_unchecked()[k] = value;
+        }
+        nctx.return_(Ok(value))
+    }
+
+
+
+
 }

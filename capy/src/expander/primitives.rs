@@ -244,7 +244,6 @@ make_primitives!(
     (PRIM_CACHE_REF, "cache-ref", true),
     (PRIM_CACHE_SET, "cache-set!", true),
     (PRIM_TUPLE, "tuple", false),
-    (PRIM_MAKE_TUPLE, "make-tuple", false),
     (PRIM_TUPLE_SIZE, "tuple-size", false),
     (PRIM_TUPLE_REF, "tuple-ref", false),
     (PRIM_TUPLE_SET, "tuple-set!", false),

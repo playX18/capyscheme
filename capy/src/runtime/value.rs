@@ -285,10 +285,10 @@ pub struct WeakValue<'gc> {
     pd: PhantomData<&'gc ()>,
 }
 
-impl<'gc> Into<WeakValue<'gc>> for Value<'gc> {
-    fn into(self) -> WeakValue<'gc> {
-        WeakValue {
-            desc: self.desc,
+impl<'gc> From<Value<'gc>> for WeakValue<'gc> {
+    fn from(value: Value<'gc>) -> Self {
+        Self {
+            desc: value.desc,
             pd: PhantomData,
         }
     }
@@ -449,6 +449,7 @@ impl Into<u32> for TypeCode8 {
     }
 }
 
+#[allow(clippy::identity_op)]
 impl TypeCode16 {
     pub const MUTABLE_PAIR: Self = Self(TypeCode8::PAIR.0 as u16);
     pub const IMMUTABLE_PAIR: Self = Self(TypeCode8::PAIR.0 as u16 + 1 * 256);
@@ -501,14 +502,14 @@ impl From<TypeCode16> for u16 {
 fn typ8(x: GCObject) -> TypeCode8 {
     unsafe {
         let hdr = x.to_address().as_ref::<ScmHeader>();
-        TypeCode8::try_from(hdr.type_bits() as u8).unwrap_or(TypeCode8::UNKNOWN)
+        TypeCode8::from(hdr.type_bits() as u8)
     }
 }
 
 fn typ16(x: GCObject) -> TypeCode16 {
     unsafe {
         let hdr = x.to_address().as_ref::<ScmHeader>();
-        TypeCode16::try_from(hdr.type_bits() as u16).unwrap_or(TypeCode16::UNKNOWN)
+        TypeCode16::from(hdr.type_bits())
     }
 }
 
@@ -553,10 +554,6 @@ impl<'gc> Value<'gc> {
         }
     }
 
-    pub fn not(self) -> bool {
-        self.raw_i64() == Self::VALUE_FALSE
-    }
-
     pub fn from_gc<T: Tagged>(gc: Gc<'gc, T>) -> Self {
         Self {
             desc: EncodedValueDescriptor { ptr: gc.as_gcobj() },
@@ -590,6 +587,14 @@ impl<'gc> Value<'gc> {
     }
 }
 
+impl<'gc> std::ops::Not for Value<'gc> {
+    type Output = bool;
+
+    fn not(self) -> Self::Output {
+        self.raw_i64() == Self::VALUE_FALSE
+    }
+}
+
 pub mod conversions;
 pub mod environment;
 pub mod eq;
@@ -597,6 +602,7 @@ pub mod hash;
 pub mod header;
 pub mod list;
 pub mod number;
+pub mod port;
 pub mod proc;
 pub mod string;
 pub mod structure;
@@ -610,6 +616,7 @@ pub use hash::*;
 pub use header::*;
 pub use list::*;
 pub use number::*;
+
 pub use proc::*;
 pub use string::*;
 pub use structure::*;
@@ -618,7 +625,10 @@ pub use vector::*;
 pub use weak_set::*;
 pub use weak_table::*;
 
-use crate::{frontend::reader::Annotation, runtime::Context};
+use crate::{
+    frontend::reader::Annotation,
+    runtime::{Context, vm::syntax::Syntax},
+};
 
 impl<'gc> fmt::Pointer for Value<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -647,8 +657,8 @@ impl GlobalValue {
     }
 }
 
-unsafe impl<'gc> bytemuck::Zeroable for GlobalValue {}
-unsafe impl<'gc> bytemuck::Pod for GlobalValue {}
+unsafe impl bytemuck::Zeroable for GlobalValue {}
+unsafe impl bytemuck::Pod for GlobalValue {}
 
 unsafe impl Trace for GlobalValue {
     unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
@@ -662,6 +672,7 @@ unsafe impl Trace for GlobalValue {
 }
 
 impl<'gc> std::fmt::Display for Value<'gc> {
+    #[allow(clippy::collapsible_else_if)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(number) = self.number() {
             write!(f, "{number}")?;
@@ -754,6 +765,15 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                 } else {
                     write!(f, "#<closure {:p}>", clo)
                 }
+            } else if self.is::<Syntax>() {
+                let syn = self.downcast::<Syntax>();
+                write!(
+                    f,
+                    "#<syntax {} at {}, wrap={}>",
+                    syn.expr(),
+                    syn.source(),
+                    syn.wrap()
+                )
             } else {
                 write!(f, "{:p} with tc={}", self, self.typ16().bits())
             }

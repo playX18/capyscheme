@@ -47,6 +47,21 @@
         (make-primcall src name args))
     (define (build-simple-lambda src ids vars meta exp)
       (make-proc src vars exp meta ids))
+    (define (expand-simple-lambda e r w s mod req rest meta body)
+      (let* ((ids (if rest (append req (list rest)) req)) (vars (map gen-var ids)) (labels (gen-labels ids)))
+
+                 (build-simple-lambda
+                  s
+                  ids
+                  vars
+                  meta
+                  (expand-body
+                   body
+                   (source-wrap e w s mod)
+                   (extend-var-env labels vars r)
+                   (make-binding-wrap ids labels w)
+                   mod)))
+    )
     (define (build-sequence src exps)
                (let* ((v exps)
                       (fk (lambda ()
@@ -87,7 +102,9 @@
     (define (build-call src rator rands)
       (make-application src rator rands))
     (define (build-conditional src test-exp then-exp else-exp)
-        (make-if src test-exp then-exp else-exp))
+      (make-if src test-exp then-exp else-exp))
+    (define (build-data src val)
+      (make-constant src val))
 
 
     (define build-named-let
@@ -166,7 +183,7 @@
     (define (id-sym-name&marks x w)
       (if (syntax? x)
         (values (syntax-expression x) (join-marks (wrap-marks w) (wrap-marks (syntax-wrap x))))
-        (values x w)))
+        (values x (wrap-marks w))))
     (define (make-wrap marks subst) (cons marks subst))
     (define (wrap-marks w) (car w))
     (define (wrap-subst w) (cdr w))
@@ -219,13 +236,20 @@
                               (lambda (symname marks)
                                 (vector-set! symnamevec i symname)
                                 (vector-set! marksvec i marks)
-                                (f ids (+ i 1)))))])))))]))
+                                (f ids (+ i 1)))))])))
+                  (wrap-subst w)))]))
     (define (smart-append m1 m2) (if (null? m2) m1 (append m1 m2)))
     (define (join-wraps w1 w2)
-      (let ([m1 (wrap-marks w1)] [s1 (wrap-subst w1)])
+      (let ((m1 (wrap-marks w1)) (s1 (wrap-subst w1)))
         (if (null? m1)
-          (if (null? s1) w2 (make-wrap (wrap-marks w2) (smart-append s1 (wrap-subst w2))))
-          (make-wrap (smart-append m1 (wrap-marks w2)) (smart-append s1 (wrap-subst w2))))))
+            (if (null? s1)
+                w2
+                (make-wrap
+                  (wrap-marks w2)
+                  (smart-append s1 (wrap-subst w2))))
+            (make-wrap
+              (smart-append m1 (wrap-marks w2))
+              (smart-append s1 (wrap-subst w2))))))
 
     (define (join-marks m1 m2) (smart-append m1 m2))
     (define (same-marks? x y)
@@ -235,7 +259,6 @@
                (eq? (car x) (car y))
                (same-marks? (cdr x) (cdr y)))))
     (define (id-var-name id w mod)
-
       (define (search sym subst marks)
         (cond
           [(null? subst) #f]
@@ -255,6 +278,7 @@
                     (cond
                       [(= i n) (search sym subst marks)]
                       [(and (eq? (vector-ref rsymnames i) sym) (same-marks? marks (vector-ref rmarks i)))
+                        
                         (let ([lbl (vector-ref rlabels i)])
                           (cond
                             [(pair? lbl)
@@ -559,7 +583,8 @@
     (define (syntax-type e r w s rib mod for-car?)
         (cond
          [(symbol? e)
-              (call-with-values (lambda () (resolve-identifier e w r mod #t))
+              (call-with-values (lambda () 
+                  (resolve-identifier e w r mod #t))
                   (lambda (type value mod*)
                       (cond
                           [(eq? type 'macro)
@@ -641,6 +666,7 @@
             (lambda (type value form e w s mod)
                 (expand-expr type value form e r w s mod))))
     (define (expand-expr type value form e r w s mod)
+     
         (cond
             [(eq? type 'lexical)
                 (build-lexical-reference s e value)]
@@ -671,6 +697,7 @@
                 (build-primcall s
                                 value
                                 (map (lambda (e) (expand e r w mod)) (cdr e)))]
+            [(eq? type 'global) (build-global-reference s value mod)]
             [(eq? type 'constant) (make-constant s (strip e))]
             [(eq? type 'call) (expand-call (expand (car e) r w mod) r w s mod)]
             [(eq? type 'begin-form)
@@ -685,7 +712,7 @@
                             (syntax-violation #f "source expression failed to match any pattern" tmp)))))]
             [(or (eq? type 'define-form) (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
                 (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
-            [else (syntax-violation #f "unexpected syntax" (source-wrap e w s mod))]))
+            [else (syntax-violation #f "unexpected syntax" type (source-wrap e w s mod))]))
     (define (expand-call x e r w s mod)
         (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(any . each-any))))
           (if tmp
@@ -693,6 +720,7 @@
               (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
 
     (define (expand-body body outer-form r w mod)
+
         (let* ([r (cons '("placeholder" . (placeholder)) r)]
                [ribcage (make-empty-ribcage)]
                [w (make-wrap (wrap-marks w) (cons ribcage (wrap-subst w)))])
@@ -700,6 +728,7 @@
                         [ids '()] [labels '()]
                         [var-ids '()] [vars '()] [vals '()] [bindings '()]
                         [expand-tail-expr #f])
+               
                 (cond
                  [(null? body)
                     (if (not expand-tail-expr)
@@ -727,13 +756,13 @@
                                                             (expand-expr)
                                                             (make-void #f))))
                                               (reverse vals))])
-                                 (build-letrec src #t var-ids vars vals tail))])))]
+                                 (build-letrec* src var-ids vars vals tail))])))]
                      [expand-tail-expr
                          (parse body ids labels (cons #f var-ids) (cons #f vars) (cons expand-tail-expr vals) bindings #f)]
                      [else
                         (let ([e (cdar body)] [er (caar body)] [body (cdr body)])
                             (call-with-values
-                                (lambda () (synta-type e er empty-wrap (source-annotation e) ribcage mod #f))
+                                (lambda () (syntax-type e er empty-wrap (source-annotation e) ribcage mod #f))
                                 (lambda (type value form e w s mod)
                                     (cond
                                     [(eq? type 'define-form)
@@ -775,6 +804,7 @@
                                         (let ([wrapped (source-wrap e w s mod)])
                                             (parse body ids labels var-ids vars vals bindings
                                                 (lambda ()
+
                                                     (expand wrapped er empty-wrap mod))))])))]))))
     (define (gen-var id)
         (let ([id (if (syntax? id) (syntax-expression id) id)])
@@ -785,6 +815,27 @@
         [(pair? x) (cons (strip (car x)) (strip (cdr x)))]
         [(vector? x) (list->vector (strip (vector->list x)))]
         [else x]))
+
+    (define lambda-formals
+      (lambda (orig-args)
+               (letrec* ((req (lambda (args rreq)
+                                (let* ((tmp args) (tmp-1 ($sc-dispatch tmp '())))
+                                  (if tmp-1
+                                      (apply (lambda () (check (reverse rreq) #f)) tmp-1)
+                                      (let ((tmp-1 ($sc-dispatch tmp '(any . any))))
+                                        (if (and tmp-1 (apply (lambda (a b) (id? a)) tmp-1))
+                                            (apply (lambda (a b) (req b (cons a rreq))) tmp-1)
+                                            (let ((tmp-1 (list tmp)))
+                                              (if (and tmp-1 (apply (lambda (r) (id? r)) tmp-1))
+                                                  (apply (lambda (r) (check (reverse rreq) r)) tmp-1)
+                                                  (let ((else tmp))
+                                                    (syntax-violation 'lambda "invalid argument list" orig-args args))))))))))
+                         (check (lambda (req rest)
+                                  (if (distinct-bound-ids? (if rest (cons rest req) req))
+                                      (values req #f rest #f)
+                                      (syntax-violation 'lambda "duplicate identifier in argument list" orig-args)))))
+                 (req orig-args '()))))
+    
     (set! syntax->datum (lambda (x) (strip x)))
     (set! $sc-dispatch (lambda (e p)
       (define (match-each e p w mod)
@@ -985,11 +1036,43 @@
                                 (expand else r w mod)))
                              tmp-1)
                       (syntax-violation #f "source expression failed to match any pattern" tmp)))))))
+    (global-extend 'core 'quote
+      (lambda (e r w s mod)
+        (let ([tmp ($sc-dispatch e '(_ any))])
+          (if tmp
+              (apply (lambda (e) (build-data s (strip e))) tmp)
+              (syntax-violation #f "source expression failed to match any pattern" e)))))
+    (global-extend 'core 'quote-syntax 
+      (lambda (e r w s mod)
+               (let* ((tmp-1 (source-wrap e w s mod)) (tmp ($sc-dispatch tmp-1 '(_ any))))
+                 (if tmp
+                     (apply (lambda (e) (build-data s e)) tmp)
+                     (let ((e tmp-1)) (syntax-violation 'quote "bad syntax" e))))))
+    (global-extend 'core 'lambda
+      (lambda (e r w s mod)
+               (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ any any . each-any))))
+                 (if tmp
+                     (apply (lambda (args e1 e2)
+                              (call-with-values
+                               (lambda () (lambda-formals args))
+                               (lambda (req opt rest kw)
+                                 (let lp ((body (cons e1 e2)) (meta '()))
+                                   (let* ((tmp-1 body) (tmp ($sc-dispatch tmp-1 '(any any . each-any))))
+                                     (if (and tmp
+                                              (apply (lambda (docstring e1 e2) (string? (syntax->datum docstring))) tmp))
+                                         (apply (lambda (docstring e1 e2)
+                                                  (lp (cons e1 e2)
+                                                      (append
+                                                       meta
+                                                       (list (cons 'documentation (syntax->datum docstring))))))
+                                                tmp)
+                                         (let ((tmp ($sc-dispatch tmp-1 '(#(vector #(each (any . any))) any . each-any))))
+                                           (if tmp
+                                               (apply (lambda (k v e1 e2)
+                                                        (lp (cons e1 e2) (append meta (syntax->datum (map cons k v)))))
+                                                      tmp)
+                                               (expand-simple-lambda e r w s mod req rest meta body)))))))))
+                            tmp)
+                     (syntax-violation 'lambda "bad lambda" e)))))
+      
     )
-
-(define tree (macroexpand '(if 1 2 3)))
-(pretty-print-ir tree)
-(define closure (interpret/preprocess tree '()))
-
-(print (closure '()))
-

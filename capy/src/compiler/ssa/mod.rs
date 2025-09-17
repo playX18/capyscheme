@@ -19,7 +19,11 @@ use crate::{
 use cranelift::prelude::{
     Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, types,
 };
-use cranelift_codegen::{ir, isa::CallConv, settings};
+use cranelift_codegen::{
+    ir::{self, SourceLoc},
+    isa::CallConv,
+    settings,
+};
 
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
 use cranelift_object::{ObjectModule, ObjectProduct};
@@ -130,7 +134,13 @@ impl<'gc> ModuleBuilder<'gc> {
             ssa.builder.finalize();
             let func_debug_cx = ssa.func_debug_cx;
             self.module.define_function(func_id, &mut context).unwrap();
-            func_debug_cx.finalize(&mut self.debug_context, func_id, &context);
+            func_debug_cx.finalize(
+                &mut self.debug_context,
+                func_id,
+                &context,
+                &self.reify_info.free_vars.fvars[&func],
+                self.module.isa(),
+            );
             self.module.clear_context(&mut context);
         }
 
@@ -161,7 +171,13 @@ impl<'gc> ModuleBuilder<'gc> {
                         cont.binding.name, err
                     )
                 });
-            func_debug_cx.finalize(&mut self.debug_context, func_id, &context);
+            func_debug_cx.finalize(
+                &mut self.debug_context,
+                func_id,
+                &context,
+                &self.reify_info.free_vars.cvars[&cont],
+                self.module.isa(),
+            );
             self.module.clear_context(&mut context);
         }
 
@@ -367,7 +383,7 @@ impl<'gc> ModuleBuilder<'gc> {
 pub struct SSABuilder<'gc, 'a, 'f> {
     pub module_builder: &'a mut ModuleBuilder<'gc>,
     pub builder: FunctionBuilder<'f>,
-    pub(crate) func_debug_cx: FunctionDebugContext,
+    pub(crate) func_debug_cx: FunctionDebugContext<'gc>,
 
     /// Map from non reified continuations to corresponding Cranelift block.
     pub blockmap: HashMap<ContRef<'gc>, ir::Block>,
@@ -388,6 +404,8 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub to_generate: Vec<ContRef<'gc>>,
 
     pub data_imports: HashMap<DataId, ir::GlobalValue>,
+
+    pub srcloc: Option<SourceLoc>,
 }
 
 #[derive(Clone, Copy)]
@@ -402,8 +420,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         mut builder: FunctionBuilder<'f>,
         target: ContOrFunc<'gc>,
         thunks: ImportedThunks,
-        func_debug_cx: FunctionDebugContext,
+        mut func_debug_cx: FunctionDebugContext<'gc>,
     ) -> Self {
+        builder.func.dfg.collect_debug_info();
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
@@ -423,6 +442,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         builder.append_block_param(exit_block, types::I64); /* rands */
         builder.append_block_param(exit_block, types::I64); /* num_rands */
 
+        builder.set_val_label(rator, func_debug_cx.internal_variable(0));
+        builder.set_val_label(num_rands, func_debug_cx.internal_variable(1));
+        builder.set_val_label(rands, func_debug_cx.internal_variable(2));
+
         let mut this = Self {
             module_builder,
             builder,
@@ -440,59 +463,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             sig_call,
 
             data_imports: HashMap::new(),
+            srcloc: None,
         };
 
         this.entrypoint(rands, num_rands);
 
         this
     }
-}
-
-pub fn compile_file<'gc>(
-    ctx: Context<'gc>,
-    path: impl AsRef<Path>,
-) -> Result<ObjectProduct, Value<'gc>> {
-    let path = path.as_ref();
-    let filename = path.to_string_lossy();
-    let source = std::fs::read_to_string(path)
-        .map_err(|err| Str::new(&ctx, format!("IO error, path={}: {err}", filename), true))?;
-    let sexp = read_from_string(ctx, source, filename)
-        .map_err(|err| Str::new(&ctx, format!("Failed to parse source: {err:?}"), true))?;
-
-    let cps = compile_program(ctx, sexp, *root_module(ctx))
-        .map_err(|err| Str::new(&ctx, format!("Failed to compile program: {err:?}"), true))?;
-
-    let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-
-    doc.1.render(70, &mut std::io::stdout()).unwrap();
-    println!();
-
-    let reify_info = crate::cps::reify(ctx, cps);
-
-    let mut shared_builder = settings::builder();
-
-    shared_builder.set("opt_level", "speed").unwrap();
-    shared_builder.enable("preserve_frame_pointers").unwrap();
-    shared_builder.enable("is_pic").unwrap();
-    shared_builder.enable("enable_pinned_reg").unwrap();
-    shared_builder.enable("enable_alias_analysis").unwrap();
-
-    let shared_flags = settings::Flags::new(shared_builder);
-
-    let isa = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux")
-        .unwrap()
-        .finish(shared_flags)
-        .unwrap();
-
-    let objbuilder =
-        cranelift_object::ObjectBuilder::new(isa, "test", default_libcall_names()).unwrap();
-
-    let objmodule = ObjectModule::new(objbuilder);
-
-    let mut module_builder = ModuleBuilder::new(ctx, objmodule, reify_info);
-
-    module_builder.compile();
-    let mut product = module_builder.module.finish();
-    module_builder.debug_context.emit(&mut product);
-    return Ok(product);
 }

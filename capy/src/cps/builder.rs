@@ -83,7 +83,7 @@ macro_rules! with_cps {
                     let $arg = $builder.fresh_variable(stringify!($arg));
                 )*
 
-                #[allow(unused_mut)]
+                #[allow(unused_mut, unused_assignments)]
                 let mut src = $crate::runtime::value::Value::new(false);
                 $(
                     src = $src;
@@ -139,12 +139,17 @@ macro_rules! with_cps {
         )}
     };
 
-    ($builder: ident; continue $k: ident ($($arg: expr),*)) => {
+    ($builder: ident; continue $k: ident ($($arg: expr),*) $(@ $src: expr)?) => {
         {
+            #[allow(unused_mut, unused_assignments)]
+            let mut src = $crate::runtime::value::Value::new(false);
+            $(
+                src = $src;
+            )*
           $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::Continue(
             $k,
             $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg.into()),*]),
-            $crate::runtime::value::Value::new(false),
+            src,
           ))
         }
     };
@@ -159,13 +164,18 @@ macro_rules! with_cps {
         }
     };
 
-    ($builder: ident; continue $k: ident $args: ident ...) => {
+    ($builder: ident; continue $k: ident $args: ident ... $(@ $src : expr)?) => {
         {
+            #[allow(unused_mut, unused_assignments)]
+            let mut src = $crate::runtime::value::Value::new(false);
+            $(
+                src = $src;
+            )*
             let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, $args);
             $crate::rsgc::Gc::new(&$builder.ctx,$crate::cps::term::Term::Continue(
                 $k,
                 args,
-                $crate::runtime::value::Value::new(false),
+                src,
             ))
         }
     };

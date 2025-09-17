@@ -115,7 +115,7 @@ const HASHSET_SIZES: &[usize] = &[
 ];
 
 impl<'gc> WeakSetInner<'gc> {
-    fn rob_from_rich(self: &Self, mc: &Mutation<'gc>, k: usize) {
+    fn rob_from_rich(&self, mc: &Mutation<'gc>, k: usize) {
         let size = self.size.get();
 
         let mut empty = k;
@@ -241,9 +241,11 @@ impl<'gc> WeakSetInner<'gc> {
             let new_lower = HASHSET_SIZES[size_index] / 5;
 
             self.size.get() > new_lower
-        } else if size_index == computed - 1 {
+        }
+        /*else if size_index == computed - 1 {
             false
-        } else {
+        }*/
+        else {
             false
         }
     }
@@ -325,11 +327,9 @@ impl<'gc> WeakSetInner<'gc> {
 
         for k in 0..size {
             let entry = entries[k].get();
-            if entry.hash != 0 {
-                if entry.is_broken() {
-                    Self::give_to_poor(this, mc, k);
-                    this.n_items.set(this.n_items.get().saturating_sub(1));
-                }
+            if entry.hash != 0 && entry.is_broken() {
+                Self::give_to_poor(this, mc, k);
+                this.n_items.set(this.n_items.get().saturating_sub(1));
             }
         }
 

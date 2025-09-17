@@ -396,6 +396,85 @@ native_fn!(
         let s = Str::new(&ctx, n.to_string_radix(base), false);
         nctx.return_(s)
     }
+
+
+    pub ("fx=") fn fx_eq<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(true));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fx=", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_int32();
+            if w != z {
+                return nctx.return_(Ok(false));
+            }
+            w = z;
+        }
+
+        nctx.return_(Ok(true))
+    }
+
+    pub ("fxlogand") fn fxlogand<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(w));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxlogand", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+
+            let z = z.as_int32();
+            w &= z;
+        }
+
+        nctx.return_(Ok(w))
+    }
+
+    pub ("fxlogior") fn fxlogior<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(w));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxlogior", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+
+            let z = z.as_int32();
+            w |= z;
+        }
+
+        nctx.return_(Ok(w))
+    }
+
+    pub ("fxlogxor") fn fxlogxor<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(w));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxlogxor", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+
+            let z = z.as_int32();
+            w ^= z;
+        }
+
+        nctx.return_(Ok(w))
+    }
 );
 
 pub(crate) fn init<'gc>(ctx: Context<'gc>) {

@@ -386,7 +386,7 @@ impl<'gc> Tuple<'gc> {
         TupleLengthBits::decode(self.hdr.word) as usize
     }
 
-    pub fn new(mc: &Mutation<'gc>, length: usize) -> Gc<'gc, Self> {
+    pub fn new(mc: &Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
         assert!(
             length <= VECTOR_MAX_LENGTH,
             "Tuple length exceeds maximum allowed size"
@@ -406,13 +406,17 @@ impl<'gc> Tuple<'gc> {
             let tuple = alloc.to_address().as_mut_ref::<Self>();
             tuple.hdr = hdr;
 
+            for i in 0..length {
+                tuple.data.as_mut_ptr().add(i).write(Lock::new(init));
+            }
+
             Gc::from_gcobj(alloc)
         }
     }
 
     pub fn from_slice(mc: &Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
-        let tuple = Self::new(mc, length);
+        let tuple = Self::new(mc, length, Value::new(false));
         Self::copy_from(tuple, slice, mc);
         tuple
     }

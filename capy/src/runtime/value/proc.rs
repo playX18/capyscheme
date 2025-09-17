@@ -183,8 +183,8 @@ impl<'gc> Procedures<'gc> {
         let mut registered = self.registered.lock();
 
         let addr = Address::from_ptr(f as *const ());
-        if let Some(registered) = registered.get(&addr) {
-            return registered.clone();
+        if let Some(&registered) = registered.get(&addr) {
+            return registered;
         }
 
         let proc = NativeProc::new(ctx, addr, true, loc);
@@ -201,8 +201,8 @@ impl<'gc> Procedures<'gc> {
     ) -> Gc<'gc, NativeProc> {
         let mut registered = self.registered.lock();
         let addr = Address::from_ptr(f as *const ());
-        if let Some(registered) = registered.get(&addr) {
-            return registered.clone();
+        if let Some(&registered) = registered.get(&addr) {
+            return registered;
         }
 
         let proc = NativeProc::new(ctx, addr, false, loc);
@@ -218,14 +218,14 @@ impl<'gc> Procedures<'gc> {
         loc: NativeLocation,
     ) -> Gc<'gc, Closure<'gc>> {
         let mut closures = self.static_closures.lock();
-        if let Some(clos) = closures.get(&Address::from_ptr(f as *const ())) {
-            return clos.clone();
+        if let Some(&clos) = closures.get(&Address::from_ptr(f as *const ())) {
+            return clos;
         }
         let proc = self.register_procedure(ctx, f, loc);
 
         let clos = Closure::new(ctx, get_trampoline_from_scheme(), &[proc.into()], false);
 
-        closures.insert(Address::from_ptr(f as *const ()), clos.clone());
+        closures.insert(Address::from_ptr(f as *const ()), clos);
 
         clos
     }
@@ -237,14 +237,14 @@ impl<'gc> Procedures<'gc> {
         loc: NativeLocation,
     ) -> Gc<'gc, Closure<'gc>> {
         let mut closures = self.static_closures.lock();
-        if let Some(clos) = closures.get(&Address::from_ptr(f as *const ())) {
-            return clos.clone();
+        if let Some(&clos) = closures.get(&Address::from_ptr(f as *const ())) {
+            return clos;
         }
         let proc = self.register_continuation(ctx, f, loc);
 
         let clos = Closure::new(ctx, get_cont_trampoline_from_scheme(), &[proc.into()], true);
 
-        closures.insert(Address::from_ptr(f as *const ()), clos.clone());
+        closures.insert(Address::from_ptr(f as *const ()), clos);
 
         clos
     }
@@ -344,6 +344,7 @@ macro_rules! native_fn {
                 };
                 $(#[$m])*
                 #[allow(unused_parens)]
+                #[allow(clippy::macro_metavars_in_unsafe)]
                 $v extern "C-unwind" fn [<c_ $name _raw>] <$gc>(
                     ctx: &$crate::runtime::prelude::Context<$gc>,
                     rator: $crate::runtime::prelude::Value<$gc>,
@@ -352,6 +353,7 @@ macro_rules! native_fn {
                     retk: $crate::runtime::prelude::Value<$gc>,
                     reth: $crate::runtime::prelude::Value<$gc>
                 ) -> $crate::runtime::prelude::NativeReturn<'gc> {
+
                     unsafe {
                         let rands_ = std::slice::from_raw_parts(rands, num_rands);
                         let nctx = $crate::runtime::prelude::NativeCallContext::<$ret>::from_raw(
@@ -456,12 +458,12 @@ macro_rules! native_cont {
                 };
                 $(#[$m])*
                 #[allow(unused_parens)]
+                #[allow(clippy::macro_metavars_in_unsafe)]
                 $v extern "C-unwind" fn [<c_ $name _raw>] <$gc>(
                     ctx: &$crate::runtime::prelude::Context<$gc>,
                     rator: $crate::runtime::prelude::Value<$gc>,
                     rands: *const $crate::runtime::prelude::Value<$gc>,
                     num_rands: usize,
-
                 ) -> $crate::runtime::prelude::NativeReturn<'gc> {
                     unsafe {
                         let rands_ = std::slice::from_raw_parts(rands, num_rands);

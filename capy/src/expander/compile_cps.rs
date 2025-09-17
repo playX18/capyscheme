@@ -163,7 +163,7 @@ pub fn t_k<'a, 'gc>(
             &args,
             Box::new(move |cps, args| {
                 with_cps!(cps;
-                    letk (h) r (rv) = fk(cps, &[Atom::Local(rv)]);
+                    letk (h) r (rv) @ src = fk(cps, &[Atom::Local(rv)]);
                     # if let Some(term) = get_primitive_table(cps.ctx).try_expand(cps, form.source(), prim, &args, r, h) {
                         term
                     } else {
@@ -219,9 +219,9 @@ pub fn t_k<'a, 'gc>(
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
             @tk (h) atest = test;
-            letk (h) cont (rv) = fk(cps, &[Atom::Local(rv)]);
-            letk (h) kcons () = t_c(cps, cons, cont, h);
-            letk (h) kalt () = t_c(cps, alt, cont, h);
+            letk (h) cont (rv) @ src = fk(cps, &[Atom::Local(rv)]);
+            letk (h) kcons () @ src = t_c(cps, cons, cont, h);
+            letk (h) kalt () @ src = t_c(cps, alt, cont, h);
             # Gc::new(&cps.ctx, Term::If(atest[0], kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
         ),
 
@@ -302,7 +302,7 @@ pub fn t_c<'a, 'gc>(
         TermKind::Const(_) | TermKind::LRef(_) => {
             let atom = m(cps, form);
             with_cps!(cps;
-                continue k (atom)
+                continue k (atom) @ src
             )
         }
 
@@ -314,7 +314,7 @@ pub fn t_c<'a, 'gc>(
             form,
             Box::new(|cps, atoms| {
                 with_cps!(cps;
-                    continue k (atoms[0].clone())
+                    continue k (atoms[0].clone()) @ src
                 )
             }),
             h,
@@ -332,7 +332,7 @@ pub fn t_c<'a, 'gc>(
                     let tmp = cps.fresh_variable("proc");
 
                     let func = cps_func(cps, &proc, tmp);
-                    let t = with_cps!(cps; continue k (Atom::Local(tmp)));
+                    let t = with_cps!(cps; continue k (Atom::Local(tmp)) @ src);
                     let body = Term::Fix(Array::from_slice(&cps.ctx, &[func]), t);
                     cps.current_topbox_scope = prev;
                     Gc::new(&cps.ctx, body)
@@ -362,7 +362,7 @@ pub fn t_c<'a, 'gc>(
 
                 with_cps!(cps;
                     let rv = #% prim (h) args... @ src;
-                    continue k (Atom::Local(rv))
+                    continue k (Atom::Local(rv)) @ src
                 )
             }),
             h,
@@ -371,7 +371,7 @@ pub fn t_c<'a, 'gc>(
         TermKind::Define(_, var, val) => with_cps!(cps;
             @tk (h) atom = val;
             let rv = #% "define" (h, Atom::Constant(var), atom[0]) @ src;
-            continue k (Atom::Local(rv))
+            continue k (Atom::Local(rv)) @ src
         ),
 
         TermKind::Let(let_) => {
@@ -394,7 +394,7 @@ pub fn t_c<'a, 'gc>(
                     @tk* (h) aexps = &let_.rhs;
                     letk (h) r#let(args...) @ src = t_c(cps, let_.body, k, h);
 
-                    continue r#let aexps ...
+                    continue r#let aexps ... @ src
                 )
             }
         }
@@ -418,8 +418,8 @@ pub fn t_c<'a, 'gc>(
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
             @tk (h) atest = test;
-            letk (h) kcons () = t_c(cps, cons, k, h);
-            letk (h) kalt () = t_c(cps, alt, k, h);
+            letk (h) kcons () @ src = t_c(cps, cons, k, h);
+            letk (h) kalt () @ src = t_c(cps, alt, k, h);
             # Gc::new(&cps.ctx, Term::If(atest[0], kcons, kalt, [BranchHint::Normal, BranchHint::Normal]))
         ),
 
@@ -450,7 +450,7 @@ pub fn t_c<'a, 'gc>(
         TermKind::Values(values) => {
             with_cps!(cps;
                 @tk* (h) vals = &values;
-                continue k vals ...
+                continue k vals ... @ src
             )
         }
 

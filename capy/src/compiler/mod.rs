@@ -1,14 +1,7 @@
 use std::{io::Write, path::Path, process::Command};
 
-use cranelift::prelude::Configurable;
-use cranelift_codegen::settings;
-use cranelift_module::default_libcall_names;
-use cranelift_object::{ObjectModule, ObjectProduct};
-use rsgc::Gc;
-use std::env;
-
 use crate::{
-    compiler::ssa::ModuleBuilder,
+    compiler::{linkutils::Linker, ssa::ModuleBuilder},
     cps::{contify::contify, reify, term::FuncRef},
     expander::{
         assignment_elimination, compile_cps, core::denotations, fix_letrec::fix_letrec, primitives,
@@ -20,6 +13,11 @@ use crate::{
         vm::thunks::{make_io_error, make_lexical_violation},
     },
 };
+use cranelift::prelude::Configurable;
+use cranelift_codegen::settings;
+use cranelift_module::default_libcall_names;
+use cranelift_object::{ObjectModule, ObjectProduct};
+use rsgc::Gc;
 
 #[macro_export]
 macro_rules! call_signature {
@@ -67,6 +65,7 @@ macro_rules! call_signature {
 }
 
 pub mod debuginfo;
+pub mod linkutils;
 pub mod ssa;
 
 pub fn compile_file<'gc>(
@@ -136,7 +135,7 @@ pub fn compile_file<'gc>(
 
     cps = cps.with_body(ctx, contify(ctx, cps.body));
 
-    if true {
+    if false {
         let file = std::fs::OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -182,12 +181,12 @@ pub fn compile_cps_to_object<'gc>(
     shared_builder.enable("enable_alias_analysis").unwrap();
 
     let shared_flags = settings::Flags::new(shared_builder);
+    let triple = target_lexicon::Triple::host();
 
-    let isa = cranelift_codegen::isa::lookup_by_name("x86_64-unknown-linux")
+    let isa = cranelift_codegen::isa::lookup(triple)
         .unwrap()
         .finish(shared_flags)
         .unwrap();
-
     let objbuilder =
         cranelift_object::ObjectBuilder::new(isa, "scheme", default_libcall_names()).unwrap();
 
@@ -197,13 +196,14 @@ pub fn compile_cps_to_object<'gc>(
 
     module_builder.compile();
     let mut product = module_builder.module.finish();
+
     module_builder.debug_context.emit(&mut product);
     return Ok(product);
 }
 
 pub fn link_object_product<'gc>(
     ctx: Context<'gc>,
-    product: ObjectProduct,
+    mut product: ObjectProduct,
     output: impl AsRef<Path>,
 ) -> Result<(), Value<'gc>> {
     let output = output.as_ref();
@@ -226,6 +226,12 @@ pub fn link_object_product<'gc>(
                 &[],
             )
         })?;
+    #[cfg(target_os = "macos")]
+    {
+        product
+            .object
+            .set_macho_build_version(macho_object_build_version_for_target());
+    }
     let bytes = product.emit().map_err(|e| {
         make_io_error(
             &ctx,
@@ -254,43 +260,26 @@ pub fn link_object_product<'gc>(
         )
     })?;
 
-    let linker = "cc"; // TODO: configurable/detect automatically
-    let mut command = Command::new(linker);
-    rlpaths(&mut command);
-    let status = command
-        .arg("-o")
-        .arg(output)
-        .arg(&obj_output)
-        .arg("-lcapy")
-        .arg("-shared")
-        .arg("-fPIC")
-        .status()
-        .map_err(|e| {
-            make_io_error(
-                &ctx,
-                "link-object",
-                Str::new(
-                    &ctx,
-                    format!("Cannot invoke linker '{}': {}", linker, e),
-                    true,
-                )
-                .into(),
-                &[],
-            )
-        })?;
-    if !status.success() {
-        return Err(make_io_error(
+    let linker = Linker::new();
+
+    linker.link(&obj_output, &output).map_err(|e| {
+        make_io_error(
             &ctx,
             "link-object",
             Str::new(
                 &ctx,
-                format!("Linker '{}' failed with exit code {}", linker, status),
+                format!(
+                    "Linking object file '{}' to output file '{}' failed: {}",
+                    obj_output.display(),
+                    output.display(),
+                    e
+                ),
                 true,
             )
             .into(),
             &[],
-        ));
-    }
+        )
+    })?;
 
     std::fs::remove_file(&obj_output).map_err(|e| {
         make_io_error(
@@ -313,19 +302,47 @@ pub fn link_object_product<'gc>(
     Ok(())
 }
 
-/// Given command add rlpath linker flags to it.
-fn rlpaths(command: &mut Command) {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_dir = manifest_dir.parent().unwrap_or(manifest_dir);
-    {
-        let profile = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        };
-        let target_dir = workspace_dir.join("target").join(profile);
-        println!("target dir: {}", target_dir.display());
-        command.arg("-Wl,-rpath").arg(target_dir.to_str().unwrap());
-        command.arg("-L").arg(target_dir.to_str().unwrap());
+#[cfg(target_os = "macos")]
+fn macho_object_build_version_for_target() -> object::write::MachOBuildVersion {
+    /// The `object` crate demands "X.Y.Z encoded in nibbles as xxxx.yy.zz"
+    /// e.g. minOS 14.0 = 0x000E0000, or SDK 16.2 = 0x00100200
+    fn pack_version((major, minor): (u32, u32)) -> u32 {
+        (major << 16) | (minor << 8)
     }
+
+    let platform = object::macho::PLATFORM_MACOS;
+    let min_os = (11, 0);
+    let sdk = (13, 1);
+    let mut build_version = object::write::MachOBuildVersion::default();
+    build_version.platform = platform;
+    build_version.minos = pack_version(min_os);
+    build_version.sdk = pack_version(sdk);
+    build_version
+}
+
+fn ld_flags(mut command: &mut Command) -> &mut Command {
+    /*if cfg!(target_os = "macos") {
+        let arch = if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            panic!("Unsupported architecture for macOS: {}", env::consts::ARCH);
+        };
+        command = command
+            .arg("-dynamic")
+            .arg("-dylib")
+            .arg("-arch")
+            .arg(arch)
+            .arg("-platform_version")
+            .arg("macos")
+            .arg("16.0.0")
+            .arg("26.0")
+    }
+
+    if cfg!(not(target_os = "macos")) {*/
+    command = command.arg("--shared");
+    //}
+
+    command
 }
