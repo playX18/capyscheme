@@ -137,20 +137,53 @@ impl<'gc> Term<'gc> {
             }
 
             // (cond <test> => <kcons> | <kalt>)
-            Term::If(test, kcons, kalt, _) => {
+            Term::If {
+                test,
+                consequent,
+                consequent_args,
+                alternative,
+                alternative_args,
+                ..
+            } => {
                 let test = test.pretty(alloc);
-                let kcons = alloc.text(kcons.name.to_string());
-                let kalt = alloc.text(kalt.name.to_string());
+                let kcons = alloc.text(consequent.name.to_string());
+                let kalt = alloc.text(alternative.name.to_string());
+
+                let kcons_args = if let Some(args) = consequent_args {
+                    alloc
+                        .intersperse(
+                            args.iter().map(|arg| arg.pretty(alloc)).collect::<Vec<_>>(),
+                            alloc.space(),
+                        )
+                        .parens()
+                        .group()
+                } else {
+                    alloc.nil()
+                };
+
+                let kalt_args = if let Some(args) = alternative_args {
+                    alloc
+                        .intersperse(
+                            args.iter().map(|arg| arg.pretty(alloc)).collect::<Vec<_>>(),
+                            alloc.space(),
+                        )
+                        .parens()
+                        .group()
+                } else {
+                    alloc.nil()
+                };
 
                 (alloc.text("cond")
                     + alloc.space()
                     + test
                     + alloc.text(" => ")
                     + kcons
+                    + kcons_args
                     + alloc.space()
                     + alloc.text("|")
                     + alloc.space()
-                    + kalt)
+                    + kalt
+                    + kalt_args)
                     .group()
                     .parens()
             }

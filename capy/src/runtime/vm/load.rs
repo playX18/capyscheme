@@ -1,8 +1,13 @@
-use crate::runtime::modules::{Variable, current_module, define};
+use crate::compiler::{compile_cps_to_object, link_object_product};
+use crate::cps::contify::contify;
+use crate::expander::fix_letrec::fix_letrec;
+use crate::expander::{assignment_elimination, compile_cps, primitives};
+use crate::runtime::modules::{Module, Variable, current_module, define};
 use crate::runtime::value::*;
+use crate::runtime::vm::expand::ScmTermToRsTerm;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
-use crate::runtime::vm::thunks::make_io_error;
-use crate::{list, native_fn};
+use crate::runtime::vm::thunks::{make_io_error, make_lexical_violation};
+use crate::{list, native_cont, native_fn};
 use rsgc::Gc;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -79,486 +84,7 @@ static DYNLIB_EXTENSION: &str = if cfg!(target_os = "linux") {
 } else {
     "dylib"
 };
-/*
-pub fn load_in_vicinity<'gc>(
-    ctx: Context<'gc>,
-    dir: impl AsRef<Path>,
-    file_name: &str,
-) -> Result<Value<'gc>, Value<'gc>> {
-    let compiled_extension = {
-        let load_compiled_extensions = loc_load_compiled_extensions(ctx).get();
-        if (load_compiled_extensions.is_null() || !load_compiled_extensions.is_pair())
-            || load_compiled_extensions.car().is::<Str>()
-                && load_compiled_extensions.car().downcast::<Str>().len() == 0
-        {
-            DYNLIB_EXTENSION.to_string()
-        } else {
-            load_compiled_extensions
-                .car()
-                .downcast::<Str>()
-                .as_ref()
-                .to_string()
-        }
-    };
 
-    let fallback_file_name = |name: &str| {
-        let loc = loc_compile_fallback_path(ctx).get();
-        let hashed = hash_filename(name);
-        if loc.is::<Str>() {
-            Some(
-                Path::new(&loc.to_string())
-                    .join(&hashed)
-                    .with_extension(&compiled_extension),
-            )
-        } else {
-            None
-        }
-    };
-
-    let file_path = Path::new(file_name);
-
-    if !file_path.is_absolute() {
-        let path = dir.as_ref().join(file_name);
-
-        return load_from_path(ctx, path);
-    }
-    let dir = dir.as_ref();
-
-    if !dir.is_absolute() {
-        let path = dir.join(file_name);
-        return load_from_path(ctx, path);
-    }
-    let path = if file_path.is_absolute() {
-        file_path.to_owned()
-    } else {
-        dir.join(file_name)
-    };
-
-    let load_compiled_path = loc_load_compiled_path(ctx).get();
-    let load_compiled_ext = loc_load_compiled_extensions(ctx).get();
-
-    let scm_stat = path
-        .metadata()
-        .ok()
-        .filter(|m| m.is_file())
-        .and_then(|m| m.modified().ok());
-    let hashed = hash_filename(&path);
-    if load_compiled_path.is::<Str>() && load_compiled_ext.is::<Str>() {
-        /*let candidate = dir
-            .join(file_name)
-            .with_extension(load_compiled_ext.to_string());
-        */
-        let candidate = Path::new(&load_compiled_path.to_string())
-            .join(&hashed)
-            .with_extension(&load_compiled_ext.to_string());
-        if let (Some(mstat), Some(scmmstat)) = (
-            candidate
-                .metadata()
-                .ok()
-                .filter(|m| m.is_file())
-                .and_then(|m| m.modified().ok()),
-            scm_stat,
-        ) {
-            if mstat > scmmstat {
-                return LIBRARY_COLLECTION
-                    .fetch(&ctx)
-                    .load(candidate, ctx)
-                    .map_err(|err| {
-                        Str::new(
-                            &ctx,
-                            format!("Failed to load compiled library: {err}"),
-                            true,
-                        )
-                        .into()
-                    });
-            } else {
-                let product = compile_file(ctx, &path)?;
-                let buf = product.emit().map_err(|err| {
-                    Str::new(
-                        &ctx,
-                        format!("Failed to emit compiled library: {err}"),
-                        true,
-                    )
-                })?;
-
-                let output = candidate.with_extension("o");
-
-                std::fs::write(&output, buf).map_err(|err| {
-                    Str::new(
-                        &ctx,
-                        format!(
-                            "Failed to write compiled library: {err} {}",
-                            output.display()
-                        ),
-                        true,
-                    )
-                })?;
-
-                let _clang = std::process::Command::new("clang")
-                    .arg("-shared")
-                    .arg("-fPIC")
-                    .arg("-lcapy")
-                    .arg("-o")
-                    .arg(&candidate)
-                    .arg(&output)
-                    .status()
-                    .map_err(|err| {
-                        Str::new(&ctx, format!("Failed to invoke clang: {err}"), true)
-                    })?;
-                println!("Compiled {} to {}", path.display(), candidate.display());
-
-                return LIBRARY_COLLECTION
-                    .fetch(&ctx)
-                    .load(candidate, ctx)
-                    .map_err(|err| {
-                        Str::new(
-                            &ctx,
-                            format!("Failed to load compiled library: {err}"),
-                            true,
-                        )
-                        .into()
-                    });
-            }
-        }
-    }
-
-    let fallback = fallback_file_name(
-        path.canonicalize()
-            .map_err(|err| Str::new(&ctx, format!("IO error: {err}"), true))?
-            .to_str()
-            .unwrap(),
-    )
-    .ok_or_else(|| Str::new(&ctx, "Invalid fallback path", true))?;
-
-    if fallback.exists() {
-        if let (Some(mstat), Some(scmmstat)) = (
-            fallback
-                .metadata()
-                .ok()
-                .filter(|m| m.is_file())
-                .and_then(|m| m.modified().ok()),
-            scm_stat,
-        ) {
-            if mstat > scmmstat {
-                return LIBRARY_COLLECTION
-                    .fetch(&ctx)
-                    .load(fallback, ctx)
-                    .map_err(|err| {
-                        Str::new(
-                            &ctx,
-                            format!("Failed to load compiled library: {err}"),
-                            true,
-                        )
-                        .into()
-                    });
-            }
-        }
-    }
-
-    let product = compile_file(ctx, &path)?;
-    let buf = product.emit().map_err(|err| {
-        Str::new(
-            &ctx,
-            format!("Failed to emit compiled library: {err}"),
-            true,
-        )
-    })?;
-
-    let output = fallback.with_extension("o");
-    std::fs::write(&output, buf).map_err(|err| {
-        Str::new(
-            &ctx,
-            format!(
-                "Failed to write compiled library: {err} {}",
-                output.display()
-            ),
-            true,
-        )
-    })?;
-
-    let _clang = std::process::Command::new("clang")
-        .arg("-shared")
-        .arg("-fPIC")
-        .arg("-lcapy")
-        .arg("-o")
-        .arg(&fallback)
-        .arg(&output)
-        .status()
-        .map_err(|err| Str::new(&ctx, format!("Failed to invoke clang: {err}"), true))?;
-    println!("Compiled {} to {}", path.display(), fallback.display());
-
-    return LIBRARY_COLLECTION
-        .fetch(&ctx)
-        .load(fallback, ctx)
-        .map_err(|err| {
-            Str::new(
-                &ctx,
-                format!("Failed to load compiled library: {err}"),
-                true,
-            )
-            .into()
-        });
-}
-
-pub fn load_from_path<'gc>(
-    ctx: Context<'gc>,
-    path: impl AsRef<Path>,
-) -> Result<Value<'gc>, Value<'gc>> {
-    let path = search_path(ctx, path).ok_or_else(|| Str::new(&ctx, "File not found", true))?;
-
-    let x = load_thunk_from_path(ctx, path)?;
-
-    Ok(x.unwrap())
-}
-
-fn load_thunk_from_path<'gc>(
-    ctx: Context<'gc>,
-    filename: impl AsRef<Path>,
-) -> Result<Option<Value<'gc>>, Value<'gc>> {
-    let filename = filename.as_ref();
-
-    let scm_mstat = filename.metadata().ok().and_then(|m| m.modified().ok());
-
-    let mut path = loc_load_compiled_path(ctx).get();
-    let exts = loc_load_compiled_extensions(ctx).get();
-    let hashed = hash_filename(&filename);
-    while path.is_pair() {
-        let elem = path.car().to_string();
-        let candidate = Path::new(&elem).join(&hashed);
-
-        let mut exts = exts;
-
-        while exts.is_pair() {
-            let ext = exts.car().to_string();
-            let candidate = candidate.with_extension(&ext[..]);
-            if candidate.exists() {
-                let mstat = candidate.metadata().ok().and_then(|m| m.modified().ok());
-
-                if let (Some(mstat), Some(scm_mstat)) = (mstat, scm_mstat) {
-                    if mstat > scm_mstat {
-                        return LIBRARY_COLLECTION
-                            .fetch(&ctx)
-                            .load(candidate, ctx)
-                            .map(Some)
-                            .map_err(|err| {
-                                Str::new(
-                                    &ctx,
-                                    format!("Failed to load compiled library: {err}"),
-                                    true,
-                                )
-                                .into()
-                            });
-                    }
-
-                    let product = compile_file(ctx, &filename)?;
-                    let buf = product.emit().map_err(|err| {
-                        Str::new(
-                            &ctx,
-                            format!("Failed to emit compiled library: {err}"),
-                            true,
-                        )
-                    })?;
-
-                    let output = candidate.with_extension("o");
-                    std::fs::write(&output, buf).map_err(|err| {
-                        Str::new(
-                            &ctx,
-                            format!(
-                                "Failed to write compiled library: {err} {}",
-                                output.display()
-                            ),
-                            true,
-                        )
-                    })?;
-
-                    let _clang = std::process::Command::new("clang")
-                        .arg("-shared")
-                        .arg("-fPIC")
-                        .arg("-lcapy")
-                        .arg("-o")
-                        .arg(&candidate)
-                        .arg(&output)
-                        .status()
-                        .map_err(|err| {
-                            Str::new(&ctx, format!("Failed to invoke clang: {err}"), true)
-                        })?;
-                    println!("Compiled {} to {}", filename.display(), candidate.display());
-
-                    return LIBRARY_COLLECTION
-                        .fetch(&ctx)
-                        .load(candidate, ctx)
-                        .map(Some)
-                        .map_err(|err| {
-                            Str::new(
-                                &ctx,
-                                format!("Failed to load compiled library: {err}"),
-                                true,
-                            )
-                            .into()
-                        });
-                }
-            }
-
-            exts = exts.cdr();
-        }
-
-        path = path.cdr();
-    }
-
-    let fallback = loc_compile_fallback_path(ctx).get().to_string();
-    let candidate = Path::new(&fallback)
-        .join(&hashed)
-        .with_extension(&DYNLIB_EXTENSION);
-
-    if candidate.exists() {
-        if let (Some(mstat), Some(scm_mstat)) = (
-            candidate
-                .metadata()
-                .ok()
-                .filter(|m| m.is_file())
-                .and_then(|m| m.modified().ok()),
-            scm_mstat,
-        ) {
-            if mstat > scm_mstat {
-                return LIBRARY_COLLECTION
-                    .fetch(&ctx)
-                    .load(candidate, ctx)
-                    .map(Some)
-                    .map_err(|err| {
-                        Str::new(
-                            &ctx,
-                            format!("Failed to load compiled library: {err}"),
-                            true,
-                        )
-                        .into()
-                    });
-            }
-        }
-    }
-
-    let product = compile_file(ctx, &filename)?;
-    let buf = product.emit().map_err(|err| {
-        Str::new(
-            &ctx,
-            format!("Failed to emit compiled library: {err}"),
-            true,
-        )
-    })?;
-
-    let output = candidate.with_extension("o");
-    std::fs::write(&output, buf).map_err(|err| {
-        Str::new(
-            &ctx,
-            format!(
-                "Failed to write compiled library: {err} {}",
-                output.display()
-            ),
-            true,
-        )
-    })?;
-
-    let _clang = std::process::Command::new("clang")
-        .arg("-shared")
-        .arg("-fPIC")
-        .arg("-lcapy")
-        .arg("-o")
-        .arg(&candidate)
-        .arg(&output)
-        .status()
-        .map_err(|err| Str::new(&ctx, format!("Failed to invoke clang: {err}"), true))?;
-    println!("Compiled {} to {}", filename.display(), candidate.display());
-
-    return LIBRARY_COLLECTION
-        .fetch(&ctx)
-        .load(candidate, ctx)
-        .map(Some)
-        .map_err(|err| {
-            Str::new(
-                &ctx,
-                format!("Failed to load compiled library: {err}"),
-                true,
-            )
-            .into()
-        });
-}
-
-fn search_path<'gc>(ctx: Context<'gc>, filename: impl AsRef<Path>) -> Option<PathBuf> {
-    let filename = filename.as_ref();
-
-    if filename.is_absolute() && filename.exists() {
-        return Some(filename.to_owned());
-    }
-
-    let mut path = loc_load_path(ctx).get();
-    let exts = loc_load_extensions(ctx).get();
-    while path.is_pair() {
-        let elem = path.car().to_string();
-
-        let candidate = Path::new(&elem).join(filename);
-
-        let mut exts = exts;
-
-        while exts.is_pair() {
-            let ext = exts.car().to_string();
-
-            let candidate = candidate.with_extension(&ext[1..]);
-            if candidate.exists() {
-                return Some(candidate);
-            }
-            exts = exts.cdr();
-        }
-
-        path = path.cdr();
-    }
-
-    None
-}
-
-pub extern "C-unwind" fn capy_load<'gc>(
-    ctx: &Context<'gc>,
-    _: Value<'gc>,
-    rands: *const Value<'gc>,
-    nrands: usize,
-    retk: Value<'gc>,
-    reth: Value<'gc>,
-) -> NativeReturn<'gc> {
-    unsafe {
-        let rands = std::slice::from_raw_parts(rands, nrands);
-        if rands.len() != 1 {
-            todo!("not enough args")
-        }
-
-        let file = rands[0].to_string();
-        let path = Path::new(&file).to_owned();
-
-        let thunk = if let Some(dir) = path
-            .parent()
-            .filter(|dir| !dir.to_string_lossy().is_empty())
-        {
-            load_in_vicinity(*ctx, dir, path.file_name().unwrap().to_str().unwrap())
-        } else {
-            let cwd = std::env::current_dir().unwrap();
-            load_in_vicinity(
-                *ctx,
-                cwd.as_path(),
-                path.file_name().unwrap().to_str().unwrap(),
-            )
-        };
-        match thunk {
-            Ok(value) => ctx.return_call(value, [], Some([retk, reth])),
-            Err(err) => ctx.return_call(reth, [err], None),
-        }
-    }
-}
-pub fn init<'gc>(ctx: Context<'gc>) {
-    let proc =
-        PROCEDURES
-            .fetch(&ctx)
-            .register_static_closure(ctx, capy_load, NativeLocation::unknown());
-
-    define(ctx, "load", proc.into());
-}
-*/
 fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     use sha3::{Digest, Sha3_256};
 
@@ -573,352 +99,6 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
 pub fn init_load<'gc>(ctx: Context<'gc>) {
     register_load_fns(ctx);
 }
-/*
-/// Given a file path, load and return a thunk that would evaluate top-level code in the file.
-pub fn load_thunk_from_file<'gc>(
-    ctx: Context<'gc>,
-    file: impl AsRef<Path>,
-) -> Result<Value<'gc>, Value<'gc>> {
-    let file = file.as_ref();
-    if !file.exists() {
-        return Err(make_io_error(
-            &ctx,
-            "load-thunk-from-file",
-            Str::new(&ctx, format!("File not found: {}", file.display()), true).into(),
-            &[],
-        ));
-    }
-    let libs = LIBRARY_COLLECTION.fetch(&ctx);
-
-    libs.load(file, ctx).map_err(|err| {
-        make_io_error(
-            &ctx,
-            "load-thunk-from-file",
-            Str::new(&ctx, format!("Failed to load file: {err}"), true).into(),
-            &[],
-        )
-    })
-}
-
-
-
-fn load_thunk_from_path<'gc>(
-    ctx: Context<'gc>,
-    filename: impl AsRef<Path>,
-    source_file_name: Option<impl AsRef<Path>>,
-) -> Result<Value<'gc>, Value<'gc>> {
-    let source_file_name = source_file_name.map(|p| p.as_ref().to_owned());
-    let path = loc_load_compiled_path(ctx).get();
-    if path.safe_list_length().is_none() {
-        return Err(make_error(
-            &ctx,
-            Symbol::from_str(ctx, "%search-path").into(),
-            Str::new(&ctx, &format!("path is not a proper list: {}", path), true).into(),
-            &[path],
-        ));
-    }
-
-    let extensions = loc_load_compiled_extensions(ctx).get();
-
-    if path.safe_list_length().is_none() {
-        return Err(make_error(
-            &ctx,
-            Symbol::from_str(ctx, "%search-path").into(),
-            Str::new(
-                &ctx,
-                &format!("extensions is not a proper list: {}", extensions),
-                true,
-            )
-            .into(),
-            &[extensions],
-        ));
-    }
-
-    let filename = filename.as_ref();
-
-    if filename.is_absolute() {
-        if path_has_extensions(extensions, filename) {
-            return load_thunk_from_file(ctx, filename);
-        }
-    }
-
-    let mut path = path;
-
-    while path.is_pair() {
-        let dir = PathBuf::from(path.car().to_string());
-
-        let candidate = dir.join(filename);
-
-        let mut ext = extensions;
-
-        while ext.is_pair() {
-            let ext_ = ext.car().to_string();
-            let candidate = candidate.with_extension(&ext_);
-
-            if let Some(meta) = candidate.metadata().ok().filter(|m| m.is_file())
-                && candidate.exists()
-            {
-                if let Some(source_file_name) = source_file_name.as_ref()
-                    && let Some(source_file_time) =
-                        source_file_name.metadata().and_then(|m| m.modified()).ok()
-                {
-                    if !compiled_is_fresh(
-                        source_file_name,
-                        &candidate,
-                        source_file_time,
-                        meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    ) {
-                        ext = ext.cdr();
-                        continue;
-                    }
-                }
-
-                if let Ok(thunk) = load_thunk_from_file(ctx, &candidate) {
-                    return Ok(thunk);
-                }
-            }
-
-            ext = ext.cdr();
-        }
-
-        path = path.cdr();
-    }
-
-    Ok(Value::new(false))
-}
-
-fn search_path<'gc>(
-    ctx: Context<'gc>,
-    path: Value<'gc>,
-    filename: impl AsRef<Path>,
-    extensions: Value<'gc>,
-    require_exts: bool,
-) -> Result<Option<PathBuf>, Value<'gc>> {
-    if path.safe_list_length().is_none() {
-        return Err(make_error(
-            &ctx,
-            Symbol::from_str(ctx, "%search-path").into(),
-            Str::new(&ctx, &format!("path is not a proper list: {}", path), true).into(),
-            &[path],
-        ));
-    }
-
-    if extensions.safe_list_length().is_none() {
-        return Err(make_error(
-            &ctx,
-            Symbol::from_str(ctx, "%search-path").into(),
-            Str::new(
-                &ctx,
-                &format!("extensions is not a proper list: {}", extensions),
-                true,
-            )
-            .into(),
-            &[extensions],
-        ));
-    }
-
-    let filename = filename.as_ref();
-
-    if filename.is_absolute() && !require_exts
-        || path_has_extensions(extensions, filename)
-            && filename.exists()
-            && filename.metadata().ok().filter(|m| m.is_file()).is_some()
-    {
-        return Ok(Some(filename.to_owned()));
-    }
-
-    let extensions = if filename.extension().is_some() {
-        Value::null()
-    } else {
-        extensions
-    };
-
-    let mut path = path;
-
-    while path.is_pair() {
-        let dir = PathBuf::from(path.car().to_string());
-        let candidate = dir.join(filename);
-        if extensions.is_null() {
-            if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some() {
-                return Ok(Some(candidate));
-            }
-        } else {
-            let mut exts = extensions;
-            while exts.is_pair() {
-                let ext = exts.car().to_string();
-                let candidate = candidate.with_extension(&ext[1..]);
-                if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
-                {
-                    return Ok(Some(candidate));
-                }
-                exts = exts.cdr();
-            }
-        }
-
-        path = path.cdr();
-    }
-
-    Ok(None)
-}
-
-fn path_has_extensions<'gc>(ext: Value<'gc>, path: impl AsRef<Path>) -> bool {
-    let path = path.as_ref();
-    if !path.exists() {
-        return false;
-    }
-    let mut exts = ext;
-    while exts.is_pair() {
-        let ext = exts.car().to_string();
-        if path.extension().is_some() && path.extension().unwrap().to_string_lossy() == ext {
-            return true;
-        }
-        exts = exts.cdr();
-    }
-    false
-}
-
-pub fn primitive_load_path<'gc>(
-    ctx: Context<'gc>,
-    filename: impl AsRef<Path>,
-) -> Result<Value<'gc>, Value<'gc>> {
-    let filename = filename.as_ref();
-
-    let Some(full_path) = search_path(
-        ctx,
-        loc_load_path(ctx).get(),
-        filename,
-        loc_load_extensions(ctx).get(),
-        false,
-    )?
-    else {
-        return Err(make_io_error(
-            &ctx,
-            "load",
-            Str::new(
-                &ctx,
-                &format!("File not found: {}", filename.display()),
-                true,
-            )
-            .into(),
-            &[],
-        ));
-    };
-
-    let hashed = hash_filename(&full_path);
-
-    let mut compiled_thunk = load_thunk_from_path(ctx, &hashed, Some(&full_path))?;
-
-    if compiled_thunk == Value::new(false) {
-        let fallback_path = loc_compile_fallback_path(ctx).get().to_string();
-        let fallback = Path::new(&fallback_path)
-            .join(&hashed)
-            .with_extension(DYNLIB_EXTENSION);
-
-        if fallback.exists()
-            && let Some(meta) = fallback.metadata().ok().filter(|m| m.is_file())
-        {
-            if let Some(source_file_time) = full_path.metadata().and_then(|m| m.modified()).ok() {
-                if compiled_is_fresh(
-                    &full_path,
-                    &fallback,
-                    source_file_time,
-                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                ) {
-                    compiled_thunk = load_thunk_from_file(ctx, &fallback)?;
-                }
-            }
-        }
-    }
-
-    if compiled_thunk.is::<Closure>() {
-        Ok(compiled_thunk)
-    } else {
-        let fallback_path = loc_compile_fallback_path(ctx).get().to_string();
-        let fallback = Path::new(&fallback_path)
-            .join(&hashed)
-            .with_extension(DYNLIB_EXTENSION);
-        try_auto_compile(ctx, &full_path, &hashed, &fallback)
-    }
-}
-
-fn try_auto_compile<'gc>(
-    ctx: Context<'gc>,
-    source: impl AsRef<Path>,
-    hashed: impl AsRef<Path>,
-    output: impl AsRef<Path>,
-) -> Result<Value<'gc>, Value<'gc>> {
-    let f = crate::compiler::compile_file(
-        ctx,
-        source.as_ref(),
-        Some(current_module(ctx).get(ctx).downcast()),
-    )?;
-    let product = crate::compiler::compile_cps_to_object(ctx, f)?;
-    let dest = output
-        .as_ref()
-        .join(hashed)
-        .with_extension(DYNLIB_EXTENSION);
-    crate::compiler::link_object_product(ctx, product, &dest)?;
-
-    LIBRARY_COLLECTION
-        .fetch(&ctx)
-        .load(dest, ctx)
-        .map_err(|err| {
-            make_io_error(
-                &ctx,
-                "load",
-                Str::new(
-                    &ctx,
-                    format!("Failed to load compiled library: {err}"),
-                    true,
-                )
-                .into(),
-                &[],
-            )
-        })
-}
-
-pub fn load_in_vicinity<'gc>(
-    ctx: Context<'gc>,
-    dir: impl AsRef<Path>,
-    filename: impl AsRef<Path>,
-) -> Result<Value<'gc>, Value<'gc>> {
-    let compiled_exteion = {
-        let loc_compiled_extensions = loc_load_compiled_extensions(ctx).get();
-
-        if (loc_compiled_extensions.is_null() || !loc_compiled_extensions.is_pair())
-            || loc_compiled_extensions.car().is::<Str>()
-                && loc_compiled_extensions.car().downcast::<Str>().len() == 0
-        {
-            DYNLIB_EXTENSION.to_string()
-        } else {
-            loc_compiled_extensions
-                .car()
-                .downcast::<Str>()
-                .as_ref()
-                .to_string()
-        }
-    };
-
-    let fallback_file_name = |name: &str| {
-        let loc = loc_compile_fallback_path(ctx).get();
-        let hashed = hash_filename(name);
-        if loc.is::<Str>() {
-            Some(Path::new(&loc.to_string().as_ref()).join(&hashed))
-        } else {
-            None
-        }
-    };
-
-    let filename = filename.as_ref();
-    let dir = dir.as_ref();
-
-    if !filename.is_absolute() {
-        let path = dir.join(filename);
-
-
-    }
-}
-*/
 
 /// Given a file name find the full path to the file and the path to its compiled version.
 pub fn find_path_to<'gc>(
@@ -941,7 +121,7 @@ pub fn find_path_to<'gc>(
     } else {
         if let Some(dir) = dir.as_ref() {
             let path = dir.join(filename);
-            println!("Searching in vicinity: {}", path.display());
+
             if path.is_file() {
                 candidates.push(path);
             }
@@ -963,7 +143,6 @@ pub fn find_path_to<'gc>(
         let paths = loc_load_path(ctx).get();
 
         for name in candidates {
-            println!("Searching for {}", name.display());
             if let Some(dir) = dir.as_ref() {
                 let candidate = dir.join(&name);
                 if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
@@ -1037,9 +216,8 @@ pub fn find_path_to<'gc>(
     Ok(Some((source_path, compiled_file.unwrap())))
 }
 
-pub fn load_thunk_in_vicinity<'gc>(
+pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     ctx: Context<'gc>,
-
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
 ) -> Result<Value<'gc>, Value<'gc>> {
@@ -1084,7 +262,12 @@ pub fn load_thunk_in_vicinity<'gc>(
     if compiled_thunk.is::<Closure>() {
         return Ok(compiled_thunk);
     }
+    if !FORCE_COMPILE {
+        let source_str = Str::new(&ctx, source.display().to_string(), true);
+        let compiled_str = Str::new(&ctx, compiled.display().to_string(), true);
 
+        return Ok(Value::cons(ctx, source_str.into(), compiled_str.into()));
+    }
     let f =
         crate::compiler::compile_file(ctx, source, Some(current_module(ctx).get(ctx).downcast()))?;
     let product = crate::compiler::compile_cps_to_object(ctx, f)?;
@@ -1134,8 +317,147 @@ native_fn!(
         ) -> Result<Value<'gc>, Value<'gc>> {
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string())).unwrap_or_else(|| std::env::current_dir().unwrap());
         let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity(nctx.ctx, filename, Some(in_vicinity));
+        let result = load_thunk_in_vicinity::<true>(nctx.ctx, filename, Some(in_vicinity));
 
         nctx.return_(result)
+    }
+
+    /// Same as load-thunk-in-vicinity, but takes closure `k` which is involed
+    /// when compilation is required. The job of this closure is to compile provided
+    /// source S-expressions into TreeIL and return it for further processing.
+    pub ("load-thunk-in-vicinity-k")
+        fn scm_load_thunk_in_vicinity_k<'gc>(
+            nctx,
+            filename: Gc<'gc, Str<'gc>>,
+            k: Value<'gc>,
+            env: Value<'gc>,
+            in_vicinity: Option<Gc<'gc, Str<'gc>>>
+        ) -> Result<Value<'gc>, Value<'gc>>
+    {
+        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string())).unwrap_or_else(|| std::env::current_dir().unwrap());
+        let filename = PathBuf::from(filename.as_ref().to_string());
+        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, Some(in_vicinity));
+
+        match result {
+            Ok(thunk) => {
+                if thunk.is::<Closure>() {
+                    return nctx.return_(Ok(thunk));
+                }
+                let ctx = nctx.ctx;
+                let file = thunk.car().to_string();
+                let file_in = match std::fs::File::open(&file).map_err(|e| {
+                    make_io_error(
+                        &ctx,
+                        "compile-file",
+                        Str::new(
+                            &ctx,
+                            format!("Cannot open input file '{}': {}", file, e),
+                            true,
+                        )
+                        .into(),
+                        &[],
+                    )
+                }) {
+                    Ok(file_in) => file_in,
+                    Err(err) => return nctx.return_(Err(err))
+                };
+
+                let text = match std::io::read_to_string(&file_in).map_err(|e| {
+                    make_io_error(
+                        &ctx,
+                        "compile-file",
+                        Str::new(
+                            &ctx,
+                            format!("Cannot read input file '{}': {}", file, e),
+                            true,
+                        )
+                        .into(),
+                        &[],
+                    )
+                }) {
+                    Ok(text) => text,
+                    Err(err) => return nctx.return_(Err(err))
+                };
+                let src = Str::new(&ctx, &file, true);
+                let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into());
+
+                let program = match parser.read_program().map_err(|err| {
+                    make_lexical_violation(&ctx, "compile-file", err.to_string(&file))
+                }) {
+                    Ok(program) => program,
+                    Err(err) => return nctx.return_(Err(err))
+                };
+
+                let reth = nctx.reth;
+                let retk = nctx.retk;
+                let after_call = make_continue_loading_closure(ctx, [thunk, retk, reth]);
+                let program = Value::list_from_slice(ctx, program);
+                nctx.call(k, &[program, env], after_call.into(), reth)
+            }
+
+            Err(err) => nctx.return_(Err(err))
+        }
+    }
+);
+
+native_cont!(
+    _register_conts:
+    pub ("load-thunk-in-vicinity-k") fn continue_loading<'gc>(nctx, ir: Value<'gc>, cenv: Value<'gc>, _unused: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        let rator = nctx.rator().downcast::<Closure>();
+        let free = rator.free.downcast::<Vector>();
+        let source_and_compiled_path = free[1].get();
+        let retk = free[2].get();
+        let reth = free[3].get();
+
+        nctx.reth = reth;
+        nctx.retk = retk;
+
+        let mut reader = ScmTermToRsTerm::new(nctx.ctx);
+        let mut ir = match reader.convert(ir) {
+            Ok(ir) => ir,
+            Err(err) => return nctx.return_(Err(err))
+        };
+
+        let m = if cenv.is::<Module>() {
+            cenv.downcast()
+        } else {
+            current_module(nctx.ctx).get(nctx.ctx).downcast()
+        };
+
+        ir = fix_letrec(nctx.ctx, ir);
+        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
+        ir = primitives::resolve_primitives(nctx.ctx, ir, m);
+        ir = primitives::expand_primitives(nctx.ctx, ir);
+
+        let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
+        cps = crate::cps::rewrite_func(nctx.ctx, cps);
+        cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+
+        let object = match compile_cps_to_object(nctx.ctx, cps) {
+            Ok(product) => product,
+            Err(err) => return nctx.return_(Err(err)),
+        };
+        let compiled_path = source_and_compiled_path.cdr().to_string();
+        match link_object_product(nctx.ctx, object, &compiled_path) {
+            Ok(_) => (),
+            Err(err) => return nctx.return_(Err(err))
+        }
+        let ctx = nctx.ctx;
+
+        let libs = LIBRARY_COLLECTION.fetch(&ctx);
+        match libs.load(&compiled_path, ctx) {
+            Err(err) => return nctx.return_(Err(make_io_error(
+                &ctx,
+                "load",
+                Str::new(
+                    &ctx,
+                    format!("Failed to load compiled library: {err}"),
+                    true,
+                )
+                .into(),
+                &[],
+            ))),
+            Ok(thunk) => unsafe { nctx.continue_to(retk, &[thunk]) },
+        }
     }
 );

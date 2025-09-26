@@ -11,7 +11,7 @@ use crate::runtime::{
         Closure, ConversionError, NativeLocation, NativeReturn, PROCEDURES, ReturnCode, Str,
         Symbol, TryIntoValues, TypeCode16, Value, Vector,
     },
-    vm::{debug::print_stacktraces_impl, trampolines::get_trampoline_into_scheme},
+    vm::trampolines::get_trampoline_into_scheme,
 };
 use rsgc::{Gc, Trace};
 
@@ -130,7 +130,6 @@ extern "C-unwind" fn default_reth<'gc>(
     rands: *const Value<'gc>,
     num_rands: usize,
 ) -> NativeReturn<'gc> {
-    print_stacktraces_impl(*_ctx);
     println!("error occured");
     unsafe {
         let slice = std::slice::from_raw_parts(rands, num_rands);
@@ -147,7 +146,7 @@ extern "C-unwind" fn default_reth<'gc>(
     }
     NativeReturn {
         code: ReturnCode::ReturnErr,
-        value: Value::new(false),
+        value: Value::new(42),
     }
 }
 

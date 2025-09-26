@@ -7,7 +7,8 @@
                 (lambda (env0)
                     (let loop ([rib rib] [env env0])
                         (if (zero? rib)
-                            (vector-ref (car env) offset)
+                            (let ([val (vector-ref (car env) offset)])
+                                val)
                             (loop (- rib 1) (cdr env))))))]
         [(lset? expr)
             (let* ([address (interpret/var-address (lset-sym expr) env)]
@@ -25,9 +26,21 @@
             (let* ([rator (interpret/preprocess (application-operator expr) env)]
                    [rands (map (lambda (rand) (interpret/preprocess rand env)) (application-operands expr))])
                 (lambda (env0)
+                    (let ([func (rator env0)])
+                        (apply func (map (lambda (rand) (rand env0)) rands)))))]
+        [(primcall? expr)
+            (let* ([rator (primcall-prim expr)]
+                   [rands (map (lambda (rand) (interpret/preprocess rand env)) (primcall-args expr))]
+                   [func (lookup-bound '(capy) rator #t)])
+                (lambda (env0)
+                    
                     (let loop ([rands rands] [vals '()])
                         (if (null? rands)
-                            (apply (rator env0) (reverse vals))
+                            (begin 
+                             
+                                (let ([res (apply (variable-ref func) (reverse vals))])
+                                  
+                                    res))
                             (loop (cdr rands) (cons ((car rands) env0) vals))))))]
         [(proc? expr) (interpret/lambda expr env)]
         [(toplevel-define? expr)
@@ -49,6 +62,29 @@
                         (begin
                             (set! var (module-variable (current-module) name))
                             (variable-ref var)))))]
+        [(module-ref? expr)
+            (let ([module (module-ref-module expr)]
+                  [name (module-ref-name expr)]
+                  [public? (module-ref-public? expr)]
+                  [var #f])
+                (lambda (env0)
+                    (if var 
+                        (variabe-ref var)
+                        (begin 
+                            (set! var (lookup-bound module name public?))
+                            (variable-ref var)))))]
+        [(module-set? expr)
+            (let ([module (module-set-module expr)]
+                  [name (module-set-name expr)]
+                  [public? (module-set-public? expr)]
+                  [val-proc (interpret/preprocess (module-set-value expr) env)]
+                  [var #f])
+                (lambda (env0)
+                    (if var
+                        (variable-set! var (val-proc env0))
+                        (begin
+                            (set! var (lookup-bound module name public?))
+                            (variable-set! var (val-proc env0))))))]
         [(toplevel-set? expr)
             (let ([name (toplevel-set-name expr)]
                   [val-proc (interpret/preprocess (toplevel-set-value expr) env)]
@@ -82,7 +118,7 @@
                                 (lambda (env0)
                                     (let ([val (val-proc env0)])
                                         (rest-proc (cons (vector val) env0)))))))))]
-        [(letrec? expr)
+        [(or (letrec*? expr) (letrec? expr))
             (let* ([lhs (let-lhs expr)]
                     [rhs (let-rhs expr)]
                     [body (let-body expr)]
@@ -90,7 +126,7 @@
                     [rhs-procs (map (lambda (rhs) (interpret/preprocess rhs nenv)) rhs)]
                     [body-proc (interpret/preprocess body nenv)])
                 (lambda (env0)
-                    (let* ([rib (make-vector (length lhs) #f)]
+                    (let* ([rib (make-vector (length lhs) 555)]
                             [new-env (cons rib env0)])
                         (let loop ([i 0] [procs rhs-procs])
                             (if (null? procs)
@@ -109,8 +145,13 @@
                             (if (null? rhs)
                                 (body-proc (cons (list->vector (reverse vals)) env0))
                                 (loop (cdr rhs) (cons ((car rhs) env0) vals)))))))]
-
-        [else (lambda (env0) #f)]))
+        [(sequence? expr)
+            (let* ([head (interpret/preprocess (sequence-head expr) env)]
+                   [tail (interpret/preprocess (sequence-tail expr) env)])
+                (lambda (env0)
+                    (head env0)
+                    (tail env0)))]
+        [else (lambda (env0) 42)]))
 
 
 
@@ -124,7 +165,7 @@
         (if (pair? x)
             (fixed-args (cdr x) (+ n 1))
             n))
-(let* ((args  (proc-args expr))
+(let*   ((args  (proc-args expr))
          (body  (proc-body expr))
          (nenv  (interpret/extend-env env (cons '&self (listify args))))
          (exprs (interpret/preprocess body nenv)))
@@ -164,7 +205,7 @@
     (lambda (env)
         (letrec ([self
             (lambda args
-                (let ([v (make-vector (+ n 2) #f)]
+                (let ([v (make-vector (+ n 2) 444)]
                       [limit (+ n 1)])
                     (vectoer-set! v 0 self)
                     (let loop ([argnum 1]
@@ -189,7 +230,9 @@
     (lambda (env)
         (letrec ([self
             (lambda (arg1)
-                (body (cons (vector self arg1) env)))])
+                (let ([env (cons (vector self arg1) env)])
+                 
+                (body env)))])
             self)))
 (define (interpret/lambda2 body)
     (lambda (env)
@@ -215,7 +258,7 @@
 (define (interpret/var-address name env)
     (let r-loop ([env env] [i 0])
         (if (null? env)
-            #f
+            555
             (let a-loop ([rib (car env)] [j 0])
                 (cond
                     [(null? rib) (r-loop (cdr env) (+ i 1))]
@@ -225,28 +268,6 @@
 (define (interpret/extend-env env names)
   (cons names env))
 
-
-(define code
-    (make-let #f 'letrec
-        '(loop)
-        '(loop)
-        (list (make-proc #f
-                '(i)
-                (make-if #f
-                    (make-application #f
-                        (make-toplevel-ref #f #f '=)
-                        (list (make-lref #f 'i 'i)
-                            (make-constant #f 100)))
-                    (make-lref #f 'i 'i)
-                    (make-application #f
-                        (make-lref #f 'loop 'loop)
-                        (list (make-application #f
-                            (make-toplevel-ref #f #f '+)
-                            (list (make-lref #f 'i 'i)
-                                (make-constant #f 1))))))
-                '()
-                '(i)))
-        (make-application #f (make-lref #f 'loop) (list (make-constant #f 0)))))
-
 (define (primitive-eval exp)
+    (pretty-print-ir exp)
     ((interpret/preprocess exp '()) '()))

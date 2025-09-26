@@ -95,6 +95,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn entrypoint(&mut self, rands: ir::Value, num_rands: ir::Value) {
+        match self.target {
+            ContOrFunc::Func(func) => {
+                self.set_debug_loc(func.source);
+            }
+
+            ContOrFunc::Cont(cont) => {
+                self.set_debug_loc(cont.source());
+            }
+        }
         self.check_yield(self.rator, rands, num_rands);
         self.load_free_vars();
         self.load_arguments(rands, num_rands);
@@ -330,6 +339,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let block = self.builder.create_block();
+        if k.cold {
+            self.builder.func.layout.set_cold(block);
+        }
         self.blockmap.insert(k, block);
         for _ in k.args.iter() {
             self.builder.append_block_param(block, types::I64);
@@ -751,16 +763,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.continue_to(*k, &rands);
             }
 
-            Term::If(cond, cons, alt, _) => {
-                /*let cond = self.atom(*cond);
-
-                let is_false = self.builder.ins().icmp_imm(
-                    IntCC::Equal,
-                    cond,
-                    Value::new(false).bits() as i64,
-                );*/
-
-                let truthy = self.atom_for_cond(*cond);
+            Term::If {
+                test,
+                consequent,
+                consequent_args,
+                alternative,
+                alternative_args,
+                hints: _,
+            } => {
+                let truthy = self.atom_for_cond(*test);
 
                 let kcons = self.builder.create_block();
                 let kalt = self.builder.create_block();
@@ -768,12 +779,18 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.ins().brif(truthy, kcons, &[], kalt, &[]);
                 self.builder.switch_to_block(kalt);
                 {
-                    self.continue_to(*alt, &[]);
+                    let alternative_args = alternative_args.map_or(vec![], |args| {
+                        args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>()
+                    });
+                    self.continue_to(*alternative, &alternative_args);
                 }
 
                 self.builder.switch_to_block(kcons);
                 {
-                    self.continue_to(*cons, &[]);
+                    let consequent_args = consequent_args.map_or(vec![], |args| {
+                        args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>()
+                    });
+                    self.continue_to(*consequent, &consequent_args);
                 }
             }
 

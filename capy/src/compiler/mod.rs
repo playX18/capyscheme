@@ -1,4 +1,4 @@
-use std::{io::Write, path::Path, process::Command};
+use std::{io::Write, path::Path};
 
 use crate::{
     compiler::{linkutils::Linker, ssa::ModuleBuilder},
@@ -128,6 +128,7 @@ pub fn compile_file<'gc>(
     il = fix_letrec(ctx, il);
     il = assignment_elimination::eliminate_assignments(ctx, il);
     il = primitives::resolve_primitives(ctx, il, module);
+    il = primitives::expand_primitives(ctx, il);
 
     let mut cps = compile_cps::cps_toplevel(ctx, &[il]);
 
@@ -135,7 +136,7 @@ pub fn compile_file<'gc>(
 
     cps = cps.with_body(ctx, contify(ctx, cps.body));
 
-    if false {
+    if true {
         let file = std::fs::OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -280,24 +281,25 @@ pub fn link_object_product<'gc>(
             &[],
         )
     })?;
-
-    std::fs::remove_file(&obj_output).map_err(|e| {
-        make_io_error(
-            &ctx,
-            "link-object",
-            Str::new(
+    if false {
+        std::fs::remove_file(&obj_output).map_err(|e| {
+            make_io_error(
                 &ctx,
-                format!(
-                    "Cannot remove temporary object file '{}': {}",
-                    obj_output.display(),
-                    e
-                ),
-                true,
+                "link-object",
+                Str::new(
+                    &ctx,
+                    format!(
+                        "Cannot remove temporary object file '{}': {}",
+                        obj_output.display(),
+                        e
+                    ),
+                    true,
+                )
+                .into(),
+                &[],
             )
-            .into(),
-            &[],
-        )
-    })?;
+        })?;
+    }
 
     Ok(())
 }
@@ -318,31 +320,4 @@ fn macho_object_build_version_for_target() -> object::write::MachOBuildVersion {
     build_version.minos = pack_version(min_os);
     build_version.sdk = pack_version(sdk);
     build_version
-}
-
-fn ld_flags(mut command: &mut Command) -> &mut Command {
-    /*if cfg!(target_os = "macos") {
-        let arch = if cfg!(target_arch = "x86_64") {
-            "x86_64"
-        } else if cfg!(target_arch = "aarch64") {
-            "arm64"
-        } else {
-            panic!("Unsupported architecture for macOS: {}", env::consts::ARCH);
-        };
-        command = command
-            .arg("-dynamic")
-            .arg("-dylib")
-            .arg("-arch")
-            .arg(arch)
-            .arg("-platform_version")
-            .arg("macos")
-            .arg("16.0.0")
-            .arg("26.0")
-    }
-
-    if cfg!(not(target_os = "macos")) {*/
-    command = command.arg("--shared");
-    //}
-
-    command
 }

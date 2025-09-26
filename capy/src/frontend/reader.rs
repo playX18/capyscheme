@@ -385,6 +385,92 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(list!(self.ctx, quote, expr).into())
             }
 
+            "syntax" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let syntax: Value<'gc> = Symbol::from_str(self.ctx, "syntax").into();
+                Ok(list!(self.ctx, syntax, expr).into())
+            }
+
+            "quasisyntax" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let quasisyntax: Value<'gc> = Symbol::from_str(self.ctx, "quasisyntax").into();
+                Ok(list!(self.ctx, quasisyntax, expr).into())
+            }
+
+            "unsyntax" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let unsyntax: Value<'gc> = Symbol::from_str(self.ctx, "unsyntax").into();
+                Ok(list!(self.ctx, unsyntax, expr).into())
+            }
+
+            "unsyntax_splicing" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let unsyntax_splicing: Value<'gc> =
+                    Symbol::from_str(self.ctx, "unsyntax-splicing").into();
+                Ok(list!(self.ctx, unsyntax_splicing, expr).into())
+            }
+
+            "quasiquote" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let quasiquote: Value<'gc> = Symbol::from_str(self.ctx, "quasiquote").into();
+                Ok(list!(self.ctx, quasiquote, expr).into())
+            }
+
+            "unquote" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let unquote: Value<'gc> = Symbol::from_str(self.ctx, "unquote").into();
+                Ok(list!(self.ctx, unquote, expr).into())
+            }
+
+            "unquote_splicing" => {
+                let mut cursor = node.walk();
+                let child = node.children(&mut cursor).skip(1).next().unwrap();
+
+                let expr = self.parse_lexeme(&child)?;
+
+                self.annotate(expr, &node);
+
+                let unquote_splicing: Value<'gc> =
+                    Symbol::from_str(self.ctx, "unquote-splicing").into();
+                Ok(list!(self.ctx, unquote_splicing, expr).into())
+            }
+
             "list" => {
                 let list = self.parse_compound_node(node, src, CompoundType::List)?;
                 Ok(list)
@@ -456,7 +542,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(vec)
             }
 
-            _ => Err(LexicalError::InvalidSyntax { span: src.0 }),
+            _ => todo!("Unhandled node kind: {}", node.kind()),
         }
     }
 }

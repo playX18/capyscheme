@@ -298,6 +298,7 @@ pub struct Proc<'gc> {
     pub args: ArrayRef<'gc, LVarRef<'gc>>,
     pub variadic: Option<LVarRef<'gc>>,
     pub body: TermRef<'gc>,
+    pub meta: Value<'gc>,
 }
 
 pub type ProcRef<'gc> = Gc<'gc, Proc<'gc>>;
@@ -496,11 +497,12 @@ pub fn let_term<'gc>(
     lhs: ArrayRef<'gc, LVarRef<'gc>>,
     rhs: ArrayRef<'gc, TermRef<'gc>>,
     body: TermRef<'gc>,
+    src: Value<'gc>,
 ) -> TermRef<'gc> {
     Gc::new(
         &ctx,
         Term {
-            source: Lock::new(false.into()),
+            source: Lock::new(src),
             kind: TermKind::Let(Let {
                 style,
                 lhs,
@@ -533,6 +535,7 @@ pub fn proc_term<'gc>(
     variadic: Option<LVarRef<'gc>>,
     body: TermRef<'gc>,
     source: Value<'gc>,
+    meta: Value<'gc>,
 ) -> TermRef<'gc> {
     Gc::new(
         &ctx,
@@ -546,6 +549,7 @@ pub fn proc_term<'gc>(
                     variadic,
                     body,
                     source,
+                    meta,
                 },
             )),
         },
@@ -784,6 +788,7 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
                     variadic,
                     body: body_term,
                     source: syntax_annotation(cenv.ctx, form),
+                    meta: Value::new(false),
                 },
             );
 
@@ -916,6 +921,7 @@ fn expand_and<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
             Array::from_slice(&cenv.ctx, &[temp_lvar]),
             Array::from_slice(&cenv.ctx, &[test_term]),
             if_branch,
+            syntax_annotation(cenv.ctx, form),
         );
     }
 
@@ -970,6 +976,7 @@ fn expand_or<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
             Array::from_slice(&cenv.ctx, &[temp_lvar]),
             Array::from_slice(&cenv.ctx, &[test_term]),
             if_branch,
+            syntax_annotation(cenv.ctx, form),
         );
     }
 
@@ -1219,6 +1226,7 @@ fn finalize_body<'gc>(
                         variadic,
                         body: body_term,
                         source: syntax_annotation(cenv.ctx, def_body),
+                        meta: Value::new(false),
                     },
                 );
 
@@ -1287,6 +1295,7 @@ fn finalize_body<'gc>(
             Array::from_slice(&cenv.ctx, lhs),
             Array::from_slice(&cenv.ctx, rhs),
             seq,
+            syntax_annotation(cenv.ctx, body),
         );
         Ok(l)
     }
@@ -1380,6 +1389,7 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             variadic,
             body: body_term,
             source: syntax_annotation(cenv.ctx, form),
+            meta: Value::new(false),
         },
     );
 
@@ -1453,6 +1463,7 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
                 variadic: None,
                 body: body_term,
                 source: syntax_annotation(cenv.ctx, form),
+                meta: Value::new(false),
             },
         );
 
@@ -1484,6 +1495,7 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
             Array::from_slice(&cenv.ctx, vec![name_lvar]),
             Array::from_slice(&cenv.ctx, vec![proc_term]),
             call_term,
+            syntax_annotation(cenv.ctx, form),
         ))
     } else {
         // Regular let form: (let ((var val) ...) body...)
@@ -1517,6 +1529,7 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
             Array::from_slice(&cenv.ctx, lvars),
             Array::from_slice(&cenv.ctx, val_terms),
             body_term,
+            syntax_annotation(cenv.ctx, form),
         ))
     }
 }
@@ -1604,13 +1617,28 @@ fn expand_let_star<'gc>(
     let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?;
     cenv.pop_frame();
 
-    Ok(let_term(
+    /*Ok(let_term(
         cenv.ctx,
         LetStyle::LetStar,
         Array::from_slice(&cenv.ctx, lvars),
         Array::from_slice(&cenv.ctx, val_terms),
         body_term,
-    ))
+    ))*/
+
+    let mut result = body_term;
+
+    for i in (0..lvars.len()).rev() {
+        result = let_term(
+            cenv.ctx,
+            LetStyle::Let,
+            Array::from_slice(&cenv.ctx, vec![lvars[i].clone()]),
+            Array::from_slice(&cenv.ctx, vec![val_terms[i].clone()]),
+            result,
+            syntax_annotation(cenv.ctx, form),
+        );
+    }
+
+    Ok(result)
 }
 
 fn expand_letrec<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -1655,6 +1683,7 @@ fn expand_letrec<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
         Array::from_slice(&cenv.ctx, lvars),
         Array::from_slice(&cenv.ctx, val_terms),
         body_term,
+        syntax_annotation(cenv.ctx, form),
     ))
 }
 
@@ -1779,6 +1808,7 @@ fn expand_letrec_star<'gc>(
         Array::from_slice(&cenv.ctx, lvars),
         Array::from_slice(&cenv.ctx, val_terms),
         body_term,
+        syntax_annotation(cenv.ctx, form),
     ))
 }
 
@@ -1969,6 +1999,7 @@ fn expand_clause<'gc>(
             [binding].into_iter().collect_gc(&cenv.ctx),
             [test_form].into_iter().collect_gc(&cenv.ctx),
             if_,
+            syntax_annotation(cenv.ctx, form),
         ))
     }
 }

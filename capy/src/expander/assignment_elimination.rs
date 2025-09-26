@@ -9,7 +9,7 @@ use crate::{
             Fix, LVarRef, Let, LetStyle, Proc, Term, TermKind, TermRef, call_term, define,
             fresh_lvar, let_term, lref, prim_call_term,
         },
-        primitives::{prim_box, prim_boxref, prim_boxset},
+        primitives::{sym_make_variable, sym_variable_ref, sym_variable_set},
     },
     runtime::Context,
 };
@@ -17,7 +17,7 @@ use crate::{
 fn box_ref<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
-        prim_boxref(ctx).into(),
+        sym_variable_ref(ctx).into(),
         &[lref(ctx, var)],
         Value::new(false),
     )
@@ -26,7 +26,7 @@ fn box_ref<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
 fn box_set<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>, value: TermRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
-        prim_boxset(ctx).into(),
+        sym_variable_set(ctx).into(),
         &[lref(ctx, var), value],
         Value::new(false),
     )
@@ -35,7 +35,7 @@ fn box_set<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>, value: TermRef<'gc>) -> Te
 fn pbox<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
-        prim_box(ctx).into(),
+        sym_make_variable(ctx).into(),
         &[lref(ctx, var)],
         Value::new(false),
     )
@@ -123,6 +123,7 @@ fn substitute<'gc>(
                             source: proc.source,
                             args: proc.args,
                             variadic: proc.variadic,
+                            meta: proc.meta,
                         },
                     )
                 })
@@ -203,6 +204,7 @@ fn substitute<'gc>(
                             args: proc.args,
                             variadic: proc.variadic,
                             source: proc.source,
+                            meta: proc.meta,
                         },
                     )),
                 },
@@ -454,6 +456,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                             args: proc.args,
                             variadic: proc.variadic,
                             source: proc.source,
+                            meta: proc.meta,
                         },
                     )
                 })
@@ -488,6 +491,7 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
                             args: proc.args,
                             variadic: proc.variadic,
                             source: proc.source,
+                            meta: proc.meta,
                         },
                     )),
                 },
@@ -605,6 +609,7 @@ fn wrap_mutables_case<'gc>(
         Array::from_slice(&ctx, mlhs),
         Array::from_slice(&ctx, mrhs),
         body,
+        Value::new(false),
     );
 
     let_

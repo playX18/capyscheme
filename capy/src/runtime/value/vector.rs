@@ -13,13 +13,10 @@ use std::ops::{Deref, Index};
 
 use crate::runtime::{Context, value::*};
 
-pub type VectorLengthBits = BitField<u64, u32, { TypeBits::NEXT_BIT }, 32, false>;
-
-pub const VECTOR_MAX_LENGTH: usize = u32::MAX as usize;
-
 #[repr(C, align(8))]
 pub struct Vector<'gc> {
     pub(crate) hdr: ScmHeader,
+    pub(crate) length: usize,
     pub(crate) data: [Lock<Value<'gc>>; 0],
 }
 
@@ -50,7 +47,7 @@ impl<'gc> Vector<'gc> {
     };
 
     pub fn len(&self) -> usize {
-        VectorLengthBits::decode(self.hdr.word) as usize
+        self.length
     }
 
     pub fn is_immutable(&self) -> bool {
@@ -62,10 +59,6 @@ impl<'gc> Vector<'gc> {
         length: usize,
         fill: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        assert!(
-            length <= VECTOR_MAX_LENGTH,
-            "Vector length exceeds maximum allowed size"
-        );
         let mut hdr = ScmHeader::new();
         let tc = if IMMUTABLE {
             TypeCode16::IMMUTABLE_VECTOR
@@ -73,7 +66,6 @@ impl<'gc> Vector<'gc> {
             TypeCode16::MUTABLE_VECTOR
         };
         hdr.set_type_bits(tc.0 as _);
-        hdr.word = VectorLengthBits::update(length as u32, hdr.word);
 
         unsafe {
             let alloc = mc.raw_allocate(
@@ -84,7 +76,7 @@ impl<'gc> Vector<'gc> {
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
-
+            vec.length = length;
             vec.hdr = hdr;
             for i in 0..length {
                 vec.data.as_mut_ptr().add(i).write(Lock::new(fill));
@@ -387,10 +379,6 @@ impl<'gc> Tuple<'gc> {
     }
 
     pub fn new(mc: &Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
-        assert!(
-            length <= VECTOR_MAX_LENGTH,
-            "Tuple length exceeds maximum allowed size"
-        );
         let mut hdr = ScmHeader::new();
         hdr.set_type_bits(TypeCode8::TUPLE.0 as _);
         hdr.word = TupleLengthBits::update(length as u32, hdr.word);

@@ -582,12 +582,10 @@ pub fn resolve_module<'gc>(
     autoload: bool,
     ensure: bool,
 ) -> Option<Gc<'gc, Module<'gc>>> {
-    if let Some(loaded) = resolve_module_root(ctx).nested_ref_module(ctx, name) {
-        if autoload {
-            return Some(loaded);
-        }
-
-        return loaded.public_interface.get();
+    if let Some(loaded) = resolve_module_root(ctx).nested_ref_module(ctx, name)
+        && (!autoload || loaded.public_interface.get().is_some())
+    {
+        return Some(loaded);
     }
 
     if ensure {
@@ -715,11 +713,11 @@ fluid!(
 );
 
 pub fn define<'gc>(ctx: Context<'gc>, name: &str, value: Value<'gc>) -> Gc<'gc, Variable<'gc>> {
-    current_module(ctx).get(ctx).downcast::<Module>().define(
-        ctx,
-        Symbol::from_str(ctx, name).into(),
-        value,
-    )
+    let sym = Symbol::from_str(ctx, name);
+    current_module(ctx)
+        .get(ctx)
+        .downcast::<Module>()
+        .define(ctx, sym.into(), value)
 }
 
 native_fn!(

@@ -7,28 +7,24 @@ use crate::{
         ReifyInfo,
         term::{ContRef, FuncRef},
     },
-    expander::{compile_program, core::LVarRef, read_from_string},
+    expander::core::LVarRef,
     runtime::{
         Context,
         fasl::FASLWriter,
-        modules::root_module,
-        value::{Str, Value, ValueEqual, Vector},
+        value::{Value, ValueEqual, Vector},
     },
 };
 
-use cranelift::prelude::{
-    Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, types,
-};
+use cranelift::prelude::{FunctionBuilder, FunctionBuilderContext, InstBuilder, types};
 use cranelift_codegen::{
     ir::{self, SourceLoc},
     isa::CallConv,
-    settings,
 };
 
-use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module, default_libcall_names};
-use cranelift_object::{ObjectModule, ObjectProduct};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
+use cranelift_object::ObjectModule;
 use rsgc::Gc;
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
 use crate::runtime::vm::thunks::*;
 
@@ -90,7 +86,7 @@ impl<'gc> ModuleBuilder<'gc> {
             let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
             let func_id = self
                 .module
-                .declare_function(&name, Linkage::Local, &sig)
+                .declare_function(&name, Linkage::Export, &sig)
                 .unwrap();
 
             self.func_for_func.insert(func, func_id);
@@ -138,7 +134,6 @@ impl<'gc> ModuleBuilder<'gc> {
                 &mut self.debug_context,
                 func_id,
                 &context,
-                &self.reify_info.free_vars.fvars[&func],
                 self.module.isa(),
             );
             self.module.clear_context(&mut context);
@@ -175,7 +170,6 @@ impl<'gc> ModuleBuilder<'gc> {
                 &mut self.debug_context,
                 func_id,
                 &context,
-                &self.reify_info.free_vars.cvars[&cont],
                 self.module.isa(),
             );
             self.module.clear_context(&mut context);

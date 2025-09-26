@@ -27,7 +27,7 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::syntax::init_syntax(mc);
     vm::memoize::init_memoize(mc);
     vm::expand::init_expand(mc);
-    let _ = crate::expander::primitives::primitives(mc);
+    let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
 }
 
 pub use thread::*;

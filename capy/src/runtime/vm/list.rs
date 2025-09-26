@@ -161,6 +161,19 @@ native_fn!(
         let res = Value::cons(nctx.ctx, pair, alist);
         nctx.return_(Ok(res))
     }
+
+    pub ("cons") fn cons<'gc>(nctx, car: Value<'gc>, cdr: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        let pair = Value::cons(nctx.ctx, car, cdr);
+        nctx.return_(Ok(pair))
+    }
+
+    pub ("list") fn list<'gc>(nctx, args: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
+        let mut ls = Value::null();
+        for v in args.iter().rev() {
+            ls = Value::cons(nctx.ctx, *v, ls);
+        }
+        nctx.return_(Ok(ls))
+    }
 );
 
 fn append_impl<'gc>(ctx: Context<'gc>, mut ls1: Value<'gc>, ls2: Value<'gc>) -> Option<Value<'gc>> {

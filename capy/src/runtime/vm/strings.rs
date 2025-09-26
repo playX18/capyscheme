@@ -85,6 +85,32 @@ native_fn!(
         println!();
         nctx.return_(())
     }
+
+    pub ("substring") fn substring<'gc>(nctx, str: Gc<'gc, Str<'gc>>, start: usize, end: usize) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+        if start > end || end > str.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "substring",
+                "invalid start or end",
+                None,
+                None,
+                3,
+                &[str.into(), start.into_value(ctx), end.into_value(ctx)]
+            );
+        }
+
+        let s = Str::substring(str, &nctx.ctx, start, end);
+
+        nctx.return_(Ok(s))
+    }
+
+    pub ("string?") fn is_string<'gc>(nctx, val: Value<'gc>) -> bool {
+        nctx.return_(val.is::<Str>())
+    }
+
+    pub ("symbol?") fn is_symbol<'gc>(nctx, val: Value<'gc>) -> bool {
+        nctx.return_(val.is::<Symbol>())
+    }
 );
 
 pub fn init_strings<'gc>(ctx: Context<'gc>) {

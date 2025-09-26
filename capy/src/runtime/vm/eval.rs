@@ -37,4 +37,8 @@ native_fn!(
 
         nctx.return_call(rator, &args)
     }
+
+    pub ("procedure?") fn procedure_p<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
+        nctx.return_((v.is::<Closure>()).into())
+    }
 );

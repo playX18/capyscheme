@@ -666,6 +666,16 @@ impl<'gc> Value<'gc> {
     pub fn assq(self, id: Value<'gc>) -> Option<Value<'gc>> {
         self.assp(|x| x.car() == id)
     }
+
+    pub fn list_from_slice(ctx: Context<'gc>, slice: impl AsRef<[Value<'gc>]>) -> Value<'gc> {
+        let mut res = Value::null();
+
+        for val in slice.as_ref().iter().rev() {
+            res = Value::cons(ctx, *val, res);
+        }
+
+        res
+    }
 }
 
 #[macro_export]

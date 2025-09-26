@@ -220,7 +220,7 @@ native_fn!(
         if !x.is_real() {
             todo!()
         }
-        let floor = Number::floor(nctx.ctx, x);
+        let floor = x.floor(nctx.ctx);
         nctx.return_(Ok(floor))
     }
 

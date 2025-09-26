@@ -415,6 +415,7 @@ impl<'gc> CPSDeserializer<'gc> {
                     free_vars: Lock::new(free_vars),
                     reified: Cell::new(reified),
                     handler: Lock::new(handler),
+                    cold: false,
                 },
             )
         } else {
