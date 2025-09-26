@@ -44,7 +44,14 @@ pub enum Term<'gc> {
         Value<'gc>,
     ),
 
-    If(Atom<'gc>, LVarRef<'gc>, LVarRef<'gc>, [BranchHint; 2]),
+    If {
+        test: Atom<'gc>,
+        consequent: LVarRef<'gc>,
+        consequent_args: Option<Atoms<'gc>>,
+        alternative: LVarRef<'gc>,
+        alternative_args: Option<Atoms<'gc>>,
+        hints: [BranchHint; 2],
+    },
 
     Letk(Conts<'gc>, TermRef<'gc>),
     Fix(Funcs<'gc>, TermRef<'gc>),
@@ -154,6 +161,7 @@ pub struct Cont<'gc> {
     pub free_vars: Lock<Option<Vars<'gc>>>,
     pub reified: Cell<bool>,
     pub handler: Lock<LVarRef<'gc>>,
+    pub cold: bool,
 }
 
 impl<'gc> PartialEq for Cont<'gc> {
@@ -207,6 +215,7 @@ impl<'gc> Cont<'gc> {
                 free_vars: Lock::new(self.free_vars.get()),
                 reified: Cell::new(self.reified.get()),
                 handler: Lock::new(self.handler.get()),
+                cold: self.cold,
             },
         )
     }
@@ -300,8 +309,33 @@ impl<'gc> TreeEq for Term<'gc> {
             (Term::Continue(k, args, _), Term::Continue(l, bargs, _)) => {
                 Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
             }
-            (Term::If(f, k, l, hints), Term::If(g, m, n, bhints)) => {
+            /*(Term::If(f, k, l, hints), Term::If(g, m, n, bhints)) => {
                 f.tree_eq(g) && Gc::ptr_eq(*k, *m) && Gc::ptr_eq(*l, *n) && hints == bhints
+            }*/
+            (
+                Term::If {
+                    test: f,
+                    consequent: k,
+                    consequent_args: args,
+                    alternative: l,
+                    alternative_args: bargs,
+                    hints,
+                },
+                Term::If {
+                    test: g,
+                    consequent: m,
+                    consequent_args: cargs,
+                    alternative: n,
+                    alternative_args: dargs,
+                    hints: bhints,
+                },
+            ) => {
+                f.tree_eq(g)
+                    && Gc::ptr_eq(*k, *m)
+                    && Gc::ptr_eq(*l, *n)
+                    && args.tree_eq(cargs)
+                    && bargs.tree_eq(dargs)
+                    && hints == bhints
             }
             (Term::Letk(ks, body), Term::Letk(ls, bbody)) => ks.tree_eq(ls) && body.tree_eq(bbody),
             (Term::Fix(fs, body), Term::Fix(ls, bbody)) => fs.tree_eq(ls) && body.tree_eq(bbody),

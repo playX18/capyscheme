@@ -23,7 +23,7 @@ libc = "*"
 [profile.release]
 lto = true
 debug = false
-incremental = false
+incremental = true
 
 [profile.dev]
-incremental = false
+incremental = true

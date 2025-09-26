@@ -2240,6 +2240,16 @@ impl<'gc> Number<'gc> {
         }
     }
 
+    pub fn exact_integer_to_isize(self) -> Option<isize> {
+        if let Number::Fixnum(i) = self {
+            Some(i as isize)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_i64().map(|v| v as isize)
+        } else {
+            None
+        }
+    }
+
     pub fn exact_integer_to_f64(self) -> Option<f64> {
         if let Number::Fixnum(i) = self {
             Some(i as f64)
@@ -4587,7 +4597,8 @@ impl<'gc> Number<'gc> {
         )
     }
 
-    pub fn floor(ctx: Context<'gc>, n: Self) -> Self {
+    pub fn floor(self, ctx: Context<'gc>) -> Self {
+        let n = self;
         match n {
             Number::Fixnum(_) | Number::BigInt(_) => n,
             Number::Flonum(fl) => {
@@ -4597,6 +4608,30 @@ impl<'gc> Number<'gc> {
             Number::Rational(rn) => {
                 if rn.numerator.is_negative() {
                     return Self::sub(
+                        ctx,
+                        Self::quotient(ctx, rn.numerator, rn.denominator),
+                        Number::Fixnum(1),
+                    );
+                }
+
+                return Self::quotient(ctx, rn.numerator, rn.denominator);
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn ceiling(self, ctx: Context<'gc>) -> Self {
+        let n = self;
+        match n {
+            Number::Fixnum(_) | Number::BigInt(_) => n,
+            Number::Flonum(fl) => {
+                return Self::Flonum(libm::ceil(fl));
+            }
+
+            Number::Rational(rn) => {
+                if rn.numerator.is_positive() {
+                    return Self::add(
                         ctx,
                         Self::quotient(ctx, rn.numerator, rn.denominator),
                         Number::Fixnum(1),
@@ -5155,6 +5190,201 @@ impl<'gc> Number<'gc> {
             Self::Complex(n) => n.real.is_even(),
             _ => false,
         }
+    }
+
+    pub fn lsh(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
+        if self.is_zero() {
+            return Some(self);
+        }
+
+        let count = self.coerce_exact_integer_to_usize();
+        if count == 0 {
+            return Some(self);
+        } else if count / (size_of::<i32>() * 8) >= i32::MAX as usize {
+            return None;
+        }
+
+        match self {
+            Self::Fixnum(n) => {
+                let s = n.checked_shl(count as _);
+                if let Some(n) = s {
+                    return Some(Self::Fixnum(n));
+                }
+
+                let bn = BigInt::from_i64(ctx, n as _);
+                return Some(Self::BigInt(BigInt::shift_left(bn, ctx, count)));
+            }
+
+            Self::BigInt(n) => {
+                return Some(Self::BigInt(BigInt::shift_left(n, ctx, count)));
+            }
+
+            _ => None,
+        }
+    }
+
+    pub fn rsh(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
+        let count = self.coerce_exact_integer_to_usize();
+        if count == 0 {
+            return Some(self);
+        }
+
+        match self {
+            Self::Fixnum(n) => {
+                let s = n.checked_shr(count as _);
+                if let Some(n) = s {
+                    return Some(Self::Fixnum(n));
+                }
+
+                let bn = BigInt::from_i64(ctx, n as _);
+                return Some(Self::BigInt(BigInt::shift_right(bn, ctx, count)));
+            }
+
+            Self::BigInt(n) => {
+                return Some(Self::BigInt(BigInt::shift_right(n, ctx, count)));
+            }
+
+            _ => None,
+        }
+    }
+
+    pub fn logior(self, ctx: Context<'gc>, other: Self) -> Self {
+        match (self, other) {
+            (Self::Fixnum(lhs), Self::Fixnum(rhs)) => {
+                return Self::Fixnum(lhs | rhs);
+            }
+
+            (Self::Fixnum(lhs), Self::BigInt(rhs)) => {
+                let lhs = BigInt::from_i64(ctx, lhs as _);
+                return Self::BigInt(BigInt::or(lhs, ctx, rhs));
+            }
+
+            (Self::BigInt(lhs), Self::Fixnum(rhs)) => {
+                let rhs = BigInt::from_i64(ctx, rhs as _);
+                return Self::BigInt(BigInt::or(lhs, ctx, rhs));
+            }
+
+            (Self::BigInt(lhs), Self::BigInt(rhs)) => {
+                return Self::BigInt(BigInt::or(lhs, ctx, rhs));
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn logand(self, ctx: Context<'gc>, other: Self) -> Self {
+        match (self, other) {
+            (Self::Fixnum(lhs), Self::Fixnum(rhs)) => {
+                return Self::Fixnum(lhs & rhs);
+            }
+
+            (Self::Fixnum(lhs), Self::BigInt(rhs)) => {
+                let lhs = BigInt::from_i64(ctx, lhs as _);
+                return Self::BigInt(BigInt::and(lhs, ctx, rhs));
+            }
+
+            (Self::BigInt(lhs), Self::Fixnum(rhs)) => {
+                let rhs = BigInt::from_i64(ctx, rhs as _);
+                return Self::BigInt(BigInt::and(lhs, ctx, rhs));
+            }
+
+            (Self::BigInt(lhs), Self::BigInt(rhs)) => {
+                return Self::BigInt(BigInt::and(lhs, ctx, rhs));
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn logxor(self, ctx: Context<'gc>, other: Self) -> Self {
+        match (self, other) {
+            (Self::Fixnum(lhs), Self::Fixnum(rhs)) => {
+                return Self::Fixnum(lhs ^ rhs);
+            }
+
+            (Self::Fixnum(lhs), Self::BigInt(rhs)) => {
+                let lhs = BigInt::from_i64(ctx, lhs as _);
+                return Self::BigInt(BigInt::xor(lhs, ctx, rhs));
+            }
+
+            (Self::BigInt(lhs), Self::Fixnum(rhs)) => {
+                let rhs = BigInt::from_i64(ctx, rhs as _);
+                return Self::BigInt(BigInt::xor(lhs, ctx, rhs));
+            }
+
+            (Self::BigInt(lhs), Self::BigInt(rhs)) => {
+                return Self::BigInt(BigInt::xor(lhs, ctx, rhs));
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn lognot(self, ctx: Context<'gc>) -> Self {
+        match self {
+            Self::Fixnum(n) => {
+                let bn = BigInt::from_i64(ctx, n as _);
+                return Self::BigInt(BigInt::not(bn, ctx));
+            }
+
+            Self::BigInt(n) => {
+                return Self::BigInt(BigInt::not(n, ctx));
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn logtest(self, ctx: Context<'gc>, other: Self) -> bool {
+        match (self, other) {
+            (Self::Fixnum(lhs), Self::Fixnum(rhs)) => (lhs & rhs) != 0,
+            (Self::Fixnum(lhs), Self::BigInt(rhs)) => {
+                let lhs = BigInt::from_i64(ctx, lhs as _);
+                !BigInt::and(lhs, ctx, rhs).is_zero()
+            }
+            (Self::BigInt(lhs), Self::Fixnum(rhs)) => {
+                let rhs = BigInt::from_i64(ctx, rhs as _);
+                !BigInt::and(lhs, ctx, rhs).is_zero()
+            }
+            (Self::BigInt(lhs), Self::BigInt(rhs)) => !BigInt::and(lhs, ctx, rhs).is_zero(),
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn logbit(self, ctx: Context<'gc>, n: Self) -> bool {
+        let n = n.coerce_exact_integer_to_usize();
+        if n / (size_of::<i32>() * 8) >= i32::MAX as usize {
+            return false;
+        }
+
+        match self {
+            Self::Fixnum(num) => {
+                if n < (size_of::<i32>() * 8) as usize {
+                    return (num & (1 << n)) != 0;
+                }
+
+                let bn = BigInt::from_i64(ctx, num as _);
+                return bn.is_bit_set(n);
+            }
+
+            Self::BigInt(bi) => {
+                if n < (size_of::<Digit>() * 8) as usize {
+                    return (bi[0] & (1 << n)) != 0;
+                }
+
+                return bi.is_bit_set(n);
+            }
+
+            _ => false,
+        }
+    }
+
+    pub fn abs(self, ctx: Context<'gc>) -> Self {
+        if self.is_positive() {
+            return self;
+        }
+
+        self.negate(ctx)
     }
 }
 

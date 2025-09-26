@@ -1,61 +1,30 @@
 
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;
-; Transcoders et cetera.
-; For representations, see iosys.sch
-;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(define (latin-1-codec) 'latin-1)
-(define (utf-8-codec) 'utf-8)
-(define (utf-16-codec) 'utf-16)
-
-; The deprecated eol-style syntax is supported only by R6RS modes.
-
-(define (native-eol-style) 'none)   ; FIXME: for backward compatibility
-
-; FIXME:  &i/o-decoding, &i/o-encoding, and their associated
-; operations might not be implemented yet.
-
-; The deprecated error-handling-mode syntax is supported only by R6RS modes.
-
-(define (make-transcoder codec . rest)
-  (cond ((null? rest)
-         (io/make-transcoder codec (native-eol-style) 'replace))
-        ((null? (cdr rest))
-         (io/make-transcoder codec (car rest) 'replace))
-        ((null? (cddr rest))
-         (io/make-transcoder codec (car rest) (cadr rest)))
-        (else
-         (assertion-violation 'make-transcoder
-                              (errmsg 'msg:wna)
-                              (cons codec rest)))))
-
-; FIXME: let's see how far we get...
-
-(define (native-transcoder)
-  ;(make-transcoder (latin-1-codec) 'none 'ignore))
-  (default-transcoder))
-
-(define (transcoder-codec t)
-  (io/transcoder-codec t))
-
-(define (transcoder-eol-style t)
-  (io/transcoder-eol-style t))
-
-(define (transcoder-error-handling-mode t)
-  (io/transcoder-error-handling-mode t))
-
-(define (bytevector->string bv t)
-    (let ((s (call-with-port
-            (transcoded-port (open-input-bytevector bv) t)
-            get-string-all)))
-    (if (eof-object? s)
-        ""
-        s)))
-
-(define p (io/make-port (lambda x #f) 'dummy 'input 'textual))
-
-(print (port? p))
-(print (io/input-port? p))
-(print (io/output-port? p))
+(define port.tag 0)
+(define port.handlers 1)
+(define port.bytes 2)
+(define port.lookahead 3)
+(define port.buf 4)
+(define port.buf-head 5)
+(define port.buf-tail 6)
+(define port.name 7)
+(define port.transcoder 8)
+(define port.mark 9)
+(define port.fd 10)
+(define port.lookahead-size 11)
+(define port.buf-size 12)
+(define port.buf-state 13)
+(define port.line 14)
+(define port.col 15)
+(define port.codec 16)
+(define port.eol-style 17)
+(define port.error-handling-mode 18)
+(define port.file-options 19)
+(define port.buffer-mode 20)
+(define port.type 21)
+(define port.subtype 22)
+(define port.direction 23)
+(define port.forcesync? 24)
+(define port.bom-le? 25)
+(define port.bom-be? 26)
+(define port.track-line-column? 27)
+(define port.opened? 28)

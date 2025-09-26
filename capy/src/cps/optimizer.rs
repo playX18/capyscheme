@@ -4,7 +4,7 @@ use crate::{
         fold::folding_table,
         term::{Atom, Atoms, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef, Throw},
     },
-    expander::{core::LVarRef, primitives::primitives},
+    expander::core::LVarRef,
     runtime::{Context, value::Value},
     utils::fixedpoint,
 };
@@ -261,10 +261,28 @@ fn census<'gc>(term: TermRef<'gc>) -> HashMap<LVarRef<'gc>, Count> {
                 }
             }
 
-            Term::If(test, then_c, else_c, ..) => {
+            Term::If {
+                test,
+                consequent,
+                consequent_args,
+                alternative,
+                alternative_args,
+                ..
+            } => {
                 inc_val_use_a(test, census, rhs);
-                inc_val_use_n(then_c, census, rhs);
-                inc_val_use_n(else_c, census, rhs);
+                inc_val_use_n(consequent, census, rhs);
+                inc_val_use_n(alternative, census, rhs);
+                if let Some(args) = consequent_args {
+                    for arg in args.iter() {
+                        inc_val_use_a(*arg, census, rhs);
+                    }
+                }
+
+                if let Some(args) = alternative_args {
+                    for arg in args.iter() {
+                        inc_val_use_a(*arg, census, rhs);
+                    }
+                }
             }
         }
     }
@@ -278,11 +296,6 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
     match *term {
         Term::Let(binding, expr, body) => match expr {
             Expression::PrimCall(prim, args, h, source) => {
-                let prim_def = primitives(state.ctx)
-                    .set
-                    .get(&prim)
-                    .expect(&format!("BUG: unknown primitive {}", prim));
-
                 let args = state
                     .substitute_atoms(args.iter().copied())
                     .collect::<Vec<_>>();
@@ -298,10 +311,6 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
 
                 let atoms = Array::from_slice(&state.ctx, args);
                 let body = shrink_tree(body, state);
-
-                /*if !prim_def.is_impure() && state.is_dead(binding) {
-                    return body;
-                }*/
 
                 Gc::new(
                     &state.ctx,
@@ -429,26 +438,65 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
             return Gc::new(&state.ctx, Term::App(fun, retc, rete, args, span));
         }
 
-        Term::If(test, kcons, kalt, hints) => {
+        Term::If {
+            test,
+            consequent,
+            consequent_args,
+            alternative,
+            alternative_args,
+            hints,
+        } => {
             let test = state.atom_subst.get(&test).cloned().unwrap_or(test);
 
+            let consequent = state
+                .var_subst
+                .get(&consequent)
+                .copied()
+                .unwrap_or(consequent);
+            let alternative = state
+                .var_subst
+                .get(&alternative)
+                .copied()
+                .unwrap_or(alternative);
+            let consequent_args = consequent_args.map(|args| {
+                args.iter()
+                    .map(|arg| state.atom_subst.get(arg).cloned().unwrap_or(*arg))
+                    .collect_gc(&state.ctx)
+            });
+            let alternative_args = alternative_args.map(|args| {
+                args.iter()
+                    .map(|arg| state.atom_subst.get(arg).cloned().unwrap_or(*arg))
+                    .collect_gc(&state.ctx)
+            });
+
             if let Atom::Constant(test) = test {
-                let k = if test != Value::new(false) {
-                    kcons
+                let (k, args) = if test != Value::new(false) {
+                    (consequent, consequent_args)
                 } else {
-                    kalt
+                    (alternative, alternative_args)
                 };
 
                 return Gc::new(
                     &state.ctx,
-                    Term::Continue(k, Array::from_slice(&state.ctx, []), Value::new(false)),
+                    Term::Continue(
+                        k,
+                        args.unwrap_or_else(|| Array::from_slice(&state.ctx, [])),
+                        Value::new(false),
+                    ),
                 );
             }
 
-            let kcons = state.var_subst.get(&kcons).copied().unwrap_or(kcons);
-            let kalt = state.var_subst.get(&kalt).copied().unwrap_or(kalt);
-
-            Gc::new(&state.ctx, Term::If(test, kcons, kalt, hints))
+            Gc::new(
+                &state.ctx,
+                Term::If {
+                    test,
+                    consequent,
+                    consequent_args,
+                    alternative,
+                    alternative_args,
+                    hints,
+                },
+            )
         }
 
         Term::Throw(throw, src) => match throw {
@@ -645,12 +693,39 @@ fn copy_t<'gc>(
             Gc::new(&ctx, Term::App(fun, retc, rete, args, src))
         }
 
-        Term::If(test, kcons, kalt, hints) => {
+        Term::If {
+            test,
+            consequent,
+            consequent_args,
+            alternative,
+            alternative_args,
+            hints,
+        } => {
             let test = subv.get(&test).cloned().unwrap_or(test);
-            let kcons = subc.get(&kcons).copied().unwrap_or(kcons);
-            let kalt = subc.get(&kalt).copied().unwrap_or(kalt);
+            let consequent = subc.get(&consequent).copied().unwrap_or(consequent);
+            let alternative = subc.get(&alternative).copied().unwrap_or(alternative);
+            let consequent_args = consequent_args.map(|args| {
+                args.iter()
+                    .map(|a| subv.get(a).cloned().unwrap_or(*a))
+                    .collect_gc(&ctx)
+            });
+            let alternative_args = alternative_args.map(|args| {
+                args.iter()
+                    .map(|a| subv.get(a).cloned().unwrap_or(*a))
+                    .collect_gc(&ctx)
+            });
 
-            Gc::new(&ctx, Term::If(test, kcons, kalt, hints))
+            Gc::new(
+                &ctx,
+                Term::If {
+                    test,
+                    consequent,
+                    consequent_args,
+                    alternative,
+                    alternative_args,
+                    hints,
+                },
+            )
         }
     }
 }
@@ -692,6 +767,7 @@ fn copy_c<'gc>(
             free_vars: Lock::new(cont.free_vars.get()),
             reified: Cell::new(cont.reified.get()),
             handler: Lock::new(handler),
+            cold: cont.cold,
         },
     )
 }
@@ -903,12 +979,46 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
             Gc::new(&state.ctx, Term::App(fun, retc, rete, args, src))
         }
 
-        Term::If(test, kcons, kalt, hints) => {
+        Term::If {
+            test,
+            consequent,
+            consequent_args,
+            alternative,
+            alternative_args,
+            hints,
+        } => {
             let test = state.atom_subst.get(&test).cloned().unwrap_or(test);
-            let kcons = state.var_subst.get(&kcons).copied().unwrap_or(kcons);
-            let kalt = state.var_subst.get(&kalt).copied().unwrap_or(kalt);
-
-            Gc::new(&state.ctx, Term::If(test, kcons, kalt, hints))
+            let consequent = state
+                .var_subst
+                .get(&consequent)
+                .copied()
+                .unwrap_or(consequent);
+            let alternative = state
+                .var_subst
+                .get(&alternative)
+                .copied()
+                .unwrap_or(alternative);
+            let consequent_args = consequent_args.map(|args| {
+                args.iter()
+                    .map(|a| state.atom_subst.get(a).cloned().unwrap_or(*a))
+                    .collect_gc(&state.ctx)
+            });
+            let alternative_args = alternative_args.map(|args| {
+                args.iter()
+                    .map(|a| state.atom_subst.get(a).cloned().unwrap_or(*a))
+                    .collect_gc(&state.ctx)
+            });
+            Gc::new(
+                &state.ctx,
+                Term::If {
+                    test,
+                    consequent,
+                    consequent_args,
+                    alternative,
+                    alternative_args,
+                    hints,
+                },
+            )
         }
     }
 }

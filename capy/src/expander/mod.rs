@@ -14,6 +14,7 @@ pub mod compile_cps;
 pub mod core;
 pub mod fix_letrec;
 //pub mod letrectify;
+pub mod fold;
 pub mod primitives;
 pub mod synclo;
 

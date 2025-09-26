@@ -194,6 +194,8 @@ native_fn!(
         obj: Value<'gc>
     ) -> bool {
         nctx.return_(
+            obj.is_bool()
+            ||
             obj.is_immediate()
             || obj.is_pair()
             || obj.is::<Vector>()

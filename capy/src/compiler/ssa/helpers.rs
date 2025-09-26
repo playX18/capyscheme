@@ -10,6 +10,14 @@ use crate::{
 };
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+    pub fn to_boolean(&mut self, v: ir::Value) -> ir::Value {
+        let cmp = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::NotEqual, v, Value::new(false).bits() as i64);
+        cmp
+    }
+
     pub fn inline_cmp_op(
         &mut self,
         lhs: ir::Value,
@@ -147,6 +155,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         self.builder.switch_to_block(join);
         self.builder.block_params(join)[0]
+    }
+
+    pub fn is_int32(&mut self, v: ir::Value) -> ir::Value {
+        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG as i64);
+        self.builder
+            .ins()
+            .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG as i64)
     }
 
     pub fn vector_ref_imm(&mut self, vec: ir::Value, ix: usize) -> ir::Value {
@@ -476,5 +491,38 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let ls = list!(ctx, Value::new(true), name, source_location, c.binding.name);
 
         self.atom(Atom::Constant(ls))
+    }
+
+    pub fn ireduce(&mut self, to: types::Type, v: ir::Value) -> ir::Value {
+        let vty = self.builder.func.dfg.value_type(v);
+        if to.bits() < vty.bits() {
+            self.builder.ins().ireduce(to, v)
+        } else if to.bits() > vty.bits() {
+            self.builder.ins().uextend(to, v)
+        } else {
+            v
+        }
+    }
+
+    pub fn sextend(&mut self, to: types::Type, v: ir::Value) -> ir::Value {
+        let vty = self.builder.func.dfg.value_type(v);
+        if to.bits() < vty.bits() {
+            self.builder.ins().ireduce(to, v)
+        } else if to.bits() > vty.bits() {
+            self.builder.ins().sextend(to, v)
+        } else {
+            v
+        }
+    }
+
+    pub fn zextend(&mut self, to: types::Type, v: ir::Value) -> ir::Value {
+        let vty = self.builder.func.dfg.value_type(v);
+        if to.bits() < vty.bits() {
+            self.builder.ins().ireduce(to, v)
+        } else if to.bits() > vty.bits() {
+            self.builder.ins().uextend(to, v)
+        } else {
+            v
+        }
     }
 }

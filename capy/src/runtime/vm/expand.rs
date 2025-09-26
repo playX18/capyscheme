@@ -19,7 +19,7 @@ static_symbols!(
     SYM_TOPLEVEL_SET = "&toplevel-set"
     SYM_TOPLEVEL_DEFINE = "&toplevel-define"
     SYM_IF = "&if"
-    SYM_LET = "&let"
+    SYM_LET_TYPE = "&let"
     SYM_FIX = "&fix"
     SYM_RECEIVE = "&receive"
     SYM_APPLICATION = "&application"
@@ -52,7 +52,7 @@ global!(
     };
 
     pub loc_let_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_let(ctx).into()).unwrap()
+        root_module(ctx).variable(ctx, sym_let_type(ctx).into()).unwrap()
     };
 
     pub loc_module_ref_type<'gc>: VariableRef<'gc> = (ctx) {
@@ -154,9 +154,9 @@ pub fn lref_sym<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     v.downcast::<Tuple>()[LREF_SYM].get()
 }
 
-const LSET_VARIABLE_: usize = LREF_SYM + 1;
-const LSET_SYM: usize = LREF_SYM + 2;
-const LSET_VALUE: usize = LREF_SYM + 3;
+const LSET_VARIABLE_: usize = TERM_SOURCEV + 1;
+const LSET_SYM: usize = TERM_SOURCEV + 2;
+const LSET_VALUE: usize = TERM_SOURCEV + 3;
 
 pub fn is_lset<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(ctx, loc_lset_type(ctx).get().record_type_rtd(ctx))
@@ -325,7 +325,9 @@ const LET_RHS: usize = TERM_SOURCEV + 4;
 const LET_BODY: usize = TERM_SOURCEV + 5;
 
 pub fn is_let<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_let_type(ctx).get().record_type_rtd(ctx))
+    let res = v.is_record_of(ctx, loc_let_type(ctx).get().record_type_rtd(ctx));
+
+    res
 }
 
 pub fn let_style<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -507,6 +509,7 @@ pub fn proc_meta<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 
 pub fn proc_ids<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_proc(ctx, v));
+
     v.downcast::<Tuple>()[PROC_IDS].get()
 }
 
@@ -572,6 +575,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let Some(var) = self.lvars.get(&sym) else {
                 return Err(t);
             };
+            var.reference();
             return Ok(Gc::new(
                 &self.ctx,
                 Term {
@@ -581,9 +585,12 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             ));
         } else if is_lset(self.ctx, t) {
             let sym = lset_sym(self.ctx, t);
+
             let Some(var) = self.lvars.get(&sym).cloned() else {
                 return Err(t);
             };
+            var.mutate();
+
             let value = lset_value(self.ctx, t);
             let value = self.convert(value)?;
             return Ok(Gc::new(
@@ -743,37 +750,40 @@ impl<'gc> ScmTermToRsTerm<'gc> {
 
             let mut ls_ids = ids;
             let mut ls_lhs = lhs;
+            let mut ls_rhs = rhs;
 
             let mut lvars = Vec::new();
             let mut exprs = Vec::new();
             while ls_ids.is_pair() {
                 let id = ls_ids.car();
                 let lhs = ls_lhs.car();
+                let rhs = ls_rhs.car();
 
                 let lvar = Gc::new(
                     &self.ctx,
                     LVar {
-                        name: id,
-                        id: lhs,
+                        name: lhs,
+                        id: id,
                         set_count: Cell::new(0),
                         ref_count: Cell::new(0),
                     },
                 );
-                self.lvars.insert(id, lvar);
+                self.lvars.insert(lhs, lvar);
                 lvars.push(lvar);
                 exprs.push(rhs);
                 ls_ids = ls_ids.cdr();
                 ls_lhs = ls_lhs.cdr();
+                ls_rhs = ls_rhs.cdr();
             }
 
             let mut rhs = Vec::new();
             for expr in exprs {
-                let expr = self.convert(expr).map_err(|_| t)?;
+                let expr = self.convert(expr).map_err(|e| e)?;
                 rhs.push(expr);
             }
             let lhs = Array::from_slice(&self.ctx, &lvars);
             let rhs = Array::from_slice(&self.ctx, &rhs);
-            let body = self.convert(body).map_err(|_| t)?;
+            let body = self.convert(body).map_err(|e| e)?;
 
             return Ok(Gc::new(
                 &self.ctx,
@@ -805,8 +815,8 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 let lvar = Gc::new(
                     &self.ctx,
                     LVar {
-                        name: id,
-                        id: lhs,
+                        name: lhs,
+                        id: id,
                         set_count: Cell::new(0),
                         ref_count: Cell::new(0),
                     },
@@ -845,6 +855,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
 
             let name = meta
                 .assq(sym_name(self.ctx).into())
+                .map(|x| x.cdr())
                 .unwrap_or(Value::new(false));
 
             let mut ls_args = args;
@@ -858,8 +869,8 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 let lvar = Gc::new(
                     &self.ctx,
                     LVar {
-                        name: if name != Value::new(false) { name } else { arg },
-                        id,
+                        name: arg,
+                        id: id,
                         set_count: Cell::new(0),
                         ref_count: Cell::new(0),
                     },
@@ -876,8 +887,8 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 let lvar = Gc::new(
                     &self.ctx,
                     LVar {
-                        name: id,
-                        id: arg,
+                        name: arg,
+                        id: id,
                         set_count: Cell::new(0),
                         ref_count: Cell::new(0),
                     },
@@ -902,6 +913,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                             variadic,
                             body,
                             name,
+                            meta,
                         },
                     )),
                 },
@@ -919,8 +931,8 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 let lvar = Gc::new(
                     &self.ctx,
                     LVar {
-                        name: id,
-                        id: var,
+                        name: var,
+                        id: id,
                         set_count: Cell::new(0),
                         ref_count: Cell::new(0),
                     },
@@ -937,8 +949,8 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 let lvar = Gc::new(
                     &self.ctx,
                     LVar {
-                        name: id,
-                        id: var,
+                        name: var,
+                        id: id,
                         set_count: Cell::new(0),
                         ref_count: Cell::new(0),
                     },

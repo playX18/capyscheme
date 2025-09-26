@@ -1,5 +1,9 @@
 use std::collections::HashMap;
 
+use crate::cps::ReifyInfo;
+use crate::cps::term::{ContRef, FuncRef};
+use crate::expander::core::LVarRef;
+use crate::runtime::value::{Value, Vector};
 use cranelift_codegen::binemit::CodeOffset;
 use cranelift_codegen::ir::{Endianness, SourceLoc, ValueLabel};
 use cranelift_codegen::isa::TargetIsa;
@@ -10,12 +14,6 @@ use gimli::write::{
     Range, RangeList, Sections, UnitEntryId, Writer,
 };
 use gimli::{AArch64, Encoding, Format, LineEncoding, Register, RiscV, RunTimeEndian, X86_64};
-use hashlink::LinkedHashSet;
-
-use crate::cps::ReifyInfo;
-use crate::cps::term::{ContRef, FuncRef};
-use crate::expander::core::LVarRef;
-use crate::runtime::value::{Value, Vector};
 
 pub(crate) struct DebugContext<'gc> {
     endian: RunTimeEndian,
@@ -64,7 +62,10 @@ impl<'gc> DebugContext<'gc> {
         let main_srcloc = reify_info.entrypoint.source();
         let file_name = if main_srcloc == Value::new(false) {
             "<unknown>".to_owned()
+        } else if main_srcloc.is::<Vector>() {
+            main_srcloc.downcast::<Vector>()[0].get().to_string()
         } else {
+            println!("main_srcloc: {main_srcloc}");
             main_srcloc.car().to_string()
         };
 
@@ -341,7 +342,6 @@ impl<'gc> FunctionDebugContext<'gc> {
         debug_context: &mut DebugContext<'gc>,
         func_id: FuncId,
         context: &cranelift_codegen::Context,
-        free_vars: &LinkedHashSet<LVarRef<'gc>>,
         isa: &dyn TargetIsa,
     ) -> CodeOffset {
         let create_row_for_span =
@@ -392,115 +392,54 @@ impl<'gc> FunctionDebugContext<'gc> {
             gimli::DW_AT_high_pc,
             AttributeValue::Udata(u64::from(func_end)),
         );
+        if false {
+            for (&label, ranges) in mcr.value_labels_ranges.iter() {
+                let locations = ranges
+                    .iter()
+                    .map(|range| {
+                        let data = match range.loc {
+                            LabelValueLoc::Reg(reg) => {
+                                let reg = isa
+                                    .map_regalloc_reg_to_dwarf(reg)
+                                    .expect("Cannot map register to DWARF register");
+                                let mut expr = Expression::new();
+                                gimli::write::Expression::op_reg(&mut expr, gimli::Register(reg));
+                                expr
+                            }
 
-        for (&label, ranges) in mcr.value_labels_ranges.iter() {
-            let locations = ranges
-                .iter()
-                .map(|range| {
-                    let data = match range.loc {
-                        LabelValueLoc::Reg(reg) => {
-                            let reg = isa
-                                .map_regalloc_reg_to_dwarf(reg)
-                                .expect("Cannot map register to DWARF register");
-                            let mut expr = Expression::new();
-                            gimli::write::Expression::op_reg(&mut expr, gimli::Register(reg));
-                            expr
+                            LabelValueLoc::CFAOffset(offset) => {
+                                let mut expr = Expression::new();
+                                let sp_reg = debug_context.stack_pointer_register;
+                                gimli::write::Expression::op_reg(&mut expr, sp_reg);
+                                gimli::write::Expression::op_plus_uconst(&mut expr, offset as u64);
+                                expr
+                            }
+                        };
+
+                        gimli::write::Location::StartEnd {
+                            begin: address_for_func_at(func_id, range.start as i64),
+                            end: address_for_func_at(func_id, range.end as i64),
+                            data,
                         }
+                    })
+                    .collect::<Vec<_>>();
 
-                        LabelValueLoc::CFAOffset(offset) => {
-                            let mut expr = Expression::new();
-                            let sp_reg = debug_context.stack_pointer_register;
-                            gimli::write::Expression::op_reg(&mut expr, sp_reg);
-                            gimli::write::Expression::op_plus_uconst(&mut expr, offset as u64);
-                            expr
-                        }
-                    };
+                let location_list = gimli::write::LocationList(locations);
+                let location_list_id = debug_context.dwarf.unit.locations.add(location_list);
+                let lbl = label.as_bits();
+                let var_id = debug_context
+                    .dwarf
+                    .unit
+                    .add(self.entry_id, gimli::DW_TAG_variable);
+                let var = debug_context.dwarf.unit.get_mut(var_id);
 
-                    gimli::write::Location::StartEnd {
-                        begin: address_for_func_at(func_id, range.start as i64),
-                        end: address_for_func_at(func_id, range.end as i64),
-                        data,
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            let location_list = gimli::write::LocationList(locations);
-            let location_list_id = debug_context.dwarf.unit.locations.add(location_list);
-            let lbl = label.as_bits();
-            let var_id = debug_context
-                .dwarf
-                .unit
-                .add(self.entry_id, gimli::DW_TAG_variable);
-            let var = debug_context.dwarf.unit.get_mut(var_id);
-
-            if lbl == 0 {
-                let rator = debug_context.dwarf.strings.add("@rator");
-                var.set(gimli::DW_AT_name, AttributeValue::StringRef(rator));
-                var.set(
-                    gimli::DW_AT_type,
-                    AttributeValue::UnitRef(debug_context.value_type),
-                );
-                var.set(
-                    gimli::DW_AT_decl_file,
-                    AttributeValue::FileIndex(Some(self.srcloc.0)),
-                );
-                var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
-                var.set(
-                    gimli::DW_AT_decl_column,
-                    AttributeValue::Udata(self.srcloc.2),
-                );
-                var.set(gimli::DW_AT_location, AttributeValue::Udata(self.srcloc.2));
-            } else if lbl == 1 {
-                let nrands = debug_context.dwarf.strings.add("@nargs");
-
-                var.set(gimli::DW_AT_name, AttributeValue::StringRef(nrands));
-
-                var.set(
-                    gimli::DW_AT_type,
-                    AttributeValue::UnitRef(debug_context.usize_type),
-                );
-                var.set(
-                    gimli::DW_AT_decl_file,
-                    AttributeValue::FileIndex(Some(self.srcloc.0)),
-                );
-                var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
-                var.set(
-                    gimli::DW_AT_decl_column,
-                    AttributeValue::Udata(self.srcloc.2),
-                );
-                var.set(gimli::DW_AT_location, AttributeValue::Udata(self.srcloc.2));
-            } else if lbl == 2 {
-                let val_type = debug_context.value_type;
-
-                let rands = debug_context.dwarf.strings.add("@rands");
-                var.set(gimli::DW_AT_name, AttributeValue::StringRef(rands));
-                var.set(gimli::DW_AT_type, AttributeValue::UnitRef(val_type));
-                var.set(
-                    gimli::DW_AT_decl_file,
-                    AttributeValue::FileIndex(Some(self.srcloc.0)),
-                );
-                var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
-                var.set(
-                    gimli::DW_AT_decl_column,
-                    AttributeValue::Udata(self.srcloc.2),
-                );
-            } else {
-                let var_ref = self.label_to_lvar[&label];
-                let name = debug_context.dwarf.strings.add(var_ref.name.to_string());
-                var.set(gimli::DW_AT_name, AttributeValue::StringRef(name));
-                var.set(
-                    gimli::DW_AT_type,
-                    AttributeValue::UnitRef(debug_context.value_type),
-                );
-                if let Some(srcloc) = self.lvar_to_label[&var_ref].1 {
-                    let (file_id, line, column) = self.source_loc_set[&srcloc];
+                if lbl == 0 {
+                    let rator = debug_context.dwarf.strings.add("@rator");
+                    var.set(gimli::DW_AT_name, AttributeValue::StringRef(rator));
                     var.set(
-                        gimli::DW_AT_decl_file,
-                        AttributeValue::FileIndex(Some(file_id)),
+                        gimli::DW_AT_type,
+                        AttributeValue::UnitRef(debug_context.value_type),
                     );
-                    var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
-                    var.set(gimli::DW_AT_decl_column, AttributeValue::Udata(column));
-                } else {
                     var.set(
                         gimli::DW_AT_decl_file,
                         AttributeValue::FileIndex(Some(self.srcloc.0)),
@@ -510,15 +449,76 @@ impl<'gc> FunctionDebugContext<'gc> {
                         gimli::DW_AT_decl_column,
                         AttributeValue::Udata(self.srcloc.2),
                     );
-                }
+                    var.set(gimli::DW_AT_location, AttributeValue::Udata(self.srcloc.2));
+                } else if lbl == 1 {
+                    let nrands = debug_context.dwarf.strings.add("@nargs");
 
-                var.set(
-                    gimli::DW_AT_location,
-                    AttributeValue::LocationListRef(location_list_id),
-                );
+                    var.set(gimli::DW_AT_name, AttributeValue::StringRef(nrands));
+
+                    var.set(
+                        gimli::DW_AT_type,
+                        AttributeValue::UnitRef(debug_context.usize_type),
+                    );
+                    var.set(
+                        gimli::DW_AT_decl_file,
+                        AttributeValue::FileIndex(Some(self.srcloc.0)),
+                    );
+                    var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                    var.set(
+                        gimli::DW_AT_decl_column,
+                        AttributeValue::Udata(self.srcloc.2),
+                    );
+                    var.set(gimli::DW_AT_location, AttributeValue::Udata(self.srcloc.2));
+                } else if lbl == 2 {
+                    let val_type = debug_context.value_type;
+
+                    let rands = debug_context.dwarf.strings.add("@rands");
+                    var.set(gimli::DW_AT_name, AttributeValue::StringRef(rands));
+                    var.set(gimli::DW_AT_type, AttributeValue::UnitRef(val_type));
+                    var.set(
+                        gimli::DW_AT_decl_file,
+                        AttributeValue::FileIndex(Some(self.srcloc.0)),
+                    );
+                    var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                    var.set(
+                        gimli::DW_AT_decl_column,
+                        AttributeValue::Udata(self.srcloc.2),
+                    );
+                } else {
+                    let var_ref = self.label_to_lvar[&label];
+                    let name = debug_context.dwarf.strings.add(var_ref.name.to_string());
+                    var.set(gimli::DW_AT_name, AttributeValue::StringRef(name));
+                    var.set(
+                        gimli::DW_AT_type,
+                        AttributeValue::UnitRef(debug_context.value_type),
+                    );
+                    if let Some(srcloc) = self.lvar_to_label[&var_ref].1 {
+                        let (file_id, line, column) = self.source_loc_set[&srcloc];
+                        var.set(
+                            gimli::DW_AT_decl_file,
+                            AttributeValue::FileIndex(Some(file_id)),
+                        );
+                        var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
+                        var.set(gimli::DW_AT_decl_column, AttributeValue::Udata(column));
+                    } else {
+                        var.set(
+                            gimli::DW_AT_decl_file,
+                            AttributeValue::FileIndex(Some(self.srcloc.0)),
+                        );
+                        var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                        var.set(
+                            gimli::DW_AT_decl_column,
+                            AttributeValue::Udata(self.srcloc.2),
+                        );
+                    }
+
+                    var.set(
+                        gimli::DW_AT_location,
+                        AttributeValue::LocationListRef(location_list_id),
+                    );
+                }
             }
         }
-
         func_end
     }
 
@@ -548,10 +548,10 @@ impl<'gc> FunctionDebugContext<'gc> {
         debug_context: &mut DebugContext<'gc>,
         func_id: FuncId,
         context: &cranelift_codegen::Context,
-        free_vars: &LinkedHashSet<LVarRef<'gc>>,
+
         isa: &dyn TargetIsa,
     ) {
-        let end = self.create_debug_lines(debug_context, func_id, context, free_vars, isa);
+        let end = self.create_debug_lines(debug_context, func_id, context, isa);
 
         debug_context.unit_range_list.0.push(Range::StartLength {
             begin: address_for_func(func_id),

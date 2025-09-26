@@ -54,6 +54,7 @@ fn lookup_interned_symbol<'gc>(
         raw_hash,
         |_, sym| {
             let sym = sym.downcast::<Symbol<'_>>();
+
             let mut n = sym.len();
             while n != 0 {
                 if sym.get(n) != name.get(n) {

@@ -9,7 +9,8 @@ pub mod optimizer;
 pub mod peval;
 pub mod pretty;
 pub mod reify;
-pub mod sexp;
+pub mod reify_primitives;
+//pub mod sexp;
 pub mod term;
 
 use std::hash::BuildHasherDefault;

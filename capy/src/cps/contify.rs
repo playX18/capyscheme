@@ -320,6 +320,7 @@ impl<'gc> Term<'gc> {
                         free_vars: Lock::new(None),
                         reified: Cell::new(false),
                         handler: Lock::new(rc.1),
+                        cold: false,
                     },
                 )
             })
@@ -510,11 +511,39 @@ impl<'gc> Term<'gc> {
                 TermRef::new(&ctx, Self::Continue(k, args, *src))
             }
 
-            Self::If(test, kcons, kalt, hint) => {
+            Self::If {
+                test,
+                consequent,
+                consequent_args,
+                alternative,
+                alternative_args,
+                hints,
+            } => {
                 let test = test.subst(ctx, subst);
-                let kcons = subst.get(kcons).copied().unwrap_or(*kcons);
-                let kalt = subst.get(kalt).copied().unwrap_or(*kalt);
-                TermRef::new(&ctx, Self::If(test, kcons, kalt, *hint))
+                let consequent = subst.get(consequent).copied().unwrap_or(*consequent);
+                let alternative = subst.get(alternative).copied().unwrap_or(*alternative);
+                let hints = *hints;
+                let consequent_args = consequent_args.map(|args| {
+                    args.iter()
+                        .map(|arg| arg.subst(ctx, subst))
+                        .collect_gc(&ctx)
+                });
+                let alternative_args = alternative_args.map(|args| {
+                    args.iter()
+                        .map(|arg| arg.subst(ctx, subst))
+                        .collect_gc(&ctx)
+                });
+                TermRef::new(
+                    &ctx,
+                    Self::If {
+                        test,
+                        consequent,
+                        consequent_args,
+                        alternative,
+                        alternative_args,
+                        hints,
+                    },
+                )
             }
 
             Term::Throw(val, data) => TermRef::new(&ctx, Term::Throw(*val, *data)),

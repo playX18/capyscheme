@@ -14,7 +14,7 @@ fn main() {
     let mut did_yield = scm.enter(|ctx| {
         current_module(ctx).set(ctx, (*root_module(ctx)).into());
         let start = std::time::Instant::now();
-        let thunk = load_thunk_in_vicinity(ctx, "boot/main.scm", None::<&str>)
+        let thunk = load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>)
             .expect("Failed to load boot/main.scm");
         println!("load thunk in {}ms", start.elapsed().as_millis());
         let start = std::time::Instant::now();

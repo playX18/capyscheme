@@ -13,6 +13,7 @@ use crate::runtime::{
         BigInt, ByteVector, Complex, HashTable, HashTableType, IntoValue, Rational, Str, Symbol,
         Value, Vector,
     },
+    vm::syntax::Syntax,
 };
 
 pub const FASL_EOF: u8 = 0;
@@ -34,6 +35,7 @@ pub const FASL_TAG_SYMBOL: u8 = 15;
 pub const FASL_TAG_STR: u8 = 16;
 pub const FASL_TAG_UNINTERNED_SYMBOL: u8 = 17;
 pub const FASL_TAG_IMMEDIATE: u8 = 18;
+pub const FASL_TAG_SYNTAX: u8 = 19;
 
 pub struct FASLWriter<'gc, W: Write> {
     pub ctx: Context<'gc>,
@@ -101,6 +103,15 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         }
 
         if obj.is::<ByteVector>() {
+            return Ok(());
+        }
+
+        if obj.is::<Syntax>() {
+            let syntax = obj.downcast::<Syntax>();
+            self.scan(syntax.expr())?;
+            self.scan(syntax.module())?;
+            self.scan(syntax.source())?;
+            self.scan(syntax.wrap())?;
             return Ok(());
         }
 
@@ -219,6 +230,16 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
 
+        if obj.is::<Syntax>() {
+            let syntax = obj.downcast::<Syntax>();
+            self.put8(FASL_TAG_SYNTAX)?;
+            self.put(syntax.expr())?;
+            self.put(syntax.module())?;
+            self.put(syntax.source())?;
+            self.put(syntax.wrap())?;
+            return Ok(());
+        }
+
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Unsupported type for FASL serialization",
@@ -316,7 +337,9 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     let str = std::str::from_utf8(&buf)
                         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
 
-                    Value::new(Symbol::from_str(self.ctx, str))
+                    let sym = Value::new(Symbol::from_str(self.ctx, str));
+
+                    sym
                 }
                 FASL_TAG_UNINTERNED_SYMBOL => {
                     let len = self.read32()? as usize;
@@ -324,6 +347,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     self.reader.read_exact(&mut buf)?;
                     let str = std::str::from_utf8(&buf)
                         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
+
                     Value::new(Symbol::from_str_uninterned(&self.ctx, str, None))
                 }
                 FASL_TAG_STR => {
@@ -462,6 +486,16 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         "Unknown lookup ID",
                     ));
                 }
+            }
+
+            _x @ FASL_TAG_SYNTAX => {
+                let expr = self.read_value()?;
+                let module = self.read_value()?;
+                let source = self.read_value()?;
+                let wrap = self.read_value()?;
+                Ok(Value::new(Syntax::new(
+                    self.ctx, expr, wrap, module, source,
+                )))
             }
 
             _ => {

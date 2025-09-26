@@ -77,10 +77,27 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
             }
         },
 
-        Term::If(cond, cons, alt, _) => get_fva(cond)
+        Term::If {
+            test,
+            consequent,
+            consequent_args,
+            alternative,
+            alternative_args,
+            ..
+        } => get_fva(test)
             .into_iter()
-            .chain(Some(cons).into_iter())
-            .chain(Some(alt).into_iter())
+            .chain(Some(consequent).into_iter())
+            .chain(Some(alternative).into_iter())
+            .chain(
+                consequent_args
+                    .iter()
+                    .flat_map(|args| args.iter().copied().flat_map(get_fva)),
+            )
+            .chain(
+                alternative_args
+                    .iter()
+                    .flat_map(|args| args.iter().copied().flat_map(get_fva)),
+            )
             .collect(),
     }
 }

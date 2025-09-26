@@ -498,7 +498,8 @@ macro_rules! native_cont {
 
                 $(#[$m])*
                 #[inline(always)]
-                $v fn $name<$gc>($ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
+                #[allow(unused, unused_mut)]
+                $v fn $name<$gc>(mut $ctx: $crate::runtime::prelude::NativeCallContext<'_, $gc, $ret>, $($arg: $arg_ty),*) -> $crate::runtime::prelude::NativeCallReturn<$gc> {
                     $b
                 }
 

@@ -94,9 +94,9 @@ const fn hash_to_index(hash: u64, size: usize) -> usize {
 const fn entry_distance(hash: u64, k: usize, size: usize) -> usize {
     let origin = hash_to_index(hash, size);
     if k >= origin {
-        k - origin
+        k.wrapping_sub(origin)
     } else {
-        size.wrapping_sub(origin + k)
+        size.wrapping_sub(origin).wrapping_add(k)
     }
 }
 
@@ -166,7 +166,7 @@ impl<'gc> WeakSetInner<'gc> {
             }
 
             // Move next_entry to k
-            Gc::write(mc, entries)[k].unlock().set(next_entry);
+            Gc::write(mc, entries)[k].unlock().set(entries[next].get());
 
             k = next;
         }
@@ -198,7 +198,7 @@ impl<'gc> WeakSetInner<'gc> {
 
             // Move next_entry to k
             //Gc::write(mc, entries)[k].unlock().set(next_entry);
-            unsafe { entries[k].unlock_unchecked() }.set(next_entry);
+            unsafe { entries[k].unlock_unchecked() }.set(entries[next].get());
 
             k = next;
         }
@@ -317,6 +317,7 @@ impl<'gc> WeakSetInner<'gc> {
             }
 
             this.n_items.set(this.n_items.get() + 1);
+
             Gc::write(mc, new_entries)[new_k].unlock().set(entry);
         }
     }

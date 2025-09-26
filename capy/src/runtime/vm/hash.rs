@@ -62,6 +62,8 @@ native_fn!(
         nctx.return_(Value::undefined())
     }
 
+
+
     pub ("core-hash-size") fn hash_size<'gc>(nctx, ht: Gc<'gc, HashTable<'gc>>) -> usize {
         let size = ht.len();
         nctx.return_(size.into())

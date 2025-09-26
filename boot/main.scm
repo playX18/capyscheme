@@ -1,4 +1,25 @@
 
+(define (remove* l r)
+  
+  (if (not (list? l))
+    (assertion-violation 'remove* "expected a list" l))
+  (if (not (list? r))
+    (assertion-violation 'remove* "expected a list" r))
+
+  (let rloop ([r r])
+    (cond
+      [(null? r) r]
+      [else (let ([first-r (car r)])
+              (let loop ([l-rest l])
+                (cond
+                  [(null? l-rest)
+                    (let ([next (rloop (cdr r))])
+                      (if (eq? next (cdr r))
+                        r
+                        (cons first-r next)))]
+                  [(equal? (car l-rest) first-r) (rloop (cdr r))]
+                  [else (loop (cdr l-rest))])))])))
+
 (define (member key alist)
   (let loop ([alist alist])
     (if (null? alist)
@@ -46,6 +67,14 @@
 (define (assq-ref alist key)
   (let ((pair (assq key alist)))
     (if (pair? pair) (cdr pair) #f)))
+(define (assoc-ref alist key)
+  (let ((pair (assoc key alist)))
+    (if (pair? pair) (cdr pair) #f)))
+
+(define (assoc-remove alist key)
+  (cond ((null? alist) '())
+        ((equal? key (caar alist)) (cdr alist))
+        (else (cons (car alist) (assoc-remove (cdr alist) key)))))
 
 (define (append-map proc lst)
   (if (null? lst) '()
@@ -127,9 +156,19 @@
         (cons a b))
       (if (or (null? x) (null? y)) '()
         (assertion-violation 'map "expected proper lists" (list x y)))))
-  (if (null? rest)
-    (map1 f x)
-    (map2 f x (car rest))))
+  (define (map3 f x y z)
+    (if (and (pair? x) (pair? y) (pair? z))
+      (let* ([a (f (car x) (car y) (car z))]
+             [b (map3 f (cdr x) (cdr y) (cdr z))])
+        (cons a b))
+      (if (or (null? x) (null? y) (null? z)) '()
+        (assertion-violation 'map "expected proper lists" (list x y z)))))
+  (let ([l (length rest)])
+    (cond
+      [(zero? l) (map1 f x)]
+      [(= l 1) (map2 f x (car rest))]
+      [(= l 2) (map3 f x (car rest) (car (cdr rest)))]
+    )))
 
 (define (for-each proc lst)
   (let loop ([lst lst])
@@ -137,6 +176,19 @@
       (begin (proc (car lst)) (loop (cdr lst)))
       (if (null? lst) '()
         (assertion-violation 'for-each "expected a proper list" lst)))))
+
+(define (and-map pred lst)
+  (let loop ([lst lst])
+    (if (null? lst) #t
+      (if (pred (car lst))
+          (loop (cdr lst))
+          #f))))
+(define (or-map pred lst)
+  (let loop ([lst lst])
+    (if (null? lst) #f
+      (if (pred (car lst))
+          #t
+          (loop (cdr lst))))))
 
 (define (make-parameter init . converter)
   (let ([f (make-fluid init)]
@@ -209,6 +261,7 @@
 (define (cadr x) (car (cdr x)))
 
 (define (make-record-type-descriptor name parent uid sealed? opaque? fields)
+ 
   (let ([opaque? (or opaque? (and parent (rtd-opaque? parent)))]
         [fields
           (map (lambda (field)
@@ -347,7 +400,7 @@
   (and (tuple? obj) (eq? (tuple-ref obj 0) 'type:record-type)))
 (define (record-type-rcd obj)
   (or (record-type? obj)
-        (assertion-violation 'record-type-rcd (wrong-type-argument-message "record-type" obj)))
+        (assertion-violation 'record-type-rcd "not a record-type" obj))
   (tuple-ref obj 3))
 (define (record-type-rtd obj)
   (or (record-type? obj)
@@ -747,6 +800,7 @@
 
 
 (define (assertion-violation who message . irritants)
+  (print-stacktrace)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -759,8 +813,8 @@
               (and who (make-who-condition who))
               (make-message-condition message)
               (make-irritants-condition irritants)))))
-      #f)
-    #f))
+      (raise #f))
+    (raise #f)))
 
 (define (syntax-violation who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
@@ -940,6 +994,13 @@
 (define (core-hash-for-each proc ht)
   (for-each proc (core-hash->list ht)))
 
+(define (core-hash-copy ht)
+  (let ([new (make-core-hash)])
+    (core-hash-for-each
+      (lambda (pair)
+        (core-hash-put! new (car pair) (cdr pair)))
+      ht)
+    new))
 
 (define (module-for-each proc module)
   (for-each proc (core-hash->list (module-obarray module))))
@@ -1295,11 +1356,23 @@
 (define (caddr x) (car (cdr (cdr x))))
 (define (cdddr x) (cdr (cdr (cdr x))))
 
+(define (lookup-bound module name public?)
+  (let ([mod (resolve-module module #f #f)])
+    (if (not mod)
+      (assertion-violation 'lookup-bound "module not found" module))
+
+    (let* ([iface (if public? (module-public-interface mod) mod)]
+           [var (module-variable iface name)])
+      (if (or (not var) (not (variable-bound? var)))
+        (assertion-violation 'lookup-bound "unbound variable" module name))
+      var)))
+
 
 (load "boot/expand.scm")
 (load "boot/interpreter.scm")
 (load "boot/psyntax.scm")
 (load "boot/iosys.scm")
 (load "boot/portio.scm")
-(load "boot/synclo.scm")
+(load "boot/fileio.scm")
+(load "boot/set.scm")
 (load "boot/eval.scm")
