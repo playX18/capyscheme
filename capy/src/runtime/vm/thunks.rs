@@ -251,7 +251,7 @@ thunks! {
                 println!("{sym:?}");
             });
         }
-        crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
+        //crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
         todo!()
     }
 
@@ -412,6 +412,7 @@ thunks! {
     }
 
     pub fn set_current_module(ctx: &Context<'gc>, module: Value<'gc>) -> Value<'gc> {
+
         crate::runtime::modules::set_current_module(*ctx, module);
         Value::undefined()
     }

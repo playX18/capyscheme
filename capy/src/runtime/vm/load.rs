@@ -428,10 +428,18 @@ native_cont!(
         ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
         ir = primitives::resolve_primitives(nctx.ctx, ir, m);
         ir = primitives::expand_primitives(nctx.ctx, ir);
+        let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+        doc.1.render(70, &mut std::io::stdout()).unwrap();
+        println!();
 
         let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
+        let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+
+
+        doc.1.render(70, &mut std::io::stdout()).unwrap();
+        println!();
 
         let object = match compile_cps_to_object(nctx.ctx, cps) {
             Ok(product) => product,

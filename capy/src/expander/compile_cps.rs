@@ -146,8 +146,9 @@ pub fn t_k<'a, 'gc>(
                 |cps| {
                     let tmp = cps.fresh_variable("proc");
                     let func = cps_func(cps, &proc, tmp);
-                    let body = fk(cps, &[Atom::Local(tmp)]);
                     cps.current_topbox_scope = prev;
+                    let body = fk(cps, &[Atom::Local(tmp)]);
+
                     Gc::new(
                         &cps.ctx,
                         Term::Fix(Array::from_slice(&cps.ctx, &[func]), body),
@@ -261,9 +262,8 @@ pub fn t_k<'a, 'gc>(
                             func
                         })
                         .collect::<Vec<_>>();
-
-                    let body = t_k(cps, fix.body, fk, h);
                     cps.current_topbox_scope = prev;
+                    let body = t_k(cps, fix.body, fk, h);
 
                     Gc::new(
                         &cps.ctx,

@@ -111,6 +111,10 @@ native_fn!(
     pub ("symbol?") fn is_symbol<'gc>(nctx, val: Value<'gc>) -> bool {
         nctx.return_(val.is::<Symbol>())
     }
+
+    pub ("string-prefix?") fn string_prefix<'gc>(nctx, prefix: Gc<'gc, Str<'gc>>, str: Gc<'gc, Str<'gc>>) -> bool {
+        nctx.return_(str.to_string().starts_with(&prefix.to_string()))
+    }
 );
 
 pub fn init_strings<'gc>(ctx: Context<'gc>) {

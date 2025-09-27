@@ -1845,7 +1845,7 @@ primitive_expanders!(
         if args.len() > 1 {
             return None;
         }
-        Some(prim_call_term(ctx, sym_current_module(ctx).into(), &[], src))
+        Some(prim_call_term(ctx, sym_current_module(ctx).into(), &args, src))
     }
 
     "define!" ex_define<'gc>(ctx, args, src) {

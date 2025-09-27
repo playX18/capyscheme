@@ -167,6 +167,20 @@ native_fn!(
         nctx.return_(Ok(pair))
     }
 
+    pub ("cons*") fn cons_star<'gc>(nctx, first: Value<'gc>, args: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
+
+        if args.is_empty() {
+            return nctx.return_(Ok(first));
+        }
+
+        let mut result = args[args.len() - 1];
+        for value in args[..args.len() - 1].iter().rev() {
+            result = Value::cons(nctx.ctx, *value, result);
+        }
+        result = Value::cons(nctx.ctx, first, result);
+        nctx.return_(Ok(result))
+    }
+
     pub ("list") fn list<'gc>(nctx, args: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
         let mut ls = Value::null();
         for v in args.iter().rev() {

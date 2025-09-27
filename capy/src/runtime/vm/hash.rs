@@ -71,7 +71,7 @@ native_fn!(
 
     pub ("core-hash->list") fn hash_to_list<'gc>(nctx, ht: Gc<'gc, HashTable<'gc>>) -> Value<'gc> {
         let list = ht.iter().map(|(k, v)| Value::cons(nctx.ctx, k, v)).collect::<Vec<_>>();
-        println!("hash_to_list: {:?}", list);
+
         let mut ls = Value::null();
 
         for pair in list.into_iter().rev() {

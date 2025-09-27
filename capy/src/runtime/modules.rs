@@ -108,7 +108,12 @@ impl<'gc> Module<'gc> {
                 inlinable_exports: Lock::new(Value::new(false)),
                 next_unique_id: AtomicUsize::new(0),
                 public_interface: Lock::new(None),
-                replacements: Lock::new(Value::new(false)),
+                replacements: Lock::new(Value::new(HashTable::new(
+                    &ctx,
+                    HashTableType::Eq,
+                    0,
+                    0.75,
+                ))),
             },
         )
     }
