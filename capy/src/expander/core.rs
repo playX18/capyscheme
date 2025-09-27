@@ -2187,9 +2187,9 @@ impl<'gc> Term<'gc> {
                     .group()
             }
 
-            TermKind::ToplevelRef(_, name) => alloc
+            TermKind::ToplevelRef(module, name) => alloc
                 .text("toplevel-ref")
-                .append(format!(" {name}"))
+                .append(format!(" {module} {name}"))
                 .parens()
                 .group(),
 

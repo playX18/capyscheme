@@ -41,12 +41,54 @@
                    val)))
     (define (build-primref src name) (make-primref src name))
     (define (build-void s) (make-void s))
+    (define (analyze-variable mod var modref-cont bare-cont)
+      (let* ((v mod)
+                      (fk (lambda ()
+                            (let ((fk (lambda ()
+                                        (let ((fk (lambda ()
+                                                    (let ((fk (lambda () (error "value failed to match" v))))
+                                                      (if (pair? v)
+                                                          (let ((vx (car v)) (vy (cdr v)))
+                                                            (if (eq? vx 'primitive)
+                                                                (syntax-violation
+                                                                 #f
+                                                                 "primitive not in operator position"
+                                                                 var)
+                                                                (fk)))
+                                                          (fk))))))
+                                          (if (pair? v)
+                                              (let ((vx (car v)) (vy (cdr v)))
+                                                (let ((tk (lambda ()
+                                                            (let ((mod vy))
+                                                              (if (equal? mod (module-name (current-module)))
+                                                                  (bare-cont mod var)
+                                                                  (modref-cont mod var #f))))))
+                                                  (if (eq? vx 'private)
+                                                      (tk)
+                                                      (let ((tk (lambda () (tk)))) (if (eq? vx 'hygiene) (tk) (fk))))))
+                                              (fk))))))
+                              (if (pair? v)
+                                  (let ((vx (car v)) (vy (cdr v)))
+                                    (if (eq? vx 'public) (let ((mod vy)) (modref-cont mod var #t)) (fk)))
+                                  (fk))))))
+                 (if (eq? v #f) (bare-cont #f var) (fk))))
+
     (define (build-global-definition src mod var exp)
       (make-toplevel-define src (and mod (cdr mod)) var (maybe-name-value var exp)))
     (define (build-global-reference src var mod)
-      (make-toplevel-ref src mod var))
+      (analyze-variable 
+        mod
+        var        
+        (lambda (mod var public?) (make-module-ref src mod var public?))
+        (lambda (mod var) (make-toplevel-ref src mod var))))
+     ; (make-toplevel-ref src mod var))
     (define (build-global-assignment src var val mod)
-      (make-toplevel-set src mod var val))
+      (let ([exp (maybe-name-value var val)])
+        (analyze-variable 
+          mod 
+          var
+          (lambda (mod var public?) (make-module-set src mod var public? exp))
+          (lambda (mod var) (make-toplevel-set src mod var exp)))))
     (define (build-primcall src name args)
         (make-primcall src name args))
     (define (build-simple-lambda src ids vars meta exp)
@@ -538,7 +580,8 @@
     (define (bound-id=? i j)
       (if (and (syntax? i) (syntax? j))
         (and (eq? (syntax-expression i) (syntax-expression j))
-             (same-marks? (wrap-marks (syntax-wrap i)) (wrap-marks (syntax-wrap j))))))
+             (same-marks? (wrap-marks (syntax-wrap i)) (wrap-marks (syntax-wrap j))))
+        (eq? i j)))
 
     (define (valid-bound-ids? ids)
       (and (let all-ids? ([ids ids])
@@ -1773,6 +1816,7 @@
                                                (expand-simple-lambda e r w s mod req rest meta body)))))))))
                             tmp)
                      (syntax-violation 'lambda "bad lambda" e)))))
+
     (global-extend 'core 'let 
       (let ()
         (define (expand-let e r w s mod constructor ids vals exps)
@@ -1965,185 +2009,26 @@
                                     (cons '(#f) (cons message arg))))
                             tmp)
                      (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))))))
-
-(define syntax-rules
+                     
+(define let*
   (let ((make-syntax make-syntax))
     (make-syntax-transformer
-     'syntax-rules
-     'macro
-     (lambda (xx)
-       (letrec* ((expand-clause
-                  (lambda (clause)
-                    (let ((tmp-1 clause))
-                      (let ((tmp ($sc-dispatch
-                                  tmp-1
-                                  (list '(any . any)
-                                        (cons (vector 'free-id (make-syntax 'syntax-error '((top)) '(hygiene capy)))
-                                              '(any . each-any))))))
-                        (if (if tmp
-                                (apply (lambda (keyword pattern message arg) (string? (syntax->datum message))) tmp)
-                                #f)
-                            (apply (lambda (keyword pattern message arg)
-                                     (list (cons (make-syntax 'dummy '((top)) '(hygiene capy)) pattern)
-                                           (list (make-syntax 'syntax '((top)) '(hygiene capy))
-                                                 (cons (make-syntax 'syntax-error '((top)) '(hygiene capy))
-                                                       (cons (cons (make-syntax 'dummy '((top)) '(hygiene capy))
-                                                                   pattern)
-                                                             (cons message arg))))))
-                                   tmp)''
-                            (let ((tmp ($sc-dispatch tmp-1 '((any . any) any))))
-                              (if tmp
-                                  (apply (lambda (keyword pattern template)
-                                           (list (cons (make-syntax 'dummy '((top)) '(hygiene capy)) pattern)
-                                                 (list (make-syntax 'syntax '((top)) '(hygiene capy)) template)))
-                                         tmp)
-                                  (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))))
-                 (expand-syntax-rules
-                  (lambda (dots keys docstrings clauses)
-                    (let ((tmp-1 (list keys docstrings clauses (map expand-clause clauses))))
-                      (let ((tmp ($sc-dispatch tmp-1 '(each-any each-any #(each ((any . any) any)) each-any))))
-                        (if tmp
-                            (apply (lambda (k docstring keyword pattern template clause)
-                                     (let ((tmp (cons (make-syntax 'lambda '((top)) '(hygiene capy))
-                                                      (cons (list (make-syntax 'x '((top)) '(hygiene capy)))
-                                                            (append
-                                                             docstring
-                                                             (list (vector
-                                                                    (cons (make-syntax
-                                                                           'macro-type
-                                                                           '((top))
-                                                                           '(hygiene capy))
-                                                                          (make-syntax
-                                                                           'syntax-rules
-                                                                           (list '(top)
-                                                                                 (vector
-                                                                                  'ribcage
-                                                                                  '#(syntax-rules)
-                                                                                  '#((top))
-                                                                                  (vector
-                                                                                   (cons '(hygiene capy)
-                                                                                         (make-syntax
-                                                                                          'syntax-rules
-                                                                                          '((top))
-                                                                                          '(hygiene capy))))))
-                                                                           '(hygiene capy)))
-                                                                    (cons (make-syntax
-                                                                           'patterns
-                                                                           '((top))
-                                                                           '(hygiene capy))
-                                                                          pattern))
-                                                                   (cons (make-syntax
-                                                                          'syntax-case
-                                                                          '((top))
-                                                                          '(hygiene capy))
-                                                                         (cons (make-syntax
-                                                                                'x
-                                                                                '((top))
-                                                                                '(hygiene capy))
-                                                                               (cons k clause)))))))))
-                                       (let ((form tmp))
-                                         (if dots
-                                             (let ((tmp dots))
-                                               (let ((dots tmp))
-                                                 (list (make-syntax 'with-ellipsis '((top)) '(hygiene capy)) dots form)))
-                                             form))))
-                                   tmp)
-                            (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))))
-         (let ((tmp xx))
-           (let ((tmp-1 ($sc-dispatch tmp '(_ each-any . #(each ((any . any) any))))))
-             (if tmp-1
-                 (apply (lambda (k keyword pattern template)
-                          (expand-syntax-rules
-                           #f
-                           k
-                           '()
-                           (map (lambda (tmp-680b775fb37a463-145d tmp-680b775fb37a463-145c tmp-680b775fb37a463-145b)
-                                  (list (cons tmp-680b775fb37a463-145b tmp-680b775fb37a463-145c)
-                                        tmp-680b775fb37a463-145d))
-                                template
-                                pattern
-                                keyword)))
-                        tmp-1)
-                 (let ((tmp-1 ($sc-dispatch tmp '(_ each-any any . #(each ((any . any) any))))))
-                   (if (if tmp-1
-                           (apply (lambda (k docstring keyword pattern template) (string? (syntax->datum docstring)))
-                                  tmp-1)
-                           #f)
-                       (apply (lambda (k docstring keyword pattern template)
-                                (expand-syntax-rules
-                                 #f
-                                 k
-                                 (list docstring)
-                                 (map (lambda (tmp-680b775fb37a463-2 tmp-680b775fb37a463-1 tmp-680b775fb37a463)
-                                        (list (cons tmp-680b775fb37a463 tmp-680b775fb37a463-1) tmp-680b775fb37a463-2))
-                                      template
-                                      pattern
-                                      keyword)))
-                              tmp-1)
-                       (let ((tmp-1 ($sc-dispatch tmp '(_ any each-any . #(each ((any . any) any))))))
-                         (if (if tmp-1 (apply (lambda (dots k keyword pattern template) (identifier? dots)) tmp-1) #f)
-                             (apply (lambda (dots k keyword pattern template)
-                                      (expand-syntax-rules
-                                       dots
-                                       k
-                                       '()
-                                       (map (lambda (tmp-680b775fb37a463-148f
-                                                     tmp-680b775fb37a463-148e
-                                                     tmp-680b775fb37a463-148d)
-                                              (list (cons tmp-680b775fb37a463-148d tmp-680b775fb37a463-148e)
-                                                    tmp-680b775fb37a463-148f))
-                                            template
-                                            pattern
-                                            keyword)))
-                                    tmp-1)
-                             (let ((tmp-1 ($sc-dispatch tmp '(_ any each-any any . #(each ((any . any) any))))))
-                               (if (if tmp-1
-                                       (apply (lambda (dots k docstring keyword pattern template)
-                                                (if (identifier? dots) (string? (syntax->datum docstring)) #f))
-                                              tmp-1)
-                                       #f)
-                                   (apply (lambda (dots k docstring keyword pattern template)
-                                            (expand-syntax-rules
-                                             dots
-                                             k
-                                             (list docstring)
-                                             (map (lambda (tmp-680b775fb37a463-14ae
-                                                           tmp-680b775fb37a463-14ad
-                                                           tmp-680b775fb37a463-14ac)
-                                                    (list (cons tmp-680b775fb37a463-14ac tmp-680b775fb37a463-14ad)
-                                                          tmp-680b775fb37a463-14ae))
-                                                  template
-                                                  pattern
-                                                  keyword)))
-                                          tmp-1)
-                                   (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))))))))
-
-(define define-syntax-rule
-  (let ((make-syntax make-syntax))
-    (make-syntax-transformer
-     'define-syntax-rule
+     'let*
      'macro
      (lambda (x)
        (let ((tmp-1 x))
-         (let ((tmp ($sc-dispatch tmp-1 '(_ (any . any) any))))
-           (if tmp
-               (apply (lambda (name pattern template)
-                        (list (make-syntax 'define-syntax '((top)) '(hygiene capy))
-                              name
-                              (list (make-syntax 'syntax-rules '((top)) '(hygiene capy))
-                                    '()
-                                    (list (cons (make-syntax '_ '((top)) '(hygiene capy)) pattern) template))))
+         (let ((tmp ($sc-dispatch tmp-1 '(any #(each (any any)) any . each-any))))
+           (if (if tmp (apply (lambda (let* x v e1 e2) (and-map identifier? x)) tmp) #f)
+               (apply (lambda (let* x v e1 e2)
+                        (let f ((bindings (map list x v)))
+                          (if (null? bindings)
+                              (cons (make-syntax 'let '((top)) '(hygiene capy)) (cons '() (cons e1 e2)))
+                              (let ((tmp-1 (list (f (cdr bindings)) (car bindings))))
+                                (let ((tmp ($sc-dispatch tmp-1 '(any any))))
+                                  (if tmp
+                                      (apply (lambda (body binding)
+                                               (list (make-syntax 'let '((top)) '(hygiene capy)) (list binding) body))
+                                             tmp)
+                                      (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))))
                       tmp)
-               (let ((tmp ($sc-dispatch tmp-1 '(_ (any . any) any any))))
-                 (if (if tmp
-                         (apply (lambda (name pattern docstring template) (string? (syntax->datum docstring))) tmp)
-                         #f)
-                     (apply (lambda (name pattern docstring template)
-                              (list (make-syntax 'define-syntax '((top)) '(hygiene capy))
-                                    name
-                                    (list (make-syntax 'syntax-rules '((top)) '(hygiene capy))
-                                          '()
-                                          docstring
-                                          (list (cons (make-syntax '_ '((top)) '(hygiene capy)) pattern) template))))
-                            tmp)
-                     (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))))))
+               (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))))

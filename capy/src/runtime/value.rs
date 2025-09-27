@@ -627,7 +627,7 @@ pub use weak_table::*;
 
 use crate::{
     frontend::reader::Annotation,
-    runtime::{Context, vm::syntax::Syntax},
+    runtime::{Context, modules::Module, vm::syntax::Syntax},
 };
 
 impl<'gc> fmt::Pointer for Value<'gc> {
@@ -703,7 +703,9 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                 write!(f, "{:x}", self.raw_i64())
             }
         } else {
-            if self.is::<Pair>() {
+            if self.is::<Module>() {
+                write!(f, "#<module {}>", self.downcast::<Module>().name.get())
+            } else if self.is::<Pair>() {
                 write!(f, "(")?;
                 format_list_contents(f, *self)?;
                 write!(f, ")")

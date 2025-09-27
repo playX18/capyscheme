@@ -36,11 +36,9 @@
                     
                     (let loop ([rands rands] [vals '()])
                         (if (null? rands)
-                            (begin 
-                             
-                                (let ([res (apply (variable-ref func) (reverse vals))])
-                                  
-                                    res))
+                            
+                                (apply (variable-ref func) (reverse vals))
+
                             (loop (cdr rands) (cons ((car rands) env0) vals))))))]
         [(proc? expr) (interpret/lambda expr env)]
         [(toplevel-define? expr)
@@ -269,5 +267,4 @@
   (cons names env))
 
 (define (primitive-eval exp)
-    (pretty-print-ir exp)
     ((interpret/preprocess exp '()) '()))

@@ -1,6 +1,13 @@
 
+(define (flatten lst)
+  (if (null? lst) '()
+    (let ((first (car lst))
+          (rest (flatten (cdr lst))))
+      (if (list? first)
+          (append (flatten first) rest)
+          (cons first rest)))))
+
 (define (remove* l r)
-  
   (if (not (list? l))
     (assertion-violation 'remove* "expected a list" l))
   (if (not (list? r))
@@ -1003,7 +1010,7 @@
     new))
 
 (define (module-for-each proc module)
-  (for-each proc (core-hash->list (module-obarray module))))
+  (for-each (lambda (kv) (proc (car kv) (cdr kv))) (core-hash->list (module-obarray module))))
 
 
 (define (module-map proc module)
@@ -1056,6 +1063,7 @@
       (core-hash-clear! (module-import-obarray module)))))
 
 (define (module-use-interfaces! module interfaces)
+ 
   (let* ([cur (module-uses module)]
          [new (let loop ([in interfaces] [out '()])
                 (if (null? in)
@@ -1270,53 +1278,51 @@
             (lambda () (set-autoloaded! dir-hint name didit)))
           didit))))
 
-(define (resolve-interface name select hide)
+(define (identity x) x)
+
+(define (resolve-interface name select hide prefix)
   (let* ([mod (resolve-module name #t #f)]
-         [iface (and mod (module-public-interface mod))])
-    (if (not iface)
+         [public-i (and mod (module-public-interface mod))]
+         [renamer (if prefix (lambda (symbol) (symbol-append prefix symbol)) identity)])
+    (if (not public-i)
       (assertion-violation 'resolve-interface "no code for module" name))
-    (if (and (not select) (null? hide))
-      iface
-      #f)))
+   
+    (if (and (not select) (null? hide) (eq? renamer identity))
+      public-i
+      (let ([custom-i (make-module)])
+        (define (maybe-export! src dst var)
+          (if (not (memq src hide))
+            (begin 
+              (let ([name (renamer dst)])
+                (if (core-hash-ref (module-replacements public-i) src)
+                  (core-hash-put! (module-replacements custom-i) name #t))
+                (module-add! custom-i name var)))))
+        (set-module-kind! custom-i 'custom-interface)
+        (set-module-name! custom-i name)
+        (for-each (lambda (binding)
+          (if (not (module-local-variable public-i binding))
+            (assertion-violation #f "no binding to hide in module" name binding)))
+          hide)
+        
+        (cond 
+          [select 
+            (for-each (lambda (bspec)
+              (let* ([direct? (symbol? bspec)]
+                     [orig (if direct? bspec (car bspec))]
+                     [seen (if direct? bspec (cdr bspec))]
+                     [var (module-local-variable public-i orig)])
+                (if (not var)
+                  (assertion-violation 'unbound-variable "no binding to select in module" orig name))
+                (maybe-export! orig seen var))
+            ) select)]
+          [else (module-for-each (lambda (sym var)
+            (maybe-export! sym sym var)) public-i)])
+          custom-i))))
 
 
-(define (define-module*
-  name
-  filename
-  imports
-  exports
-  replacements
-  re-exports
-  re-export-replacements
-  autoloads)
-  (define (list-of pred lst)
-    (or (null? lst) (and (pred (car lst)) (list-of pred (cdr lst)))))
-
-  (define (valid-import? x)
-    (list? x))
-  (define (valid-export? x)
-    (or (symbol? x) (and (pair? x) (symbol? (car x)) (symbol? (cdr x)))))
-  (define (valid-autoload? x)
-    (and (pair? x) (list-of symbol? (car x)) (list-of symbol? (cdr x))))
-
+(define (define-module* name)
   (let ([module (resolve-module name #f #t)])
     (beautify-user-module! module)
-    (if filename
-      (set-module-filename! module filename))
-    (if (not (list-of valid-import? imports))
-      (assertion-violation 'define-module "invalid imports" imports))
-    (if (not (list-of valid-export? exports))
-      (assertion-violation 'define-module "invalid exports" exports))
-    (if (not (list-of valid-autoload? autoloads))
-      (assertion-violation 'define-module "invalid autoloads" autoloads))
-
-    (module-export! module exports)
-
-    (if (not (null? imports))
-      (let ([imports (map (lambda (import-spec)
-        (resolve-interface import-spec #f '())) imports)])
-        (module-use-interfaces! module imports)))
-
     module))
 
 (define (module-export! m names)
@@ -1341,9 +1347,10 @@
 
 (define (process-use-modules module-iface-args)
   (let ([interfaces (map (lambda (mif-args)
-    (or (resolve-interface mif-args #f '())
+    (or (apply resolve-interface mif-args)
       (assertion-violation 'use "failed to resolve module" mif-args))) module-iface-args)])
     (module-use-interfaces! (current-module) interfaces)))
+
 
 (define (call-with-values producer consumer)
   (receive results (producer)
