@@ -398,7 +398,7 @@ native_fn!(
     }
 
 
-    pub ("fx=") fn fx_eq<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+    pub ("=") fn fx_eq<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
         if rest.is_empty() {
             return nctx.return_(Ok(true));
         }
@@ -407,7 +407,7 @@ native_fn!(
         for z in rest.iter() {
             if !z.is_int32() {
                 let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation("fx=", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+                return nctx.wrong_argument_violation("=", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
             }
             let z = z.as_int32();
             if w != z {

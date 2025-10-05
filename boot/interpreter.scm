@@ -28,17 +28,18 @@
                 (lambda (env0)
                     (let ([func (rator env0)])
                         (apply func (map (lambda (rand) (rand env0)) rands)))))]
+        [(primref? expr)
+            (let* ([name (primref-prim expr)]
+                   [func (lookup-bound '(capy) name #t)])
+                (lambda (env) (variable-ref func)))]
         [(primcall? expr)
             (let* ([rator (primcall-prim expr)]
                    [rands (map (lambda (rand) (interpret/preprocess rand env)) (primcall-args expr))]
                    [func (lookup-bound '(capy) rator #t)])
                 (lambda (env0)
-                    
                     (let loop ([rands rands] [vals '()])
                         (if (null? rands)
-                            
-                                (apply (variable-ref func) (reverse vals))
-
+                            (apply (variable-ref func) (reverse vals))
                             (loop (cdr rands) (cons ((car rands) env0) vals))))))]
         [(proc? expr) (interpret/lambda expr env)]
         [(toplevel-define? expr)
@@ -59,6 +60,8 @@
                         (variable-ref var)
                         (begin
                             (set! var (module-variable (current-module) name))
+                            (if (not var)
+                                (error 'toplevel-ref "unbound variable" name))
                             (variable-ref var)))))]
         [(module-ref? expr)
             (let ([module (module-ref-module expr)]
@@ -149,7 +152,9 @@
                 (lambda (env0)
                     (head env0)
                     (tail env0)))]
-        [else (lambda (env0) 42)]))
+        [(void? expr)
+            (lambda (env0) (if #f #f))]
+        [else (lambda (env0) (assertion-violation #f "unhandled node " expr))]))
 
 
 

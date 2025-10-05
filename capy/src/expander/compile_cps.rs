@@ -1066,7 +1066,7 @@ pub fn cached_toplevel_box<'gc>(
         let cached = #% "cache-ref" (h, cache_key) @ src;
         let is_heap_obj = #% "heap-object?" (h, cached) @ src;
         letk (h) merge (cached) = with_cps!(cps; continue k (cached));
-        letk (h) kinit () = with_cps!(cps;
+        letk cold (h) kinit () = with_cps!(cps;
             let module = #%"cache-ref" (h, Atom::Constant(scope)) @ src;
             # reify_lookup(cps, src, module, name, bound, h, |cps, var| {
                 with_cps!(cps;
@@ -1095,7 +1095,7 @@ pub fn cached_module_box<'gc>(
         let cache_entry = #% "cache-ref" (h, cache_key) @ src;
         let is_heap_obj = #% "heap-object?" (h, cache_entry) @ src;
         letk (h) merge (cached) = with_cps!(cps; continue k (cached));
-        letk (h) kinit () = if public {
+        letk cold (h) kinit () = if public {
             with_cps!(cps;
                 let var = #% "lookup-bound-public" (h, Atom::Constant(module), Atom::Constant(name)) @ src;
                 let _k = #% "cache-set!" (h, cache_key, Atom::Local(var)) @ src;

@@ -1,4 +1,8 @@
 
+(define (max a x)
+  (if (> a x) a x))
+(define (boolean? x) (boolean? x))
+(define (alist-cons key datum alist) (cons (cons key datum) alist))
 (define (flatten lst)
   (if (null? lst) '()
     (let ((first (car lst))
@@ -190,12 +194,16 @@
       (if (pred (car lst))
           (loop (cdr lst))
           #f))))
+
 (define (or-map pred lst)
   (let loop ([lst lst])
     (if (null? lst) #f
       (if (pred (car lst))
           #t
           (loop (cdr lst))))))
+
+(define (every? pred lst)
+  (and (list? lst) (every1 pred lst)))
 
 (define (make-parameter init . converter)
   (let ([f (make-fluid init)]
@@ -268,16 +276,40 @@
 (define (cadr x) (car (cdr x)))
 
 (define (make-record-type-descriptor name parent uid sealed? opaque? fields)
- 
+  (or (symbol? name)
+    (assertion-violation 'make-record-type-descriptor "expected a symbol for name" name))
+  (or (vector? fields)
+    (assertion-violation 'make-record-type-descriptor "expected a vector for fields" fields))
+  (and parent 
+    (or (record-type-descriptor? parent)
+        (assertion-violation 'make-record-type-descriptor "expected a record-type descriptor or #f for parent" parent))
+    (and (rtd-sealed? parent)
+      (assertion-violation 'make-record-type-descriptor "cannot extend a sealed record type" parent)))
+  
   (let ([opaque? (or opaque? (and parent (rtd-opaque? parent)))]
         [fields
           (map (lambda (field)
-            (if (eq? (car field) 'mutable)
-              (cons #t (cadr field))
-              (cons #f (cadr field)))
-          ) (vector->list fields))])
-
-    (make-rtd name parent uid sealed? opaque? fields)))
+                (if (eq? (car field) 'mutable)
+                  (cons #t (cadr field))
+                  (cons #f (cadr field)))) 
+               (vector->list fields))])
+    (cond
+      [(not uid) (make-rtd name parent #f sealed? opaque? fields)]
+      [else 
+        (let ([current (core-hash-ref nongenerative-record-types uid #f)])
+          (cond 
+            [current
+              (if (and (eqv? (rtd-uid current) uid)
+                       (eqv? parent (rtd-parent current))
+                       (equal? fields (rtd-fields current)))
+                current
+                (assertion-violation 'make-record-type-descriptor
+                                     "mismatched subsequent call for nongenerative record-type"
+                                     (list name parent uid sealed? opaque? fields)))]
+            [else 
+              (let ([new (make-rtd name parent uid sealed? opaque? fields)])
+                (core-hash-put! nongenerative-record-types uid new)
+                new)]))])))
 
 
 (define (make-rcd rtd protocol custom-protocol? parent)
@@ -385,9 +417,9 @@
 
 (define (record-accessor rtd k)
   (or (record-type-descriptor? rtd)
-        (assertion-violation 'record-accssor (wrong-type-argument-message "record-type-descriptor" rtd) (list rtd k)))
+        (assertion-violation 'record-accessor (wrong-type-argument-message "record-type-descriptor" rtd) (list rtd k)))
   (or (< -1 k (length (rtd-fields rtd)))
-      (assertion-violation 'record-accssor "field index out of range"))
+      (assertion-violation 'record-accessor "field index out of range"))
   (make-accessor rtd (flat-field-offset rtd k)))
 
 (define (record-mutator rtd k)
@@ -423,6 +455,9 @@
     (assertion-violation
       'record-rtd
       (format "expected a record, but got ~r" obj) obj)))
+
+
+
 
 (define &condition
   (let* ([rtd (make-record-type-descriptor '&condition #f #f #f #f '#())]
@@ -1202,9 +1237,7 @@
     m))
 
 (define resolve-module
-  (let ([root (make-module)])
-    (set-module-name! root '())
-    (module-define-submodule! root 'capy the-root-module)
+  (let ([root *resolve-module-root*])
     (lambda (name autoload ensure)
       (let ([already (nested-ref-module root name)])
         (if (and already
@@ -1267,10 +1300,9 @@
               (save-module-excursion
                 (lambda ()
                   (current-module (make-fresh-user-module))
-
                   (call/cc (lambda (return)
                     (with-exception-handler
-                      (lambda (_x) (return #f))
+                      (lambda (_x) (print "Autoload of " module-name " failed: " (condition-message _x) " irritants: " (condition-irritants _x)) (return #f))
                       (lambda ()
                         (load (string-append dir-hint name))
                         (set! didit #t)
@@ -1325,13 +1357,20 @@
     (beautify-user-module! module)
     module))
 
-(define (module-export! m names)
-  (let ([public-i (module-public-interface m)])
+(define (module-export! m names . replace?)
+
+  (let ([replace? (if (null? replace?) #f (car replace?))]
+        [public-i (module-public-interface m)])
     (for-each (lambda (name)
       (let* ([internal-name (if (pair? name) (car name) name)]
              [external-name (if (pair? name) (cdr name) name)]
              [var (module-ensure-local-variable! m internal-name)])
+        (if replace? 
+          (core-hash-put! (module-replacements public-i) external-name #t))
         (module-add! public-i external-name var))) names)))
+
+(define (module-replace! m names)
+  (module-export! m names #t))
 
 (define (module-export-all! mod)
   (define (fresh-interface!)
@@ -1375,11 +1414,75 @@
       var)))
 
 
+(define (module-re-export! m names . replace?)
+  (let ([replace? (if (null? replace?) #f (car replace?))])
+    (let ([public-i (module-public-interface m)])
+      (for-each 
+        (lambda (name)
+          (let* ([internal-name (if (pair? name) (car name) name)]
+                 [external-name (if (pair? name) (cdr name) name)]
+                 [var (module-variable m interna-name)])
+              (cond 
+                [(not var)
+                  (assertion-violation 'unbound-variable "undefined variable" internal-name)]
+                [(eq? var (module-local-variable m internal-name))
+                  (assertion-violation 'export "re-exporting local variable" internal-name)]
+                [else 
+                  (if replace? 
+                    (core-hash-put! (module-replacements public-i) external-name #t))
+                  (module-add! public-i external-name var)])))
+        names))))
+
+
+
+
+
+(define (r6rs:bytevector-copy! source source-start target target-start count)
+  (if (>= source-start target-start)
+      (let loop ((i 0))
+        (if (< i count)
+            (begin
+              (bytevector-u8-set! target
+                                  (+ target-start i)
+                                  (bytevector-u8-ref source (+ source-start i)))
+              (loop (+ i 1)))))
+      (let loop ((i (- count 1)))
+        (if (>= i 0)
+            (begin
+              (bytevector-u8-set! target
+                                  (+ target-start i)
+                                  (bytevector-u8-ref source (+ source-start i)))
+              (loop (- i 1)))))))
+
+;;; Generalized from one argument for R7RS.
+
+(define (bytevector-copy b . rest)
+  (let* ((n (bytevector-length b))
+         (start (if (null? rest) 0 (car rest)))
+         (end (if (or (null? rest) (null? (cdr rest))) n (cadr rest)))
+         (k (- end start))
+         (b2 (make-bytevector k)))
+    (r6rs:bytevector-copy! b start b2 0 k)
+    b2))
+
+(define (assert cond . rest)
+  (if (not cond)
+      (apply assertion-violation 'assert "assertion failed" rest)
+      #t))
+
+
 (load "boot/expand.scm")
 (load "boot/interpreter.scm")
+;(load "boot/synclo.scm")
 (load "boot/psyntax.scm")
+(load "boot/sys.scm")
 (load "boot/iosys.scm")
 (load "boot/portio.scm")
+(load "boot/bytevectorio.scm")
 (load "boot/fileio.scm")
+(load "boot/conio.scm")
+(load "boot/stringio.scm")
+(load "boot/stdio.scm")
 (load "boot/set.scm")
+(load "boot/print.scm")
 (load "boot/eval.scm")

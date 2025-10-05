@@ -129,7 +129,14 @@ impl<'gc> ModuleBuilder<'gc> {
             ssa.builder.seal_all_blocks();
             ssa.builder.finalize();
             let func_debug_cx = ssa.func_debug_cx;
-            self.module.define_function(func_id, &mut context).unwrap();
+            self.module
+                .define_function(func_id, &mut context)
+                .unwrap_or_else(|err| {
+                    panic!(
+                        "error when compiling function {} ({}): {}",
+                        func.binding.name, func.name, err
+                    )
+                });
             func_debug_cx.finalize(
                 &mut self.debug_context,
                 func_id,

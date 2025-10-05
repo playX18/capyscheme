@@ -136,6 +136,7 @@ native_fn!(
         name: Value<'gc>,
         typ: Value<'gc>,
         binding: Value<'gc>
+
     ) -> Value<'gc> {
         let transformer = SyntaxTransformer::new(nctx.ctx, name, typ, binding);
         nctx.return_(transformer.into())
