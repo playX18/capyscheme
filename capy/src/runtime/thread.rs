@@ -168,7 +168,7 @@ impl<'gc> State<'gc> {
     pub fn new(mc: &'gc Mutation<'gc>) -> Self {
         let (runstack_start, _runstack_end) = make_fresh_runstack();
         Self {
-            shadow_stack: UnsafeCell::new(debug::ShadowStack::new(4)),
+            shadow_stack: UnsafeCell::new(debug::ShadowStack::new(20)),
             dynamic_state: DynamicState::new(mc),
             runstack: Cell::new(runstack_start),
             nest_level: AtomicUsize::new(0),

@@ -185,6 +185,200 @@ native_fn!(
             nctx.return_(ret)
         }
     }
+
+    pub ("syscall:open") fn syscall_open<'gc>(
+        nctx,
+        filename: Gc<'gc, Str<'gc>>,
+        flags: i32,
+        mode: i32
+    ) -> i32 {
+        let mut newflags = 0;
+
+        if flags & 0x01 != 0 {
+            newflags |= libc::O_RDONLY;
+        }
+
+        if flags & 0x02 != 0 {
+            newflags |= libc::O_WRONLY;
+        }
+
+        if flags & 0x04 != 0 {
+            newflags |= libc::O_APPEND;
+        }
+
+        if flags & 0x08 != 0 {
+            newflags |= libc::O_CREAT;
+        }
+
+        if flags & 0x10 != 0 {
+            newflags |= libc::O_TRUNC;
+        }
+
+        if filename.len() == 0 {
+            return nctx.return_(-1);
+        }
+
+        unsafe {
+            let cpath = CString::new(filename.to_string()).unwrap();
+            let ret = libc::open(cpath.as_ptr(), newflags, mode);
+            nctx.return_(ret)
+        }
+    }
+
+    pub ("syscall:close") fn syscall_close<'gc>(
+        nctx,
+        fd: i32
+    ) -> i32 {
+        unsafe {
+            let ret = libc::close(fd);
+            nctx.return_(ret)
+        }
+    }
+
+    pub ("syscall:read") fn syscall_read<'gc>(
+        nctx,
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        nbytes: usize
+    ) -> isize {
+        if nbytes > buf.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "syscall:read",
+                "buffer too small for read",
+                None,
+                None,
+                3,
+                &[fd.into(), buf.into(), nbytes.into_value(ctx)]
+            );
+        }
+
+        unsafe {
+            let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
+            let ret = libc::read(fd, ptr, nbytes);
+            nctx.return_(ret)
+        }
+    }
+
+    pub ("syscall:write") fn syscall_write<'gc>(
+        nctx,
+        fd: i32,
+        buf: Gc<'gc, ByteVector>,
+        nbytes: usize,
+        offset: usize
+    ) -> isize {
+        if nbytes > buf.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "syscall:write",
+                "buffer too small for write",
+                None,
+                None,
+                3,
+                &[fd.into(), buf.into(), nbytes.into_value(ctx)]
+            );
+        }
+
+        unsafe {
+            let ptr = buf.as_slice().as_ptr().wrapping_add(offset) as *const libc::c_void;
+            let ret = libc::write(fd, ptr, nbytes);
+            nctx.return_(ret)
+        }
+    }
+
+    pub ("syscall:lseek") fn syscall_lseek<'gc>(
+        nctx,
+        fd: i32,
+        offset: i64,
+        whence: i32
+    ) -> i64 {
+        unsafe {
+            let ret = libc::lseek(fd, offset, whence);
+            nctx.return_(ret)
+        }
+    }
+
+    pub ("syscall:pollinput") fn syscall_pollinput<'gc>(
+        nctx,
+        fd: i32
+    ) -> i32 {
+        unsafe {
+            let mut fds = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ret = libc::poll(&mut fds as *mut libc::pollfd, 1, 0);
+            if ret > 0 && (fds.revents & (libc::POLLIN|libc::POLLHUP|libc::POLLERR)) != 0 {
+                nctx.return_(1)
+            } else {
+                nctx.return_(0)
+            }
+        }
+    }
+
+    pub ("syscall:unlink") fn syscall_unlink<'gc>(
+        nctx,
+        filename: Gc<'gc, Str<'gc>>
+    ) -> i32 {
+        let cpath = CString::new(filename.to_string()).unwrap();
+        unsafe {
+            let ret = libc::unlink(cpath.as_ptr());
+            nctx.return_(ret)
+        }
+    }
+
+    pub ("syscall:rename") fn syscall_rename<'gc>(
+        nctx,
+        old_filename: Gc<'gc, Str<'gc>>,
+        new_filename: Gc<'gc, Str<'gc>>
+    ) -> i32 {
+        let cold = CString::new(old_filename.to_string()).unwrap();
+        let cnew = CString::new(new_filename.to_string()).unwrap();
+        unsafe {
+            let ret = libc::rename(cold.as_ptr(), cnew.as_ptr());
+            nctx.return_(ret)
+        }
+    }
+
+    pub ("syscall:mtime") fn syscall_mtime<'gc>(
+        nctx,
+        filename: Gc<'gc, Str<'gc>>,
+        vbuf: Gc<'gc, Vector<'gc>>
+    ) -> i32 {
+        let path = filename.to_string();
+
+        unsafe {
+            let mut buf = std::mem::zeroed::<libc::stat>();
+            let cpath = CString::new(path).unwrap();
+            let ret = libc::stat(cpath.as_ptr(), &mut buf);
+            if ret != 0 {
+                return nctx.return_(-1);
+            }
+
+            let tm = libc::localtime(&buf.st_mtime);
+            let wbuf = Gc::write(&nctx.ctx, vbuf);
+            wbuf[0].unlock().set((1900 + (*tm).tm_year).into_value(nctx.ctx));
+            wbuf[1].unlock().set((1 + (*tm).tm_mon).into_value(nctx.ctx));
+            wbuf[2].unlock().set((*tm).tm_mday.into_value(nctx.ctx));
+            wbuf[3].unlock().set((*tm).tm_hour.into_value(nctx.ctx));
+            wbuf[4].unlock().set((*tm).tm_min.into_value(nctx.ctx));
+            wbuf[5].unlock().set((*tm).tm_sec.into_value(nctx.ctx));
+            nctx.return_(0)
+        }
+    }
+
+    pub ("syscall:access") fn syscall_access<'gc>(
+        nctx,
+        filename: Gc<'gc, Str<'gc>>,
+        mode: i32
+    ) -> i32 {
+        let cpath = CString::new(filename.to_string()).unwrap();
+        unsafe {
+            let ret = libc::access(cpath.as_ptr(), mode);
+            nctx.return_(ret)
+        }
+    }
 );
 
 pub fn init_io<'gc>(ctx: Context<'gc>) {

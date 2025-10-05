@@ -78,6 +78,11 @@ native_fn!(
         nctx.return_(sym)
     }
 
+    pub ("string->uninterned-symbol") fn string_to_uninterned_symbol<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
+        let sym = Symbol::from_string_uninterned(&nctx.ctx, str, None);
+        nctx.return_(sym)
+    }
+
     pub ("print") fn print<'gc>(nctx, args: &'gc [Value<'gc>]) -> () {
         for arg in args.iter() {
             print!("{}", arg);
@@ -114,6 +119,93 @@ native_fn!(
 
     pub ("string-prefix?") fn string_prefix<'gc>(nctx, prefix: Gc<'gc, Str<'gc>>, str: Gc<'gc, Str<'gc>>) -> bool {
         nctx.return_(str.to_string().starts_with(&prefix.to_string()))
+    }
+
+    pub ("string-ref") fn string_ref<'gc>(nctx, str: Gc<'gc, Str<'gc>>, index: usize) -> Result<char, Value<'gc>> {
+        if index >= str.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "string-ref",
+                "index out of bounds",
+                None,
+                None,
+                2,
+                &[str.into(), index.into_value(ctx)]
+            );
+        }
+
+        let ch = str.get(index).unwrap(); // safe due to the bounds check above
+
+        nctx.return_(Ok(ch))
+    }
+
+    pub ("utf8->string") fn utf8_to_string<'gc>(nctx, bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+        match std::str::from_utf8(&bytes.as_slice()[..]) {
+            Ok(s) => {
+                let str = Str::new(&nctx.ctx, s, false);
+                nctx.return_(Ok(str))
+            },
+            Err(_) => {
+
+                nctx.wrong_argument_violation(
+                    "utf8->string",
+                    "invalid UTF-8 bytevector",
+                    None,
+                    None,
+                    1,
+                    &[bytes.into()]
+                )
+            }
+        }
+    }
+
+    pub ("string->utf8") fn string_to_utf8<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
+        let bytes = str.to_string().into_bytes();
+        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes);
+        nctx.return_(bytevec)
+    }
+
+    pub ("utf16->string") fn utf16_to_string<'gc>(nctx, bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+        let utf16_data: Vec<u16> = bytes.as_slice()
+            .chunks(2)
+            .map(|chunk| {
+                if chunk.len() == 2 {
+                    u16::from_le_bytes([chunk[0], chunk[1]])
+                } else {
+                    // Handle odd-length byte vectors by padding with zero
+                    u16::from_le_bytes([chunk[0], 0])
+                }
+            })
+            .collect();
+
+        match String::from_utf16(&utf16_data[..]) {
+            Ok(s) => {
+                let str = Str::new(&nctx.ctx, &s, false);
+                nctx.return_(Ok(str))
+            },
+            Err(_) => {
+
+                nctx.wrong_argument_violation(
+                    "utf16->string",
+                    "invalid UTF-16 bytevector",
+                    None,
+                    None,
+                    1,
+                    &[bytes.into()]
+                )
+            }
+        }
+    }
+
+    pub ("string->utf16") fn string_to_utf16<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
+        let utf16_data: Vec<u16> = str.to_string().encode_utf16().collect();
+        let mut bytes = Vec::with_capacity(utf16_data.len() * 2);
+        for code_unit in utf16_data {
+            bytes.extend_from_slice(&code_unit.to_le_bytes());
+        }
+
+        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes);
+        nctx.return_(bytevec)
     }
 );
 

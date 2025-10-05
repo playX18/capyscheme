@@ -4,8 +4,8 @@ use capy::runtime::{
     vm::{VMResult, call_scheme, load::load_thunk_in_vicinity},
 };
 
-//#[global_allocator]
-//static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     env_logger::init();

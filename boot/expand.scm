@@ -8,6 +8,7 @@
     (and (record? obj) (rtd-ancestor? (record-type-rtd &term) (record-rtd obj))))
 
 (define term-src (record-accessor (record-type-rtd &term) 0))
+
 (define &lref
     (let* ([rtd (make-record-type-descriptor '&lref (record-type-rtd &term) #f #f #f '#((immutable variable) (immutable sym)))]
            [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])

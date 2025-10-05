@@ -74,6 +74,8 @@ native_fn! {
         nctx.return_(len)
     }
 
+
+
     pub ("bytevector?") fn bytevector_p<'gc>(nctx, value: Value<'gc>) -> bool {
         nctx.return_(value.is::<ByteVector>())
     }
@@ -89,6 +91,16 @@ native_fn! {
         nctx.return_(Ok(v))
     }
 
+    pub ("bytevector-ref") fn bytevector_ref<'gc>(nctx, bv: Gc<'gc, ByteVector>, k: usize) -> Result<u8, Value<'gc>> {
+        if k >= bv.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation("bytevector-u8-ref", "index out of bounds", Some(k.into_value(ctx)), Some(1), 2, &[bv.into(), k.into_value(ctx)]);
+        }
+
+        let v = bv[k];
+
+        nctx.return_(Ok(v))
+    }
     pub ("bytevector-u8-set!") fn bytevector_u8_set<'gc>(nctx, bv: Gc<'gc, ByteVector>, k: usize, value: u8) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
             let ctx = nctx.ctx;
@@ -101,6 +113,26 @@ native_fn! {
         nctx.return_(Ok(value))
     }
 
+    pub ("bytevector-set!") fn bytevector_set<'gc>(nctx, bv: Gc<'gc, ByteVector>, k: usize, value: u8) -> Result<u8, Value<'gc>> {
+        if k >= bv.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation("bytevector-u8-set!", "index out of bounds", Some(k.into_value(ctx)), Some(1), 3, &[bv.into(), k.into_value(ctx), value.into_value(ctx)]);
+        }
+
+        unsafe {
+            bv.as_slice_mut_unchecked()[k] = value;
+        }
+        nctx.return_(Ok(value))
+    }
+
+    pub ("bytevector=?") fn bytevector_eq_p<'gc>(nctx, bv1: Gc<'gc, ByteVector>, bv2: Gc<'gc, ByteVector>) -> bool {
+        nctx.return_(bv1.as_slice() == bv2.as_slice())
+    }
+
+    pub ("bytevector-fill!") fn bytevector_fill<'gc>(nctx, bv: Gc<'gc, ByteVector>, value: u8) -> Value<'gc> {
+        bv.fill(value);
+        nctx.return_(bv.into())
+    }
 
 
 

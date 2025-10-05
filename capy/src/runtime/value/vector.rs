@@ -8,8 +8,8 @@ use rsgc::{
     mmtk::AllocationSemantics,
     object::VTable,
 };
-use std::mem::offset_of;
 use std::ops::{Deref, Index};
+use std::{cell::UnsafeCell, mem::offset_of};
 
 use crate::runtime::{Context, value::*};
 
@@ -195,7 +195,7 @@ macro_rules! vector {
 pub struct ByteVector {
     hdr: ScmHeader,
     len: usize,
-    data: [u8; 0],
+    data: [UnsafeCell<u8>; 0],
 }
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
@@ -256,15 +256,17 @@ impl ByteVector {
         }
     }
 
+    #[inline(never)]
     pub fn from_slice<'gc>(mc: &Mutation<'gc>, slice: &[u8]) -> Gc<'gc, Self> {
         let length = slice.len();
         let byte_vector = Self::new::<false>(mc, length);
         byte_vector.copy_from(slice);
+
         byte_vector
     }
 
     pub fn as_slice<'gc>(self: Gc<'gc, Self>) -> &'gc [u8] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
     }
 
     pub unsafe fn as_slice_mut_unchecked(&self) -> &mut [u8] {
@@ -280,6 +282,7 @@ impl ByteVector {
         }
     }
 
+    #[inline(never)]
     pub fn copy_from(&self, other: impl AsRef<[u8]>) {
         let other_slice = other.as_ref();
         assert!(
@@ -288,17 +291,14 @@ impl ByteVector {
         );
 
         unsafe {
-            let slice = self.as_slice_mut_unchecked();
-            for (i, &byte) in other_slice.iter().enumerate() {
-                slice[i] = byte;
-            }
+            self.as_slice_mut_unchecked()[..other_slice.len()].copy_from_slice(other_slice);
         }
     }
 }
 
 impl<'gc> AsRef<[u8]> for ByteVector {
     fn as_ref(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
     }
 }
 
@@ -306,7 +306,7 @@ impl<'gc> Deref for ByteVector {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
     }
 }
 
@@ -314,8 +314,7 @@ impl<'gc> Index<usize> for ByteVector {
     type Output = u8;
 
     fn index(&self, index: usize) -> &Self::Output {
-        assert!(index < self.len, "Index out of bounds");
-        unsafe { &*self.data.get_unchecked(index) }
+        &(**self)[index]
     }
 }
 
@@ -351,6 +350,7 @@ fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
             .to_address()
             .as_mut_ref::<Tuple<'static>>()
             .as_slice_mut_unchecked();
+        println!("trace tuple {:p}", tuple);
         tuple.trace(vis);
     }
 }

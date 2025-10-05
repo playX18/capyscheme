@@ -98,6 +98,10 @@ native_fn!(
 
         nctx.return_(lst.get())
     }
+
+    pub ("unspecified") fn unspecified<'gc>(nctx) -> Value<'gc> {
+        nctx.return_(Value::undefined())
+    }
 );
 
 native_cont!(
@@ -115,6 +119,13 @@ native_cont!(
         unsafe {
             nctx.return_call_unsafe(retk, reth, handler, &[ans])
         }
+    }
+
+    pub ("procedure-name") fn procedure_name<'gc>(
+        nctx,
+        proc: Gc<'gc, Closure<'gc>>
+    ) -> Value<'gc> {
+        todo!()
     }
 );
 

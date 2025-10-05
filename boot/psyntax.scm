@@ -7,6 +7,22 @@
 (define bound-identifier=? #f)
 (define $sc-dispatch #f)
 (define macroexpand #f)
+(define <er-macro-transformer> 
+  (let* ([rtd (make-record-type-descriptor '<er-macro-transformer> #f #f #f #f '#((immutable proc)))]
+         [rcd (make-record-constructor-descriptor rtd #f #f)])
+        (make-record-type '<er-macro-transformer> rtd rcd)))
+(define er-macro-transformer? (record-predicate (record-type-rtd <er-macro-transformer>)))
+(define er-macro-transformer-proc (record-accessor (record-type-rtd <er-macro-transformer>) 0))
+(define er-macro-transformer (record-constructor (record-type-rcd <er-macro-transformer>)))
+
+(define <ir-macro-transformer> 
+  (let* ([rtd (make-record-type-descriptor '<ir-macro-transformer> #f #f #f #f '#((immutable proc)))]
+         [rcd (make-record-constructor-descriptor rtd #f #f)])
+        (make-record-type '<ir-macro-transformer> rtd rcd)))
+(define ir-macro-transformer? (record-predicate (record-type-rtd <ir-macro-transformer>)))
+(define ir-macro-transformer-proc (record-accessor (record-type-rtd <ir-macro-transformer>) 0))
+(define ir-macro-transformer (record-constructor (record-type-rcd <ir-macro-transformer>)))
+
 
 (let ([syntax? (module-ref (current-module) 'syntax?)]
       [make-syntax (module-ref (current-module) 'make-syntax)]
@@ -236,6 +252,22 @@
         [(symbol? x) #t]
         [(syntax? x) (symbol? (syntax-expression x))]
         [else #f]))
+    (define (syntax-car x)
+      (if (syntax? x)
+        (let ([e (syntax-expression x)]
+              [w (syntax-wrap x)]
+              [m (syntax-module x)]
+              [s (syntax-sourcev x)])
+          (make-syntax (car e) w m s))
+        (car x)))
+    (define (syntax-cdr x)
+      (if (syntax? x)
+        (let ([e (syntax-expression x)]
+              [w (syntax-wrap x)]
+              [m (syntax-module x)]
+              [s (syntax-sourcev x)])
+          (make-syntax (cdr e) w m s))
+        (cdr x)))
     (define (id-sym-name x) (if (syntax? x) (syntax-expression x) x))
     (define (id-sym-name&marks x w)
       (if (syntax? x)
@@ -509,7 +541,6 @@
       (define (resolve-global var mod)
         (let ([v (and (not (equal? mod '(primitive)))
                            (module-variable (if mod (resolve-module (cdr mod) #t #t) (current-module)) var))])
-
           (if (and v (variable-bound? v) (macro? (variable-ref v)))
             (let* ([m (variable-ref v)]
                    [type (macro-type m)]
@@ -638,18 +669,28 @@
         (define (macro-introduced-identifier? id)
             (not (equal? (wrap-marks (syntax-wrap id)) '(top))))
         (define (ensure-fresh-name var)
-            (define (ribcage-has-var? var)
-                (let loop ([labels (ribcage-labels ribcage)])
-                    (cond
-                        [(null? labels) #f]
-                        [else
-                            (let ([wrapped (cdr (car labels))] [labels (cdr labels)])
-                                (or (eq? (syntax-expression wrapped) var) (loop labels)))])))
-            (let loop ([unique var] [n 1])
-                (if (ribcage-has-var? unique)
-                    (let ([tail (string->symbol (number->string n))])
-                        (loop (symbol-append var '- tail) (+ 1 n)))
-                    unique)))
+           
+            (letrec* ((ribcage-has-var?
+                                         (lambda (var)
+                                           (let lp ((labels (ribcage-labels ribcage)))
+                                             (let* ((v labels)
+                                                    (fk (lambda ()
+                                                          (let ((fk (lambda () (error "value failed to match" v))))
+                                                            (if (pair? v)
+                                                                (let ((vx (car v)) (vy-1 (cdr v)))
+                                                                  (if (pair? vx)
+                                                                      (let ((vx (car vx)) (vy (cdr vx)))
+                                                                        (let* ((wrapped vy) (labels vy-1))
+                                                                          (or (eq? (syntax-expression wrapped) var)
+                                                                              (lp labels))))
+                                                                      (fk)))
+                                                                (fk))))))
+                                               (if (null? v) #f (fk)))))))
+                                (let lp ((unique var) (n 1))
+                                  (if (ribcage-has-var? unique)
+                                      (let ((tail (string->symbol (number->string n))))
+                                        (lp (symbol-append var '- tail) (+ 1 n)))
+                                      unique))))
         (define (fresh-derived-name id orig-form)
             (ensure-fresh-name
                 (symbol-append
@@ -657,7 +698,8 @@
                     '-
                     (string->symbol
                         (number->string
-                            (hash (syntax->datum orig-form))) 16))))
+                            (hash (syntax->datum orig-form)))))))
+
         (define (parse body r w s m esew mod)
             (let loop ([body body])
 
@@ -671,7 +713,8 @@
         (define (parse1 x r w s m esew mod)
             (define (current-module-for-expansion mod)
                 (cond
-                    [(and (pair? mod) (eq? (car mod) 'hygiene)) (cons 'hygiene (module-name (current-module)))]
+                    [(and (pair? mod) (eq? (car mod) 'hygiene))
+                      (cons 'hygiene (module-name (current-module)))]
                     [else mod]))
 
             (call-with-values
@@ -695,8 +738,8 @@
                                       (lambda (type* value* mod*)
                                         (if (eq? type* 'macro)
                                             (top-level-eval
-                                            (build-global-definition s mod var (build-void s))
-                                            mod))
+                                              (build-global-definition s mod var (build-void s))
+                                              mod))
                                         (lambda ()
                                           (build-global-definition s mod var (expand e r w mod))))))))]
                       [(eq? type 'begin-form)
@@ -705,7 +748,7 @@
                                   (apply (lambda (e1) (parse e1 r w s m essew mod)) tmp)
                                   (syntax-violation
                                       #f
-                                      "source expansion failed to match any pattern"
+                                      "source expansion failed to match any pattern dada"
                                       e)))]
                       [(eq? type 'eval-when-form)
                         (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
@@ -745,7 +788,7 @@
                                                      tmp)
                                               (syntax-violation
                                                #f
-                                               "source expression failed to match any pattern"
+                                               "source expression failed to match any pattern dasda"
                                                tmp-1)))]
                       [(or (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
                         (let* ([id (wrap value w mod)]
@@ -758,20 +801,20 @@
                                   ((memv key '(c))
                                     (cond
                                       ((memq 'compile esew)
-                                      (let ((e (expand-install-global mod var type (expand e r w mod))))
+                                      (let ((e (expand-install-global mod var type (expand e r w mod) id)))
                                         (top-level-eval e mod)
                                         (if (memq 'load esew) (list (lambda () e)) '())))
                                       ((memq 'load esew)
                                       (list (lambda ()
-                                              (expand-install-global mod var type (expand e r w mod)))))
+                                              (expand-install-global mod var type (expand e r w mod) id))))
                                       (else '())))
                                   ((memv key '(c&e))
-                                    (let ((e (expand-install-global mod var type (expand e r w mod))))
+                                    (let ((e (expand-install-global mod var type (expand e r w mod) id)))
                                       (top-level-eval e mod)
                                       (list (lambda () e))))
                                   (else (if (memq 'eval esew)
                                             (top-level-eval
-                                              (expand-install-global mod var type (expand e r w mod))
+                                              (expand-install-global mod var type (expand e r w mod) id)
                                               mod))
                                         '()))))]
                       [else
@@ -789,7 +832,10 @@
                 (cons ((car thunks)) (lp (cdr thunks)))))])
             (if (null? res) (build-void s) (build-sequence s res)))))
     
+    
     (define (expand-macro p e r w s rib mod)
+      (define transformer (car p))
+      (define transformer-stx (cdr p))
       (define (decorate-source x)
         (source-wrap x empty-wrap s #f))
       (define (map* f x)
@@ -804,6 +850,34 @@
                             (let* ((x vx) (x* vy)) (cons (f x) (map* f x*))))
                           (fk))))))
           (if (null? v) '() (fk))))
+
+
+      (define (rebuild-macro-output/closure x m k)
+        (cond 
+          [(pair? x) (decorate-source (map* (lambda (x) (rebuild-macro-output/closure x m k)) x))]
+          [(syntax? x)
+            (let ((w (syntax-wrap x)))
+              (let ((ms (wrap-marks w)) (ss (wrap-subst w)))
+                (if (and (pair? ms) (eq? (car ms) the-anti-mark))
+                    (wrap-syntax x (make-wrap (cdr ms) (if rib (cons rib (cdr ss)) (cdr ss))) mod)
+                    (wrap-syntax
+                      x
+                      (make-wrap (cons m ms) (if rib (cons rib (cons 'shift ss)) (cons 'shift ss)))
+                    mod))))]
+          [(vector? x)
+            (let* ((n (vector-length x)) (v (make-vector n)))
+              (let loop ((i 0))
+                (if (= i n)
+                    (begin (if #f #f) v)
+                    (begin
+                      (vector-set! v i (rebuild-macro-output/closure (vector-ref x i) m k))
+                      (loop (+ i 1)))))
+              (decorate-source v))]
+            [(symbol? x)
+              (rebuild-macro-output/closure (datum->syntax k x #f) m k)]
+            [else (decorate-source x)]
+        )
+      )
       (define (rebuild-macro-output x m)
         (cond
           ((pair? x) (decorate-source (map* (lambda (x) (rebuild-macro-output x m)) x)))
@@ -832,16 +906,64 @@
             (source-wrap e w (wrap-subst w) mod)
             x))
           (else (decorate-source x))))
-      (let ([old (fluid-ref transformer-environment)])
+      (define (apply-transformer transform e)
+        (rebuild-macro-output 
+          (transform e)
+          (new-mark)))
+      (define (apply-transformer/closure transform e k)
+        (rebuild-macro-output/closure 
+          (transform e)
+          (new-mark)
+          k))
       
+      (define (er-transform transformer e k)
+        (let* ([i (if (identifier? e) e (syntax-cdr e))]
+               [inject (lambda (id)
+                (if (identifier? id)
+                  id 
+                  (datum->syntax i id #f)))])
+          (apply-transformer/closure 
+            (lambda (stx)
+              (transformer
+                (syntax->datum e)
+                (lambda (exp)
+                  (datum->syntax k exp #f))
+                (lambda (id1 id2)
+                  (free-identifier=? (inject id1) (inject id2)))))
+            e i)))
+      
+      
+      (define (ir-transform transformer e k)
+        (let* ([rename (lambda (id)
+                          (if (identifier? id)
+                            id 
+                            (datum->syntax k id #f)))])
+              (apply-transformer/closure 
+                (lambda (stx)
+                  (let ([i (if (identifier? e) e (syntax-car e))])
+                    (transformer 
+                      (syntax->datum e)
+                      (lambda (exp)
+                        (datum->syntax i exp #f))
+                      (lambda (id1 id2)
+                        (free-identifier=? (rename id1) (rename id2))))))
+                e k)))
+     
+      (let ([old (fluid-ref transformer-environment)])
         (dynamic-wind 
           (lambda () (fluid-set! transformer-environment (lambda (k) (k e r w s rib mod))))
-          (lambda () (rebuild-macro-output (p (source-wrap e (anti-mark w) s mod)) (new-mark)))
+          (lambda () 
+            (cond 
+              [(procedure? transformer) (apply-transformer transformer (source-wrap e (anti-mark w) s mod))]
+              [(er-macro-transformer? transformer) (er-transform (er-macro-transformer-proc transformer) (source-wrap e (anti-mark w) s mod) transformer-stx)]
+              [(ir-macro-transformer? transformer) (ir-transform (ir-macro-transformer-proc transformer) (source-wrap e (anti-mark w) s mod) transformer-stx)]
+              [else (syntax-violation #f "invalid transformer" p)]))
+          ;(lambda () (rebuild-macro-output (p (source-wrap e (anti-mark w) s mod)) (new-mark)))
           (lambda () (fluid-set! transformer-environment old)))))
 
     (define (eval-local-transformer expanded mod)
       (let ([p (local-eval expanded mod)])
-        (if (not (procedure? p)) (syntax-violation #f "nonprocedure transformer" p))
+        (if (not (or (procedure? p) (er-transformer? p) (ir-transformer? p))) (syntax-violation #f "nonprocedure transformer" p))
         p))
     (define (expand-local-syntax rec? e r w s mod k)
       (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ #(each (any any)) any . each-any))))
@@ -856,7 +978,7 @@
                                           labels
                                           (let ((w (if rec? new-w w)) (trans-r (macros-only-env r)))
                                             (map (lambda (x)
-                                                   (cons 'macro (eval-local-transformer (expand x trans-r w mod) mod)))
+                                                   (cons 'macro  (cons (eval-local-transformer (expand x trans-r w mod) mod) (wrap x w '(hygiene capy))) ))
                                                  val))
                                           r)
                                          new-w
@@ -903,17 +1025,19 @@
     (define (syntax-type e r w s rib mod for-car?)
         (cond
          [(symbol? e)
-              (call-with-values (lambda () 
+              (call-with-values (lambda ()
                   (resolve-identifier e w r mod #t))
                   (lambda (type value mod*)
                       (cond
                           [(eq? type 'macro)
+                              
                               (if for-car?
                                   (values type value e e w s mod)
                                   (syntax-type (expand-macro value e r w s rib mod) r empty-wrap s rib mod #f))]
                           [(eq? type 'global)
+                              
                               (values type value e value w s mod*)]
-                          [else (values type value e e w s mod*)])))]
+                          [else (values type value e e w s mod)])))]
          [(pair? e)
             (let ([first (car e)])
                 (call-with-values (lambda () (syntax-type first r w s rib mod #t))
@@ -938,13 +1062,13 @@
                               (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
                                 (if (and tmp (apply (lambda (name val) (id? name)) tmp))
                                     (apply (lambda (name val) (values 'define-syntax-form name e val w s mod)) tmp)
-                                    (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
+                                    (syntax-violation #f "source expression failed to match any pattern dasda" tmp-1)))]
                             [(eq? ftype 'define-syntax-parameter)
                               (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
                                 (if (and tmp (apply (lambda (name val) (id? name)) tmp))
                                     (apply (lambda (name val) (values 'define-syntax-parameter-form name e val w s mod))
                                           tmp)
-                                    (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
+                                    (syntax-violation #f "source expression failed to match any pattern xasxa" tmp-1)))]
                             [(eq? ftype 'define)
                                 (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any))))
                               (if (and tmp-1 (apply (lambda (name val) (id? name)) tmp-1))
@@ -993,7 +1117,7 @@
          [(self-evaluating? e) (values 'constant #f e e w s mod)]
          [else (values 'other #f e e w s mod)]))
 
-    (define (expand-install-global mod name type e)
+    (define (expand-install-global mod name type e id)
         (build-global-definition
             #f
             mod
@@ -1005,14 +1129,14 @@
                       (make-constant #f
                           (if (eq? type 'define-syntax-parameter-form)
                               'syntax-parameter 'macro))
-                      e))))
+                      (build-primcall #f 'cons (list e (make-constant #f id)))
+                      ))))
     (define (expand e r w mod)
         (call-with-values
             (lambda () (syntax-type e r w (source-annotation e) #f mod #f))
             (lambda (type value form e w s mod)
                 (expand-expr type value form e r w s mod))))
     (define (expand-expr type value form e r w s mod)
-     
         (cond
             [(eq? type 'lexical)
                 (build-lexical-reference s e value)]
@@ -1054,7 +1178,7 @@
                                    (let ((when-list (parse-when-list e x)))
                                      (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
                                  tmp)
-                          (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
+                          (syntax-violation #f "source expression failed to match any pattern www" tmp-1)))]
             [(eq? type 'begin-form)
                 (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any . each-any))))
                   (if tmp-1
@@ -1064,7 +1188,7 @@
                             (apply (lambda ()
                                      (syntax-violation #f "sequence of zero expressions" (source-wrap e w s mod)))
                                    tmp-1)
-                            (syntax-violation #f "source expression failed to match any pattern" tmp)))))]
+                            (syntax-violation #f "source expression failed to match any pattern dadas" tmp)))))]
             [(or (eq? type 'define-form) (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
                 (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
             [(eq? type 'local-syntax-form)
@@ -1078,7 +1202,7 @@
         (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(any . each-any))))
           (if tmp
               (apply (lambda (e0 e1) (build-call s x (map (lambda (e) (expand e r w mod)) e1))) tmp)
-              (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
+              (syntax-violation #f "source expression failed to match any pattern dasdasd" tmp-1))))
 
     (define (expand-body body outer-form r w mod)
 
@@ -1167,7 +1291,7 @@
                                         r
                                         (extend-env
                                          (list label)
-                                         (list (cons 'macro (eval-local-transformer (expand e trans-r w mod) mod)))
+                                         (list (cons 'macro (cons (eval-local-transformer (expand e trans-r w mod) mod) id)))
                                          (cdr r)))
                                        (parse body (cons id ids) labels var-ids vars vals bindings #f))]
                                     [(eq? type 'define-syntax-parameter-form) 
@@ -1250,6 +1374,72 @@
                                       (values req #f rest #f)
                                       (syntax-violation 'lambda "duplicate identifier in argument list" orig-args)))))
                  (req orig-args '()))))
+    (define (expand-public-ref e r w mod)
+        (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any))))
+                 (if (and tmp (apply (lambda (mod id) (and (and-map id? mod) (id? id))) tmp))
+                     (apply (lambda (mod id)
+                              (values
+                               (syntax->datum id)
+                               r
+                               top-wrap
+                               #f
+                               (syntax->datum (cons (make-syntax 'public '((top)) '(hygiene capy)) mod))))
+                            tmp)
+                     (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
+
+    (define (expand-private-ref e r w mod)
+        (letrec* ((remodulate
+                          (lambda (x mod)
+                            (cond
+                              ((pair? x) (cons (remodulate (car x) mod) (remodulate (cdr x) mod)))
+                              ((syntax? x)
+                               (make-syntax
+                                (remodulate (syntax-expression x) mod)
+                                (syntax-wrap x)
+                                mod
+                                (syntax-sourcev x)))
+                              ((vector? x)
+                               (let* ((n (vector-length x)) (v (make-vector n)))
+                                 (let loop ((i 0))
+                                   (if (= i n)
+                                       (begin (if #f #f) v)
+                                       (begin (vector-set! v i (remodulate (vector-ref x i) mod)) (loop (+ 1 i)))))))
+                              (else x)))))
+                 (let* ((tmp e)
+                        (tmp-1 ($sc-dispatch
+                                tmp
+                                (list '_ (vector 'free-id (make-syntax 'primitive '((top)) '(hygiene capy))) 'any))))
+                   (if (and tmp-1
+                            (apply (lambda (id)
+                                     (and (id? id)
+                                          (equal? (cdr (or (and (syntax? id) (syntax-module id)) mod)) '(capy))))
+                                   tmp-1))
+                       (apply (lambda (id) (values (syntax->datum id) r top-wrap #f '(primitive))) tmp-1)
+                       (let ((tmp-1 ($sc-dispatch tmp '(_ each-any any))))
+                         (if (and tmp-1 (apply (lambda (mod id) (and (and-map id? mod) (id? id))) tmp-1))
+                             (apply (lambda (mod id)
+                                      (values
+                                       (syntax->datum id)
+                                       r
+                                       top-wrap
+                                       #f
+                                       (syntax->datum (cons (make-syntax 'private '((top)) '(hygiene capy)) mod))))
+                                    tmp-1)
+                             (let ((tmp-1 ($sc-dispatch
+                                           tmp
+                                           (list '_
+                                                 (vector 'free-id (make-syntax '@@ '((top)) '(hygiene capy)))
+                                                 'each-any
+                                                 'any))))
+                               (if (and tmp-1 (apply (lambda (mod exp) (and-map id? mod)) tmp-1))
+                                   (apply (lambda (mod exp)
+                                            (let ((mod (syntax->datum
+                                                        (cons (make-syntax 'private '((top)) '(hygiene capy)) mod))))
+                                              (values (remodulate exp mod) r w (source-annotation exp) mod)))
+                                          tmp-1)
+                                   (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
+      
+
     (define expand-syntax 
       (letrec* ((gen-syntax
                         (lambda (src e r maps ellipsis? mod)
@@ -1592,7 +1782,7 @@
                                        (list (expand val r empty-wrap mod))))
                                     (syntax-violation 'syntax-case "invalid literals list" e)))
                               tmp)
-                       (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))
+                       (syntax-violation #f "source expression failed to match any pattern AAA" tmp-1))))))
     
     (set! syntax->datum (lambda (x) (strip x)))
     (set! $sc-dispatch (lambda (e p)
@@ -1701,7 +1891,8 @@
 
 
     (set! identifier? (lambda (x) (nonsymbol-id? x)))
-    (set! datum->syntax (lambda (id datum source)        
+    (set! datum->syntax (lambda (id datum . opt-source)  
+        (define source (if (null? opt-source) #f (car opt-source)))      
         (define (props->sourcev alist)
             (and (pair? alist)
                 (vector (assq-ref alist 'filename)
@@ -1777,13 +1968,13 @@
                                 (expand then r w mod)
                                 (expand else r w mod)))
                              tmp-1)
-                      (syntax-violation #f "source expression failed to match any pattern" tmp)))))))
+                      (syntax-violation #f "source expression failed to match any pattern bbb" tmp)))))))
     (global-extend 'core 'quote
       (lambda (e r w s mod)
         (let ([tmp ($sc-dispatch e '(_ any))])
           (if tmp
               (apply (lambda (e) (build-data s (strip e))) tmp)
-              (syntax-violation #f "source expression failed to match any pattern" e)))))
+              (syntax-violation #f "source expression failed to match any pattern ccc" e)))))
     (global-extend 'core 'quote-syntax 
       (lambda (e r w s mod)
                (let* ((tmp-1 (source-wrap e w s mod)) (tmp ($sc-dispatch tmp-1 '(_ any))))
@@ -1923,7 +2114,7 @@
                                                                tmp)
                                                         (syntax-violation
                                                          #f
-                                                         "source expression failed to match any pattern"
+                                                         "source expression failed to match any pattern xxx"
                                                          tmp-1))))))
                                              (build-call
                                               s
@@ -1941,6 +2132,8 @@
     (global-extend 'core 'syntax expand-syntax)
     (global-extend 'define-syntax 'define-syntax '())
     (global-extend 'define-syntax-parameter 'define-syntax-parameter '())
+    (global-extend 'module-ref '@ expand-public-ref)
+    (global-extend 'module-ref '@@ expand-private-ref)
     )
 
 
@@ -1949,7 +2142,7 @@
     (make-syntax-transformer
      'with-syntax
      'macro
-     (lambda (x)
+     (cons (lambda (x)
        (let ((tmp x))
          (let ((tmp-1 ($sc-dispatch tmp '(_ () any . each-any))))
            (if tmp-1
@@ -1974,14 +2167,15 @@
                                                 (cons (make-syntax 'let '((top)) '(hygiene capy))
                                                       (cons '() (cons e1 e2))))))
                                   tmp-1)
-                           (syntax-violation #f "source expression failed to match any pattern" tmp))))))))))))
+                           (syntax-violation #f "source expression failed to match any pattern bbbb" tmp)))))))))
+            (make-syntax #f '((top)) '(hygiene capy))))))
 
 (define syntax-error
   (let ((make-syntax make-syntax))
     (make-syntax-transformer
      'syntax-error
      'macro
-     (lambda (x)
+     (cons (lambda (x)
        (let ((tmp-1 x))
          (let ((tmp ($sc-dispatch tmp-1 '(_ (any . any) any . each-any))))
            (if (if tmp (apply (lambda (keyword operands message arg) (string? (syntax->datum message))) tmp) #f)
@@ -2008,14 +2202,15 @@
                                      '(hygiene capy))
                                     (cons '(#f) (cons message arg))))
                             tmp)
-                     (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))))))
+                     (syntax-violation #f "source expression failed to match any pattern erq" tmp-1)))))))
+                (make-syntax #f '((top)) '(hygiene capy))))))
                      
 (define let*
   (let ((make-syntax make-syntax))
     (make-syntax-transformer
      'let*
      'macro
-     (lambda (x)
+     (cons (lambda (x)
        (let ((tmp-1 x))
          (let ((tmp ($sc-dispatch tmp-1 '(any #(each (any any)) any . each-any))))
            (if (if tmp (apply (lambda (let* x v e1 e2) (and-map identifier? x)) tmp) #f)
@@ -2029,6 +2224,7 @@
                                       (apply (lambda (body binding)
                                                (list (make-syntax 'let '((top)) '(hygiene capy)) (list binding) body))
                                              tmp)
-                                      (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))))
+                                      (syntax-violation #f "source expression failed to match any pattern xca" tmp-1)))))))
                       tmp)
-               (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))))
+               (syntax-violation #f "source expression failed to match any pattern daa" tmp-1)))))
+          (make-syntax #f '((top)) '(hygiene capy))))))

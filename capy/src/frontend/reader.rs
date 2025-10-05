@@ -542,7 +542,13 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(vec)
             }
 
-            _ => todo!("Unhandled node kind: {}", node.kind()),
+            _ => todo!(
+                "Unhandled node kind: {}: {} at {} in {}",
+                node.kind(),
+                self.text_of(node),
+                node.start_position().row,
+                self.source_file
+            ),
         }
     }
 }

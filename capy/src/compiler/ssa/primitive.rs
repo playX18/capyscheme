@@ -1622,6 +1622,12 @@ prim!(
         PrimValue::Comparison(is_vector)
     },
 
+    "bytevector?" => is_bytevector(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let is_bv = ssa.has_typ8(val, TypeCode8::BYTEVECTOR.bits());
+        PrimValue::Comparison(is_bv)
+    },
+
     "vector" => vector(ssa, args, _h) {
         let size = size_of::<Vector>() as i64 + args.len() as i64 * size_of::<Value>() as i64;
         let size = ssa.builder.ins().iconst(types::I64, size);
@@ -1648,7 +1654,11 @@ prim!(
     "make-tuple" => make_tuple(ssa, args, _h) {
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let size = ssa.atom(args[0]);
-        let fill = ssa.atom(args[1]);
+        let fill = if args.len() > 1 {
+            ssa.atom(args[1])
+        } else {
+            ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64)
+        };
 
         let result = ssa.handle_thunk_call_result(
             ssa.thunks.make_tuple,
@@ -1849,6 +1859,42 @@ prim!(
         PrimValue::Value(untagged)
     },
 
+    "exact-integer?" => is_exact_integer(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let check = ssa.handle_thunk_call_result(ssa.thunks.exact_integerp, &[ctx, val], _h);
+
+
+        PrimValue::Value(check)
+    },
+
+    "exact?" => is_exact(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let check = ssa.handle_thunk_call_result(ssa.thunks.exactp, &[ctx, val], _h);
+
+        PrimValue::Value(check)
+    },
+
+    "integer?" => is_integer(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let check = ssa.builder.ins().call(ssa.thunks.integerp, &[ctx, val]);
+        PrimValue::Comparison(ssa.builder.inst_results(check)[0])
+    },
+
+    "char?" => is_char(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let mask = ssa.builder.ins().iconst(types::I64, Value::CHAR_MASK as i64);
+        let tag = ssa.builder.ins().iconst(types::I64, Value::CHAR_TAG);
+        let masked = ssa.builder.ins().band(val, mask);
+        let cmp = ssa.builder.ins().icmp(IntCC::Equal, masked, tag);
+        PrimValue::Comparison(cmp)
+    },
+
     "number?" => is_number(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let mask = ssa.builder.ins().band_imm(val, Value::NUMBER_TAG as i64);
@@ -1872,6 +1918,51 @@ prim!(
         let val = ssa.atom(args[0]);
 
         PrimValue::Comparison(ssa.has_typ16(val, TypeCode16::COMPLEX.bits()))
+    },
+
+    "ash" => ash(ssa, args, _h) {
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let lhs = ssa.atom(args[0]);
+        let rhs = ssa.atom(args[1]);
+
+        let result = ssa.handle_thunk_call_result(ssa.thunks.ash, &[ctx, lhs, rhs], _h);
+        PrimValue::Value(result)
+    },
+    "logand" => logand(ssa, args, _h) {
+        let lhs = ssa.atom(args[0]);
+        let rhs = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.logand, &[ctx, lhs, rhs], _h);
+        PrimValue::Value(result)
+    },
+
+    "logior" => logior(ssa, args, _h) {
+        let lhs = ssa.atom(args[0]);
+        let rhs = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.logior, &[ctx, lhs, rhs], _h);
+        PrimValue::Value(result)
+    },
+
+    "lognot" => lognot(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.lognot, &[ctx, val], _h);
+        PrimValue::Value(result)
+    },
+
+    "integer->char" => integer_to_char(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.integer_to_char, &[ctx, val], _h);
+        PrimValue::Value(result)
+    },
+
+    "char->integer" => char_to_integer(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.char_to_integer, &[ctx, val], _h);
+        PrimValue::Value(result)
     },
 
     "+" => plus(ssa, args, _h) {
@@ -2123,7 +2214,8 @@ prim!(
 
     "tuple-size" => tuple_size(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
-        let size = ssa.handle_thunk_call_result(ssa.thunks.tuple_size, &[arg], _h);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let size = ssa.handle_thunk_call_result(ssa.thunks.tuple_size, &[ctx, arg], _h);
         PrimValue::Value(size)
     },
 

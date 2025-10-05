@@ -1,12 +1,12 @@
+(define (make-tree depth)
+    (if (= depth 0)
+        '()
+        (cons (make-tree (- depth 1)) (make-tree (- depth 1)))))
 
-(define-module (bar)
-    (export (rename foo base:foo))
-    (define (foo) 42)
-    (letrec ([x 42]
-             [y (lambda () (+ (foo) x))])
-        (y)))
+(define iterations 246000)
+(define depth 18)
 
-(define-module (baz))
-
-(import (prefix (bar) bar:))
-(print (bar:base:foo))
+(let lp ([i 0] [res '()])
+    (if (< i iterations)
+        (lp (+ i 1) (make-tree depth))
+        #f))

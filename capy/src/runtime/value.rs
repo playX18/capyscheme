@@ -627,7 +627,11 @@ pub use weak_table::*;
 
 use crate::{
     frontend::reader::Annotation,
-    runtime::{Context, modules::Module, vm::syntax::Syntax},
+    runtime::{
+        Context,
+        modules::Module,
+        vm::syntax::{Syntax, SyntaxTransformer},
+    },
 };
 
 impl<'gc> fmt::Pointer for Value<'gc> {
@@ -776,6 +780,9 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                     syn.source(),
                     syn.wrap()
                 )
+            } else if self.is::<SyntaxTransformer>() {
+                let st = self.downcast::<SyntaxTransformer>();
+                write!(f, "#<syntax-transformer {}>", st.name())
             } else {
                 write!(f, "{:p} with tc={}", self, self.typ16().bits())
             }

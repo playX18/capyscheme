@@ -6,6 +6,7 @@ use crate::{
     fluid, global, list, native_fn,
     runtime::{
         Context,
+        prelude::VariableRef,
         value::{
             Boxed, HashTable, HashTableType, IntoValue, ScmHeader, Str, Symbol, Tagged, TypeCode8,
             Value,
@@ -58,6 +59,7 @@ pub struct Module<'gc> {
     pub next_unique_id: AtomicUsize,
     pub replacements: Lock<Value<'gc>>,
     pub inlinable_exports: Lock<Value<'gc>>,
+    pub environment: Lock<Value<'gc>>,
 }
 
 unsafe impl<'gc> Trace for Module<'gc> {
@@ -114,6 +116,7 @@ impl<'gc> Module<'gc> {
                     0,
                     0.75,
                 ))),
+                environment: Lock::new(Value::new(false)),
             },
         )
     }
@@ -575,9 +578,15 @@ impl<'gc> Module<'gc> {
 global!(
     resolve_module_root<'gc>: Gc<'gc, Module<'gc>> = (ctx) {
         let root = Module::new(ctx, 0, Value::null(), Value::new(false));
-
+        barrier::field!(Gc::write(&ctx, root), Module, name).unlock().set(Value::null());
         root.define_submodule(ctx, Symbol::from_str(ctx, "capy").into(), *root_module(ctx));
         root
+    };
+
+    loc_resolve_module_root<'gc>: VariableRef<'gc> = (ctx) {
+        let root = resolve_module_root(ctx);
+        let var = define(ctx, "*resolve-module-root*", (*root).into());
+        var
     };
 );
 
@@ -587,14 +596,21 @@ pub fn resolve_module<'gc>(
     autoload: bool,
     ensure: bool,
 ) -> Option<Gc<'gc, Module<'gc>>> {
-    if let Some(loaded) = resolve_module_root(ctx).nested_ref_module(ctx, name)
+    if let Some(loaded) = loc_resolve_module_root(ctx)
+        .get()
+        .downcast::<Module>()
+        .nested_ref_module(ctx, name)
         && (!autoload || loaded.public_interface.get().is_some())
     {
         return Some(loaded);
     }
 
     if ensure {
-        Some(make_modules_in(ctx, *resolve_module_root(ctx), name))
+        Some(make_modules_in(
+            ctx,
+            loc_resolve_module_root(ctx).get().downcast(),
+            name,
+        ))
     } else {
         None
     }
@@ -1034,6 +1050,17 @@ native_fn!(
         let unique_id = m.next_unique_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         nctx.return_(unique_id)
     }
+
+    pub ("module-environment") fn module_environment<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+        nctx.return_(module.environment.get())
+    }
+
+    pub ("set-module-environment!") fn set_module_environment<'gc>(nctx, module: Gc<'gc, Module<'gc>>, environment: Value<'gc>) -> Value<'gc> {
+        barrier::field!(Gc::write(&nctx.ctx, module), Module, environment)
+            .unlock()
+            .set(environment);
+        nctx.return_(Value::undefined())
+    }
 );
 
 global!(
@@ -1058,4 +1085,5 @@ pub fn init_modules<'gc>(ctx: Context<'gc>) {
     barrier::field!(Gc::write(&ctx, scm_module), Module, obarray)
         .unlock()
         .set(root_module.obarray.get());
+    let _ = loc_resolve_module_root(ctx);
 }

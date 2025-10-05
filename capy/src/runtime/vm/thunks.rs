@@ -240,6 +240,7 @@ thunks! {
         ctx: &Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
+        print_stacktraces_impl(*ctx);
         println!("wrong number of args: {}", subr);
 
         if subr.is::<Closure>() {
@@ -264,6 +265,7 @@ thunks! {
          let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
 
         let mut ls = Value::null();
+
         for &arg in args[from..].iter().rev() {
             ls = Value::cons(*ctx, arg, ls);
         }
@@ -277,7 +279,11 @@ thunks! {
     ) -> Value<'gc> {
 
         crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
-         println!("non applicable: {}", subr);
+        let ret = unsafe { returnaddress(0) };
+        let sym = backtrace::resolve(ret as _, |sym| {
+            println!("{sym:?}");
+        });
+        println!("non applicable: {}", subr);
         todo!()
     }
 
@@ -1210,7 +1216,8 @@ thunks! {
             }
         }
 
-        if count.is_negative() {
+        if !count.is_negative() {
+            println!("lsh {} by {}", n, count);
             let Some(res) = n.lsh(*ctx, count) else {
                 return ThunkResult {
                     code: 1,
@@ -1225,6 +1232,7 @@ thunks! {
             ThunkResult { code: 0, value: res.into_value(*ctx) }
         } else {
             let count = count.negate(*ctx);
+
             let Some(res) = n.rsh(*ctx, count) else {
                 return ThunkResult {
                     code: 1,
@@ -1243,6 +1251,7 @@ thunks! {
 
     pub fn logand(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
+            print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1254,6 +1263,7 @@ thunks! {
         };
 
         let Some(b) = b.number() else {
+             print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1895,6 +1905,7 @@ thunks! {
     }
 
     pub fn number2string(ctx: &Context<'gc>, n: Value<'gc>, radix: Value<'gc>) -> ThunkResult<'gc> {
+
         let radix = if radix == Value::undefined() {
             10
         } else {
@@ -2788,6 +2799,7 @@ pub fn make_lexical_violation<'gc>(
 
 pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) -> ThunkResult<'gc> {
     let Some(module) = crate::runtime::modules::resolve_module(ctx, name, false, false) else {
+        println!("module {} not found in {}", name, current_module(&ctx));
         return ThunkResult {
             code: 1,
             value: make_assertion_violation(
