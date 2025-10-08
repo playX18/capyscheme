@@ -55,7 +55,7 @@ impl<'gc> Context<'gc> {
             let retk = call.rands[0];
             let reth = call.rands[1];
             call_scheme_with_k(
-                *self,
+                self,
                 retk,
                 reth,
                 call.rator,

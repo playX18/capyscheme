@@ -28,8 +28,8 @@ pub fn take_yieldpoint(mc: &Mutation<'_>) -> bool {
     mc.take_yieldpoint() != 0
 }
 use mimalloc::MiMalloc;
-#[global_allocator]
-static ALLOC: MiMalloc = MiMalloc;
+//#[global_allocator]
+//static ALLOC: MiMalloc = MiMalloc;
 
 #[derive(Default)]
 struct DebugAlloc;

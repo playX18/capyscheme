@@ -53,12 +53,12 @@ pub fn call_scheme<'gc>(
     let retk = procs.register_static_cont_closure(ctx, default_retk, NativeLocation::unknown());
     let reth = procs.register_static_cont_closure(ctx, default_reth, NativeLocation::unknown());
 
-    call_scheme_with_k(ctx, retk.into(), reth.into(), rator, args)
+    call_scheme_with_k(&ctx, retk.into(), reth.into(), rator, args)
 }
 
 /// Call Scheme code with explicit return and error continuations.
-pub fn call_scheme_with_k<'gc>(
-    ctx: Context<'gc>,
+pub extern "C" fn call_scheme_with_k<'gc>(
+    ctx: &Context<'gc>,
     retk: Value<'gc>,
     reth: Value<'gc>,
     rator: Value<'gc>,
@@ -127,16 +127,16 @@ pub fn call_scheme_with_k<'gc>(
             println!("{symbol:?}");
         });
         println!(
-            "set to old runstack {}, state={:p}",
-            old_runstack, ctx.state
+            "set to old runstack {}, state={:p}, ctx={:p}",
+            old_runstack, ctx.state, ctx
         );
-        let val = f(&ctx, rator, rands.to_ptr(), num_rands);
+        let val = trampoline(&ctx, rator, rands.to_ptr(), num_rands, f);
         ctx.state.nest_level.store(nest_level, Ordering::Relaxed);
         ctx.state.runstack.set(old_runstack);
         libc::printf(
-            b"returned to native code,state=%p, old_runstack=%p\n\0".as_ptr() as *const _,
+            b"returned to native code,state=%p, old_runstack=%p, ctx=%p\n\0".as_ptr() as *const _,
             ctx.state,
-            old_runstack,
+            old_runstack,ctx,
         );
 
         match val.code {
@@ -148,14 +148,31 @@ pub fn call_scheme_with_k<'gc>(
                     .saved_call
                     .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
                 println!(
-                    "saved call {:p} in {:p}",
+                    "saved call {:p} in {:p} (ctx={:p}",
                     ctx.state.saved_call.get().unwrap(),
-                    ctx.state
+                    ctx.state,
+                    ctx
                 );
                 VMResult::Yield
             }
         }
     }
+}
+
+#[inline(never)]
+extern "C" fn trampoline<'a>(
+    ctx: &Context<'a>,
+    rator: Value<'a>,
+    rands: *const Value<'a>,
+    num_rands: usize,
+    f: extern "C-unwind" fn(
+        &Context<'a>,
+        Value<'a>,
+        *const Value<'a>,
+        usize,
+    ) -> NativeReturn<'a>,
+) -> NativeReturn<'a> {
+    f(ctx, rator, rands, num_rands)
 }
 
 extern "C-unwind" fn default_retk<'gc>(
@@ -208,6 +225,7 @@ extern "C-unwind" fn default_reth<'gc>(
 /// A VM execution result.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Trace)]
 #[collect(no_drop)]
+#[repr(C)]
 pub enum VMResult<'gc> {
     /// VM executed succsefully and value was returned.
     Ok(Value<'gc>),
