@@ -11,7 +11,7 @@
               (make-tree (- depth 1)))))
 (define (foo i) (lp i))
 (define (lp i)
-    ;(print "i=" i)
+    
     (if (< i x)
         (begin 
             (make-vector 16)
