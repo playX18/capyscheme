@@ -572,8 +572,9 @@ impl<'gc> Value<'gc> {
     pub fn downcast<T: Tagged>(self) -> Gc<'gc, T> {
         assert!(
             self.is::<T>(),
-            "Value is not of type {}",
-            std::any::type_name::<T>()
+            "Value is not of type {}: {}",
+            std::any::type_name::<T>(),
+            self
         );
         unsafe { Gc::from_gcobj(self.as_cell_raw()) }
     }

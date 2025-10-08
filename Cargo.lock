@@ -258,6 +258,7 @@ dependencies = [
  "libm",
  "log",
  "memmap2",
+ "mimalloc",
  "num",
  "num-bigint",
  "object 0.37.3",
@@ -1621,6 +1622,7 @@ dependencies = [
  "mmtk",
  "parking_lot",
  "radium",
+ "rand",
  "rsgc-derive",
 ]
 

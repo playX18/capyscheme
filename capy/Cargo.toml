@@ -21,6 +21,7 @@ tree-sitter-scheme = { git = "https://github.com/6cdh/tree-sitter-scheme" }
 paste = "1.0.15"
 pretty = "0.12.4"
 hashlink = "0.10.0"
+mimalloc = { version = "*", features = ["secure"] }
 petgraph = "0.8.2"
 libc = "0.2.174"
 cranelift-jit.workspace = true

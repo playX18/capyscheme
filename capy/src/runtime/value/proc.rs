@@ -327,6 +327,7 @@ pub struct NativeReturn<'gc> {
 #[repr(C)]
 pub struct SavedCall<'gc> {
     pub rator: Value<'gc>,
+    pub from_procedure: bool,
     pub rands: ArrayRef<'gc, Value<'gc>>,
 }
 

@@ -313,6 +313,7 @@ impl<'gc> WeakTable<'gc> {
             value,
             index,
         );
+        drop(guard);
 
         None
     }

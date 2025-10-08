@@ -53,6 +53,9 @@ fn lookup_interned_symbol<'gc>(
         mc,
         raw_hash,
         |_, sym| {
+            if !sym.is::<Symbol>() {
+                panic!("Non-symbol in symbol table: {sym:?}");
+            }
             let sym = sym.downcast::<Symbol<'_>>();
 
             let mut n = sym.len();

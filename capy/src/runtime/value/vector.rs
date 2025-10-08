@@ -350,7 +350,7 @@ fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
             .to_address()
             .as_mut_ref::<Tuple<'static>>()
             .as_slice_mut_unchecked();
-        println!("trace tuple {:p}", tuple);
+
         tuple.trace(vis);
     }
 }

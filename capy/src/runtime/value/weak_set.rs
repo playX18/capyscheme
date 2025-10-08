@@ -17,12 +17,13 @@ use rsgc::{
 };
 
 use crate::runtime::{
-    value::ScmHeader,
+    value::{ScmHeader, Symbol},
     vmthread::{VM_THREAD, VMThreadTask},
 };
 
 use super::{Tagged, TypeCode8, Value};
 #[repr(C, align(8))]
+#[derive(Debug)]
 struct WeakEntry<'gc> {
     value: Value<'gc>,
     hash: u64,
@@ -42,9 +43,12 @@ impl<'gc> WeakEntry<'gc> {
 }
 
 unsafe impl<'gc> Trace for WeakEntry<'gc> {
-    unsafe fn trace(&mut self, _visitor: &mut Visitor) {}
+    unsafe fn trace(&mut self, _visitor: &mut Visitor) {
+        _visitor.register_for_weak_processing();
+    }
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
         if self.value.is_bwp() {
+            assert!(!self.value.is::<Symbol>());
             return;
         }
 
@@ -479,7 +483,7 @@ impl<'gc> WeakSetInner<'gc> {
                     let entry = entries[k].get();
 
                     if entry.value.is_bwp() {
-                        this.give_to_poor_no_wb(k);
+                        this.give_to_poor(mc, k);
                         this.n_items.set(this.n_items.get().saturating_sub(1));
                         other_hash = entries[k].get().hash;
                         continue 'retry;
@@ -652,6 +656,8 @@ pub(crate) fn vacuum_weak_sets<'gc>(mc: &Mutation<'gc>) {
 
         guard.retain(|weak_set| {
             if let Some(weak_set) = weak_set.upgrade() {
+                println!("Vacuuming weak set {:p}", weak_set);
+
                 let wset = weak_set.inner.lock();
                 Gc::write(mc, weak_set);
                 unsafe {

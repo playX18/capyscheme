@@ -33,7 +33,7 @@ use std::cell::Cell;
 use rsgc::{
     Gc,
     alloc::{Array, ArrayRef},
-    barrier::Unlock,
+    barrier::{self},
     cell::Lock,
     traits::IterGc,
 };
@@ -584,9 +584,10 @@ impl<'gc> Cont<'gc> {
 
         let body = self.body().subst(ctx, subst);
         let k = self.with_body(ctx, body);
-        unsafe {
-            k.handler.unlock_unchecked().set(handler);
-        }
+
+        barrier::field!(Gc::write(&ctx, k), Cont, handler)
+            .unlock()
+            .set(handler);
         k
     }
 }
