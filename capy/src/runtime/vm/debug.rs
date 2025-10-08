@@ -88,6 +88,13 @@ impl<'gc> ShadowStack<'gc> {
 
         item
     }
+
+    pub fn clear(&mut self) {
+        self.buffer.iter_mut().for_each(|slot| *slot = None);
+        self.head = 0;
+        self.tail = 0;
+        self.len = 0;
+    }
 }
 
 pub(crate) fn init_debug<'gc>(ctx: Context<'gc>) {
@@ -105,7 +112,7 @@ native_fn!(
 );
 
 pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
-    let state = ctx.state();
+    let state = ctx.state;
     let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
     backtrace::trace(|_| {
         shadow_stack.for_each_mut(|frame| {

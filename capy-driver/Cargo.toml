@@ -11,7 +11,7 @@ cranelift-object.workspace = true
 target-lexicon.workspace = true
 cranelift-module.workspace = true
 cranelift-codegen.workspace = true
-mimalloc = "*"
+mimalloc = { version = "*", features = ["secure"] }
 cranelift-jit.workspace = true
 cranelift.workspace = true
 env_logger = "*"

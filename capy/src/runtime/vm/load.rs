@@ -106,11 +106,11 @@ pub fn find_path_to<'gc>(
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
 ) -> Result<Option<(PathBuf, PathBuf)>, Value<'gc>> {
+    println!("HELLO");
     let filename = filename.as_ref();
     let dir = in_vicinity.map(|p| p.as_ref().to_owned());
 
     let mut source_path = None;
-    let mut candidates = Vec::new();
 
     if filename.is_absolute() {
         if filename.is_file() {
@@ -119,6 +119,8 @@ pub fn find_path_to<'gc>(
     } else if filename.is_relative() && filename.is_file() {
         source_path = Some(filename.to_owned());
     } else {
+        let mut candidates = Vec::new();
+        println!("hello");
         if let Some(dir) = dir.as_ref() {
             let path = dir.join(filename);
 
@@ -141,8 +143,9 @@ pub fn find_path_to<'gc>(
             }
         }
         let paths = loc_load_path(ctx).get();
-
+        println!("candidates: {:p}", &candidates);
         for name in candidates {
+            println!("CANDIDATE: {}", name.display());
             if let Some(dir) = dir.as_ref() {
                 let candidate = dir.join(&name);
                 if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
@@ -165,6 +168,7 @@ pub fn find_path_to<'gc>(
                 paths = paths.cdr();
             }
         }
+        println!("AYO");
     }
 
     let source_path = match source_path {
@@ -201,6 +205,7 @@ pub fn find_path_to<'gc>(
     }
 
     if compiled_file.is_none() {
+        println!("FALLBACK PATH");
         let fallback = loc_compile_fallback_path(ctx).get().to_string();
         let fallback = Path::new(&fallback);
         if !fallback.exists() {
@@ -212,7 +217,7 @@ pub fn find_path_to<'gc>(
 
         compiled_file = Some(candidate);
     }
-
+    println!("FOUND PATHS");
     Ok(Some((source_path, compiled_file.unwrap())))
 }
 
@@ -238,6 +243,11 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
             ));
         }
     };
+    println!(
+        "source={}, compiled={}",
+        source.display(),
+        compiled.display()
+    );
 
     let source_time = source
         .metadata()

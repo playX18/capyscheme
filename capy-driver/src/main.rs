@@ -3,9 +3,10 @@ use capy::runtime::{
     modules::{current_module, root_module},
     vm::{VMResult, call_scheme, load::load_thunk_in_vicinity},
 };
+use mimalloc::MiMalloc;
 
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+//#[global_allocator]
+//static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     env_logger::init();
@@ -44,6 +45,7 @@ fn main() {
 
     while did_yield {
         did_yield = scm.enter(|ctx| {
+            println!("will-resume={}", ctx.has_suspended_call());
             if ctx.has_suspended_call() {
                 match ctx.resume_suspended_call() {
                     VMResult::Ok(val) => {

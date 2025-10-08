@@ -5,7 +5,7 @@ members = ["capy", "capy-driver"]
 default-members = ["capy"]
 
 [workspace.dependencies]
-rsgc = { path = "../RSGC", default-features = false }
+rsgc = { path = "../RSGC", default-features = false, features = ["aslr"] }
 #rsgc = { git = "https://codeberg.org/playxe/rsgc", branch = "main" }
 cranelift-jit = "0.123.1"
 cranelift = "0.123.1"
@@ -27,3 +27,4 @@ incremental = true
 
 [profile.dev]
 incremental = true
+opt-level = 1

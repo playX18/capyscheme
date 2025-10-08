@@ -242,12 +242,12 @@ thunks! {
     ) -> Value<'gc> {
         print_stacktraces_impl(*ctx);
         println!("wrong number of args: {}", subr);
-
-        if subr.is::<Closure>() {
-            let ip = unsafe { returnaddress(0) };
+        let ip = unsafe { returnaddress(0) };
             backtrace::resolve(ip as _, |sym| {
                 println!("{sym:?}");
-            });
+        });
+        if subr.is::<Closure>() {
+            println!("{}", subr.downcast::<Closure>().meta);
             let sym = backtrace::resolve(subr.downcast::<Closure>().code.to_mut_ptr(), |sym| {
                 println!("{sym:?}");
             });
@@ -472,12 +472,18 @@ thunks! {
         rands: *const Value<'gc>,
         num_rands: usize
     ) -> Gc<'gc, SavedCall<'gc>> {
-
+        ctx.state.runstack.set(ctx.state.runstack_start);
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-
+        println!("YIELDING WITH {num_rands} ARGS: {args:?}, RATOR={rator}");
+        let code = rator.downcast::<Closure>().code;
+        backtrace::resolve(code.to_mut_ptr(), |sym| {
+            println!("  at {sym:?}");
+        });
+        println!("take_yieldpoint={}", ctx.take_yieldpoint());
+        print_stacktraces_impl(*ctx);
         let arr = Array::from_slice(&ctx, args);
-
-        Gc::new(&ctx, SavedCall { rands: arr, rator })
+        println!("runstack {}..{} during yield,state={:p}", ctx.state.runstack_start, ctx.state.runstack.get(), ctx.state);
+        Gc::new(&ctx, SavedCall { rands: arr, rator, from_procedure: true })
     }
 
     pub fn alloc_tc8(

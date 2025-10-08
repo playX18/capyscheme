@@ -349,7 +349,7 @@ impl<'gc> Fluid<'gc> {
     }
 
     pub fn get(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Value<'gc> {
-        let dynamic_state = &ctx.state().dynamic_state;
+        let dynamic_state = &ctx.state.dynamic_state;
 
         let entry = dynamic_state.cache.get(&ctx, Value::from(self));
 
@@ -376,7 +376,7 @@ impl<'gc> Fluid<'gc> {
     }
 
     pub fn set(self: Gc<'gc, Self>, ctx: Context<'gc>, value: Value<'gc>) {
-        let dynamic_state = &ctx.state().dynamic_state;
+        let dynamic_state = &ctx.state.dynamic_state;
 
         if dynamic_state.cache.update(&ctx, Value::from(self), value) {
             return;

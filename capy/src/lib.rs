@@ -27,3 +27,33 @@ use rsgc::Mutation;
 pub fn take_yieldpoint(mc: &Mutation<'_>) -> bool {
     mc.take_yieldpoint() != 0
 }
+use mimalloc::MiMalloc;
+#[global_allocator]
+static ALLOC: MiMalloc = MiMalloc;
+
+#[derive(Default)]
+struct DebugAlloc;
+
+unsafe impl std::alloc::GlobalAlloc for DebugAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let ptr = unsafe { MiMalloc.alloc(layout) };
+
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { MiMalloc.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        let ptr = unsafe { MiMalloc.realloc(ptr, layout, new_size) };
+
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let ptr = unsafe { MiMalloc.alloc_zeroed(layout) };
+
+        ptr
+    }
+}

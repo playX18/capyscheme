@@ -48,28 +48,56 @@ pub fn call_scheme<'gc>(
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> VMResult<'gc> {
-    if !rator.is::<Closure>() {
-        return VMResult::Err(rator);
-    }
-    let old_runstack = ctx.state().runstack.get();
-    let nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
     let procs = PROCEDURES.fetch(&ctx);
 
     let retk = procs.register_static_cont_closure(ctx, default_retk, NativeLocation::unknown());
     let reth = procs.register_static_cont_closure(ctx, default_reth, NativeLocation::unknown());
 
-    let rands = ctx.state().runstack.get();
+    call_scheme_with_k(ctx, retk.into(), reth.into(), rator, args)
+}
+
+/// Call Scheme code with explicit return and error continuations.
+pub fn call_scheme_with_k<'gc>(
+    ctx: Context<'gc>,
+    retk: Value<'gc>,
+    reth: Value<'gc>,
+    rator: Value<'gc>,
+    args: impl IntoIterator<Item = Value<'gc>>,
+) -> VMResult<'gc> {
+    if !rator.is::<Closure>() {
+        return VMResult::Err(rator);
+    }
+    let old_runstack = ctx.state.runstack.get();
+    let nest_level = ctx.state.nest_level.fetch_add(1, Ordering::Relaxed);
+
+    let rands = ctx.state.runstack.get();
     let mut argc = 0;
+    println!(
+        "runstack {}->{}",
+        ctx.state.runstack_start, ctx.state.runstack_end
+    );
     unsafe {
         rands.store(retk);
         rands.add(size_of::<Value>()).store(reth);
 
         for (i, arg) in args.into_iter().enumerate() {
+            if rands.add((i + 2) * size_of::<Value>()) >= ctx.state.runstack_end {
+                panic!(
+                    "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
+                    rands.add((i + 2) * size_of::<Value>()),
+                    ctx.state.runstack_end,
+                    i + 2,
+                    (ctx.state.runstack_end - ctx.state.runstack_start) / size_of::<Value>()
+                );
+            }
+            if rands.add((i + 2) * size_of::<Value>()) < ctx.state.runstack_start {
+                println!("runstack underflow");
+            }
             rands.add((i + 2) * size_of::<Value>()).store(arg);
             argc += 1;
         }
 
-        ctx.state()
+        ctx.state
             .runstack
             .set(rands.add((argc + 2) * size_of::<Value>()));
     }
@@ -86,9 +114,31 @@ pub fn call_scheme<'gc>(
             usize,
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
+        println!(
+            "call {} with {} args {:?}",
+            rator,
+            num_rands,
+            std::slice::from_raw_parts(rands.to_ptr::<Value>(), num_rands)
+        );
+        backtrace::resolve(rator.downcast::<Closure>().code.to_mut_ptr(), |symbol| {
+            if let Some(name) = symbol.name() {
+                println!("Calling scheme function: {}", name);
+            }
+            println!("{symbol:?}");
+        });
+        println!(
+            "set to old runstack {}, state={:p}",
+            old_runstack, ctx.state
+        );
         let val = f(&ctx, rator, rands.to_ptr(), num_rands);
-        ctx.state().nest_level.store(nest_level, Ordering::Relaxed);
-        ctx.state().runstack.set(old_runstack);
+        ctx.state.nest_level.store(nest_level, Ordering::Relaxed);
+        ctx.state.runstack.set(old_runstack);
+        libc::printf(
+            b"returned to native code,state=%p, old_runstack=%p\n\0".as_ptr() as *const _,
+            ctx.state,
+            old_runstack,
+        );
+
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
             ReturnCode::ReturnErr => VMResult::Err(val.value),
@@ -97,6 +147,11 @@ pub fn call_scheme<'gc>(
                 ctx.state
                     .saved_call
                     .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
+                println!(
+                    "saved call {:p} in {:p}",
+                    ctx.state.saved_call.get().unwrap(),
+                    ctx.state
+                );
                 VMResult::Yield
             }
         }

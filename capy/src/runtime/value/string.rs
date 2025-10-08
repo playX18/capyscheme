@@ -11,15 +11,17 @@ use rsgc::{
     },
     object::VTable,
 };
-use std::{cell::Cell, sync::OnceLock};
+use std::{
+    cell::{Cell, UnsafeCell},
+    sync::OnceLock,
+};
 
 #[repr(C, align(8))]
 pub(crate) struct Stringbuf {
     hdr: ScmHeader,
     pub(crate) length: usize,
     mutable: Cell<bool>,
-    pad: [u8; 7],
-    data: [u8; 0],
+    data: [UnsafeCell<u8>; 0],
 }
 
 const STRINGBUF_TC16_WIDE: TypeCode16 = TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 1 * 256);
@@ -119,7 +121,7 @@ impl Stringbuf {
                 hdr,
                 length,
                 mutable: Cell::new(false),
-                pad: [0; 7],
+
                 data: [],
             });
 
