@@ -768,6 +768,7 @@ fn copy_c<'gc>(
             reified: Cell::new(cont.reified.get()),
             handler: Lock::new(handler),
             cold: cont.cold,
+            meta: cont.meta,
         },
     )
 }
@@ -803,6 +804,7 @@ fn copy_f<'gc>(
     Gc::new(
         &ctx,
         Func {
+            meta: fun.meta,
             return_cont: retc1,
             handler_cont: rete1,
             name: fun.name,

@@ -49,7 +49,7 @@ fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
 
     let sig = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
     let sigref = builder.import_signature(sig);
-
+    let old_pinned = builder.ins().get_pinned_reg(types::I64);
     builder.ins().set_pinned_reg(ctx);
 
     let code = builder.ins().load(
@@ -62,6 +62,7 @@ fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Con
         .ins()
         .call_indirect(sigref, code, &[rator, rands, num_rands]);
 
+    builder.ins().set_pinned_reg(old_pinned);
     let code = builder.inst_results(call)[0];
     let val = builder.inst_results(call)[1];
     builder.ins().return_(&[code, val]);

@@ -471,13 +471,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         if let Some(k) = self.module_builder.reify_info.free_vars.conts.get(&k)
             && !k.reified.get()
         {
+            let k = *k;
             // TODO: Support `k` where variadic is used and materialize a list.
-            let block = self.block_for_cont(*k);
+            let block = self.block_for_cont(k);
             let block_args = args
                 .into_iter()
                 .map(|v| ir::BlockArg::Value(*v))
                 .collect::<Vec<_>>();
-
+            let bb_args_len = self.builder.block_params(block).len();
+            if bb_args_len != block_args.len() {
+                panic!(
+                    "wrong number of args when jumping to continuation {}@{:p}, expected {}, got {}",
+                    k.binding.name,
+                    k.binding,
+                    bb_args_len,
+                    block_args.len()
+                );
+            }
             return self.builder.ins().jump(block, &block_args);
         }
 

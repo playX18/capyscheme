@@ -21,6 +21,7 @@ pub mod debug;
 pub mod errors;
 pub mod eval;
 pub mod expand;
+pub mod ffi;
 pub mod hash;
 pub mod io;
 pub mod libraries;
@@ -50,8 +51,18 @@ pub fn call_scheme<'gc>(
 ) -> VMResult<'gc> {
     let procs = PROCEDURES.fetch(&ctx);
 
-    let retk = procs.register_static_cont_closure(ctx, default_retk, NativeLocation::unknown());
-    let reth = procs.register_static_cont_closure(ctx, default_reth, NativeLocation::unknown());
+    let retk = procs.register_static_cont_closure(
+        ctx,
+        default_retk,
+        NativeLocation::unknown(),
+        Value::null(),
+    );
+    let reth = procs.register_static_cont_closure(
+        ctx,
+        default_reth,
+        NativeLocation::unknown(),
+        Value::null(),
+    );
 
     call_scheme_with_k(&ctx, retk.into(), reth.into(), rator, args)
 }
@@ -72,10 +83,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
 
     let rands = ctx.state.runstack.get();
     let mut argc = 0;
-    println!(
-        "runstack {}->{}",
-        ctx.state.runstack_start, ctx.state.runstack_end
-    );
+
     unsafe {
         rands.store(retk);
         rands.add(size_of::<Value>()).store(reth);
@@ -91,7 +99,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
                 );
             }
             if rands.add((i + 2) * size_of::<Value>()) < ctx.state.runstack_start {
-                println!("runstack underflow");
+                panic!("runstack underflow");
             }
             rands.add((i + 2) * size_of::<Value>()).store(arg);
             argc += 1;
@@ -114,30 +122,9 @@ pub extern "C" fn call_scheme_with_k<'gc>(
             usize,
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
-        println!(
-            "call {} with {} args {:?}",
-            rator,
-            num_rands,
-            std::slice::from_raw_parts(rands.to_ptr::<Value>(), num_rands)
-        );
-        backtrace::resolve(rator.downcast::<Closure>().code.to_mut_ptr(), |symbol| {
-            if let Some(name) = symbol.name() {
-                println!("Calling scheme function: {}", name);
-            }
-            println!("{symbol:?}");
-        });
-        println!(
-            "set to old runstack {}, state={:p}, ctx={:p}",
-            old_runstack, ctx.state, ctx
-        );
         let val = trampoline(&ctx, rator, rands.to_ptr(), num_rands, f);
         ctx.state.nest_level.store(nest_level, Ordering::Relaxed);
         ctx.state.runstack.set(old_runstack);
-        libc::printf(
-            b"returned to native code,state=%p, old_runstack=%p, ctx=%p\n\0".as_ptr() as *const _,
-            ctx.state,
-            old_runstack,ctx,
-        );
 
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
@@ -147,12 +134,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
                 ctx.state
                     .saved_call
                     .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
-                println!(
-                    "saved call {:p} in {:p} (ctx={:p}",
-                    ctx.state.saved_call.get().unwrap(),
-                    ctx.state,
-                    ctx
-                );
+
                 VMResult::Yield
             }
         }
@@ -165,12 +147,7 @@ extern "C" fn trampoline<'a>(
     rator: Value<'a>,
     rands: *const Value<'a>,
     num_rands: usize,
-    f: extern "C-unwind" fn(
-        &Context<'a>,
-        Value<'a>,
-        *const Value<'a>,
-        usize,
-    ) -> NativeReturn<'a>,
+    f: extern "C-unwind" fn(&Context<'a>, Value<'a>, *const Value<'a>, usize) -> NativeReturn<'a>,
 ) -> NativeReturn<'a> {
     f(ctx, rator, rands, num_rands)
 }
@@ -500,8 +477,13 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     ) -> NativeCallReturn<'gc> {
         if proc.is::<Closure>() && !proc.downcast::<Closure>().is_continuation() {
             let closure = proc.downcast::<Closure>();
-            if closure.meta.is_pair() {
-                let name = closure.meta.car().to_string();
+            if closure.meta.get().is_pair() {
+                let name = Value::assq(
+                    closure.meta.get(),
+                    Symbol::from_str(self.ctx, "name").into(),
+                )
+                .unwrap_or(Value::new(false))
+                .to_string();
                 return self.wrong_number_of_arguments_violation(
                     &name,
                     required_min,

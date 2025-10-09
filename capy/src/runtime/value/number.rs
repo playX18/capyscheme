@@ -341,6 +341,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     const VT: &'static VTable = &VTable {
+        type_name: "BigInt",
         instance_size: 0,
         alignment: align_of::<usize>(),
         compute_alignment: None,

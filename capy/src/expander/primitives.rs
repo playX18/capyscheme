@@ -119,6 +119,7 @@ interesting_prim_names!(
     char_le = "char<=?"
     char_gt = "char>?"
     char_ge = "char>=?"
+    char_equal = "char=?"
 
     integer2char = "integer->char"
     char2integer = "char->integer"
@@ -412,6 +413,7 @@ primitive_expanders!(
         if producer.variadic.is_some() || !producer.args.is_empty() {
             return None;
         }
+
 
         Some(Gc::new(
             &ctx,
@@ -781,37 +783,38 @@ primitive_expanders!(
         }
 
         // For <= with more than 2 arguments, expand into a series of comparisons
-        // (<= a b c d) => (let ([tmp (<= a b)]) (if tmp (<= b c d) #f))
-        let first = args[0];
-        let second = args[1];
-        let rest = &args[2..];
+            // (<= a b c d) => (let ([tmp (<= a b)]) (if tmp (<= b c d) #f))
+            let first = args[0];
+            let second = args[1];
+            let rest = &args[2..];
 
-        let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "<=-tmp").into());
-        let initial_cmp = prim_call_term(ctx, sym_number_le(ctx).into(), &[first, second], src);
+            let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "<=-tmp").into());
+            let initial_cmp = prim_call_term(ctx, sym_number_le(ctx).into(), &[first, second], src);
 
-        let remaining_cmp = if rest.len() == 1 {
-            prim_call_term(ctx, sym_number_le(ctx).into(), &[second, rest[0]], src)
-        } else {
-            let mut new_args = vec![second];
-            new_args.extend_from_slice(rest);
-            ex_num_le(ctx, &new_args, src)?
-        };
+            let remaining_cmp = if rest.len() == 1 {
+                prim_call_term(ctx, sym_number_le(ctx).into(), &[second, rest[0]], src)
+            } else {
+                let mut new_args = vec![second];
+                new_args.extend_from_slice(rest);
+                ex_num_le(ctx, &new_args, src)?
+            };
 
-        let if_branch = if_term(
-            ctx,
-            lref(ctx, tmp),
-            remaining_cmp,
-            constant(ctx, Value::new(false)),
-        );
+            let if_branch = if_term(
+                ctx,
+                lref(ctx, tmp),
+                remaining_cmp,
+                constant(ctx, Value::new(false)),
+            );
 
-        Some(let_term(
-            ctx,
-            LetStyle::Let,
-            Array::from_slice(&ctx, &[tmp]),
-            Array::from_slice(&ctx, &[initial_cmp]),
-            if_branch,
-            src,
-        ))
+            Some(let_term(
+                ctx,
+                LetStyle::Let,
+                Array::from_slice(&ctx, &[tmp]),
+                Array::from_slice(&ctx, &[initial_cmp]),
+                if_branch,
+                src,
+            ))
+
     }
 
 
@@ -1302,6 +1305,22 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_exact_integerp(ctx).into(), args, src))
     }
 
+    "char=?" ex_char_eq<'gc>(ctx, args, src) {
+        if args.len() < 2 {
+            return None;
+        }
+
+        // replace with `(= (char->integer arg0) ...)`
+        let mut int_args = Vec::with_capacity(args.len());
+        for arg in args {
+            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), &[
+                *arg
+            ], src));
+        }
+
+        Some(prim_call_term(ctx, sym_number_eq(ctx).into(), &int_args, src))
+    }
+
     "char<?" ex_char_lt<'gc>(ctx, args, src) {
         if args.len() < 2 {
             return None;
@@ -1315,7 +1334,7 @@ primitive_expanders!(
             ], src));
         }
 
-        Some(prim_call_term(ctx, sym_number_lt(ctx).into(), &int_args, src))
+        ex_num_lt(ctx, &int_args, src)
     }
 
     "char<=?" ex_char_le<'gc>(ctx, args, src) {
@@ -1331,7 +1350,7 @@ primitive_expanders!(
             ], src));
         }
 
-        Some(prim_call_term(ctx, sym_number_le(ctx).into(), &int_args, src))
+        ex_num_le(ctx, &int_args, src)
     }
 
     "char>?" ex_char_gt<'gc>(ctx, args, src) {
@@ -1347,7 +1366,7 @@ primitive_expanders!(
             ], src));
         }
 
-        Some(prim_call_term(ctx, sym_number_gt(ctx).into(), &int_args, src))
+        ex_num_gt(ctx, &int_args, src)
     }
 
     "char>=?" ex_char_ge<'gc>(ctx, args, src) {
@@ -1363,10 +1382,10 @@ primitive_expanders!(
             ], src));
         }
 
-        Some(prim_call_term(ctx, sym_number_ge(ctx).into(), &int_args, src))
+        ex_num_ge(ctx, &int_args, src)
     }
 
-        "char->integer" ex_char_to_integer<'gc>(ctx, args, src) {
+    "char->integer" ex_char_to_integer<'gc>(ctx, args, src) {
         if args.len() != 1 {
             return None;
         }
@@ -1866,6 +1885,7 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
         TermKind::PrimCall(name, args) => {
             if let Some(f) = primitive_expanders(ctx).get(ctx, name.downcast()) {
                 if let Some(expanded) = f(ctx, args.as_slice(), t.source()) {
+                 
                     return expanded;
                 } else {
                     // failed expansion: reify primitive into a function call to it instead

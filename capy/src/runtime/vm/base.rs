@@ -1,4 +1,4 @@
-use rsgc::{Gc, barrier::Unlock, cell::Lock};
+use rsgc::{Gc, barrier, barrier::Unlock, cell::Lock};
 
 use crate::{
     native_cont, native_fn,
@@ -101,6 +101,64 @@ native_fn!(
 
     pub ("unspecified") fn unspecified<'gc>(nctx) -> Value<'gc> {
         nctx.return_(Value::undefined())
+    }
+
+
+    pub ("procedure-properties") fn procedure_metadata<'gc>(
+        nctx,
+        proc: Gc<'gc, Closure<'gc>>
+    ) -> Value<'gc> {
+        nctx.return_(proc.meta.get())
+    }
+
+    pub ("set-procedure-properties!") fn set_procedure_metadata<'gc>(
+        nctx,
+        proc: Gc<'gc, Closure<'gc>>,
+        meta: Value<'gc>
+    ) -> Value<'gc> {
+        let wproc = Gc::write(&nctx.ctx, proc);
+        barrier::field!(wproc, Closure, meta).unlock().set(meta);
+        nctx.return_(meta)
+    }
+
+    pub ("memv") fn memv<'gc>(
+        nctx,
+        item: Value<'gc>,
+        lst: Value<'gc>
+    ) -> Value<'gc> {
+        if !lst.is_list() {
+            return nctx.wrong_argument_violation("memv", "expected a list", Some(lst), Some(2), 2, &[item, lst]);
+        }
+        let mut walk = lst;
+
+        while walk.is_pair() {
+            if walk.car().eqv(item) {
+                return nctx.return_(walk);
+            }
+            walk = walk.cdr();
+        }
+
+        nctx.return_(Value::new(false))
+    }
+
+    pub ("memq") fn memq<'gc>(
+        nctx,
+        item: Value<'gc>,
+        lst: Value<'gc>
+    ) -> Value<'gc> {
+        if !lst.is_list() {
+            return nctx.wrong_argument_violation("memq", "expected a list", Some(lst), Some(2), 2, &[item, lst]);
+        }
+        let mut walk = lst;
+
+        while walk.is_pair() {
+            if walk.car() == item {
+                return nctx.return_(walk);
+            }
+            walk = walk.cdr();
+        }
+
+        nctx.return_(Value::new(false))
     }
 );
 

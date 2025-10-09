@@ -84,6 +84,7 @@ unsafe impl<'gc> Trace for Struct<'gc> {
 
 impl<'gc> Struct<'gc> {
     pub const VT: &'static VTable = &VTable {
+        type_name: "struct",
         alignment: align_of::<Value>(),
         compute_alignment: None,
         compute_size: Some(|object| unsafe {

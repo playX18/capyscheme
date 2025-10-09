@@ -787,6 +787,10 @@ native_fn!(
         nctx.return_(module)
     }
 
+    pub ("module?") fn module_p<'gc>(nctx, value: Value<'gc>) -> bool {
+        nctx.return_(value.is::<Module>())
+    }
+
     pub ("module-obarray") fn module_obarray<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
         nctx.return_(module.obarray.get())
     }

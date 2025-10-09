@@ -1,19 +1,37 @@
+(define reader (make-reader (current-input-port) "stdin"))
+(reader-mode-set! reader 'r6rs)
+(define (repl)
+    (let loop ()
+        (with-exception-handler 
+            (lambda (exn)
+                        (display "error reading from stdin: ")
+                        (displayln (condition-message exn))
+                        (display "irritants: ")
+                        (displayln (condition-irritants exn))
+                        (loop))
+            (lambda ()
+            (display "> ")
+        (let ((datum (read-datum reader)))
+            (if (eof-object? datum)
+                (begin
+                    (newline)
+                    (displayln "Goodbye!")
+                    (exit))
+                (begin
+                    (with-exception-handler 
+                      (lambda (exn)
+                        (display "Error: ")
+                        (displayln (condition-message exn))
+                        (display "irritants: ")
+                        (displayln (condition-irritants exn))
+                        (loop))
+                      (lambda () (let ([res (eval datum)])
+                        (if (not (eq? res (unspecified)))
+                            (begin (display "=> ")
+                            (displayln res))))))
+                    (loop))))))))
 
-(define (fac n)
-    (if (= n 0)
-        1
-        (* n (fac (- n 1)))))
-(define x (fac 3000))
-(define (make-tree depth)
-    (if (= depth 0)
-        '()
-        (cons (make-tree (- depth 1))
-              (make-tree (- depth 1)))))
-(define (foo i) (lp i))
-(define (lp i)
-    
-    (if (< i x)
-        (begin 
-            (make-vector 16)
-            (foo (+ i 1)))))
-(lp 0)
+
+
+(repl)
+

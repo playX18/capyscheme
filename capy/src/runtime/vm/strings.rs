@@ -70,6 +70,7 @@ native_fn!(
 
     pub ("symbol->string") fn symbol_to_string<'gc>(nctx, sym: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Str<'gc>> {
         let s = sym.to_str(&nctx.ctx);
+
         nctx.return_(s)
     }
 
@@ -83,7 +84,8 @@ native_fn!(
         nctx.return_(sym)
     }
 
-    pub ("print") fn print<'gc>(nctx, args: &'gc [Value<'gc>]) -> () {
+    /// prints all arguments using their `Display` implementation, followed by a newline.
+    pub (":print") fn print<'gc>(nctx, args: &'gc [Value<'gc>]) -> () {
         for arg in args.iter() {
             print!("{}", arg);
         }
@@ -207,6 +209,104 @@ native_fn!(
         let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes);
         nctx.return_(bytevec)
     }
+
+    pub ("char-general-category") fn char_general_category<'gc>(nctx, ch: char) -> Gc<'gc, Symbol<'gc>> {
+        use unicode_general_category::get_general_category;
+
+        let category = get_general_category(ch);
+        let category_str = match category {
+            unicode_general_category::GeneralCategory::UppercaseLetter => "Lu",
+            unicode_general_category::GeneralCategory::LowercaseLetter => "Ll",
+            unicode_general_category::GeneralCategory::TitlecaseLetter => "Lt",
+            unicode_general_category::GeneralCategory::ModifierLetter => "Lm",
+            unicode_general_category::GeneralCategory::OtherLetter => "Lo",
+            unicode_general_category::GeneralCategory::NonspacingMark => "Mn",
+            unicode_general_category::GeneralCategory::SpacingMark => "Mc",
+            unicode_general_category::GeneralCategory::EnclosingMark => "Me",
+            unicode_general_category::GeneralCategory::DecimalNumber => "Nd",
+            unicode_general_category::GeneralCategory::LetterNumber => "Nl",
+            unicode_general_category::GeneralCategory::OtherNumber => "No",
+            unicode_general_category::GeneralCategory::ConnectorPunctuation => "Pc",
+            unicode_general_category::GeneralCategory::DashPunctuation => "Pd",
+            unicode_general_category::GeneralCategory::OpenPunctuation => "Ps",
+            unicode_general_category::GeneralCategory::ClosePunctuation => "Pe",
+            unicode_general_category::GeneralCategory::InitialPunctuation => "Pi",
+            unicode_general_category::GeneralCategory::FinalPunctuation => "Pf",
+            unicode_general_category::GeneralCategory::OtherPunctuation => "Po",
+            unicode_general_category::GeneralCategory::MathSymbol => "Sm",
+            unicode_general_category::GeneralCategory::CurrencySymbol => "Sc",
+            unicode_general_category::GeneralCategory::ModifierSymbol => "Sk",
+            unicode_general_category::GeneralCategory::OtherSymbol => "So",
+            unicode_general_category::GeneralCategory::SpaceSeparator => "Zs",
+            unicode_general_category::GeneralCategory::LineSeparator => "Zl",
+            unicode_general_category::GeneralCategory::ParagraphSeparator => "Zp",
+            unicode_general_category::GeneralCategory::Control => "Cc",
+            unicode_general_category::GeneralCategory::Format => "Cf",
+            unicode_general_category::GeneralCategory::Surrogate => "Cs",
+            unicode_general_category::GeneralCategory::PrivateUse => "Co",
+            unicode_general_category::GeneralCategory::Unassigned => "Cn",
+            _ => "Cn", // Shouldn't happen
+        };
+
+        let sym = Symbol::from_str(nctx.ctx, category_str);
+        nctx.return_(sym)
+    }
+
+    pub ("char-whitespace?") fn char_whitespace<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_whitespace())
+    }
+
+    pub ("char-alphabetic?") fn char_alphabetic<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_alphabetic())
+    }
+
+    pub ("char-numeric?") fn char_numeric<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_numeric())
+    }
+
+    pub ("char-upper-case?") fn char_upper_case<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_uppercase())
+    }
+
+    pub ("char-lower-case?") fn char_lower_case<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_lowercase())
+    }
+
+    pub ("char-title-case?") fn char_title_case<'gc>(nctx, ch: char) -> bool {
+        use unicode_general_category::get_general_category;
+        use unicode_general_category::GeneralCategory;
+
+        let category = get_general_category(ch);
+        nctx.return_(category == GeneralCategory::TitlecaseLetter)
+    }
+
+    pub ("list->string") fn list_to_string<'gc>(nctx, lst: Value<'gc>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+        if !lst.is_list() {
+            return nctx.wrong_argument_violation("list->string", "expected a list", Some(lst), Some(1), 1, &[lst]);
+        }
+        let mut walk = lst;
+        let mut buffer = String::new();
+
+        while walk.is_pair() {
+            let ch_val = walk.car();
+            if !ch_val.is_char() {
+                return nctx.wrong_argument_violation("list->string", "expected a list of characters", Some(ch_val), Some(1), 1, &[lst]);
+            }
+            let ch = ch_val.char();
+            buffer.push(ch);
+            walk = walk.cdr();
+        }
+
+        if !walk.is_null() {
+            return nctx.wrong_argument_violation("list->string", "expected a proper list", Some(walk), Some(1), 1, &[lst]);
+        }
+
+        let s = Str::new(&nctx.ctx, &buffer, false);
+        nctx.return_(Ok(s))
+    }
+
+
+
 );
 
 pub fn init_strings<'gc>(ctx: Context<'gc>) {

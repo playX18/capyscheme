@@ -18,6 +18,7 @@
                     [(null? exps) (values (join (reverse out)) (current-module) (current-module))]
                     [else 
                         (let ([exp (macroexpand (car exps) 'c '(compile load eval))])
+                           
                             (lp (cdr exps) (cons exp out)))])))))
 
 

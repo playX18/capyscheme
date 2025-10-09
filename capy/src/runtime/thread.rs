@@ -10,7 +10,7 @@ use crate::runtime::{
     value::{
         NativeReturn, ReturnCode, SavedCall, Value, init_symbols, init_weak_sets, init_weak_tables,
     },
-    vm::{VMResult, call_scheme, call_scheme_with_k, debug},
+    vm::{VMResult, call_scheme_with_k, debug},
 };
 
 #[derive(Clone, Copy)]
@@ -154,17 +154,9 @@ unsafe impl Trace for State<'_> {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
 
     unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
-        println!("TRACE STATE {:p}", self);
         visitor.trace(&mut self.dynamic_state);
 
         let runstack = unsafe {
-            println!(
-                "TRACE RUNSTACK {} {}..{}",
-                (self.runstack.get().as_usize() as isize - self.runstack_start.as_usize() as isize)
-                    / std::mem::size_of::<Value>() as isize,
-                self.runstack_start,
-                self.runstack.get()
-            );
             std::slice::from_raw_parts_mut(
                 self.runstack_start.to_mut_ptr::<Value>(),
                 (self.runstack.get() - self.runstack_start) / size_of::<Value>(),
@@ -185,10 +177,7 @@ unsafe impl Trace for State<'_> {
         }
 
         if let Some(saved_call) = self.saved_call.get_mut() {
-            println!("tracing saved call {:p}", saved_call);
             visitor.trace(saved_call);
-        } else {
-            println!("NO SAVED CALL???");
         }
     }
 }
@@ -228,7 +217,6 @@ impl Scheme {
         F: for<'gc> FnOnce(Context<'gc>) -> T,
     {
         let (result, should_gc) = self.mutator.mutate(|mc, state| {
-            println!("enter state={:p}", state);
             let ctx = state.context(mc);
             let result = f(ctx);
             unsafe { (*ctx.state.shadow_stack.get()).clear() };
@@ -253,7 +241,6 @@ impl Scheme {
                     State::new(mc)
                 });
                 m.mutate(|mc, state: &State<'_>| {
-                    println!("Initializing state {:p}", state);
                     super::init(state.context(mc));
                 });
                 m

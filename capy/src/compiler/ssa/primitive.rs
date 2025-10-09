@@ -1890,6 +1890,9 @@ prim!(
         let val = ssa.atom(args[0]);
         let mask = ssa.builder.ins().iconst(types::I64, Value::CHAR_MASK as i64);
         let tag = ssa.builder.ins().iconst(types::I64, Value::CHAR_TAG);
+        if ssa.builder.func.dfg.value_type(val) != types::I64 {
+            unreachable!()
+        }
         let masked = ssa.builder.ins().band(val, mask);
         let cmp = ssa.builder.ins().icmp(IntCC::Equal, masked, tag);
         PrimValue::Comparison(cmp)
@@ -2042,6 +2045,9 @@ prim!(
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
             let eq = emit_icmp(ssa, acc,rhs, IntCC::Equal, _h);
+            if ssa.builder.func.dfg.value_type(eq) != ssa.builder.func.dfg.value_type(acc) {
+                unreachable!()
+            }
             acc = ssa.builder.ins().band(acc, eq);
         }
         PrimValue::Comparison(acc)
@@ -2065,6 +2071,9 @@ prim!(
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
             let lt = emit_icmp(ssa, acc,rhs, IntCC::SignedLessThan, _h);
+            if ssa.builder.func.dfg.value_type(lt) != ssa.builder.func.dfg.value_type(acc) {
+                unreachable!()
+            }
             acc = ssa.builder.ins().band(acc, lt);
         }
         PrimValue::Comparison(acc)
@@ -2089,6 +2098,9 @@ prim!(
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
             let gt = emit_icmp(ssa, acc,rhs, IntCC::SignedGreaterThan, _h);
+            if ssa.builder.func.dfg.value_type(gt) != ssa.builder.func.dfg.value_type(acc) {
+                unreachable!()
+            }
             acc = ssa.builder.ins().band(acc, gt);
         }
         PrimValue::Comparison(acc)
@@ -2113,6 +2125,9 @@ prim!(
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
             let gte = emit_icmp(ssa, acc,rhs, IntCC::SignedGreaterThanOrEqual, _h);
+            if ssa.builder.func.dfg.value_type(gte) != ssa.builder.func.dfg.value_type(acc) {
+                unreachable!()
+            }
             acc = ssa.builder.ins().band(acc, gte);
         }
         PrimValue::Comparison(acc)
@@ -2136,9 +2151,28 @@ prim!(
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
             let lte = emit_icmp(ssa, acc,rhs, IntCC::SignedLessThanOrEqual, _h);
+            if ssa.builder.func.dfg.value_type(lte) != ssa.builder.func.dfg.value_type(acc) {
+                unreachable!("type mismatch in <=: {:?} vs {:?}", ssa.builder.func.dfg.value_type(lte), ssa.builder.func.dfg.value_type(acc))
+            }
             acc = ssa.builder.ins().band(acc, lte);
         }
         PrimValue::Comparison(acc)
+    },
+
+    "memq" => memq(ssa, args, _h) {
+        let item = ssa.atom(args[0]);
+        let list = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.memq, &[ctx, item, list], _h);
+        PrimValue::Value(result)
+    },
+
+    "memv" => memv(ssa, args, _h) {
+        let item = ssa.atom(args[0]);
+        let list = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.memv, &[ctx, item, list], _h);
+        PrimValue::Value(result)
     },
 
     "zero?" => is_zero(ssa, args, _h) {

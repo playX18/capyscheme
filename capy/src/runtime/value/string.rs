@@ -21,6 +21,7 @@ pub(crate) struct Stringbuf {
     hdr: ScmHeader,
     pub(crate) length: usize,
     mutable: Cell<bool>,
+    pad: [u8; 7],
     data: [UnsafeCell<u8>; 0],
 }
 
@@ -43,6 +44,7 @@ unsafe impl Trace for Stringbuf {
 
 impl Stringbuf {
     const VT: &'static VTable = &VTable {
+        type_name: "Stringbuf",
         instance_size: 0,
         alignment: std::mem::align_of::<Self>(),
         compute_alignment: None,
@@ -121,7 +123,7 @@ impl Stringbuf {
                 hdr,
                 length,
                 mutable: Cell::new(false),
-
+                pad: [0; 7],
                 data: [],
             });
 
@@ -203,6 +205,10 @@ impl<'gc> Str<'gc> {
     #[doc(hidden)]
     pub fn strbuf(&self) -> Address {
         self.stringbuf.get().to_object_reference().to_raw_address()
+    }
+
+    pub fn from_str(mc: &Mutation<'gc>, s: impl AsRef<str>) -> Gc<'gc, Self> {
+        Self::new(mc, s, false)
     }
 
     /// Create a new string with the given UTF-8 contents.

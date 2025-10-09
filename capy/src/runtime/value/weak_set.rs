@@ -656,8 +656,6 @@ pub(crate) fn vacuum_weak_sets<'gc>(mc: &Mutation<'gc>) {
 
         guard.retain(|weak_set| {
             if let Some(weak_set) = weak_set.upgrade() {
-                println!("Vacuuming weak set {:p}", weak_set);
-
                 let wset = weak_set.inner.lock();
                 Gc::write(mc, weak_set);
                 unsafe {

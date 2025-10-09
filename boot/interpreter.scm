@@ -108,8 +108,8 @@
 
         [(let*? expr)
             (let ([lhs (let-lhs expr)]
-                    [rhs (let-rhs expr)]
-                    [body (let-body expr)])
+                  [rhs (let-rhs expr)]
+                  [body (let-body expr)])
                 (let loop ([vars lhs] [vals rhs] [env env])
                     (if (null? vars)
                         (interpret/preprocess body env)
@@ -121,11 +121,11 @@
                                         (rest-proc (cons (vector val) env0)))))))))]
         [(or (letrec*? expr) (letrec? expr))
             (let* ([lhs (let-lhs expr)]
-                    [rhs (let-rhs expr)]
-                    [body (let-body expr)]
-                    [nenv (cons lhs env)]
-                    [rhs-procs (map (lambda (rhs) (interpret/preprocess rhs nenv)) rhs)]
-                    [body-proc (interpret/preprocess body nenv)])
+                   [rhs (let-rhs expr)]
+                   [body (let-body expr)]
+                   [nenv (cons lhs env)]
+                   [rhs-procs (map (lambda (rhs) (interpret/preprocess rhs nenv)) rhs)]
+                   [body-proc (interpret/preprocess body nenv)])
                 (lambda (env0)
                     (let* ([rib (make-vector (length lhs) 555)]
                             [new-env (cons rib env0)])
@@ -154,6 +154,7 @@
                     (tail env0)))]
         [(void? expr)
             (lambda (env0) (if #f #f))]
+        
         [else (lambda (env0) (assertion-violation #f "unhandled node " expr))]))
 
 

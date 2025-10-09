@@ -109,6 +109,7 @@ pub struct Func<'gc> {
     pub body: TermRef<'gc>,
 
     pub free_vars: Lock<Option<Vars<'gc>>>,
+    pub meta: Value<'gc>,
 }
 
 impl<'gc> Func<'gc> {
@@ -116,6 +117,7 @@ impl<'gc> Func<'gc> {
         Gc::new(
             &ctx,
             Func {
+                meta: self.meta,
                 name: self.name,
                 source: self.source,
                 binding: self.binding,
@@ -162,6 +164,7 @@ pub struct Cont<'gc> {
     pub reified: Cell<bool>,
     pub handler: Lock<LVarRef<'gc>>,
     pub cold: bool,
+    pub meta: Value<'gc>,
 }
 
 impl<'gc> PartialEq for Cont<'gc> {
@@ -206,6 +209,7 @@ impl<'gc> Cont<'gc> {
         Gc::new(
             &ctx,
             Self {
+                meta: self.meta,
                 name: self.name,
                 binding: self.binding,
                 args: self.args,

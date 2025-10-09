@@ -871,3 +871,20 @@
      x)
     ((do "step" x y)
      y)))
+
+;; Implements `receive` syntax by translating to `call-with-values`.
+;; Compiler will later on eliminate `call-with-values` to `receive`.
+(define-syntax receive
+  (syntax-rules ()
+    ((receive formals expression body ...)
+     (call-with-values (lambda () expression)
+                       (lambda formals body ...)))))
+(define-syntax when 
+  (syntax-rules ()
+    ((when test body ...)
+     (if test (begin body ...)))))
+
+(define-syntax unless 
+  (syntax-rules ()
+    ((unless test body ...)
+     (if test #f (begin body ...)))))

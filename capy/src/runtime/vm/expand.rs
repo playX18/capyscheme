@@ -573,7 +573,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
         if is_lref(self.ctx, t) {
             let sym = lref_sym(self.ctx, t);
             let Some(var) = self.lvars.get(&sym) else {
-                return Err(t);
+                panic!("unbound lvar: {sym}")
             };
             var.reference();
             return Ok(Gc::new(
@@ -587,7 +587,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let sym = lset_sym(self.ctx, t);
 
             let Some(var) = self.lvars.get(&sym).cloned() else {
-                return Err(t);
+                panic!("unbound lvar: {sym}")
             };
             var.mutate();
 
@@ -624,7 +624,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let mut args = Vec::with_capacity(len);
 
             while ls.is_pair() {
-                let arg = self.convert(ls.car()).map_err(|_| t)?;
+                let arg = self.convert(ls.car())?;
                 args.push(arg);
                 ls = ls.cdr();
             }
@@ -644,7 +644,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let len = ls.list_length();
             let mut args = Vec::with_capacity(len);
             while ls.is_pair() {
-                let arg = self.convert(ls.car()).map_err(|_| t)?;
+                let arg = self.convert(ls.car())?;
                 args.push(arg);
                 ls = ls.cdr();
             }
@@ -680,7 +680,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let module = module_set_module(self.ctx, t);
             let name = module_set_name(self.ctx, t);
             let public = module_set_public(self.ctx, t);
-            let value = self.convert(module_set_value(self.ctx, t)).map_err(|_| t)?;
+            let value = self.convert(module_set_value(self.ctx, t))?;
             return Ok(Gc::new(
                 &self.ctx,
                 Term {
@@ -701,9 +701,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
         } else if is_toplevel_set(self.ctx, t) {
             let module = toplevel_set_mod(self.ctx, t);
             let name = toplevel_set_name(self.ctx, t);
-            let value = self
-                .convert(toplevel_set_value(self.ctx, t))
-                .map_err(|_| t)?;
+            let value = self.convert(toplevel_set_value(self.ctx, t))?;
             return Ok(Gc::new(
                 &self.ctx,
                 Term {
@@ -714,9 +712,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
         } else if is_toplevel_define(self.ctx, t) {
             let module = toplevel_define_mod(self.ctx, t);
             let name = toplevel_define_name(self.ctx, t);
-            let value = self
-                .convert(toplevel_define_value(self.ctx, t))
-                .map_err(|_| t)?;
+            let value = self.convert(toplevel_define_value(self.ctx, t))?;
             return Ok(Gc::new(
                 &self.ctx,
                 Term {
@@ -725,9 +721,9 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 },
             ));
         } else if is_if(self.ctx, t) {
-            let cond = self.convert(if_cond(self.ctx, t)).map_err(|_| t)?;
-            let then = self.convert(if_then(self.ctx, t)).map_err(|_| t)?;
-            let els = self.convert(if_else(self.ctx, t)).map_err(|_| t)?;
+            let cond = self.convert(if_cond(self.ctx, t))?;
+            let then = self.convert(if_then(self.ctx, t))?;
+            let els = self.convert(if_else(self.ctx, t))?;
             return Ok(Gc::new(
                 &self.ctx,
                 Term {
@@ -830,15 +826,15 @@ impl<'gc> ScmTermToRsTerm<'gc> {
 
             let mut rhs = Vec::new();
             for expr in exprs {
-                let TermKind::Proc(proc) = self.convert(expr).map_err(|_| t)?.kind else {
-                    return Err(t);
+                let TermKind::Proc(proc) = self.convert(expr)?.kind else {
+                    return Err(expr);
                 };
 
                 rhs.push(proc);
             }
             let lhs = Array::from_slice(&self.ctx, &lvars);
             let rhs = Array::from_slice(&self.ctx, &rhs);
-            let body = self.convert(body).map_err(|_| t)?;
+            let body = self.convert(body)?;
 
             return Ok(Gc::new(
                 &self.ctx,
@@ -883,7 +879,9 @@ impl<'gc> ScmTermToRsTerm<'gc> {
 
             let variadic = if !ls_args.is_null() {
                 let arg = ls_args;
+
                 let id = ls_ids.car();
+
                 let lvar = Gc::new(
                     &self.ctx,
                     LVar {
@@ -899,7 +897,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 None
             };
 
-            let body = self.convert(body).map_err(|_| t)?;
+            let body = self.convert(body)?;
 
             return Ok(Gc::new(
                 &self.ctx,
@@ -961,8 +959,8 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 None
             };
 
-            let producer = self.convert(producer).map_err(|_| t)?;
-            let consumer = self.convert(consumer).map_err(|_| t)?;
+            let producer = self.convert(producer)?;
+            let consumer = self.convert(consumer)?;
 
             return Ok(Gc::new(
                 &self.ctx,
@@ -981,7 +979,7 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let len = ls.list_length();
             let mut vals = Vec::with_capacity(len);
             while ls.is_pair() {
-                let v = self.convert(ls.car()).map_err(|_| t)?;
+                let v = self.convert(ls.car())?;
                 vals.push(v);
                 ls = ls.cdr();
             }
@@ -994,14 +992,14 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             ));
         } else if is_sequence(self.ctx, t) {
             let mut seq = Vec::new();
-            seq.push(self.convert(sequence_head(self.ctx, t)).map_err(|_| t)?);
+            seq.push(self.convert(sequence_head(self.ctx, t))?);
 
             let mut tail = sequence_tail(self.ctx, t);
             while is_sequence(self.ctx, tail) {
-                seq.push(self.convert(sequence_head(self.ctx, tail)).map_err(|_| t)?);
+                seq.push(self.convert(sequence_head(self.ctx, tail))?);
                 tail = sequence_tail(self.ctx, tail);
             }
-            seq.push(self.convert(tail).map_err(|_| t)?);
+            seq.push(self.convert(tail)?);
             let seq = Array::from_slice(&self.ctx, &seq);
             return Ok(Gc::new(
                 &self.ctx,

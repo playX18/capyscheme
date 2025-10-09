@@ -32,6 +32,7 @@ pub fn t_k<'a, 'gc>(
             let consumer_k_var = cps.fresh_variable("consumer");
 
             let consumer_k = Cont {
+                meta: Value::new(false),
                 name: Value::new(false),
                 binding: consumer_k_var,
                 args: formals,
@@ -449,6 +450,7 @@ pub fn t_c<'a, 'gc>(
             let consumer_k_var = cps.fresh_variable("consumer");
 
             let consumer_k = Cont {
+                meta: Value::new(false),
                 name: Value::new(false),
                 binding: consumer_k_var,
                 args: formals,
@@ -539,6 +541,7 @@ pub fn cps_func<'a, 'gc>(
     Gc::new(
         &builder.ctx,
         Func {
+            meta: proc.meta,
             args: proc.args,
             name: proc.name,
             binding,
