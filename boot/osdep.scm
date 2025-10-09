@@ -61,4 +61,17 @@
     (else
      (error "Illegal keyword " (car l) " in pathname list."))))
 
-; eof
+
+
+(define **nul** 0)
+(define **alarm** 7)
+(define **backspace** 8)
+(define **tab** 9)
+(define **linefeed** 10)
+(define **vtab** 11)
+(define **page** 12)
+(define **return** 13)
+(define **esc** 27)
+(define **space** 32)
+(define **delete** 127)
+(define **newline** **linefeed**)

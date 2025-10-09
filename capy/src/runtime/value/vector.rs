@@ -8,8 +8,8 @@ use rsgc::{
     mmtk::AllocationSemantics,
     object::VTable,
 };
+use std::mem::offset_of;
 use std::ops::{Deref, Index};
-use std::{cell::UnsafeCell, mem::offset_of};
 
 use crate::runtime::{Context, value::*};
 
@@ -36,6 +36,7 @@ impl<'gc> Vector<'gc> {
     pub const OFFSET_OF_DATA: usize = offset_of!(Vector, data);
 
     pub const VT: &'static VTable = &VTable {
+        type_name: "Vector",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
@@ -190,12 +191,13 @@ macro_rules! vector {
         $crate::runtime::value::Vector::new(&$mc, 0, Value::null())
     };
 }
+type BytevectorMappingField = BitField<u64, bool, { TypeBits::NEXT_BIT }, 1, false>;
 
 #[repr(C, align(8))]
 pub struct ByteVector {
     hdr: ScmHeader,
     len: usize,
-    data: [UnsafeCell<u8>; 0],
+    contents: Address,
 }
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
@@ -209,15 +211,28 @@ fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
 
 impl ByteVector {
     pub const VT: &'static VTable = &VTable {
+        type_name: "ByteVector",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
         compute_size: Some(|vec| unsafe {
+            let bv = vec.to_address().as_ref::<ByteVector>();
+            if bv.is_mapping() {
+                return 0;
+            }
             vec.to_address().as_ref::<ByteVector>().len * size_of::<u8>()
         }),
         trace: trace_byte_vector,
         weak_proc: process_weak_byte_vector,
     };
+
+    pub fn contents(&self) -> Address {
+        self.contents
+    }
+
+    pub fn is_mapping(&self) -> bool {
+        BytevectorMappingField::decode(self.hdr.word)
+    }
 
     pub fn len(&self) -> usize {
         self.len
@@ -251,6 +266,32 @@ impl ByteVector {
             let vec = alloc.to_address().as_mut_ref::<Self>();
             vec.hdr = hdr;
             vec.len = length;
+            let contents = (vec as *mut Self).add(1);
+            vec.contents = Address::from_ptr(contents as *mut u8);
+
+            Gc::from_gcobj(alloc)
+        }
+    }
+
+    /// Allocate a new memory-mapped bytevector. This can be used to represent
+    /// memory from FFI calls or memory-mapped files.
+    pub fn new_mapping<'gc>(mc: &Mutation<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
+        let mut hdr = ScmHeader::new();
+        hdr.set_type_bits(TypeCode8::BYTEVECTOR.0 as _);
+        hdr.word = BytevectorMappingField::update(true, hdr.word);
+
+        unsafe {
+            let alloc = mc.raw_allocate(
+                size_of::<Self>(),
+                align_of::<Self>(),
+                &Self::VT,
+                AllocationSemantics::Default,
+            );
+
+            let vec = alloc.to_address().as_mut_ref::<Self>();
+            vec.hdr = hdr;
+            vec.len = length;
+            vec.contents = addr;
 
             Gc::from_gcobj(alloc)
         }
@@ -266,11 +307,11 @@ impl ByteVector {
     }
 
     pub fn as_slice<'gc>(self: Gc<'gc, Self>) -> &'gc [u8] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 
     pub unsafe fn as_slice_mut_unchecked(&self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_ptr() as *mut u8, self.len) }
+        unsafe { std::slice::from_raw_parts_mut(self.contents.to_mut_ptr() as *mut u8, self.len) }
     }
 
     pub fn fill(&self, fill: u8) {
@@ -298,7 +339,7 @@ impl ByteVector {
 
 impl<'gc> AsRef<[u8]> for ByteVector {
     fn as_ref(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 }
 
@@ -306,7 +347,7 @@ impl<'gc> Deref for ByteVector {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len) }
+        unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 }
 
@@ -364,6 +405,7 @@ unsafe impl<'gc> Tagged for Tuple<'gc> {
 
 impl<'gc> Tuple<'gc> {
     pub const VT: &'static VTable = &VTable {
+        type_name: "Tuple",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,

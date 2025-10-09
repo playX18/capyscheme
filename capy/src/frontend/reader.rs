@@ -343,9 +343,61 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             }
 
             "string" => {
-                let text = &text[1..text.len() - 1];
-                let string = Str::new(&self.ctx, text, false);
+                let content = &text[1..text.len() - 1]; // Remove quotes
+                let mut result = String::new();
+                let mut chars = content.chars();
 
+                while let Some(ch) = chars.next() {
+                    if ch == '\\' {
+                        match chars.next() {
+                            Some('n') => result.push('\n'),
+                            Some('t') => result.push('\t'),
+                            Some('r') => result.push('\r'),
+                            Some('\\') => result.push('\\'),
+                            Some('"') => result.push('"'),
+                            Some('a') => result.push('\u{07}'), // alarm
+                            Some('b') => result.push('\u{08}'), // backspace
+                            Some('v') => result.push('\u{0B}'), // vertical tab
+                            Some('f') => result.push('\u{0C}'), // form feed
+                            Some('x') => {
+                                // Hex escape sequence \xNN;
+                                let mut hex_digits = String::new();
+                                while let Some(hex_ch) = chars.next() {
+                                    if hex_ch == ';' {
+                                        break;
+                                    }
+                                    if hex_ch.is_ascii_hexdigit() {
+                                        hex_digits.push(hex_ch);
+                                    } else {
+                                        return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                    }
+                                }
+                                if let Ok(code_point) = u32::from_str_radix(&hex_digits, 16) {
+                                    if let Some(unicode_char) = char::from_u32(code_point) {
+                                        result.push(unicode_char);
+                                    } else {
+                                        return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                    }
+                                } else {
+                                    return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                }
+                            }
+                            Some(other) => {
+                                return Err(LexicalError::InvalidCharacter {
+                                    source: src.0,
+                                    character: other,
+                                });
+                            }
+                            None => {
+                                return Err(LexicalError::UnclosedString { source: src.0 });
+                            }
+                        }
+                    } else {
+                        result.push(ch);
+                    }
+                }
+
+                let string = Str::new(&self.ctx, &result, false);
                 Ok(string.into())
             }
 
@@ -485,10 +537,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         .unwrap_or(hex_part.len());
 
                     if end_of_hex == 0 {
-                        return Err(LexicalError::InvalidCharacter {
-                            source: src.0,
-                            character: 'x',
-                        });
+                        return Ok(Value::new('x'));
                     }
 
                     let hex_str = &hex_part[..end_of_hex];
@@ -510,6 +559,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 const NAMED_CHARS: &[(&str, char)] = &[
                     ("newline", '\n'),
+                    ("linefeed", '\n'),
                     ("space", ' '),
                     ("tab", '\t'),
                     ("return", '\r'),

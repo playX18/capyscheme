@@ -109,6 +109,16 @@ pub trait FromValue<'gc>: Sized {
     fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>>;
 }
 
+impl<'gc> FromValue<'gc> for char {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        if value.is_char() {
+            Ok(value.char())
+        } else {
+            Err(ConversionError::type_mismatch(0, "char", value))
+        }
+    }
+}
+
 impl<'gc> FromValue<'gc> for bool {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         Ok(value != Value::new(false))

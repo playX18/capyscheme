@@ -240,14 +240,14 @@ thunks! {
         ctx: &Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
-        print_stacktraces_impl(*ctx);
+        //print_stacktraces_impl(*ctx);
         println!("wrong number of args: {}", subr);
         let ip = unsafe { returnaddress(0) };
             backtrace::resolve(ip as _, |sym| {
                 println!("{sym:?}");
         });
         if subr.is::<Closure>() {
-            println!("{}", subr.downcast::<Closure>().meta);
+            //println!("{}", subr.downcast::<Closure>().meta);
             let sym = backtrace::resolve(subr.downcast::<Closure>().code.to_mut_ptr(), |sym| {
                 println!("{sym:?}");
             });
@@ -303,6 +303,10 @@ thunks! {
         let variable = module.downcast::<Module>().variable(*ctx, name);
 
         let Some(variable) = variable else {
+            let ip = unsafe { returnaddress(0) };
+            backtrace::resolve(ip as _, |sym| {
+                println!("{sym:?}");
+            });
             println!("lookup-bound: variable not found: {} in {}", name, module);
             print_stacktraces_impl(*ctx);
             return ThunkResult {
@@ -446,7 +450,7 @@ thunks! {
             }),
             code: Address::from_ptr(func),
             free,
-            meta,
+            meta: rsgc::cell::Lock::new(meta),
         };
 
         Gc::new(&ctx, clos).into()
@@ -474,15 +478,10 @@ thunks! {
     ) -> Gc<'gc, SavedCall<'gc>> {
         ctx.state.runstack.set(ctx.state.runstack_start);
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-        println!("YIELDING WITH {num_rands} ARGS: {args:?}, RATOR={rator}");
-        let code = rator.downcast::<Closure>().code;
-        backtrace::resolve(code.to_mut_ptr(), |sym| {
-            println!("  at {sym:?}");
-        });
-        println!("take_yieldpoint={}", ctx.take_yieldpoint());
-        print_stacktraces_impl(*ctx);
+
+
         let arr = Array::from_slice(&ctx, args);
-        println!("runstack {}..{} during yield,state={:p}", ctx.state.runstack_start, ctx.state.runstack.get(), ctx.state);
+
         Gc::new(&ctx, SavedCall { rands: arr, rator, from_procedure: true })
     }
 
@@ -902,6 +901,7 @@ thunks! {
                 )
             }
         };
+
 
         ThunkResult { code: 0, value: s.to_str(ctx).into() }
     }

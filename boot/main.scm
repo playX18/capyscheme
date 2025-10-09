@@ -140,6 +140,9 @@
             ((pred (car lst)) (loop (cdr lst) (cons (car lst) acc1) acc2))
             (else (loop (cdr lst) acc1 (cons (car lst) acc2)))))))
 
+(define (for-all pred lst)
+  (if (null? lst) #t
+    (and (pred (car lst)) (for-all pred (cdr lst)))))
 
 (define safe-length
   (lambda (lst)
@@ -212,12 +215,16 @@
         (if (null? args)
             (fluid-ref f)
             (let ([old (fluid-ref f)])
-              (fluid-set! f (conv (car args)))
+              (if (not (conv (car args)))
+                (assertion-violation 'parameter "bad value for parameter" (car args)))
+              (fluid-set! f (car args))
               old)))))
 
 
+(define tuple-printer (make-parameter #f))
+
 (define (make-rtd name parent uid sealed? opaque? fields)
-    (tuple 'type:record-type-descriptor name parent uid sealed? opaque? fields))
+    (tuple 'type:record-type-descriptor name parent uid sealed? opaque? fields #f))
 
 (define record-type-descriptor?
   (lambda (obj)
@@ -230,6 +237,8 @@
 (define rtd-sealed?     (lambda (rtd) (tuple-ref rtd 4)))
 (define rtd-opaque?     (lambda (rtd) (tuple-ref rtd 5)))
 (define rtd-fields      (lambda (rtd) (tuple-ref rtd 6)))
+(define rtd-printer     (lambda (rtd) (tuple-ref rtd 7)))
+(define set-rtd-printer! (lambda (rtd printer) (tuple-set! rtd 7 printer)))
 
 
 (define (rtd-ancestor? parent rtd)
@@ -449,6 +458,8 @@
   (and
     (tuple? obj)
     (record-type-descriptor? (tuple-ref obj 0))))
+(define (record-type-descriptor obj)
+  (record-rtd obj))
 (define (record-rtd obj)
   (if (record? obj)
     (tuple-ref obj 0)
@@ -530,6 +541,16 @@
 (define message-condition? (condition-predicate (record-type-rtd &message)))
 (define condition-message (condition-accessor (record-type-rtd &message) (record-accessor (record-type-rtd &message) 0)))
 
+(define &source
+  (let ([rtd (make-record-type-descriptor '&source (record-type-rtd &condition) #f #f #f '#((immutable file) (immutable line) (immutable column)))])
+    (let ([rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)])
+      (make-record-type '&source rtd rcd))))
+
+(define make-source-condition (record-constructor (record-type-rcd &source)))
+(define source-condition? (condition-predicate (record-type-rtd &source)))
+(define condition-source-file (condition-accessor (record-type-rtd &source) (record-accessor (record-type-rtd &source) 0)))
+(define condition-source-line (condition-accessor (record-type-rtd &source) (record-accessor (record-type-rtd &source) 1)))
+(define condition-source-column (condition-accessor (record-type-rtd &source) (record-accessor (record-type-rtd &source) 2)))
 
 (define (make-condition-uid) #f)
 (define &warning
@@ -826,8 +847,10 @@
   (.raise obj))
 
 (define (raise-continuable obj)
-  ((car (*current-exception-handlers*)) obj))
-
+  (let ((handlers (*current-exception-handlers*)))
+    (with-exception-handler (cadr handlers)
+      (lambda () ((car handlers) obj)))))
+  
 (define (with-exception-handler handler thunk)
   (let* ([previous-handlers (*current-exception-handlers*)]
         [new-handlers (if handler
@@ -1302,7 +1325,7 @@
                   (current-module (make-fresh-user-module))
                   (call/cc (lambda (return)
                     (with-exception-handler
-                      (lambda (_x) (print "Autoload of " module-name " failed: " (condition-message _x) " irritants: " (condition-irritants _x)) (return #f))
+                      (lambda (_x) (print "FAIL!") (print "Autoload of " module-name " failed: " (condition-message _x) " irritants: " (condition-irritants _x)) (return #f))
                       (lambda ()
                         (load (string-append dir-hint name))
                         (set! didit #t)
@@ -1470,12 +1493,37 @@
       (apply assertion-violation 'assert "assertion failed" rest)
       #t))
 
+(define (procedure-property proc key)
+  (let ([p (assq key (procedure-properties proc))])
+    (and p (cdr p))))
+  
+(define (procedure-name proc)
+  (procedure-property proc 'name))
+
+(define (procedure-documentation proc)
+  (procedure-property proc 'documentation))
+
+(define (procedure-sourcev proc)
+  (let ([src (procedure-property proc 'source)])
+    (cond 
+      [(vector? src) src]
+      [(list? src)
+        (let ([file (assq 'filename src)]
+              [line (assq 'line src)]
+              [col (assq 'column src)])
+          (vector file line col))]
+      [else #f])))
+
+(define (call-without-interrupts thunk)
+  (thunk))
+
 
 (load "boot/expand.scm")
 (load "boot/interpreter.scm")
 ;(load "boot/synclo.scm")
 (load "boot/psyntax.scm")
 (load "boot/sys.scm")
+(load "boot/osdep.scm")
 (load "boot/iosys.scm")
 (load "boot/portio.scm")
 (load "boot/bytevectorio.scm")
@@ -1483,6 +1531,13 @@
 (load "boot/conio.scm")
 (load "boot/stringio.scm")
 (load "boot/stdio.scm")
-(load "boot/set.scm")
 (load "boot/print.scm")
+(initialize-io-system)
+
+(load "boot/reader.scm")
+
+
+
+(load "boot/set.scm")
+
 (load "boot/eval.scm")

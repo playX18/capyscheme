@@ -110,12 +110,15 @@
     (define (build-simple-lambda src ids vars meta exp)
       (make-proc src vars exp meta ids))
     (define (expand-simple-lambda e r w s mod req rest meta body)
-      (let* ((ids (if rest (append req (list rest)) req)) (vars (map gen-var ids)) (labels (gen-labels ids)))
-
+      (let* ([ids (if rest (append req (list rest)) req)] 
+             [req-vars (map gen-var req)]
+             [rest-var (if rest (gen-var rest) '())]
+             [vars (append req-vars (list rest-var))] 
+             [labels (gen-labels ids)])
                  (build-simple-lambda
                   s
                   ids
-                  vars
+                  (if (null? req-vars) rest-var (append req-vars rest-var))
                   meta
                   (expand-body
                    body
@@ -1929,6 +1932,7 @@
 
 
     (set! macroexpand (lambda (x . rest)
+        "Expands expression `x` in the context of module `m` or (current-module) if `m` is not given."
         (define (unstrip x)
             (define (annotate result)
                 (let ([props (source-properties x)])

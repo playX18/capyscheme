@@ -3,10 +3,6 @@ use capy::runtime::{
     modules::{current_module, root_module},
     vm::{VMResult, call_scheme, load::load_thunk_in_vicinity},
 };
-use mimalloc::MiMalloc;
-
-//#[global_allocator]
-//static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     env_logger::init();
@@ -31,7 +27,6 @@ fn main() {
                 println!("Program finished with value: {}", val);
             }
             VMResult::Err(err) => {
-                //print_stacktraces_impl(ctx);
                 println!("Program terminated with error: {}", err);
             }
             VMResult::Yield => {
@@ -58,6 +53,9 @@ fn main() {
                     }
                     VMResult::Yield => {
                         println!("Resumed program yielded");
+                        if ctx.take_yieldpoint() != 0 {
+                            println!("took yieldpoint");
+                        }
                         true
                     }
                 }

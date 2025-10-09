@@ -321,6 +321,7 @@ impl<'gc> Term<'gc> {
                         reified: Cell::new(false),
                         handler: Lock::new(rc.1),
                         cold: false,
+                        meta: f.meta,
                     },
                 )
             })

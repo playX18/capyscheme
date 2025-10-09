@@ -106,7 +106,6 @@ pub fn find_path_to<'gc>(
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
 ) -> Result<Option<(PathBuf, PathBuf)>, Value<'gc>> {
-    println!("HELLO");
     let filename = filename.as_ref();
     let dir = in_vicinity.map(|p| p.as_ref().to_owned());
 
@@ -120,7 +119,7 @@ pub fn find_path_to<'gc>(
         source_path = Some(filename.to_owned());
     } else {
         let mut candidates = Vec::new();
-        println!("hello");
+
         if let Some(dir) = dir.as_ref() {
             let path = dir.join(filename);
 
@@ -143,9 +142,8 @@ pub fn find_path_to<'gc>(
             }
         }
         let paths = loc_load_path(ctx).get();
-        println!("candidates: {:p}", &candidates);
+
         for name in candidates {
-            println!("CANDIDATE: {}", name.display());
             if let Some(dir) = dir.as_ref() {
                 let candidate = dir.join(&name);
                 if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
@@ -168,7 +166,6 @@ pub fn find_path_to<'gc>(
                 paths = paths.cdr();
             }
         }
-        println!("AYO");
     }
 
     let source_path = match source_path {
@@ -205,7 +202,6 @@ pub fn find_path_to<'gc>(
     }
 
     if compiled_file.is_none() {
-        println!("FALLBACK PATH");
         let fallback = loc_compile_fallback_path(ctx).get().to_string();
         let fallback = Path::new(&fallback);
         if !fallback.exists() {
@@ -217,7 +213,6 @@ pub fn find_path_to<'gc>(
 
         compiled_file = Some(candidate);
     }
-    println!("FOUND PATHS");
     Ok(Some((source_path, compiled_file.unwrap())))
 }
 
@@ -243,11 +238,6 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
             ));
         }
     };
-    println!(
-        "source={}, compiled={}",
-        source.display(),
-        compiled.display()
-    );
 
     let source_time = source
         .metadata()
@@ -438,17 +428,12 @@ native_cont!(
         ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
         ir = primitives::resolve_primitives(nctx.ctx, ir, m);
         ir = primitives::expand_primitives(nctx.ctx, ir);
-        /*let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        doc.1.render(70, &mut std::io::stdout()).unwrap();
-        println!();*/
+
         let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
 
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
-        //let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
 
-        //doc.1.render(70, &mut std::io::stdout()).unwrap();
-        //println!();
 
         let object = match compile_cps_to_object(nctx.ctx, cps) {
             Ok(product) => product,

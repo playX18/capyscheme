@@ -112,6 +112,7 @@ native_fn!(
 );
 
 pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
+    println!("{}", std::backtrace::Backtrace::force_capture());
     let state = ctx.state;
     let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
     backtrace::trace(|_| {
@@ -147,10 +148,10 @@ pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
             buf.push_str(" in ");
             if frame.rator.is::<Closure>() {
                 let clos = frame.rator.downcast::<Closure>();
-                if clos.meta.is_list() {
-                    buf.push_str(&clos.meta.car().to_string());
+                if let Some(name) = clos.name(ctx) {
+                    buf.push_str(&name.to_string());
                 } else {
-                    buf.push_str(&format!("<closure {:p}> ", clos,));
+                    buf.push_str("<anonymous>");
                 }
             } else {
                 buf.push_str(&frame.rator.to_string());

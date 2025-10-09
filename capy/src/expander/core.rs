@@ -6,7 +6,6 @@ use rsgc::{
     alloc::array::{Array, ArrayRef},
     barrier,
     cell::Lock,
-    traits::IterGc,
 };
 
 use crate::{
@@ -14,10 +13,11 @@ use crate::{
         assignment_elimination, fix_letrec::fix_letrec, get_source_property,
         primitives::resolve_primitives, synclo::syntax_annotation,
     },
+    list,
     runtime::{
         Context,
         modules::{Module, root_module},
-        value::{Symbol, Value},
+        value::{Str, Symbol, Value},
         vm::syntax::props_to_sourcev,
     },
     static_symbols,
@@ -52,6 +52,8 @@ pub struct Denotations<'gc> {
     pub denotation_of_receive: Value<'gc>,
     pub denotation_of_and: Value<'gc>,
     pub denotation_of_or: Value<'gc>,
+    pub denotation_of_when: Value<'gc>,
+    pub denotation_of_unless: Value<'gc>,
 }
 
 static DENOTATIONS: OnceLock<Global<Rootable!(Denotations<'_>)>> = OnceLock::new();
@@ -75,6 +77,8 @@ static_symbols!(
     DENOTATION_OF_AND = "and"
     DENOTATION_OF_OR = "or"
     DENOTATION_OF_DO = "do"
+    DENOTATION_OF_WHEN = "when"
+    DENOTATION_OF_UNLESS = "unless"
 );
 
 pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
@@ -99,6 +103,8 @@ pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
                 denotation_of_set: denotation_of_set(ctx).into(),
                 denotation_of_values: denotation_of_values(ctx).into(),
                 denotation_of_receive: denotation_of_receive(ctx).into(),
+                denotation_of_when: denotation_of_when(ctx).into(),
+                denotation_of_unless: denotation_of_unless(ctx).into(),
             })
         })
         .fetch(&ctx)
@@ -650,6 +656,10 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_do(cenv, program)
         } else if proc == cenv.denotations.denotation_of_if {
             expand_if(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_when {
+            expand_when(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_unless {
+            expand_unless(cenv, program)
         } else if proc == cenv.denotations.denotation_of_and {
             expand_and(cenv, program)
         } else if proc == cenv.denotations.denotation_of_or {
@@ -747,15 +757,19 @@ fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
             sourcev: syntax_annotation(cenv.ctx, form),
         }));
     }
+    let old = cenv.expression_name;
+    cenv.expression_name = form.cadr();
 
     if let Some(lvar) = cenv.get(form.cadr()) {
         let value = expand(cenv, form.caddr())?;
+        cenv.expression_name = old;
         return Ok(lset(cenv.ctx, lvar, value));
     }
 
     let value = expand(cenv, form.caddr())?;
     let name = form.cadr();
     let source = syntax_annotation(cenv.ctx, form);
+    cenv.expression_name = old;
     Ok(toplevel_set(
         cenv.ctx,
         Value::new(false),
@@ -769,7 +783,7 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     let def = Define::parse(cenv.ctx, form)?;
 
     match def {
-        Define::Lambda(name, params, variadic, body) => {
+        Define::Lambda(name, params, variadic, mut body) => {
             let params = params
                 .into_iter()
                 .map(|sym| fresh_lvar(cenv.ctx, sym))
@@ -787,6 +801,30 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
                 cenv.extend(variadic.name, variadic.clone());
             }
 
+            let mut meta = list!(
+                cenv.ctx,
+                Value::cons(
+                    cenv.ctx,
+                    Symbol::from_str(cenv.ctx, "source").into(),
+                    syntax_annotation(cenv.ctx, form)
+                ),
+                // name:
+                Value::cons(cenv.ctx, Symbol::from_str(cenv.ctx, "name").into(), name)
+            );
+
+            if body.is_pair() && body.car().is::<Str>() && body.list_length() >= 2 {
+                meta = Value::cons(
+                    cenv.ctx,
+                    Value::cons(
+                        cenv.ctx,
+                        Symbol::from_str(cenv.ctx, "documentation").into(),
+                        body.car(),
+                    ),
+                    meta,
+                );
+                body = body.cdr();
+            }
+
             let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, body))?;
             cenv.pop_frame();
 
@@ -798,7 +836,7 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
                     variadic,
                     body: body_term,
                     source: syntax_annotation(cenv.ctx, form),
-                    meta: Value::new(false),
+                    meta,
                 },
             );
 
@@ -820,8 +858,10 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
         }
 
         Define::Simple(name, value) => {
+            let old = cenv.expression_name;
+            cenv.expression_name = name;
             let term = expand(cenv, value)?;
-
+            cenv.expression_name = old;
             Ok(define(
                 cenv.ctx,
                 Value::new(false),
@@ -851,6 +891,56 @@ fn expand_quote<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'
             kind: TermKind::Const(datum),
         },
     ))
+}
+
+fn expand_when<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    if form.list_length() < 3 {
+        return Err(Box::new(CompileError {
+            message: "when requires at least test and one body expression".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let test = form.cadr();
+    let body = form.cddr();
+
+    let test_term = expand(cenv, test)?;
+    let body_term = if body.cdr().is_null() {
+        expand(cenv, body.car())?
+    } else {
+        let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+        expand(cenv, begin_form)?
+    };
+
+    let undefined_term = constant(cenv.ctx, Value::undefined());
+
+    Ok(if_term(cenv.ctx, test_term, body_term, undefined_term))
+}
+
+fn expand_unless<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    if form.list_length() < 3 {
+        return Err(Box::new(CompileError {
+            message: "unless requires at least test and one body expression".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let test = form.cadr();
+    let body = form.cddr();
+
+    let test_term = expand(cenv, test)?;
+    let body_term = if body.cdr().is_null() {
+        expand(cenv, body.car())?
+    } else {
+        let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+        expand(cenv, begin_form)?
+    };
+
+    let undefined_term = constant(cenv.ctx, Value::undefined());
+
+    Ok(if_term(cenv.ctx, test_term, undefined_term, body_term))
 }
 
 fn expand_if<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -1374,7 +1464,7 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     }
 
     let formals = form.cadr();
-    let body = form.cddr();
+    let mut body = form.cddr();
 
     let (args, variadic) = collect_formals(cenv.ctx, formals)?;
 
@@ -1388,6 +1478,34 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
         cenv.extend(variadic.name, variadic.clone());
     }
 
+    let mut meta = list!(
+        cenv.ctx,
+        Value::cons(
+            cenv.ctx,
+            Symbol::from_str(cenv.ctx, "name").into(),
+            cenv.expression_name
+        ),
+        Value::cons(
+            cenv.ctx,
+            Symbol::from_str(cenv.ctx, "source").into(),
+            syntax_annotation(cenv.ctx, form)
+        )
+    );
+
+    if body.is_pair() && body.car().is::<Str>() && body.list_length() >= 2 {
+        let doc = body.car();
+        body = body.cdr();
+        meta = Value::cons(
+            cenv.ctx,
+            Value::cons(
+                cenv.ctx,
+                Symbol::from_str(cenv.ctx, "documentation").into(),
+                doc,
+            ),
+            meta,
+        );
+    }
+
     let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?;
     cenv.pop_frame();
 
@@ -1399,7 +1517,7 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             variadic,
             body: body_term,
             source: syntax_annotation(cenv.ctx, form),
-            meta: Value::new(false),
+            meta,
         },
     );
 
@@ -2104,19 +2222,47 @@ fn expand_clause<'gc>(
         let test_form = expand(cenv, test)?;
         let binding = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "cond-test-tmp").into());
 
-        let lbody = if body.is_null() {
-            lref(cenv.ctx, binding)
+        // Check for => syntax: (test => proc)
+        let lbody = if body.is_pair()
+            && body.car().is::<Symbol>()
+            && body.car() == Symbol::from_str(cenv.ctx, "=>").into()
+        {
+            if body.list_length() != 2 {
+                return Err(Box::new(CompileError {
+                    message: "=> clause must have exactly one procedure expression".to_string(),
+                    irritants: vec![clause],
+                    sourcev: syntax_annotation(cenv.ctx, form),
+                }));
+            }
+
+            let proc_expr = body.cadr();
+            let proc_term = expand(cenv, proc_expr)?;
+
+            // Call the procedure with the test result: (proc test-result)
+            call_term(
+                cenv.ctx,
+                proc_term,
+                vec![lref(cenv.ctx, binding.clone())],
+                syntax_annotation(cenv.ctx, clause),
+            )
+        } else if body.is_null() {
+            lref(cenv.ctx, binding.clone())
         } else {
             let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
             expand(cenv, begin_form)?
         };
 
-        let if_ = if_term(cenv.ctx, lref(cenv.ctx, binding), lbody, else_branch);
+        let if_ = if_term(
+            cenv.ctx,
+            lref(cenv.ctx, binding.clone()),
+            lbody,
+            else_branch,
+        );
         Ok(let_term(
             cenv.ctx,
             LetStyle::Let,
-            [binding].into_iter().collect_gc(&cenv.ctx),
-            [test_form].into_iter().collect_gc(&cenv.ctx),
+            Array::from_slice(&cenv.ctx, &[binding]),
+            Array::from_slice(&cenv.ctx, &[test_form]),
             if_,
             syntax_annotation(cenv.ctx, form),
         ))
@@ -2200,6 +2346,31 @@ fn expand_case_clauses<'gc>(
             }));
         }
 
+        // Check for => syntax in else clause
+        if body.is_pair()
+            && body.car().is::<Symbol>()
+            && body.car() == Symbol::from_str(cenv.ctx, "=>").into()
+        {
+            if body.list_length() != 2 {
+                return Err(Box::new(CompileError {
+                    message: "=> clause must have exactly one procedure expression".to_string(),
+                    irritants: vec![clause],
+                    sourcev: syntax_annotation(cenv.ctx, form),
+                }));
+            }
+
+            let proc_expr = body.cadr();
+            let proc_term = expand(cenv, proc_expr)?;
+
+            // Call the procedure with the key value: (proc key)
+            return Ok(call_term(
+                cenv.ctx,
+                proc_term,
+                vec![lref(cenv.ctx, key_lvar.clone())],
+                syntax_annotation(cenv.ctx, clause),
+            ));
+        }
+
         if body.cdr().is_null() {
             return expand(cenv, body.car());
         } else {
@@ -2236,7 +2407,71 @@ fn expand_case_clauses<'gc>(
             )
         };
 
-        let then_branch = if body.is_null() {
+        // Check for => syntax: ((datum1 datum2 ...) => proc)
+        let then_branch = if body.is_pair()
+            && body.car().is::<Symbol>()
+            && body.car() == Symbol::from_str(cenv.ctx, "=>").into()
+        {
+            if body.list_length() != 2 {
+                return Err(Box::new(CompileError {
+                    message: "=> clause must have exactly one procedure expression".to_string(),
+                    irritants: vec![clause],
+                    sourcev: syntax_annotation(cenv.ctx, form),
+                }));
+            }
+
+            let proc_expr = body.cadr();
+            let proc_term = expand(cenv, proc_expr)?;
+
+            // For case =>, we need to call the procedure with the matching datum,
+            // not the key. We need to store the result of memv/eqv? test.
+            let test_result_lvar = fresh_lvar(
+                cenv.ctx,
+                Symbol::from_str(cenv.ctx, "case-test-result").into(),
+            );
+
+            // If it's a memv test, call proc with the matched datum from the list
+            if test.is_pair() {
+                // For memv, we call (proc (car test-result)) since memv returns the tail
+                let car_call = prim_call_term(
+                    cenv.ctx,
+                    Symbol::from_str(cenv.ctx, "car").into(),
+                    vec![lref(cenv.ctx, test_result_lvar.clone())],
+                    syntax_annotation(cenv.ctx, clause),
+                );
+
+                let proc_call = call_term(
+                    cenv.ctx,
+                    proc_term,
+                    vec![car_call],
+                    syntax_annotation(cenv.ctx, clause),
+                );
+
+                let if_branch = if_term(
+                    cenv.ctx,
+                    lref(cenv.ctx, test_result_lvar.clone()),
+                    proc_call,
+                    else_branch,
+                );
+
+                return Ok(let_term(
+                    cenv.ctx,
+                    LetStyle::Let,
+                    Array::from_slice(&cenv.ctx, vec![test_result_lvar]),
+                    Array::from_slice(&cenv.ctx, vec![memv_test]),
+                    if_branch,
+                    syntax_annotation(cenv.ctx, form),
+                ));
+            } else {
+                // For eqv?, we call proc with the key value (which matched the datum)
+                call_term(
+                    cenv.ctx,
+                    proc_term,
+                    vec![lref(cenv.ctx, key_lvar.clone())],
+                    syntax_annotation(cenv.ctx, clause),
+                )
+            }
+        } else if body.is_null() {
             constant(cenv.ctx, Value::undefined())
         } else if body.cdr().is_null() {
             expand(cenv, body.car())?

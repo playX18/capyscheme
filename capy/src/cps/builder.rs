@@ -71,7 +71,7 @@ macro_rules! with_cps {
         }
     };
 
-    ($builder: ident; letk ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident)? = $e: expr),*;$($rest:tt)+) => {{
+    ($builder: ident; letk ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
         let mut conts = Vec::new();
         $(
             let $k = $builder.fresh_variable(stringify!($k));
@@ -86,9 +86,16 @@ macro_rules! with_cps {
                 )*
                 #[allow(unused_mut, unused_assignments)]
                 let mut src = $crate::runtime::value::Value::new(false);
+                #[allow(unused_mut, unused_assignments)]
+                let mut meta = $crate::runtime::value::Value::new(false);
                 $(
                     src = $src;
+                    $(
+                        meta = $meta;
+                    )?
                 )?
+
+
                 let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg),*]);
                 let body = $e;
 
@@ -96,6 +103,7 @@ macro_rules! with_cps {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
                     args: args,
+                    meta,
                     variadic: None,
                     body,
                     source: src,
@@ -117,7 +125,7 @@ macro_rules! with_cps {
     }
     };
 
-    ($builder: ident; letk cold ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident)? = $e: expr),*;$($rest:tt)+) => {{
+    ($builder: ident; letk cold ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)? )? = $e: expr),*;$($rest:tt)+) => {{
         let mut conts = Vec::new();
         $(
             let $k = $builder.fresh_variable(stringify!($k));
@@ -132,8 +140,13 @@ macro_rules! with_cps {
                 )*
                 #[allow(unused_mut, unused_assignments)]
                 let mut src = $crate::runtime::value::Value::new(false);
+                #[allow(unused_mut, unused_assignments)]
+                let mut meta = $crate::runtime::value::Value::new(false);
                 $(
                     src = $src;
+                    $(
+                        meta = $meta;
+                    )?
                 )?
                 let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg),*]);
                 let body = $e;
@@ -141,6 +154,7 @@ macro_rules! with_cps {
                 let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
+                    meta,
                     args: args,
                     variadic: None,
                     body,
@@ -163,12 +177,16 @@ macro_rules! with_cps {
     }
     };
 
-    ($builder: ident; letk ($h: ident) $k: ident ($args: ident ...) @ $src: ident = $e: expr; $($rest:tt)+) => {
+    ($builder: ident; letk ($h: ident) $k: ident ($args: ident ...) @ $src: ident $($meta: ident)? = $e: expr; $($rest:tt)+) => {
         {let $k = $builder.fresh_variable(stringify!($k));
 
             let args = $args;
             let body = $e;
-
+            #[allow(unused_mut, unused_assignments)]
+            let mut meta = $crate::runtime::value::Value::new(false);
+            $(
+                meta = $meta;
+            )?
         let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
             name: $crate::runtime::value::Value::new(false),
             binding: $k,
@@ -176,6 +194,7 @@ macro_rules! with_cps {
             variadic: None,
             body,
             source: $src,
+            meta,
             free_vars: $crate::rsgc::cell::Lock::new(None),
             reified: std::cell::Cell::new(false),
             handler: $crate::rsgc::cell::Lock::new($h),

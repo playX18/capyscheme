@@ -682,7 +682,6 @@ mod tests {
                     v3.into_value(ctx),
                 ], // k3's value is rooted, but k3 itself is not in tmps
                 table,
-                //k1_weak: WeakValue(k1.into_value(ctx)),
             };
             let _ = ROOTSET.set(Global::new(rootset));
         });

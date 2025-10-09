@@ -5,13 +5,13 @@ edition = "2024"
 
 [dependencies]
 capy = { path = "../capy" }
-pretty = "*"
-libloading = "0.8.8"
+pretty.workspace = true
+libloading.workspace = true
 cranelift-object.workspace = true
 target-lexicon.workspace = true
 cranelift-module.workspace = true
 cranelift-codegen.workspace = true
-mimalloc = { version = "*", features = ["secure"] }
+mimalloc.workspace = true
 cranelift-jit.workspace = true
 cranelift.workspace = true
-env_logger = "*"
+env_logger.workspace = true

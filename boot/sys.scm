@@ -143,7 +143,7 @@
 (define (osdep/read-file fd buffer nbytes)
   (if (not (fixnum? fd))
       (error "osdep/read-file: invalid descriptor " fd))
-  (if (not (bytevector-like? buffer))
+  (if (not (bytevector? buffer))
       (error "osdep/read-file: invalid buffer " buffer))
   (if (not (and (fixnum? nbytes) (>= nbytes 0)))
       (error "osdep/read-file: invalid byte count " nbytes))

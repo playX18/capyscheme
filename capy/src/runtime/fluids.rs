@@ -58,7 +58,7 @@ impl<'gc> Cache<'gc> {
         let mut hash = simplehash::Fnv1aHasher64::new();
 
         key.hash(&mut hash);
-        hash.finish_raw() as _
+        (hash.finish_raw() as usize) & 15
     }
 
     /// Get the current time and increment the clock
