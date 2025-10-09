@@ -247,7 +247,7 @@ thunks! {
                 println!("{sym:?}");
         });
         if subr.is::<Closure>() {
-            //println!("{}", subr.downcast::<Closure>().meta);
+            println!("{}", subr.downcast::<Closure>().meta.get());
             let sym = backtrace::resolve(subr.downcast::<Closure>().code.to_mut_ptr(), |sym| {
                 println!("{sym:?}");
             });
@@ -265,7 +265,13 @@ thunks! {
          let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
 
         let mut ls = Value::null();
-
+        if from >= args.len() {
+            unsafe { let ret = returnaddress(0);
+            backtrace::resolve(ret as _, |sym| {
+                println!("{sym:?}");
+            });
+        }
+        }
         for &arg in args[from..].iter().rev() {
             ls = Value::cons(*ctx, arg, ls);
         }
@@ -2021,6 +2027,11 @@ thunks! {
 
     pub fn car(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as *mut _, |symbol| {
+                println!("{symbol:?}");
+            });
+            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -2036,6 +2047,11 @@ thunks! {
 
     pub fn cdr(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as *mut _, |symbol| {
+                println!("{symbol:?}");
+            });
+            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,

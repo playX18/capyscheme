@@ -1,3 +1,4 @@
+(define-module (capy-user))
 (define reader (make-reader (current-input-port) "stdin"))
 (reader-mode-set! reader 'r6rs)
 (define (repl)

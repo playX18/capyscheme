@@ -136,7 +136,7 @@ pub fn compile_file<'gc>(
 
     cps = cps.with_body(ctx, contify(ctx, cps.body));
 
-    if !false {
+    if false {
         let file = std::fs::OpenOptions::new()
             .write(true)
             .truncate(true)

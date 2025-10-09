@@ -13,17 +13,32 @@ use crate::runtime::Context;
 use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Trace)]
 #[collect(no_drop)]
-pub enum HashTableType {
+pub enum HashTableType<'gc> {
     Eq,
     Eqv,
     Equal,
     String,
-    Generic,
+    Generic(Value<'gc>),
 }
 use simplehash::murmur::MurmurHasher64;
 
-impl HashTableType {
-    pub fn hash<'gc>(self, value: Value<'gc>) -> u64 {
+pub const HASHTABLE_HANDLER_SIGNATURE: usize = 0;
+pub const HASHTABLE_HANDLER_HASH: usize = 1;
+pub const HASHTABLE_HANDLER_EQUIV: usize = 2;
+pub const HASHTABLE_HANDLER_SIZE: usize = 3;
+pub const HASHTABLE_HANDLER_REF: usize = 4;
+pub const HASHTABLE_HANDLER_SET: usize = 5;
+pub const HASHTABLE_HANDLER_DELETE: usize = 6;
+pub const HASHTABLE_HANDLER_CONTAINS: usize = 7;
+pub const HASHTABLE_HANDLER_COPY: usize = 8;
+pub const HASHTABLE_HANDLER_CLEAR: usize = 9;
+pub const HASHTABLE_HANDLER_HASH_FUNC: usize = 10;
+pub const HASHTABLE_HANDLER_EQUIV_FUNC: usize = 11;
+pub const HASHTABLE_HANDLER_MUTABLE: usize = 12;
+pub const HASHTABLE_HANDLER_ALIST: usize = 13;
+
+impl<'gc> HashTableType<'gc> {
+    pub fn hash(self, value: Value<'gc>) -> u64 {
         let mut hasher = MurmurHasher64::new(5381);
         match self {
             HashTableType::Eq => value.hash(&mut hasher),
@@ -37,13 +52,13 @@ impl HashTableType {
                     value.hash(&mut hasher);
                 }
             }
-            HashTableType::Generic => unreachable!(),
+            HashTableType::Generic(_) => unreachable!(),
         }
 
         hasher.finish()
     }
 
-    pub fn equal<'gc>(self, lhs: Value<'gc>, rhs: Value<'gc>) -> bool {
+    pub fn equal(self, lhs: Value<'gc>, rhs: Value<'gc>) -> bool {
         match self {
             Self::Eq => lhs == rhs,
             Self::Eqv => lhs.eqv(rhs),
@@ -162,16 +177,36 @@ pub struct InnerHashTable<'gc> {
     threshold: Cell<usize>,
     load_factor: f64,
     mod_count: Cell<usize>,
-    pub typ: HashTableType,
+    pub typ: HashTableType<'gc>,
 }
 
 impl<'gc> HashTable<'gc> {
     pub fn new(
         mc: &Mutation<'gc>,
-        typ: HashTableType,
+        typ: HashTableType<'gc>,
         initial_capacity: usize,
         load_factor: f64,
     ) -> Gc<'gc, Self> {
+        if let HashTableType::Generic(_) = typ {
+            // generic hashtable: no table, handled separately.
+            let table = Array::with(mc, 0, |_, _| Lock::new(None));
+            let mut hdr = ScmHeader::new();
+            hdr.set_type_bits(TypeCode8::HASHTABLE.bits() as _);
+            return Gc::new(
+                mc,
+                Self {
+                    hdr,
+                    inner: Monitor::new(InnerHashTable {
+                        table: Lock::new(table),
+                        count: Cell::new(0),
+                        threshold: Cell::new(0),
+                        load_factor,
+                        mod_count: Cell::new(0),
+                        typ,
+                    }),
+                },
+            );
+        }
         let initial_capacity = initial_capacity.min(1);
         let initial_capacity = (initial_capacity == 0)
             .then_some(8)
@@ -203,6 +238,19 @@ impl<'gc> HashTable<'gc> {
         );
 
         this
+    }
+
+    pub fn is_mutable(&self) -> bool {
+        match self.inner.lock().typ {
+            HashTableType::Generic(_) => {
+                unreachable!()
+            }
+            _ => self.hdr.type_bits() == TypeCode16::MUTABLE_HASHTABLE.bits(),
+        }
+    }
+
+    pub fn typ(&self) -> HashTableType<'gc> {
+        self.inner.lock().typ
     }
 
     fn rehash(inner: &Write<InnerHashTable<'gc>>, ctx: Context<'gc>) {
@@ -471,6 +519,17 @@ impl<'gc> HashTable<'gc> {
     pub fn len(&self) -> usize {
         self.inner.lock().count.get()
     }
+
+    pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+        let guard = self.inner.lock();
+        let new_table = HashTable::new(&ctx, guard.typ, guard.table.get().len(), guard.load_factor);
+
+        for (k, v) in self.iter() {
+            new_table.put(ctx, k, v);
+        }
+
+        new_table
+    }
 }
 
 pub struct HashTableIter<'gc> {
@@ -528,6 +587,10 @@ impl<'gc> Iterator for HashTableValues<'gc> {
 
 unsafe impl<'gc> Tagged for HashTable<'gc> {
     const TC8: TypeCode8 = TypeCode8::HASHTABLE;
+    const TC16: &'static [TypeCode16] = &[
+        TypeCode16::MUTABLE_HASHTABLE,
+        TypeCode16::IMMUTABLE_HASHTABLE,
+    ];
     const TYPE_NAME: &'static str = "#<hashtable>";
 }
 

@@ -484,12 +484,12 @@
        (for-each (lambda (sym)
                    (module-add! iface sym
                                 (or (module-variable mod sym)
-                                    (error (format
+                                    (error 'import (format
                                              #f
-                                             "no binding `~A' in module ~A"
+                                             "no binding `~a' in module ~a"
                                              sym mod))))
-                   (when (hashq-ref (module-replacements mod) sym)
-                     (hashq-set! (module-replacements iface) sym #t)))
+                   (if (core-hash-ref (module-replacements mod) sym)
+                     (core-hash-put! (module-replacements iface) sym #t)))
                  (syntax->datum #'(identifier ...)))
        iface))
     
@@ -502,7 +502,7 @@
                                  mod)
        (for-each (lambda (sym)
                    (unless (module-local-variable iface sym)
-                     (error (format #f "no binding `~A' in module ~A" sym mod)))
+                     (error 'import (format #f "no binding `~a' in module ~a" sym mod)))
                    (module-remove! iface sym))
                  (syntax->datum #'(identifier ...)))
        iface))
@@ -516,8 +516,8 @@
         (lambda (sym var)
           (let ((sym* (symbol-append pre sym)))
             (module-add! iface sym* var)
-            (when (hashq-ref (module-replacements mod) sym)
-              (hashq-set! (module-replacements iface) sym* #t))))
+            (if (core-hash-ref (module-replacements mod) sym)
+              (core-hash-put! (module-replacements iface) sym* #t))))
         mod)
        iface))
 
@@ -537,14 +537,14 @@
               (let ((to (vector-ref v 0))
                     (replace? (vector-ref v 1))
                     (var (vector-ref v 2)))
-                (when (module-local-variable iface to)
-                  (error (format
+                (if (module-local-variable iface to)
+                  (error 'import (format
                            #f
-                           "duplicate binding for `~A' in module ~A"
+                           "duplicate binding for `~a' in module ~a"
                            to
                            mod)))
                 (module-add! iface to var)
-                (when replace?
+                (if replace?
                   (hashq-set! replacements to #t))))
             out)
            iface)
@@ -552,9 +552,9 @@
            (let* ((from (caar in))
                   (to (cdar in))
                   (var (module-variable mod from))
-                  (replace? (hashq-ref replacements from)))
-             (unless var (error
-                           (format #f "no binding `~A' in module ~A" from mod)))
+                  (replace? (core-hash-ref replacements from)))
+             (unless var (error 'resolve-r6rs-interface
+                           (format #f "no binding `~a' in module ~a" from mod)))
              (module-remove! iface from)
              (hashq-remove! replacements from)
              (lp (cdr in) (cons (vector to replace? var) out))))))))

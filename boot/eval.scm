@@ -41,4 +41,6 @@
 ; load file containing base macros
 
 (load "boot/base.scm")
+(load "boot/libraries.scm")
+
 (load "test.scm")
