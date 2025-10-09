@@ -2175,6 +2175,20 @@ prim!(
         PrimValue::Value(result)
     },
 
+    "exact->inexact" => exact_to_inexact(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.exact2inexact, &[ctx, val], _h);
+        PrimValue::Value(result)
+    },
+
+    "inexact->exact" => inexact_to_exact(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.inexact_to_exact, &[ctx, val], _h);
+        PrimValue::Value(result)
+    },
+
     "zero?" => is_zero(ssa, args, _h) {
         if args.is_empty() {
             return PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64));

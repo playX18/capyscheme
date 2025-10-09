@@ -10,7 +10,9 @@ use crate::{
 
 native_fn!(
     register_base_fns:
-
+    pub ("eof-object") fn eof_object<'gc>(nctx) -> Value<'gc> {
+        nctx.return_(Value::eof())
+    }
     pub ("exit") fn exit<'gc>(_nctx, code: Value<'gc>) -> () {
         let code = if code.is_int32() {
             code.as_int32()
@@ -76,6 +78,21 @@ native_fn!(
     pub ("gensym") fn gensym<'gc>(nctx, prefix: Option<Gc<'gc, Str<'gc>>>) -> Value<'gc> {
         let sym = Symbol::gensym(nctx.ctx, prefix);
         nctx.return_(sym.into())
+    }
+
+    pub ("values-list") fn values_list<'gc>(nctx, lst: Value<'gc>) -> () {
+        if !lst.is_list() {
+            return nctx.wrong_argument_violation("values-list", "expected a list", Some(lst), Some(1), 1, &[lst]);
+        }
+        let mut values = Vec::new();
+        let mut walk = lst;
+        while walk.is_pair() {
+            values.push(walk.car());
+            walk = walk.cdr();
+        }
+
+
+        nctx.return_many(&values)
     }
 
     pub ("delete!") fn delete<'gc>(nctx, item: Value<'gc>, lst: Value<'gc>) -> Value<'gc> {

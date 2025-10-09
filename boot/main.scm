@@ -395,7 +395,6 @@
           (assertion-violation "record accessor" (wrong-type-argument-message (format "record of type ~a" (rtd-name rtd)) obj))))))
 
 (define (wrong-type-argument-message . args) args)
-(define (format msg . rest) msg)
 
 (define make-mutator
   (lambda (rtd k)
@@ -777,54 +776,59 @@
             old)))))
 
 
-(define *here*
-  (let ([f (make-thread-local-fluid (list #f))])
+(define *winders* 
+  (let ([f (make-thread-local-fluid '())])
     (lambda args
       (if (null? args)
           (fluid-ref f)
           (let ([old (fluid-ref f)])
             (fluid-set! f (car args))
             old)))))
-
-
-
-(define (reroot! there)
-    (define (reroot-loop there)
-        (if (eq? there (*here*))
-            #f
-            (begin
-
-                (reroot-loop (cdr there))
-                (let ([old-pair (car there)])
-                    (let ([before (car old-pair)] [after (cdr old-pair)])
-                        (set-car! (*here*) (cons after before))
-                        (set-cdr! (*here*) there)
-                        (set-car! there #f)
-                        (set-cdr! there '())
-                        (*here* there)
-                        (before)
-                    )))))
-    (reroot-loop there))
-
-
-(define (dynamic-wind before thunk after)
-    (let ([here (*here*)])
-        (let ([there (list #f)])
-            (before)
-            (set-car! (*here*) (cons after before))
-            (set-cdr! (*here*) there)
-            (*here* there)
-            (receive results (thunk)
+(define call-with-current-continuation #f)
+(define dynamic-wind #f)
+(let ([winders (make-thread-local-fluid '())])
+  (define (get-winders) (fluid-ref winders))
+  (define (set-winders w) (fluid-set! winders w))
+  (define (common-tail x y)
+    (let ((lx (length x)) (ly (length y)))
+        (do ((x (if (> lx ly) (list-tail x (- lx ly)) x) (cdr x))
+             (y (if (> ly lx) (list-tail y (- ly lx)) y) (cdr y)))
+            ((eq? x y) x))))
+  (define do-wind
+    (lambda (new)
+      (let ((tail (common-tail new winders)))
+        (let f ((l winders))
+          (if (not (eq? l tail))
               (begin
-                (reroot! here)
-                (apply values results))))))
+                (set! winders (cdr l))
+                ((cdar l))
+                (f (cdr l)))))
+        (let f ((l new))
+          (if (not (eq? l tail))
+              (begin
+                (f (cdr l))
+                ((caar l))
+                (set! winders l)))))))
+  (set! call-with-current-continuation 
+    (lambda (f)
+      (.call/cc-unsafe (lambda (k)
+        (f (let ([save (get-winders)])
+          (lambda (x)
+            (if (not (eq? save (get-winders)))
+                (do-wind save))
+            (k x))))))))
+  (set! dynamic-wind 
+    (lambda (in body out)
+      (in)
+      (set-winders (cons (cons out in) (get-winders)))
+      (receive results (body)
+        (begin 
+          (set-winders (cdr (get-winders)))
+          (out)
+          (values-list results))))))
 
-(define (call-with-current-continuation proc)
-  (let ([here (*here*)])
-    (.call/cc-unsafe (lambda (cont)
-      (proc (lambda results
-        (reroot! here)
-        (apply cont results)))))))
+
+
 
 (define call/cc call-with-current-continuation)
 
@@ -1087,10 +1091,12 @@
       (lambda ()
         (set! outer-module (current-module))
         (current-module inner-module)
+      
         (set! inner-module #f))
       thunk
       (lambda ()
         (set! inner-module (current-module))
+     
         (current-module outer-module)
         (set! outer-module #f)))))
 
@@ -1325,7 +1331,7 @@
                   (current-module (make-fresh-user-module))
                   (call/cc (lambda (return)
                     (with-exception-handler
-                      (lambda (_x) (print "FAIL!") (print "Autoload of " module-name " failed: " (condition-message _x) " irritants: " (condition-irritants _x)) (return #f))
+                      (lambda (_x)  (:print "Autoload of " module-name " failed: " (condition-message _x) " irritants: " (condition-irritants _x)) (return #f))
                       (lambda ()
                         (load (string-append dir-hint name))
                         (set! didit #t)
@@ -1444,7 +1450,7 @@
         (lambda (name)
           (let* ([internal-name (if (pair? name) (car name) name)]
                  [external-name (if (pair? name) (cdr name) name)]
-                 [var (module-variable m interna-name)])
+                 [var (module-variable m internal-name)])
               (cond 
                 [(not var)
                   (assertion-violation 'unbound-variable "undefined variable" internal-name)]
@@ -1532,6 +1538,7 @@
 (load "boot/stringio.scm")
 (load "boot/stdio.scm")
 (load "boot/print.scm")
+(load "boot/format.scm")
 (initialize-io-system)
 
 (load "boot/reader.scm")

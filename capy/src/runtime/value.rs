@@ -478,6 +478,9 @@ impl TypeCode16 {
     pub const NATIVE_PROC: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16);
     pub const NATIVE_K: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16 + 1 * 256);
 
+    pub const MUTABLE_HASHTABLE: Self = Self(TypeCode8::HASHTABLE.0 as u16);
+    pub const IMMUTABLE_HASHTABLE: Self = Self(TypeCode8::HASHTABLE.0 as u16 + 1 * 256);
+
     pub const fn tc8(self) -> TypeCode8 {
         TypeCode8(self.0 as u8)
     }

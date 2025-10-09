@@ -295,6 +295,14 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
+    pub fn return_many(self, values: &[Value<'gc>]) -> NativeCallReturn<'gc> {
+        NativeCallReturn {
+            ret: self
+                .ctx
+                .return_call(self.retk, values.iter().copied(), None),
+        }
+    }
+
     pub fn return_error(self, err: Value<'gc>) -> NativeCallReturn<'gc> {
         NativeCallReturn {
             ret: NativeReturn {

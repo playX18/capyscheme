@@ -188,6 +188,44 @@ native_fn!(
         }
         nctx.return_(Ok(ls))
     }
+
+    pub ("list-head") fn list_head<'gc>(nctx, lst: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
+        if !lst.is_list() {
+            return nctx.wrong_argument_violation("list-head", "expected a list", Some(lst), Some(1), 2, &[lst, Value::new(n as i32)]);
+        }
+        let mut walk = lst;
+        let mut count = 0;
+
+        while walk.is_pair() && count < n {
+            walk = walk.cdr();
+            count += 1;
+        }
+
+        if count < n && !walk.is_null() {
+            return nctx.wrong_argument_violation("list-head", "list too short", Some(lst), Some(1), 2, &[lst, Value::new(n as i32)]);
+        }
+
+        nctx.return_(Ok(walk))
+    }
+
+    pub ("list-tail") fn list_tail<'gc>(nctx, lst: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
+        if !lst.is_list() {
+            return nctx.wrong_argument_violation("list-tail", "expected a list", Some(lst), Some(1), 2, &[lst, Value::new(n as i32)]);
+        }
+        let mut walk = lst;
+        let mut count = 0;
+
+        while walk.is_pair() && count < n {
+            walk = walk.cdr();
+            count += 1;
+        }
+
+        if count < n {
+            return nctx.wrong_argument_violation("list-tail", "list too short", Some(lst), Some(1), 2, &[lst, Value::new(n as i32)]);
+        }
+
+        nctx.return_(Ok(walk))
+    }
 );
 
 fn append_impl<'gc>(ctx: Context<'gc>, mut ls1: Value<'gc>, ls2: Value<'gc>) -> Option<Value<'gc>> {
