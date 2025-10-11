@@ -21,7 +21,6 @@ tree-sitter-scheme.workspace = true
 paste.workspace = true
 pretty.workspace = true
 hashlink.workspace = true
-mimalloc.workspace = true
 petgraph.workspace = true
 libc.workspace = true
 cranelift-jit.workspace = true
@@ -48,3 +47,6 @@ unicode-general-category.workspace = true
 
 [lib]
 crate-type = ["dylib"]
+
+[features]
+portable = []

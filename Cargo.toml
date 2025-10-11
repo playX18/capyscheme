@@ -35,7 +35,6 @@ tree-sitter-scheme = { git = "https://github.com/6cdh/tree-sitter-scheme" }
 paste = "1.0.15"
 pretty = "0.12.4"
 hashlink = "0.10.0"
-mimalloc = { version = "*", features = ["secure"] }
 petgraph = "0.8.2"
 sha3 = "0.10.8"
 hex = "*"
@@ -53,6 +52,7 @@ unicode-general-category = "1.1.0"
 lto = true
 debug = true
 incremental = true
+
 
 [profile.dev]
 incremental = true
