@@ -203,6 +203,26 @@ native_fn!(
 
         nctx.return_(Value::new(false))
     }
+
+    pub ("make-uuid") fn make_uuid<'gc>(nctx) -> Value<'gc> {
+        let uuid = uuid::Uuid::new_v4();
+        let ctx = nctx.ctx;
+        nctx.return_(Str::new(&ctx, &uuid.to_string(), true).into())
+    }
+
+    pub ("boolean=?") fn boolean_eq<'gc>(
+        nctx,
+        a: Value<'gc>,
+        b: Value<'gc>
+    ) -> Value<'gc> {
+        if !a.is_bool() {
+            return nctx.wrong_argument_violation("boolean=?", "expected a boolean", Some(a), Some(1), 2, &[a, b]);
+        }
+        if !b.is_bool() {
+            return nctx.wrong_argument_violation("boolean=?", "expected a boolean", Some(b), Some(2), 2, &[a, b]);
+        }
+        nctx.return_(Value::new(a.as_bool() == b.as_bool()))
+    }
 );
 
 native_cont!(

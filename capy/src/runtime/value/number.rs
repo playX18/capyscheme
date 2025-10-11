@@ -5387,6 +5387,38 @@ impl<'gc> Number<'gc> {
 
         self.negate(ctx)
     }
+
+    pub fn polar(self, ctx: Context<'gc>, rhs: Self) -> Self {
+        if rhs.is_zero() {
+            return self;
+        }
+
+        let r = self.real_to_f64(ctx);
+        let a = rhs.real_to_f64(ctx);
+        Self::Complex(Complex::new(
+            ctx,
+            Self::Flonum(r * libm::cos(a)),
+            Self::Flonum(r * libm::sin(a)),
+        ))
+    }
+
+    pub fn angle(self, ctx: Context<'gc>) -> Self {
+        if let Self::Complex(c) = self {
+            let real = c.real.real_to_f64(ctx);
+            let imag = c.imag.real_to_f64(ctx);
+            return Self::Flonum(libm::atan2(imag, real));
+        }
+
+        if self.is_negative() {
+            return Self::Flonum(std::f64::consts::PI);
+        }
+
+        if let Self::Flonum(n) = self {
+            return Self::Flonum(0.0);
+        }
+
+        Self::Fixnum(0)
+    }
 }
 
 impl<'gc> Rational<'gc> {

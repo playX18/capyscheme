@@ -527,6 +527,443 @@ native_fn!(
 
         nctx.return_(Ok(w))
     }
+
+    pub ("real-valued?") fn is_real_valued<'gc>(nctx, w: Number<'gc>) -> bool {
+        if w.is_real() {
+            return nctx.return_(true);
+        }
+
+        if let Number::Complex(c) = w {
+            return nctx.return_(c.imag.is_zero());
+        }
+
+        nctx.return_(false)
+    }
+
+    pub ("rational-valued?") fn is_rational_valued<'gc>(nctx, w: Number<'gc>) -> bool {
+        if w.is_rational() {
+            return nctx.return_(true);
+        }
+
+        if let Number::Complex(c) = w {
+            return nctx.return_(c.imag.is_zero() && c.real.is_rational());
+        }
+
+        nctx.return_(false)
+    }
+
+    pub ("integer-valued?") fn is_integer_valued<'gc>(nctx, w: Number<'gc>) -> bool {
+        if w.is_integer() {
+            return nctx.return_(true);
+        }
+
+        if let Number::Complex(c) = w {
+            return nctx.return_(c.imag.is_zero() && c.real.is_integer());
+        }
+
+        nctx.return_(false)
+    }
+
+    pub ("make-rectangular") fn make_rectangular<'gc>(nctx, real: Number<'gc>, imag: Number<'gc>) -> Number<'gc> {
+        let real = if let Number::Complex(c) = real {
+            c.real
+        } else {
+            real
+        };
+        let imag = if let Number::Complex(c) = imag {
+            c.imag
+        } else {
+            imag
+        };
+        let c = Number::Complex(Complex::new(nctx.ctx, real, imag));
+        nctx.return_(c)
+    }
+
+    pub ("make-polar") fn make_polar<'gc>(nctx, r: Number<'gc>, theta: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
+        if !r.is_real_valued() {
+            let r = r.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("make-polar", "magnitude must be a real number", Some(r), Some(1), 2, &[r]);
+        }
+        if !theta.is_real_valued() {
+            let theta = theta.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("make-polar", "angle must be a real number", Some(theta), Some(2), 2, &[theta]);
+        }
+        let c = r.polar(nctx.ctx, theta);
+        nctx.return_(Ok(c))
+    }
+
+    pub ("real-part") fn real_part<'gc>(nctx, z: Number<'gc>) -> Number<'gc> {
+        if let Number::Complex(c) = z {
+            nctx.return_(c.real)
+        } else {
+            nctx.return_(z)
+        }
+    }
+
+    pub ("imag-part") fn imag_part<'gc>(nctx, z: Number<'gc>) -> Number<'gc> {
+        if let Number::Complex(c) = z {
+            nctx.return_(c.imag)
+        } else {
+            nctx.return_(Number::Fixnum(0))
+        }
+    }
+
+    pub ("angle") fn angle<'gc>(nctx, z: Number<'gc>) -> Number<'gc> {
+        let angle = z.angle(nctx.ctx);
+        nctx.return_(angle)
+    }
+
+    pub ("flonum?") fn is_flonum<'gc>(nctx, w: Number<'gc>) -> bool {
+        nctx.return_(w.is_flonum())
+    }
+
+    pub ("fl=?") fn fl_eq<'gc>(nctx, w: f64, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(true));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_flonum() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fl=?", "argument must be a flonum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_flonum();
+            if w != z {
+                return nctx.return_(Ok(false));
+            }
+            w = z;
+        }
+
+        nctx.return_(Ok(true))
+    }
+
+    pub ("fl<?") fn fl_lt<'gc>(nctx, w: f64, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            if w.is_nan() {
+                return nctx.return_(Ok(false));
+            }
+
+            return nctx.return_(Ok(true));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_flonum() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fl<?", "argument must be a flonum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_flonum();
+            if !(w < z) {
+                return nctx.return_(Ok(false));
+            }
+            w = z;
+        }
+
+        nctx.return_(Ok(true))
+    }
+
+    pub ("fl>?") fn fl_gt<'gc>(nctx, w: f64, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            if w.is_nan() {
+                return nctx.return_(Ok(false));
+            }
+
+            return nctx.return_(Ok(true));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_flonum() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fl>?", "argument must be a flonum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_flonum();
+            if !(w > z) {
+                return nctx.return_(Ok(false));
+            }
+            w = z;
+        }
+
+        nctx.return_(Ok(true))
+    }
+
+    pub ("fl<=?") fn fl_le<'gc>(nctx, w: f64, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            if w.is_nan() {
+                return nctx.return_(Ok(false));
+            }
+
+            return nctx.return_(Ok(true));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_flonum() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fl<=?", "argument must be a flonum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_flonum();
+            if !(w <= z) {
+                return nctx.return_(Ok(false));
+            }
+            w = z;
+        }
+
+        nctx.return_(Ok(true))
+    }
+
+    pub ("fl>=?") fn fl_ge<'gc>(nctx, w: f64, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            if w.is_nan() {
+                return nctx.return_(Ok(false));
+            }
+
+            return nctx.return_(Ok(true));
+        }
+        let mut w = w;
+
+        for z in rest.iter() {
+            if !z.is_flonum() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fl>=?", "argument must be a flonum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_flonum();
+            if !(w >= z) {
+                return nctx.return_(Ok(false));
+            }
+            w = z;
+        }
+
+        nctx.return_(Ok(true))
+    }
+
+    pub ("flinteger?") fn is_fl_integer<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w == w.trunc() && !w.is_infinite() && !w.is_nan())
+    }
+
+    pub ("flzero?") fn is_fl_zero<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w == 0.0)
+    }
+
+    pub ("flpositive?") fn is_fl_positive<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w > 0.0)
+    }
+
+    pub ("flnegative?") fn is_fl_negative<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w < 0.0)
+    }
+
+    pub ("flodd?") fn is_fl_odd<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w % 2.0 != 0.0)
+    }
+
+    pub ("fleven?") fn is_fl_even<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w % 2.0 == 0.0)
+    }
+
+    pub ("flfinite?") fn is_fl_finite<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w.is_finite())
+    }
+
+    pub ("flinfinite?") fn is_fl_infinite<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w.is_infinite())
+    }
+
+    pub ("flnan?") fn is_fl_nan<'gc>(nctx, w: f64) -> bool {
+        nctx.return_(w.is_nan())
+    }
+
+    pub ("flmax") fn fl_max<'gc>(nctx, x: f64, rest: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
+        let mut max = x;
+
+        for z in rest.iter() {
+            if !z.is_flonum() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("flmax", "argument must be a flonum", Some(z.clone()), Some(1), 2, &[max.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_flonum();
+            if z > max || max.is_nan() {
+                max = z;
+            }
+        }
+
+        nctx.return_(Ok(max))
+    }
+
+    pub ("flmin") fn fl_min<'gc>(nctx, x: f64, rest: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
+        let mut min = x;
+
+        for z in rest.iter() {
+            if !z.is_flonum() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("flmin", "argument must be a flonum", Some(z.clone()), Some(1), 2, &[min.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_flonum();
+            if z < min || min.is_nan() {
+                min = z;
+            }
+        }
+
+        nctx.return_(Ok(min))
+    }
+
+    pub ("fl+") fn fl_plus<'gc>(nctx, args: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
+        if args.len() == 0 {
+            return nctx.return_(Ok(0.0));
+        }
+
+        if args.len() == 1 {
+            let Some(arg) = args[0].flonum() else {
+                return nctx.wrong_argument_violation("fl+", "argument must be a flonum", Some(args[0].clone()), Some(0), 1, args);
+            };
+            return nctx.return_(Ok(arg));
+        }
+
+        let Some(mut acc) = args[0].flonum() else {
+            return nctx.wrong_argument_violation("fl+", "argument must be a flonum", Some(args[0].clone()), Some(0), args.len(), args);
+         };
+
+        for arg in args[1..].iter() {
+            let Some(arg) = arg.flonum() else {
+                return nctx.wrong_argument_violation("fl+", "argument must be a flonum", Some(arg.clone()), Some(1), args.len(), args);
+             };
+            acc += arg;
+        }
+
+        nctx.return_(Ok(acc))
+    }
+
+    pub ("fl-") fn fl_minus<'gc>(nctx, x: f64, rest: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(-x));
+        }
+
+        let Some(mut acc) = rest[0].flonum() else {
+            let mut args = Vec::with_capacity(1 + rest.len());
+            args.push(x.into_value(nctx.ctx));
+            args.extend_from_slice(rest);
+            return nctx.wrong_argument_violation("fl-", "argument must be a flonum", Some(rest[0].clone()), Some(1), args.len(), &args);
+        };
+
+        for arg in rest[1..].iter() {
+            let Some(arg) = arg.flonum() else {
+                let mut args = Vec::with_capacity(1 + rest.len());
+                args.push(acc.into_value(nctx.ctx));
+                args.extend_from_slice(rest);
+                return nctx.wrong_argument_violation("fl-", "argument must be a flonum", Some(arg.clone()), Some(1), args.len(), &args);
+            };
+            acc -= arg;
+        }
+
+        acc = x - acc;
+
+        nctx.return_(Ok(acc))
+    }
+
+    pub ("fl*") fn fl_times<'gc>(nctx, args: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
+        if args.len() == 0 {
+            return nctx.return_(Ok(1.0));
+        }
+
+        if args.len() == 1 {
+            let Some(arg) = args[0].flonum() else {
+                return nctx.wrong_argument_violation("fl*", "argument must be a flonum", Some(args[0].clone()), Some(0), 1, args);
+            };
+            return nctx.return_(Ok(arg));
+        }
+
+        let Some(mut acc) = args[0].flonum() else {
+            return nctx.wrong_argument_violation("fl*", "argument must be a flonum", Some(args[0].clone()), Some(0), args.len(), args);
+         };
+
+        for arg in args[1..].iter() {
+            let Some(arg) = arg.flonum() else {
+                return nctx.wrong_argument_violation("fl*", "argument must be a flonum", Some(arg.clone()), Some(1), args.len(), args);
+             };
+            acc *= arg;
+        }
+
+        nctx.return_(Ok(acc))
+    }
+
+    pub ("fl/") fn fl_div<'gc>(nctx, x: f64, rest: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
+        if rest.is_empty() {
+            if x == 0.0 {
+                let x = x.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation("fl/", "division by zero", Some(x), Some(1), 1, &[x]);
+            }
+            return nctx.return_(Ok(1.0 / x));
+        }
+
+        let Some(mut acc) = rest[0].flonum() else {
+            let mut args = Vec::with_capacity(1 + rest.len());
+            args.push(x.into_value(nctx.ctx));
+            args.extend_from_slice(rest);
+            return nctx.wrong_argument_violation("fl/", "argument must be a flonum", Some(rest[0].clone()), Some(1), args.len(), &args);
+        };
+
+        for arg in rest[1..].iter() {
+            let Some(arg) = arg.flonum() else {
+                let mut args = Vec::with_capacity(1 + rest.len());
+                args.push(acc.into_value(nctx.ctx));
+                args.extend_from_slice(rest);
+                return nctx.wrong_argument_violation("fl/", "argument must be a flonum", Some(arg.clone()), Some(1), args.len(), &args);
+            };
+            if arg == 0.0 {
+                let arg = arg.into_value(nctx.ctx);
+                let mut args = Vec::with_capacity(1 + rest.len());
+                args.push(x.into_value(nctx.ctx));
+                args.extend_from_slice(rest);
+                return nctx.wrong_argument_violation("fl/", "division by zero", Some(arg), Some(2), args.len(), &args);
+            }
+            acc /= arg;
+        }
+
+        if acc == 0.0 {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let acc = acc.into_value(ctx);
+            return nctx.wrong_argument_violation("fl/", "division by zero", Some(acc), Some(2), 2, &[x, acc]);
+        }
+
+        acc = x / acc;
+
+        nctx.return_(Ok(acc))
+    }
+
+    pub ("fldiv") fn fl_divide<'gc>(nctx, x: f64, y: f64) -> Result<f64, Value<'gc>> {
+        if y == 0.0 {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.wrong_argument_violation("fldiv", "division by zero", Some(y), Some(2), 2, &[x, y]);
+        }
+        let res = x / y;
+        nctx.return_(Ok(res))
+    }
+
+    pub ("fldiv0") fn fl_divide0<'gc>(nctx, y: f64) -> Result<f64, Value<'gc>> {
+        if y == 0.0 {
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("fldiv0", "division by zero", Some(y), Some(1), 1, &[y]);
+        }
+        let res = 1.0 / y;
+        nctx.return_(Ok(res))
+    }
+
+    pub ("flnumerator") fn fl_numerator<'gc>(nctx, x: f64) -> Value<'gc> {
+        if x == 0.0 {
+            return nctx.return_(Value::new(0.0f64));
+        }
+        let ctx = nctx.ctx;
+        let obj = Number::Flonum(x).to_exact(ctx);
+        if let Number::Rational(r) = obj {
+            nctx.return_(r.numerator.into_value(ctx))
+        } else {
+            nctx.return_(obj.to_inexact(ctx).into_value(ctx))
+        }
+    }
 );
 
 pub(crate) fn init<'gc>(ctx: Context<'gc>) {

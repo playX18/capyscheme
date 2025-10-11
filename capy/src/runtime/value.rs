@@ -264,6 +264,14 @@ impl<'gc> Value<'gc> {
         f64::from_bits(bits)
     }
 
+    pub fn flonum(self) -> Option<f64> {
+        if self.is_flonum() {
+            Some(self.as_flonum())
+        } else {
+            None
+        }
+    }
+
     pub fn as_bool(self) -> bool {
         assert!(self.is_bool());
         self.raw_i64() != Value::VALUE_FALSE

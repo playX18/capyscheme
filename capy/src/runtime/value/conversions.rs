@@ -135,6 +135,16 @@ impl<'gc> FromValue<'gc> for i32 {
     }
 }
 
+impl<'gc> FromValue<'gc> for f64 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        if let Some(n) = value.flonum() {
+            Ok(n)
+        } else {
+            Err(ConversionError::type_mismatch(0, "f64", value))
+        }
+    }
+}
+
 impl<'gc> FromValue<'gc> for usize {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         let Some(n) = value.number() else {
