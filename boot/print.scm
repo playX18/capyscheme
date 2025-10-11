@@ -4,7 +4,7 @@
            
             (print 
                 (string-append "#<procedure" (let ([name (procedure-name proc)])
-                    (if name (string-append " " (symbol->string name)) "")) " " (number->string (hash proc) 16) ">")
+                    (if name (string-append " " (if (symbol? name) (symbol->string name) name)) "")) " " (number->string (hash proc) 16) ">")
                 port 
                 #f))))
 
