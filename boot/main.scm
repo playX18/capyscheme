@@ -776,7 +776,7 @@
             old)))))
 
 
-(define *winders* 
+(define current-dynamic-wind-record 
   (let ([f (make-thread-local-fluid '())])
     (lambda args
       (if (null? args)
@@ -784,53 +784,39 @@
           (let ([old (fluid-ref f)])
             (fluid-set! f (car args))
             old)))))
-(define call-with-current-continuation #f)
-(define dynamic-wind #f)
-(let ([winders (make-thread-local-fluid '())])
-  (define (get-winders) (fluid-ref winders))
-  (define (set-winders w) (fluid-set! winders w))
-  (define (common-tail x y)
-    (let ((lx (length x)) (ly (length y)))
-        (do ((x (if (> lx ly) (list-tail x (- lx ly)) x) (cdr x))
-             (y (if (> ly lx) (list-tail y (- ly lx)) y) (cdr y)))
-            ((eq? x y) x))))
-  (define do-wind
-    (lambda (new)
-      (let ((tail (common-tail new winders)))
-        (let f ((l winders))
-          (if (not (eq? l tail))
-              (begin
-                (set! winders (cdr l))
-                ((cdar l))
-                (f (cdr l)))))
-        (let f ((l new))
-          (if (not (eq? l tail))
-              (begin
-                (f (cdr l))
-                ((caar l))
-                (set! winders l)))))))
-  (set! call-with-current-continuation 
-    (lambda (f)
-      (.call/cc-unsafe (lambda (k)
-        (f (let ([save (get-winders)])
-          (lambda (x)
-            (if (not (eq? save (get-winders)))
-                (do-wind save))
-            (k x))))))))
-  (set! dynamic-wind 
-    (lambda (in body out)
-      (in)
-      (set-winders (cons (cons out in) (get-winders)))
-      (receive results (body)
-        (begin 
-          (set-winders (cdr (get-winders)))
-          (out)
-          (values-list results))))))
 
+(define (perform-dynamic-wind new cont args)
+  (define common-tail
+      (lambda (x y)
+        (let ((nx (length x)) (ny (length y)))
+          (do
+            ((x (if (> nx ny) (list-tail x (- nx ny)) x) (cdr x))
+             (y (if (> ny nx) (list-tail y (- ny nx)) y) (cdr y)))
+            ((eq? x y) x)))))
+    (let ((tail (common-tail new (current-dynamic-wind-record))))
+      (let loop ((rec (current-dynamic-wind-record)))
+        (cond ((not (eq? rec tail)) (current-dynamic-wind-record (cdr rec)) ((cdar rec)) (loop (cdr rec)))))
+      (let loop ((rec new))
+        (cond ((not (eq? rec tail)) (loop (cdr rec)) ((caar rec)) (current-dynamic-wind-record rec)))))
+    (apply cont args))
 
+(define (dynamic-wind in body out)
+  (in)
+  (current-dynamic-wind-record (cons (cons in out) (current-dynamic-wind-record)))
+  (call-with-values 
+    body
+    (lambda ans 
+      (current-dynamic-wind-record (cdr (current-dynamic-wind-record)))
+      (out)
+      (apply values ans))))
 
-
-(define call/cc call-with-current-continuation)
+(define (call/cc f)
+  (define saved-record (current-dynamic-wind-record))
+  (.call/cc-unsafe 
+    (lambda (k)
+      (f (lambda args 
+        (perform-dynamic-wind saved-record k args))))))
+(define call-with-current-continuation call/cc)
 
 (define (unhandled-exception-error val)
   (.return-error val))
@@ -869,7 +855,6 @@
 
 
 (define (assertion-violation who message . irritants)
-  (print-stacktrace)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -932,6 +917,30 @@
       #f)
     #f))
 
+(define undefined-violation
+  (lambda (who . message)
+    (raise
+      (apply
+        condition
+        (filter
+          values
+          (list
+            (make-undefined-violation)
+            (and who (make-who-condition who))
+            (and (pair? message) (make-message-condition (car message)))))))))
+
+(define (.make-undefined-violation who . message)
+  (if (or (not who) (string? who) (symbol? who))
+    (apply
+      condition
+      (filter
+        values
+        (list
+          (make-undefined-violation)
+          (and who (make-who-condition who))
+          (and (pair? message) (make-message-condition (car message))))))
+    #f))
+
 (define raise-i/o-error
   (lambda (who message . irritants)
     (raise
@@ -975,6 +984,7 @@
             (make-irritants-condition irritants))))
       #f)
     #f))
+
 
 (define (.make-error who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
@@ -1038,14 +1048,20 @@
         (loop (cdr lst) (cons (car lst) acc))
         (loop (cdr lst) acc)))))
 
+
+
 (define (load-in-vicinity filename directory)
-  (let ([thunk (load-thunk-in-vicinity filename directory)])
+  (let ([thunk (load-thunk-in-vicinity filename #t directory )])
     (thunk)))
 
 (define (load filename)
-  (let ([thunk (load-thunk-in-vicinity filename)])
+  (let ([thunk (load-thunk-in-vicinity filename #t)])
     (thunk)))
 
+(define (primitive-load filename)
+  "Loads file by searching only load path or by its absolute path."
+  (let ([thunk (load-thunk-in-vicinity filename #f)])
+    (thunk)))
 
 (define (module-search fn m v)
   (or (fn m v)
@@ -1085,6 +1101,7 @@
   (core-hash-put! (module-submodules module) name submodule))
 
 (define (save-module-excursion thunk)
+
   (let ([inner-module (current-module)]
         [outer-module #f])
     (dynamic-wind
@@ -1331,7 +1348,7 @@
                   (current-module (make-fresh-user-module))
                   (call/cc (lambda (return)
                     (with-exception-handler
-                      (lambda (_x)  (:print "Autoload of " module-name " failed: " (condition-message _x) " irritants: " (condition-irritants _x)) (return #f))
+                      (lambda (_x) ((current-exception-printer) _x) (return #f))
                       (lambda ()
                         (load (string-append dir-hint name))
                         (set! didit #t)
@@ -1463,7 +1480,10 @@
         names))))
 
 
-
+(define current-exception-printer
+  (make-parameter
+    (lambda (exn . port)
+      (displayln "Exception occured" port))))
 
 
 (define (r6rs:bytevector-copy! source source-start target target-start count)
@@ -1524,27 +1544,20 @@
   (thunk))
 
 
-(load "boot/expand.scm")
-(load "boot/interpreter.scm")
-;(load "boot/synclo.scm")
-(load "boot/psyntax.scm")
-(load "boot/sys.scm")
-(load "boot/osdep.scm")
-(load "boot/iosys.scm")
-(load "boot/portio.scm")
-(load "boot/bytevectorio.scm")
-(load "boot/fileio.scm")
-(load "boot/conio.scm")
-(load "boot/stringio.scm")
-(load "boot/stdio.scm")
-(load "boot/print.scm")
-(load "boot/format.scm")
+(primitive-load "boot/expand.scm")
+(primitive-load "boot/interpreter.scm")
+(primitive-load "boot/psyntax.scm")
+(primitive-load "boot/sys.scm")
+(primitive-load "boot/osdep.scm")
+(primitive-load "boot/iosys.scm")
+(primitive-load "boot/portio.scm")
+(primitive-load "boot/bytevectorio.scm")
+(primitive-load "boot/fileio.scm")
+(primitive-load "boot/conio.scm")
+(primitive-load "boot/stringio.scm")
+(primitive-load "boot/stdio.scm")
+(primitive-load "boot/print.scm")
+(primitive-load "boot/format.scm")
 (initialize-io-system)
-
-(load "boot/reader.scm")
-
-
-
-(load "boot/set.scm")
-
-(load "boot/eval.scm")
+(primitive-load "boot/reader.scm")
+(primitive-load "boot/eval.scm")

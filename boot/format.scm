@@ -96,7 +96,10 @@
       (cond ((= i n))
 	    ((char=? (string-ref format-string i) #\~)
 	     (let ((c (string-ref format-string (+ i 1))))
-	       (cond ((char=? c #\~)
+	       (cond 
+         ((char=? c #\!)
+          (flush-output-port port))
+         ((char=? c #\~)
 		      (write-char #\~ port)
 		      (format-loop (+ i 2) args))
 		     ((char=? c #\%)

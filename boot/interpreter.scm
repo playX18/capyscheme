@@ -61,7 +61,7 @@
                         (begin
                             (set! var (module-variable (current-module) name))
                             (if (not var)
-                                (error 'toplevel-ref "unbound variable" name))
+                                (undefined-violation var "undefined variable"))
                             (variable-ref var)))))]
         [(module-ref? expr)
             (let ([module (module-ref-module expr)]
@@ -211,7 +211,7 @@
             (lambda args
                 (let ([v (make-vector (+ n 2) 444)]
                       [limit (+ n 1)])
-                    (vectoer-set! v 0 self)
+                    (vector-set! v 0 self)
                     (let loop ([argnum 1]
                                [argtail args])
                         (cond
