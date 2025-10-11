@@ -606,8 +606,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     0,
                 )
             }
-
-            _ => todo!(),
         }
     }
 
@@ -763,8 +761,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         };
                         self.variables.insert(*var, val);
                     }
-
-                    _ => todo!("{expr:?}"),
                 }
                 self.term(*next);
             }
@@ -853,8 +849,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     self.continue_to(*consequent, &consequent_args);
                 }
             }
-
-            _ => todo!(),
         }
     }
 

@@ -15,7 +15,6 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::load::init_load(mc);
     vm::arith::init(mc);
     modules::init_modules(mc);
-    runtime::value::init_structs(mc);
     vm::strings::init_strings(mc);
     vm::vector::init_vectors(mc);
     vm::list::init_lists(mc);
@@ -33,7 +32,7 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
 
 pub use thread::*;
 
-use crate::runtime::{self, vmthread::VM_THREAD};
+use crate::runtime::vmthread::VM_THREAD;
 
 #[allow(ambiguous_glob_imports)]
 pub mod prelude {

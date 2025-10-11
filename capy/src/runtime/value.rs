@@ -609,7 +609,6 @@ pub mod number;
 pub mod port;
 pub mod proc;
 pub mod string;
-pub mod structure;
 pub mod symbols;
 pub mod vector;
 pub mod weak_set;
@@ -623,7 +622,6 @@ pub use number::*;
 
 pub use proc::*;
 pub use string::*;
-pub use structure::*;
 pub use symbols::*;
 pub use vector::*;
 pub use weak_set::*;

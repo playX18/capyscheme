@@ -137,7 +137,9 @@ impl<'gc> FromValue<'gc> for i32 {
 
 impl<'gc> FromValue<'gc> for usize {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else { todo!() };
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "usize", value));
+        };
 
         n.exact_integer_to_usize()
             .ok_or_else(|| ConversionError::type_mismatch(0, "usize", value))
@@ -146,7 +148,9 @@ impl<'gc> FromValue<'gc> for usize {
 
 impl<'gc> FromValue<'gc> for i64 {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else { todo!() };
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "i64", value));
+        };
 
         n.exact_integer_to_i64()
             .ok_or_else(|| ConversionError::type_mismatch(0, "i64", value))
@@ -155,7 +159,9 @@ impl<'gc> FromValue<'gc> for i64 {
 
 impl<'gc> FromValue<'gc> for isize {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else { todo!() };
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "isize", value));
+        };
 
         n.exact_integer_to_isize()
             .ok_or_else(|| ConversionError::type_mismatch(0, "isize", value))
@@ -164,7 +170,9 @@ impl<'gc> FromValue<'gc> for isize {
 
 impl<'gc> FromValue<'gc> for u64 {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else { todo!() };
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "u64", value));
+        };
 
         n.exact_integer_to_u64()
             .ok_or_else(|| ConversionError::type_mismatch(0, "u64", value))

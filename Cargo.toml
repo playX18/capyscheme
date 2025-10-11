@@ -5,8 +5,8 @@ members = ["capy", "capy-driver"]
 default-members = ["capy"]
 
 [workspace.dependencies]
-rsgc = { path = "../RSGC", default-features = false, features = [] }
-#rsgc = { git = "https://codeberg.org/playxe/rsgc", branch = "main" }
+#rsgc = { path = "../RSGC", default-features = false, features = [] }
+rsgc = { git = "https://codeberg.org/playxe/rsgc", default-features = false }
 cranelift-jit = "0.123.1"
 cranelift = "0.123.1"
 cranelift-codegen = "0.123.1"
@@ -52,8 +52,9 @@ unicode-general-category = "1.1.0"
 lto = true
 debug = true
 incremental = true
-
+rpath = true
 
 [profile.dev]
 incremental = true
 opt-level = 0
+rpath = true

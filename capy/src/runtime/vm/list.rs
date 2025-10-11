@@ -1,9 +1,6 @@
 use rsgc::Gc;
 
-use crate::{
-    native_fn,
-    runtime::{prelude::*, vm::debug::print_stacktraces_impl},
-};
+use crate::{native_fn, runtime::prelude::*};
 pub fn init_lists<'gc>(ctx: Context<'gc>) {
     register_list_fns(ctx);
 }
@@ -21,8 +18,7 @@ native_fn!(
 
     pub ("length") fn length<'gc>(nctx, ls: Value<'gc>) -> Result<usize, Value<'gc>> {
         if !ls.is_list() {
-            print_stacktraces_impl(nctx.ctx);
-            todo!("not a list: {ls}");
+            return nctx.wrong_argument_violation("length", "expected a list", Some(ls), Some(1), 1, &[ls]);
         }
 
         nctx.return_(Ok(ls.list_length()))
@@ -30,7 +26,7 @@ native_fn!(
 
     pub ("reverse") fn reverse<'gc>(nctx, ls: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !ls.is_list() {
-            todo!()
+            return nctx.wrong_argument_violation("reverse", "expected a list", Some(ls), Some(1), 1, &[ls]);
         }
         let res = ls.list_reverse(nctx.ctx);
         nctx.return_(Ok(res))
@@ -38,7 +34,7 @@ native_fn!(
 
     pub ("list->vector") fn list_to_vector<'gc>(nctx, ls: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !ls.is_list() {
-            todo!()
+            return nctx.wrong_argument_violation("list->vector", "expected a list", Some(ls), Some(1), 1, &[ls]);
         }
         let res = ls.list_to_vector(nctx.ctx);
         nctx.return_(Ok(res.into()))
@@ -56,22 +52,21 @@ native_fn!(
 
     pub ("cdr") fn cdr<'gc>(nctx, pair: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            todo!()
+            return nctx.wrong_argument_violation("cdr", "expected a pair", Some(pair), Some(1), 1, &[pair]);
         }
         nctx.return_(Ok(pair.cdr()))
     }
 
     pub ("car") fn car<'gc>(nctx, pair: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            crate::runtime::vm::debug::print_stacktraces_impl(nctx.ctx);
-            todo!("not a list: {pair}");
+            return nctx.wrong_argument_violation("car", "expected a pair", Some(pair), Some(1), 1, &[pair]);
         }
         nctx.return_(Ok(pair.car()))
     }
 
     pub ("set-car!") fn set_car<'gc>(nctx, pair: Value<'gc>, value: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            todo!()
+            return nctx.wrong_argument_violation("set-car!", "expected a pair", Some(pair), Some(1), 1, &[pair]);
         }
         pair.set_car(nctx.ctx, value);
         nctx.return_(Ok(Value::undefined()))
@@ -79,7 +74,7 @@ native_fn!(
 
     pub ("set-cdr!") fn set_cdr<'gc>(nctx, pair: Value<'gc>, value: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
-            todo!()
+            return nctx.wrong_argument_violation("set-cdr!", "expected a pair", Some(pair), Some(1), 1, &[pair]);
         }
         pair.set_cdr(nctx.ctx, value);
         nctx.return_(Ok(Value::undefined()))
@@ -87,31 +82,31 @@ native_fn!(
 
     pub ("list-ref") fn list_ref<'gc>(nctx, ls: Value<'gc>, index: usize) -> Result<Value<'gc>, Value<'gc>> {
         if !ls.is_list() {
-            todo!()
+            return nctx.wrong_argument_violation("list-ref", "expected a list", Some(ls), Some(1), 1, &[ls]);
         }
         let mut current = ls;
         for _ in 0..index {
             if !current.is_pair() {
-                todo!()
+                return nctx.wrong_argument_violation("list-ref", "expected a pair", Some(current), Some(1), 1, &[current]);
             }
             current = current.cdr();
         }
         if !current.is_pair() {
-            todo!()
+            return nctx.wrong_argument_violation("list-ref", "expected a pair", Some(current), Some(1), 1, &[current]);
         }
         nctx.return_(Ok(current.car()))
     }
 
     pub ("take") fn take<'gc>(nctx, ls: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
         if !ls.is_list() {
-            todo!()
+            return nctx.wrong_argument_violation("take", "expected a list", Some(ls), Some(1), 1, &[ls]);
         }
         let mut current = ls;
         let mut res = Value::null();
         let mut count = 0;
         while !current.is_null() && count < n {
             if !current.is_pair() {
-                todo!()
+                return nctx.wrong_argument_violation("take", "expected a pair", Some(current), Some(1), 1, &[current]);
             }
             res = Value::cons(nctx.ctx, current.car(), res);
             current = current.cdr();
@@ -123,13 +118,13 @@ native_fn!(
 
     pub ("drop") fn drop<'gc>(nctx, ls: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
         if !ls.is_list() {
-            todo!()
+            return nctx.wrong_argument_violation("drop", "expected a list", Some(ls), Some(1), 1, &[ls]);
         }
         let mut current = ls;
         let mut count = 0;
         while !current.is_null() && count < n {
             if !current.is_pair() {
-                todo!()
+                return nctx.wrong_argument_violation("drop", "expected a pair", Some(current), Some(1), 1, &[current]);
             }
             current = current.cdr();
             count += 1;
@@ -145,11 +140,11 @@ native_fn!(
         let mut res = args[args.len() - 1];
         for arg in args[..args.len() - 1].iter().rev() {
             if !arg.is_list() {
-                todo!()
+                return nctx.wrong_argument_violation("append", "expected a list", Some(*arg), Some(1), 1, &[*arg]);
             }
             match append_impl(nctx.ctx, *arg, res) {
                 Some(v) => res = v,
-                None => todo!(),
+                None => return nctx.wrong_argument_violation("append", "expected a list", Some(*arg), Some(1), 1, &[*arg]),
             }
         }
 

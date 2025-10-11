@@ -22,7 +22,7 @@ native_fn!(
         }
 
         if !rands[rands.len() - 1].is_list() {
-            todo!()
+            return nctx.wrong_argument_violation("apply", "last argument must be a list", Some(rands[rands.len() - 1]), Some(rands.len() - 1), rands.len(), rands);
         }
 
         let mut ls = rands[rands.len() - 1];

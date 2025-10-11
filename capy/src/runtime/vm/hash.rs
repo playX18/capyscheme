@@ -205,62 +205,66 @@ native_fn!(
 
     pub ("make-core-hashtable") fn make_core_hashtable<'gc>(
         nctx,
-        kind: SymbolRef<'gc>,
+        kind: Option<SymbolRef<'gc>>,
         nsize_or_handlers: Option<Value<'gc>>
     ) -> Value<'gc> {
         let ctx = nctx.ctx;
-        let typ = if kind == sym_eq(ctx) {
-            HashTableType::Eq
-        } else if kind == sym_eqv(ctx) {
-            HashTableType::Eqv
-        } else if kind == sym_equal(ctx) {
-            HashTableType::Equal
-        } else if kind == sym_string(ctx) {
-            HashTableType::String
-        } else if kind == sym_generic(ctx) {
-            let handlers = match nsize_or_handlers {
-                None => return nctx.wrong_argument_violation(
-                    "make-core-hashtable",
-                    "expected vector of handlers",
-                    None,
-                    Some(2),
-                    1,
-                    &[],
-                ),
-                Some(v) => v
-            };
-            if !handlers.is::<Vector>() {
+        let typ = if let Some(kind) = kind { 
+            if kind == sym_eq(ctx) {
+                HashTableType::Eq
+            } else if kind == sym_eqv(ctx) {
+                HashTableType::Eqv
+            } else if kind == sym_equal(ctx) {
+                HashTableType::Equal
+            } else if kind == sym_string(ctx) {
+                HashTableType::String
+            } else if kind == sym_generic(ctx) {
+                let handlers = match nsize_or_handlers {
+                    None => return nctx.wrong_argument_violation(
+                        "make-core-hashtable",
+                        "expected vector of handlers",
+                        None,
+                        Some(2),
+                        1,
+                        &[],
+                    ),
+                    Some(v) => v
+                };
+                if !handlers.is::<Vector>() {
+                    return nctx.wrong_argument_violation(
+                        "make-core-hashtable",
+                        "expected vector of handlers",
+                        Some(handlers),
+                        Some(2),
+                        1,
+                        &[handlers],
+                    );
+                }
+
+                if handlers.downcast::<Vector>().len() != 14 {
+                    return nctx.wrong_argument_violation(
+                        "make-core-hashtable",
+                        "expected vector of 14 handlers",
+                        Some(handlers),
+                        Some(2),
+                        1,
+                        &[handlers],
+                    );
+                }
+
+                return nctx.return_(HashTable::new(&ctx, HashTableType::Generic(handlers), 0, 0.0).into());
+            } else {
                 return nctx.wrong_argument_violation(
                     "make-core-hashtable",
-                    "expected vector of handlers",
-                    Some(handlers),
-                    Some(2),
+                    "expected 'eq?, 'eqv?, 'equal?, 'string=? or 'generic",
+                    Some(kind.into()),
+                    Some(1),
                     1,
-                    &[handlers],
+                    &[kind.into()],
                 );
             }
-
-            if handlers.downcast::<Vector>().len() != 14 {
-                return nctx.wrong_argument_violation(
-                    "make-core-hashtable",
-                    "expected vector of 14 handlers",
-                    Some(handlers),
-                    Some(2),
-                    1,
-                    &[handlers],
-                );
-            }
-
-            return nctx.return_(HashTable::new(&ctx, HashTableType::Generic(handlers), 0, 0.0).into());
         } else {
-            return nctx.wrong_argument_violation(
-                "make-core-hashtable",
-                "expected 'eq?, 'eqv?, 'equal?, 'string=? or 'generic",
-                Some(kind.into()),
-                Some(1),
-                1,
-                &[kind.into()],
-            );
+            HashTableType::Eq
         };
 
         let nsize = match nsize_or_handlers {

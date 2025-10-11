@@ -60,7 +60,7 @@
               (begin 
                 (format #t "Goodbye!~%")
                 (flush-output-port (current-output-port))
-                (exit))
+                (exit 0))
               (begin 
                 (let ([ans (eval form (current-module))])
                   (unless (eq? ans (unspecified))

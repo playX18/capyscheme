@@ -18,7 +18,6 @@ pub type Funcs<'gc> = ArrayRef<'gc, FuncRef<'gc>>;
 pub enum Atom<'gc> {
     Constant(Value<'gc>),
     Local(LVarRef<'gc>),
-    Values(ArrayRef<'gc, Atom<'gc>>),
 }
 
 impl<'gc> std::fmt::Display for Atom<'gc> {
@@ -26,7 +25,6 @@ impl<'gc> std::fmt::Display for Atom<'gc> {
         match self {
             Self::Constant(c) => write!(f, "{}", c),
             Self::Local(l) => write!(f, "{}", l.name),
-            Self::Values(_) => write!(f, "(values ...)"),
         }
     }
 }
@@ -56,8 +54,6 @@ pub enum Term<'gc> {
     Letk(Conts<'gc>, TermRef<'gc>),
     Fix(Funcs<'gc>, TermRef<'gc>),
     Let(LVarRef<'gc>, Expression<'gc>, TermRef<'gc>),
-
-    Throw(Throw<'gc>, Value<'gc>),
 }
 
 impl<'gc, T: Into<Value<'gc>>> From<T> for Atom<'gc> {
@@ -74,23 +70,8 @@ impl<'gc> Into<Atom<'gc>> for LVarRef<'gc> {
 
 #[derive(Debug, Clone, Trace, Copy)]
 #[collect(no_drop)]
-pub enum Throw<'gc> {
-    /// Throw to KEY and ARGS. ARGS should be a list
-    Throw(Atom<'gc>, Atom<'gc>),
-    /// Raise error indicating VAL as bad value, KEY-SUBR-AND-MESSAGE
-    /// should be a vector, where first element is the symbol
-    /// to which to throw, the second is the procedure in which to signal
-    /// the error (a string) or #f, and the third is the format string
-    /// with one template argument.
-    Value(Atom<'gc>, Atom<'gc>),
-    ValueAndData(Atom<'gc>, Atom<'gc>),
-}
-
-#[derive(Debug, Clone, Trace, Copy)]
-#[collect(no_drop)]
 pub enum Expression<'gc> {
     PrimCall(Value<'gc>, Atoms<'gc>, LVarRef<'gc>, Value<'gc>),
-    PrimRef(Value<'gc>),
 }
 
 pub type TermRef<'gc> = Gc<'gc, Term<'gc>>;
@@ -249,12 +230,7 @@ impl<'gc> TreeEq for Atom<'gc> {
             (Atom::Constant(a), Atom::Constant(b)) => a.tree_eq(b),
 
             (Atom::Local(a), Atom::Local(b)) => Gc::ptr_eq(*a, *b),
-            (Atom::Values(a), Atom::Values(b)) => {
-                if a.len() != b.len() {
-                    return false;
-                }
-                a.iter().zip(b.iter()).all(|(x, y)| x.tree_eq(y))
-            }
+
             _ => false,
         }
     }
@@ -284,23 +260,6 @@ impl<'gc> TreeEq for Func<'gc> {
             && self.args.tree_eq(&other.args)
             && self.variadic.tree_eq(&other.variadic)
             && self.body.tree_eq(&other.body)
-    }
-}
-
-impl<'gc> TreeEq for Throw<'gc> {
-    fn tree_eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Throw::Throw(a_key, a_args), Throw::Throw(b_key, b_args)) => {
-                a_key.tree_eq(b_key) && a_args.tree_eq(b_args)
-            }
-            (Throw::Value(a_key, a_subr_and_message), Throw::Value(b_key, b_subr_and_message)) => {
-                a_key.tree_eq(b_key) && a_subr_and_message.tree_eq(b_subr_and_message)
-            }
-            (Throw::ValueAndData(a_key, a_data), Throw::ValueAndData(b_key, b_data)) => {
-                a_key.tree_eq(b_key) && a_data.tree_eq(b_data)
-            }
-            _ => false,
-        }
     }
 }
 
@@ -346,7 +305,6 @@ impl<'gc> TreeEq for Term<'gc> {
             (Term::Let(k, expr, body), Term::Let(l, bexpr, bbody)) => {
                 Gc::ptr_eq(*k, *l) && expr.tree_eq(bexpr) && body.tree_eq(bbody)
             }
-            (Term::Throw(a, _), Term::Throw(b, _)) => a.tree_eq(b),
 
             _ => false,
         }
@@ -359,9 +317,6 @@ impl<'gc> TreeEq for Expression<'gc> {
             (Expression::PrimCall(f, args, h, _), Expression::PrimCall(g, bargs, gh, _)) => {
                 f.tree_eq(g) && args.tree_eq(bargs) && Gc::ptr_eq(*h, *gh)
             }
-            (Expression::PrimRef(f), Expression::PrimRef(g)) => f.tree_eq(g),
-
-            _ => false,
         }
     }
 }
@@ -372,7 +327,6 @@ impl<'gc> Term<'gc> {
             Term::Continue(_, _, source) | Term::App(_, _, _, _, source) => *source,
             Term::If { .. } => Value::new(false),
             Term::Letk(_, body) | Term::Fix(_, body) | Term::Let(_, _, body) => body.source(),
-            Term::Throw(_, src) => *src,
         }
     }
 }

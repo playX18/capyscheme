@@ -22,6 +22,7 @@ pub mod runtime;
 pub mod utils;
 
 pub use rsgc;
+use rsgc::{MMTKBuilder, mmtk::util::options::PlanSelector};
 
 use crate::runtime::{
     Scheme,
@@ -30,6 +31,22 @@ use crate::runtime::{
 };
 
 pub fn init_scheme() -> Scheme {
+    let mut mmtk_builder = MMTKBuilder::new();
+    if (*mmtk_builder.options.plan) == PlanSelector::GenCopy {
+        mmtk_builder.options.plan.set(PlanSelector::SemiSpace);
+    }
+
+    if matches!(
+        *mmtk_builder.options.plan,
+        PlanSelector::GenImmix | PlanSelector::StickyImmix
+    ) {
+        mmtk_builder.options.plan.set(PlanSelector::Immix);
+    }
+
+    if (*mmtk_builder.options.plan) == PlanSelector::MarkCompact {
+        mmtk_builder.options.plan.set(PlanSelector::MarkSweep);
+    }
+
     let scm = Scheme::new();
 
     let mut did_yield = scm.enter(|ctx| {

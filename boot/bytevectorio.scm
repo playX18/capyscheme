@@ -32,7 +32,7 @@
 
 (define (bytevector-io/install-port-position-as-binary! p data)
   (let ((get-position
-         (lambda () (tuple-ref data bytevector-io.i))))
+         (lambda () (vector-ref data bytevector-io.i))))
     (io/port-alist-set! p
                         (cons (cons 'port-position-in-bytes get-position)
                               (io/port-alist p)))))
@@ -123,29 +123,29 @@
      (error "bytevector-io/ioproc: illegal operation: " op))))
 
 (define (bytevector-io/fill-buffer data buffer)
-  (let* ((b     (tuple-ref data bytevector-io.bv))
-	 (i     (tuple-ref data bytevector-io.i))
-         (limit (tuple-ref data bytevector-io.limit))
+  (let* ((b     (vector-ref data bytevector-io.bv))
+	       (i     (vector-ref data bytevector-io.i))
+         (limit (vector-ref data bytevector-io.limit))
          (n     (bytevector-length buffer))
          (count (max (min n (- limit i)))))
     (if (<= count 0)
         'eof
         (begin (r6rs:bytevector-copy! b i buffer 0 count)
-               (tuple-set! data bytevector-io.i (+ i count))
+               (vector-set! data bytevector-io.i (+ i count))
                count))))
 
 ; For input/output bytevector ports.  Notice the definition of n.
 
 (define (bytevector-io/fill-buffer1 data buffer)
-  (let* ((b     (tuple-ref data bytevector-io.bv))
-	 (i     (tuple-ref data bytevector-io.i))
-         (limit (tuple-ref data bytevector-io.limit))
+  (let* ((b     (vector-ref data bytevector-io.bv))
+	       (i     (vector-ref data bytevector-io.i))
+         (limit (vector-ref data bytevector-io.limit))
          (n     1)
          (count (max 0 (min n (- limit i)))))
     (if (<= count 0)
         'eof
         (begin (r6rs:bytevector-copy! b i buffer 0 count)
-               (tuple-set! data bytevector-io.i (+ i count))
+               (vector-set! data bytevector-io.i (+ i count))
                count))))
 
 (define (bytevector-io/flush-buffer data buffer count)
@@ -164,14 +164,14 @@
                'ok))))
 
 (define (bytevector-io/set-position! data posn)
-  (case (tuple-ref data bytevector-io.type)
+  (case (vector-ref data bytevector-io.type)
    ((bytevector-input-port
      bytevector-output-port
      bytevector-input/output-port)
-    (let* ((bv (tuple-ref data bytevector-io.bv))
+    (let* ((bv (vector-ref data bytevector-io.bv))
            (n  (bytevector-length bv)))
       (if (<= 0 posn)
-          (begin (tuple-set! data bytevector-io.i posn)
+          (begin (vector-set! data bytevector-io.i posn)
                  'ok)
           'error)))
    (else

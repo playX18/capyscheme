@@ -1,5 +1,5 @@
 use crate::{
-    cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef, Throw},
+    cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     expander::core::LVarRef,
 };
 use hashlink::LinkedHashMap as HashMap;
@@ -18,8 +18,6 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
                     .copied()
                     .collect()
             }
-
-            _ => HashSet::new(),
         },
 
         Term::Letk(conts, body) => {
@@ -68,14 +66,6 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
                 .chain(std::iter::once(h))
                 .collect()
         }
-        Term::Throw(throw, _) => match throw {
-            Throw::Throw(key, args) | Throw::Value(key, args) | Throw::ValueAndData(key, args) => {
-                get_fva(key)
-                    .into_iter()
-                    .chain(get_fva(args).into_iter())
-                    .collect()
-            }
-        },
 
         Term::If {
             test,
@@ -105,7 +95,6 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
 fn get_fva<'gc>(atom: Atom<'gc>) -> Vec<LVarRef<'gc>> {
     match atom {
         Atom::Local(lvar) => vec![lvar],
-        Atom::Values(atoms) => atoms.iter().copied().flat_map(get_fva).collect(),
         _ => Vec::new(),
     }
 }

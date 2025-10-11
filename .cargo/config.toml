@@ -1,5 +1,3 @@
-
-
 [target.x86_64-apple-darwin]
 rustflags = ["-Clink-args=-Wl,-rpath,@loader_path/"]
 [target.aarch64-apple-darwin]

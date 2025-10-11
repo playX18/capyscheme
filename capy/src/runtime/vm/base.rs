@@ -222,12 +222,6 @@ native_cont!(
         }
     }
 
-    pub ("procedure-name") fn procedure_name<'gc>(
-        nctx,
-        proc: Gc<'gc, Closure<'gc>>
-    ) -> Value<'gc> {
-        todo!()
-    }
 
 );
 
