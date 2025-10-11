@@ -1,15 +1,41 @@
 use rsgc::{Gc, barrier, barrier::Unlock, cell::Lock};
 
 use crate::{
-    native_cont, native_fn,
+    fluid, native_cont, native_fn,
     runtime::{
         Context,
         value::{Closure, Pair, Str, Symbol, Value, Vector},
     },
 };
 
+fluid!(
+    pub program_arguments_fluid = Value::null();
+);
+
 native_fn!(
     register_base_fns:
+    pub ("procedure?") fn is_procedure<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
+        nctx.return_(Value::new(v.is::<Closure>()))
+    }
+
+    pub ("program-arguments") fn program_arguments<'gc>(nctx) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        nctx.return_(program_arguments_fluid(ctx).get(ctx))
+    }
+
+    pub ("set-program-arguments!") fn set_program_arguments<'gc>(
+        nctx,
+        args: Value<'gc>
+    ) -> Value<'gc> {
+        if !args.is_list() {
+            return nctx.wrong_argument_violation("set-program-arguments!", "expected a list", Some(args), Some(1), 1, &[args]);
+        }
+        let ctx = nctx.ctx;
+        program_arguments_fluid(ctx).set(ctx, args);
+        nctx.return_(args)
+    }
+
+
     pub ("eof-object") fn eof_object<'gc>(nctx) -> Value<'gc> {
         nctx.return_(Value::eof())
     }
@@ -208,4 +234,10 @@ native_cont!(
 pub fn init_base<'gc>(ctx: Context<'gc>) {
     register_base_fns(ctx);
     let _ = register_base_conts;
+
+    let args = std::env::args().rev().fold(Value::null(), |acc, arg| {
+        Value::cons(ctx, Str::new(&ctx, arg, true).into(), acc)
+    });
+
+    program_arguments_fluid(ctx).set(ctx, args);
 }
