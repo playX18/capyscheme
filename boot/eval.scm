@@ -24,14 +24,18 @@
 
 (set! load
     (lambda (filename)
-        (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module))])
+        (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #t)])
             (thunk))))))
 
 (set! load-in-vicinity 
     (lambda (filename directory)
-        (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) directory)])
+        (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #t directory)])
             (thunk))))))
 
+(set! primitive-load
+    (lambda (filename)
+        (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
+            (thunk))))))
 
 (define (eval x . m)
     (save-module-excursion (lambda () 
@@ -40,7 +44,6 @@
             (primitive-eval code)))))
 ; load file containing base macros
 
-(load "boot/base.scm")
-(load "boot/libraries.scm")
-
-(load "test.scm")
+(primitive-load "boot/base.scm")
+(primitive-load "boot/libraries.scm")
+(primitive-load "boot/cli.scm")

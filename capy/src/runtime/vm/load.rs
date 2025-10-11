@@ -47,24 +47,50 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         loc_compile_fallback_path(ctx).set(ctx, Str::new(&ctx, &cache_dir, true).into());
     }
 
-    if let Ok(path) = std::env::var("CAPY_LOAD_PATH") {
-        let paths = path.split(':').map(|s| Str::new(&ctx, s, true).into());
+    let mut path = Value::null();
+    let mut cpath = Value::null();
+
+    if cfg!(feature = "portable") {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."));
+        path = Value::cons(
+            ctx,
+            Str::new(&ctx, &exe_dir.to_string_lossy(), true).into(),
+            path,
+        );
+
+        let _cpath = exe_dir.join("compiled");
+        cpath = Value::cons(
+            ctx,
+            Str::new(&ctx, &_cpath.to_string_lossy(), true).into(),
+            cpath,
+        );
+    }
+
+    if let Ok(load_path) = std::env::var("CAPY_LOAD_PATH") {
+        let paths = load_path.split(':').map(|s| Str::new(&ctx, s, true).into());
         let mut sig = Value::null();
         for p in paths.rev() {
             sig = Value::cons(ctx, p, sig);
         }
-        loc_load_path(ctx).set(ctx, sig);
+        path = sig;
     }
 
-    if let Ok(path) = std::env::var("CAPY_LOAD_COMPILED_PATH") {
-        let paths = path.split(':').map(|s| Str::new(&ctx, s, true).into());
+    if let Ok(compiled_path) = std::env::var("CAPY_LOAD_COMPILED_PATH") {
+        let paths = compiled_path
+            .split(':')
+            .map(|s| Str::new(&ctx, s, true).into());
         let mut sig = Value::null();
         for p in paths.rev() {
             sig = Value::cons(ctx, p, sig);
         }
-
-        loc_load_compiled_path(ctx).set(ctx, sig);
+        cpath = sig;
     }
+
+    loc_load_path(ctx).set(ctx, path);
+    loc_load_compiled_path(ctx).set(ctx, cpath);
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_dir = Path::new(manifest_dir)
@@ -105,6 +131,7 @@ pub fn find_path_to<'gc>(
     ctx: Context<'gc>,
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
+    resolve_relative: bool,
 ) -> Result<Option<(PathBuf, PathBuf)>, Value<'gc>> {
     let filename = filename.as_ref();
     let dir = in_vicinity.map(|p| p.as_ref().to_owned());
@@ -115,7 +142,7 @@ pub fn find_path_to<'gc>(
         if filename.is_file() {
             source_path = Some(filename.to_owned());
         }
-    } else if filename.is_relative() && filename.is_file() {
+    } else if filename.is_relative() && filename.is_file() && resolve_relative {
         source_path = Some(filename.to_owned());
     } else {
         let mut candidates = Vec::new();
@@ -220,9 +247,10 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     ctx: Context<'gc>,
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
+    resolve_relative: bool,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let filename = filename.as_ref();
-    let (source, compiled) = match find_path_to(ctx, filename, in_vicinity)? {
+    let (source, compiled) = match find_path_to(ctx, filename, in_vicinity, resolve_relative)? {
         Some(v) => v,
         None => {
             return Err(make_io_error(
@@ -313,11 +341,12 @@ native_fn!(
         fn scm_load_thunk_in_vicinity<'gc>(
             nctx,
             filename: Gc<'gc, Str<'gc>>,
+            resolve_relative: bool,
             in_vicinity: Option<Gc<'gc, Str<'gc>>>
         ) -> Result<Value<'gc>, Value<'gc>> {
-        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string())).unwrap_or_else(|| std::env::current_dir().unwrap());
+        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
         let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<true>(nctx.ctx, filename, Some(in_vicinity));
+        let result = load_thunk_in_vicinity::<true>(nctx.ctx, filename, in_vicinity, resolve_relative);
 
         nctx.return_(result)
     }
@@ -331,12 +360,13 @@ native_fn!(
             filename: Gc<'gc, Str<'gc>>,
             k: Value<'gc>,
             env: Value<'gc>,
+            resolve_relative: bool,
             in_vicinity: Option<Gc<'gc, Str<'gc>>>
         ) -> Result<Value<'gc>, Value<'gc>>
     {
-        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string())).unwrap_or_else(|| std::env::current_dir().unwrap());
+        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
         let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, Some(in_vicinity));
+        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative);
 
         match result {
             Ok(thunk) => {
@@ -417,7 +447,7 @@ native_cont!(
             Ok(ir) => ir,
             Err(err) => return nctx.return_(Err(err))
         };
-
+        println!(";; Compiling file: {} -> {}", source_and_compiled_path.car(), source_and_compiled_path.cdr());
         let m = if cenv.is::<Module>() {
             cenv.downcast()
         } else {
@@ -433,6 +463,18 @@ native_cont!(
 
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+
+        if false {
+            let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.cps.scm", source_and_compiled_path.cdr()))
+                .unwrap();
+            println!("CPS {} -> {}.cps.scm", source_and_compiled_path.car(), source_and_compiled_path.cdr());
+            doc.1.render(80, &mut file).unwrap();
+        }
 
 
         let object = match compile_cps_to_object(nctx.ctx, cps) {
