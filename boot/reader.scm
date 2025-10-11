@@ -727,3 +727,20 @@
             d^))))
 
 (set! get-token reader:get-token))
+
+(define (get-port-reader port fn) 
+  (let ([r (io/port-reader port)])
+    (if r 
+      r
+      (begin 
+        (let ([reader (make-reader port (or fn (port-name port)))])
+          (reader-mode-set! reader 'r6rs)
+          (io/port-reader-set! port reader)
+          reader)))))
+      
+(define (get-datum p)
+  (read-datum (get-port-reader p #f)))
+
+(define (read . rest)
+  (let ([p (if (null? rest) (current-input-port) (car rest))])
+    (get-datum p)))

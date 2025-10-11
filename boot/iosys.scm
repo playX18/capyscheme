@@ -219,8 +219,8 @@
 (define port.setposn    19) ; boolean: true iff supports set-port-position!
 (define port.alist      20) ; association list: used mainly by custom ports
 (define port.r7rstype   21) ; copy of port.type but unaltered by closing
-
-(define port.structure-size 22)      ; size of port structure
+(define port.reader     22)
+(define port.structure-size 23)      ; size of port structure
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -339,7 +339,7 @@
     (tuple-set! v port.setposn set-position?)
     (tuple-set! v port.alist '())
     (tuple-set! v port.r7rstype (tuple-ref v port.type))
-
+    (tuple-set! v port.reader #f)
     (tuple-set! v 0 'type:port)
     (io/reset-buffers! v)                     ; inserts sentinel
     v))
@@ -580,6 +580,15 @@
         (unspecified))
       (begin (error "io/close-port: not a port: " p)
              #t)))
+
+(define (io/port-reader p)
+  (if (not (port? p))
+    (assertion-violation 'port-reader "not a port" p))
+  (tuple-ref p port.reader))
+(define (io/port-reader-set! p r)
+  (if (not (port? p))
+    (assertion-violation 'port-reader-set! "not a port" p))
+  (tuple-set! p port.reader r))
 
 (define (io/port-name p)
   (((tuple-ref p port.ioproc) 'name) (tuple-ref p port.iodata)))
