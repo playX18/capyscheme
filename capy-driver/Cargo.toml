@@ -1,0 +1,24 @@
+[package]
+name = "capy-driver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+capy = { path = "../capy" }
+pretty.workspace = true
+libloading.workspace = true
+cranelift-object.workspace = true
+target-lexicon.workspace = true
+cranelift-module.workspace = true
+cranelift-codegen.workspace = true
+cranelift-jit.workspace = true
+cranelift.workspace = true
+env_logger.workspace = true
+
+[features]
+portable = ["capy/portable"]
+default = ["portable"]
+
+[[bin]]
+name = "capy"
+path = "src/main.rs"
