@@ -1,4 +1,15 @@
+(define (tuple->list x)
+  (let lp ([i 0] [n (tuple-size x)] [acc '()])
+    (if (< i n)
+        (lp (+ i 1) n (cons (tuple-ref x i) acc))
+        (reverse acc))))
 
+(define (tuple-index x v)
+  (let lp ([i 0] [n (tuple-size x)])
+    (cond ((= i n) -1)
+          ((equal? (tuple-ref x i) v) i)
+          (else (lp (+ i 1) n)))))
+  
 (define min
   (letrec ((min (lambda (x . y)
                   (if (<= x x)

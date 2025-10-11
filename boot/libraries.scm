@@ -404,7 +404,7 @@
                         read
                         read-with-shared-structure
                         write-with-shared-structure
-                        tuple tuple? make-tuple tuple-ref tuple-set! tuple-length tuple-index tuple->list
+                        tuple tuple? make-tuple tuple-ref tuple-set! tuple-size tuple-index tuple->list
                         make-weak-mapping weak-mapping? weak-mapping-key weak-mapping-value
                         make-core-hashtable core-hashtable?
                         make-weak-core-hashtable weak-core-hashtable?
@@ -416,19 +416,102 @@
                         core-hashtable-equivalence-function
                         core-hashtable-hash-function
                         usleep
-                        scheme-error
-                        architecture-feature
-                        collect collect-notify collect-stack-notify collect-trip-bytes display-heap-statistics display-object-statistics
-                        backtrace expansion-backtrace backtrace-line-length display-backtrace
-                        warning-level
-                        restricted-print-line-length
-                        record-print-nesting-limit
-                        macro-expand compile compile-coreform closure-code
+                        macroexpand compile-tree-il
                         current-environment current-macro-environment current-variable-environment current-dynamic-environment
                         system-environment interaction-environment
-                        make-environment
-                        copy-environment-variables! copy-environment-macros!
-                        top-level-bound? top-level-value set-top-level-value!
+
+                        variable-ref
+                        variable-set!
+                        make-variable 
+                        variable-bound?
+
+                        current-module
+                        make-module
+                        module?
+                        module-obarray
+                        module-uses
+                        module-binder
+                        module-declarative?
+                        module-transformer
+                        raw-module-name
+                        module-version
+                        module-kind
+                        module-import-obarray
+                        module-submodules
+                        module-filename
+                        module-public-interface
+                        module-next-unique-id
+                        module-replacements
+                        module-inlinable-exports
+                        set-module-obarray!
+                        set-module-uses!
+                        set-module-declarative!
+                        set-module-name!
+                        set-module-version!
+                        set-module-kind!
+                        set-module-filename!
+                        set-module-public-interface!
+                        set-module-next-unique-id!
+                        set-module-replacements!
+                        set-module-inlinable-exports!
+                        module-local-variable
+                        module-locally-bound?
+                        module-bound?
+                        module-variable
+                        module-symbol-binding
+                        module-symbol-local-binding
+                        module-make-local-var!
+                        module-ensure-local-variable!
+                        module-add!
+                        module-remove!
+                        module-clear!
+                        module-gensym
+                        module-generate-unique-id
+                        module-environment
+                        set-module-environment!
+                        module-map
+                        module-ref-submodule
+                        module-define-submodule!
+                        save-module-excursion
+                        module-ref
+                        module-set!
+                        module-defined?
+                        module-use!
+                        module-use-interfaces!
+                        module-define!
+                        nested-ref
+                        nested-set!
+                        nested-remove!
+                        nested-ref-module
+                        nested-define-module!
+                        local-ref
+                        local-set!
+                        local-define
+                        local-remove
+                        local-ref-module
+                        local-define-module
+                        module-name
+                        make-modules-in
+                        beautify-user-module!
+                        make-fresh-user-module
+                        resolve-module
+                        resolve-interface
+                        define-module*
+                        module-export!
+                        module-replace!
+                        module-export-all!
+                        process-use-modules
+                        lookup-bound
+                        module-re-export!
+                        current-exception-printer
+
+                        procedure-properties
+                        set-procedure-properties!
+                        procedure-property
+                        procedure-name
+                        procedure-documentation
+                        procedure-sourcev
+
                         core-read
                         current-source-comments
                         current-after-expansion-hook
