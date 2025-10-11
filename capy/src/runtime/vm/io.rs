@@ -13,6 +13,13 @@ static_symbols!(
 native_fn!(
     register_io_fns:
 
+    pub ("getcwd") fn getcwd<'gc>(nctx) -> Gc<'gc, Str<'gc>> {
+        let buf = std::env::current_dir().unwrap_or_default();
+        let s = buf.to_string_lossy();
+        let ctx = nctx.ctx;
+        nctx.return_(Str::new(&ctx, &s, true))
+    }
+
     pub ("file-exists?") fn file_exists<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
         let metadata = std::fs::metadata(path.to_string());
         nctx.return_(metadata.is_ok())
