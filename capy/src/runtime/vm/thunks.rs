@@ -231,6 +231,12 @@ pub mod compiler {
             std::iter::once(ir::types::I64)
         }
     }
+
+    impl PrimType for isize {
+        fn clif_type() -> impl Iterator<Item = ir::Type> {
+            std::iter::once(ir::types::I64)
+        }
+    }
 }
 
 thunks! {
@@ -238,22 +244,28 @@ thunks! {
 
     pub fn wrong_number_of_args(
         ctx: &Context<'gc>,
-        subr: Value<'gc>
+        subr: Value<'gc>,
+        got: usize,
+        expected: isize
     ) -> Value<'gc> {
         //print_stacktraces_impl(*ctx);
-        println!("wrong number of args: {}", subr);
-        let ip = unsafe { returnaddress(0) };
-            backtrace::resolve(ip as _, |sym| {
-                println!("{sym:?}");
-        });
-        if subr.is::<Closure>() {
-            println!("{}", subr.downcast::<Closure>().meta.get());
-            let sym = backtrace::resolve(subr.downcast::<Closure>().code.to_mut_ptr(), |sym| {
-                println!("{sym:?}");
-            });
+        let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
+        if is_cont {
+            println!("Wrong number of return values: got {}, expected {}", got, expected);
+        } else {
+            println!("Wrong number of arguments to {}: got {}, expected {}", subr, got, expected);
         }
-        //crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
-        todo!()
+
+        if subr.is::<Closure>() {
+            let clos = subr.downcast::<Closure>();
+            println!("meta: {}", clos.meta.get());
+        }
+        let ret = unsafe { returnaddress(0) };
+        backtrace::resolve(ret as _, |sym| {
+            println!("{sym:?}");
+        });
+
+        panic!();
     }
 
     pub fn cons_rest(
@@ -306,6 +318,11 @@ thunks! {
         name: Value<'gc>
     ) -> ThunkResult<'gc> {
         assert!(name.is::<Symbol>());
+        if !module.is::<Module>() {
+            println!("lookup-bound: not a module: {}", module);
+            print_stacktraces_impl(*ctx);
+            panic!();
+        }
         let variable = module.downcast::<Module>().variable(*ctx, name);
 
         let Some(variable) = variable else {
@@ -317,7 +334,8 @@ thunks! {
             print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
-                value: make_assertion_violation(ctx, Symbol::from_str(*ctx, "unbound-variable").into(), Str::new(ctx, &format!("unbound variable '{name}'"), true).into(), &[name, module]),
+                value:
+                    make_undefined_violation(ctx, name, &format!("variable not found in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
             };
         };
 
@@ -326,7 +344,7 @@ thunks! {
             print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
-                value: make_assertion_violation(ctx, Symbol::from_str(*ctx, "unbound-variable").into(), Str::new(ctx, &format!("unbound variable '{name}'"), true).into(), &[name, module]),
+                value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
             };
         }
 
@@ -348,7 +366,7 @@ thunks! {
             println!("lookup: variable not found: {} in {}", name, module);
             return ThunkResult {
                 code: 1,
-                value: make_assertion_violation(ctx, Symbol::from_str(*ctx, "unbound-variable").into(), Str::new(ctx, "unbound variable", true).into(), &[name, module]),
+                value: make_undefined_violation(ctx, name, &format!("variable not found in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
             };
         };
 
@@ -378,7 +396,7 @@ thunks! {
             println!("lookup-bound-public: variable unbound: {} in {}", name, module.value);
             return ThunkResult {
                 code: 1,
-                value: make_assertion_violation(ctx, Symbol::from_str(*ctx, "unbound-variable").into(), Str::new(ctx, "unbound variable", true).into(), &[name, module.value]),
+                value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.value.downcast::<Module>().name.get()), &[name, module.value]),
             };
         }
 
@@ -404,7 +422,7 @@ thunks! {
         if !var.is_bound() {
             return ThunkResult {
                 code: 1,
-                value: make_assertion_violation(ctx, Symbol::from_str(*ctx, "unbound-variable").into(), Str::new(ctx, "unbound variable", true).into(), &[name, module.value]),
+                value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.value.downcast::<Module>().name.get()), &[name, module.value]),
             };
         }
 
@@ -424,11 +442,25 @@ thunks! {
     }
 
     pub fn current_module(ctx: &Context<'gc>) -> Value<'gc> {
-        crate::runtime::modules::current_module(*ctx).get(*ctx)
+        let module = crate::runtime::modules::current_module(*ctx).get(*ctx);
+        if !module.is::<Module>() {
+            println!("current-module: not a module: {}", module);
+            print_stacktraces_impl(*ctx);
+            panic!();
+        }
+        module
     }
 
     pub fn set_current_module(ctx: &Context<'gc>, module: Value<'gc>) -> Value<'gc> {
-
+        if !module.is::<Module>() {
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as _, |sym| {
+                println!("{sym:?}");
+            });
+            println!("set-current-module: not a module: {}", module);
+            print_stacktraces_impl(*ctx);
+            panic!();
+        }
         crate::runtime::modules::set_current_module(*ctx, module);
         Value::undefined()
     }
@@ -2746,6 +2778,28 @@ pub fn make_assertion_violation<'gc>(
     }
 }
 
+pub fn make_undefined_violation<'gc>(
+    ctx: &Context<'gc>,
+    who: Value<'gc>,
+    message: impl AsRef<str>,
+    irritants: &[Value<'gc>],
+) -> Value<'gc> {
+    let message: Value = Str::new(&ctx, message, true).into();
+    let mut args = vec![who, message];
+    args.extend_from_slice(irritants);
+    let undefined_violation = root_module(*ctx)
+        .get(
+            *ctx,
+            Symbol::from_str(*ctx, ".make-undefined-violation").into(),
+        )
+        .unwrap_or_else(|| panic!("pre boot code, who={who}, message={message}",));
+    match call_scheme(*ctx, undefined_violation, args) {
+        VMResult::Ok(val) => val,
+        VMResult::Err(err) => err,
+        VMResult::Yield => unreachable!(),
+    }
+}
+
 pub fn make_error<'gc>(
     ctx: &Context<'gc>,
     who: Value<'gc>,
@@ -2824,10 +2878,10 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
         println!("module {} not found in {}", name, current_module(&ctx));
         return ThunkResult {
             code: 1,
-            value: make_assertion_violation(
+            value: make_undefined_violation(
                 &ctx,
                 Symbol::from_str(ctx, "resolve-module").into(),
-                Str::new(&ctx, "module not found", true).into(),
+                "module not found",
                 &[name],
             ),
         };

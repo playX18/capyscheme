@@ -741,6 +741,22 @@ pub fn define<'gc>(ctx: Context<'gc>, name: &str, value: Value<'gc>) -> Gc<'gc, 
         .define(ctx, sym.into(), value)
 }
 
+pub fn convert_module_name<'gc>(ctx: Context<'gc>, name: &str) -> Value<'gc> {
+    let parts = name.split(' ').collect::<Vec<_>>();
+    let mut result = Value::null();
+    for part in parts.iter().rev() {
+        result = Value::cons(ctx, Symbol::from_str(ctx, part).into(), result);
+    }
+
+    result
+}
+
+pub fn public_ref<'gc>(ctx: Context<'gc>, module_name: &str, name: &str) -> Option<Value<'gc>> {
+    let module_name = convert_module_name(ctx, module_name);
+    let module = resolve_module(ctx, module_name, false, false)?;
+    module.get(ctx, Symbol::from_str(ctx, name).into())
+}
+
 native_fn!(
     register_module_fns:
 

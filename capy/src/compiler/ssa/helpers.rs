@@ -386,7 +386,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .brif(has_typ, then, then_args, else_, else_args);
     }
 
-    pub fn wrong_num_args(&mut self, proc: &str, h: LVarRef<'gc>) {
+    pub fn wrong_num_args(&mut self, proc: &str, h: LVarRef<'gc>, got: usize, expected: isize) {
         let c = Symbol::from_str(self.module_builder.ctx, proc);
         let c = self.module_builder.intern_constant(c.into()).unwrap();
         let c = self.import_data(c);
@@ -397,10 +397,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .ins()
                 .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0);
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let err = self
-            .builder
-            .ins()
-            .call(self.thunks.wrong_number_of_args, &[ctx, value]);
+        let got = self.builder.ins().iconst(types::I64, got as i64);
+        let expected = self.builder.ins().iconst(types::I64, expected as i64);
+        let err = self.builder.ins().call(
+            self.thunks.wrong_number_of_args,
+            &[ctx, value, got, expected],
+        );
         let val = self.builder.inst_results(err)[0];
         self.continue_to(h, &[val]);
     }

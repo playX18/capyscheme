@@ -1,7 +1,4 @@
-use crate::{
-    native_fn,
-    runtime::{prelude::*, vm::debug::print_stacktraces_impl},
-};
+use crate::{native_fn, runtime::prelude::*};
 
 pub(crate) fn init_eval<'gc>(ctx: Context<'gc>) {
     register_eval_fns(ctx);
@@ -12,8 +9,7 @@ native_fn!(
 
     pub ("apply") fn apply<'gc>(nctx, rator: Value<'gc>, rands: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
         if !rator.is::<Closure>() {
-            print_stacktraces_impl(nctx.ctx);
-            todo!("can only apply closures, got: {rator}");
+            return nctx.wrong_argument_violation("apply", "attempt to call non-procedure", Some(rator), Some(0), 1, &[rator])
         }
 
         if rands.len() == 0 {
