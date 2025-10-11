@@ -454,10 +454,11 @@ macro_rules! fluid {
                     }).fetch(&ctx)
             }
 
+            #[allow(dead_code)]
             $v fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::value::Value<'gc> {
                 [<$name: snake>](ctx).get(ctx)
             }
-
+            #[allow(dead_code)]
             $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) -> $crate::runtime::value::Value<'gc> {
                 let old = [<get_ $name: snake>](ctx);
                 [<$name: snake>](ctx).set(ctx, value);

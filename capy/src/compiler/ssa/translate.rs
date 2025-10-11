@@ -193,10 +193,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(err);
                 {
-                    let err = self
-                        .builder
-                        .ins()
-                        .call(self.thunks.wrong_number_of_args, &[ctx, self.rator]);
+                    let got = num_rands;
+                    let expected = -(params.len() as isize);
+                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                    let err = self.builder.ins().call(
+                        self.thunks.wrong_number_of_args,
+                        &[ctx, self.rator, got, expected],
+                    );
                     let err = self.builder.inst_results(err)[0];
                     let error_handler = self.default_error_handler();
 
@@ -267,10 +270,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(err);
                 {
-                    let err = self
-                        .builder
-                        .ins()
-                        .call(self.thunks.wrong_number_of_args, &[ctx, self.rator]);
+                    let got = num_rands;
+                    let expected = params.len() as isize;
+                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                    let err = self.builder.ins().call(
+                        self.thunks.wrong_number_of_args,
+                        &[ctx, self.rator, got, expected],
+                    );
                     let err = self.builder.inst_results(err)[0];
                     let error_handler = self.default_error_handler();
 
@@ -334,11 +340,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(err);
                 {
+                    let got = num_rands;
+                    let expected = 0isize;
+                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
                     let handler = self.default_error_handler();
-                    let err = self
-                        .builder
-                        .ins()
-                        .call(self.thunks.wrong_number_of_args, &[ctx, num_rands]);
+                    let err = self.builder.ins().call(
+                        self.thunks.wrong_number_of_args,
+                        &[ctx, num_rands, got, expected],
+                    );
                     let err = self.builder.inst_results(err)[0];
                     self.continue_to(handler, &[err]);
                 }
@@ -540,9 +549,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     /* helpers */
 
-    pub fn check_argcount(&mut self, proc: &str, h: LVarRef<'gc>, got: usize, expected: usize) {
-        let got = self.builder.ins().iconst(types::I64, got as i64);
-        let expected = self.builder.ins().iconst(types::I64, expected as i64);
+    pub fn check_argcount(&mut self, proc: &str, h: LVarRef<'gc>, got_: usize, expected_: usize) {
+        let got = self.builder.ins().iconst(types::I64, got_ as i64);
+        let expected = self.builder.ins().iconst(types::I64, expected_ as i64);
 
         let on_err = self.builder.create_block();
         let on_succ = self.builder.create_block();
@@ -553,7 +562,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.func.layout.set_cold(on_err);
         self.builder.switch_to_block(on_err);
         {
-            self.wrong_num_args(proc, h);
+            self.wrong_num_args(proc, h, got_, expected_ as _);
         }
         self.builder.switch_to_block(on_succ);
     }
