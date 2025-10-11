@@ -490,6 +490,8 @@
 ; to io/put-char.
 
 (define (io/write-char c p)
+  (unless (char? c)
+    (error 'write-char "not a character" c))
   (if (port? p)
       (let ((type (tuple-ref p port.type)))
         (cond ((eq? type type:binary-output)                ; FIXME (was io/if)
@@ -1624,6 +1626,8 @@
            #t))))
 
 (define (io/put-char p c)
+  (unless (char? c)
+    (error 'put-char "not a character" c))
   (if (port? p)
       (let ((type (tuple-ref p port.type))
             (buf (tuple-ref p port.mainbuf))
@@ -1937,6 +1941,8 @@
              (lim  (tuple-ref p port.mainlim)))
          (define (loop i j)
            (cond ((< i k)
+                  (unless (char? c)
+                    (error 'put-string "not a character" c))
                   (let* ((c (string-ref s i))
                          (sv (char->integer c)))
                     (if (and (< 10 sv)    ; 10 = #\newline

@@ -29,7 +29,8 @@ native_fn! {
 
     pub ("vector-ref") fn vector_ref<'gc>(nctx, vec: Gc<'gc, Vector<'gc>>, k: usize) -> Result<Value<'gc>, Value<'gc>> {
         if k >= vec.len() {
-            todo!()
+            let k = k.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("vector-ref", "index out of bounds", Some(k), Some(1), 2, &[vec.into(), k]);
         }
 
         let v = vec[k].get();
@@ -39,7 +40,8 @@ native_fn! {
 
     pub ("vector-set!") fn vector_set<'gc>(nctx, vec: Gc<'gc, Vector<'gc>>, k: usize, value: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if k >= vec.len() {
-            todo!()
+            let k = k.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("vector-set!", "index out of bounds", Some(k), Some(1), 3, &[vec.into(), k, value]);
         }
 
         let wvec = Gc::write(&nctx.ctx, vec);
@@ -74,6 +76,13 @@ native_fn! {
         nctx.return_(len)
     }
 
+    pub ("bytevector->list") fn bytevector_to_list<'gc>(nctx, bv: Gc<'gc, ByteVector>) -> Value<'gc> {
+        let mut lst = Value::new(false);
+        for &b in bv.as_slice().iter().rev() {
+            lst = Value::cons(nctx.ctx, b.into_value(nctx.ctx), lst);
+        }
+        nctx.return_(lst)
+    }
 
 
     pub ("bytevector?") fn bytevector_p<'gc>(nctx, value: Value<'gc>) -> bool {

@@ -543,31 +543,17 @@ native_fn!(
         nctx.return_(Value::new(obj.is::<Fluid>()))
     }
 
-    pub ("fluid-thread-local?") fn is_fluid_thread_local<'gc>(nctx, obj: Value<'gc>) -> Value<'gc> {
-        if !obj.is::<Fluid>() {
-            todo!()
-        }
-
-        let fluid = obj.downcast::<Fluid>();
+    pub ("fluid-thread-local?") fn is_fluid_thread_local<'gc>(nctx, fluid: FluidRef<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(fluid.is_thread_local()))
     }
 
-    pub ("fluid-ref") fn fluid_ref<'gc>(nctx, fluid: Value<'gc>) -> Value<'gc> {
-        if !fluid.is::<Fluid>() {
-            todo!()
-        }
-
-        let fluid = fluid.downcast::<Fluid>();
+    pub ("fluid-ref") fn fluid_ref<'gc>(nctx, fluid: FluidRef<'gc>) -> Value<'gc> {
         let value = fluid.get(nctx.ctx);
         nctx.return_(value)
     }
 
-    pub ("fluid-set!") fn fluid_set<'gc>(nctx, fluid: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
-        if !fluid.is::<Fluid>() {
-            todo!()
-        }
+    pub ("fluid-set!") fn fluid_set<'gc>(nctx, fluid: FluidRef<'gc>, value: Value<'gc>) -> Value<'gc> {
 
-        let fluid = fluid.downcast::<Fluid>();
         let old_value = fluid.get(nctx.ctx);
         fluid.set(nctx.ctx, value);
         nctx.return_(old_value)

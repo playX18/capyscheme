@@ -250,22 +250,31 @@ thunks! {
     ) -> Value<'gc> {
         //print_stacktraces_impl(*ctx);
         let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
-        if is_cont {
-            println!("Wrong number of return values: got {}, expected {}", got, expected);
+        let msg = if is_cont {
+            if expected < 0 {
+                format!("expected at least {} values, got {}", -expected, got)
+            } else {
+                format!("expected {} value(s), got {}", expected, got)
+            }
         } else {
-            println!("Wrong number of arguments to {}: got {}, expected {}", subr, got, expected);
-        }
+            if expected < 0 {
+                format!("procedure expected at least {} arguments, got {}", -expected, got)
+            } else {
+                format!("procedure expected {} arguments, got {}", expected, got)
+            }
+        };
 
-        if subr.is::<Closure>() {
-            let clos = subr.downcast::<Closure>();
-            println!("meta: {}", clos.meta.get());
-        }
-        let ret = unsafe { returnaddress(0) };
-        backtrace::resolve(ret as _, |sym| {
-            println!("{sym:?}");
-        });
-
-        panic!();
+        let meta = if subr.is::<Closure>() {
+            subr.downcast::<Closure>().meta.get()
+        } else {
+            Value::new(false)
+        };
+        make_assertion_violation(
+            ctx,
+            Value::new(false),
+            Str::new(&ctx, &msg, true).into(),
+            &[subr, meta]
+        )
     }
 
     pub fn cons_rest(
@@ -278,11 +287,6 @@ thunks! {
 
         let mut ls = Value::null();
         if from >= args.len() {
-            unsafe { let ret = returnaddress(0);
-            backtrace::resolve(ret as _, |sym| {
-                println!("{sym:?}");
-            });
-        }
         }
         for &arg in args[from..].iter().rev() {
             ls = Value::cons(*ctx, arg, ls);
@@ -296,13 +300,13 @@ thunks! {
         subr: Value<'gc>
     ) -> Value<'gc> {
 
-        crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
-        let ret = unsafe { returnaddress(0) };
-        let sym = backtrace::resolve(ret as _, |sym| {
-            println!("{sym:?}");
-        });
-        println!("non applicable: {}", subr);
-        todo!()
+        make_assertion_violation(
+            ctx,
+            Value::new(false),
+            Str::new(&ctx, "attempt to call non-procedure", true).into(),
+            &[subr]
+        )
+
     }
 
     pub fn make_variable(
@@ -319,19 +323,12 @@ thunks! {
     ) -> ThunkResult<'gc> {
         assert!(name.is::<Symbol>());
         if !module.is::<Module>() {
-            println!("lookup-bound: not a module: {}", module);
-            print_stacktraces_impl(*ctx);
-            panic!();
+            unreachable!("lookup-bound: not a module: {}", module);
         }
         let variable = module.downcast::<Module>().variable(*ctx, name);
 
         let Some(variable) = variable else {
-            let ip = unsafe { returnaddress(0) };
-            backtrace::resolve(ip as _, |sym| {
-                println!("{sym:?}");
-            });
-            println!("lookup-bound: variable not found: {} in {}", name, module);
-            print_stacktraces_impl(*ctx);
+
             return ThunkResult {
                 code: 1,
                 value:
@@ -340,8 +337,7 @@ thunks! {
         };
 
         if variable.get() == Value::undefined() {
-            println!("lookup-bound: variable unbound: {} in {}", name, module);
-            print_stacktraces_impl(*ctx);
+
             return ThunkResult {
                 code: 1,
                 value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
@@ -363,7 +359,7 @@ thunks! {
         let variable = module.downcast::<Module>().variable(*ctx, name);
 
         let Some(var) = variable else {
-            println!("lookup: variable not found: {} in {}", name, module);
+
             return ThunkResult {
                 code: 1,
                 value: make_undefined_violation(ctx, name, &format!("variable not found in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
@@ -393,7 +389,7 @@ thunks! {
 
         let var = var.value.downcast::<Variable>();
         if !var.is_bound() {
-            println!("lookup-bound-public: variable unbound: {} in {}", name, module.value);
+
             return ThunkResult {
                 code: 1,
                 value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.value.downcast::<Module>().name.get()), &[name, module.value]),
@@ -444,9 +440,9 @@ thunks! {
     pub fn current_module(ctx: &Context<'gc>) -> Value<'gc> {
         let module = crate::runtime::modules::current_module(*ctx).get(*ctx);
         if !module.is::<Module>() {
-            println!("current-module: not a module: {}", module);
+
             print_stacktraces_impl(*ctx);
-            panic!();
+            panic!("current-module: not a module: {}", module);
         }
         module
     }
@@ -459,7 +455,7 @@ thunks! {
             });
             println!("set-current-module: not a module: {}", module);
             print_stacktraces_impl(*ctx);
-            panic!();
+            panic!("set-current-module: not a module: {}", module);
         }
         crate::runtime::modules::set_current_module(*ctx, module);
         Value::undefined()
@@ -472,13 +468,12 @@ thunks! {
         is_cont: bool,
         meta: Value<'gc>
     ) -> Value<'gc> {
-  //      NCLOSURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let free = if nfree == 0 {
             Value::new(false)
         } else {
             Vector::new::<false>(&ctx, nfree, Value::undefined()).into()
         };
-//        println!("make-closure {nfree}, code={func:p}, cont={}, meta={}", is_cont, meta);
 
         let clos = Closure {
             header: ScmHeader::with_type_bits(if is_cont {
@@ -646,23 +641,44 @@ thunks! {
                 value: false.into()
             }
         };
-        todo!()
+        ThunkResult { code: 0, value: num.is_flonum().into() }
     }
 
     pub fn is_zero(ctx: &Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(num) = value.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "zero?").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[value],
+                )
+            }
         };
         ThunkResult { code: 0, value: num.is_zero().into() }
     }
 
     pub fn is_less_than(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "<").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[value],
+                )
+            }
         };
 
         let Some(other) = other.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "<").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[other],
+                )
+            }
         };
 
         ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) == Some(Ordering::Less)).into() }
@@ -670,11 +686,25 @@ thunks! {
 
     pub fn is_less_than_equal(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "<=").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[value],
+                )
+            }
         };
 
         let Some(other) = other.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "<=").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[other],
+                )
+            }
         };
 
         ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) != Some(Ordering::Greater)).into() }
@@ -682,11 +712,25 @@ thunks! {
 
     pub fn is_greater_than(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, ">").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[value],
+                )
+            }
         };
 
         let Some(other) = other.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, ">").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[other],
+                )
+            }
         };
 
         ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) == Some(Ordering::Greater)).into() }
@@ -694,11 +738,25 @@ thunks! {
 
     pub fn is_greater_than_equal(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, ">=").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[value],
+                )
+            }
         };
 
         let Some(other) = other.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, ">=").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[other],
+                )
+            }
         };
 
         ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) != Some(Ordering::Less)).into() }
@@ -706,11 +764,25 @@ thunks! {
 
     pub fn is_numerically_equal(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "=").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[value],
+                )
+            }
         };
 
         let Some(other) = other.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "=").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[other],
+                )
+            }
         };
 
         ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) == Some(Ordering::Equal)).into() }
@@ -718,7 +790,14 @@ thunks! {
 
     pub fn negate(ctx: &Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(num) = value.number() else {
-            todo!()
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "negate").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[value],
+                )
+            }
         };
 
         ThunkResult { code: 0, value: num.negate(*ctx).into_value(*ctx) }
@@ -729,8 +808,6 @@ thunks! {
         let rands = unsafe { std::slice::from_raw_parts(rands, num_rands).to_vec() };
 
         unsafe {
-            //let loc = lookup_scheme_location(*ctx, ip as u64);
-            //  println!("CALL {:?} rands=({})", loc, rands.iter().map(|v| format!("{:?}", v)).collect::<Vec<String>>().join(", "));
             let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta: Value::new(false) };
             (*ctx.state.shadow_stack.get()).push(frame);
         }
@@ -1261,7 +1338,7 @@ thunks! {
         }
 
         if !count.is_negative() {
-            println!("lsh {} by {}", n, count);
+
             let Some(res) = n.lsh(*ctx, count) else {
                 return ThunkResult {
                     code: 1,
@@ -1884,7 +1961,13 @@ thunks! {
     }
 
     pub fn char_to_integer(ctx: &Context<'gc>, c: Value<'gc>) -> ThunkResult<'gc> {
+
         if !c.is_char() {
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as *mut _, |symbol| {
+                println!("{symbol:?}");
+            });
+            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -2059,11 +2142,7 @@ thunks! {
 
     pub fn car(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
-            let ret = unsafe { returnaddress(0) };
-            backtrace::resolve(ret as *mut _, |symbol| {
-                println!("{symbol:?}");
-            });
-            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
+
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -2079,11 +2158,6 @@ thunks! {
 
     pub fn cdr(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
-            let ret = unsafe { returnaddress(0) };
-            backtrace::resolve(ret as *mut _, |symbol| {
-                println!("{symbol:?}");
-            });
-            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -2875,7 +2949,6 @@ pub fn make_lexical_violation<'gc>(
 
 pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) -> ThunkResult<'gc> {
     let Some(module) = crate::runtime::modules::resolve_module(ctx, name, false, false) else {
-        println!("module {} not found in {}", name, current_module(&ctx));
         return ThunkResult {
             code: 1,
             value: make_undefined_violation(

@@ -1,6 +1,39 @@
 
-(define (max a x)
-  (if (> a x) a x))
+(define min
+  (letrec ((min (lambda (x . y)
+                  (if (<= x x)
+                      (loop y x (exact? x))
+                      x)))
+           (loop (lambda (y x exact)
+                   (if (null? y)
+                       x
+                       (let ((y1 (car y)))
+                         (cond ((< y1 x)
+                                (if exact
+                                    (loop (cdr y) y1 (exact? y1))
+                                    (loop (cdr y) (inexact y1) exact)))
+                               ((and exact (not (exact? y1)))
+                                (loop (cdr y) (inexact x) #f))
+                               (else (loop (cdr y) x exact))))))))
+    min))
+ 
+(define max
+  (letrec ((max (lambda (x . y)
+                  (if (<= x x)
+                      (loop y x (exact? x))
+                      x)))
+           (loop (lambda (y x exact)
+                   (if (null? y)
+                       x
+                       (let ((y1 (car y)))
+                         (cond ((> y1 x)
+                                (if exact
+                                    (loop (cdr y) y1 (exact? y1))
+                                    (loop (cdr y) (inexact y1) exact)))
+                               ((and exact (not (exact? y1)))
+                                (loop (cdr y) (inexact x) #f))
+                               (else (loop (cdr y) x exact))))))))
+    max))
 (define (boolean? x) (boolean? x))
 (define (alist-cons key datum alist) (cons (cons key datum) alist))
 (define (flatten lst)
@@ -953,7 +986,7 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (and (pair? irritants) (make-irritants-condition irritants))))))))
-(define .make-i/o-error
+(define .make-io-error
   (lambda (who message . irritants)
     (if (or (not who) (string? who) (symbol? who))
       (if (string? message)
@@ -1561,3 +1594,21 @@
 (initialize-io-system)
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")
+
+(set! %load-extensions 
+  (cons (cons ".sls" %load-extensions) %load-extensions))
+(set! %load-extensions 
+  (cons (cons ".sld" %load-extensions) %load-extensions))
+
+
+(set! %load-extensions 
+  (cons (cons ".capy.sls" %load-extensions) %load-extensions))
+(set! %load-extensions 
+  (cons (cons ".capy.sld" %load-extensions) %load-extensions))
+(set! %load-extensions 
+  (cons (cons ".capy.scm" %load-extensions) %load-extensions))
+(set! %load-extensions 
+  (cons (cons ".sch" %load-extensions) %load-extensions))
+
+(let ([user-module (define-module* '(capy user))])
+  (current-module user-module))

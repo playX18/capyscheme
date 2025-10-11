@@ -16,7 +16,38 @@ pub mod fix_letrec;
 //pub mod letrectify;
 pub mod fold;
 pub mod primitives;
-pub mod synclo;
+
+pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    let Some(props) = get_source_property(ctx, obj) else {
+        return Value::new(false);
+    };
+
+    if props.is_pair() {
+        let filename = props
+            .assq(sym_filename(ctx).into())
+            .map(|pair| pair.cdr())
+            .unwrap_or(Value::new(false));
+        let line = props
+            .assq(sym_line(ctx).into())
+            .map(|pair| pair.cdr())
+            .unwrap_or(Value::new(false));
+        let column = props
+            .assq(sym_column(ctx).into())
+            .map(|pair| pair.cdr())
+            .unwrap_or(Value::new(false));
+        Vector::from_slice(&ctx, &[filename, line, column]).into()
+    } else {
+        Value::new(false)
+    }
+}
+
+pub fn syntax_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    datum_sourcev(ctx, obj)
+}
+
+pub fn syntax_annotation<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
+    datum_sourcev(ctx, obj)
+}
 
 static SOURCE_PROPERTIES: OnceLock<Global<Rootable!(Gc<'_, WeakTable<'_>>)>> = OnceLock::new();
 

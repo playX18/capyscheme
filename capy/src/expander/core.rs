@@ -11,7 +11,7 @@ use rsgc::{
 use crate::{
     expander::{
         assignment_elimination, fix_letrec::fix_letrec, get_source_property,
-        primitives::resolve_primitives, synclo::syntax_annotation,
+        primitives::resolve_primitives, syntax_annotation,
     },
     list,
     runtime::{

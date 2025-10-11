@@ -98,7 +98,7 @@
     (define (lookahead-char reader) (rnrs:lookahead-char (reader-port reader)))
     (define (get-char reader) 
         (let ([c (rnrs:get-char (reader-port reader))])
-            (if (char=? c #\newline)
+            (if (eqv? c #\newline)
                 (begin 
                     (reader-line-set! reader (+ 1 (reader-line reader)))
                     (reader-column-set! reader -1)))
@@ -150,7 +150,6 @@
                          (char<=? #\A c #\F))
                         (lp (cons c digits)))
                     ((and (char=? c #\;) (pair? digits))
-                        (:print "string->number for " digits)
                         (let ((sv (string->number (list->string (reverse digits)) 16)))
                             (cond 
                                 ((unicode-scalar-value? sv)
@@ -695,7 +694,7 @@
             [(openp)
                 (get-compound-datum p src 'closep 'list labels)]
             [(openb)
-                (get-compound-datum p src 'closeb 'vector labels)]
+                (get-compound-datum p src 'closeb 'list labels)]
             [(vector)
                 (get-compound-datum p src 'closep 'vector labels)]
             [(bytevector)

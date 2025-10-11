@@ -15,13 +15,7 @@ impl<'gc> Atom<'gc> {
     {
         match self {
             Atom::Constant(value) => alloc.text(format!("{}", value)),
-
             Atom::Local(var) => alloc.text(format!("{}", var.name)),
-            Atom::Values(atoms) => {
-                let atoms_doc =
-                    alloc.intersperse(atoms.iter().map(|atom| atom.pretty(alloc)), alloc.space());
-                (alloc.text("values") + alloc.space() + atoms_doc).parens()
-            }
         }
     }
 }
@@ -46,53 +40,6 @@ impl<'gc> Func<'gc> {
             .nest(2)
             .group()
             .parens()
-    }
-}
-
-impl<'gc> Throw<'gc> {
-    pub fn pretty<'a, D, A>(&self, alloc: &'a D) -> DocBuilder<'a, D, A>
-    where
-        D: DocAllocator<'a, A>,
-        D::Doc: Clone,
-        A: 'a + Clone,
-    {
-        match self {
-            Throw::Throw(key, args) => {
-                // (thow <key> <args>)
-
-                (alloc.text("throw")
-                    + alloc.space()
-                    + key.pretty(alloc)
-                    + alloc.space()
-                    + args.pretty(alloc))
-                .group()
-                .parens()
-            }
-
-            Throw::Value(val, subr_and_message) => {
-                // (throw/value <val> <subr-and-message>)
-
-                (alloc.text("throw/value")
-                    + alloc.space()
-                    + val.pretty(alloc)
-                    + alloc.space()
-                    + subr_and_message.pretty(alloc))
-                .group()
-                .parens()
-            }
-
-            Throw::ValueAndData(val, data) => {
-                // (throw/value+data <val> <data>)
-
-                (alloc.text("throw/value+data")
-                    + alloc.space()
-                    + val.pretty(alloc)
-                    + alloc.space()
-                    + data.pretty(alloc))
-                .group()
-                .parens()
-            }
-        }
     }
 }
 
@@ -229,8 +176,6 @@ impl<'gc> Term<'gc> {
                 .group()
                 .parens()
             }
-
-            Term::Throw(throw, _) => throw.pretty(alloc),
         }
     }
 }
@@ -252,12 +197,6 @@ impl<'gc> Expression<'gc> {
                     alloc.space(),
                 );
                 (alloc.text("#%") + alloc.text(prim.to_string()) + alloc.space() + args_doc)
-                    .group()
-                    .parens()
-            }
-
-            Expression::PrimRef(prim) => {
-                (alloc.text("#%") + alloc.space() + alloc.text(prim.to_string()))
                     .group()
                     .parens()
             }

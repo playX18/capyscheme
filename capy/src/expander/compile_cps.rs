@@ -132,8 +132,27 @@ pub fn t_k<'a, 'gc>(
             h,
         ),
 
-        TermKind::ModuleSet(..) => {
-            todo!()
+        TermKind::ModuleSet(module, name, public, exp) => {
+            with_cps!(cps;
+                @tk (h) atom = exp;
+                # {
+                    module_box(
+                        cps,
+                        |cps, var| {
+                            with_cps!(cps;
+                                let _val = #% "variable-set!" (h, var, atom[0]) @ src;
+                                # fk(cps, &[Atom::Constant(Value::undefined())])
+                            )
+                        },
+                        h,
+                        module,
+                        name,
+                        public,
+                        true,
+                        src
+                    )
+                }
+            )
         }
 
         TermKind::Proc(proc) => {
@@ -495,7 +514,7 @@ pub fn t_c<'a, 'gc>(
             )
         }
 
-        _ => todo!("{:?}", form),
+        TermKind::LSet(..) => panic!("LSet should not be in CPS form"),
     }
 }
 
@@ -504,8 +523,7 @@ pub fn m<'a, 'gc>(_: &'a mut CPSBuilder<'gc>, form: CoreTermRef<'gc>) -> Atom<'g
         TermKind::Const(c) => Atom::Constant(*c),
         TermKind::LRef(lref) => Atom::Local(*lref),
 
-        TermKind::Proc(_) => todo!(),
-        _ => unreachable!(),
+        _ => unreachable!("m() should only be called on constants and local references"),
     }
 }
 

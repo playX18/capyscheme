@@ -2,7 +2,7 @@
 use crate::{
     cps::{
         fold::folding_table,
-        term::{Atom, Atoms, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef, Throw},
+        term::{Atom, Atoms, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
     runtime::{Context, value::Value},
@@ -183,10 +183,6 @@ fn census<'gc>(term: TermRef<'gc>) -> HashMap<LVarRef<'gc>, Count> {
     ) {
         if let Atom::Local(name) = atom {
             inc_val_use_n(name, census, rhs);
-        } else if let Atom::Values(values) = atom {
-            for &value in values.iter() {
-                inc_val_use_a(value, census, rhs);
-            }
         }
     }
 
@@ -196,23 +192,6 @@ fn census<'gc>(term: TermRef<'gc>) -> HashMap<LVarRef<'gc>, Count> {
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
     ) {
         match *term {
-            Term::Throw(throw, _) => match throw {
-                Throw::Throw(key, args) => {
-                    inc_val_use_a(key, census, rhs);
-                    inc_val_use_a(args, census, rhs);
-                }
-
-                Throw::Value(val, subr_and_message) => {
-                    inc_val_use_a(val, census, rhs);
-                    inc_val_use_a(subr_and_message, census, rhs);
-                }
-
-                Throw::ValueAndData(val, subr_and_message) => {
-                    inc_val_use_a(val, census, rhs);
-                    inc_val_use_a(subr_and_message, census, rhs);
-                }
-            },
-
             Term::Let(_, expr, body) => {
                 match expr {
                     Expression::PrimCall(_, args, h, _) => {
@@ -222,8 +201,6 @@ fn census<'gc>(term: TermRef<'gc>) -> HashMap<LVarRef<'gc>, Count> {
 
                         inc_val_use_n(h, census, rhs);
                     }
-
-                    _ => (),
                 }
 
                 add_to_census(body, census, rhs);
@@ -316,14 +293,6 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                     &state.ctx,
                     Term::Let(binding, Expression::PrimCall(prim, atoms, h, source), body),
                 )
-            }
-
-            Expression::PrimRef(name) => {
-                let body = shrink_tree(body, state);
-                return Gc::new(
-                    &state.ctx,
-                    Term::Let(binding, Expression::PrimRef(name), body),
-                );
             }
         },
 
@@ -498,40 +467,6 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                 },
             )
         }
-
-        Term::Throw(throw, src) => match throw {
-            Throw::Throw(key, args) => {
-                let key = state.atom_subst.get(&key).cloned().unwrap_or(key);
-                let args = state.atom_subst.get(&args).cloned().unwrap_or(args);
-                Gc::new(&state.ctx, Term::Throw(Throw::Throw(key, args), src))
-            }
-
-            Throw::Value(val, subr_and_message) => {
-                let val = state.atom_subst.get(&val).cloned().unwrap_or(val);
-                let subr_and_message = state
-                    .atom_subst
-                    .get(&subr_and_message)
-                    .cloned()
-                    .unwrap_or(subr_and_message);
-                Gc::new(
-                    &state.ctx,
-                    Term::Throw(Throw::Value(val, subr_and_message), src),
-                )
-            }
-
-            Throw::ValueAndData(val, subr_and_message) => {
-                let val = state.atom_subst.get(&val).cloned().unwrap_or(val);
-                let subr_and_message = state
-                    .atom_subst
-                    .get(&subr_and_message)
-                    .cloned()
-                    .unwrap_or(subr_and_message);
-                Gc::new(
-                    &state.ctx,
-                    Term::Throw(Throw::ValueAndData(val, subr_and_message), src),
-                )
-            }
-        },
     }
 }
 
@@ -582,8 +517,6 @@ fn copy_t<'gc>(
 
                     Expression::PrimCall(prim, atoms, h, source)
                 }
-
-                _ => expr,
             };
 
             Gc::new(&ctx, Term::Let(binding1, expr, body1))
@@ -648,36 +581,6 @@ fn copy_t<'gc>(
 
             Gc::new(&ctx, Term::Continue(cont, args, src))
         }
-
-        Term::Throw(throw, src) => match throw {
-            Throw::Throw(key, args) => {
-                let key = subv.get(&key).cloned().unwrap_or(key);
-                let args = subv.get(&args).cloned().unwrap_or(args);
-
-                Gc::new(&ctx, Term::Throw(Throw::Throw(key, args), src))
-            }
-
-            Throw::Value(val, subr_and_message) => {
-                let val = subv.get(&val).cloned().unwrap_or(val);
-                let subr_and_message = subv
-                    .get(&subr_and_message)
-                    .cloned()
-                    .unwrap_or(subr_and_message);
-                Gc::new(&ctx, Term::Throw(Throw::Value(val, subr_and_message), src))
-            }
-
-            Throw::ValueAndData(val, subr_and_message) => {
-                let val = subv.get(&val).cloned().unwrap_or(val);
-                let subr_and_message = subv
-                    .get(&subr_and_message)
-                    .cloned()
-                    .unwrap_or(subr_and_message);
-                Gc::new(
-                    &ctx,
-                    Term::Throw(Throw::ValueAndData(val, subr_and_message), src),
-                )
-            }
-        },
 
         Term::App(fun, retc, rete, args, src) => {
             let fun = subv.get(&fun).cloned().unwrap_or_else(|| fun);
@@ -834,8 +737,6 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
                     let handler = state.var_subst.get(&handler).copied().unwrap_or(handler);
                     Expression::PrimCall(prim, args, handler, src)
                 }
-
-                _ => exp,
             };
             let body = inline_t(state, body, cnt_limit);
             Gc::new(&state.ctx, Term::Let(name, exp, body))
@@ -917,39 +818,6 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
 
             Gc::new(&state.ctx, Term::Continue(cnt, args, src))
         }
-        Term::Throw(throw, src) => match throw {
-            Throw::Throw(key, args) => {
-                let key = state.atom_subst.get(&key).cloned().unwrap_or(key);
-                let args = state.atom_subst.get(&args).cloned().unwrap_or(args);
-                Gc::new(&state.ctx, Term::Throw(Throw::Throw(key, args), src))
-            }
-
-            Throw::Value(val, subr_and_message) => {
-                let val = state.atom_subst.get(&val).cloned().unwrap_or(val);
-                let subr_and_message = state
-                    .atom_subst
-                    .get(&subr_and_message)
-                    .cloned()
-                    .unwrap_or(subr_and_message);
-                Gc::new(
-                    &state.ctx,
-                    Term::Throw(Throw::Value(val, subr_and_message), src),
-                )
-            }
-
-            Throw::ValueAndData(val, subr_and_message) => {
-                let val = state.atom_subst.get(&val).cloned().unwrap_or(val);
-                let subr_and_message = state
-                    .atom_subst
-                    .get(&subr_and_message)
-                    .cloned()
-                    .unwrap_or(subr_and_message);
-                Gc::new(
-                    &state.ctx,
-                    Term::Throw(Throw::ValueAndData(val, subr_and_message), src),
-                )
-            }
-        },
 
         Term::App(fun, ret_cp, ret_ep, args, src) => {
             let retc = state.var_subst.get(&ret_cp).copied().unwrap_or(ret_cp);

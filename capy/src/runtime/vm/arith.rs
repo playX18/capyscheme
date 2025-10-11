@@ -35,7 +35,9 @@ native_fn!(
 
     pub ("quotient") fn quotient<'gc>(nctx, x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
         if y.is_zero() {
-            todo!()
+            let x = x.into_value(nctx.ctx);
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("quotient", "division by zero", Some(y), Some(2), 2, &[x, y]);
         }
 
         let result = Number::quotient(nctx.ctx, x, y);
@@ -45,7 +47,9 @@ native_fn!(
 
     pub ("remainder") fn remainder<'gc>(nctx, x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
         if y.is_zero() {
-            todo!()
+            let x = x.into_value(nctx.ctx);
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("remainder", "division by zero", Some(y), Some(2), 2, &[x, y]);
         }
 
         let result = Number::remainder(nctx.ctx, x, y);
@@ -55,7 +59,9 @@ native_fn!(
 
     pub ("modulo") fn modulo<'gc>(nctx, x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
         if y.is_zero() {
-            todo!()
+            let x = x.into_value(nctx.ctx);
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("modulo", "division by zero", Some(y), Some(2), 2, &[x, y]);
         }
 
         let result = Number::modulo(nctx.ctx, x, y);
@@ -71,10 +77,16 @@ native_fn!(
         }
 
         let mut acc = x;
-
+        let mut position = 1;
         for arg in rest.iter() {
-            let Some(arg) = arg.number() else { todo!() };
+            let Some(arg) = arg.number() else {
+                let mut args = Vec::with_capacity(1 + rest.len());
+                args.push(x.into_value(nctx.ctx));
+                args.extend_from_slice(rest);
+                return nctx.wrong_argument_violation("-", "argument must be a number", Some(arg.clone()), Some(position), args.len(), &args);
+            };
             acc = Number::sub(nctx.ctx, acc, arg);
+            position += 1;
         }
 
         nctx.return_(Ok(acc))
@@ -98,14 +110,20 @@ native_fn!(
         }
 
         if args.len() == 1 {
-            let Some(arg) = args[0].number() else { todo!() };
+            let Some(arg) = args[0].number() else {
+                return nctx.wrong_argument_violation("+", "argument must be a number", Some(args[0].clone()), Some(0), 1, args);
+            };
             return nctx.return_(Ok(arg));
         }
 
-        let Some(mut acc) = args[0].number() else { todo!() };
+        let Some(mut acc) = args[0].number() else {
+            return nctx.wrong_argument_violation("+", "argument must be a number", Some(args[0].clone()), Some(0), args.len(), args);
+         };
 
         for arg in args[1..].iter() {
-            let Some(arg) = arg.number() else { todo!() };
+            let Some(arg) = arg.number() else {
+                return nctx.wrong_argument_violation("+", "argument must be a number", Some(arg.clone()), Some(1), args.len(), args);
+             };
             acc = Number::add(nctx.ctx, acc, arg);
         }
 
@@ -118,14 +136,20 @@ native_fn!(
         }
 
         if args.len() == 1 {
-            let Some(arg) = args[0].number() else { todo!() };
+            let Some(arg) = args[0].number() else {
+                return nctx.wrong_argument_violation("*", "argument must be a number", Some(args[0].clone()), Some(0), 1, args);
+            };
             return nctx.return_(Ok(arg));
         }
 
-        let Some(mut acc) = args[0].number() else { todo!() };
+        let Some(mut acc) = args[0].number() else {
+            return nctx.wrong_argument_violation("*", "argument must be a number", Some(args[0].clone()), Some(0), args.len(), args);
+        };
 
         for arg in args[1..].iter() {
-            let Some(arg) = arg.number() else { todo!() };
+            let Some(arg) = arg.number() else {
+                return nctx.wrong_argument_violation("*", "argument must be a number", Some(arg.clone()), Some(1), args.len(), args);
+            };
             acc = Number::mul(nctx.ctx, acc, arg);
         }
 
@@ -135,17 +159,28 @@ native_fn!(
     pub ("/") fn div<'gc>(nctx, z: Number<'gc>, rest: &'gc [Value<'gc>]) -> Result<Number<'gc>, Value<'gc>> {
         if rest.is_empty() {
             if z.is_zero() {
-                todo!()
+                let z = z.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation("/", "division by zero", Some(z), Some(1), 1, &[z]);
             }
             let one = Number::Fixnum(1);
             let res = Number::div(nctx.ctx, one, z);
             return nctx.return_(Ok(res));
         }
 
-        let Some(mut acc) = rest[0].number() else { todo!() };
+        let Some(mut acc) = rest[0].number() else {
+            let mut args = Vec::with_capacity(1 + rest.len());
+            args.push(z.into_value(nctx.ctx));
+            args.extend_from_slice(rest);
+            return nctx.wrong_argument_violation("/", "argument must be a number", Some(rest[0].clone()), Some(1), args.len(), &args);
+        };
 
         for arg in rest[1..].iter() {
-            let Some(arg) = arg.number() else { todo!() };
+            let Some(arg) = arg.number() else {
+                let mut args = Vec::with_capacity(1 + rest.len());
+                args.push(acc.into_value(nctx.ctx));
+                args.extend_from_slice(rest);
+                return nctx.wrong_argument_violation("/", "argument must be a number", Some(arg.clone()), Some(1), args.len(), &args);
+            };
             acc = Number::div(nctx.ctx, acc, arg);
         }
 
@@ -195,7 +230,8 @@ native_fn!(
 
     pub ("exact-integer-sqrt") fn exact_integer_sqrt<'gc>(nctx, x: Number<'gc>) -> Result<(Number<'gc>, Number<'gc>), Value<'gc>> {
         if !x.is_exact_integer() {
-            todo!()
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("exact-integer-sqrt", "argument must be an exact integer", Some(x), Some(1), 1, &[x]);
         }
         let sqrt = Number::exact_integer_sqrt(nctx.ctx, x);
         nctx.return_(Ok(sqrt))
@@ -218,7 +254,8 @@ native_fn!(
 
     pub ("floor") fn floor<'gc>(nctx, x: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
         if !x.is_real() {
-            todo!()
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("floor", "argument must be a real number", Some(x), Some(1), 1, &[x]);
         }
         let floor = x.floor(nctx.ctx);
         nctx.return_(Ok(floor))
@@ -232,7 +269,10 @@ native_fn!(
         let mut w = w;
 
         for z in rest.iter() {
-            let Some(z) = z.number() else { todo!() };
+            let Some(z) = z.number() else {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("=", "argument must be a number", Some(z.clone()), Some(1), rest.len() + 1, &[w.into_value(ctx)].iter().chain(rest.iter()).cloned().collect::<Vec<_>>().as_slice());
+           };
             if !Number::equal(nctx.ctx, w, z) {
                 return nctx.return_(Ok(false));
             }
@@ -253,7 +293,10 @@ native_fn!(
         let mut w = w;
 
         for z in rest.iter() {
-            let Some(z) = z.number() else { todo!() };
+            let Some(z) = z.number() else {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("<", "argument must be a number", Some(z.clone()), Some(1), rest.len() + 1, &[w.into_value(ctx)].iter().chain(rest.iter()).cloned().collect::<Vec<_>>().as_slice());
+            };
             let cmp = Number::compare(nctx.ctx, w, z);
             if cmp != Some(Ordering::Less) {
                 return nctx.return_(Ok(false));
@@ -275,7 +318,10 @@ native_fn!(
         let mut w = w;
 
         for z in rest.iter() {
-            let Some(z) = z.number() else { todo!() };
+            let Some(z) = z.number() else {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("<=", "argument must be a number", Some(z.clone()), Some(1), rest.len() + 1, &[w.into_value(ctx)].iter().chain(rest.iter()).cloned().collect::<Vec<_>>().as_slice());
+            };
             let cmp = Number::compare(nctx.ctx, w, z);
             if cmp != Some(Ordering::Less) {
                 return nctx.return_(Ok(false));
@@ -297,7 +343,10 @@ native_fn!(
         let mut w = w;
 
         for z in rest.iter() {
-            let Some(z) = z.number() else { todo!() };
+            let Some(z) = z.number() else {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(">", "argument must be a number", Some(z.clone()), Some(1), rest.len() + 1, &[w.into_value(ctx)].iter().chain(rest.iter()).cloned().collect::<Vec<_>>().as_slice());
+            };
             let cmp = Number::compare(nctx.ctx, w, z);
             if cmp != Some(Ordering::Greater) {
                 return nctx.return_(Ok(false));
@@ -319,7 +368,10 @@ native_fn!(
         let mut w = w;
 
         for z in rest.iter() {
-            let Some(z) = z.number() else { todo!() };
+            let Some(z) = z.number() else {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(">=", "argument must be a number", Some(z.clone()), Some(1), rest.len() + 1, &[w.into_value(ctx)].iter().chain(rest.iter()).cloned().collect::<Vec<_>>().as_slice());
+            };
             let cmp = Number::compare(nctx.ctx, w, z);
             if cmp == Some(Ordering::Less) || cmp.is_none() {
                 return nctx.return_(Ok(false));

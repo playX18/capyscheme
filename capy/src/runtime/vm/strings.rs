@@ -7,6 +7,30 @@ use crate::runtime::prelude::*;
 native_fn!(
     register_str_fns:
 
+    pub ("string=?") fn string_equal<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string=?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let s1 = s1.downcast::<Str>();
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string=?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
+            if s1 != s2 {
+                return nctx.return_(false);
+            }
+        }
+        nctx.return_(true)
+    }
+
+
+
     pub ("string-length") fn string_length<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> usize {
         let len = str.len();
         nctx.return_(len)
@@ -20,7 +44,7 @@ native_fn!(
 
         if strs.len() == 1 {
             if !strs[0].is::<Str>() {
-                todo!()
+                return nctx.wrong_argument_violation("string-append", "expected a string", Some(strs[0]), Some(1), 1, &[strs[0]]);
             }
 
             return nctx.return_(Ok(strs[0].downcast::<Str>()));
@@ -29,9 +53,9 @@ native_fn!(
 
         let mut buffer = String::new();
 
-        for str in strs.iter() {
+        for (i, str) in strs.iter().enumerate() {
             if !str.is::<Str>() {
-                todo!()
+                return nctx.wrong_argument_violation("string-append", "expected a string", Some(*str), Some(i), strs.len(), &strs);
             }
 
             buffer.push_str(&str.downcast::<Str>().to_string());
@@ -48,7 +72,7 @@ native_fn!(
 
         if syms.len() == 1 {
             if !syms[0].is::<Symbol>() {
-                todo!()
+                return nctx.wrong_argument_violation("symbol-append", "expected a symbol", Some(syms[0]), Some(1), 1, &[syms[0]]);
             }
 
             return nctx.return_(Ok(syms[0].downcast::<Symbol>()));
@@ -57,9 +81,9 @@ native_fn!(
 
         let mut buffer = String::new();
 
-        for sym in syms.iter() {
+        for (i, sym) in syms.iter().enumerate() {
             if !sym.is::<Symbol>() {
-                todo!()
+                return nctx.wrong_argument_violation("symbol-append", "expected a symbol", Some(*sym), Some(i), syms.len(), &syms);
             }
 
             buffer.push_str(&sym.downcast::<Symbol>().to_string());

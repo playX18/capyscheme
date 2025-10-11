@@ -158,8 +158,6 @@ impl<'gc> Term<'gc> {
                         body.common_return_cont(ns, ignore)
                     }
                 }
-
-                _ => body.common_return_cont(ns, ignore),
             },
 
             Self::Letk(ks, body) => ks
@@ -546,8 +544,6 @@ impl<'gc> Term<'gc> {
                     },
                 )
             }
-
-            Term::Throw(val, data) => TermRef::new(&ctx, Term::Throw(*val, *data)),
         }
     }
 }
@@ -604,7 +600,6 @@ impl<'gc> Expression<'gc> {
                 let h = subst.get(&h).copied().unwrap_or(h);
                 Self::PrimCall(name, args, h, src)
             }
-            _ => self,
         }
     }
 }
