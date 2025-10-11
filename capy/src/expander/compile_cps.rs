@@ -387,6 +387,22 @@ pub fn t_c<'a, 'gc>(
             h,
         ),
 
+        TermKind::PrimRef(name) => module_box(
+            cps,
+            |cps, var| {
+                with_cps!(cps;
+                    let val = #% "variable-ref" (h, var) @ src;
+                    continue k (Atom::Local(val)) @ src
+                )
+            },
+            h,
+            list!(cps.ctx, Value::new(Symbol::from_str(cps.ctx, "capy"))),
+            name,
+            true,
+            true,
+            src,
+        ),
+
         TermKind::Define(_, var, val) => with_cps!(cps;
             @tk (h) atom = val;
             let rv = #% "define" (h, Atom::Constant(var), atom[0]) @ src;
@@ -479,7 +495,7 @@ pub fn t_c<'a, 'gc>(
             )
         }
 
-        _ => todo!(),
+        _ => todo!("{:?}", form),
     }
 }
 
