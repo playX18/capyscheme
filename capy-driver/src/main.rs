@@ -1,67 +1,19 @@
-use capy::runtime::{
-    Scheme,
-    modules::{current_module, root_module},
-    vm::{VMResult, call_scheme, load::load_thunk_in_vicinity},
+use capy::{
+    init_scheme,
+    runtime::{
+        modules::public_ref,
+        vm::{base::get_program_arguments_fluid, call_scheme},
+    },
 };
 
 fn main() {
     env_logger::init();
-    let scm = Scheme::new();
+    let scm = init_scheme();
 
-    let mut did_yield = scm.enter(|ctx| {
-        current_module(ctx).set(ctx, (*root_module(ctx)).into());
-        let start = std::time::Instant::now();
-        let thunk = load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>)
-            .expect("Failed to load boot/main.scm");
-        println!("load thunk in {}ms", start.elapsed().as_millis());
-        let start = std::time::Instant::now();
-        let result = call_scheme(ctx, thunk, []);
-        let duration = start.elapsed();
-        println!(
-            "Execution time: {:.4}ms",
-            duration.as_micros() as f64 / 1000.0
-        );
+    scm.enter(|ctx| {
+        let entry = public_ref(ctx, "boot cli", "enter");
 
-        match result {
-            VMResult::Ok(val) => {
-                println!("Program finished with value: {}", val);
-            }
-            VMResult::Err(err) => {
-                println!("Program terminated with error: {}", err);
-            }
-            VMResult::Yield => {
-                println!("Program yielded");
-                return true;
-            }
-        }
-
-        false
+        let args = get_program_arguments_fluid(ctx);
+        call_scheme(ctx, entry.expect("malformed installation"), [args]);
     });
-
-    while did_yield {
-        did_yield = scm.enter(|ctx| {
-            println!("will-resume={}", ctx.has_suspended_call());
-            if ctx.has_suspended_call() {
-                match ctx.resume_suspended_call() {
-                    VMResult::Ok(val) => {
-                        println!("Resumed program finished with value: {}", val);
-                        false
-                    }
-                    VMResult::Err(err) => {
-                        println!("Resumed program terminated with error: {}", err);
-                        false
-                    }
-                    VMResult::Yield => {
-                        println!("Resumed program yielded");
-                        if ctx.take_yieldpoint() != 0 {
-                            println!("took yieldpoint");
-                        }
-                        true
-                    }
-                }
-            } else {
-                false
-            }
-        })
-    }
 }
