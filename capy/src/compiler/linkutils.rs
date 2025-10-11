@@ -74,21 +74,16 @@ impl Linker {
 
 /// Given command add rlpath linker flags to it.
 fn rlpaths(command: &mut Command) {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_dir = manifest_dir.parent().unwrap_or(manifest_dir);
-    {
-        let profile = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        };
-        let target_dir = workspace_dir.join("target").join(profile);
+    if cfg!(feature = "portable") {
         if cfg!(target_os = "macos") {
-            command.arg("-rpath").arg(target_dir.to_str().unwrap());
+            command.arg("-rpath").arg("@loader_path/");
         } else {
-            command.arg("--rpath").arg(target_dir.to_str().unwrap());
+            command.arg("--rpath").arg("$ORIGIN/");
         }
-
-        command.arg("-L").arg(target_dir.to_str().unwrap());
+        let exe = std::env::current_exe().expect("Failed to get current exe path");
+        let dir = exe
+            .parent()
+            .expect("Failed to get parent directory of current exe");
+        command.arg("-L").arg(dir);
     }
 }

@@ -11,7 +11,14 @@ cranelift-object.workspace = true
 target-lexicon.workspace = true
 cranelift-module.workspace = true
 cranelift-codegen.workspace = true
-mimalloc.workspace = true
 cranelift-jit.workspace = true
 cranelift.workspace = true
 env_logger.workspace = true
+
+[features]
+portable = ["capy/portable"]
+default = ["portable"]
+
+[[bin]]
+name = "capy"
+path = "src/main.rs"
