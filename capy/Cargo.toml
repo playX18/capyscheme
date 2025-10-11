@@ -1,0 +1,52 @@
+[package]
+name = "capy"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ariadne.workspace = true
+atomic.workspace = true
+bitflags.workspace = true
+bytemuck.workspace = true
+easy-bitfield.workspace = true
+env_logger.workspace = true
+libm.workspace = true
+num-bigint.workspace = true
+rand.workspace = true
+rsgc.workspace = true
+simplehash.workspace = true
+num.workspace = true
+tree-sitter.workspace = true
+tree-sitter-scheme.workspace = true
+paste.workspace = true
+pretty.workspace = true
+hashlink.workspace = true
+petgraph.workspace = true
+libc.workspace = true
+cranelift-jit.workspace = true
+cranelift.workspace = true
+cranelift-codegen.workspace = true
+cranelift-module.workspace = true
+cranelift-object.workspace = true
+libloading.workspace = true
+sha3.workspace = true
+hex.workspace = true
+log.workspace = true
+gimli.workspace = true
+target-lexicon.workspace = true
+object.workspace = true
+addr2line.workspace = true
+memmap2.workspace = true
+probe.workspace = true
+lexical.workspace = true
+findshlibs.workspace = true
+backtrace.workspace = true
+which.workspace = true
+libffi.workspace = true
+unicode-general-category.workspace = true
+
+[lib]
+crate-type = ["dylib"]
+
+[features]
+portable = []
