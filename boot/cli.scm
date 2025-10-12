@@ -94,6 +94,8 @@
                 ((current-exception-printer) c)
                 (exit 1))
             (lambda ()
+                (unless (null? load-path)
+                    (set! %load-path (append (reverse load-path) %load-path)))
                 (eval `(begin 
                     ,@(reverse out)
                     ,(if interactive? 

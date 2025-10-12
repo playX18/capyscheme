@@ -277,7 +277,6 @@ impl<'gc> Module<'gc> {
 
             while uses.is_pair() {
                 let iface = uses.car().downcast::<Module>();
-
                 let var = iface.variable(ctx, sym);
                 if let Some(var) = var {
                     self.import_obarray.put(ctx, sym, var);

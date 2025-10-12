@@ -105,7 +105,7 @@ pub fn compile_file<'gc>(
         )
     })?;
     let src = Str::new(&ctx, file.display().to_string(), true);
-    let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into());
+    let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), false);
 
     let program = parser.read_program().map_err(|err| {
         make_lexical_violation(&ctx, "compile-file", err.to_string(file.display()))

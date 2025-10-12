@@ -61,6 +61,13 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
             path,
         );
 
+        let batteris_dir = exe_dir.join("batteries");
+        path = Value::cons(
+            ctx,
+            Str::new(&ctx, &batteris_dir.to_string_lossy(), true).into(),
+            path,
+        );
+
         let _cpath = exe_dir.join("compiled");
         cpath = Value::cons(
             ctx,
@@ -248,6 +255,7 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
+    _stx: bool,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let filename = filename.as_ref();
     let (source, compiled) = match find_path_to(ctx, filename, in_vicinity, resolve_relative)? {
@@ -346,7 +354,7 @@ native_fn!(
         ) -> Result<Value<'gc>, Value<'gc>> {
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
         let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<true>(nctx.ctx, filename, in_vicinity, resolve_relative);
+        let result = load_thunk_in_vicinity::<true>(nctx.ctx, filename, in_vicinity, resolve_relative, false);
 
         nctx.return_(result)
     }
@@ -366,7 +374,7 @@ native_fn!(
     {
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
         let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative);
+        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative, true);
 
         match result {
             Ok(thunk) => {
@@ -409,7 +417,7 @@ native_fn!(
                     Err(err) => return nctx.return_(Err(err))
                 };
                 let src = Str::new(&ctx, &file, true);
-                let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into());
+                let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
 
                 let program = match parser.read_program().map_err(|err| {
                     make_lexical_violation(&ctx, "compile-file", err.to_string(&file))

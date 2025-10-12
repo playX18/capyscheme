@@ -2117,11 +2117,8 @@ thunks! {
 
         match n {
             Ok(n) => ThunkResult { code: 0, value: n.to_vm_number(*ctx).into_value(*ctx) },
-            Err(_) => ThunkResult { code: 1, value: make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "string->number").into(),
-                Str::new(ctx, "not a number", true).into(),
-                &[s.into()],
-            ) }
+            Err(_) => return ThunkResult { code: 0, value: Value::new(false) }
+
         }
     }
 

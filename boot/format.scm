@@ -144,8 +144,8 @@
 		      (write (car args) port)
 		      (format-loop (+ i 2) (cdr args)))
                      ((char=? c #\,)
-                      (let-values (((width side spec i)
-                                    (get-field-width (+ i 2))))
+                      (receive (width side spec i)
+                               (get-field-width (+ i 2))
                         (case spec
                           ((#\f) 
                            (display (list (car args) width)) (newline)
@@ -154,8 +154,8 @@
                           (else 
                            (format-error)))))
                      ((char-numeric? c)
-                      (let-values (((width side spec i) 
-                                    (get-field-width (+ i 1))))
+                      (receive (width side spec i) 
+                                    (get-field-width (+ i 1))
                         (case spec
                           ((#\a) 
                            (format-justified width side (car args) display)
@@ -164,8 +164,8 @@
                            (format-justified width side (car args) write)
                            (format-loop i (cdr args)))
                           ((#\,)
-                           (let-values (((width2 side2 spec2 i2)
-                                         (get-field-width i)))
+                           (receive (width2 side2 spec2 i2)
+                                         (get-field-width i)
                              (case spec2
                                ((#\f)
                                 (format-justified width 'right

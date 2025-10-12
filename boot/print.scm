@@ -183,7 +183,8 @@
                 (display "#<syntax " p)
                 (display (syntax-expression x))
                 (display " at " p)
-                (display (syntax-sourcev x) p)]
+                (display (syntax-sourcev x) p)
+                (display ">" p)]
             [(module? x)
                 (display "#<module " p)
                 (display (module-name x) p)

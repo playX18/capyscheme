@@ -123,10 +123,7 @@
           (file-io/install-port-position-as-binary! p data)
           (file-io/remember p)
           p)
-        (begin (raise-r6rs-exception (make-i/o-filename-error filename)
-                                     'file-io/open-file
-                                     (errmsg 'msg:openerror)
-                                     (list filename io-mode))
+        (begin (raise-i/o-filename-error 'open-file "file not found" filename)
                #t))))
 
 ; The R6RS says it's supposed to ignore the file options,
