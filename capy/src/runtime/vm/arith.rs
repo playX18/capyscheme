@@ -964,6 +964,19 @@ native_fn!(
             nctx.return_(obj.to_inexact(ctx).into_value(ctx))
         }
     }
+
+    pub ("fxmod") fn fx_mod<'gc>(nctx, x: i32, y: i32) -> i32 {
+        if y == 0 {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.wrong_argument_violation("fxmod", "division by zero", Some(y), Some(2), 2, &[x, y]);
+        }
+        // (fx- x (fx* (fxdiv x y) y))
+        let r = x - ((x / y) * y);
+        nctx.return_(r)
+    }
+
 );
 
 pub(crate) fn init<'gc>(ctx: Context<'gc>) {

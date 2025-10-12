@@ -39,7 +39,7 @@ impl<'gc> DebugContext<'gc> {
     pub(crate) fn new(reify_info: &ReifyInfo<'gc>, isa: &dyn TargetIsa) -> Self {
         let encoding = Encoding {
             format: Format::Dwarf32,
-            version: 4,
+            version: 5,
             address_size: isa.frontend_config().pointer_bytes() as u8,
         };
 

@@ -106,7 +106,7 @@ pub fn read_from_string<'gc>(
     filename: impl AsRef<str>,
 ) -> Result<Value<'gc>, LexicalError<'gc>> {
     let filename = Str::new(&ctx, filename, true);
-    let tree_sitter = TreeSitter::new(ctx, source.as_ref(), filename.into());
+    let tree_sitter = TreeSitter::new(ctx, source.as_ref(), filename.into(), false);
     let program = tree_sitter.read_program()?;
 
     let mut ls = Value::null();

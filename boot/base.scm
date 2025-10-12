@@ -888,3 +888,38 @@
   (syntax-rules ()
     ((unless test body ...)
      (if test #f (begin body ...)))))
+
+
+(define call-with-include-port 
+  (let ([syntax-dirname
+    (lambda (stx)
+      (define src (syntax-source stx))
+      (define filename (if (vector? src) (vector-ref src 0) (and src (assq-ref src 'filename))))
+      (if filename 
+        (dirname filename)
+        #f))])
+    (lambda (filename proc)
+      (define dir (syntax-dirname filename))
+      (define file (syntax->datum filename))
+      (define path 
+        (cond 
+          [(absolute-path-string? file) file]
+          [(string? dir) (string-append dir "/" file)]
+          [else file]))
+      (call-with-input-file
+        path
+        proc))))
+
+(define-syntax include 
+  (lambda (stx)
+    (syntax-case stx ()
+      [(include filename)
+        (call-with-include-port 
+          #'filename
+          (lambda (port)
+            (cons #'begin 
+              (let lp ()
+                (let ([x (read-syntax port)])
+                  (if (eof-object? (syntax-expression x))
+                      '()
+                      (cons (datum->syntax #'filename x) (lp))))))))])))

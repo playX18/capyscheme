@@ -13,6 +13,14 @@ static_symbols!(
 native_fn!(
     register_io_fns:
 
+    pub ("dirname") fn dirname<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        let p = std::path::PathBuf::from(path.to_string());
+        let dir = p.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let s = dir.to_string_lossy();
+        let ctx = nctx.ctx;
+        nctx.return_(Str::new(&ctx, &s, true))
+    }
+
     pub ("getcwd") fn getcwd<'gc>(nctx) -> Gc<'gc, Str<'gc>> {
         let buf = std::env::current_dir().unwrap_or_default();
         let s = buf.to_string_lossy();

@@ -11,8 +11,7 @@
            [rcd (make-record-constructor-descriptor rtd #f #f)])
         (make-record-type '<reader> rtd rcd)))
 
-(define foobar #f)
-(define (xxx) 'foo)
+
 (define reader? (record-predicate (record-type-rtd <reader>)))
 (define %make-reader (record-constructor (record-type-rcd <reader>)))
 (define reader-port (record-accessor (record-type-rtd <reader>) 0))
@@ -55,7 +54,7 @@
 (define (reader-source r)
     (vector (reader-file r) (reader-saved-line r) (reader-saved-column r)))
 (define (annotate source stripped datum)
-    (%make-annotation datum source stripped))
+    (datum->syntax #f datum source))
 
 (define (make-reader port file)
     (%make-reader port file 1 0 1 0 #f 'rnrs #f))
@@ -423,7 +422,7 @@
                            (column (reader-saved-column p)))
                        (values 'shebang `(,line ,column ,(get-line p)))))
                     ((and (char? next-char) (char-alphabetic? next-char))
-                     (let-values (((type id) (get-token p)))
+                     (receive (type id) (get-token p)
                        (cond
                          ((eq? type 'identifier)
                           (case id
@@ -733,7 +732,7 @@
       r
       (begin 
         (let ([reader (make-reader port (or fn (port-name port)))])
-          (reader-mode-set! reader 'r6rs)
+          (reader-mode-set! reader 'r7rs)
           (io/port-reader-set! port reader)
           reader)))))
       
@@ -743,3 +742,8 @@
 (define (read . rest)
   (let ([p (if (null? rest) (current-input-port) (car rest))])
     (get-datum p)))
+
+(define (read-syntax . rest)
+  "Read a datum with source annotations. Produces #<syntax> objects."
+  (define port (if (null? rest) (current-input-port) (car rest)))
+  (read-annotated (get-port-reader port #f)))

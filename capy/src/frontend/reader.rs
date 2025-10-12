@@ -6,10 +6,11 @@ use tree_sitter::Node;
 use crate::{
     expander::add_source,
     frontend::num::{NumberParseError, parse_number},
-    list,
+    global, list,
     runtime::{
         Context,
-        value::{ByteVector, IntoValue, ScmHeader, Str, Symbol, Tagged, TypeCode8, Value},
+        value::{ByteVector, IntoValue, ScmHeader, Str, Symbol, Tagged, TypeCode8, Value, Vector},
+        vm::syntax::Syntax,
     },
 };
 
@@ -116,10 +117,12 @@ pub struct TreeSitter<'a, 'gc> {
     text: &'a str,
     tree: tree_sitter::Tree,
     source_file: Value<'gc>,
+    #[allow(dead_code)]
+    wrap_stx: bool,
 }
 
 impl<'a, 'gc> TreeSitter<'a, 'gc> {
-    pub fn new(ctx: Context<'gc>, text: &'a str, source_file: Value<'gc>) -> Self {
+    pub fn new(ctx: Context<'gc>, text: &'a str, source_file: Value<'gc>, wrap_stx: bool) -> Self {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter::Language::new(tree_sitter_scheme::LANGUAGE))
@@ -128,6 +131,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         let tree = parser.parse(text, None).unwrap();
 
         Self {
+            wrap_stx,
             ctx,
             text,
             tree,
@@ -229,7 +233,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                             let vec = Value::list_to_vector(head, self.ctx);
 
                             self.annotate(vec.into(), &child);
-                            return Ok(vec.into());
+                            return Ok(self.wrap(node, vec.into()));
                         }
 
                         CompoundType::Bytevector => {
@@ -252,12 +256,12 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                             self.annotate(bv.into(), &child);
 
-                            return Ok(bv.into());
+                            return Ok(self.wrap(node, bv.into()));
                         }
 
                         CompoundType::List => {
                             self.annotate(head, &child);
-                            return Ok(head.into());
+                            return Ok(self.wrap(node, head));
                         }
                     },
 
@@ -290,7 +294,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                             self.annotate(head, &next);
 
-                            return Ok(head);
+                            return Ok(self.wrap(node, head));
                         } else {
                             return Err(LexicalError::InvalidSyntax { span: src.0 });
                         }
@@ -360,14 +364,72 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                             Some('v') => result.push('\u{0B}'), // vertical tab
                             Some('f') => result.push('\u{0C}'), // form feed
                             Some('x') => {
-                                // Hex escape sequence \xNN;
+                                // Hex escape sequence \xHH
                                 let mut hex_digits = String::new();
-                                while let Some(hex_ch) = chars.next() {
-                                    if hex_ch == ';' {
-                                        break;
+                                for _ in 0..2 {
+                                    if let Some(hex_ch) = chars.next() {
+                                        if hex_ch.is_ascii_hexdigit() {
+                                            hex_digits.push(hex_ch);
+                                        } else {
+                                            return Err(LexicalError::InvalidSyntax {
+                                                span: src.0,
+                                            });
+                                        }
+                                    } else {
+                                        return Err(LexicalError::InvalidSyntax { span: src.0 });
                                     }
-                                    if hex_ch.is_ascii_hexdigit() {
-                                        hex_digits.push(hex_ch);
+                                }
+                                if let Ok(code_point) = u32::from_str_radix(&hex_digits, 16) {
+                                    if let Some(unicode_char) = char::from_u32(code_point) {
+                                        result.push(unicode_char);
+                                    } else {
+                                        return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                    }
+                                } else {
+                                    return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                }
+                            }
+                            // \uHHHH
+                            // Character code given by four hexadecimal digits. For example \u0100 for a capital A with macron (U+0100).
+                            Some('u') => {
+                                let mut hex_digits = String::new();
+                                for _ in 0..4 {
+                                    if let Some(hex_ch) = chars.next() {
+                                        if hex_ch.is_ascii_hexdigit() {
+                                            hex_digits.push(hex_ch);
+                                        } else {
+                                            return Err(LexicalError::InvalidSyntax {
+                                                span: src.0,
+                                            });
+                                        }
+                                    } else {
+                                        return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                    }
+                                }
+                                if let Ok(code_point) = u32::from_str_radix(&hex_digits, 16) {
+                                    if let Some(unicode_char) = char::from_u32(code_point) {
+                                        result.push(unicode_char);
+                                    } else {
+                                        return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                    }
+                                } else {
+                                    return Err(LexicalError::InvalidSyntax { span: src.0 });
+                                }
+                            }
+
+                            // \UHHHHHH
+                            // Character code given by six hexadecimal digits. For example \U010402.
+                            Some('U') => {
+                                let mut hex_digits = String::new();
+                                for _ in 0..6 {
+                                    if let Some(hex_ch) = chars.next() {
+                                        if hex_ch.is_ascii_hexdigit() {
+                                            hex_digits.push(hex_ch);
+                                        } else {
+                                            return Err(LexicalError::InvalidSyntax {
+                                                span: src.0,
+                                            });
+                                        }
                                     } else {
                                         return Err(LexicalError::InvalidSyntax { span: src.0 });
                                     }
@@ -398,7 +460,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 }
 
                 let string = Str::new(&self.ctx, &result, false);
-                Ok(string.into())
+                Ok(self.wrap(node, string.into()))
             }
 
             "number" => {
@@ -554,7 +616,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         }
                     })?;
 
-                    return Ok(Value::new(ch).into());
+                    return Ok(self.wrap(node, Value::new(ch).into()));
                 }
 
                 const NAMED_CHARS: &[(&str, char)] = &[
@@ -572,7 +634,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 for (name, character) in NAMED_CHARS {
                     if let Some(_) = rest.strip_prefix(name) {
-                        return Ok(Value::new(*character));
+                        return Ok(self.wrap(node, Value::new(*character).into()));
                     }
                 }
 
@@ -584,7 +646,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                             character: ' ',
                         })?;
 
-                return Ok(Value::new(character).into());
+                return Ok(self.wrap(node, Value::new(character).into()));
             }
 
             "vector" => {
@@ -600,6 +662,28 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 self.source_file
             ),
         }
+    }
+
+    pub fn wrap(&self, node: &Node, val: Value<'gc>) -> Value<'gc> {
+        if !self.wrap_stx {
+            return val;
+        }
+        global!(
+            empty_wrap<'gc>: Value<'gc> = (ctx) list!(ctx, Value::null());
+        );
+        let filename = self.source_file;
+        let line = node.start_position().row as i32;
+        let column = node.start_position().column as i32;
+        let v = Vector::from_slice(&self.ctx, &[filename, line.into(), column.into()]);
+
+        let stx = Syntax::new(
+            self.ctx,
+            val,
+            *empty_wrap(self.ctx),
+            Value::new(false),
+            v.into(),
+        );
+        stx.into()
     }
 }
 

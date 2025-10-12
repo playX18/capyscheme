@@ -111,14 +111,14 @@
 
 ; Read-char has been re-coded in MAL for performance; see Lib/malcode.mal.
 ;
-;(define (read-char . rest)
-;  (cond ((null? rest)
-;        (io/read-char (current-input-port)))
-;       ((null? (cdr rest))
-;        (io/read-char (car rest)))
-;       (else
-;        (error "read-char: too many arguments.")
-;        #t)))
+(define (read-char . rest)
+  (cond ((null? rest)
+        (io/read-char (current-input-port)))
+       ((null? (cdr rest))
+        (io/read-char (car rest)))
+       (else
+        (error 'read-char "too many arguments.")
+        #t)))
 
 (define (peek-char . rest)
   (cond ((null? rest)

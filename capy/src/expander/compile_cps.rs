@@ -156,6 +156,16 @@ pub fn t_k<'a, 'gc>(
         }
 
         TermKind::Proc(proc) => {
+            if cps.current_topbox_scope.is_some() {
+                let tmp = cps.fresh_variable("proc");
+                let func = cps_func(cps, &proc, tmp);
+                let body = fk(cps, &[Atom::Local(tmp)]);
+                return Gc::new(
+                    &cps.ctx,
+                    Term::Fix(Array::from_slice(&cps.ctx, &[func]), body),
+                );
+            }
+
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
             let id = cps.current_topbox_scope.unwrap();
@@ -164,15 +174,9 @@ pub fn t_k<'a, 'gc>(
                 src,
                 id,
                 |cps| {
-                    let tmp = cps.fresh_variable("proc");
-                    let func = cps_func(cps, &proc, tmp);
+                    let t = t_k(cps, form, fk, h);
                     cps.current_topbox_scope = prev;
-                    let body = fk(cps, &[Atom::Local(tmp)]);
-
-                    Gc::new(
-                        &cps.ctx,
-                        Term::Fix(Array::from_slice(&cps.ctx, &[func]), body),
-                    )
+                    t
                 },
                 h,
             )
@@ -265,6 +269,24 @@ pub fn t_k<'a, 'gc>(
         ),
 
         TermKind::Fix(fix) => {
+            if cps.current_topbox_scope.is_some() {
+                let funcs = fix
+                    .lhs
+                    .iter()
+                    .zip(fix.rhs.iter())
+                    .map(|(binding, func)| {
+                        let func = cps_func(cps, func, *binding);
+                        func
+                    })
+                    .collect::<Vec<_>>();
+
+                let body = t_k(cps, fix.body, fk, h);
+
+                return Gc::new(
+                    &cps.ctx,
+                    Term::Fix(Array::from_slice(&cps.ctx, &funcs), body),
+                );
+            }
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
             let id = cps.current_topbox_scope.unwrap();
@@ -273,22 +295,9 @@ pub fn t_k<'a, 'gc>(
                 src,
                 id,
                 |cps| {
-                    let funcs = fix
-                        .lhs
-                        .iter()
-                        .zip(fix.rhs.iter())
-                        .map(|(binding, func)| {
-                            let func = cps_func(cps, func, *binding);
-                            func
-                        })
-                        .collect::<Vec<_>>();
+                    let form = t_k(cps, form, fk, h);
                     cps.current_topbox_scope = prev;
-                    let body = t_k(cps, fix.body, fk, h);
-
-                    Gc::new(
-                        &cps.ctx,
-                        Term::Fix(Array::from_slice(&cps.ctx, &funcs), body),
-                    )
+                    form
                 },
                 h,
             )
@@ -308,6 +317,24 @@ pub fn t_c<'a, 'gc>(
 
     match form.kind {
         TermKind::Fix(fix) => {
+            if cps.current_topbox_scope.is_some() {
+                let funcs = fix
+                    .lhs
+                    .iter()
+                    .zip(fix.rhs.iter())
+                    .map(|(binding, func)| {
+                        let func = cps_func(cps, func, *binding);
+                        func
+                    })
+                    .collect::<Vec<_>>();
+
+                let body = t_c(cps, fix.body, k, h);
+
+                return Gc::new(
+                    &cps.ctx,
+                    Term::Fix(Array::from_slice(&cps.ctx, &funcs), body),
+                );
+            }
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
             let id = cps.current_topbox_scope.unwrap();
@@ -316,22 +343,9 @@ pub fn t_c<'a, 'gc>(
                 src,
                 id,
                 |cps| {
-                    let funcs = fix
-                        .lhs
-                        .iter()
-                        .zip(fix.rhs.iter())
-                        .map(|(binding, func)| {
-                            let func = cps_func(cps, func, *binding);
-                            func
-                        })
-                        .collect::<Vec<_>>();
-
-                    let body = t_c(cps, fix.body, k, h);
+                    let form = t_c(cps, form, k, h);
                     cps.current_topbox_scope = prev;
-                    Gc::new(
-                        &cps.ctx,
-                        Term::Fix(Array::from_slice(&cps.ctx, &funcs), body),
-                    )
+                    form
                 },
                 h,
             )
@@ -359,6 +373,15 @@ pub fn t_c<'a, 'gc>(
         ),
 
         TermKind::Proc(proc) => {
+            if cps.current_topbox_scope.is_some() {
+                let tmp = cps.fresh_variable("proc");
+                let func = cps_func(cps, &proc, tmp);
+                let body = with_cps!(cps; continue k (Atom::Local(tmp)) @ src);
+                return Gc::new(
+                    &cps.ctx,
+                    Term::Fix(Array::from_slice(&cps.ctx, &[func]), body),
+                );
+            }
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
             let id = cps.current_topbox_scope.unwrap();
@@ -367,13 +390,9 @@ pub fn t_c<'a, 'gc>(
                 src,
                 id,
                 |cps| {
-                    let tmp = cps.fresh_variable("proc");
-
-                    let func = cps_func(cps, &proc, tmp);
-                    let t = with_cps!(cps; continue k (Atom::Local(tmp)) @ src);
-                    let body = Term::Fix(Array::from_slice(&cps.ctx, &[func]), t);
+                    let form = t_c(cps, form, k, h);
                     cps.current_topbox_scope = prev;
-                    Gc::new(&cps.ctx, body)
+                    form
                 },
                 h,
             )

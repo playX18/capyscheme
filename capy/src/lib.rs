@@ -52,8 +52,9 @@ pub fn init_scheme() -> Scheme {
     let mut did_yield = scm.enter(|ctx| {
         current_module(ctx).set(ctx, (*root_module(ctx)).into());
 
-        let thunk = load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false)
-            .expect("Failed to load boot/main.scm");
+        let thunk =
+            load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, false)
+                .expect("Failed to load boot/main.scm");
 
         let result = call_scheme(ctx, thunk, []);
 

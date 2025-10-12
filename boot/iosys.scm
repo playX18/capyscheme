@@ -1941,8 +1941,6 @@
              (lim  (tuple-ref p port.mainlim)))
          (define (loop i j)
            (cond ((< i k)
-                  (unless (char? c)
-                    (error 'put-string "not a character" c))
                   (let* ((c (string-ref s i))
                          (sv (char->integer c)))
                     (if (and (< 10 sv)    ; 10 = #\newline

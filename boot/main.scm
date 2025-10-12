@@ -985,6 +985,21 @@
           (and (pair? message) (make-message-condition (car message))))))
     #f))
 
+
+
+(define raise-i/o-filename-error
+  (lambda (who message filename . irritants)
+    (raise
+      (apply
+        condition
+        (filter
+          values
+          (list
+            (make-i/o-filename-error filename)
+            (and who (make-who-condition who))
+            (make-message-condition message)
+            (and (pair? irritants) (make-irritants-condition irritants))))))))
+
 (define raise-i/o-error
   (lambda (who message . irritants)
     (raise
@@ -997,6 +1012,69 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (and (pair? irritants) (make-irritants-condition irritants))))))))
+
+(define raise-misc-i/o-error-with-port
+  (lambda (constructor who message port . options)
+    (raise
+      (apply
+        condition
+        (filter
+          values
+          (list
+            (apply constructor options)
+            (and who (make-who-condition who))
+            (make-message-condition message)
+            (and port (make-i/o-port-error port))
+            (make-irritants-condition (cons* port options))))))))
+
+(define raise-misc-i/o-error
+  (lambda (constructor who message . options)
+    (raise
+      (apply
+        condition
+        (filter
+          values
+          (list
+            (apply constructor options)
+            (and who (make-who-condition who))
+            (make-message-condition message)
+            (and (pair? options) (make-irritants-condition options))))))))
+
+(define raise-i/o-read-error
+  (lambda (who message port)
+    (raise-misc-i/o-error-with-port make-i/o-read-error who message port)))
+
+(define raise-i/o-write-error
+  (lambda (who message port)
+    (raise-misc-i/o-error-with-port make-i/o-write-error who message port)))
+
+(define raise-i/o-file-protection-error
+  (lambda (who message filename)
+    (raise-misc-i/o-error make-i/o-file-protection-error who message filename)))
+
+(define raise-i/o-file-is-read-only-error
+  (lambda (who message port)
+    (raise-misc-i/o-error-with-port make-i/o-file-is-read-only-error who message port)))
+
+(define raise-i/o-file-already-exists-error
+  (lambda (who message filename)
+    (raise-misc-i/o-error make-i/o-file-already-exists-error who message filename)))
+
+(define raise-i/o-file-does-not-exist-error
+  (lambda (who message filename)
+    (raise-misc-i/o-error make-i/o-file-does-not-exist-error who message filename)))
+
+(define raise-i/o-invalid-position-error
+  (lambda (who message port position)
+    (raise-misc-i/o-error-with-port make-i/o-invalid-position-error who message port position)))
+
+(define raise-i/o-decoding-error
+  (lambda (who message port)
+    (raise-misc-i/o-error make-i/o-decoding-error who message port)))
+
+(define raise-i/o-encoding-error
+  (lambda (who message port char)
+    (raise-misc-i/o-error make-i/o-encoding-error who message port char)))
 (define .make-io-error
   (lambda (who message . irritants)
     (if (or (not who) (string? who) (symbol? who))
@@ -1199,7 +1277,7 @@
                         out
                         (cons iface out))))))])
 
-    (set-module-uses! module (append cur new))
+    (set-module-uses! module (append new cur))
     (core-hash-clear! (module-import-obarray module))))
 
 (define (module-define! module name value)
@@ -1491,7 +1569,9 @@
 (define (caar x) (car (car x)))
 (define (caddr x) (car (cdr (cdr x))))
 (define (cdddr x) (cdr (cdr (cdr x))))
-
+(define (string->number x . radix) 
+  (let ([radix (if (null? radix) 10 (car radix))])
+    (string->number x radix)))
 (define (lookup-bound module name public?)
   (let ([mod (resolve-module module #f #f)])
     (if (not mod)
@@ -1605,7 +1685,6 @@
 (initialize-io-system)
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")
-
 (set! %load-extensions 
   (cons (cons ".sls" %load-extensions) %load-extensions))
 (set! %load-extensions 

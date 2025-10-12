@@ -8,31 +8,9 @@
   '(no-create no-fail no-truncate
     spanky0 spanky1 spanky2))
 
-; Enumeration sets can't be created until late in the initialization
-; process, so the creation of this enumeration set must be delayed.
-
-(define *file-options-enumeration-set* #f)
-
-(define (file-options-enumeration-set)
-  (if (not *file-options-enumeration-set*)
-      (set! *file-options-enumeration-set*
-            (make-enumeration *file-option-symbols*)))
-  *file-options-enumeration-set*)  
-
-(define (make-file-options-set syms)
-  ((enum-set-constructor (file-options-enumeration-set)) syms))
-
-(define (file-options->list options)
-  (enum-set->list options))
-
-; toplevel.sch defines variables no-create, no-fail, and
-; no-truncate so they don't have to be quoted when passed
-; to file-options.
-
 (define (file-options . symbols)
-  (make-file-options-set
-   (filter (lambda (sym) (memq sym *file-option-symbols*))
-           symbols)))
+  (filter (lambda (sym) (memq sym *file-option-symbols*))
+          symbols))
 
 ; The R6RS specification of buffer-mode? does not allow it
 ; to return true for the datum buffer mode, so this predicate
