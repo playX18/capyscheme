@@ -32,7 +32,7 @@ use crate::runtime::{
 
 pub fn init_scheme() -> Scheme {
     let mut mmtk_builder = MMTKBuilder::new();
-    if (*mmtk_builder.options.plan) == PlanSelector::GenCopy {
+    /*if (*mmtk_builder.options.plan) == PlanSelector::GenCopy {
         mmtk_builder.options.plan.set(PlanSelector::SemiSpace);
     }
 
@@ -41,9 +41,10 @@ pub fn init_scheme() -> Scheme {
         PlanSelector::GenImmix | PlanSelector::StickyImmix
     ) {
         mmtk_builder.options.plan.set(PlanSelector::Immix);
-    }
+    }*/
 
     if (*mmtk_builder.options.plan) == PlanSelector::MarkCompact {
+        println!(";; Warning: MarkCompact is not supported, using MarkSweep instead.");
         mmtk_builder.options.plan.set(PlanSelector::MarkSweep);
     }
 

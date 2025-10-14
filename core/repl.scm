@@ -45,7 +45,6 @@
 (current-exception-printer default-exception-printer)
 (define (read-eval-print-loop)
   (define input (current-input-port))
-
   (let loop () 
     (call/cc (lambda (continue)
       (with-exception-handler 
