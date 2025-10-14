@@ -187,7 +187,7 @@ native_fn!(
 
     pub ("string->utf8") fn string_to_utf8<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
         let bytes = str.to_string().into_bytes();
-        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes);
+        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
         nctx.return_(bytevec)
     }
 
@@ -230,7 +230,7 @@ native_fn!(
             bytes.extend_from_slice(&code_unit.to_le_bytes());
         }
 
-        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes);
+        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
         nctx.return_(bytevec)
     }
 
