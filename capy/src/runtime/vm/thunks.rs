@@ -24,9 +24,12 @@ use crate::{
 };
 use cranelift_codegen::ir::InstBuilder;
 use rsgc::{
-    Gc,
+    Gc, ObjectSlot,
     alloc::Array,
-    mmtk::{AllocationSemantics, util::Address},
+    mmtk::{
+        AllocationSemantics, MutatorContext,
+        util::{Address, ObjectReference},
+    },
     object::{VTable, VTableOf},
 };
 use std::{alloc::Layout, cmp::Ordering};
@@ -131,7 +134,10 @@ macro_rules! thunks {
 
 pub mod compiler {
     use cranelift_codegen::ir;
-    use rsgc::{Gc, mmtk::util::Address};
+    use rsgc::{
+        Gc, ObjectSlot,
+        mmtk::util::{Address, ObjectReference},
+    };
 
     use crate::runtime::{
         value::{TypeCode8, TypeCode16, Value},
@@ -140,6 +146,12 @@ pub mod compiler {
 
     pub trait PrimType {
         fn clif_type() -> impl Iterator<Item = ir::Type>;
+    }
+
+    impl PrimType for ObjectSlot {
+        fn clif_type() -> impl Iterator<Item = ir::Type> {
+            std::iter::once(ir::types::I64)
+        }
     }
 
     impl PrimType for TypeCode8 {
@@ -233,6 +245,18 @@ pub mod compiler {
     }
 
     impl PrimType for isize {
+        fn clif_type() -> impl Iterator<Item = ir::Type> {
+            std::iter::once(ir::types::I64)
+        }
+    }
+
+    impl PrimType for i32 {
+        fn clif_type() -> impl Iterator<Item = ir::Type> {
+            std::iter::once(ir::types::I32)
+        }
+    }
+
+    impl PrimType for ObjectReference {
         fn clif_type() -> impl Iterator<Item = ir::Type> {
             std::iter::once(ir::types::I64)
         }
@@ -2800,6 +2824,44 @@ thunks! {
         Str::set(s, &ctx, index, c);
 
         ThunkResult { code: 0, value: Value::undefined() }
+    }
+
+    pub fn post_write_barrier_slow(
+        ctx: &Context<'gc>,
+        src: ObjectReference,
+        offset: i32,
+        target: ObjectReference
+    ) -> () {
+        unsafe {
+            log::debug!("post write barrier: src={:?}, offset={}, target={:?}", src, offset, target);
+            ctx.mc.thread_unchecked()
+                .mutator_unchecked()
+                .barrier()
+                .object_reference_write_slow(
+                    src,
+                    ObjectSlot::from_address(src.to_raw_address().offset(offset as _)),
+                    Some(target)
+                )
+        }
+    }
+
+    pub fn post_write_barrier_at_slot(
+        ctx: &Context<'gc>,
+        src: ObjectReference,
+        slot: ObjectSlot,
+        target: ObjectReference
+    ) -> () {
+        unsafe {
+            log::debug!("post write barrier: src={:?}, slot={:?}, target={:?}", src, slot, target);
+            ctx.mc.thread_unchecked()
+                .mutator_unchecked()
+                .barrier()
+                .object_reference_write_slow(
+                    src,
+                    slot,
+                    Some(target)
+                )
+        }
     }
 }
 

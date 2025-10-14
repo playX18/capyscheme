@@ -1440,7 +1440,9 @@ prim!(
         let arg = ssa.atom(args[0]);
         let val = ssa.atom(args[1]);
 
+        ssa.pre_write_barrier(arg, offset_of!(Variable, value) as i32, val);
         ssa.builder.ins().store(ir::MemFlags::new(), val, arg, offset_of!(Variable, value) as i32);
+        ssa.post_write_barrier(arg, offset_of!(Variable, value) as i32, val);
         PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64))
     },
 
@@ -1535,14 +1537,18 @@ prim!(
     "set-car!" => set_car(ssa, args, _h) {
         let pair = ssa.atom(args[0]);
         let new_car = ssa.atom(args[1]);
+        ssa.pre_write_barrier(pair, offset_of!(Pair, car) as i32, new_car);
         ssa.builder.ins().store(ir::MemFlags::trusted(), new_car, pair, offset_of!(Pair, car) as i32);
+        ssa.post_write_barrier(pair, offset_of!(Pair, car) as i32, new_car);
         PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64))
     },
 
     "set-cdr!" => set_cdr(ssa, args, _h) {
         let pair = ssa.atom(args[0]);
         let new_cdr = ssa.atom(args[1]);
+        ssa.pre_write_barrier(pair, offset_of!(Pair, cdr) as i32, new_cdr);
         ssa.builder.ins().store(ir::MemFlags::trusted(), new_cdr, pair, offset_of!(Pair, cdr) as i32);
+        ssa.post_write_barrier(pair, offset_of!(Pair, cdr) as i32, new_cdr);
         PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64))
     },
 
@@ -1782,7 +1788,9 @@ prim!(
                         let ix_offset = ssa.builder.ins().imul_imm(ix, size_of::<Value>() as i64);
                         let data_ptr = ssa.builder.ins().iadd_imm(vec, offset_of!(Vector, data) as i64);
                         let elem_ptr = ssa.builder.ins().iadd(data_ptr, ix_offset);
+                        ssa.pre_write_barrier_n(vec, elem_ptr, new_val);
                         ssa.builder.ins().store(ir::MemFlags::trusted(), new_val, elem_ptr, 0);
+                        ssa.post_write_barrier_n(vec, elem_ptr, new_val);
                         ssa.builder.ins().jump(merge, &[]);
                     },
                     |ssa, _| {
@@ -2289,7 +2297,9 @@ prim!(
         let offset = ssa.builder.ins().iadd_imm(offset, offset_of!(Tuple, data) as i32 as i64);
         let offset = ssa.zextend(types::I64, offset);
         let addr = ssa.builder.ins().iadd(tuple, offset);
+        ssa.pre_write_barrier_n(tuple, addr, value);
         ssa.builder.ins().store(ir::MemFlags::trusted(), value, addr, 0);
+        ssa.post_write_barrier_n(tuple, addr, value);
         PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64))
     },
 
