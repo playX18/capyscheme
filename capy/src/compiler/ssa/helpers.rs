@@ -545,7 +545,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let slowpath = self.builder.create_block();
 
                 self.builder.func.layout.set_cold(slowpath);
-                self.branch_if_heap_object(src, check_wb, &[], done, &[]);
+                self.branch_if_immediate(src, done, &[], check_wb, &[]);
 
                 self.builder.switch_to_block(check_wb);
                 {
@@ -599,7 +599,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let slowpath = self.builder.create_block();
 
                 self.builder.func.layout.set_cold(slowpath);
-                self.branch_if_heap_object(src, check_wb, &[], done, &[]);
+                self.branch_if_immediate(src, done, &[], check_wb, &[]);
 
                 self.builder.switch_to_block(check_wb);
                 {

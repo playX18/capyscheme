@@ -5,7 +5,6 @@ members = ["capy", "capy-driver"]
 default-members = ["capy"]
 
 [workspace.dependencies]
-#rsgc = { path = "../RSGC", default-features = false, features = [] }
 rsgc = { git = "https://codeberg.org/playxe/rsgc", default-features = false }
 cranelift-jit = "0.123.1"
 cranelift = "0.123.1"
@@ -14,12 +13,10 @@ cranelift-module = "0.123.1"
 cranelift-object = "0.123.1"
 libloading = "0.8.8"
 target-lexicon = "*"
-addr2line = "0.25.0"
 gimli = "0.32.2"
 object = { version = "0.37.3", features = ["macho"] }
 cfg-if = "1.0.0"
 libc = "0.2.174"
-ariadne = "0.5.1"
 atomic = "0.6.1"
 bitflags = "2.9.1"
 bytemuck = "1.23.1"

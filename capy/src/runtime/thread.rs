@@ -224,7 +224,7 @@ impl Scheme {
         });
 
         if should_gc {
-            self.mutator.collect_garbage();
+            self.mutator.yieldpoint();
         }
 
         result
