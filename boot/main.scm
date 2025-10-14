@@ -1638,6 +1638,17 @@
     (r6rs:bytevector-copy! b start b2 0 k)
     b2))
 
+(define (bytevector-copy/nonmoving b . rest)
+  (let* ((n (bytevector-length b))
+         (start (if (null? rest) 0 (car rest)))
+         (end (if (or (null? rest) (null? (cdr rest))) n (cadr rest)))
+         (k (- end start))
+         (b2 (make-bytevector/nonmoving k)))
+    (r6rs:bytevector-copy! b start b2 0 k)
+    b2))
+
+(define bytevector-copy! r6rs:bytevector-copy!)
+
 (define (assert cond . rest)
   (if (not cond)
       (apply assertion-violation 'assert "assertion failed" rest)

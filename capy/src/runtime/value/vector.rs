@@ -242,7 +242,11 @@ impl ByteVector {
         self.hdr.type_bits() == TypeCode16::IMMUTABLE_BYTEVECTOR.0
     }
 
-    pub fn new<'gc, const IMMUTABLE: bool>(mc: &Mutation<'gc>, length: usize) -> Gc<'gc, Self> {
+    pub fn new<'gc, const IMMUTABLE: bool>(
+        mc: &Mutation<'gc>,
+        length: usize,
+        movable: bool,
+    ) -> Gc<'gc, Self> {
         assert!(
             length <= BYTE_VECTOR_MAX_LENGTH,
             "Byte vector length exceeds maximum allowed size"
@@ -254,13 +258,19 @@ impl ByteVector {
             TypeCode16::MUTABLE_BYTEVECTOR
         };
 
+        let semantics = if movable {
+            AllocationSemantics::Default
+        } else {
+            AllocationSemantics::NonMoving
+        };
+
         hdr.set_type_bits(tc.0 as _);
         unsafe {
             let alloc = mc.raw_allocate(
                 size_of::<Self>() + size_of::<u8>() * length,
                 align_of::<Self>(),
                 &Self::VT,
-                AllocationSemantics::Default,
+                semantics,
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
@@ -298,9 +308,9 @@ impl ByteVector {
     }
 
     #[inline(never)]
-    pub fn from_slice<'gc>(mc: &Mutation<'gc>, slice: &[u8]) -> Gc<'gc, Self> {
+    pub fn from_slice<'gc>(mc: &Mutation<'gc>, slice: &[u8], movable: bool) -> Gc<'gc, Self> {
         let length = slice.len();
-        let byte_vector = Self::new::<false>(mc, length);
+        let byte_vector = Self::new::<false>(mc, length, movable);
         byte_vector.copy_from(slice);
 
         byte_vector

@@ -64,7 +64,15 @@ native_fn! {
 
 
     pub ("make-bytevector") fn make_bytevector<'gc>(nctx, nelems: usize, init: Option<u8>) -> Value<'gc> {
-        let v = ByteVector::new::<false>(&nctx.ctx, nelems);
+        let v = ByteVector::new::<false>(&nctx.ctx, nelems, true);
+        if let Some(b) = init {
+            v.fill(b);
+        }
+        nctx.return_(v.into())
+    }
+
+    pub ("make-bytevector/nonmoving") fn make_bytevector_nonmoving<'gc>(nctx, nelems: usize, init: Option<u8>) -> Value<'gc> {
+        let v = ByteVector::new::<false>(&nctx.ctx, nelems, false);
         if let Some(b) = init {
             v.fill(b);
         }
@@ -162,7 +170,30 @@ native_fn! {
             bytes.push(n);
             current = current.cdr();
         }
-        let bv = ByteVector::from_slice(&nctx.ctx, &bytes);
+        let bv = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        nctx.return_(Ok(bv.into()))
+    }
+
+    pub ("u8-list->bytevector/nonmoving") fn u8_list_to_bytevector_nonmoving<'gc>(nctx, lst: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        let mut bytes = Vec::new();
+        let mut current = lst;
+        let ctx = nctx.ctx;
+        if !current.is_list() {
+
+            return nctx.wrong_argument_violation("u8-list->bytevector", "not a proper list", Some(lst), Some(0), 1, &[lst]);
+        }
+
+        while current.is_pair() {
+            let n = match u8::try_from_value(ctx, current.car()) {
+                Ok(n) => n,
+                Err(_) => {
+                    return nctx.wrong_argument_violation("u8-list->bytevector", "not a u8", Some(current.car()), Some(0), 1, &[lst]);
+                }
+            };
+            bytes.push(n);
+            current = current.cdr();
+        }
+        let bv = ByteVector::from_slice(&nctx.ctx, &bytes, false);
         nctx.return_(Ok(bv.into()))
     }
 
