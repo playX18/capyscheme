@@ -281,25 +281,24 @@ pub fn link_object_product<'gc>(
             &[],
         )
     })?;
-    if false {
-        std::fs::remove_file(&obj_output).map_err(|e| {
-            make_io_error(
+
+    std::fs::remove_file(&obj_output).map_err(|e| {
+        make_io_error(
+            &ctx,
+            "link-object",
+            Str::new(
                 &ctx,
-                "link-object",
-                Str::new(
-                    &ctx,
-                    format!(
-                        "Cannot remove temporary object file '{}': {}",
-                        obj_output.display(),
-                        e
-                    ),
-                    true,
-                )
-                .into(),
-                &[],
+                format!(
+                    "Cannot remove temporary object file '{}': {}",
+                    obj_output.display(),
+                    e
+                ),
+                true,
             )
-        })?;
-    }
+            .into(),
+            &[],
+        )
+    })?;
 
     Ok(())
 }

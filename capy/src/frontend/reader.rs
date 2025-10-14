@@ -239,7 +239,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         CompoundType::Bytevector => {
                             let len = Value::list_length(head);
 
-                            let bv = ByteVector::new::<false>(&self.ctx, len);
+                            let bv = ByteVector::new::<false>(&self.ctx, len, true);
 
                             let mut vec = Vec::with_capacity(len);
 

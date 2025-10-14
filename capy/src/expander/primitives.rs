@@ -828,7 +828,7 @@ primitive_expanders!(
         } else {
             let first = args[0];
             let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_plus(ctx).into(), &[first, prim_call_term(ctx, sym_plus(ctx).into(), rest, src)], src));
+            return Some(prim_call_term(ctx, sym_plus(ctx).into(), &[first, ex_plus(ctx, rest, src)?], src));
         }
     }
 
@@ -842,7 +842,7 @@ primitive_expanders!(
         } else {
             let first = args[0];
             let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_multiply(ctx).into(), &[first, prim_call_term(ctx, sym_multiply(ctx).into(), rest, src)], src));
+            return Some(prim_call_term(ctx, sym_multiply(ctx).into(), &[first, ex_multiply(ctx, rest, src)?], src));
         }
     }
 
@@ -856,7 +856,7 @@ primitive_expanders!(
         } else {
             let first = args[0];
             let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_minus(ctx).into(), &[first, prim_call_term(ctx, sym_plus(ctx).into(), rest, src)], src));
+            return Some(prim_call_term(ctx, sym_minus(ctx).into(), &[first, ex_minus(ctx, rest, src)?], src));
         }
     }
 
@@ -870,7 +870,7 @@ primitive_expanders!(
         } else {
             let first = args[0];
             let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_div(ctx).into(), &[first, prim_call_term(ctx, sym_multiply(ctx).into(), rest, src)], src));
+            return Some(prim_call_term(ctx, sym_div(ctx).into(), &[first, ex_div(ctx, rest, src)?], src));
         }
     }
 
@@ -1885,7 +1885,6 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
         TermKind::PrimCall(name, args) => {
             if let Some(f) = primitive_expanders(ctx).get(ctx, name.downcast()) {
                 if let Some(expanded) = f(ctx, args.as_slice(), t.source()) {
-                 
                     return expanded;
                 } else {
                     // failed expansion: reify primitive into a function call to it instead
