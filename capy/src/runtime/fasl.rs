@@ -428,7 +428,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 let count = self.read64()? as usize;
                 let mut buf = vec![0u8; count];
                 self.reader.read_exact(&mut buf)?;
-                Ok(Value::new(ByteVector::from_slice(&self.ctx, &buf)))
+                Ok(Value::new(ByteVector::from_slice(&self.ctx, &buf, true)))
             }
 
             _x @ FASL_TAG_BIGINT => {

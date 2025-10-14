@@ -156,25 +156,20 @@ native_fn!(
         nctx.return_(Ok(acc))
     }
 
-    pub ("/") fn div<'gc>(nctx, z: Number<'gc>, rest: &'gc [Value<'gc>]) -> Result<Number<'gc>, Value<'gc>> {
+    pub ("/") fn div<'gc>(nctx, acc: Number<'gc>, rest: &'gc [Value<'gc>]) -> Result<Number<'gc>, Value<'gc>> {
         if rest.is_empty() {
-            if z.is_zero() {
-                let z = z.into_value(nctx.ctx);
-                return nctx.wrong_argument_violation("/", "division by zero", Some(z), Some(1), 1, &[z]);
+            if acc.is_zero() {
+                let acc = acc.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation("/", "division by zero", Some(acc), Some(1), 1, &[acc]);
             }
             let one = Number::Fixnum(1);
-            let res = Number::div(nctx.ctx, one, z);
+            let res = Number::div(nctx.ctx, one, acc);
             return nctx.return_(Ok(res));
         }
 
-        let Some(mut acc) = rest[0].number() else {
-            let mut args = Vec::with_capacity(1 + rest.len());
-            args.push(z.into_value(nctx.ctx));
-            args.extend_from_slice(rest);
-            return nctx.wrong_argument_violation("/", "argument must be a number", Some(rest[0].clone()), Some(1), args.len(), &args);
-        };
+        let mut acc = acc;
 
-        for arg in rest[1..].iter() {
+        for arg in rest.iter() {
             let Some(arg) = arg.number() else {
                 let mut args = Vec::with_capacity(1 + rest.len());
                 args.push(acc.into_value(nctx.ctx));
