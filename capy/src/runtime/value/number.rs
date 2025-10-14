@@ -370,14 +370,20 @@ unsafe impl<'gc> Tagged for BigInt<'gc> {
 
 #[derive(Trace)]
 #[collect(no_drop)]
+#[repr(C)]
 pub struct Complex<'gc> {
+    pub hdr: ScmHeader,
     pub real: Number<'gc>,
     pub imag: Number<'gc>,
 }
 
 impl<'gc> Complex<'gc> {
     pub fn new(ctx: Context<'gc>, real: Number<'gc>, imag: Number<'gc>) -> Gc<'gc, Self> {
-        let complex = Complex { real, imag };
+        let complex = Complex {
+            hdr: ScmHeader::with_type_bits(TypeCode16::COMPLEX.bits()),
+            real,
+            imag,
+        };
         Gc::new(&ctx, complex)
     }
 }
@@ -390,7 +396,9 @@ unsafe impl<'gc> Tagged for Complex<'gc> {
 
 #[derive(Trace)]
 #[collect(no_drop)]
+#[repr(C)]
 pub struct Rational<'gc> {
+    pub hdr: ScmHeader,
     pub numerator: Number<'gc>,
     pub denominator: Number<'gc>,
 }
@@ -402,6 +410,7 @@ impl<'gc> Rational<'gc> {
         denominator: Number<'gc>,
     ) -> Gc<'gc, Self> {
         let rational = Rational {
+            hdr: ScmHeader::with_type_bits(TypeCode16::RATIONAL.bits()),
             numerator,
             denominator,
         };
@@ -2585,6 +2594,7 @@ impl<'gc> Number<'gc> {
         let gcd = n1;
 
         if deno == gcd {
+            println!("deno == gcd: {} {}", deno, gcd);
             return (ans_sign * nume / gcd).into_number(ctx);
         }
 
