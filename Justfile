@@ -37,7 +37,6 @@ build portable:
     {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-driver {{if portable == "true" { "--features portable" } else { "" } }}
 
 
-
 # Perform portable installation of CapyScheme which installs the binary
 # and all necessary resources to the specified install prefix
 # by default, it installs to ~/.local/share/capy
@@ -46,7 +45,7 @@ install-portable: (build "true")
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     cp -r boot {{install-prefix}}/share/capy/{{version}}
     cp -r core {{install-prefix}}/share/capy/{{version}}
-    cp -r scheme {{install-prefix}}/share/capy/{{version}}
+    cp -r stdlib {{install-prefix}}/share/capy/{{version}}
     cp -r batteries {{install-prefix}}/share/capy/{{version}}
     cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}

@@ -5203,12 +5203,21 @@ impl<'gc> Number<'gc> {
         }
     }
 
+    pub fn ash(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
+        if count.is_negative() {
+            return self.rsh(ctx, count.negate(ctx));
+        }
+
+        self.lsh(ctx, count)
+    }
+
     pub fn lsh(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
         if self.is_zero() {
             return Some(self);
         }
 
-        let count = self.coerce_exact_integer_to_usize();
+        let count = count.coerce_exact_integer_to_usize();
+
         if count == 0 {
             return Some(self);
         } else if count / (size_of::<i32>() * 8) >= i32::MAX as usize {

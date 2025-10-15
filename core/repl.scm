@@ -43,7 +43,23 @@
       )))
   (format out "~a~%" output))
 (current-exception-printer default-exception-printer)
+
+
+
 (define (read-eval-print-loop)
+  (define (print-values vals)
+    (cond 
+      [(null? vals) (unspecified)]
+      [(null? (cdr vals)) 
+        (unless (eq? (car vals) (unspecified)) 
+          (format #t "=> ~a~%~!" (car vals)))]
+      [else 
+        (let loop ([vals vals] [index 0])
+          (unless (null? vals)
+            (format #t "[~a] = ~a~%" index (car vals))
+            (loop (cdr vals) (+ index 1))))
+        (flush-output-port (current-output-port))]))
+
   (define input (current-input-port))
   (let loop () 
     (call/cc (lambda (continue)
@@ -54,14 +70,13 @@
           (continue #f))
         (lambda ()
           (format #t "> ~!")
-          (let ([form (read input)])
+          (let ([form (read-syntax input)])
             (if (eof-object? form)
               (begin 
                 (format #t "Goodbye!~%")
                 (flush-output-port (current-output-port))
                 (exit 0))
               (begin 
-                (let ([ans (eval form (current-module))])
-                  (unless (eq? ans (unspecified))
-                    (format #t "=> ~a~%~!" ans))))))))))
+                (receive ans (eval form (current-module))
+                  (print-values ans)))))))))
     (loop))))

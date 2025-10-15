@@ -1976,6 +1976,14 @@ prim!(
         PrimValue::Value(result)
     },
 
+    "expt" => expt(ssa, args, _h) {
+        let base = ssa.atom(args[0]);
+        let exp = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.expt, &[ctx, base, exp], _h);
+        PrimValue::Value(result)
+    },
+
     "+" => plus(ssa, args, _h) {
         if args.is_empty() {
             return PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64));

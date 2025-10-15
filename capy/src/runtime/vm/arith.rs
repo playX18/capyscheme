@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 
 use crate::{
     native_fn,
+    runtime::value::conversions::*,
     runtime::{Context, prelude::*},
 };
 
@@ -445,7 +446,7 @@ native_fn!(
     }
 
 
-    pub ("=") fn fx_eq<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
+    pub ("fx=?") fn fx_eq<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
         if rest.is_empty() {
             return nctx.return_(Ok(true));
         }
@@ -454,7 +455,7 @@ native_fn!(
         for z in rest.iter() {
             if !z.is_int32() {
                 let ctx = nctx.ctx;
-                return nctx.wrong_argument_violation("=", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+                return nctx.wrong_argument_violation("fx=?", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
             }
             let z = z.as_int32();
             if w != z {
@@ -972,6 +973,596 @@ native_fn!(
         nctx.return_(r)
     }
 
+    pub ("bitwise-arithmetic-shift") fn bitwise_arithmetic_shift<'gc>(nctx, x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
+        if !x.is_exact_integer() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("bitwise-arithmetic-shift", "first argument must be an exact integer", Some(x), Some(1), 2, &[x]);
+        }
+        if !y.is_exact_integer() {
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("bitwise-arithmetic-shift", "second argument must be an exact integer", Some(y), Some(2), 2, &[y]);
+        }
+
+        let Some(shifted) = x.ash(nctx.ctx, y) else {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.wrong_argument_violation("bitwise-arithmetic-shift", "shift amount is too large", Some(y), Some(2), 2, &[x, y]);
+        };
+        nctx.return_(shifted)
+    }
+
+    pub ("fixnum-width") fn fixnum_width<'gc>(nctx) -> i32 {
+        nctx.return_(32)
+    }
+
+    pub ("least-fixnum") fn least_fixnum<'gc>(nctx) -> i32 {
+        nctx.return_(i32::MIN)
+    }
+
+    pub ("greatest-fixnum") fn greatest_fixnum<'gc>(nctx) -> i32 {
+        nctx.return_(i32::MAX)
+    }
+
+    pub ("fx<?") fn fx_lt<'gc>(nctx, a: i32, b: i32, rest: RestOf<'gc, 'gc, i32>) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(a < b));
+        }
+        let mut a = a;
+        let mut b = b;
+
+        for i in 0..rest.len() {
+            if !(a < b) {
+                return nctx.return_(Ok(false));
+            }
+            a = b;
+            b = match rest.at(nctx.ctx, i) {
+                Ok(v) => v,
+                Err(e) => return nctx.conversion_error("fx<?", e),
+            };
+        }
+
+        nctx.return_(Ok(a < b))
+    }
+
+    pub ("fx<=?") fn fx_le<'gc>(nctx, a: i32, b: i32, rest: RestOf<'gc, 'gc, i32>) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(a <= b));
+        }
+        let mut a = a;
+        let mut b = b;
+
+        for i in 0..rest.len() {
+            if !(a <= b) {
+                return nctx.return_(Ok(false));
+            }
+            a = b;
+            b = match rest.at(nctx.ctx, i) {
+                Ok(v) => v,
+                Err(e) => return nctx.conversion_error("fx<=?", e),
+            };
+        }
+
+        nctx.return_(Ok(a <= b))
+    }
+
+    pub ("fx>?") fn fx_gt<'gc>(nctx, a: i32, b: i32, rest: RestOf<'gc, 'gc, i32>) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(a > b));
+        }
+        let mut a = a;
+        let mut b = b;
+
+        for i in 0..rest.len() {
+            if !(a > b) {
+                return nctx.return_(Ok(false));
+            }
+            a = b;
+            b = match rest.at(nctx.ctx, i) {
+                Ok(v) => v,
+                Err(e) => return nctx.conversion_error("fx>?", e),
+            };
+        }
+
+        nctx.return_(Ok(a > b))
+    }
+
+    pub ("fx>=?") fn fx_ge<'gc>(nctx, a: i32, b: i32, rest: RestOf<'gc, 'gc, i32>) -> Result<bool, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(a >= b));
+        }
+        let mut a = a;
+        let mut b = b;
+
+        for i in 0..rest.len() {
+            if !(a >= b) {
+                return nctx.return_(Ok(false));
+            }
+            a = b;
+            b = match rest.at(nctx.ctx, i) {
+                Ok(v) => v,
+                Err(e) => return nctx.conversion_error("fx>=?", e),
+            };
+        }
+
+        nctx.return_(Ok(a >= b))
+    }
+
+    pub ("fxzero?") fn fxzerop<'gc>(nctx, w: i32) -> bool {
+        nctx.return_(w == 0)
+    }
+
+    pub ("fxpositive?") fn fxpositivep<'gc>(nctx, w: i32) -> bool {
+        nctx.return_(w > 0)
+    }
+
+    pub ("fxnegative?") fn fxnegativep<'gc>(nctx, w: i32) -> bool {
+        nctx.return_(w < 0)
+    }
+
+    pub ("fxodd?") fn fxoddp<'gc>(nctx, w: i32) -> bool {
+        nctx.return_(w % 2 != 0)
+    }
+
+    pub ("fxeven?") fn fxevenp<'gc>(nctx, w: i32) -> bool {
+        nctx.return_(w % 2 == 0)
+    }
+
+    pub ("fxmax") fn fx_max<'gc>(nctx, x: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        let mut max = x;
+
+        for z in rest.iter() {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxmax", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[max.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_int32();
+            if z > max {
+                max = z;
+            }
+        }
+
+        nctx.return_(Ok(max))
+    }
+
+    pub ("fxmin") fn fx_min<'gc>(nctx, x: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        let mut min = x;
+
+        for z in rest.iter() {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxmin", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[min.into_value(ctx), z.clone()]);
+            }
+            let z = z.as_int32();
+            if z < min {
+                min = z;
+            }
+        }
+
+        nctx.return_(Ok(min))
+    }
+
+    pub ("fx+") fn fx_plus<'gc>(nctx, args: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if args.len() == 0 {
+            return nctx.return_(Ok(0));
+        }
+
+        if args.len() == 1 {
+            let Some(arg) = args[0].int32() else {
+                return nctx.wrong_argument_violation("fx+", "argument must be a fixnum", Some(args[0].clone()), Some(0), 1, args);
+            };
+            return nctx.return_(Ok(arg));
+        }
+
+        let Some(mut acc) = args[0].int32() else {
+            return nctx.wrong_argument_violation("fx+", "argument must be a fixnum", Some(args[0].clone()), Some(0), args.len(), args);
+         };
+
+        for arg in args[1..].iter() {
+            let Some(arg) = arg.int32() else {
+                return nctx.wrong_argument_violation("fx+", "argument must be a fixnum", Some(arg.clone()), Some(1), args.len(), args);
+             };
+            match acc.checked_add(arg) {
+                Some(v) => acc = v,
+                None => {
+                    let ctx = nctx.ctx;
+                    let acc = acc.into_value(ctx);
+                    let arg = arg.into_value(ctx);
+                    return nctx.wrong_argument_violation("fx+", "integer overflow", Some(arg), Some(1), args.len(), &[acc, arg]);
+                }
+            }
+        }
+
+        nctx.return_(Ok(acc))
+    }
+
+    pub ("fx-") fn fx_minus<'gc>(nctx, x: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(-x));
+        }
+
+        let Some(mut acc) = rest[0].int32() else {
+            let mut args = Vec::with_capacity(1 + rest.len());
+            args.push(x.into_value(nctx.ctx));
+            args.extend_from_slice(rest);
+            return nctx.wrong_argument_violation("fx-", "argument must be a fixnum", Some(rest[0].clone()), Some(1), args.len(), &args);
+        };
+
+        for arg in rest[1..].iter() {
+            let Some(arg) = arg.int32() else {
+                let mut args = Vec::with_capacity(1 + rest.len());
+                args.push(acc.into_value(nctx.ctx));
+                args.extend_from_slice(rest);
+                return nctx.wrong_argument_violation("fx-", "argument must be a fixnum", Some(arg.clone()), Some(1), args.len(), &args);
+            };
+            match acc.checked_add(-arg) {
+                Some(v) => acc = v,
+                None => {
+                    let ctx = nctx.ctx;
+                    let acc = acc.into_value(ctx);
+                    let arg = arg.into_value(ctx);
+                    return nctx.wrong_argument_violation("fx-", "integer overflow", Some(arg), Some(1), rest.len(), &[acc, arg]);
+                }
+            }
+        }
+
+        match acc.checked_neg() {
+            Some(v) => acc = v,
+            None => {
+                let ctx = nctx.ctx;
+                let x = x.into_value(ctx);
+                let acc = acc.into_value(ctx);
+                return nctx.wrong_argument_violation("fx-", "integer overflow", Some(acc), Some(1), 2, &[x, acc]);
+            }
+        }
+
+        nctx.return_(Ok(acc))
+    }
+
+    pub ("fx*") fn fx_times<'gc>(nctx, args: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if args.len() == 0 {
+            return nctx.return_(Ok(1));
+        }
+
+        if args.len() == 1 {
+            let Some(arg) = args[0].int32() else {
+                return nctx.wrong_argument_violation("fx*", "argument must be a fixnum", Some(args[0].clone()), Some(0), 1, args);
+            };
+            return nctx.return_(Ok(arg));
+        }
+
+        let Some(mut acc) = args[0].int32() else {
+            return nctx.wrong_argument_violation("fx*", "argument must be a fixnum", Some(args[0].clone()), Some(0), args.len(), args);
+         };
+
+        for arg in args[1..].iter() {
+            let Some(arg) = arg.int32() else {
+                return nctx.wrong_argument_violation("fx*", "argument must be a fixnum", Some(arg.clone()), Some(1), args.len(), args);
+             };
+            match acc.checked_mul(arg) {
+                Some(v) => acc = v,
+                None => {
+                    let ctx = nctx.ctx;
+                    let acc = acc.into_value(ctx);
+                    let arg = arg.into_value(ctx);
+                    return nctx.wrong_argument_violation("fx*", "integer overflow", Some(arg), Some(1), args.len(), &[acc, arg]);
+                }
+            }
+        }
+
+        nctx.return_(Ok(acc))
+    }
+
+    pub ("fxdiv") fn fx_div<'gc>(nctx, x: i32, y: i32) -> Result<i32, Value<'gc>> {
+        if y == 0 {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.wrong_argument_violation("fxdiv", "division by zero", Some(y), Some(2), 2, &[x, y]);
+        }
+        let res = x / y;
+        nctx.return_(Ok(res))
+    }
+
+    pub ("fxdiv0") fn fx_div0<'gc>(nctx, x: i32, y: i32) -> Result<i32, Value<'gc>> {
+        if y == 0 {
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("fxdiv0", "division by zero", Some(y), Some(1), 1, &[y]);
+        }
+        let div = x / y;
+        let mod_ = x - (div * y);
+        if mod_ < (y / 2).abs() {
+            return nctx.return_(Ok(div));
+        }
+        if y > 0 {
+            return nctx.return_(Ok(div + 1));
+        } else {
+            return nctx.return_(Ok(div - 1));
+        }
+    }
+
+    pub ("fxnot") fn fx_not<'gc>(nctx, w: i32) -> i32 {
+        nctx.return_(!w)
+    }
+
+    pub ("fxand") fn fx_and<'gc>(nctx, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(-1));
+        }
+        let Some(mut w) = rest[0].int32() else {
+            return nctx.wrong_argument_violation("fxand", "argument must be a fixnum", Some(rest[0].clone()), Some(0), rest.len(), rest);
+        };
+
+
+        for z in rest.iter().skip(1) {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxand", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+
+            let z = z.as_int32();
+            w &= z;
+        }
+
+        nctx.return_(Ok(w))
+    }
+
+    pub ("fxior") fn fxior<'gc>(nctx, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(0));
+        }
+        let Some(mut w) = rest[0].int32() else {
+            return nctx.wrong_argument_violation("fxior", "argument must be a fixnum", Some(rest[0].clone()), Some(0), rest.len(), rest);
+        };
+
+        for z in rest.iter().skip(1) {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxior", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+
+            let z = z.as_int32();
+            w |= z;
+        }
+
+        nctx.return_(Ok(w))
+    }
+
+    pub ("fxxor") fn fxxor<'gc>(nctx, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
+        if rest.is_empty() {
+            return nctx.return_(Ok(0));
+        }
+        let Some(mut w) = rest[0].int32() else {
+            return nctx.wrong_argument_violation("fxxor", "argument must be a fixnum", Some(rest[0].clone()), Some(0), rest.len(), rest);
+        };
+
+        for z in rest.iter().skip(1) {
+            if !z.is_int32() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("fxxor", "argument must be a fixnum", Some(z.clone()), Some(1), 2, &[w.into_value(ctx), z.clone()]);
+            }
+
+            let z = z.as_int32();
+            w ^= z;
+        }
+
+        nctx.return_(Ok(w))
+    }
+
+    pub ("fxif") fn fxif<'gc>(nctx, fx1: i32, fx2: i32, fx3: i32) -> i32 {
+        nctx.return_((fx1 & fx2) | (!fx1 & fx3))
+    }
+
+    pub ("fxbit-count") fn fxbit_count<'gc>(nctx, w: i32) -> i32 {
+        nctx.return_(w.count_ones() as i32)
+    }
+
+    pub ("fxlength") fn fxlength<'gc>(nctx, w: i32) -> i32 {
+        if w == 0 {
+            return nctx.return_(0);
+        }
+        nctx.return_(32 - w.leading_zeros() as i32)
+    }
+
+    pub ("fxfirst-bit-set") fn fxfirst_bit_set<'gc>(nctx, w: i32) -> i32 {
+        if w == 0 {
+            return nctx.return_(-1);
+        }
+        nctx.return_((w & -w).trailing_zeros() as i32 + 1)
+    }
+
+    pub ("fxbit-set?") fn fxbit_setp<'gc>(nctx, w: i32, k: i32) -> Result<bool, Value<'gc>> {
+        if k < 0 || k >= 32 {
+            let ctx = nctx.ctx;
+            let w = w.into_value(ctx);
+            let k = k.into_value(ctx);
+            return nctx.wrong_argument_violation("fxbit-set?", "bit index out of range", Some(k), Some(2), 2, &[w, k]);
+        }
+        nctx.return_(Ok((w & (1 << k)) != 0))
+    }
+
+    pub ("fxcopy-bit") fn fxcopy_bit<'gc>(
+        nctx,
+        fx1: i32,
+        fx2: i32,
+        fx3: i32
+    ) -> i32 {
+        if fx2 >= 0 && fx2 < 32 {
+            if fx3 == 0 || fx3 == 1 {
+                let mask = 1 << fx2;
+                return nctx.return_((mask & (fx3 << fx2)) | (!mask & fx1));
+            } else {
+                let ctx = nctx.ctx;
+                let fx1 = fx1.into_value(ctx);
+                let fx2 = fx2.into_value(ctx);
+                let fx3 = fx3.into_value(ctx);
+                return nctx.wrong_argument_violation(
+                    "fxcopy-bit",
+                    "third argument must be 0 or 1",
+                    Some(fx3),
+                    Some(3),
+                    3,
+                    &[fx1, fx2, fx3]
+                );
+            }
+        }
+
+        let ctx = nctx.ctx;
+        let fx1 = fx1.into_value(ctx);
+        let fx2 = fx2.into_value(ctx);
+        let fx3 = fx3.into_value(ctx);
+        nctx.wrong_argument_violation(
+            "fxcopy-bit",
+            "bit index out of range",
+            Some(fx2),
+            Some(2),
+            3,
+            &[fx1, fx2, fx3]
+        )
+    }
+
+    pub ("fxarithmetic-shift") fn fxarithmetic_shift<'gc>(
+        nctx,
+        fx1: i32,
+        fx2: i32
+    ) -> i32 {
+        if fx2 > -32 && fx2 < 32 {
+            let n;
+            if fx2 > 0 {
+                n = fx1.wrapping_shl(fx2 as u32);
+                if (n.wrapping_shr(fx2 as u32) == fx1) && (n >= i32::MIN) && n <= i32::MAX {
+                    return nctx.return_(n);
+                }
+            } else {
+                n = fx1.wrapping_shr((-fx2) as u32);
+                if (n.wrapping_shl((-fx2) as u32) == fx1) && (n >= i32::MIN) && n <= i32::MAX {
+                    return nctx.return_(n);
+                }
+            }
+            let ctx = nctx.ctx;
+            let fx1 = fx1.into_value(ctx);
+            let fx2 = fx2.into_value(ctx);
+            return nctx.wrong_argument_violation(
+                "fxarithmetic-shift",
+                "shift amount is too large",
+                Some(fx2),
+                Some(2),
+                2,
+                &[fx1, fx2]
+            );
+        }
+
+        let ctx = nctx.ctx;
+        let fx1 = fx1.into_value(ctx);
+        let fx2 = fx2.into_value(ctx);
+        nctx.wrong_argument_violation(
+            "fxarithmetic-shift",
+            "shift amount is too large",
+            Some(fx2),
+            Some(2),
+            2,
+            &[fx1, fx2]
+        )
+    }
+
+    pub ("fxarithmetic-shift-left") fn fxarithmetic_shift_left<'gc>(
+        nctx,
+        fx1: i32,
+        fx2: u32
+    ) -> i32 {
+        let Some(n) = fx1.checked_shl(fx2) else {
+            let ctx = nctx.ctx;
+            let fx1 = fx1.into_value(ctx);
+            let fx2 = fx2.into_value(ctx);
+            return nctx.wrong_argument_violation(
+                "fxarithmetic-shift-left",
+                "shift amount is too large",
+                Some(fx2),
+                Some(2),
+                2,
+                &[fx1, fx2]
+            );
+        };
+        nctx.return_(n)
+    }
+
+    pub ("fxarithmetic-shift-right") fn fxarithmetic_shift_right<'gc>(
+        nctx,
+        fx1: i32,
+        fx2: u32
+    ) -> i32 {
+        let Some(n) = fx1.checked_shr(fx2) else {
+            let ctx = nctx.ctx;
+            let fx1 = fx1.into_value(ctx);
+            let fx2 = fx2.into_value(ctx);
+            return nctx.wrong_argument_violation(
+                "fxarithmetic-shift-right",
+                "shift amount is too large",
+                Some(fx2),
+                Some(2),
+                2,
+                &[fx1, fx2]
+            );
+        };
+        nctx.return_(n)
+    }
+
+    pub ("fxbit-field") fn fxbit_field<'gc>(
+        nctx,
+        fx1: i32,
+        fx2: i32,
+        fx3: i32
+    ) -> i32 {
+        let ctx = nctx.ctx;
+        if fx2 < 0 || fx2 >= 32 {
+            return nctx.wrong_argument_violation(
+                "fxbit-field",
+                "second argument must be in the range 0 to 31",
+                Some(fx2.into_value(ctx)),
+                Some(2),
+                3,
+                &[fx1.into_value(ctx), fx2.into_value(ctx), fx3.into_value(ctx)]
+            );
+        }
+
+        if fx3 < 0 || fx3 >= 32 {
+            return nctx.wrong_argument_violation(
+                "fxbit-field",
+                "third argument must be in the range 0 to 31",
+                Some(fx3.into()),
+                Some(3),
+                3,
+                &[fx1.into(), fx2.into(), fx3.into()]
+            );
+        }
+
+        if fx2 > fx3 {
+            return nctx.wrong_argument_violation(
+                "fxbit-field",
+                "second argument must be less than or equal to the third argument",
+                Some(fx2.into_value(ctx)),
+                Some(2),
+                3,
+                &[fx1.into_value(ctx), fx2.into_value(ctx), fx3.into_value(ctx)]
+            );
+        }
+
+        let mask = !(-1 << fx3);
+        return nctx.return_((fx1 & mask) >> fx2);
+    }
+
+    pub ("fxcopy-bit-field") fn fxcopy_bit_field<'gc>(
+        nctx,
+        fx1: i32,
+        fx2: i32,
+        fx3: i32,
+        fx4: i32
+    ) -> i32 {
+        let mask1 = -1 << fx2;
+        let mask2 = !(-1 << fx3);
+        let mask = mask1 & !mask2;
+        nctx.return_((mask & (fx4 << fx2)) | (!mask & fx1))
+    }
 );
 
 pub(crate) fn init<'gc>(ctx: Context<'gc>) {

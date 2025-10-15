@@ -1,7 +1,7 @@
 # Implementation
 
 CapyScheme aims to implement R6RS/R7RS specification and also be performant. Implementation of language
-consists of "core expander",CPS compiler, runtime, and GC.
+consists of "core expander", CPS compiler, runtime, and GC.
 
 ## Frontend
 

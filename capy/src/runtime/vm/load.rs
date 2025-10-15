@@ -68,6 +68,13 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
             path,
         );
 
+        let stdlib_dir = exe_dir.join("stdlib");
+        path = Value::cons(
+            ctx,
+            Str::new(&ctx, &stdlib_dir.to_string_lossy(), true).into(),
+            path,
+        );
+
         let _cpath = exe_dir.join("compiled");
         cpath = Value::cons(
             ctx,
@@ -180,6 +187,7 @@ pub fn find_path_to<'gc>(
         for name in candidates {
             if let Some(dir) = dir.as_ref() {
                 let candidate = dir.join(&name);
+
                 if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
                 {
                     source_path = Some(candidate);
@@ -192,6 +200,7 @@ pub fn find_path_to<'gc>(
             while paths.is_pair() {
                 let dir = PathBuf::from(paths.car().to_string());
                 let candidate = dir.join(&name);
+
                 if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
                 {
                     source_path = Some(candidate);

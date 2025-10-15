@@ -135,6 +135,17 @@ impl<'gc> FromValue<'gc> for i32 {
     }
 }
 
+impl<'gc> FromValue<'gc> for u32 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "u32", value));
+        };
+
+        n.exact_integer_to_u32()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "u32", value))
+    }
+}
+
 impl<'gc> FromValue<'gc> for f64 {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if let Some(n) = value.flonum() {
@@ -576,5 +587,62 @@ impl<'gc> TryIntoValues<'gc> for &[Value<'gc>] {
         _ctx: Context<'gc>,
     ) -> Result<impl Iterator<Item = Value<'gc>>, Value<'gc>> {
         Ok(self.iter().copied())
+    }
+}
+
+pub struct RestOf<'a, 'gc, T: FromValue<'gc>> {
+    pub rest: &'a [Value<'gc>],
+    pub _marker: std::marker::PhantomData<T>,
+}
+
+impl<'a, 'gc, T: FromValue<'gc>> FromValues<'gc, 'a> for RestOf<'a, 'gc, T> {
+    const ARITY: Arity = Arity { min: 0, max: None };
+    fn from_values(
+        _ctx: Context<'gc>,
+        pos: &mut usize,
+        values: &'a [Value<'gc>],
+    ) -> Result<Self, ConversionError<'gc>> {
+        let rest = &values[*pos..];
+        *pos = values.len();
+        Ok(Self {
+            rest,
+            _marker: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<'a, 'gc, T: FromValue<'gc>> RestOf<'a, 'gc, T> {
+    pub fn at(&self, ctx: Context<'gc>, index: usize) -> Result<T, ConversionError<'gc>> {
+        if let Some(value) = self.rest.get(index) {
+            T::try_from_value(ctx, *value).map_err(|e| e.with_appended_pos(index))
+        } else {
+            Err(ConversionError::ArityMismatch {
+                pos: index,
+                expected: T::ARITY,
+                found: self.rest.len(),
+            })
+        }
+    }
+
+    pub fn iter(
+        &self,
+        ctx: Context<'gc>,
+    ) -> impl Iterator<Item = Result<T, ConversionError<'gc>>> + '_ {
+        self.rest
+            .iter()
+            .enumerate()
+            .map(move |(i, v)| T::try_from_value(ctx, *v).map_err(|e| e.with_appended_pos(i)))
+    }
+
+    pub fn len(&self) -> usize {
+        self.rest.len()
+    }
+
+    pub fn as_slice(&self) -> &'a [Value<'gc>] {
+        self.rest
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rest.is_empty()
     }
 }

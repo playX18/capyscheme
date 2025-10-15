@@ -258,6 +258,14 @@ impl<'gc> Value<'gc> {
         self.raw_i64() as i32
     }
 
+    pub fn int32(self) -> Option<i32> {
+        if self.is_int32() {
+            Some(self.as_int32())
+        } else {
+            None
+        }
+    }
+
     pub fn as_flonum(self) -> f64 {
         assert!(self.is_flonum());
         let bits = (self.raw_i64() as u64).wrapping_sub(Self::DOUBLE_ENCODE_OFFSET);
