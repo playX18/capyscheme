@@ -1697,19 +1697,8 @@
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")
 (set! %load-extensions 
-  (cons (cons ".sls" %load-extensions) %load-extensions))
-(set! %load-extensions 
-  (cons (cons ".sld" %load-extensions) %load-extensions))
-
-
-(set! %load-extensions 
-  (cons (cons ".capy.sls" %load-extensions) %load-extensions))
-(set! %load-extensions 
-  (cons (cons ".capy.sld" %load-extensions) %load-extensions))
-(set! %load-extensions 
-  (cons (cons ".capy.scm" %load-extensions) %load-extensions))
-(set! %load-extensions 
-  (cons (cons ".sch" %load-extensions) %load-extensions))
+  (append '("sls" "sld" "capy.sls" "capy.sld" "capy.scm" "sch")
+          %load-extensions))
 
 (let ([user-module (define-module* '(capy user))])
   (current-module user-module))
