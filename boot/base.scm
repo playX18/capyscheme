@@ -460,18 +460,22 @@
   (syntax-case import-spec (library only except prefix rename srfi)
     ;; (srfi :n ...) -> (srfi srfi-n ...)
     ;; (srfi n ...) -> (srfi srfi-n ...)
-    ((library (srfi n rest ...))
+    ((library (srfi n rest ...) (version ...))
      (srfi-name? #'(srfi n rest ...))
      (let ((srfi-n (make-srfi-n #'srfi #'n)))
        (resolve-r6rs-interface
         (syntax-case #'(rest ...) ()
           (()
-           #`(library (srfi #,srfi-n)))
+           #`(library (srfi #,srfi-n (version ...))))
           ((name rest ...)
            ;; SRFI 97 says that the first identifier after the `n'
            ;; is used for the libraries name, so it must be ignored.
-           #`(library (srfi #,srfi-n rest ... )))))))
+           #`(library (srfi #,srfi-n rest ... (version ...))))))))
     
+    ((library (name name* ... (version ...)))
+      (and-map sym? #'(name name* ...))
+      (resolve-interface (syntax->datum #'(name name* ...)) #f '() #f))
+
     ((library (name name* ...))
      (and-map sym? #'(name name* ...))
      (resolve-interface (syntax->datum #'(name name* ...)) #f '() #f))
@@ -559,13 +563,13 @@
              (hashq-remove! replacements from)
              (lp (cdr in) (cons (vector to replace? var) out))))))))
     
-    ((name name* ... )
+    ((name name* ... (version ... ))
      (module-name? #'(name name* ...))
-     (resolve-r6rs-interface #'(library (name name* ...))))
+     (resolve-r6rs-interface #'(library (name name* ... (version ...)))))
 
     ((name name* ...)
      (module-name? #'(name name* ...))
-     (resolve-r6rs-interface #'(library (name name* ...))))))
+     (resolve-r6rs-interface #'(library (name name* ... ()))))))
 
 (define-syntax export 
     (syntax-rules ()
@@ -674,7 +678,15 @@
               (else
                (lp #'rest (cons #'id e) r x))))))))
     (syntax-case stx (export import srfi)
-      ((_ (srfi n rest ... )
+      [(_ (srfi n rest ...)
+          (export espec ...)
+          (import ispec ...))
+        (srfi-name? #'(srfi n rest ...))
+        (let ((srfi-n (make-srfi-n #'srfi #'n)))
+          #`(library (srfi #,srfi-n rest ... ())
+              (export espec ...)
+              (import ispec ...)))]
+      ((_ (srfi n rest ... (version ...))
           (export espec ...)
           (import ispec ...)
           body ...)
@@ -684,8 +696,17 @@
              (export espec ...)
              (import ispec ...)
              body ...)))
+      [(_ (name name* ...)
+          (export espec ...)
+          (import ispec ...)
+          body ...)
+          (module-name? #'(name name* ...))
+          #`(library (name name* ... ())
+              (export espec ...)
+              (import ispec ...)
+              body ...)]
 
-      ((_ (name name* ...)
+      ((_ (name name* ... (version ...))
           (export espec ...)
           (import ispec ...)
 	  body ...)
