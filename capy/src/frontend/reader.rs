@@ -343,7 +343,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             "symbol" => {
                 let symbol = Symbol::from_str(self.ctx, text);
 
-                Ok(symbol.into())
+                Ok(self.wrap(node, symbol.into()))
             }
 
             "string" => {
@@ -484,7 +484,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     return Err(LexicalError::InvalidSyntax { span: src.0 });
                 };
 
-                Ok(value)
+                Ok(self.wrap(node, value))
             }
 
             "quote" => {
@@ -496,7 +496,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 self.annotate(expr, &node);
 
                 let quote: Value<'gc> = Symbol::from_str(self.ctx, "quote").into();
-                Ok(list!(self.ctx, quote, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, quote, expr).into()))
             }
 
             "syntax" => {
@@ -508,7 +508,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 self.annotate(expr, &node);
 
                 let syntax: Value<'gc> = Symbol::from_str(self.ctx, "syntax").into();
-                Ok(list!(self.ctx, syntax, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, syntax, expr).into()))
             }
 
             "quasisyntax" => {
@@ -520,7 +520,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 self.annotate(expr, &node);
 
                 let quasisyntax: Value<'gc> = Symbol::from_str(self.ctx, "quasisyntax").into();
-                Ok(list!(self.ctx, quasisyntax, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, quasisyntax, expr).into()))
             }
 
             "unsyntax" => {
@@ -532,7 +532,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 self.annotate(expr, &node);
 
                 let unsyntax: Value<'gc> = Symbol::from_str(self.ctx, "unsyntax").into();
-                Ok(list!(self.ctx, unsyntax, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, unsyntax, expr).into()))
             }
 
             "unsyntax_splicing" => {
@@ -545,7 +545,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 let unsyntax_splicing: Value<'gc> =
                     Symbol::from_str(self.ctx, "unsyntax-splicing").into();
-                Ok(list!(self.ctx, unsyntax_splicing, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, unsyntax_splicing, expr).into()))
             }
 
             "quasiquote" => {
@@ -557,7 +557,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 self.annotate(expr, &node);
 
                 let quasiquote: Value<'gc> = Symbol::from_str(self.ctx, "quasiquote").into();
-                Ok(list!(self.ctx, quasiquote, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, quasiquote, expr).into()))
             }
 
             "unquote" => {
@@ -569,7 +569,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 self.annotate(expr, &node);
 
                 let unquote: Value<'gc> = Symbol::from_str(self.ctx, "unquote").into();
-                Ok(list!(self.ctx, unquote, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, unquote, expr).into()))
             }
 
             "unquote_splicing" => {
@@ -582,12 +582,12 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
                 let unquote_splicing: Value<'gc> =
                     Symbol::from_str(self.ctx, "unquote-splicing").into();
-                Ok(list!(self.ctx, unquote_splicing, expr).into())
+                Ok(self.wrap(node, list!(self.ctx, unquote_splicing, expr).into()))
             }
 
             "list" => {
                 let list = self.parse_compound_node(node, src, CompoundType::List)?;
-                Ok(list)
+                Ok(self.wrap(node, list))
             }
 
             "character" => {
@@ -599,7 +599,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         .unwrap_or(hex_part.len());
 
                     if end_of_hex == 0 {
-                        return Ok(Value::new('x'));
+                        return Ok(self.wrap(node, Value::new('x')));
                     }
 
                     let hex_str = &hex_part[..end_of_hex];
@@ -651,7 +651,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "vector" => {
                 let vec = self.parse_compound_node(node, src, CompoundType::Vector)?;
-                Ok(vec)
+                Ok(self.wrap(node, vec))
             }
 
             _ => todo!(
@@ -665,7 +665,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
     }
 
     pub fn wrap(&self, node: &Node, val: Value<'gc>) -> Value<'gc> {
-        if !self.wrap_stx {
+        if !self.wrap_stx || val.is::<Syntax>() {
             return val;
         }
         global!(
