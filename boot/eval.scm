@@ -42,8 +42,15 @@
         (let* ([m (if (null? m) (current-module) (car m))]
            [code (macroexpand x 'e '(eval))])
             (primitive-eval code)))))
+
+(define (try-resolve-module name autoload ensure)
+    (with-exception-handler 
+        (lambda exn #f)
+        (lambda () 
+            (resolve-module name autoload ensure))))
 ; load file containing base macros
 
 (primitive-load "boot/base.scm")
 (primitive-load "boot/libraries.scm")
+(primitive-load "boot/match.scm")
 (primitive-load "boot/cli.scm")

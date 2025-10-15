@@ -1877,15 +1877,6 @@ prim!(
         PrimValue::Value(check)
     },
 
-    "exact?" => is_exact(ssa, args, _h) {
-        let val = ssa.atom(args[0]);
-
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let check = ssa.handle_thunk_call_result(ssa.thunks.exactp, &[ctx, val], _h);
-
-        PrimValue::Value(check)
-    },
-
     "integer?" => is_integer(ssa, args, _h) {
         let val = ssa.atom(args[0]);
 
@@ -2041,6 +2032,14 @@ prim!(
         }
 
         PrimValue::Value(acc)
+    },
+
+    "/" => div(ssa, args, _h) {
+        let a = ssa.atom(args[0]);
+        let b = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.number_div, &[ctx, a, b], _h);
+        PrimValue::Value(result)
     },
 
     "=" => numeric_equal(ssa, args, _h) {
@@ -2205,6 +2204,20 @@ prim!(
         PrimValue::Value(result)
     },
 
+    "inexact?" => is_inexact(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let check = ssa.handle_thunk_call_result(ssa.thunks.inexactp, &[ctx, val], _h);
+        PrimValue::Value(check)
+    },
+
+    "exact?" => is_exact(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let check = ssa.handle_thunk_call_result(ssa.thunks.exactp, &[ctx, val], _h);
+        PrimValue::Value(check)
+    },
+
     "zero?" => is_zero(ssa, args, _h) {
         if args.is_empty() {
             return PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64));
@@ -2357,6 +2370,37 @@ prim!(
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
 
         let result = ssa.handle_thunk_call_result(ssa.thunks.length, &[ctx, val], _h);
+        PrimValue::Value(result)
+    },
+
+    "floor" => floor(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.floor, &[ctx, val], _h);
+        PrimValue::Value(result)
+    },
+
+    "quotient" => quotient(ssa, args, _h) {
+        let a = ssa.atom(args[0]);
+        let b = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.quotient, &[ctx, a, b], _h);
+        PrimValue::Value(result)
+    },
+
+    "remainder" => remainder(ssa, args, _h) {
+        let a = ssa.atom(args[0]);
+        let b = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.remainder, &[ctx, a, b], _h);
+        PrimValue::Value(result)
+    },
+
+    "modulo" => modulo(ssa, args, _h) {
+        let a = ssa.atom(args[0]);
+        let b = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.modulo, &[ctx, a, b], _h);
         PrimValue::Value(result)
     }
 );

@@ -323,7 +323,7 @@ thunks! {
         ctx: &Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
-
+        println!("call {subr}");
         make_assertion_violation(
             ctx,
             Value::new(false),
@@ -1145,6 +1145,17 @@ thunks! {
                 )
             }
         };
+
+        if b.is_zero() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "/").into(),
+                    Str::new(ctx, "division by zero", true).into(),
+                    &[a.into_value(*ctx), b.into_value(*ctx)],
+                )
+            }
+        }
 
         ThunkResult { code: 0, value: Number::div(*ctx, a, b).into_value(*ctx) }
     }

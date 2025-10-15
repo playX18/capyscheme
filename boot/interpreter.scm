@@ -61,7 +61,7 @@
                         (begin
                             (set! var (module-variable (current-module) name))
                             (if (not var)
-                                (undefined-violation var "undefined variable"))
+                                (undefined-violation var (format #f "undefined variable: ~a" name)))
                             (variable-ref var)))))]
         [(module-ref? expr)
             (let ([module (module-ref-module expr)]

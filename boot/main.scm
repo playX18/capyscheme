@@ -1,3 +1,8 @@
+(define (eq? x y) (eq? x y))
+(define (eqv? x y) (eqv? x y))
+(define (equal? x y) (equal? x y))
+(define (null? x) (null? x))
+
 (define (tuple->list x)
   (let lp ([i 0] [n (tuple-size x)] [acc '()])
     (if (< i n)
@@ -899,6 +904,7 @@
 
 
 (define (assertion-violation who message . irritants)
+  (print-stacktrace)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -1655,8 +1661,11 @@
       #t))
 
 (define (procedure-property proc key)
-  (let ([p (assq key (procedure-properties proc))])
-    (and p (cdr p))))
+  (cond 
+    [(procedure-properties proc)
+      (let ([p (assq key (procedure-properties proc))])
+        (and p (cdr p)))]
+    [else #f]))
   
 (define (procedure-name proc)
   (procedure-property proc 'name))
@@ -1697,7 +1706,7 @@
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")
 (set! %load-extensions 
-  (append '("sls" "sld" "capy.sls" "capy.sld" "capy.scm" "sch")
+  (append '("sls" "sld" "capy.sls" "capy.sld" ".capy.scm" ".sch")
           %load-extensions))
 
 (let ([user-module (define-module* '(capy user))])
