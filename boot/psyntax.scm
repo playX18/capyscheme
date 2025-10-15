@@ -7,6 +7,7 @@
 (define bound-identifier=? #f)
 (define $sc-dispatch #f)
 (define macroexpand #f)
+(define :ellipsis? #f)
 (define <er-macro-transformer> 
   (let* ([rtd (make-record-type-descriptor '<er-macro-transformer> #f #f #f #f '#((immutable proc)))]
          [rcd (make-record-constructor-descriptor rtd #f #f)])
@@ -1929,7 +1930,7 @@
             (let ((x ls)) (if (not (list? x)) (syntax-violation 'generate-temporaries "invalid argument" x)))
             (let ((mod (cons 'hygiene (module-name (current-module)))))
               (map (lambda (x) (wrap (gen-var 't) top-wrap mod)) ls))))
-
+    (set! :ellipsis? ellipsis?)
 
     (set! macroexpand (lambda (x . rest)
         "Expands expression `x` in the context of module `m` or (current-module) if `m` is not given."

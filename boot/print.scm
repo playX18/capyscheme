@@ -1,7 +1,6 @@
 (define procedure-printer 
     (make-parameter 
         (lambda (proc port slashify)
-           
             (print 
                 (string-append "#<procedure" (let ([name (procedure-name proc)])
                     (if name (string-append " " (if (symbol? name) (symbol->string name) name)) "")) " " (number->string (hash proc) 16) ">")
@@ -191,6 +190,10 @@
                 (display ">" p)]
             [(eq? (unspecified) x)
                 (printstr "#<unspecified>" p)]
+            [(boolean? x)
+                (printstr (if x "#t" "#f") p)]
+            [(variable? x)
+                (printstr (string-append "#<variable " (number->string (hash x) 16) ">") p)]
             [else (printstr "<TODO>" p)]))
     
     (define (printnumber n p slashify)

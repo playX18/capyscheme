@@ -1,4 +1,4 @@
-use cranelift::prelude::{InstBuilder, IntCC, types};
+use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
 use rsgc::mmtk::{
     BarrierSelector, util::metadata::side_metadata::GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS,
@@ -119,6 +119,52 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.block_params(join)[0]
     }
 
+    pub fn inline_float_unary_op(
+        &mut self,
+        value: ir::Value,
+        fastpath: impl FnOnce(&mut Self, ir::Value) -> ir::Value,
+        slowpath: impl FnOnce(&mut Self, ir::Value) -> ir::Value,
+    ) -> ir::Value {
+        let is_f64 = self.is_flonum(value);
+        let fastpath_bb = self.builder.create_block();
+        let slowpath_bb = self.builder.create_block();
+        let join = self.builder.create_block();
+
+        self.builder.append_block_param(join, types::I64);
+
+        self.builder
+            .ins()
+            .brif(is_f64, fastpath_bb, &[], slowpath_bb, &[]);
+
+        self.builder.switch_to_block(fastpath_bb);
+        {
+            let f64_encode_off = self
+                .builder
+                .ins()
+                .iconst(types::I64, Value::DOUBLE_ENCODE_OFFSET as i64);
+            let value_bits = self.builder.ins().isub(value, f64_encode_off);
+            let value_f64 = self
+                .builder
+                .ins()
+                .bitcast(types::F64, MemFlags::new(), value_bits);
+            let res = fastpath(self, value_f64);
+            let res = self.builder.ins().bitcast(types::I64, MemFlags::new(), res);
+            let res = self
+                .builder
+                .ins()
+                .iadd_imm(res, Value::DOUBLE_ENCODE_OFFSET as i64);
+            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
+        }
+        self.builder.switch_to_block(slowpath_bb);
+        {
+            let res = slowpath(self, value);
+            self.builder.ins().jump(join, &[BlockArg::Value(res)]);
+        }
+
+        self.builder.switch_to_block(join);
+        self.builder.block_params(join)[0]
+    }
+
     pub fn inline_unary_op(
         &mut self,
         value: ir::Value,
@@ -164,6 +210,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder
             .ins()
             .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG as i64)
+    }
+
+    pub fn is_flonum(&mut self, v: ir::Value) -> ir::Value {
+        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG as i64);
+        let not_zero = self.builder.ins().icmp_imm(IntCC::NotEqual, v, 0);
+        let not_i32 = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::NotEqual, tag, Value::NUMBER_TAG as i64);
+        self.builder.ins().band(not_i32, not_zero)
     }
 
     pub fn vector_ref_imm(&mut self, vec: ir::Value, ix: usize) -> ir::Value {

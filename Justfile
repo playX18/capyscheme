@@ -45,6 +45,7 @@ install-portable: (build "true")
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     cp -r boot {{install-prefix}}/share/capy/{{version}}
     cp -r core {{install-prefix}}/share/capy/{{version}}
+    cp -r core.scm {{install-prefix}}/share/capy/{{version}}
     cp -r stdlib {{install-prefix}}/share/capy/{{version}}
     cp -r batteries {{install-prefix}}/share/capy/{{version}}
     cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
@@ -60,6 +61,7 @@ tar: (build "true")
     @-mkdir -p temp-dist/capy-{{version}}
     cp -r boot temp-dist/capy-{{version}}/
     cp -r core temp-dist/capy-{{version}}/
+    cp -r core.scm temp-dist/capy-{{version}}/
     cp -r scheme temp-dist/capy-{{version}}/
     cp -r batteries temp-dist/capy-{{version}}/
     cp '{{target-path}}/capy' temp-dist/capy-{{version}}/

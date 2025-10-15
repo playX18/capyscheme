@@ -4,6 +4,7 @@ use crate::{
     fluid, native_cont, native_fn,
     runtime::{
         Context,
+        modules::Variable,
         value::{Closure, Pair, Str, Symbol, Value, Vector},
     },
 };
@@ -222,6 +223,24 @@ native_fn!(
             return nctx.wrong_argument_violation("boolean=?", "expected a boolean", Some(b), Some(2), 2, &[a, b]);
         }
         nctx.return_(Value::new(a.as_bool() == b.as_bool()))
+    }
+
+    pub ("variable?") fn is_variable<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
+        nctx.return_(Value::new(v.is::<Variable>()))
+    }
+
+    pub ("symbol=?") fn symbol_eq<'gc>(
+        nctx,
+        a: Value<'gc>,
+        b: Value<'gc>
+    ) -> Value<'gc> {
+        if !a.is::<Symbol>() {
+            return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(a), Some(1), 2, &[a, b]);
+        }
+        if !b.is::<Symbol>() {
+            return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(b), Some(2), 2, &[a, b]);
+        }
+        nctx.return_(Value::new(a == b))
     }
 );
 

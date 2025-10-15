@@ -1,8 +1,6 @@
 
 (define-library (scheme base)
-  (import (rename (except (core)
-                          for-each map member assoc string->list string-copy string-fill!
-                          vector->list vector-fill! bytevector-copy vector-map)
+  (import (rename (core)
                   (define-record-type r6rs:define-record-type)
                   (current-input-port r6rs:current-input-port)
                   (current-output-port r6rs:current-output-port)
@@ -459,18 +457,6 @@
       (lambda (n m)
         (values (floor-quotient n m) (modulo n m))))
 
-    (define get-output-bytevector
-      (lambda (port)
-        (get-accumulated-bytevector port)))
-
-    (define get-output-string
-      (lambda (port)
-        (get-accumulated-string port)))
-
-    (define input-port-open?
-      (lambda (port)
-        (and (not (port-closed? port)) (input-port? port))))
-
     (define list-set!
       (lambda (lst k obj)
         (let loop ((lst lst) (k k))
@@ -646,39 +632,6 @@
         (let-optionals options ((port (current-output-port)))
           (r6rs:flush-output-port port))))
 
-    (define-syntax cond-expand
-      (lambda (x)
-        (syntax-case x (else)
-          ((_)
-           #'(begin #f))
-          ((_ (else body ...))
-           #'(begin #f body ...))
-          ((_ (else body ...) more ...)
-           (syntax-violation 'cond-expand "misplaced else" x))
-          ((_ (conditions body ...) more ...)
-           (if (fulfill-feature-requirements? x (syntax->datum #'conditions))
-               #'(begin #f body ...)
-               #'(cond-expand more ...))))))
-
-    (define-syntax define-values
-      (lambda (x)
-        (syntax-case x ()
-          ((_ var expr)
-           (identifier? (syntax var))
-           (syntax (define var (call-with-values (lambda () expr) list))))
-          ((_ (var ...) expr)
-           (with-syntax (((i ...) (iota (length (syntax (var ...))))))
-             (syntax
-              (begin
-                (define temp (call-with-values (lambda () expr) vector))
-                (define var (vector-ref temp i)) ...))))
-          ((_ (var ... . var2) expr)
-           (with-syntax (((i ...) (iota (length (syntax (var ...))))) (n (length (syntax (var ...)))))
-             (syntax
-              (begin
-                (define temp (call-with-values (lambda () expr) list))
-                (define var (list-ref temp i)) ...
-                (define var2 (list-tail temp n)))))))))
 
     (define-syntax let-syntax
       (syntax-rules ()

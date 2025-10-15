@@ -33,8 +33,7 @@
 
   (import (core primitives)
           (core lists)
-          (core syntax-case)
-          (core destructuring))
+          (core syntax-case))
 
   (define-syntax define-record-type
     (lambda (x)

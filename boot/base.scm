@@ -1,7 +1,6 @@
 (current-module (resolve-module '(capy) #f #f))
 
 
-
 (define-syntax ...
   (lambda (x)
     (syntax-violation '... "bad use of '...' syntactic keyword" x x)))
@@ -490,8 +489,8 @@
                                 (or (module-variable mod sym)
                                     (error 'import (format
                                              #f
-                                             "no binding `~a' in module ~a"
-                                             sym mod))))
+                                             "no binding '~a' in module ~a"
+                                             sym mod (module-uses mod)))))
                    (if (core-hash-ref (module-replacements mod) sym)
                      (core-hash-put! (module-replacements iface) sym #t)))
                  (syntax->datum #'(identifier ...)))
@@ -505,8 +504,8 @@
                                    (module-add! iface sym var))
                                  mod)
        (for-each (lambda (sym)
-                   (unless (module-local-variable iface sym)
-                     (error 'import (format #f "no binding `~a' in module ~a" sym mod)))
+                   (if (not (module-local-variable iface sym))
+                     (error 'import (format #f "no binding '~a' in module ~a ~a" sym mod (module-uses mod) )))
                    (module-remove! iface sym))
                  (syntax->datum #'(identifier ...)))
        iface))
@@ -544,12 +543,13 @@
                 (if (module-local-variable iface to)
                   (error 'import (format
                            #f
-                           "duplicate binding for `~a' in module ~a"
+                           "duplicate binding for '~a' in module ~a (rename uses ~a)"
                            to
-                           mod)))
+                           mod
+                           (module-uses mod))))
                 (module-add! iface to var)
                 (if replace?
-                  (hashq-set! replacements to #t))))
+                  (core-hash-put! replacements to #t))))
             out)
            iface)
           (else
@@ -557,10 +557,10 @@
                   (to (cdar in))
                   (var (module-variable mod from))
                   (replace? (core-hash-ref replacements from)))
-             (unless var (error 'resolve-r6rs-interface
-                           (format #f "no binding `~a' in module ~a" from mod)))
+             (if (not var) (error 'resolve-r6rs-interface
+                           (format #f "no binding `~a` in module ~a" from mod)))
              (module-remove! iface from)
-             (hashq-remove! replacements from)
+             (core-hash-remove! replacements from)
              (lp (cdr in) (cons (vector to replace? var) out))))))))
     
     ((name name* ... (version ... ))
@@ -910,7 +910,7 @@
     ((unless test body ...)
      (if test #f (begin body ...)))))
 
-
+(eval-when (expand load eval)
 (define call-with-include-port 
   (let ([syntax-dirname
     (lambda (stx)
@@ -927,9 +927,10 @@
           [(absolute-path-string? file) file]
           [(string? dir) (string-append dir "/" file)]
           [else file]))
+      (format #t "Including file: ~a\n" path)
       (call-with-input-file
         path
-        proc))))
+        proc)))))
 
 (define-syntax include 
   (lambda (stx)
@@ -944,3 +945,200 @@
                   (if (eof-object? (syntax-expression x))
                       '()
                       (cons (datum->syntax #'filename x) (lp))))))))])))
+
+(define (generate-temporary-symbol)
+  (module-gensym ".L"))
+
+;;;;;;;;;;;;;;
+;; let-values
+;;
+;; Current approach is to translate
+;;
+;;   (let-values (((x y . z) (foo a b))
+;;                ((p q) (bar c)))
+;;     (baz x y z p q))
+;;
+;; into
+;;
+;;   (call-with-values (lambda () (foo a b))
+;;     (lambda (<tmp-x> <tmp-y> . <tmp-z>)
+;;       (call-with-values (lambda () (bar c))
+;;         (lambda (<tmp-p> <tmp-q>)
+;;           (let ((x <tmp-x>)
+;;                 (y <tmp-y>)
+;;                 (z <tmp-z>)
+;;                 (p <tmp-p>)
+;;                 (q <tmp-q>))
+;;             (baz x y z p q))))))
+
+;; We could really use quasisyntax here...
+(define-syntax let-values
+  (lambda (x)
+    (syntax-case x ()
+      ((_ ((binds exp)) b0 b1 ...)
+       (syntax (call-with-values (lambda () exp)
+                 (lambda binds b0 b1 ...))))
+      ((_ (clause ...) b0 b1 ...)
+       (let lp ((clauses (syntax (clause ...)))
+                (ids '())
+                (tmps '()))
+         (if (null? clauses)
+             (with-syntax (((id ...) ids)
+                           ((tmp ...) tmps))
+               (syntax (let ((id tmp) ...)
+                         b0 b1 ...)))
+             (syntax-case (car clauses) ()
+               (((var ...) exp)
+                (with-syntax (((new-tmp ...) (generate-temporaries 
+                                              (syntax (var ...))))
+                              ((id ...) ids)
+                              ((tmp ...) tmps))
+                  (with-syntax ((inner (lp (cdr clauses)
+                                           (syntax (var ... id ...))
+                                           (syntax (new-tmp ... tmp ...)))))
+                    (syntax (call-with-values (lambda () exp)
+                              (lambda (new-tmp ...) inner))))))
+               ((vars exp)
+                (with-syntax ((((new-var . new-tmp) ...)
+                               (let lp ((vars (syntax vars)))
+                                 (syntax-case vars ()
+                                   ((id . rest)
+                                    (acons (syntax id)
+                                           (car
+                                            (generate-temporaries (syntax (id))))
+                                           (lp (syntax rest))))
+                                   (id (acons (syntax id)
+                                              (car
+                                               (generate-temporaries (syntax (id))))
+                                              '())))))
+                              ((id ...) ids)
+                              ((tmp ...) tmps))
+                  (with-syntax ((inner (lp (cdr clauses)
+                                           (syntax (new-var ... id ...))
+                                           (syntax (new-tmp ... tmp ...))))
+                                (args (let lp ((tmps (syntax (new-tmp ...))))
+                                        (syntax-case tmps ()
+                                          ((id) (syntax id))
+                                          ((id . rest) (cons (syntax id)
+                                                             (lp (syntax rest))))))))
+                    (syntax (call-with-values (lambda () exp)
+                              (lambda args inner)))))))))))))
+
+;;;;;;;;;;;;;;
+;; let*-values
+;;
+;; Current approach is to translate
+;;
+;;   (let*-values (((x y z) (foo a b))
+;;                ((p q) (bar c)))
+;;     (baz x y z p q))
+;;
+;; into
+;;
+;;   (call-with-values (lambda () (foo a b))
+;;     (lambda (x y z)
+;;       (call-with-values (lambda (bar c))
+;;         (lambda (p q)
+;;           (baz x y z p q)))))
+
+(define-syntax let*-values
+  (syntax-rules ()
+    ((let*-values () body ...)
+     (let () body ...))
+    ((let*-values ((vars-1 binding-1) (vars-2 binding-2) ...) body ...)
+     (call-with-values (lambda () binding-1)
+       (lambda vars-1
+         (let*-values ((vars-2 binding-2) ...)
+           body ...))))))
+(define-syntax with-implicit
+    (lambda (x)
+      (syntax-case x ()
+        [(_ (k x ...) e1 ... e2)
+         #'(with-syntax ([x (datum->syntax #'k 'x)] ...)
+             e1 ... e2)]
+        [_ (syntax-violation 'with-implicit "invalid syntax" x)])))
+
+(define-syntax define-library 
+  (lambda (stx)
+    (define (handle-includes filenames)
+      (syntax-case filenames ()
+        (() #'())
+        ((filename . filenames)
+         (append (call-with-include-port
+                  #'filename
+                  (lambda (p)
+                    (let lp ()
+                      (let ((x (read-syntax p)))
+                        (if (eof-object? x)
+                            #'()
+                            (cons (datum->syntax #'filename x) (lp)))))))
+                 (handle-includes #'filenames)))))
+    (define (handle-cond-expand clauses)
+      (define (has-req? req)
+        (syntax-case req (and or not library)
+          ((and req ...)
+           (and-map has-req? #'(req ...)))
+          ((or req ...)
+           (or-map has-req? #'(req ...)))
+          ((not req)
+           (not (has-req? #'req)))
+          ((library lib-name)
+           (->bool
+            (false-if-exception
+             (resolve-r6rs-interface
+              (syntax->datum #'lib-name)))))
+          (id
+           (identifier? #'id)
+           ;; FIXME: R7RS (features) isn't quite the same as
+           ;; %cond-expand-features; see scheme/base.scm.
+           (memq (syntax->datum #'id) %cond-expand-features))))
+      (syntax-case clauses (else)
+        (() #'())  ; R7RS says this is not specified :-/
+        (((else decl ...))
+         #'(decl ...))
+        (((test decl ...) . clauses)
+         (if (has-req? #'test)
+             #'(decl ...)
+             (handle-cond-expand #'clauses)))))
+    (define (partition-decls decls exports imports code)
+      (syntax-case decls (export import begin include include-ci
+                                 include-library-declarations cond-expand)
+        (() (values exports imports (reverse code)))
+        (((export clause ...) . decls)
+         (partition-decls #'decls (append exports #'(clause ...)) imports code))
+        (((import clause ...) . decls)
+         (partition-decls #'decls exports (append imports #'(clause ...)) code))
+        (((begin expr ...) . decls)
+         (partition-decls #'decls exports imports
+                          (cons #'(begin expr ...) code)))
+        (((include filename ...) . decls)
+         (partition-decls #'decls exports imports
+                          (cons #'(begin (include filename) ...) code)))
+        (((include-ci filename ...) . decls)
+         (partition-decls #'decls exports imports
+                          (cons #'(begin (include-ci filename) ...) code)))
+        (((include-library-declarations filename ...) . decls)
+         (syntax-case (handle-includes #'(filename ...)) ()
+           ((decl ...)
+            (partition-decls #'(decl ... . decls) exports imports code))))
+        (((cond-expand clause ...) . decls)
+         (syntax-case (handle-cond-expand #'(clause ...)) ()
+           ((decl ...)
+            (partition-decls #'(decl ... . decls) exports imports code))))))
+
+    (syntax-case stx ()
+      ((_ name decl ...)
+       (call-with-values (lambda ()
+                           (partition-decls #'(decl ...) '() '() '()))
+         (lambda (exports imports code)
+           #`(library name
+               (export . #,exports)
+               (import . #,imports)
+               . #,code)))))))
+
+(define-syntax include-library-declarations
+  (lambda (x)
+    (syntax-violation
+     'include-library-declarations
+     "use of 'include-library-declarations' outside define-library" x x)))
+

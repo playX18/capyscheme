@@ -46,7 +46,7 @@
           (core lists)
           (core unicode)
           (core optargs))
-  (displayln "LOADING core/hashtables...")
+
   (define make-generic-hashtable
     (lambda (hash-function equiv-function ht-root size mutable?)
 
