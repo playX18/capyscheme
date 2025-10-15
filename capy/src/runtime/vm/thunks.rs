@@ -2863,6 +2863,921 @@ thunks! {
                 )
         }
     }
+
+    // fixnums, most of them just return error code
+    // since we try to inline them.
+    pub fn fxplus(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx+").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx+").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxeq(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx=").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx=?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxlt(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx<?").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx<?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxgt(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx>?").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx>?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxle(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx<=?").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx<=?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxge(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx>=?").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx>=?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxzero(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxzero?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxpositive(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxpositive?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxnegative(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxnegative?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxodd(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxodd?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxeven(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxeven?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxmax(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxmax").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxmax").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxmin(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxmin").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxmin").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxtimes(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx*").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx*").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxminus(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx-").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx-").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxdiv(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx/").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        if let Some(Number::Fixnum(0)) = y.number() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fx/").into(),
+                    Str::new(ctx, "division by zero", true).into(),
+                    &[y],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fx/").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxmod(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxmod").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        if let Some(Number::Fixnum(0)) = y.number() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxmod").into(),
+                    Str::new(ctx, "division by zero", true).into(),
+                    &[y],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxmod").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxdiv_and_mod(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxdiv-and-mod").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        if let Some(Number::Fixnum(0)) = y.number() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxdiv-and-mod").into(),
+                    Str::new(ctx, "division by zero", true).into(),
+                    &[y],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxdiv-and-mod").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxdiv0(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxdiv0").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        if let Some(Number::Fixnum(0)) = y.number() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxdiv0").into(),
+                    Str::new(ctx, "division by zero", true).into(),
+                    &[y],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxdiv0").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxmod0(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxmod0").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        if let Some(Number::Fixnum(0)) = y.number() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxmod0").into(),
+                    Str::new(ctx, "division by zero", true).into(),
+                    &[y],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxmod0").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxdiv0_and_mod0(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxdiv0-and-mod0").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        if let Some(Number::Fixnum(0)) = y.number() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxdiv0-and-mod0").into(),
+                    Str::new(ctx, "division by zero", true).into(),
+                    &[y],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxdiv0-and-mod0").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxnot(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxnot").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxior(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxior").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxior").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxxor(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        y: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxxor").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxxor").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[y],
+            )
+        }
+    }
+
+    pub fn fxif(
+        ctx: &Context<'gc>,
+        test: Value<'gc>,
+        then: Value<'gc>,
+        else_: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !test.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxif").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[test],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxif").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[then, else_],
+            )
+        }
+    }
+
+    pub fn fxbit_count(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxbit-count").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxlength(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxlength").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxfirst_bit_set(
+        ctx: &Context<'gc>,
+        x: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxfirst-bit-set").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[x],
+            )
+        }
+    }
+
+    pub fn fxbit_setp(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        index: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxbit-set?").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxbit-set?").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[index],
+            )
+        }
+    }
+
+    pub fn fxcopy_bit(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        index: Value<'gc>,
+        value: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxcopy-bit").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxcopy-bit").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[index, value],
+            )
+        }
+    }
+
+    pub fn fxcopy_bit_field(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        start: Value<'gc>,
+        width: Value<'gc>,
+        value: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxcopy-bit-field").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxcopy-bit-field").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[start, width, value],
+            )
+        }
+    }
+
+    pub fn fxarithmetic_shift(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        count: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxarithmetic-shift").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxarithmetic-shift").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[count],
+            )
+        }
+    }
+
+    pub fn fxarithmetic_shift_left(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        count: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxarithmetic-shift-left").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxarithmetic-shift-left").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[count],
+            )
+        }
+    }
+
+    pub fn fxarithmetic_shift_right(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        count: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxarithmetic-shift-right").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxarithmetic-shift-right").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[count],
+            )
+        }
+    }
+
+    pub fn fxrotate_bit_field(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        start: Value<'gc>,
+        width: Value<'gc>,
+        count: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxrotate-bit-field").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxrotate-bit-field").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[start, width, count],
+            )
+        }
+    }
+
+    pub fn fxreverse_bit_field(
+        ctx: &Context<'gc>,
+        x: Value<'gc>,
+        start: Value<'gc>,
+        end: Value<'gc>
+    ) -> ThunkResult<'gc> {
+
+        if !x.is_int32() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "fxreverse-bit-field").into(),
+                    Str::new(ctx, "not a fixnum", true).into(),
+                    &[x],
+                )
+            }
+        }
+
+        return ThunkResult {
+            code: 1, value:
+            make_assertion_violation(ctx,
+                Symbol::from_str(*ctx, "fxreverse-bit-field").into(),
+                Str::new(ctx, "not a fixnum", true).into(),
+                &[start, end],
+            )
+        }
+    }
 }
 
 #[unsafe(no_mangle)]

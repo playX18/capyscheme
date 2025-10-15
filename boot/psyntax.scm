@@ -2137,8 +2137,7 @@
     (global-extend 'define-syntax 'define-syntax '())
     (global-extend 'define-syntax-parameter 'define-syntax-parameter '())
     (global-extend 'module-ref '@ expand-public-ref)
-    (global-extend 'module-ref '@@ expand-private-ref)
-    )
+    (global-extend 'module-ref '@@ expand-private-ref))
 
 
 (define with-syntax
