@@ -189,6 +189,8 @@
                 (display "#<module " p)
                 (display (module-name x) p)
                 (display ">" p)]
+            [(eq? (unspecified) x)
+                (printstr "#<unspecified>" p)]
             [else (printstr "<TODO>" p)]))
     
     (define (printnumber n p slashify)
