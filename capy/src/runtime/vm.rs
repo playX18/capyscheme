@@ -1,4 +1,5 @@
 use std::{
+    io::ErrorKind,
     marker::PhantomData,
     ops::{FromResidual, Try},
     sync::atomic::Ordering,
@@ -11,7 +12,7 @@ use crate::runtime::{
         Closure, ConversionError, NativeLocation, NativeReturn, PROCEDURES, ReturnCode, Str,
         Symbol, TryIntoValues, TypeCode16, Value, Vector,
     },
-    vm::trampolines::get_trampoline_into_scheme,
+    vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
 };
 use rsgc::{Gc, Trace};
 
@@ -389,6 +390,8 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         reth: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
         if !proc.has_typ16(TypeCode16::CLOSURE_PROC) {
+            crate::runtime::vm::debug::print_stacktraces_impl(self.ctx);
+
             return self.wrong_argument_violation(
                 "apply",
                 "attempt to call non procedure value",
@@ -591,6 +594,136 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .chain(irritants.iter().copied())
             .collect::<Vec<_>>();
         self.return_call(error, &args)
+    }
+
+    pub fn raise_io_error(
+        self,
+        err: std::io::Error,
+        operation: IoOperation,
+        who: &str,
+        message: &str,
+        filename: Value<'gc>,
+    ) -> NativeCallReturn<'gc> {
+        let message = if let Some(code) = err.raw_os_error() {
+            Str::from_str(&self.ctx, &format!("{message} ({code})"))
+        } else {
+            Str::from_str(&self.ctx, message)
+        }
+        .into();
+        let who = if who.len() != 0 {
+            Symbol::from_str(self.ctx, who).into()
+        } else {
+            Value::new(false)
+        };
+
+        match operation {
+            IoOperation::Open => match err.raw_os_error() {
+                Some(libc::ENOENT) => {
+                    let error = root_module(self.ctx)
+                        .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
+                        .expect("pre boot error");
+                    return self.return_call(error, &[who, message, filename]);
+                }
+
+                Some(libc::EEXIST) => {
+                    let error = root_module(self.ctx)
+                        .get_str(self.ctx, "raise-i/o-file-already-exists-error")
+                        .expect("pre boot error");
+                    return self.return_call(error, &[who, message, filename]);
+                }
+
+                Some(libc::EROFS) | Some(libc::EISDIR) | Some(libc::ETXTBSY) => {
+                    let error = root_module(self.ctx)
+                        .get_str(self.ctx, "raise-i/o-file-is-read-only-error")
+                        .expect("pre boot error");
+                    return self.return_call(error, &[who, message, filename]);
+                }
+                Some(libc::EACCES) => {
+                    let error = root_module(self.ctx)
+                        .get_str(self.ctx, "raise-i/o-file-protection-error")
+                        .expect("pre boot error");
+                    return self.return_call(error, &[who, message, filename]);
+                }
+
+                _ => {
+                    let error = root_module(self.ctx)
+                        .get_str(self.ctx, "raise-i/o-error")
+                        .expect("pre boot error");
+                    return self.return_call(error, &[who, message, filename]);
+                }
+            },
+
+            IoOperation::Read => {
+                let error = root_module(self.ctx)
+                    .get_str(self.ctx, "raise-i/o-read-error")
+                    .expect("pre boot error");
+                return self.return_call(error, &[who, message, filename]);
+            }
+
+            IoOperation::Write => {
+                let error = root_module(self.ctx)
+                    .get_str(self.ctx, "raise-i/o-write-error")
+                    .expect("pre boot error");
+                return self.return_call(error, &[who, message, filename]);
+            }
+
+            IoOperation::Seek => {
+                let error = root_module(self.ctx)
+                    .get_str(self.ctx, "raise-i/o-seek-error")
+                    .expect("pre boot error");
+                return self.return_call(error, &[who, message, filename]);
+            }
+            _ => {
+                let error = root_module(self.ctx)
+                    .get_str(self.ctx, "raise-i/o-error")
+                    .expect("pre boot error");
+                return self.return_call(error, &[who, message, filename]);
+            }
+        };
+    }
+
+    pub fn raise_io_filesystem_error(
+        self,
+        who: &str,
+        message: &str,
+        err: std::io::Error,
+        old_filename: Value<'gc>,
+        new_filename: Value<'gc>,
+    ) -> NativeCallReturn<'gc> {
+        let message = if let Some(code) = err.raw_os_error() {
+            Str::from_str(&self.ctx, &format!("{message} ({code})"))
+        } else {
+            Str::from_str(&self.ctx, message)
+        }
+        .into();
+        let who = if who.len() != 0 {
+            Symbol::from_str(self.ctx, who).into()
+        } else {
+            Value::new(false)
+        };
+
+        match err.kind() {
+            ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty => {
+                let error = root_module(self.ctx)
+                    .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
+                    .expect("pre boot error");
+                self.return_call(error, &[who, message, old_filename])
+            }
+
+            ErrorKind::AlreadyExists => {
+                let error = root_module(self.ctx)
+                    .get_str(self.ctx, "raise-i/o-file-already-exists-error")
+                    .expect("pre boot error");
+                self.return_call(error, &[who, message, new_filename])
+            }
+
+            _ => {
+                let error = root_module(self.ctx)
+                    .get_str(self.ctx, "raise-i/o-error")
+                    .expect("pre boot error");
+                self.return_call(error, &[who, message, old_filename, new_filename])
+            }
+        }
     }
 
     pub fn wrong_argument_violation(

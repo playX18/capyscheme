@@ -324,6 +324,11 @@ thunks! {
         subr: Value<'gc>
     ) -> Value<'gc> {
         println!("call {subr}");
+        crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
+        let ret = unsafe { returnaddress(0) };
+        backtrace::resolve(ret as _, |sym| {
+            println!("{sym:?}");
+        });
         make_assertion_violation(
             ctx,
             Value::new(false),

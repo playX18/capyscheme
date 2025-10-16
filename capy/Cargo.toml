@@ -18,6 +18,7 @@ simplehash.workspace = true
 num.workspace = true
 tree-sitter.workspace = true
 tree-sitter-scheme.workspace = true
+rustix = { version = "*", features = ["fs"] }
 paste.workspace = true
 pretty.workspace = true
 hashlink.workspace = true

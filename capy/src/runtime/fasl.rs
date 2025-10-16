@@ -115,6 +115,10 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
 
+        if obj.is_number() {
+            return Ok(());
+        }
+
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Unsupported type for FASL serialization",
@@ -239,7 +243,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             self.put(syntax.wrap())?;
             return Ok(());
         }
-
+        println!("CAN'T SERIALIZE: {obj}");
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Unsupported type for FASL serialization",
@@ -269,6 +273,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
                 self.put32(str.len() as u32)?;
                 self.put_many(str.to_string().as_bytes())?;
             } else {
+                println!("CAN'T SERIALIZE LITE: {key}");
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "Unsupported type for FASL serialization",
@@ -432,9 +437,10 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             }
 
             _x @ FASL_TAG_BIGINT => {
+                let negative = self.read8()? != 0;
                 let count = self.read32()? as usize;
                 let mut digits = Vec::with_capacity(count);
-                let negative = self.read8()? != 0;
+
                 for _ in 0..count {
                     digits.push(self.read64()?);
                 }

@@ -239,6 +239,7 @@ dependencies = [
  "probe",
  "rand",
  "rsgc",
+ "rustix",
  "sha3",
  "simplehash",
  "target-lexicon",

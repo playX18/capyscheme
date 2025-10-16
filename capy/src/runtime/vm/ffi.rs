@@ -6,6 +6,7 @@ use std::{
 use crate::{
     global, native_fn,
     runtime::{
+        modules::define,
         prelude::*,
         vm::thunks::{ThunkResult, make_assertion_violation},
         vmthread::{VM_THREAD, VMThreadTask},
@@ -338,6 +339,14 @@ native_fn!(
         match alignof(ctx, ftype) {
             Ok(align) => nctx.return_(align),
             Err(e) => nctx.conversion_error("alignof", e),
+        }
+    }
+
+    pub ("sizeof") fn sizeof_scm<'gc>(nctx, ftype: Value<'gc>) -> usize {
+        let ctx = nctx.ctx;
+        match sizeof(ctx, ftype) {
+            Ok(size) => nctx.return_(size),
+            Err(e) => nctx.conversion_error("sizeof", e),
         }
     }
 
@@ -1039,4 +1048,85 @@ extern "C-unwind" fn c_foreign_call<'gc>(
 
 pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
     register_ffi_fns(ctx);
+
+    define(ctx, "void", ForeignType::Void.into());
+    define(ctx, "float", ForeignType::Float.into());
+    define(ctx, "double", ForeignType::Double.into());
+    define(ctx, "complex-float", ForeignType::ComplexFloat.into());
+    define(ctx, "complex-double", ForeignType::ComplexDouble.into());
+    define(ctx, "uint8", ForeignType::Uint8.into());
+    define(ctx, "int8", ForeignType::Int8.into());
+    define(ctx, "uint16", ForeignType::Uint16.into());
+    define(ctx, "int16", ForeignType::Int16.into());
+    define(ctx, "uint32", ForeignType::Uint32.into());
+    define(ctx, "int32", ForeignType::Int32.into());
+    define(ctx, "uint64", ForeignType::Uint64.into());
+    define(ctx, "int64", ForeignType::Int64.into());
+
+    if size_of::<std::ffi::c_short>() == 2 {
+        define(ctx, "short", ForeignType::Int16.into());
+        define(ctx, "unsigned-short", ForeignType::Uint16.into());
+    } else if size_of::<std::ffi::c_short>() == 4 {
+        define(ctx, "short", ForeignType::Int32.into());
+        define(ctx, "unsigned-short", ForeignType::Uint32.into());
+    } else if size_of::<std::ffi::c_short>() == 8 {
+        define(ctx, "short", ForeignType::Int64.into());
+        define(ctx, "unsigned-short", ForeignType::Uint64.into());
+    }
+
+    if size_of::<std::ffi::c_int>() == 2 {
+        define(ctx, "int", ForeignType::Int16.into());
+        define(ctx, "unsigned-int", ForeignType::Uint16.into());
+    } else if size_of::<std::ffi::c_int>() == 4 {
+        define(ctx, "int", ForeignType::Int32.into());
+        define(ctx, "unsigned-int", ForeignType::Uint32.into());
+    } else if size_of::<std::ffi::c_int>() == 8 {
+        define(ctx, "int", ForeignType::Int64.into());
+        define(ctx, "unsigned-int", ForeignType::Uint64.into());
+    }
+
+    if size_of::<std::ffi::c_long>() == 2 {
+        define(ctx, "long", ForeignType::Int16.into());
+        define(ctx, "unsigned-long", ForeignType::Uint16.into());
+    } else if size_of::<std::ffi::c_long>() == 4 {
+        define(ctx, "long", ForeignType::Int32.into());
+        define(ctx, "unsigned-long", ForeignType::Uint32.into());
+    } else if size_of::<std::ffi::c_long>() == 8 {
+        define(ctx, "long", ForeignType::Int64.into());
+        define(ctx, "unsigned-long", ForeignType::Uint64.into());
+    }
+
+    if size_of::<std::ffi::c_longlong>() == 2 {
+        define(ctx, "long-long", ForeignType::Int16.into());
+        define(ctx, "unsigned-long-long", ForeignType::Uint16.into());
+    } else if size_of::<std::ffi::c_longlong>() == 4 {
+        define(ctx, "long-long", ForeignType::Int32.into());
+        define(ctx, "unsigned-long-long", ForeignType::Uint32.into());
+    } else if size_of::<std::ffi::c_longlong>() == 8 {
+        define(ctx, "long-long", ForeignType::Int64.into());
+        define(ctx, "unsigned-long-long", ForeignType::Uint64.into());
+    }
+
+    if size_of::<libc::ssize_t>() == 2 {
+        define(ctx, "ssize_t", ForeignType::Int16.into());
+        define(ctx, "size_t", ForeignType::Uint16.into());
+    } else if size_of::<libc::ssize_t>() == 4 {
+        define(ctx, "ssize_t", ForeignType::Int32.into());
+        define(ctx, "size_t", ForeignType::Uint32.into());
+    } else if size_of::<libc::ssize_t>() == 8 {
+        define(ctx, "ssize_t", ForeignType::Int64.into());
+        define(ctx, "size_t", ForeignType::Uint64.into());
+    }
+
+    if size_of::<libc::intptr_t>() == 4 {
+        define(ctx, "intptr_t", ForeignType::Int32.into());
+        define(ctx, "uintptr_t", ForeignType::Uint32.into());
+    } else if size_of::<libc::intptr_t>() == 8 {
+        define(ctx, "intptr_t", ForeignType::Int64.into());
+        define(ctx, "uintptr_t", ForeignType::Uint64.into());
+    }
+
+    let nullp = Gc::new(&ctx, Pointer::new(std::ptr::null_mut()));
+
+    define(ctx, "%null-pointer", nullp.into());
 }

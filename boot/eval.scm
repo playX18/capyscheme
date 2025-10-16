@@ -57,9 +57,6 @@
                     [else 
                         ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))])))))
 
-        ;(save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #t directory)])
-        ;    (thunk))))))
-
 (set! primitive-load
     (lambda (filename)
         (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
@@ -79,6 +76,6 @@
 ; load file containing base macros
 
 (primitive-load "boot/base.scm")
-(primitive-load "boot/libraries.scm")
 (primitive-load "boot/match.scm")
+(primitive-load "boot/libraries.scm")
 (primitive-load "boot/cli.scm")

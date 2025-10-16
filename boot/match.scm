@@ -344,7 +344,7 @@
 ;; pattern so far.
 
 (define-syntax match-two
-  (syntax-rules (_ ___ ..1 *** quote quasiquote ? $ = and or not set! get!)
+  (syntax-rules (_ ___ - ..1 *** quote quasiquote ? $ = and or not set! get!)
     ((match-two v () g+s (sk ...) fk i)
      (if (null? v) (sk ... i) fk))
     ((match-two v (quote p) g+s (sk ...) fk i)
@@ -758,6 +758,7 @@
     ((match-extract-vars #(p ...) . x)
      (match-extract-vars (p ...) . x))
     ((match-extract-vars _ (k ...) i v)    (k ... v))
+    ((match-extract-vars - (k ...) i v)    (k ... v))
     ((match-extract-vars ___ (k ...) i v)  (k ... v))
     ((match-extract-vars *** (k ...) i v)  (k ... v))
     ((match-extract-vars ..1 (k ...) i v)  (k ... v))

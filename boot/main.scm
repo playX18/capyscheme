@@ -904,7 +904,7 @@
 
 
 (define (assertion-violation who message . irritants)
-  (print-stacktrace)
+ ;(print-stacktrace)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -980,7 +980,7 @@
             (and (pair? message) (make-message-condition (car message)))))))))
 
 (define (.make-undefined-violation who . message)
-  (print-stacktrace)
+  ;(print-stacktrace)
   (if (or (not who) (string? who) (symbol? who))
     (apply
       condition
