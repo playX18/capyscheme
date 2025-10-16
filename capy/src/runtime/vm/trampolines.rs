@@ -4,7 +4,10 @@
 //! is not ABI stable and we can't write trampolines using `global_asm!` because of that.
 
 use crate::runtime::{CallData, Context as RtCtx, value::ReturnCode};
-use std::{mem::offset_of, sync::LazyLock};
+use std::{
+    mem::offset_of,
+    sync::{LazyLock, Mutex},
+};
 
 use cranelift::prelude::{
     AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, types,
@@ -27,7 +30,7 @@ use crate::{
 };
 
 struct Trampolines {
-    module: JITModule,
+    module: Mutex<JITModule>,
     enter_scheme_trampoline: FuncId,
     native_trampoline: FuncId,
     native_continuation_trampoline: FuncId,
@@ -447,7 +450,7 @@ impl Trampolines {
             enter_scheme_trampoline,
             native_trampoline,
             native_continuation_trampoline,
-            module,
+            module: Mutex::new(module),
         }
     }
 }
@@ -461,6 +464,8 @@ static TRAMPOLINE_INTO_SCHEME: LazyLock<Address> = LazyLock::new(|| {
     Address::from_ptr(
         TRAMPOLINES
             .module
+            .lock()
+            .unwrap()
             .get_finalized_function(TRAMPOLINES.enter_scheme_trampoline),
     )
 });
@@ -469,6 +474,8 @@ static TRAMPOLINE_FROM_SCHEME: LazyLock<Address> = LazyLock::new(|| {
     Address::from_ptr(
         TRAMPOLINES
             .module
+            .lock()
+            .unwrap()
             .get_finalized_function(TRAMPOLINES.native_trampoline),
     )
 });
@@ -485,6 +492,8 @@ pub fn get_cont_trampoline_from_scheme() -> Address {
     let addr = Address::from_ptr(
         TRAMPOLINES
             .module
+            .lock()
+            .unwrap()
             .get_finalized_function(TRAMPOLINES.native_continuation_trampoline),
     );
 

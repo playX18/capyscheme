@@ -204,7 +204,11 @@ impl<'gc> Closure<'gc> {
 unsafe impl<'gc> Tagged for Closure<'gc> {
     const TC8: TypeCode8 = TypeCode8::CLOSURE;
 
-    const TC16: &'static [TypeCode16] = &[TypeCode16::CLOSURE_PROC, TypeCode16::CLOSURE_K];
+    const TC16: &'static [TypeCode16] = &[
+        TypeCode16::CLOSURE_PROC,
+        TypeCode16::CLOSURE_K,
+        TypeCode16::CLOSURE_FOREIGN,
+    ];
 
     const TYPE_NAME: &'static str = "procedure";
 }
@@ -222,6 +226,10 @@ unsafe impl<'gc> Trace for Closure<'gc> {
 impl<'gc> Closure<'gc> {
     pub fn is_continuation(&self) -> bool {
         self.header.type_bits() == TypeCode16::CLOSURE_K.bits()
+    }
+
+    pub fn is_foreign(&self) -> bool {
+        self.header.type_bits() == TypeCode16::CLOSURE_FOREIGN.bits()
     }
 }
 

@@ -77,7 +77,10 @@
                 (make-warning)
                 (lexical-condition reader msg irritants)))
         (reader-error reader msg irritants)))
-
+(define (assert-mode p msg modes)
+  (unless (memq (reader-mode p) modes)
+    (reader-warning p (string-append msg " is not allowed in this mode")
+                    (reader-mode p))))
 (define (eof-warning reader)
     (reader-warning reader "unexpected end of file"))
 
@@ -732,7 +735,7 @@
       r
       (begin 
         (let ([reader (make-reader port (or fn (port-name port)))])
-          (reader-mode-set! reader 'r7rs)
+          (reader-mode-set! reader 'r6rs)
           (io/port-reader-set! port reader)
           reader)))))
       
@@ -746,4 +749,8 @@
 (define (read-syntax . rest)
   "Read a datum with source annotations. Produces #<syntax> objects."
   (define port (if (null? rest) (current-input-port) (car rest)))
-  (read-annotated (get-port-reader port #f)))
+  (define exp (read-annotated (get-port-reader port #f)))
+  (cond 
+    [(and (syntax? exp) (eof-object? (syntax-expression exp)))
+     (eof-object)]
+    [else exp]))

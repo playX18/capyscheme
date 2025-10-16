@@ -85,7 +85,7 @@ native_fn! {
     }
 
     pub ("bytevector->list") fn bytevector_to_list<'gc>(nctx, bv: Gc<'gc, ByteVector>) -> Value<'gc> {
-        let mut lst = Value::new(false);
+        let mut lst = Value::null();
         for &b in bv.as_slice().iter().rev() {
             lst = Value::cons(nctx.ctx, b.into_value(nctx.ctx), lst);
         }

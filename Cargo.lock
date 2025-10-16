@@ -242,6 +242,7 @@ dependencies = [
  "sha3",
  "simplehash",
  "target-lexicon",
+ "tinyvec",
  "tree-sitter",
  "tree-sitter-scheme",
  "unicode-general-category",

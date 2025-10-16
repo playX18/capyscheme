@@ -18,6 +18,7 @@ use rsgc::{Gc, Trace};
 pub mod arith;
 pub mod base;
 pub mod debug;
+pub mod dl;
 pub mod errors;
 pub mod eval;
 pub mod expand;
@@ -554,6 +555,24 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         } else {
             self.return_call(assertion_violation, &[who, message])
         }
+    }
+
+    pub fn raise_undefined_violation(
+        self,
+        who: &str,
+        message: &str,
+        irritants: &[Value<'gc>],
+    ) -> NativeCallReturn<'gc> {
+        let error = root_module(self.ctx)
+            .get_str(self.ctx, "undefined-violation")
+            .expect("pre boot error");
+        let who = Value::new(Symbol::from_str(self.ctx, who));
+        let message = Str::new(&self.ctx, message, true).into();
+        let args = std::iter::once(who)
+            .chain(std::iter::once(message))
+            .chain(irritants.iter().copied())
+            .collect::<Vec<_>>();
+        self.return_call(error, &args)
     }
 
     pub fn raise_error(

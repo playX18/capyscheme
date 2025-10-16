@@ -980,6 +980,7 @@
             (and (pair? message) (make-message-condition (car message)))))))))
 
 (define (.make-undefined-violation who . message)
+  (print-stacktrace)
   (if (or (not who) (string? who) (symbol? who))
     (apply
       condition
@@ -1613,7 +1614,9 @@
 (define current-exception-printer
   (make-parameter
     (lambda (exn . port)
-      (displayln "Exception occured" port))))
+      (define p (if (null? port) (current-error-port) (car port)))
+      (:print "exception: " p)
+      (format p "Unhandled exception: ~a: ~a" (condition-who exn) (condition-message exn)))))
 
 
 (define (r6rs:bytevector-copy! source source-start target target-start count)

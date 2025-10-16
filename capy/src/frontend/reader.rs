@@ -654,6 +654,11 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(self.wrap(node, vec))
             }
 
+            "#u8" => {
+                let bv = self.parse_compound_node(node, src, CompoundType::Bytevector)?;
+                Ok(self.wrap(node, bv))
+            }
+
             _ => todo!(
                 "Unhandled node kind: {}: {} at {} in {}",
                 node.kind(),

@@ -12,4 +12,4 @@ R6RS/R7RS compiler and runtime written in Rust.
 
 ## Thanks
 
-Big thanks to authors of [Larceny](https://github/larcenists/larceny), [Guile](https://www.gnu.org/software/guile/) and [Ypsilon](https://https://github.com/fujita-y/ypsilon). CapyScheme uses stdlib parts from all of these libraries and takes inspiration from them.
+Big thanks to authors of [Larceny](https://github/larcenists/larceny), [Guile](https://www.gnu.org/software/guile/) and [Ypsilon](https://https://github.com/fujita-y/ypsilon). CapyScheme uses stdlib parts from all of them and takes inspiration from them.

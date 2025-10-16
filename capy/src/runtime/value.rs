@@ -433,6 +433,7 @@ impl TypeCode8 {
     pub const EXPANDER: Self = Self(40);
     pub const NATIVE_PROCEDURE: Self = Self(41);
     pub const CACHE_CELL: Self = Self(42);
+    pub const CIF: Self = Self(43);
 
     pub const UNKNOWN: Self = Self(0xFF);
 }
@@ -490,6 +491,7 @@ impl TypeCode16 {
 
     pub const CLOSURE_PROC: Self = Self(TypeCode8::CLOSURE.0 as u16);
     pub const CLOSURE_K: Self = Self(TypeCode8::CLOSURE.0 as u16 + 1 * 256);
+    pub const CLOSURE_FOREIGN: Self = Self(TypeCode8::CLOSURE.0 as u16 + 2 * 256);
 
     pub const NATIVE_PROC: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16);
     pub const NATIVE_K: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16 + 1 * 256);
@@ -732,7 +734,7 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                 format_list_contents(f, *self)?;
                 write!(f, ")")
             } else if self.is::<Str>() {
-                write!(f, "{}", self.downcast::<Str>())
+                write!(f, "\"{}\"", self.downcast::<Str>())
             } else if self.is::<Symbol>() {
                 write!(f, "{}", self.downcast::<Symbol>())
             } else if self.is::<Vector>() {

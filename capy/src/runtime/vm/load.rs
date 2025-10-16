@@ -177,7 +177,7 @@ pub fn find_path_to<'gc>(
             candidates.push(filename.with_extension("scm"));
         } else {
             while exts.is_pair() {
-                let ext = exts.car().to_string();
+                let ext = exts.car().downcast::<Str>().to_string();
                 candidates.push(filename.with_extension(&ext));
                 exts = exts.cdr();
             }
@@ -198,7 +198,7 @@ pub fn find_path_to<'gc>(
             let mut paths = paths;
 
             while paths.is_pair() {
-                let dir = PathBuf::from(paths.car().to_string());
+                let dir = PathBuf::from(paths.car().downcast::<Str>().to_string());
                 let candidate = dir.join(&name);
 
                 if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
@@ -233,7 +233,7 @@ pub fn find_path_to<'gc>(
     let mut cpath = loc_load_compiled_path(ctx).get();
 
     while cpath.is_pair() {
-        let dir = PathBuf::from(cpath.car().to_string());
+        let dir = PathBuf::from(cpath.car().downcast::<Str>().to_string());
         if dir.is_dir() {
             let candidate = dir.join(&hashed).with_extension(DYNLIB_EXTENSION);
             if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some() {
@@ -245,7 +245,10 @@ pub fn find_path_to<'gc>(
     }
 
     if compiled_file.is_none() {
-        let fallback = loc_compile_fallback_path(ctx).get().to_string();
+        let fallback = loc_compile_fallback_path(ctx)
+            .get()
+            .downcast::<Str>()
+            .to_string();
         let fallback = Path::new(&fallback);
         if !fallback.exists() {
             std::fs::create_dir_all(fallback).expect("Failed to create fallback directory");
@@ -354,6 +357,102 @@ pub fn compiled_is_fresh(
 native_fn!(
     register_load_fns:
 
+    pub ("%find-path-to") fn scm_find_path_to<'gc>(
+        nctx,
+        filename: Gc<'gc, Str<'gc>>,
+        resolve_relative: bool,
+        in_vicinity: Option<Gc<'gc, Str<'gc>>>
+    ) -> Result<Value<'gc>, Value<'gc>> {
+        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
+        let filename = PathBuf::from(filename.as_ref().to_string());
+        let ctx = nctx.ctx;
+        let result = match find_path_to(ctx, filename, in_vicinity, resolve_relative) {
+            Ok(v) => v,
+            Err(err) => return nctx.return_(Err(err))
+        };
+
+        match result {
+            Some((source, compiled)) => nctx.return_(Ok(Value::cons(
+                ctx,
+                Str::new(&ctx, &source.to_string_lossy(), true).into(),
+                Str::new(&ctx, &compiled.to_string_lossy(), true).into(),
+            ))),
+            None => nctx.return_(Ok(Value::new(false)))
+        }
+    }
+
+    pub ("%compile") fn compile<'gc>(
+        nctx,
+        expanded: Value<'gc>,
+        destination: Gc<'gc, Str<'gc>>,
+        m: Option<Value<'gc>>
+    ) -> Result<Value<'gc>, Value<'gc>> {
+        let mut reader = ScmTermToRsTerm::new(nctx.ctx);
+        let mut ir = match reader.convert(expanded) {
+            Ok(ir) => ir,
+            Err(err) => return nctx.return_(Err(err))
+        };
+
+        let m = if let Some(m) = m {
+            if m.is::<Module>() {
+                m.downcast()
+            } else {
+                current_module(nctx.ctx).get(nctx.ctx).downcast()
+            }
+        } else {
+            current_module(nctx.ctx).get(nctx.ctx).downcast()
+        };
+
+        ir = fix_letrec(nctx.ctx, ir);
+        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
+        ir = primitives::resolve_primitives(nctx.ctx, ir, m);
+        ir = primitives::expand_primitives(nctx.ctx, ir);
+
+        let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
+        cps = crate::cps::rewrite_func(nctx.ctx, cps);
+        cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+        let object = match compile_cps_to_object(nctx.ctx, cps) {
+            Ok(product) => product,
+            Err(err) => return nctx.return_(Err(err)),
+        };
+        let compiled_path = destination.to_string();
+        match link_object_product(nctx.ctx, object, &compiled_path) {
+            Ok(_) => (),
+            Err(err) => return nctx.return_(Err(err))
+        }
+        let ctx = nctx.ctx;
+        let libs = LIBRARY_COLLECTION.fetch(&ctx);
+        match libs.load(&compiled_path, ctx) {
+            Err(err) => nctx.return_(Err(make_io_error(
+                &ctx,
+                "load",
+                Str::new(
+                    &ctx,
+                    format!("Failed to load compiled library: {err}"),
+                    true,
+                )
+                .into(),
+                &[],
+            ))),
+            Ok(thunk) => nctx.return_(Ok(thunk)),
+        }
+    }
+
+    pub ("try-load-thunk-in-vicinity")
+        fn scm_try_load_thunk_in_vicinity<'gc>(
+            nctx,
+            filename: Gc<'gc, Str<'gc>>,
+            resolve_relative: bool,
+            in_vicinity: Option<Gc<'gc, Str<'gc>>>
+        ) -> Result<Value<'gc>, Value<'gc>> {
+        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
+        let filename = PathBuf::from(filename.as_ref().to_string());
+        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative, false);
+
+        nctx.return_(result)
+    }
+
+
     pub ("load-thunk-in-vicinity")
         fn scm_load_thunk_in_vicinity<'gc>(
             nctx,
@@ -391,7 +490,7 @@ native_fn!(
                     return nctx.return_(Ok(thunk));
                 }
                 let ctx = nctx.ctx;
-                let file = thunk.car().to_string();
+                let file = thunk.car().downcast::<Str>().to_string();
                 let file_in = match std::fs::File::open(&file).map_err(|e| {
                     make_io_error(
                         &ctx,
@@ -498,7 +597,7 @@ native_cont!(
             Ok(product) => product,
             Err(err) => return nctx.return_(Err(err)),
         };
-        let compiled_path = source_and_compiled_path.cdr().to_string();
+        let compiled_path = source_and_compiled_path.cdr().downcast::<Str>().to_string();
         match link_object_product(nctx.ctx, object, &compiled_path) {
             Ok(_) => (),
             Err(err) => return nctx.return_(Err(err))
