@@ -55,7 +55,7 @@
 (define (pathname-list->string l)
   (case (car l)
     ((absolute)
-     (fold-left (lambda (x y) (string-append x "/" y)) "" (cdr l)))
+     (fold-left (lambda (x y) (string-append x "/" y)) "e" (cdr l)))
     ((relative)
      (fold-left (lambda (x y) (string-append x "/" y)) (cadr l) (cddr l)))
     (else

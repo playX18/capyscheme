@@ -70,7 +70,7 @@
           (continue #f))
         (lambda ()
           (format #t "> ~!")
-          (let ([form (read-syntax input)])
+          (let ([form (read input)])
             (if (eof-object? form)
               (begin 
                 (format #t "Goodbye!~%")

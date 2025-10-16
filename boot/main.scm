@@ -1687,6 +1687,28 @@
 (define (call-without-interrupts thunk)
   (thunk))
 
+(define mod
+  (lambda (x y)
+    (- x (* (div x y) y))))
+
+(define div-and-mod
+  (lambda (x y)
+    (let ((d (div x y)))
+      (values d (- x (* d y))))))
+
+(define mod0
+  (lambda (x y)
+    (- x (* (div0 x y) y))))
+
+(define div0-and-mod0
+  (lambda (x y)
+    (let ((d0 (div0 x y)))
+      (values d0 (- x (* d0 y))))))
+
+
+(define current-jiffy microsecond)
+(define jiffies-per-second (lambda () 1000000))
+(define current-second (lambda () (/ (microsecond) 1000000.0)))
 
 (primitive-load "boot/expand.scm")
 (primitive-load "boot/interpreter.scm")
@@ -1702,6 +1724,7 @@
 (primitive-load "boot/stdio.scm")
 (primitive-load "boot/print.scm")
 (primitive-load "boot/format.scm")
+(primitive-load "boot/log.scm")
 (initialize-io-system)
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")

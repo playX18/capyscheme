@@ -1947,10 +1947,16 @@
                  (annotate (list->vector (map unstrip (vector->list x))))]
              [(syntax? x) x]
              [else (annotate x)]))
+        
         (let ([m (if (null? rest) 'e (car rest))]
               [essew (if (= (length rest) 2) (car (cdr rest)) '(eval))])
-            (expand-top-sequence (list (unstrip x)) null-env top-wrap #f m essew
-                 (cons 'hygiene (module-name (current-module)))))))
+            (*log-time* 
+              (lambda () 
+                (expand-top-sequence (list (unstrip x)) null-env top-wrap #f m essew
+                  (cons 'hygiene (module-name (current-module)))))
+              log:debug
+              "psyntax"
+              "macroexpand"))))
 
 
 

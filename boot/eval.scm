@@ -18,14 +18,20 @@
                     [(null? exps) (values (join (reverse out)) (current-module) (current-module))]
                     [else 
                         (let ([exp (macroexpand (car exps) 'c '(compile load eval))])
-                           
                             (lp (cdr exps) (cons exp out)))])))))
 
 
 (set! load
     (lambda (filename)
-        (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #t)])
-            (thunk))))))
+        (*log-time* 
+            (lambda () 
+                (save-module-excursion 
+                    (lambda () 
+                        (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #t)])
+                            (thunk)))))
+            log:debug
+            "load"
+            "file loaded '~a'" filename)))
 
 (set! load-in-vicinity 
     (lambda (filename directory)

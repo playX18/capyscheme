@@ -83,11 +83,27 @@
                                    [arg (read port)])
                                 (set! entrypoint arg))
                             (parse (cdr args) out)]
-                        
+                        [(string=? arg "-log:trace")
+                            (log:set-max-level! log:trace)
+                            (parse args out)]
+                        [(string=? arg "-log:info")
+                            (log:set-max-level! log:info)
+                            (parse args out)]
+                        [(string=? arg "-log:debug")
+                            (log:set-max-level! log:debug)
+                            (parse args out)]
+                        [(string=? arg "-log:warn")
+                            (log:set-max-level! log:warn)
+                            (parse args out)]
+                        [(string=? arg "-log:error")
+                            (log:set-max-level! log:error)
+                            (parse args out)]
                         [else (error "unknown argument: ~a" arg)]))]))
 
     (define (finish args out)
         (set-program-arguments! (cons arg0 args))
+        (if (not (zero? (log:max-level)))
+            (log:set-logger! *simple-logger*))
         (with-exception-handler 
             (lambda (c)
                 (flush-output-port (current-output-port))

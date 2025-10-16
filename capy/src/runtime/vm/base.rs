@@ -242,6 +242,16 @@ native_fn!(
         }
         nctx.return_(Value::new(a == b))
     }
+
+    pub ("microsecond") fn microsecond<'gc>(nctx) -> u128 {
+        unsafe {
+            let mut tv: std::mem::MaybeUninit<libc::timeval> = std::mem::MaybeUninit::uninit();
+            libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut());
+            let tv = tv.assume_init();
+            let sec = tv.tv_sec as u128 * 1_000_000 + tv.tv_usec as u128;
+            nctx.return_(sec)
+        }
+    }
 );
 
 native_cont!(

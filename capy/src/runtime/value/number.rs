@@ -649,7 +649,7 @@ impl<'gc> BigInt<'gc> {
         let mut result = 0.0;
 
         for &word in self.iter().rev() {
-            result *= BASE as f64 + word as f64;
+            result = result * BASE as f64 + word as f64;
         }
 
         result
@@ -1715,6 +1715,28 @@ impl<'gc> BigInt<'gc> {
         size
     }
 
+    pub fn count_ones(&self) -> usize {
+        if self.is_zero() {
+            return 0;
+        }
+        let mut count = 0;
+        for word in self.words_slice() {
+            count += word.count_ones() as usize;
+        }
+        count
+    }
+
+    pub fn count_zeros(&self) -> usize {
+        if self.is_zero() {
+            return 0;
+        }
+        let mut count = 0;
+        for word in self.words_slice() {
+            count += word.count_zeros() as usize;
+        }
+        count
+    }
+
     pub fn first_bit_set(&self) -> i32 {
         if self.is_zero() {
             return -1;
@@ -2260,6 +2282,26 @@ impl<'gc> Number<'gc> {
         }
     }
 
+    pub fn exact_integer_to_u128(self) -> Option<u128> {
+        if let Number::Fixnum(i) = self {
+            Some(i as u128)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_u128()
+        } else {
+            None
+        }
+    }
+
+    pub fn exact_integer_to_i128(self) -> Option<i128> {
+        if let Number::Fixnum(i) = self {
+            Some(i as i128)
+        } else if let Number::BigInt(b) = self {
+            b.try_as_i128()
+        } else {
+            None
+        }
+    }
+
     pub fn exact_integer_to_f64(self) -> Option<f64> {
         if let Number::Fixnum(i) = self {
             Some(i as f64)
@@ -2594,7 +2636,6 @@ impl<'gc> Number<'gc> {
         let gcd = n1;
 
         if deno == gcd {
-            println!("deno == gcd: {} {}", deno, gcd);
             return (ans_sign * nume / gcd).into_number(ctx);
         }
 
@@ -3304,6 +3345,64 @@ impl<'gc> Number<'gc> {
                 }
             }
         }
+    }
+
+    pub fn integer_div(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        match lhs {
+            Self::Fixnum(x) => match rhs {
+                Number::Fixnum(y) => {
+                    let div = if x == 0 {
+                        0
+                    } else if x > 0 {
+                        x / y
+                    } else if y > 0 {
+                        (x - y + 1) / y
+                    } else {
+                        (x + y + 1) / y
+                    };
+
+                    return Number::Fixnum(div);
+                }
+
+                _ => (),
+            },
+
+            _ => (),
+        }
+
+        if matches!(lhs, Number::Flonum(_)) || matches!(rhs, Number::Flonum(_)) {
+            let x = lhs.real_to_f64(ctx);
+            let y = rhs.real_to_f64(ctx);
+            return Self::Flonum(if y > 0.0 {
+                (x / y).floor()
+            } else {
+                -((x / -y).floor())
+            });
+        }
+
+        if rhs.is_negative() {
+            return Self::div(ctx, lhs, rhs).floor(ctx);
+        }
+
+        Self::div(ctx, lhs, rhs.negate(ctx)).floor(ctx).negate(ctx)
+    }
+
+    pub fn integer_div0(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
+        let div = Self::integer_div(ctx, lhs, rhs);
+        let mod_ = Self::sub(ctx, lhs, Self::mul(ctx, div, rhs));
+        if Self::compare(
+            ctx,
+            mod_,
+            Self::magnitude(ctx, Self::div(ctx, rhs, Self::Fixnum(2))),
+        ) == Some(std::cmp::Ordering::Less)
+        {
+            return div;
+        }
+        if rhs.is_positive() {
+            return Self::add(ctx, div, Number::Fixnum(1));
+        }
+
+        Self::sub(ctx, div, Number::Fixnum(1))
     }
 
     pub fn div(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Self {
@@ -4656,6 +4755,64 @@ impl<'gc> Number<'gc> {
         }
     }
 
+    pub fn truncate(self, ctx: Context<'gc>) -> Self {
+        match self {
+            Self::Fixnum(_) | Self::BigInt(_) => self,
+            Self::Flonum(fl) => {
+                return Self::Flonum(fl.trunc());
+            }
+
+            Self::Rational(rn) => {
+                return Self::quotient(ctx, rn.numerator, rn.denominator);
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn round(self, ctx: Context<'gc>) -> Self {
+        match self {
+            Self::Fixnum(_) | Self::BigInt(_) => self,
+            Self::Flonum(fl) => {
+                let ans = (fl + 0.5).floor();
+                if ans != fl + 0.5 {
+                    return Self::Flonum(fl);
+                }
+
+                if ans * 0.5 == (ans * 0.5).floor() {
+                    return Self::Flonum(ans - 1.0);
+                } else {
+                    return Self::Flonum(ans);
+                }
+            }
+
+            Self::Rational(rn) => {
+                let negative = rn.numerator.is_negative();
+                let half = Self::Rational(Rational::new(
+                    ctx,
+                    Number::Fixnum(if negative { -1 } else { 1 }),
+                    Number::Fixnum(2),
+                ));
+                let n_and_half = Self::add(ctx, self, half);
+                if let Number::Rational(rn) = n_and_half {
+                    return Self::quotient(ctx, rn.numerator, rn.denominator);
+                } else {
+                    if n_and_half.is_even() {
+                        return n_and_half;
+                    }
+
+                    return Self::add(
+                        ctx,
+                        n_and_half,
+                        Number::Fixnum(if negative { -1 } else { 1 }),
+                    );
+                }
+            }
+
+            _ => unreachable!(),
+        }
+    }
+
     pub fn to_exact(self, ctx: Context<'gc>) -> Self {
         match self {
             Self::Flonum(n) => {
@@ -5029,6 +5186,14 @@ impl<'gc> Number<'gc> {
         }
 
         Self::BigInt(BigInt::from_u64(ctx, n))
+    }
+
+    pub fn from_u128(ctx: Context<'gc>, n: u128) -> Self {
+        if n <= i32::MAX as u128 {
+            return Self::Fixnum(n as i32);
+        }
+
+        Self::BigInt(BigInt::from_u128(ctx, n))
     }
 
     pub fn from_u32(ctx: Context<'gc>, n: u32) -> Self {
@@ -6011,6 +6176,33 @@ impl<'gc> ExactInteger<'gc> {
             Self::BigInt(b) => b.is_negative(),
         }
     }
+
+    pub fn bit_count(&self) -> u32 {
+        match self {
+            Self::Fixnum(n) => n.count_ones(),
+            Self::BigInt(b) => b.count_ones() as _,
+        }
+    }
+
+    pub fn bit_length(&self, ctx: Context<'gc>) -> u32 {
+        match self {
+            Self::Fixnum(n) => {
+                if *n == 0 {
+                    return 0;
+                }
+                let n2 = if *n < 0 { !*n } else { *n };
+                return 32 - n2.leading_zeros();
+            }
+            Self::BigInt(b) => {
+                if b.is_positive() {
+                    return BigInt::bitsize(*b) as _;
+                }
+
+                let nb = BigInt::not(*b, ctx);
+                return BigInt::bitsize(nb) as _;
+            }
+        }
+    }
 }
 
 fn i32_to_raidx(n: i32, radix: u8) -> String {
@@ -6091,6 +6283,51 @@ impl<'gc> Number<'gc> {
                 let imag = c.imag.to_string_radix(base);
                 format!("{} + {}i", real, imag)
             }
+        }
+    }
+}
+
+impl<'gc> FromValue<'gc> for ExactInteger<'gc> {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        if value.is_int32() {
+            return Ok(Self::Fixnum(value.as_int32()));
+        }
+
+        if value.is::<BigInt>() {
+            return Ok(Self::BigInt(value.downcast()));
+        }
+
+        Err(ConversionError::TypeMismatch {
+            pos: 0,
+            expected: "exact integer",
+            found: value,
+        })
+    }
+}
+
+impl<'gc> Into<Value<'gc>> for ExactInteger<'gc> {
+    fn into(self) -> Value<'gc> {
+        match self {
+            Self::Fixnum(n) => Value::new(n),
+            Self::BigInt(b) => b.into(),
+        }
+    }
+}
+
+impl<'gc> Into<Number<'gc>> for ExactInteger<'gc> {
+    fn into(self) -> Number<'gc> {
+        match self {
+            Self::Fixnum(n) => Number::Fixnum(n),
+            Self::BigInt(b) => Number::BigInt(b),
+        }
+    }
+}
+
+impl<'gc> IntoValue<'gc> for ExactInteger<'gc> {
+    fn into_value(self, _ctx: Context<'gc>) -> Value<'gc> {
+        match self {
+            Self::Fixnum(n) => Value::new(n),
+            Self::BigInt(b) => b.into(),
         }
     }
 }

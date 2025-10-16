@@ -58,6 +58,7 @@
 
 (library (core primitives)
     (export 
+        current-jiffy jiffies-per-second current-second
         library define-library define define-syntax
                          quote lambda if set!
                          cond case and or

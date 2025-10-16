@@ -259,6 +259,23 @@ impl<'gc> IntoValue<'gc> for u64 {
     }
 }
 
+impl<'gc> FromValue<'gc> for u128 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "u128", value));
+        };
+
+        n.exact_integer_to_u128()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "u128", value))
+    }
+}
+
+impl<'gc> IntoValue<'gc> for u128 {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_u128(mc, self).into_value(mc)
+    }
+}
+
 impl<'gc> IntoValue<'gc> for u32 {
     fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
         Number::from_u32(mc, self).into_value(mc)
