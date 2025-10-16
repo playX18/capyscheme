@@ -183,7 +183,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let not_enough = self.builder.ins().icmp_imm(
                     IntCC::UnsignedLessThan,
                     num_rands,
-                    params.len() as i64 - 1,
+                    params.len() as i64,
                 );
 
                 let succ = self.builder.create_block();

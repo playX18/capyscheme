@@ -183,6 +183,80 @@ native_fn!(
         nctx.return_(Ok(acc))
     }
 
+    pub ("div") fn integer_div<'gc>(nctx, x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
+        if !x.is_real() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div", "first argument must be a real number", Some(x), Some(1), 2, &[x]);
+        }
+
+        if !x.is_finite() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div", "first argument must be a finite number", Some(x), Some(1), 2, &[x]);
+        }
+
+        if !y.is_real() {
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div", "second argument must be a real number", Some(y), Some(2), 2, &[y]);
+        }
+
+        if y.is_zero() {
+            let y = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div", "division by zero", Some(y), Some(2), 2, &[y]);
+        }
+        let res = Number::integer_div(nctx.ctx, x, y);
+        nctx.return_(res)
+    }
+
+    pub ("div0") fn integer_div0<'gc>(nctx, x: Number<'gc>, rhs: Number<'gc>) -> Number<'gc> {
+        if !x.is_real() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div0", "first argument must be a real number", Some(x), Some(1), 2, &[x]);
+        }
+
+        if !x.is_finite() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div0", "first argument must be a finite number", Some(x), Some(1), 2, &[x]);
+        }
+
+        if !rhs.is_real() {
+            let rhs = rhs.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div0", "second argument must be a real number", Some(rhs), Some(2), 2, &[rhs]);
+        }
+
+        if rhs.is_zero() {
+            let rhs = rhs.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("div0", "division by zero", Some(rhs), Some(2), 2, &[rhs]);
+        }
+
+        let res = Number::integer_div0(nctx.ctx, x, rhs);
+        nctx.return_(res)
+    }
+
+    pub ("denominator") fn denominator<'gc>(nctx, x: Number<'gc>) -> Number<'gc> {
+        if !x.is_real_valued() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("denominator", "argument must be a real number", Some(x), Some(1), 1, &[x]);
+        }
+
+        let inexact = !x.is_exact();
+        let obj = x.to_exact(nctx.ctx);
+        if let Number::Rational(rn) = obj {
+            let deno = if inexact {
+                rn.denominator.to_inexact(nctx.ctx)
+            } else {
+                rn.denominator
+            };
+
+            return nctx.return_(deno);
+        }
+
+        nctx.return_(if inexact {
+            Number::Flonum(1.0)
+        } else {
+            Number::Fixnum(1)
+        })
+    }
+
     pub ("expt") fn expt<'gc>(nctx, x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
         let expt = Number::expt(nctx.ctx, x, y);
 
@@ -256,6 +330,52 @@ native_fn!(
         let floor = x.floor(nctx.ctx);
         nctx.return_(Ok(floor))
     }
+
+    pub ("ceiling") fn ceiling<'gc>(nctx, x: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
+        let x = if let Number::Complex(cn) = x
+            && cn.imag.is_zero() {
+            x
+        } else {
+            x
+        };
+        if !x.is_real() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("ceiling", "argument must be a real number", Some(x), Some(1), 1, &[x]);
+        }
+        let ceiling = x.ceiling(nctx.ctx);
+        nctx.return_(Ok(ceiling))
+    }
+
+    pub ("truncate") fn truncate<'gc>(nctx, x: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
+        let x = if let Number::Complex(cn) = x
+            && cn.imag.is_zero() {
+            x
+        } else {
+            x
+        };
+        if !x.is_real() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("truncate", "argument must be a real number", Some(x), Some(1), 1, &[x]);
+        }
+        let truncate = x.truncate(nctx.ctx);
+        nctx.return_(Ok(truncate))
+    }
+
+    pub ("round") fn round<'gc>(nctx, x: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
+        let x = if let Number::Complex(cn) = x
+            && cn.imag.is_zero() {
+            x
+        } else {
+            x
+        };
+        if !x.is_real() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("round", "argument must be a real number", Some(x), Some(1), 1, &[x]);
+        }
+        let round = x.round(nctx.ctx);
+        nctx.return_(Ok(round))
+    }
+
 
     pub ("=") fn equal<'gc>(nctx, w: Number<'gc>, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
         if rest.is_empty() {
@@ -990,6 +1110,169 @@ native_fn!(
             return nctx.wrong_argument_violation("bitwise-arithmetic-shift", "shift amount is too large", Some(y), Some(2), 2, &[x, y]);
         };
         nctx.return_(shifted)
+    }
+
+    pub ("bitwise-bit-count") fn bitwise_bit_count<'gc>(nctx, x: ExactInteger<'gc>) -> u32 {
+        let count = x.bit_count();
+        nctx.return_(count)
+    }
+
+    pub ("bitwise-bit-length") fn bitwise_bit_length<'gc>(nctx, x: ExactInteger<'gc>) -> u32 {
+        let length = x.bit_length(nctx.ctx);
+        nctx.return_(length)
+    }
+
+    pub ("bitwise-first-bit-set") fn bitwise_first_bit_set<'gc>(nctx, x: ExactInteger<'gc>) -> i32 {
+        let pos = ExactInteger::first_bit_set(nctx.ctx, x);
+        nctx.return_(pos)
+    }
+
+    pub ("bitwise-not") fn bitwise_not<'gc>(nctx, x: ExactInteger<'gc>) -> ExactInteger<'gc> {
+        let not = ExactInteger::bitnot(nctx.ctx, x);
+        nctx.return_(not)
+    }
+
+    pub ("bitwise-and") fn bitwise_and<'gc>(nctx, rest: &'gc [Value<'gc>]) -> Value<'gc> {
+        if rest.is_empty() {
+            return nctx.return_(Value::new(-1i32));
+        }
+
+        if rest.len() == 1 {
+            let Some(n) = rest[0].number() else {
+                return nctx.wrong_argument_violation("bitwise-and", "argument must be a number", Some(rest[0].clone()), Some(1), 1, &[rest[0].clone()]);
+            };
+
+            if !n.is_exact_integer() {
+                let n = n.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation("bitwise-and", "argument must be an exact integer", Some(n), Some(1), 1, &[n]);
+            }
+            let n = n.into_value(nctx.ctx);
+
+            return nctx.return_(n);
+        }
+
+        if rest.len() == 2 {
+            let a = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
+                Ok(a) => a,
+                Err(e) => return nctx.conversion_error("bitwise-and", e),
+            };
+            let b = match ExactInteger::try_from_value(nctx.ctx, rest[1]) {
+                Ok(b) => b,
+                Err(e) => return nctx.conversion_error("bitwise-and", e),
+            };
+            let res = ExactInteger::bitand(nctx.ctx, a, b);
+            return nctx.return_(res.into());
+        }
+
+        let mut acc = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
+            Ok(a) => a,
+            Err(e) => return nctx.conversion_error("bitwise-and", e),
+        };
+
+        for v in &rest[1..] {
+            let b = match ExactInteger::try_from_value(nctx.ctx, *v) {
+                Ok(b) => b,
+                Err(e) => return nctx.conversion_error("bitwise-and", e),
+            };
+            acc = ExactInteger::bitand(nctx.ctx, acc, b);
+        }
+
+        nctx.return_(acc.into())
+    }
+    pub ("bitwise-ior") fn bitwise_ior<'gc>(nctx, rest: &'gc [Value<'gc>]) -> Value<'gc> {
+        if rest.is_empty() {
+            return nctx.return_(Value::new(0i32));
+        }
+
+        if rest.len() == 1 {
+            let Some(n) = rest[0].number() else {
+                return nctx.wrong_argument_violation("bitwise-ior", "argument must be a number", Some(rest[0].clone()), Some(1), 1, &[rest[0].clone()]);
+            };
+
+            if !n.is_exact_integer() {
+                let n = n.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation("bitwise-ior", "argument must be an exact integer", Some(n), Some(1), 1, &[n]);
+            }
+            let n = n.into_value(nctx.ctx);
+
+            return nctx.return_(n);
+        }
+
+        if rest.len() == 2 {
+            let a = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
+                Ok(a) => a,
+                Err(e) => return nctx.conversion_error("bitwise-ior", e),
+            };
+            let b = match ExactInteger::try_from_value(nctx.ctx, rest[1]) {
+                Ok(b) => b,
+                Err(e) => return nctx.conversion_error("bitwise-ior", e),
+            };
+            let res = ExactInteger::bitor(nctx.ctx, a, b);
+            return nctx.return_(res.into());
+        }
+
+        let mut acc = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
+            Ok(a) => a,
+            Err(e) => return nctx.conversion_error("bitwise-ior", e),
+        };
+
+        for v in &rest[1..] {
+            let b = match ExactInteger::try_from_value(nctx.ctx, *v) {
+                Ok(b) => b,
+                Err(e) => return nctx.conversion_error("bitwise-ior", e),
+            };
+            acc = ExactInteger::bitor(nctx.ctx, acc, b);
+        }
+
+        nctx.return_(acc.into())
+    }
+
+    pub ("bitwise-xor") fn bitwise_xor<'gc>(nctx, rest: &'gc [Value<'gc>]) -> Value<'gc> {
+        if rest.is_empty() {
+            return nctx.return_(Value::new(0i32));
+        }
+
+        if rest.len() == 1 {
+            let Some(n) = rest[0].number() else {
+                return nctx.wrong_argument_violation("bitwise-xor", "argument must be a number", Some(rest[0].clone()), Some(1), 1, &[rest[0].clone()]);
+            };
+
+            if !n.is_exact_integer() {
+                let n = n.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation("bitwise-xor", "argument must be an exact integer", Some(n), Some(1), 1, &[n]);
+            }
+            let n = n.into_value(nctx.ctx);
+
+            return nctx.return_(n);
+        }
+
+        if rest.len() == 2 {
+            let a = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
+                Ok(a) => a,
+                Err(e) => return nctx.conversion_error("bitwise-xor", e),
+            };
+            let b = match ExactInteger::try_from_value(nctx.ctx, rest[1]) {
+                Ok(b) => b,
+                Err(e) => return nctx.conversion_error("bitwise-xor", e),
+            };
+            let res = ExactInteger::bitxor(nctx.ctx, a, b);
+            return nctx.return_(res.into());
+        }
+
+        let mut acc = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
+            Ok(a) => a,
+            Err(e) => return nctx.conversion_error("bitwise-xor", e),
+        };
+
+        for v in &rest[1..] {
+            let b = match ExactInteger::try_from_value(nctx.ctx, *v) {
+                Ok(b) => b,
+                Err(e) => return nctx.conversion_error("bitwise-xor", e),
+            };
+            acc = ExactInteger::bitxor(nctx.ctx, acc, b);
+        }
+
+        nctx.return_(acc.into())
     }
 
     pub ("fixnum-width") fn fixnum_width<'gc>(nctx) -> i32 {
