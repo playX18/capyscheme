@@ -411,6 +411,19 @@ native_fn!(
         let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+
+        if !true {
+            let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.cps.scm", destination))
+                .unwrap();
+            println!("CPS -> {}.cps.scm", destination);
+            doc.1.render(80, &mut file).unwrap();
+        }
+
         let object = match compile_cps_to_object(nctx.ctx, cps) {
             Ok(product) => product,
             Err(err) => return nctx.return_(Err(err)),
@@ -580,13 +593,13 @@ native_cont!(
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
 
-        if false {
+        if !true {
             let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open(format!("{}.cps.scm", source_and_compiled_path.cdr()))
+                .open(format!("{}.cps.scm", source_and_compiled_path.cdr().downcast::<Str>()))
                 .unwrap();
             println!("CPS {} -> {}.cps.scm", source_and_compiled_path.car(), source_and_compiled_path.cdr());
             doc.1.render(80, &mut file).unwrap();

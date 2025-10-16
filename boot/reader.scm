@@ -595,6 +595,8 @@
                 (memq (char-general-category c)
                       '(Lu Ll Lt Lm Lo Mn Nl No Pd Pc Po Sc Sm Sk So Co))))
        (get-identifier p c #f))
+      ((char=? c #\@)
+        (get-identifier p c #f))
       ((char=? c #\\)                 ;<inline hex escape>
        (let ((c (get-char p)))
          (cond ((eqv? c #\x)

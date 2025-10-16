@@ -70,6 +70,20 @@
        (and (identifier? #'dots) (string? (syntax->datum #'docstring)))
        (expand-syntax-rules #'dots #'(k ...) #'(docstring) #'(((keyword . pattern) template) ...))))))
 
+(define-syntax define-syntax-rule
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (name . pattern) template)
+       #'(define-syntax name
+           (syntax-rules ()
+             ((_ . pattern) template))))
+      ((_ (name . pattern) docstring template)
+       (string? (syntax->datum #'docstring))
+       #'(define-syntax name
+           (syntax-rules ()
+             docstring
+             ((_ . pattern) template)))))))
+
 (define-syntax cond
     (lambda (x)
       (syntax-case x ()

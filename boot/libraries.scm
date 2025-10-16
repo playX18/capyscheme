@@ -1,7 +1,8 @@
 
 
 (library (core intrinsics)
-   (export               library define-library define define-syntax
+   (export               match
+                         library define-library define define-syntax
                          quote lambda if set!
                          cond case and or
                          let let* letrec letrec* let-values let*-values
@@ -644,7 +645,65 @@
 
                         feature-identifiers
                         fulfill-feature-requirements?
-                        continuation-to-exit)
+                        continuation-to-exit
+                        void 
+                        float
+                        float double
+                        complex-float complex-double
+                        short
+                        unsigned-short
+                        int unsigned-int long unsigned-long size_t ssize_t ptrdiff_t
+                        int8 uint8
+                        uint16 int16
+                        uint32 int32
+                        uint64 int64
+                        intptr_t uintptr_t
+                        sizeof alignof
+                        %null-pointer
+                        pointer?
+                        make-pointer
+                        pointer->scm
+                        scm->pointer
+                        pointer-address
+                        pointer->bytevector
+                        bytevector->pointer
+                        set-pointer-finalizer!
+                        dereference-pointer
+                        pointer->procedure
+                        match
+                        match-next
+                        match-two
+                        match-quasiquote
+                        match-drop-ids
+                        match-tuck-ids
+                        match-drop-first-arg
+                        match-gen-or
+                        match-gen-or-step
+                        match-gen-ellipsis
+                        match-verify-no-ellipsis
+                        match-gen-search
+                        match-vector
+                        match-vector-two
+                        match-vector-step
+                        match-gen-vector-ellipsis
+                        match-vector-tail
+                        match-vector-tail-two
+                        match-record-refs
+                        match-extract-vars
+                        match-extract-vars-step
+                        match-extract-quasiquote-vars
+                        match-extract-quasiquote-vars-step
+                        match-lambda
+                        match-lambda*
+                        match-let
+                        match-letrec
+                        match-let/helper
+                        match-named-let
+                        match-let*
+                        match-check-ellipsis
+                        match-check-identifier
+                        match-bound-identifier-memv
+                        )
     (import (capy)))
 
 

@@ -125,6 +125,50 @@ impl<'gc> FromValue<'gc> for bool {
     }
 }
 
+impl<'gc> FromValue<'gc> for u8 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "u8", value));
+        };
+
+        n.exact_integer_to_u8()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "u8", value))
+    }
+}
+
+impl<'gc> FromValue<'gc> for i8 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "i8", value));
+        };
+
+        n.exact_integer_to_i8()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "i8", value))
+    }
+}
+
+impl<'gc> FromValue<'gc> for i16 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "i16", value));
+        };
+
+        n.exact_integer_to_i16()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "i16", value))
+    }
+}
+
+impl<'gc> FromValue<'gc> for u16 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        let Some(n) = value.number() else {
+            return Err(ConversionError::type_mismatch(0, "u16", value));
+        };
+
+        n.exact_integer_to_u16()
+            .ok_or_else(|| ConversionError::type_mismatch(0, "u16", value))
+    }
+}
+
 impl<'gc> FromValue<'gc> for i32 {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is_int32() {
@@ -143,6 +187,16 @@ impl<'gc> FromValue<'gc> for u32 {
 
         n.exact_integer_to_u32()
             .ok_or_else(|| ConversionError::type_mismatch(0, "u32", value))
+    }
+}
+
+impl<'gc> FromValue<'gc> for f32 {
+    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        if let Some(n) = value.flonum() {
+            Ok(n as f32)
+        } else {
+            Err(ConversionError::type_mismatch(0, "f32", value))
+        }
     }
 }
 
@@ -197,25 +251,6 @@ impl<'gc> FromValue<'gc> for u64 {
 
         n.exact_integer_to_u64()
             .ok_or_else(|| ConversionError::type_mismatch(0, "u64", value))
-    }
-}
-
-impl<'gc> FromValue<'gc> for u8 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::TypeMismatch {
-                pos: 0,
-                expected: "number",
-                found: value,
-            });
-        };
-
-        n.exact_integer_to_u8()
-            .ok_or_else(|| ConversionError::TypeMismatch {
-                pos: 0,
-                expected: "u8",
-                found: value,
-            })
     }
 }
 
@@ -294,9 +329,27 @@ impl<'gc> IntoValue<'gc> for u8 {
     }
 }
 
+impl<'gc> IntoValue<'gc> for i16 {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_i16(self).into_value(mc)
+    }
+}
+
+impl<'gc> IntoValue<'gc> for i8 {
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        Number::from_i8(self).into_value(mc)
+    }
+}
+
 impl<'gc> IntoValue<'gc> for () {
     fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
         Value::undefined()
+    }
+}
+
+impl<'gc> IntoValue<'gc> for f32 {
+    fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
+        Value::new(self as f64)
     }
 }
 

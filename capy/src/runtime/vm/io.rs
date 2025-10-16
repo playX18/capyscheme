@@ -10,6 +10,17 @@ static_symbols!(
     SYM_TEXTUAL = "textual"
 );
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IoOperation {
+    Open,
+    Read,
+    Write,
+    Seek,
+    Close,
+    Stat,
+    Select,
+}
+
 native_fn!(
     register_io_fns:
 
@@ -20,6 +31,336 @@ native_fn!(
         let ctx = nctx.ctx;
         nctx.return_(Str::new(&ctx, &s, true))
     }
+
+    pub ("getenv") fn getenv<'gc>(nctx, var: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+        match std::env::var(var.to_string()) {
+            Ok(s) => {
+                let ctx = nctx.ctx;
+                nctx.return_(Str::new(&ctx, &s, true).into())
+            }
+            Err(_) => {
+                nctx.return_(Value::new(false))
+            }
+        }
+    }
+
+    pub ("directory-list") fn directory_list<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> Value<'gc> {
+        let p = std::path::PathBuf::from(path.to_string());
+        let ctx = nctx.ctx;
+
+
+        match std::fs::read_dir(p) {
+            Ok(entries) => {
+                let mut ls = Value::null();
+                for entry in entries {
+                    if let Ok(entry) = entry {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        ls = Value::cons(ctx, Str::new(&ctx, &name, true).into(), ls);
+                    }
+                }
+                ls = ls.list_reverse(ctx);
+                nctx.return_(ls)
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "directory-list",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("current-directory") fn current_directory<'gc>(nctx) -> Gc<'gc, Str<'gc>> {
+        match std::env::current_dir() {
+            Ok(buf) => {
+                let s = buf.to_string_lossy();
+                let ctx = nctx.ctx;
+                nctx.return_(Str::new(&ctx, &s, true))
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "current-directory",
+                    &error,
+                    Value::new(false)
+                )
+            }
+        }
+    }
+
+    pub ("create-directory") fn create_directory<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::create_dir(path.to_string()) {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "create-directory",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("delete-file") fn delete_file<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::remove_file(path.to_string()) {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "delete-file",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-size-in-bytes") fn file_size_in_bytes<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> i64 {
+        match std::fs::metadata(path.to_string()) {
+            Ok(metadata) => {
+                nctx.return_(metadata.len() as i64)
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-size-in-bytes",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-regular?") fn file_regular<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::metadata(path.to_string()) {
+            Ok(metadata) => {
+                nctx.return_(metadata.is_file())
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-regular?",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-directory?") fn file_directory<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::metadata(path.to_string()) {
+            Ok(metadata) => {
+                nctx.return_(metadata.is_dir())
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-directory?",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-symbolic-link?") fn file_symbolic_link<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::symlink_metadata(path.to_string()) {
+            Ok(metadata) => {
+                nctx.return_(metadata.file_type().is_symlink())
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-symbolic-link?",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-readable?") fn file_readable<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        nctx.return_(rustix::fs::access(&path.to_string(), rustix::fs::Access::READ_OK).is_ok())
+    }
+
+    pub ("file-writable?") fn file_writable<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        nctx.return_(rustix::fs::access(&path.to_string(), rustix::fs::Access::WRITE_OK).is_ok())
+    }
+
+    pub ("file-executable?") fn file_executable<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
+        nctx.return_(rustix::fs::access(&path.to_string(), rustix::fs::Access::EXEC_OK).is_ok())
+    }
+
+    pub ("change-file-mode") fn change_file_mode<'gc>(nctx, path: Gc<'gc, Str<'gc>>, mode: i32) -> bool {
+        let Some(mode) = rustix::fs::Mode::from_bits(mode as _) else {
+            return nctx.wrong_argument_violation(
+                "change-file-mode",
+                "invalid mode bits",
+                Some(mode.into()),
+                Some(0),
+                2,
+                &[path.into(), mode.into()]
+            );
+        };
+        match rustix::fs::chmod(&path.to_string(), mode) {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                nctx.raise_io_error(
+                    std::io::Error::new(err.kind(), "failed to change mode"),
+                    IoOperation::Open,
+                    "change-file-mode",
+                    &err.to_string(),
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("rename-file") fn rename_file<'gc>(nctx, old_path: Gc<'gc, Str<'gc>>, new_path: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::rename(old_path.to_string(), new_path.to_string()) {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_filesystem_error(
+                    "rename-file",
+                    &error,
+                    err,
+                    old_path.into(),
+                    new_path.into()
+                )
+            }
+        }
+    }
+
+    pub ("create-symbolic-link") fn create_symbolic_link<'gc>(nctx, original: Gc<'gc, Str<'gc>>, link: Gc<'gc, Str<'gc>>) -> bool {
+        match std::os::unix::fs::symlink(original.to_string(), link.to_string()) {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "create-symbolic-link",
+                    &error,
+                    link.into()
+                )
+            }
+        }
+    }
+
+    pub ("create-hard-link") fn create_hard_link<'gc>(nctx, original: Gc<'gc, Str<'gc>>, link: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::hard_link(original.to_string(), link.to_string()) {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "create-hard-link",
+                    &error,
+                    link.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-stat-atime") fn file_stat_atime<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> i64 {
+        match std::fs::metadata(path.to_string()) {
+            Ok(metadata) => {
+                match metadata.accessed() {
+                    Ok(time) => {
+                        match time.duration_since(std::time::UNIX_EPOCH) {
+                            Ok(dur) => nctx.return_(dur.as_secs() as i64),
+                            Err(_) => nctx.return_(-1)
+                        }
+                    }
+                    Err(_) => nctx.return_(-1)
+                }
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-stat-atime",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-stat-mtime") fn file_stat_mtime<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> i64 {
+        match std::fs::metadata(path.to_string()) {
+            Ok(metadata) => {
+                match metadata.modified() {
+                    Ok(time) => {
+                        match time.duration_since(std::time::UNIX_EPOCH) {
+                            Ok(dur) => nctx.return_(dur.as_secs() as i64),
+                            Err(_) => nctx.return_(-1)
+                        }
+                    }
+                    Err(_) => nctx.return_(-1)
+                }
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-stat-mtime",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
+    pub ("file-stat-ctime") fn file_stat_ctime<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> i64 {
+        match std::fs::metadata(path.to_string()) {
+            Ok(metadata) => {
+                match metadata.created() {
+                    Ok(time) => {
+                        match time.duration_since(std::time::UNIX_EPOCH) {
+                            Ok(dur) => nctx.return_(dur.as_secs() as i64),
+                            Err(_) => nctx.return_(-1)
+                        }
+                    }
+                    Err(_) => nctx.return_(-1)
+                }
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-stat-ctime",
+                    &error,
+                    path.into()
+                )
+            }
+        }
+    }
+
 
     pub ("getcwd") fn getcwd<'gc>(nctx) -> Gc<'gc, Str<'gc>> {
         let buf = std::env::current_dir().unwrap_or_default();
@@ -57,6 +398,7 @@ native_fn!(
         let p = std::path::PathBuf::from(path.to_string());
         nctx.return_(p.is_absolute())
     }
+
 
     pub ("io/open") fn io_open<'gc>(
         nctx,
