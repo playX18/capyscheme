@@ -352,7 +352,10 @@ thunks! {
         let variable = module.downcast::<Module>().variable(*ctx, name);
 
         let Some(variable) = variable else {
-
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as _, |sym| {
+                println!("{sym:?}");
+            });
             return ThunkResult {
                 code: 1,
                 value:
@@ -383,7 +386,10 @@ thunks! {
         let variable = module.downcast::<Module>().variable(*ctx, name);
 
         let Some(var) = variable else {
-
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as _, |sym| {
+                println!("{sym:?}");
+            });
             return ThunkResult {
                 code: 1,
                 value: make_undefined_violation(ctx, name, &format!("variable not found in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),

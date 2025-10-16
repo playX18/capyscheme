@@ -42,7 +42,8 @@ lexical = { version = "7.0.4", features = ["power-of-two"] }
 findshlibs = "0.10.2"
 backtrace = "0.3.75"
 which = "8.0.0"
-libffi = "4.1.2"
+libffi = { version = "4.1.2" }
+tinyvec = "1.6.0"
 unicode-general-category = "1.1.0"
 
 [profile.release]

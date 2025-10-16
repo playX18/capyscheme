@@ -135,7 +135,7 @@
       (let ((d0 (fldiv0 x y)))
         (values d0 (fl- x (fl* d0 y))))))
 
-  (define 2^fixnum-width (expt 2 (fixnum-width)))
+  (define two^fixnum-width (expt 2 (fixnum-width)))
 
   (define fxmod
     (lambda (x y)
@@ -158,22 +158,22 @@
   (define fx+/carry
     (lambda (fx1 fx2 fx3)
       (let* ((s (+ fx1 fx2 fx3))
-             (s0 (mod0 s 2^fixnum-width))
-             (s1 (div0 s 2^fixnum-width)))
+             (s0 (mod0 s two^fixnum-width))
+             (s1 (div0 s two^fixnum-width)))
         (values s0 s1))))
 
   (define fx-/carry
     (lambda (fx1 fx2 fx3)
       (let* ((d (- fx1 fx2 fx3))
-             (d0 (mod0 d 2^fixnum-width))
-             (d1 (div0 d 2^fixnum-width)))
+             (d0 (mod0 d two^fixnum-width))
+             (d1 (div0 d two^fixnum-width)))
         (values d0 d1))))
 
   (define fx*/carry
     (lambda (fx1 fx2 fx3)
       (let* ((s (+ (* fx1 fx2) fx3))
-             (s0 (mod0 s 2^fixnum-width))
-             (s1 (div0 s 2^fixnum-width)))
+             (s0 (mod0 s two^fixnum-width))
+             (s1 (div0 s two^fixnum-width)))
         (values s0 s1))))
 
   (define fxrotate-bit-field

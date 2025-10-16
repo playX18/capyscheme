@@ -5927,7 +5927,7 @@ pub fn parse_ubignum<'gc>(
         return BigInt::zero(ctx);
     }
     let mut ans = BigInt::zero(ctx);
-    let mut digit_count = 0;
+
     while let Some(&c) = s.peek() {
         if c == '#' {
             return ans;
@@ -5942,8 +5942,6 @@ pub fn parse_ubignum<'gc>(
         } else {
             break;
         }
-
-        digit_count += 1;
 
         if digit < radix as u8 {
             ans = BigInt::times(ans, ctx, BigInt::from_u64(ctx, radix as _));

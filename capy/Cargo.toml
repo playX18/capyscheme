@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+tinyvec = { workspace = true, features = ["alloc"] }
 atomic.workspace = true
 bitflags.workspace = true
 bytemuck.workspace = true

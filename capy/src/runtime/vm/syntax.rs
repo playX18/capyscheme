@@ -5,7 +5,11 @@ use crate::{
     list, native_fn,
     runtime::{
         Context,
+        fluids::Fluid,
+        modules::Module,
+        prelude::*,
         value::{Closure, Pair, ScmHeader, Str, Tagged, Tuple, TypeCode8, Value, Vector},
+        vm::ffi::Pointer,
     },
 };
 
@@ -196,14 +200,27 @@ native_fn!(
     ) -> bool {
         nctx.return_(
             obj.is_bool()
-            ||
-            obj.is_immediate()
+            || obj.is_immediate()
+            || obj.is_int32()
+            || obj.is_flonum()
+            || obj.is_bool()
+            || obj.is_char()
+            || obj.is_null()
+            || obj == Value::undefined()
             || obj.is_pair()
             || obj.is::<Vector>()
             || obj.is::<Str>()
             || obj.is::<Closure>()
             || obj.is::<Syntax>()
             || obj.is::<Tuple>()
+            || obj.is::<ByteVector>()
+            || obj.is::<HashTable>()
+            || obj.is::<WeakSet>()
+            || obj.is::<WeakTable>()
+            || obj.is::<WeakMapping>()
+            || obj.is::<Fluid>()
+            || obj.is::<Module>()
+            || obj.is::<Pointer>()
             || obj.is_number()
         )
     }

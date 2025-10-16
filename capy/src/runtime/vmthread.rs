@@ -17,6 +17,7 @@ pub enum VMThreadTask {
     VacuumWeakSets,
     VacuumWeakTables,
     ClosePorts,
+    FinalizePointers,
     MutatorTask(Box<dyn for<'gc> FnOnce(&'gc Mutation<'gc>) + Send>),
     Task(Box<dyn FnOnce() + Send>),
 
@@ -57,6 +58,7 @@ impl VmThread {
                 loop {
                     match receiver.recv_timeout(Duration::from_millis(100)) {
                         Ok(task) => match task {
+                            VMThreadTask::FinalizePointers => (),
                             VMThreadTask::ClosePorts => {
                                 /*mutator.mutate(|mc, _| {
                                     super::value::port::close_ports(mc);

@@ -162,7 +162,7 @@
                         (write-char #\" p))
                     (printstr x p))]
             [(eof-object? x) (printeof p)]
-            [(bytevector? x) (print-bytevector x p slashify)]
+            [(bytevector? x) (print-bytevector x p slashify level)]
             [(port? x) (print-port x p slashify)]
             [(procedure? x) (print-procedure x p slashify)]
             [(tuple? x) ((tuple-printer) x p slashify)]
@@ -194,6 +194,8 @@
                 (printstr (if x "#t" "#f") p)]
             [(variable? x)
                 (printstr (string-append "#<variable " (number->string (hash x) 16) ">") p)]
+            [(pointer? x)
+                (printstr (string-append "#<pointer " (number->string (pointer-address x) 16) ">") p)]
             [else (printstr "<TODO>" p)]))
     
     (define (printnumber n p slashify)
@@ -245,7 +247,7 @@
             (printstr (string-append "#<" (cond [(input-port? x) "input-port"]
                                                 [(output-port? x) "output-port"]
                                                 [else "port"]) " " (port-name x) ">") p))
-        (define (print-bytevector x p slashify)
+        (define (print-bytevector x p slashify level)
             (write-char #\# p)
             (cond 
                 ((io/port-allows-r7rs-weirdness? p) #t)
