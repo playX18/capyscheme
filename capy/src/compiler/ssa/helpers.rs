@@ -590,11 +590,66 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     pub fn pre_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {
         let _ = (src, offset, target);
+
+        match self.module_builder.ctx.mc.barrier() {
+            BarrierSelector::SATBBarrier => {
+                /*let done = self.builder.create_block();
+                let check_wb = self.builder.create_block();
+                let slowpath = self.builder.create_block();
+
+                self.builder.func.layout.set_cold(slowpath);
+                self.branch_if_immediate(src, done, &[], check_wb, &[]);
+
+                self.builder.switch_to_block(check_wb);
+                {
+                    let meta_base_address = self.builder.ins().iconst(
+                        types::I64,
+                        GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS.as_usize() as i64,
+                    );
+                    let shifted_addr = self.builder.ins().ushr_imm(src, 6);
+                    let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
+                    let shift = self.builder.ins().ushr_imm(src, 3);
+                    let shift = self.builder.ins().band_imm(shift, 0b111);
+
+                    let byte_val = self.builder.ins().load(
+                        types::I8,
+                        ir::MemFlags::trusted().with_can_move(),
+                        meta_addr,
+                        0,
+                    );
+
+                    let shifted_val = self.builder.ins().ushr(byte_val, shift);
+                    let masked = self.builder.ins().band_imm(shifted_val, 1);
+                    let is_set = self.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+
+                    self.builder.ins().brif(is_set, slowpath, &[], done, &[]);
+                }
+                self.builder.switch_to_block(slowpath);
+                {
+                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                    let offset = self.builder.ins().iconst(types::I32, offset as i64);
+                    self.builder.ins().call(
+                        self.thunks.post_write_barrier_slow,
+                        &[ctx, src, offset, target],
+                    );
+                    self.builder.ins().jump(done, &[]);
+                }
+                self.builder.switch_to_block(done);*/
+                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                let offset = self.builder.ins().iconst(types::I32, offset as i64);
+                self.builder
+                    .ins()
+                    .call(self.thunks.pre_write_barrier, &[ctx, src, offset, target]);
+            }
+
+            BarrierSelector::NoBarrier | BarrierSelector::ObjectBarrier => { /* no-op */ }
+        }
     }
 
     pub fn post_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {
         match self.module_builder.ctx.mc.barrier() {
             BarrierSelector::NoBarrier => {}
+            BarrierSelector::SATBBarrier => { /* no-op */ }
             BarrierSelector::ObjectBarrier => {
                 let done = self.builder.create_block();
                 let check_wb = self.builder.create_block();
@@ -644,11 +699,64 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     pub fn pre_write_barrier_n(&mut self, src: ir::Value, slot: ir::Value, target: ir::Value) {
         let _ = (src, slot, target);
+        match self.module_builder.ctx.mc.barrier() {
+            BarrierSelector::SATBBarrier => {
+                /*let done = self.builder.create_block();
+                let check_wb = self.builder.create_block();
+                let slowpath = self.builder.create_block();
+
+                self.builder.func.layout.set_cold(slowpath);
+                self.branch_if_immediate(src, done, &[], check_wb, &[]);
+
+                self.builder.switch_to_block(check_wb);
+                {
+                    let meta_base_address = self.builder.ins().iconst(
+                        types::I64,
+                        GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS.as_usize() as i64,
+                    );
+                    let shifted_addr = self.builder.ins().ushr_imm(src, 6);
+                    let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
+                    let shift = self.builder.ins().ushr_imm(src, 3);
+                    let shift = self.builder.ins().band_imm(shift, 0b111);
+                    let shift = self.builder.ins().ireduce(types::I8, shift);
+                    let byte_val = self.builder.ins().load(
+                        types::I8,
+                        ir::MemFlags::trusted().with_can_move(),
+                        meta_addr,
+                        0,
+                    );
+
+                    let shifted_val = self.builder.ins().ushr(byte_val, shift);
+                    let masked = self.builder.ins().band_imm(shifted_val, 1);
+                    let is_set = self.builder.ins().icmp_imm(IntCC::Equal, masked, 1);
+
+                    self.builder.ins().brif(is_set, slowpath, &[], done, &[]);
+                }
+                self.builder.switch_to_block(slowpath);
+                {
+                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                    self.builder.ins().call(
+                        self.thunks.post_write_barrier_at_slot,
+                        &[ctx, src, slot, target],
+                    );
+                    self.builder.ins().jump(done, &[]);
+                }
+                self.builder.switch_to_block(done);*/
+                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                self.builder.ins().call(
+                    self.thunks.pre_write_barrier_at_slot,
+                    &[ctx, src, slot, target],
+                );
+            }
+
+            BarrierSelector::NoBarrier | BarrierSelector::ObjectBarrier => { /* no-op */ }
+        }
     }
 
     pub fn post_write_barrier_n(&mut self, src: ir::Value, slot: ir::Value, target: ir::Value) {
         match self.module_builder.ctx.mc.barrier() {
             BarrierSelector::NoBarrier => {}
+            BarrierSelector::SATBBarrier => {}
             BarrierSelector::ObjectBarrier => {
                 let done = self.builder.create_block();
                 let check_wb = self.builder.create_block();

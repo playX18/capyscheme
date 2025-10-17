@@ -6,12 +6,14 @@ use std::{
 use rsgc::{
     Gc, Rootable, Trace,
     alloc::array::Array,
-    barrier::{self, Unlock, Write},
+    barrier::{self, Write},
     cell::Lock,
     collection::Visitor,
     finalizer::FinalizationNotify,
     global::Global,
+    mmtk::util::Address,
     mutator::Mutation,
+    object::GCObject,
     sync::monitor::Monitor,
     weak::Weak,
 };
@@ -30,14 +32,27 @@ struct WeakEntry<'gc> {
 }
 
 impl<'gc> WeakEntry<'gc> {
-    fn is_broken(&self) -> bool {
-        self.value.is_bwp()
+    fn is_broken(&self, mc: &Mutation<'gc>) -> bool {
+        self.get(mc).is_bwp()
     }
 
     fn broken() -> Self {
         Self {
             value: Value::from_raw_i64(Value::VALUE_BWP),
             hash: 0,
+        }
+    }
+
+    fn get(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+        if self.value.is_bwp() {
+            return self.value;
+        }
+
+        unsafe {
+            mc.raw_weak_reference_load(GCObject::from_address(Address::from_usize(
+                self.value.bits() as _,
+            )));
+            self.value
         }
     }
 }
@@ -128,8 +143,8 @@ impl<'gc> WeakSetInner<'gc> {
 
         loop {
             empty = (empty + 1) % size;
-
-            if entries[empty].get().value.is_bwp() {
+            let value = entries[empty].get().get(mc);
+            if value.is_bwp() {
                 break;
             }
         }
@@ -162,8 +177,8 @@ impl<'gc> WeakSetInner<'gc> {
             if hash == 0 || hash_to_index(hash, size) == next {
                 break;
             }
-
-            if next_entry.value.is_bwp() {
+            let value = next_entry.get(mc);
+            if value.is_bwp() {
                 self.give_to_poor(mc, next);
                 self.n_items.set(self.n_items.get() - 1);
                 continue;
@@ -177,38 +192,6 @@ impl<'gc> WeakSetInner<'gc> {
 
         // Free the end
         Gc::write(mc, entries)[k].unlock().set(WeakEntry {
-            value: Value::bwp(),
-            hash: 0,
-        });
-    }
-
-    fn give_to_poor_no_wb(&self, mut k: usize) {
-        let size = self.size.get();
-        let entries = self.entries.get();
-        loop {
-            let next = (k + 1) % size;
-            let next_entry = entries[next].get();
-            let hash = next_entry.hash;
-
-            if hash == 0 || hash_to_index(hash, size) == next {
-                break;
-            }
-
-            if next_entry.value.is_bwp() {
-                self.give_to_poor_no_wb(next);
-                self.n_items.set(self.n_items.get() - 1);
-                continue;
-            }
-
-            // Move next_entry to k
-            //Gc::write(mc, entries)[k].unlock().set(next_entry);
-            unsafe { entries[k].unlock_unchecked() }.set(entries[next].get());
-
-            k = next;
-        }
-
-        // Free the end
-        unsafe { entries[k].unlock_unchecked() }.set(WeakEntry {
             value: Value::bwp(),
             hash: 0,
         });
@@ -298,7 +281,7 @@ impl<'gc> WeakSetInner<'gc> {
 
             let entry = old_entries[old_k].get();
 
-            if entry.is_broken() {
+            if entry.is_broken(mc) {
                 continue;
             }
 
@@ -332,7 +315,7 @@ impl<'gc> WeakSetInner<'gc> {
 
         for k in 0..size {
             let entry = entries[k].get();
-            if entry.hash != 0 && entry.is_broken() {
+            if entry.hash != 0 && entry.is_broken(mc) {
                 Self::give_to_poor(this, mc, k);
                 this.n_items.set(this.n_items.get().saturating_sub(1));
             }
@@ -367,15 +350,15 @@ impl<'gc> WeakSetInner<'gc> {
                 if hash == other_hash {
                     let entry = entries[k].get();
 
-                    if entry.value.is_bwp() {
+                    if entry.is_broken(mc) {
                         this.give_to_poor(mc, k);
                         this.n_items.set(this.n_items.get() - 1);
                         other_hash = entries[k].get().hash;
                         continue 'retry;
                     }
-
-                    if pred(mc, entry.value) {
-                        return Some(entry.value);
+                    let value = entry.get(mc);
+                    if pred(mc, value) {
+                        return Some(value);
                     }
                 }
 
@@ -416,17 +399,17 @@ impl<'gc> WeakSetInner<'gc> {
 
                 if other_hash == hash {
                     let entry = entries[k].get();
-
-                    if entry.value.is_bwp() {
+                    let value = entry.get(mc);
+                    if entry.is_broken(mc) {
                         this.give_to_poor(mc, k);
                         this.n_items.set(this.n_items.get() - 1);
 
                         continue 'retry;
                     }
 
-                    if pred(mc, entry.value) {
+                    if pred(mc, value) {
                         // Found an entry with this key.
-                        return entry.value;
+                        return value;
                     }
                 }
 
@@ -481,15 +464,15 @@ impl<'gc> WeakSetInner<'gc> {
 
                 if other_hash == hash {
                     let entry = entries[k].get();
-
-                    if entry.value.is_bwp() {
+                    let value = entry.get(mc);
+                    if entry.is_broken(mc) {
                         this.give_to_poor(mc, k);
                         this.n_items.set(this.n_items.get().saturating_sub(1));
                         other_hash = entries[k].get().hash;
                         continue 'retry;
                     }
 
-                    if pred(mc, entry.value) {
+                    if pred(mc, value) {
                         // Found an entry with this key.
                         Gc::write(mc, entries)[k].unlock().set(WeakEntry {
                             value: Value::bwp(),
@@ -500,7 +483,7 @@ impl<'gc> WeakSetInner<'gc> {
                         if this.n_items.get() < this.lower.get() {
                             Self::resize(this, mc);
                         } else {
-                            this.give_to_poor_no_wb(k);
+                            this.give_to_poor(mc, k);
                         }
                         return;
                     }
@@ -655,7 +638,7 @@ pub(crate) fn vacuum_weak_sets<'gc>(mc: &Mutation<'gc>) {
         let mut guard = all_weak_sets.0.lock();
 
         guard.retain(|weak_set| {
-            if let Some(weak_set) = weak_set.upgrade() {
+            if let Some(weak_set) = weak_set.upgrade(mc) {
                 let wset = weak_set.inner.lock();
                 Gc::write(mc, weak_set);
                 unsafe {

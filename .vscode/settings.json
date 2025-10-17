@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "*.sld": "scheme",
+        "__config": "c",
+        "locale": "c",
+        "istream": "c"
+    }
+}

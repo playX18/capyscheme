@@ -32,13 +32,13 @@ pub fn t_k<'a, 'gc>(
             let consumer_k_var = cps.fresh_variable("consumer");
 
             let consumer_k = Cont {
-                meta: Value::new(false),
+                meta: cps.current_meta,
                 name: Value::new(false),
                 binding: consumer_k_var,
                 args: formals,
                 variadic: formals_opt,
                 body: t_k(cps, consumer, fk, h),
-
+                ignore_args: false,
                 source: src,
                 free_vars: Lock::new(None),
                 reified: Cell::new(false),
@@ -504,11 +504,12 @@ pub fn t_c<'a, 'gc>(
             let consumer_k_var = cps.fresh_variable("consumer");
 
             let consumer_k = Cont {
-                meta: Value::new(false),
+                meta: cps.current_meta,
                 name: Value::new(false),
                 binding: consumer_k_var,
                 args: formals,
                 variadic: formals_opt,
+                ignore_args: false,
                 body: t_c(cps, consumer, k, h),
 
                 source: src,
@@ -582,15 +583,35 @@ pub fn t_k_many<'a, 'gc>(
     )
 }
 
+pub fn cps_seq<'a, 'gc>(
+    builder: &'a mut CPSBuilder<'gc>,
+    forms: &[CoreTermRef<'gc>],
+    k: LVarRef<'gc>,
+    h: LVarRef<'gc>,
+) -> TermRef<'gc> {
+    if forms.is_empty() {
+        panic!("Cannot compile an empty sequence to CPS");
+    }
+
+    let last = *forms.last().unwrap();
+    let before = &forms[..forms.len() - 1];
+    with_cps!(builder;
+        @tk* (h) _aexps = before;
+        # t_c(builder, last, k, h)
+    )
+}
+
 pub fn cps_func<'a, 'gc>(
     builder: &'a mut CPSBuilder<'gc>,
     proc: &Proc<'gc>,
     binding: LVarRef<'gc>,
 ) -> FuncRef<'gc> {
+    let old_meta = builder.current_meta;
+    builder.current_meta = proc.meta;
     let return_cont = builder.fresh_variable("return");
     let handler_cont = builder.fresh_variable("handler");
     let body = t_c(builder, proc.body, return_cont, handler_cont);
-
+    builder.current_meta = old_meta;
     Gc::new(
         &builder.ctx,
         Func {

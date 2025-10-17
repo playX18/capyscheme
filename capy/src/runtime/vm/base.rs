@@ -4,7 +4,7 @@ use crate::{
     fluid, native_cont, native_fn,
     runtime::{
         Context,
-        modules::Variable,
+        modules::{Variable, define},
         value::{Closure, Pair, Str, Symbol, Value, Vector},
     },
 };
@@ -15,6 +15,44 @@ fluid!(
 
 native_fn!(
     register_base_fns:
+    pub ("host-arch") fn host_target<'gc>(nctx) -> Value<'gc> {
+        let target = Str::new(&nctx.ctx, std::env::consts::ARCH, true);
+        nctx.return_(target.into())
+    }
+
+    pub ("host-os") fn host_os<'gc>(nctx) -> Value<'gc> {
+        let os = Str::new(&nctx.ctx, std::env::consts::OS, true);
+        nctx.return_(os.into())
+    }
+
+    pub ("host-family") fn host_family<'gc>(nctx) -> Value<'gc> {
+        let family = Str::new(&nctx.ctx, std::env::consts::FAMILY, true);
+        nctx.return_(family.into())
+    }
+
+    pub ("host-triple") fn host_triple<'gc>(nctx) -> Value<'gc> {
+        let triple = format!(
+            "{}-{}-{}",
+            std::env::consts::ARCH,
+            std::env::consts::OS,
+            std::env::consts::FAMILY
+        );
+        let triple = Str::new(&nctx.ctx, &triple, true);
+        nctx.return_(triple.into())
+    }
+
+    pub ("dll-suffix") fn dll_suffix<'gc>(nctx) -> Value<'gc> {
+        let suffix = std::env::consts::DLL_SUFFIX;
+        let suffix = Str::new(&nctx.ctx, suffix, true);
+        nctx.return_(suffix.into())
+    }
+
+    pub ("dll-prefix") fn dll_prefix<'gc>(nctx) -> Value<'gc> {
+        let prefix = std::env::consts::DLL_PREFIX;
+        let prefix = Str::new(&nctx.ctx, prefix, true);
+        nctx.return_(prefix.into())
+    }
+
     pub ("procedure?") fn is_procedure<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(v.is::<Closure>()))
     }
@@ -283,4 +321,97 @@ pub fn init_base<'gc>(ctx: Context<'gc>) {
     });
 
     program_arguments_fluid(ctx).set(ctx, args);
+
+    // Input flags (c_iflag)
+    define(ctx, "IGNBRK", Value::new(libc::IGNBRK as i32));
+    define(ctx, "BRKINT", Value::new(libc::BRKINT as i32));
+    define(ctx, "IGNPAR", Value::new(libc::IGNPAR as i32));
+    define(ctx, "PARMRK", Value::new(libc::PARMRK as i32));
+    define(ctx, "INPCK", Value::new(libc::INPCK as i32));
+    define(ctx, "ISTRIP", Value::new(libc::ISTRIP as i32));
+    define(ctx, "INLCR", Value::new(libc::INLCR as i32));
+    define(ctx, "IGNCR", Value::new(libc::IGNCR as i32));
+    define(ctx, "ICRNL", Value::new(libc::ICRNL as i32));
+    define(ctx, "IXON", Value::new(libc::IXON as i32));
+    define(ctx, "IXOFF", Value::new(libc::IXOFF as i32));
+
+    // Output flags (c_oflag)
+    define(ctx, "OPOST", Value::new(libc::OPOST as i32));
+    define(ctx, "ONLCR", Value::new(libc::ONLCR as i32));
+    define(ctx, "OCRNL", Value::new(libc::OCRNL as i32));
+    define(ctx, "ONOCR", Value::new(libc::ONOCR as i32));
+    define(ctx, "ONLRET", Value::new(libc::ONLRET as i32));
+
+    // Control flags (c_cflag)
+    define(ctx, "CSIZE", Value::new(libc::CSIZE as i32));
+    define(ctx, "CS5", Value::new(libc::CS5 as i32));
+    define(ctx, "CS6", Value::new(libc::CS6 as i32));
+    define(ctx, "CS7", Value::new(libc::CS7 as i32));
+    define(ctx, "CS8", Value::new(libc::CS8 as i32));
+    define(ctx, "CSTOPB", Value::new(libc::CSTOPB as i32));
+    define(ctx, "CREAD", Value::new(libc::CREAD as i32));
+    define(ctx, "PARENB", Value::new(libc::PARENB as i32));
+    define(ctx, "PARODD", Value::new(libc::PARODD as i32));
+    define(ctx, "HUPCL", Value::new(libc::HUPCL as i32));
+    define(ctx, "CLOCAL", Value::new(libc::CLOCAL as i32));
+
+    // Local flags (c_lflag)
+    define(ctx, "ISIG", Value::new(libc::ISIG as i32));
+    define(ctx, "ICANON", Value::new(libc::ICANON as i32));
+    define(ctx, "ECHO", Value::new(libc::ECHO as i32));
+    define(ctx, "ECHOE", Value::new(libc::ECHOE as i32));
+    define(ctx, "ECHOK", Value::new(libc::ECHOK as i32));
+    define(ctx, "ECHONL", Value::new(libc::ECHONL as i32));
+    define(ctx, "NOFLSH", Value::new(libc::NOFLSH as i32));
+    define(ctx, "TOSTOP", Value::new(libc::TOSTOP as i32));
+    define(ctx, "IEXTEN", Value::new(libc::IEXTEN as i32));
+
+    // Control characters indices
+    define(ctx, "VINTR", Value::new(libc::VINTR as i32));
+    define(ctx, "VQUIT", Value::new(libc::VQUIT as i32));
+    define(ctx, "VERASE", Value::new(libc::VERASE as i32));
+    define(ctx, "VKILL", Value::new(libc::VKILL as i32));
+    define(ctx, "VEOF", Value::new(libc::VEOF as i32));
+    define(ctx, "VTIME", Value::new(libc::VTIME as i32));
+    define(ctx, "VMIN", Value::new(libc::VMIN as i32));
+    define(ctx, "VSTART", Value::new(libc::VSTART as i32));
+    define(ctx, "VSTOP", Value::new(libc::VSTOP as i32));
+    define(ctx, "VSUSP", Value::new(libc::VSUSP as i32));
+
+    // tcsetattr actions
+    define(ctx, "TCSANOW", Value::new(libc::TCSANOW as i32));
+    define(ctx, "TCSADRAIN", Value::new(libc::TCSADRAIN as i32));
+    define(ctx, "TCSAFLUSH", Value::new(libc::TCSAFLUSH as i32));
+
+    // tcflush queue selectors
+    define(ctx, "TCIFLUSH", Value::new(libc::TCIFLUSH as i32));
+    define(ctx, "TCOFLUSH", Value::new(libc::TCOFLUSH as i32));
+    define(ctx, "TCIOFLUSH", Value::new(libc::TCIOFLUSH as i32));
+
+    // tcflow actions
+    define(ctx, "TCOOFF", Value::new(libc::TCOOFF as i32));
+    define(ctx, "TCOON", Value::new(libc::TCOON as i32));
+    define(ctx, "TCIOFF", Value::new(libc::TCIOFF as i32));
+    define(ctx, "TCION", Value::new(libc::TCION as i32));
+
+    // Baud rates
+    define(ctx, "B0", Value::new(libc::B0 as i32));
+    define(ctx, "B50", Value::new(libc::B50 as i32));
+    define(ctx, "B75", Value::new(libc::B75 as i32));
+    define(ctx, "B110", Value::new(libc::B110 as i32));
+    define(ctx, "B134", Value::new(libc::B134 as i32));
+    define(ctx, "B150", Value::new(libc::B150 as i32));
+    define(ctx, "B200", Value::new(libc::B200 as i32));
+    define(ctx, "B300", Value::new(libc::B300 as i32));
+    define(ctx, "B600", Value::new(libc::B600 as i32));
+    define(ctx, "B1200", Value::new(libc::B1200 as i32));
+    define(ctx, "B1800", Value::new(libc::B1800 as i32));
+    define(ctx, "B2400", Value::new(libc::B2400 as i32));
+    define(ctx, "B4800", Value::new(libc::B4800 as i32));
+    define(ctx, "B9600", Value::new(libc::B9600 as i32));
+    define(ctx, "B19200", Value::new(libc::B19200 as i32));
+    define(ctx, "B38400", Value::new(libc::B38400 as i32));
+    define(ctx, "B57600", Value::new(libc::B57600 as i32));
+    define(ctx, "B115200", Value::new(libc::B115200 as i32));
+    define(ctx, "B230400", Value::new(libc::B230400 as i32));
 }

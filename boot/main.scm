@@ -1579,6 +1579,15 @@
 (define (string->number x . radix) 
   (let ([radix (if (null? radix) 10 (car radix))])
     (string->number x radix)))
+
+(define (string-any pred str)
+  (let loop ((i 0) (n (string-length str)))
+    (if (>= i n)
+        #f
+        (if (pred (string-ref str i))
+            #t
+            (loop (+ i 1) n)))))
+
 (define (lookup-bound module name public?)
   (let ([mod (resolve-module module #f #f)])
     (if (not mod)

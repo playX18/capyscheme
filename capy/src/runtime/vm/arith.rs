@@ -439,7 +439,7 @@ native_fn!(
                 return nctx.wrong_argument_violation("<=", "argument must be a number", Some(z.clone()), Some(1), rest.len() + 1, &[w.into_value(ctx)].iter().chain(rest.iter()).cloned().collect::<Vec<_>>().as_slice());
             };
             let cmp = Number::compare(nctx.ctx, w, z);
-            if cmp != Some(Ordering::Less) {
+            if !matches!(cmp, Some(Ordering::Less) | Some(Ordering::Equal)) {
                 return nctx.return_(Ok(false));
             }
             w = z;
@@ -510,8 +510,8 @@ native_fn!(
         nctx.return_(w.is_zero())
     }
 
-    pub ("fixnum?") fn is_fixnum<'gc>(nctx, w: Number<'gc>) -> bool {
-        nctx.return_(w.is_fixnum())
+    pub ("fixnum?") fn is_fixnum<'gc>(nctx, w: Value<'gc>) -> bool {
+        nctx.return_(w.is_int32())
     }
 
     pub("bigint?") fn is_bigint<'gc>(nctx, w: Number<'gc>) -> bool {
@@ -604,6 +604,68 @@ native_fn!(
         }
 
         nctx.return_(Ok(w))
+    }
+
+    pub ("logior") fn logior<'gc>(nctx, w: ExactInteger<'gc>, rest: &'gc [Value<'gc>]) -> ExactInteger<'gc> {
+        if rest.is_empty() {
+            return nctx.return_(w);
+        }
+        let mut w = w;
+
+        for &z in rest.iter() {
+            let z = match ExactInteger::try_from_value(nctx.ctx, z) {
+                Ok(z) => z,
+                Err(e) => {
+                    return nctx.conversion_error("logior", e);
+                }
+            };
+            w = ExactInteger::bitor(nctx.ctx, w, z);
+        }
+
+        nctx.return_(w)
+    }
+
+    pub ("logxor") fn logxor<'gc>(nctx, w: ExactInteger<'gc>, rest: &'gc [Value<'gc>]) -> ExactInteger<'gc> {
+        if rest.is_empty() {
+            return nctx.return_(w);
+        }
+        let mut w = w;
+
+        for &z in rest.iter() {
+            let z = match ExactInteger::try_from_value(nctx.ctx, z) {
+                Ok(z) => z,
+                Err(e) => {
+                    return nctx.conversion_error("logxor", e);
+                }
+            };
+            w = ExactInteger::bitxor(nctx.ctx, w, z);
+        }
+
+        nctx.return_(w)
+    }
+
+    pub ("logand") fn logand<'gc>(nctx, w: ExactInteger<'gc>, rest: &'gc [Value<'gc>]) -> ExactInteger<'gc> {
+        if rest.is_empty() {
+            return nctx.return_(w);
+        }
+        let mut w = w;
+
+        for &z in rest.iter() {
+            let z = match ExactInteger::try_from_value(nctx.ctx, z) {
+                Ok(z) => z,
+                Err(e) => {
+                    return nctx.conversion_error("logand", e);
+                }
+            };
+            w = ExactInteger::bitand(nctx.ctx, w, z);
+        }
+
+        nctx.return_(w)
+    }
+
+    pub ("lognot") fn lognot<'gc>(nctx, w: ExactInteger<'gc>) -> ExactInteger<'gc> {
+        let w = ExactInteger::bitnot(nctx.ctx, w);
+        nctx.return_(w)
     }
 
     pub ("fxlogior") fn fxlogior<'gc>(nctx, w: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {

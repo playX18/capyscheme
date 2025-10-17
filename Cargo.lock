@@ -262,6 +262,7 @@ dependencies = [
  "cranelift-module",
  "cranelift-object",
  "env_logger",
+ "libc",
  "libloading",
  "pretty",
  "target-lexicon",
@@ -281,9 +282,9 @@ dependencies = [
 
 [[package]]
 name = "cfg-if"
-version = "1.0.3"
+version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
+checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "colorchoice"
@@ -732,14 +733,14 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26145e563e54f2cadc477553f1ec5ee650b00862f0a58bcd12cbdc5f0ea2d2f4"
+checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
- "wasi",
+ "wasip2",
 ]
 
 [[package]]
@@ -1138,7 +1139,7 @@ dependencies = [
 [[package]]
 name = "mmtk"
 version = "0.31.0"
-source = "git+https://github.com/mmtk/mmtk-core?rev=f0b992c#f0b992cf4710b00a84c280f2a11679d39e35e872"
+source = "git+https://github.com/mmtk/mmtk-core#1ffa5b325a07d4fe99fe7e7008b295f8febea407"
 dependencies = [
  "atomic",
  "atomic-traits",
@@ -1177,7 +1178,7 @@ dependencies = [
 [[package]]
 name = "mmtk-macros"
 version = "0.31.0"
-source = "git+https://github.com/mmtk/mmtk-core?rev=f0b992c#f0b992cf4710b00a84c280f2a11679d39e35e872"
+source = "git+https://github.com/mmtk/mmtk-core#1ffa5b325a07d4fe99fe7e7008b295f8febea407"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -1570,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "rsgc"
 version = "0.1.0"
-source = "git+https://codeberg.org/playxe/rsgc#2765a7523ce723b784e49057b2c956898bff8ee5"
+source = "git+https://codeberg.org/playxe/rsgc#0d45be3ccdc1c0c88c317c94a0c808868cb67b53"
 dependencies = [
  "atomic",
  "bytemuck",
@@ -1587,7 +1588,7 @@ dependencies = [
 [[package]]
 name = "rsgc-derive"
 version = "0.1.0"
-source = "git+https://codeberg.org/playxe/rsgc#2765a7523ce723b784e49057b2c956898bff8ee5"
+source = "git+https://codeberg.org/playxe/rsgc#0d45be3ccdc1c0c88c317c94a0c808868cb67b53"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1984,15 +1985,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "wasi"
-version = "0.14.7+wasi-0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "883478de20367e224c0090af9cf5f9fa85bed63a95c1abf3afc5c083ebc06e8c"
-dependencies = [
- "wasip2",
-]
 
 [[package]]
 name = "wasip2"

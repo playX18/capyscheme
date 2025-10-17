@@ -5,13 +5,14 @@ use rsgc::Gc;
 use crate::cps::term::*;
 use crate::expander::core::{LVarRef, fresh_lvar};
 use crate::runtime::Context;
-use crate::runtime::value::Symbol;
+use crate::runtime::value::{Symbol, Value};
 
 pub struct CPSBuilder<'gc> {
     pub ctx: Context<'gc>,
     pub varcount: u32,
     pub scope_id: u32,
     pub current_topbox_scope: Option<u32>,
+    pub current_meta: Value<'gc>,
 }
 
 pub type FCont<'a, 'gc> =
@@ -46,6 +47,7 @@ impl<'gc> CPSBuilder<'gc> {
             varcount: 0,
             current_topbox_scope: None,
             scope_id: 0,
+            current_meta: Value::null(),
         }
     }
 
@@ -104,6 +106,7 @@ macro_rules! with_cps {
                     binding: $k,
                     args: args,
                     meta,
+                    ignore_args: false,
                     variadic: None,
                     body,
                     source: src,
@@ -158,6 +161,7 @@ macro_rules! with_cps {
                     args: args,
                     variadic: None,
                     body,
+                    ignore_args: false,
                     source: src,
                     reified: std::cell::Cell::new(false),
                     free_vars: $crate::rsgc::cell::Lock::new(None),
@@ -192,6 +196,7 @@ macro_rules! with_cps {
             binding: $k,
             args,
             variadic: None,
+            ignore_args: false,
             body,
             source: $src,
             meta,
