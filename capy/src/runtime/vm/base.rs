@@ -1,11 +1,11 @@
-use rsgc::{Gc, barrier, barrier::Unlock, cell::Lock};
+use rsgc::{Gc, barrier};
 
 use crate::{
     fluid, native_cont, native_fn,
     runtime::{
         Context,
         modules::{Variable, define},
-        value::{Closure, Pair, Str, Symbol, Value, Vector},
+        value::{Closure, Str, Symbol, Value, Vector},
     },
 };
 
@@ -164,21 +164,25 @@ native_fn!(
         if !lst.is_list() {
             return nctx.wrong_argument_violation("delete!", "expected a list", Some(lst), Some(2), 2, &[item, lst]);
         }
-        let mut walk = lst;
-        let lst = Lock::new(lst);
 
-        let mut prev: *const Lock<Value<'gc>> = &lst;
+        let mut lst = lst;
+        let mut walk = lst;
+        let mut prev = lst;
 
         while walk.is_pair() {
             if walk.car().r5rs_equal(item) {
-                unsafe { (*prev).unlock_unchecked().set(walk.cdr()) };
+                if prev == lst {
+                    lst = walk.cdr();
+                } else {
+                    prev.set_cdr(nctx.ctx, walk.cdr());
+                }
             } else {
-                prev = &walk.downcast::<Pair>().cdr;
+                prev = walk;
             }
             walk = walk.cdr();
         }
 
-        nctx.return_(lst.get())
+        nctx.return_(lst)
     }
 
     pub ("unspecified") fn unspecified<'gc>(nctx) -> Value<'gc> {
