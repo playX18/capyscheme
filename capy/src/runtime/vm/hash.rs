@@ -209,7 +209,7 @@ native_fn!(
         nsize_or_handlers: Option<Value<'gc>>
     ) -> Value<'gc> {
         let ctx = nctx.ctx;
-        let typ = if let Some(kind) = kind { 
+        let typ = if let Some(kind) = kind {
             if kind == sym_eq(ctx) {
                 HashTableType::Eq
             } else if kind == sym_eqv(ctx) {

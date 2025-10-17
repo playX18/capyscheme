@@ -1139,7 +1139,7 @@ dependencies = [
 [[package]]
 name = "mmtk"
 version = "0.31.0"
-source = "git+https://github.com/mmtk/mmtk-core#1ffa5b325a07d4fe99fe7e7008b295f8febea407"
+source = "git+https://github.com/mmtk/mmtk-core?rev=680df0ef7fac7c6a1087a72491cde3710bac8959#680df0ef7fac7c6a1087a72491cde3710bac8959"
 dependencies = [
  "atomic",
  "atomic-traits",
@@ -1178,7 +1178,7 @@ dependencies = [
 [[package]]
 name = "mmtk-macros"
 version = "0.31.0"
-source = "git+https://github.com/mmtk/mmtk-core#1ffa5b325a07d4fe99fe7e7008b295f8febea407"
+source = "git+https://github.com/mmtk/mmtk-core?rev=680df0ef7fac7c6a1087a72491cde3710bac8959#680df0ef7fac7c6a1087a72491cde3710bac8959"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -1571,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "rsgc"
 version = "0.1.0"
-source = "git+https://codeberg.org/playxe/rsgc#0d45be3ccdc1c0c88c317c94a0c808868cb67b53"
+source = "git+https://codeberg.org/playxe/rsgc#7e79b73b70febe9f22b51a8fc7fb5d435e8f8b49"
 dependencies = [
  "atomic",
  "bytemuck",
@@ -1588,7 +1588,7 @@ dependencies = [
 [[package]]
 name = "rsgc-derive"
 version = "0.1.0"
-source = "git+https://codeberg.org/playxe/rsgc#0d45be3ccdc1c0c88c317c94a0c808868cb67b53"
+source = "git+https://codeberg.org/playxe/rsgc#7e79b73b70febe9f22b51a8fc7fb5d435e8f8b49"
 dependencies = [
  "proc-macro2",
  "quote",
