@@ -593,7 +593,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         match self.module_builder.ctx.mc.barrier() {
             BarrierSelector::SATBBarrier => {
-                /*let done = self.builder.create_block();
+                let done = self.builder.create_block();
                 let check_wb = self.builder.create_block();
                 let slowpath = self.builder.create_block();
 
@@ -634,12 +634,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     );
                     self.builder.ins().jump(done, &[]);
                 }
-                self.builder.switch_to_block(done);*/
+                self.builder.switch_to_block(done);
+                /*
                 let ctx = self.builder.ins().get_pinned_reg(types::I64);
                 let offset = self.builder.ins().iconst(types::I32, offset as i64);
                 self.builder
                     .ins()
-                    .call(self.thunks.pre_write_barrier, &[ctx, src, offset, target]);
+                    .call(self.thunks.pre_write_barrier, &[ctx, src, offset, target]);*/
             }
 
             BarrierSelector::NoBarrier | BarrierSelector::ObjectBarrier => { /* no-op */ }
@@ -701,7 +702,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let _ = (src, slot, target);
         match self.module_builder.ctx.mc.barrier() {
             BarrierSelector::SATBBarrier => {
-                /*let done = self.builder.create_block();
+                let done = self.builder.create_block();
                 let check_wb = self.builder.create_block();
                 let slowpath = self.builder.create_block();
 
@@ -741,12 +742,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     );
                     self.builder.ins().jump(done, &[]);
                 }
-                self.builder.switch_to_block(done);*/
+                self.builder.switch_to_block(done); /* 
                 let ctx = self.builder.ins().get_pinned_reg(types::I64);
                 self.builder.ins().call(
-                    self.thunks.pre_write_barrier_at_slot,
-                    &[ctx, src, slot, target],
-                );
+                self.thunks.pre_write_barrier_at_slot,
+                &[ctx, src, slot, target],
+                );*/
             }
 
             BarrierSelector::NoBarrier | BarrierSelector::ObjectBarrier => { /* no-op */ }
