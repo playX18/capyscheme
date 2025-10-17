@@ -14,6 +14,7 @@ cranelift-codegen.workspace = true
 cranelift-jit.workspace = true
 cranelift.workspace = true
 env_logger.workspace = true
+libc.workspace = true
 
 [features]
 portable = ["capy/portable"]

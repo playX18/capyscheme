@@ -4,7 +4,7 @@
         call-with-current-continuation
         dynamic-wind
         when unless case-lambda)
-    (import)
+    (import (core primitives))
   (define-syntax case-lambda
     (lambda (x)
       (define compile-clause

@@ -663,6 +663,7 @@ fn copy_c<'gc>(
         Cont {
             name: cont.name(),
             binding,
+            ignore_args: cont.ignore_args,
             body,
             args: args1,
             variadic: var1,

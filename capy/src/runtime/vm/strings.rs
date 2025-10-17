@@ -117,7 +117,8 @@ native_fn!(
         nctx.return_(())
     }
 
-    pub ("substring") fn substring<'gc>(nctx, str: Gc<'gc, Str<'gc>>, start: usize, end: usize) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+    pub ("substring") fn substring<'gc>(nctx, str: Gc<'gc, Str<'gc>>, start: usize, end: Option<usize>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+        let end = end.unwrap_or(str.len());
         if start > end || end > str.len() {
             let ctx = nctx.ctx;
             return nctx.wrong_argument_violation(
@@ -145,6 +146,268 @@ native_fn!(
 
     pub ("string-prefix?") fn string_prefix<'gc>(nctx, prefix: Gc<'gc, Str<'gc>>, str: Gc<'gc, Str<'gc>>) -> bool {
         nctx.return_(str.to_string().starts_with(&prefix.to_string()))
+    }
+
+    pub ("string-contains") fn string_contains<'gc>(
+        nctx,
+        s1: Gc<'gc, Str<'gc>>,
+        s2: Gc<'gc, Str<'gc>>,
+        start1: Option<usize>,
+        end1: Option<usize>,
+        start2: Option<usize>,
+        end2: Option<usize>
+    ) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        let mut cstart1 = if let Some(start1) = start1 {
+            if start1 >= s1.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains",
+                    "start1 out of bounds",
+                    None,
+                    None,
+                    3,
+                    &[s1.into(), s2.into(), start1.into_value(ctx)]
+                );
+            }
+            start1
+        } else {
+            0
+        };
+
+        let cend1 = if let Some(end1) = end1 {
+            if end1 > s1.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains",
+                    "end1 out of bounds",
+                    None,
+                    None,
+                    4,
+                    &[s1.into(), s2.into(), end1.into_value(ctx)]
+                );
+            }
+            end1
+        } else {
+            s1.len()
+        };
+
+        if cstart1 > cend1 {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "string-contains",
+                "start1 greater than end1",
+                None,
+                None,
+                3,
+                &[s1.into(), s2.into(), cstart1.into_value(ctx), cend1.into_value(ctx)]
+            );
+        }
+
+        let cstart2 = if let Some(start2) = start2 {
+            if start2 >= s2.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains",
+                    "start2 out of bounds",
+                    None,
+                    None,
+                    5,
+                    &[s1.into(), s2.into(), start2.into_value(ctx)]
+                );
+            }
+            start2
+        } else {
+            0
+        };
+
+        let cend2 = if let Some(end2) = end2 {
+            if end2 > s2.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains",
+                    "end2 out of bounds",
+                    None,
+                    None,
+                    6,
+                    &[s1.into(), s2.into(), end2.into_value(ctx)]
+                );
+            }
+            end2
+        } else {
+            s2.len()
+        };
+
+        let len2 = cend2 - cstart2;
+
+        if cend1 - cstart1 >= len2
+        {
+            while cstart1 <= cend1 - len2 {
+                let mut i = cstart1;
+                let mut j = cstart2;
+
+                while i < cend1
+                    && j < cend2
+                    && s1.get(i) == s2.get(j)
+                {
+                    i += 1;
+                    j += 1;
+                }
+
+                if j == cend2 {
+                    return nctx.return_(cstart1.into_value(ctx));
+                }
+                cstart1 += 1;
+            }
+        }
+
+        nctx.return_(Value::new(false))
+    }
+
+    pub ("string-contains-ci") fn string_contains_ci<'gc>(
+        nctx,
+        s1: Gc<'gc, Str<'gc>>,
+        s2: Gc<'gc, Str<'gc>>,
+        start1: Option<usize>,
+        end1: Option<usize>,
+        start2: Option<usize>,
+        end2: Option<usize>
+    ) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        let mut cstart1 = if let Some(start1) = start1 {
+            if start1 >= s1.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains-ci",
+                    "start1 out of bounds",
+                    None,
+                    None,
+                    3,
+                    &[s1.into(), s2.into(), start1.into_value(ctx)]
+                );
+            }
+            start1
+        } else {
+            0
+        };
+
+        let cend1 = if let Some(end1) = end1 {
+            if end1 > s1.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains-ci",
+                    "end1 out of bounds",
+                    None,
+                    None,
+                    4,
+                    &[s1.into(), s2.into(), end1.into_value(ctx)]
+                );
+            }
+            end1
+        } else {
+            s1.len()
+        };
+
+        if cstart1 > cend1 {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "string-contains-ci",
+                "start1 greater than end1",
+                None,
+                None,
+                3,
+                &[s1.into(), s2.into(), cstart1.into_value(ctx), cend1.into_value(ctx)]
+            );
+        }
+
+        let cstart2 = if let Some(start2) = start2 {
+            if start2 >= s2.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains-ci",
+                    "start2 out of bounds",
+                    None,
+                    None,
+                    5,
+                    &[s1.into(), s2.into(), start2.into_value(ctx)]
+                );
+            }
+            start2
+        } else {
+            0
+        };
+
+        let cend2 = if let Some(end2) = end2 {
+            if end2 > s2.len() {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation(
+                    "string-contains-ci",
+                    "end2 out of bounds",
+                    None,
+                    None,
+                    6,
+                    &[s1.into(), s2.into(), end2.into_value(ctx)]
+                );
+            }
+            end2
+        } else {
+            s2.len()
+        };
+
+        let len2 = cend2 - cstart2;
+
+        if cend1 - cstart1 >= len2
+        {
+            while cstart1 <= cend1 - len2 {
+                let mut i = cstart1;
+                let mut j = cstart2;
+
+                while i < cend1
+                    && j < cend2
+                    && s1.get(i).unwrap().to_lowercase().eq(s2.get(j).unwrap().to_lowercase())
+                {
+                    i += 1;
+                    j += 1;
+                }
+
+                if j == cend2 {
+                    return nctx.return_(cstart1.into_value(ctx));
+                }
+                cstart1 += 1;
+            }
+        }
+
+        nctx.return_(Value::new(false))
+    }
+
+    pub ("string-null?") fn string_null<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> bool {
+        nctx.return_(str.len() == 0)
+    }
+
+    pub ("string-split") fn string_split<'gc>(nctx, str: Gc<'gc, Str<'gc>>, ch: char) -> Value<'gc> {
+        let parts = str.to_string().split(ch).rev().fold(Value::null(), |acc, part| {
+            Value::cons(
+                nctx.ctx,
+                Str::new(&nctx.ctx, part, false).into(),
+                acc
+            )
+        });
+        nctx.return_(parts)
+    }
+
+    pub ("string") fn string<'gc>(nctx, chars: &'gc [Value<'gc>]) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+        let mut buffer = String::with_capacity(chars.len());
+
+        for (i, ch_val) in chars.iter().enumerate() {
+            if !ch_val.is_char() {
+                return nctx.wrong_argument_violation("string", "expected a character", Some(*ch_val), Some(i + 1), chars.len(), chars);
+            }
+            let ch = ch_val.char();
+            buffer.push(ch);
+        }
+
+        let s = Str::new(&nctx.ctx, &buffer, false);
+        nctx.return_(Ok(s))
     }
 
     pub ("string-ref") fn string_ref<'gc>(nctx, str: Gc<'gc, Str<'gc>>, index: usize) -> Result<char, Value<'gc>> {

@@ -568,7 +568,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 let addr = Address::from_usize(a.bits() as usize) + offset.as_int32() as isize;
                 addr.store(value.bits() as u64);
                 let slot = ObjectSlot::from_address(addr);
-                ctx.mutation().raw_object_reference_write_post(a.as_cell_raw(), slot, GCObject::NULL);
+                ctx.mutation().raw_object_reference_write(a.as_cell_raw(), slot, GCObject::NULL);
             }
             Some(Value::undefined())
         }

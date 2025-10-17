@@ -328,6 +328,17 @@ impl<'gc> WeakValue<'gc> {
     pub fn is_broken(&self) -> bool {
         self.as_value().raw_i64() == Value::bwp().raw_i64()
     }
+
+    pub fn get(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+        if !self.as_value().is_cell() {
+            return self.as_value();
+        }
+
+        unsafe {
+            mc.raw_weak_reference_load(self.as_value().desc.ptr);
+        }
+        self.as_value()
+    }
 }
 
 unsafe impl<'gc> Trace for WeakValue<'gc> {

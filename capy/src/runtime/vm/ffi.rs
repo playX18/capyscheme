@@ -117,6 +117,7 @@ static_symbols!(
     SYM_ASTERISK = "*"
     SYM_NULL = "%null-pointer"
     SYM_NULL_POINTER_ERROR = "null-pointer-error"
+    SYM_ARRAY = "array"
 );
 
 const fn round_up(len: usize, align: usize) -> usize {
@@ -300,6 +301,64 @@ native_fn!(
         nctx.return_(p)
     }
 
+    /// If `len` is -1 or None then string is null-terminated
+    pub ("pointer->string") fn pointer_to_string<'gc>(
+        nctx,
+        pointer: Gc<'gc, Pointer>,
+        length: Option<isize>
+    ) -> Gc<'gc, Str<'gc>> {
+        let value = pointer.value();
+        if value.is_null() {
+            return null_pointer_error(nctx, "pointer->string");
+        }
+
+        let length = length.unwrap_or(-1);
+
+        if length < 0 {
+            // null-terminated string
+            let cstr = unsafe { std::ffi::CStr::from_ptr(value.cast::<std::ffi::c_char>()) };
+            let string = match cstr.to_str() {
+                Ok(s) => s,
+                Err(_) => return nctx.wrong_argument_violation(
+                    "pointer->string",
+                    "invalid UTF-8 sequence",
+                    Some(pointer.into()),
+                    None,
+                    1,
+                    &[pointer.into()]
+                )
+            };
+            let str_obj = Str::from_str(&nctx.ctx, string);
+            nctx.return_(str_obj)
+        } else {
+            // fixed length string
+            if length < 0 {
+                return nctx.wrong_argument_violation(
+                    "pointer->string",
+                    "negative length",
+                    Some(Value::new(length as i32)),
+                    None,
+                    2,
+                    &[pointer.into(), Value::new(length as i32)]
+                );
+            }
+            let slice = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length as usize) };
+            let string = match std::str::from_utf8(slice) {
+                Ok(s) => s,
+                Err(_) => return nctx.wrong_argument_violation(
+                    "pointer->string",
+                    "invalid UTF-8 sequence",
+                    Some(pointer.into()),
+                    None,
+                    1,
+                    &[pointer.into()]
+                ),
+            };
+            let str_obj = Str::from_str(&nctx.ctx, string);
+            nctx.return_(str_obj)
+        }
+    }
+
     pub ("set-pointer-finalizer!") fn set_pointer_finalizer<'gc>(
         nctx,
         p: Gc<'gc, Pointer>,
@@ -397,7 +456,12 @@ pub fn alignof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, Conve
         Ok(align)
     } else if ftype == Value::new(sym_asterisk(ctx)) {
         Ok(std::mem::align_of::<*mut ()>())
-    } else if ftype.is_pair() {
+    } else if ftype.is_list() {
+        if ftype.list_length() == 3 && ftype.car() == sym_array(ctx).into() {
+            let typ = ftype.cadr();
+            return alignof(ctx, typ);
+        }
+
         let mut max = 0;
         let mut current = ftype;
         while current.is_pair() {
@@ -433,7 +497,18 @@ pub fn sizeof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, Conver
         Ok(size)
     } else if ftype == Value::new(sym_asterisk(ctx)) {
         Ok(std::mem::size_of::<*mut ()>())
-    } else if ftype.is_pair() {
+    } else if ftype.is_list() {
+        if ftype.list_length() == 3 && ftype.car() == sym_array(ctx).into() {
+            let typ = ftype.cadr();
+            let count = ftype.caddr();
+
+            let Some(n) = count.number().and_then(|x| x.exact_integer_to_usize()) else {
+                return Err(ConversionError::type_mismatch(2, "fixnum", count));
+            };
+            let size = sizeof(ctx, typ)?;
+            let align = alignof(ctx, typ)?;
+            return Ok(round_up(size * n, align));
+        }
         let mut off = 0;
         let align = alignof(ctx, ftype)?;
         let mut current = ftype;
@@ -444,6 +519,34 @@ pub fn sizeof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, Conver
         }
 
         Ok(round_up(off, align))
+    } else if ftype.is::<Vector>() {
+        let v = ftype.downcast::<Vector>();
+        if v.len() != 2 {
+            return Err(ConversionError::type_mismatch(
+                0,
+                "vector of length 2",
+                ftype,
+            ));
+        }
+
+        let typ = v[0].get();
+        let count = v[1].get();
+
+        if !count.is_int32() {
+            return Err(ConversionError::type_mismatch(1, "fixnum", count));
+        }
+        let count = count.as_int32();
+
+        if count <= 0 {
+            return Err(ConversionError::type_mismatch(
+                1,
+                "positive fixnum",
+                count.into(),
+            ));
+        }
+
+        let size = sizeof(ctx, typ)?;
+        Ok(round_up(size * (count as usize), alignof(ctx, typ)?))
     } else {
         Err(ConversionError::type_mismatch(0, "foreign type", ftype))
     }
@@ -482,6 +585,24 @@ fn parse_ffi_type<'gc>(
         }
         *n_structs += 1;
         return true;
+    } else if ftype.is::<Vector>() {
+        let v = ftype.downcast::<Vector>();
+        if v.len() != 2 {
+            return false;
+        }
+
+        let typ = v[0].get();
+        let count = v[1].get();
+        if !count.is_int32() {
+            return false;
+        }
+
+        let count = count.as_int32();
+        if count <= 0 {
+            return false;
+        }
+
+        return parse_ffi_type(ctx, typ, false, n_structs, n_struct_elems);
     } else {
         return false;
     }
@@ -516,6 +637,32 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
             typ = typ.cdr();
         }
         Ok(Type::structure(elts))
+    } else if ftype.is::<Vector>() {
+        let v = ftype.downcast::<Vector>();
+        if v.len() != 2 {
+            return Err(ConversionError::type_mismatch(
+                0,
+                "vector of length 2",
+                ftype,
+            ));
+        }
+
+        let _typ = v[0].get();
+        let count = v[1].get();
+        if !count.is_int32() {
+            return Err(ConversionError::type_mismatch(1, "fixnum", count));
+        }
+
+        let count = count.as_int32();
+        if count <= 0 {
+            return Err(ConversionError::type_mismatch(
+                1,
+                "positive fixnum",
+                count.into(),
+            ));
+        }
+
+        todo!()
     } else {
         Err(ConversionError::type_mismatch(0, "foreign type", ftype))
     }
@@ -1129,4 +1276,25 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
     let nullp = Gc::new(&ctx, Pointer::new(std::ptr::null_mut()));
 
     define(ctx, "%null-pointer", nullp.into());
+
+    define(
+        ctx,
+        "RTLD_LAZY",
+        Value::new(libloading::os::unix::RTLD_LAZY as i32),
+    );
+    define(
+        ctx,
+        "RTLD_NOW",
+        Value::new(libloading::os::unix::RTLD_NOW as i32),
+    );
+    define(
+        ctx,
+        "RTLD_GLOBAL",
+        Value::new(libloading::os::unix::RTLD_GLOBAL as i32),
+    );
+    define(
+        ctx,
+        "RTLD_LOCAL",
+        Value::new(libloading::os::unix::RTLD_LOCAL as i32),
+    );
 }

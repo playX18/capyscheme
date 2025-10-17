@@ -149,7 +149,7 @@
                #t))))
 
 (define (file-io/open-file-output-port filename options bufmode transcoder)
-  (let* ((opts (file-options->list options))
+  (let* ((opts options)
          (dont-create (memq 'no-create opts))
          (dont-fail (memq 'no-fail opts))
          (dont-truncate (memq 'no-truncate opts))
@@ -201,7 +201,7 @@
 ; FIXME:  This should be implemented better.
 
 (define (file-io/open-file-input/output-port filename options bufmode t)
-  (let* ((opts (file-options->list options))
+  (let* ((opts options)
          (dont-create (memq 'no-create opts))
          (dont-fail (memq 'no-fail opts))
          (dont-truncate (memq 'no-truncate opts))

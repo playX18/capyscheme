@@ -315,6 +315,7 @@ impl<'gc> Term<'gc> {
                         variadic: f.variadic,
                         body: f.body.subst(ctx, &subst_map),
                         source: f.source,
+                        ignore_args: false,
                         free_vars: Lock::new(None),
                         reified: Cell::new(false),
                         handler: Lock::new(rc.1),

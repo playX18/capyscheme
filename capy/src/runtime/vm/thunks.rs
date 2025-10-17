@@ -275,6 +275,10 @@ thunks! {
         //print_stacktraces_impl(*ctx);
         let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
         let msg = if is_cont {
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as _, |sym| {
+                println!("{sym:?}");
+            });
             if expected < 0 {
                 format!("expected at least {} values, got {}", -expected, got)
             } else {
@@ -1471,7 +1475,7 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
+                    Symbol::from_str(*ctx, "logior").into(),
                     Str::new(ctx, "not a number", true).into(),
                     &[a],
                 )
@@ -1482,7 +1486,7 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
+                    Symbol::from_str(*ctx, "logior").into(),
                     Str::new(ctx, "not a number", true).into(),
                     &[b],
                 )
@@ -1493,7 +1497,7 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
+                    Symbol::from_str(*ctx, "logior").into(),
                     Str::new(ctx, "not an exact integer", true).into(),
                     &[a.into_value(*ctx)],
                 )
@@ -1504,7 +1508,7 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
+                    Symbol::from_str(*ctx, "logior").into(),
                     Str::new(ctx, "not an exact integer", true).into(),
                     &[b.into_value(*ctx)],
                 )
@@ -2145,7 +2149,7 @@ thunks! {
         ThunkResult { code: 0, value: s.into() }
     }
 
-    pub fn string2number(ctx: &Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string2number(ctx: &Context<'gc>, s: Value<'gc>, digits: Value<'gc>) -> ThunkResult<'gc> {
         let Some(s) = s.try_as::<Str>() else {
             return ThunkResult {
                 code: 1,
@@ -2157,9 +2161,72 @@ thunks! {
             }
         };
 
+        let radix = if digits == Value::undefined() {
+            10
+        } else {
+            let Some(radix) = digits.number() else {
+                return ThunkResult {
+                    code: 1,
+                    value: make_assertion_violation(ctx,
+                        Symbol::from_str(*ctx, "string->number").into(),
+                        Str::new(ctx, "not a number", true).into(),
+                        &[digits],
+                    )
+                }
+            };
+
+            if !radix.is_exact_integer() {
+                return ThunkResult {
+                    code: 1,
+                    value: make_assertion_violation(ctx,
+                        Symbol::from_str(*ctx, "string->number").into(),
+                        Str::new(ctx, "not an exact integer", true).into(),
+                        &[radix.into_value(*ctx)],
+                    )
+                }
+            }
+
+            let Some(radix) = radix.exact_integer_to_i32() else {
+                return ThunkResult {
+                    code: 1,
+                    value: make_assertion_violation(ctx,
+                        Symbol::from_str(*ctx, "string->number").into(),
+                        Str::new(ctx, "not in i32 range", true).into(),
+                        &[radix.into_value(*ctx)],
+                    )
+                }
+            };
+
+            if radix < 2 || radix > 36 {
+                return ThunkResult {
+                    code: 1,
+                    value: make_assertion_violation(ctx,
+                        Symbol::from_str(*ctx, "string->number").into(),
+                        Str::new(ctx, "radix out of range", true).into(),
+                        &[Number::Fixnum(radix).into_value(*ctx)],
+                    )
+                }
+            }
+
+            radix
+        };
+        let s = if radix == 10 {
+            s.to_string()
+        } else if radix == 2 {
+            format!("#b{s}")
+        } else if radix == 8 {
+            format!("#o{s}")
+        } else if radix == 16 {
+            format!("#x{s}")
+        } else if radix != 10 {
+            format!("#{radix}r{s}")
+        } else {
+            s.to_string()
+        };
 
 
-        let n = crate::frontend::num::parse_number(&s.to_string());
+
+        let n = crate::frontend::num::parse_number(&s);
 
         match n {
             Ok(n) => ThunkResult { code: 0, value: n.to_vm_number(*ctx).into_value(*ctx) },
@@ -2846,6 +2913,44 @@ thunks! {
         Str::set(s, &ctx, index, c);
 
         ThunkResult { code: 0, value: Value::undefined() }
+    }
+
+    pub fn pre_write_barrier(
+        ctx: &Context<'gc>,
+        src: ObjectReference,
+        offset: i32,
+        target: ObjectReference
+    ) -> () {
+        unsafe {
+            log::debug!("pre write barrier: src={:?}, offset={}, target={:?}", src, offset, target);
+            ctx.mc.thread_unchecked()
+                .mutator_unchecked()
+                .barrier()
+                .object_reference_write_pre(
+                    src,
+                    ObjectSlot::from_address(src.to_raw_address().offset(offset as _)),
+                    Some(target)
+                )
+        }
+    }
+
+    pub fn pre_write_barrier_at_slot(
+        ctx: &Context<'gc>,
+        src: ObjectReference,
+        slot: ObjectSlot,
+        target: ObjectReference
+    ) -> () {
+        unsafe {
+            log::debug!("pre write barrier: src={:?}, slot={:?}, target={:?}", src, slot, target);
+            ctx.mc.thread_unchecked()
+                .mutator_unchecked()
+                .barrier()
+                .object_reference_write_pre(
+                    src,
+                    slot,
+                    Some(target)
+                )
+        }
     }
 
     pub fn post_write_barrier_slow(

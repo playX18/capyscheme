@@ -59,6 +59,8 @@
 
 (library (core primitives)
     (export 
+        when unless
+        logior logand logxor lognot
         current-jiffy jiffies-per-second current-second
         library define-library define define-syntax
                          quote lambda if set!
@@ -670,6 +672,9 @@
                         set-pointer-finalizer!
                         dereference-pointer
                         pointer->procedure
+                        dlopen
+                        dlsym
+                        dlclose
                         match
                         match-next
                         match-two

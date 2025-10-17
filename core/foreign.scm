@@ -35,11 +35,25 @@
         read-c-struct write-c-struct
         make-c-struct parse-c-struct
 
-        define-wrapped-pointer-type)
-    (import (capy))
+        define-c-struct
+        struct-size
+        struct-alignment)
+    (import (core control) (core primitives))
+
+    (define (string->pointer x)
+      "Converts a Scheme string to a C-style null-terminated string"
+      (unless (string? x)
+        (assertion-violation 'string->pointer "not a string" x))
+      (define bv (make-bytevector/nonmoving (+ (string-length x) 1) 0))
+      (bytevector-copy! (string->utf8 x) 0 bv 0 (string-length x))
+      ;; bytevector should be alive as long as pointer is alive
+      (bytevector->pointer bv))
+    
+    ;; pointer->string is implemented in Rust to make our life simpler.
+
     (define (null-pointer? x)
         (= (pointer-address x) 0))
-    
+
     (define-syntax-rule (align off alignment)
         (+ 1 (logior (- off 1) (- alignment 1))))
 
@@ -89,6 +103,7 @@
                         [(eq? t (cte k)) expr]
                         ...
                         [else alt]))]))
+    
     (define-syntax-rule (read-field %bv %offset %type)
         (let ((bv %bv)
               (offset %offset)
@@ -127,7 +142,7 @@
             (offset %offset)
             (size (cte (sizeof (list type ...)))))
         (unless (<= (bytevector-length bv) (+ offset size))
-          (error "destination bytevector too small"))
+          (error 'read-c-struct "destination bytevector too small"))
         (let*-values (((field offset)
             (read-field bv offset (cte type)))
                   ...)
@@ -172,10 +187,10 @@
             (offset %offset)
             (size (cte (sizeof (list type ...)))))
         (unless (<= (bytevector-length bv) (+ offset size))
-          (error "destination bytevector too small"))
+          (error 'write-c-struct "destination bytevector too small"))
         (let* ((offset (write-field bv offset (cte type) field))
               ...)
-          (values))))
+          (values (unspecified)))))
 
 
     (define (%write-c-struct bv offset types vals)
@@ -183,22 +198,50 @@
         (match types
           (() (match vals
                 (() #t)
-                (x (error "too many values" vals))))
+                (_ (error "too many values" vals))))
+          (`(array ,type ,count)
+            (let loop ([i 0]
+                       [value vals]
+                       [o offset])
+                (if (= i count)
+                    #t
+                    (match value
+                        [(head . tail)
+                            (write-field bv o type head)
+                            (loop (+ i 1) tail (+ o (sizeof type)))]))))
+          ((`(array ,type ,count) . types)
+            (let loop ([i 0]
+                       [value vals]
+                       [o offset])
+                (if (= i count)
+                    (lp o types value)
+                    (match value
+                        [(head . tail)
+                            (write-field bv o type head)
+                            (loop (+ i 1) tail (+ o (sizeof type)))]))))
           ((type . types)
-          (match vals
-            ((val . vals)
-              
-              (lp (write-field bv offset type val) types vals))
-            (() (error "too few values" vals)))))))
+            (match vals
+              ((val . vals)
+                (lp (write-field bv offset type val) types vals))
+              (() (error 'write-c-struct "too few values" vals)))))))
 
     (define (%read-c-struct bv offset types)
       (let lp ((offset offset) (types types))
         (match types
           (() '())
+          (`(array ,type ,count)
+            (let loop ([i 0]
+                       [vals '()]
+                       [o offset])
+                (if (= i count)
+                    (reverse vals)
+                    (let-values (((val no) (read-field bv o type)))
+                        (loop (+ i 1) (cons val vals) no)))))
+          
           ((type . types)
-          (call-with-values (lambda () (read-field bv offset type))
-            (lambda (val offset)
-              (cons val (lp offset types))))))))
+            (call-with-values (lambda () (read-field bv offset type))
+              (lambda (val offset)
+                (cons val (lp offset types))))))))
 
     (define (make-c-struct types vals)
       (let ((bv (make-bytevector (sizeof types) 0)))
@@ -206,4 +249,50 @@
         (bytevector->pointer bv)))
 
     (define (parse-c-struct foreign types)
-      (%read-c-struct (pointer->bytevector foreign (sizeof types)) 0 types)))
+      (%read-c-struct (pointer->bytevector foreign (sizeof types)) 0 types))
+
+    (define-syntax struct-alignment 
+        (syntax-rules () 
+            [(_ offset types ...)
+                (max (align offset (alignof types)) ...)]))
+    (define-syntax struct-size 
+        (syntax-rules () 
+            [(_ offset (processed ...))
+                (+ 1 (logior (- offset 1) (- (struct-alignment offset processed ...) 1)))]
+            [(_ offset (processed ...) type0 types ...)
+                (struct-size (+ (sizeof type0) (align offset (alignof type0)))
+                             (type0 processed ...)
+                             types ...)]))
+
+        
+
+    (define-syntax define-c-struct-macro 
+        (syntax-rules ()
+            ((_ name ((fields types) ...))
+     (define-c-struct-macro name
+       (fields ...) 0 ()
+       ((fields types) ...)))
+    ((_ name (fields ...) offset (clauses ...) ((field type) rest ...))
+     (define-c-struct-macro name
+       (fields ...)
+       (+ (align offset type) (cte (sizeof type)))
+       (clauses ... ((_ field-offset field) (align offset type)))
+       (rest ...)))
+    ((_ name (fields ...) offset (clauses ...) ())
+     (define-syntax name
+       (syntax-rules (field-offset fields ...)
+         clauses ...)))))
+
+    (define-syntax define-c-struct 
+        (lambda (x)
+            (syntax-case x () 
+                [(_ name size wrap-fields read write! (fields types) ...)
+                    (identifier? #'name)
+                    #'(begin 
+                        (define-c-struct-macro name ((fields types) ...))
+                        (define size (struct-size 0 () types ...))
+                        (define (write! bv offset fields ...)
+                            (write-c-struct bv offset ((fields types) ...)))
+                        (define (read bv . offset)
+                            (define off (if (null? offset) 0 (car offset)))
+                            (read-c-struct bv off ((fields types) ...) wrap-fields)))]))))

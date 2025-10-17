@@ -2156,8 +2156,10 @@ prim!(
             // handle 2 args without introducing more blocks
             let lhs = ssa.atom(args[0]);
             let rhs = ssa.atom(args[1]);
-            let lte = emit_icmp(ssa, lhs, rhs, IntCC::SignedLessThanOrEqual,  _h);
-            return PrimValue::Comparison(lte);
+            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let lte = ssa.handle_thunk_call_result(ssa.thunks.number_le, &[ctx, lhs, rhs], _h);
+            //emit_icmp(ssa, lhs, rhs, IntCC::SignedLessThanOrEqual,  _h);
+            return PrimValue::Value(lte);
         }
 
         let mut acc = ssa.atom(args[0]);
@@ -2360,8 +2362,13 @@ prim!(
 
     "string->number" => string_to_number(ssa, args, _h) {
         let str = ssa.atom(args[0]);
+        let radix = if args.len() > 1 {
+            ssa.atom(args[1])
+        } else {
+            ssa.builder.ins().iconst(types::I64, Value::new(10i32).bits() as i64)
+        };
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.string2number, &[ctx, str], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.string2number, &[ctx, str, radix], _h);
         PrimValue::Value(result)
     },
 

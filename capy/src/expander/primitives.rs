@@ -61,10 +61,10 @@ interesting_prim_names!(
     inexact_to_exact = "inexact->exact"
     expt = "expt"
     ash = "ash"
-    logand = "logand"
-    logior = "logior"
-    logxor = "logxor"
-    lognot = "lognot"
+    //logand = "logand"
+    //logior = "logior"
+    //logxor = "logxor"
+    //lognot = "lognot"
     logtest = "logtest"
     logibtp = "logbit?"
     sqrt = "sqrt"
@@ -930,11 +930,13 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_ash(ctx).into(), args, src))
     }
 
-    "logand" ex_logand<'gc>(ctx, args, src) {
+/*     "logand" ex_logand<'gc>(ctx, args, src) {
         if args.is_empty() {
             return Some(constant(ctx, Value::new(-1i32)));
         } else if args.len() == 1 {
             return Some(args[0]);
+        } else if args.len() == 2 {
+            return Some(prim_call_term(ctx, sym_logand(ctx).into(), args, src));
         } else {
             let first = args[0];
             let rest = &args[1..];
@@ -947,6 +949,8 @@ primitive_expanders!(
             return Some(constant(ctx, Value::new(0i32)));
         } else if args.len() == 1 {
             return Some(args[0]);
+        } else if args.len() == 2 {
+            return Some(prim_call_term(ctx, sym_logior(ctx).into(), args, src));
         } else {
             let first = args[0];
             let rest = &args[1..];
@@ -959,6 +963,8 @@ primitive_expanders!(
             return Some(constant(ctx, Value::new(0i32)));
         } else if args.len() == 1 {
             return Some(args[0]);
+        } else if args.len() == 2 {
+            return Some(prim_call_term(ctx, sym_logxor(ctx).into(), args, src));
         } else {
             let first = args[0];
             let rest = &args[1..];
@@ -973,7 +979,7 @@ primitive_expanders!(
 
         Some(prim_call_term(ctx, sym_lognot(ctx).into(), args, src))
     }
-
+*/
     "logtest" ex_logtest<'gc>(ctx, args, src) {
         if args.len() != 2 {
             return None;
