@@ -59,6 +59,7 @@
 
 (library (core primitives)
     (export 
+        cond-expand
         when unless
         logior logand logxor lognot
         current-jiffy jiffies-per-second current-second
