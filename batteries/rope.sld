@@ -17,7 +17,8 @@
         rope-split
         rope-index
         rope-substring
-        rope-kill)
+        rope-kill
+        rope-length)
     (begin
 
 (define *short-leaf* (make-parameter 16))
