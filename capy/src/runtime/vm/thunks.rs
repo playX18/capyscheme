@@ -285,6 +285,7 @@ thunks! {
                 format!("expected {} value(s), got {}", expected, got)
             }
         } else {
+            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
             if expected < 0 {
                 format!("procedure expected at least {} arguments, got {}", -expected, got)
             } else {
@@ -498,6 +499,12 @@ thunks! {
         }
         crate::runtime::modules::set_current_module(*ctx, module);
         Value::undefined()
+    }
+
+    pub fn module_ensure_local_variable(ctx: &Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
+        let module = module.downcast::<Module>();
+        let variable = module.ensure_local_variable(*ctx, name);
+        variable.into()
     }
 
     pub fn make_closure(

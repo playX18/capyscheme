@@ -847,9 +847,27 @@ fn format_list_contents<'gc>(f: &mut fmt::Formatter<'_>, list: Value<'gc>) -> fm
     }
 }
 
-#[derive(Trace)]
+#[derive(Trace, Copy, Clone)]
 #[collect(no_drop)]
 pub struct ValueEqual<'gc>(pub Value<'gc>);
+
+impl<'gc> Into<Value<'gc>> for ValueEqual<'gc> {
+    fn into(self) -> Value<'gc> {
+        self.0
+    }
+}
+
+impl<'gc> From<Value<'gc>> for ValueEqual<'gc> {
+    fn from(value: Value<'gc>) -> Self {
+        Self(value)
+    }
+}
+
+impl<'gc> PartialEq<Value<'gc>> for ValueEqual<'gc> {
+    fn eq(&self, other: &Value<'gc>) -> bool {
+        self.0.r5rs_equal(*other)
+    }
+}
 
 impl<'gc> PartialEq for ValueEqual<'gc> {
     fn eq(&self, other: &Self) -> bool {

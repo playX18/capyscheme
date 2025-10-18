@@ -8,7 +8,8 @@ use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
 use crate::runtime::{
     fluids::DynamicState,
     value::{
-        NativeReturn, ReturnCode, SavedCall, Value, init_symbols, init_weak_sets, init_weak_tables,
+        NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols, init_weak_sets,
+        init_weak_tables,
     },
     vm::{VMResult, call_scheme_with_k, debug},
 };
@@ -41,6 +42,14 @@ impl<'gc> Context<'gc> {
 
     pub fn has_suspended_call(&self) -> bool {
         self.state.saved_call.get().is_some()
+    }
+
+    pub fn intern(&self, s: &str) -> Value<'gc> {
+        Symbol::from_str(*self, s).into()
+    }
+
+    pub fn str(&self, s: &str) -> Value<'gc> {
+        Str::from_str(&self, s).into()
     }
 
     pub fn resume_suspended_call(&self) -> VMResult<'gc> {

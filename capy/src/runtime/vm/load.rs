@@ -1,6 +1,8 @@
 use crate::compiler::{compile_cps_to_object, link_object_product};
 use crate::cps::contify::contify;
 use crate::expander::fix_letrec::fix_letrec;
+use crate::expander::free_vars::resolve_free_vars;
+use crate::expander::letrectify::letrectify;
 use crate::expander::{assignment_elimination, compile_cps, primitives};
 use crate::runtime::modules::{Module, Variable, current_module, define};
 use crate::runtime::value::*;
@@ -403,16 +405,29 @@ native_fn!(
             current_module(nctx.ctx).get(nctx.ctx).downcast()
         };
 
-        ir = fix_letrec(nctx.ctx, ir);
-        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
         ir = primitives::resolve_primitives(nctx.ctx, ir, m);
         ir = primitives::expand_primitives(nctx.ctx, ir);
+        ir = resolve_free_vars(nctx.ctx, ir);
+        ir = letrectify(nctx.ctx, ir);
+        ir = fix_letrec(nctx.ctx, ir);
+        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
 
         let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
 
         if !true {
+            let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.ir.scm", destination))
+                .unwrap();
+            println!("IR -> {}.ir.scm", destination);
+            doc.1.render(80, &mut file).unwrap();
+
+
             let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
@@ -576,17 +591,20 @@ native_cont!(
             Ok(ir) => ir,
             Err(err) => return nctx.return_(Err(err))
         };
-        println!(";; Compiling file: {} -> {}", source_and_compiled_path.car(), source_and_compiled_path.cdr());
+        // println!(";; Compiling file: {} -> {}", source_and_compiled_path.car(), source_and_compiled_path.cdr());
         let m = if cenv.is::<Module>() {
             cenv.downcast()
         } else {
             current_module(nctx.ctx).get(nctx.ctx).downcast()
         };
 
-        ir = fix_letrec(nctx.ctx, ir);
-        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
         ir = primitives::resolve_primitives(nctx.ctx, ir, m);
         ir = primitives::expand_primitives(nctx.ctx, ir);
+        ir = resolve_free_vars(nctx.ctx, ir);
+        ir = letrectify(nctx.ctx, ir);
+        ir = fix_letrec(nctx.ctx, ir);
+        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
+
 
         let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
 

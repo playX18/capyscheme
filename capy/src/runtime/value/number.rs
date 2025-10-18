@@ -529,6 +529,16 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<false>(ctx, &[value], false)
     }
 
+    pub fn from_i32(ctx: Context<'gc>, value: i32) -> Gc<'gc, Self> {
+        if value == 0 {
+            return Self::zero(ctx);
+        }
+
+        let abs_value = value.wrapping_abs() as u64;
+
+        BigInt::new::<false>(ctx, &[abs_value], value < 0)
+    }
+
     pub fn from_i64(ctx: Context<'gc>, value: i64) -> Gc<'gc, Self> {
         if value == 0 {
             return Self::zero(ctx);
@@ -1675,7 +1685,7 @@ impl<'gc> BigInt<'gc> {
         let sbits = shift % DIGIT_BIT;
 
         let mut res = vec![];
-        res.reserve(this.len() - swords);
+        res.reserve(this.len().saturating_sub(swords));
 
         let mut carry = 0;
         let mut i = this.len() - 1;
@@ -6042,7 +6052,7 @@ impl<'gc> Hash for Number<'gc> {
     }
 }
 
-#[derive(Debug, Clone, Trace)]
+#[derive(Debug, Clone, Copy, Trace)]
 #[collect(no_drop)]
 pub enum ExactInteger<'gc> {
     Fixnum(i32),

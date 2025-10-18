@@ -256,6 +256,56 @@ impl<'gc> Str<'gc> {
         )
     }
 
+    pub fn from_char(mc: &Mutation<'gc>, c: char, count: usize) -> Gc<'gc, Self> {
+        if c as u32 <= 0xff {
+            let buf = if count == 0 {
+                null_stringbuf(mc)
+            } else {
+                Stringbuf::new(mc, count, false)
+            };
+            let chars = buf.chars_mut();
+            unsafe {
+                std::ptr::write_bytes(chars.as_mut_ptr(), c as u8, count);
+            }
+
+            let mut hdr = ScmHeader::new();
+            hdr.set_type_bits(TypeCode16::STRING.0);
+
+            Gc::new(
+                mc,
+                Self {
+                    hdr,
+                    stringbuf: Lock::new(buf),
+                    start: Cell::new(0),
+                    length: count,
+                },
+            )
+        } else {
+            let buf = if count == 0 {
+                null_stringbuf(mc)
+            } else {
+                Stringbuf::new(mc, count, true)
+            };
+            let chars = buf.wide_chars_mut();
+            for i in 0..count {
+                chars[i] = c;
+            }
+
+            let mut hdr = ScmHeader::new();
+            hdr.set_type_bits(TypeCode16::STRING.0);
+
+            Gc::new(
+                mc,
+                Self {
+                    hdr,
+                    stringbuf: Lock::new(buf),
+                    start: Cell::new(0),
+                    length: count,
+                },
+            )
+        }
+    }
+
     pub fn new_wide(
         mc: &Mutation<'gc>,
         contents: impl AsRef<str>,

@@ -376,6 +376,80 @@ native_fn!(
         nctx.return_(Ok(round))
     }
 
+    pub ("random") fn random<'gc>(nctx, min: Option<ExactInteger<'gc>>, max: Option<ExactInteger<'gc>>) -> Value<'gc> {
+        let Some(min) = min else {
+            return nctx.return_(Value::new(rand::random::<f64>()));
+        };
+
+        let Some(max) = max else {
+            match min {
+                ExactInteger::Fixnum(n) => {
+                    return nctx.return_(Value::new((rand::random::<u32>() % n as u32) as i32));
+                }
+
+                ExactInteger::BigInt(b) => {
+                    let max_bitwidth = b.bits();
+                    let mut rng = rand::rng();
+                    let rb = BigInt::random(nctx.ctx, &mut rng, max_bitwidth);
+                    let rb = BigInt::rem(rb, nctx.ctx, b);
+                    return nctx.return_(rb.into());
+                }
+            }
+        };
+
+        match (min, max) {
+            (ExactInteger::Fixnum(min_val), ExactInteger::Fixnum(max_val)) => {
+                if min_val >= max_val {
+                    let ctx = nctx.ctx;
+                    let min = min.into_value(ctx);
+                    let max = max.into_value(ctx);
+                    return nctx.wrong_argument_violation("random", "min must be less than max", Some(min), Some(1), 2, &[min, max]);
+                }
+                let range = max_val - min_val;
+                let random_val = (rand::random::<u32>() % range as u32) as i32 + min_val;
+                return nctx.return_(Value::new(random_val));
+            }
+
+            (ExactInteger::BigInt(_), ExactInteger::Fixnum(_)) => {
+                let ctx = nctx.ctx;
+                let min = min.into_value(ctx);
+                let max = max.into_value(ctx);
+                return nctx.wrong_argument_violation("random", "max must be greater than min", Some(max), Some(2), 2, &[min, max]);
+            }
+
+            (ExactInteger::Fixnum(min), ExactInteger::BigInt(max)) => {
+                let min_bigint = BigInt::from_i32(nctx.ctx, min);
+
+                let range = BigInt::minus(max, nctx.ctx, min_bigint);
+                let max_bitwidth = range.bits();
+                let mut rng = rand::rng();
+                let rb = BigInt::random(nctx.ctx, &mut rng, max_bitwidth);
+                let rb = BigInt::rem(rb, nctx.ctx, range);
+                let result = BigInt::plus(rb, nctx.ctx, min_bigint);
+                return nctx.return_(result.into());
+            }
+
+            (ExactInteger::BigInt(min), ExactInteger::BigInt(max)) => {
+                if min >= max {
+                    let ctx = nctx.ctx;
+                    let min = min.into_value(ctx);
+                    let max = max.into_value(ctx);
+                    return nctx.wrong_argument_violation("random", "min must be less than max", Some(min), Some(1), 2, &[min, max]);
+                }
+
+                let range = BigInt::minus(max, nctx.ctx, min);
+                let max_bitwidth = range.bits();
+                let mut rng = rand::rng();
+                let rb = BigInt::random(nctx.ctx, &mut rng, max_bitwidth);
+                let rb = BigInt::rem(rb, nctx.ctx, range);
+                let result = BigInt::plus(rb, nctx.ctx, min);
+                return nctx.return_(result.into());
+            }
+
+        }
+
+    }
+
 
     pub ("=") fn equal<'gc>(nctx, w: Number<'gc>, rest: &'gc [Value<'gc>]) -> Result<bool, Value<'gc>> {
         if rest.is_empty() {
