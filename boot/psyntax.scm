@@ -1908,6 +1908,7 @@
             (if id (syntax-wrap id) empty-wrap)
             (if id (syntax-module id) #f)
             (cond
+                [(and (not source) id (syntax-sourcev id)) (syntax-sourcev id)]
                 [(not source) (props->sourcev (source-properties datum))]
                 [(and (alist? source)) (props->sourcev source)]
                 [(and (vector? source) (= (vector-length source) 3)) source]
