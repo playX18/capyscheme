@@ -55,6 +55,8 @@
      file-io/name)
     ((set-position!)
      file-io/set-position!)
+    ((fd)
+     file-io/fd)
     (else 
      (error "file-io/ioproc: illegal operation: " op))))
 

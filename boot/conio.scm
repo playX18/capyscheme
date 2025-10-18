@@ -100,6 +100,9 @@
     ((name)
      (lambda (data)
        (file-io/name data)))
+    ((fd)
+     (lambda (data)
+       (file-io/fd data)))
     (else 
      (error "console-io/ioproc: illegal operation: " op)
      #t)))

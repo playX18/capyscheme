@@ -1302,7 +1302,7 @@
 
 (define default-transcoder
   (make-parameter
-                  codec:latin-1
+                  codec:utf-8
                   (lambda (t)
                     (and (fixnum? t)
                          (<= codec:latin-1 t transcoder-mask:codec)))))
@@ -2597,5 +2597,10 @@
      (else
       ; must be closed, error, eof
       (unspecified)))))
+
+(define (io/port-fd p)
+  (define ioproc (tuple-ref p port.ioproc))
+  (define iodata (tuple-ref p port.iodata))
+  ((ioproc 'fd) iodata))
 
 ; eof
