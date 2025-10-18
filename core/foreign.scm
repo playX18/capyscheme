@@ -275,8 +275,8 @@
     ((_ name (fields ...) offset (clauses ...) ((field type) rest ...))
      (define-c-struct-macro name
        (fields ...)
-       (+ (align offset type) (cte (sizeof type)))
-       (clauses ... ((_ field-offset field) (align offset type)))
+       (+ (align offset (alignof type)) (cte (sizeof type)))
+       (clauses ... ((_ field-offset field) (align offset (alignof type))))
        (rest ...)))
     ((_ name (fields ...) offset (clauses ...) ())
      (define-syntax name
