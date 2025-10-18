@@ -1,7 +1,7 @@
 use crate::cps::Set;
 use crate::expander::core::{
     LetStyle, Term, TermKind, TermRef, call_term, constant, fresh_lvar, if_term, let_term, lref,
-    prim_call_term, seq,
+    prim_call_term, seq_from_slice,
 };
 use crate::runtime::Context;
 use crate::runtime::modules::{Module, Variable, resolve_module, root_module};
@@ -270,10 +270,12 @@ pub fn resolve_primitives<'gc>(
                     local_definitions.insert(*name);
                 }
 
-                TermKind::Seq(seq) => {
-                    for exp in seq.iter() {
+                TermKind::Seq(head, tail) => {
+                    /*for exp in seq.iter() {
                         collect_local_definitions(*exp, local_definitions);
-                    }
+                    }*/
+                    collect_local_definitions(*head, local_definitions);
+                    collect_local_definitions(*tail, local_definitions);
                 }
                 _ => (),
             }
@@ -476,8 +478,8 @@ primitive_expanders!(
         if ls.is_null() {
             let x = constant(ctx, Value::new(false));
             // effects are preserved by returning (begin key false)
-            let arr = Array::from_slice(&ctx, &[key, x]);
-            return Some(seq(ctx, arr))
+
+            return Some(seq_from_slice(ctx, [key, x]))
         }
 
         let len = ls.list_length();
@@ -545,8 +547,8 @@ primitive_expanders!(
         if ls.is_null() {
             let x = constant(ctx, Value::new(false));
             // effects are preserved by returning (begin key false)
-            let arr = Array::from_slice(&ctx, &[key, x]);
-            return Some(seq(ctx, arr))
+
+            return Some(seq_from_slice(ctx, [key, x]));
         }
 
         let len = ls.list_length();
@@ -597,8 +599,8 @@ primitive_expanders!(
             return None;
         } else if args.len() == 1 {
             // return as (begin arg true)
-            let arr = Array::from_slice(&ctx, &[args[0], constant(ctx, Value::new(true))]);
-            return Some(seq(ctx, arr));
+
+            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_number_eq(ctx).into(), args, src));
         }
@@ -642,8 +644,8 @@ primitive_expanders!(
             return None;
         } else if args.len() == 1 {
             // return as (begin arg true)
-            let arr = Array::from_slice(&ctx, &[args[0], constant(ctx, Value::new(true))]);
-            return Some(seq(ctx, arr));
+
+            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_number_lt(ctx).into(), args, src));
         }
@@ -687,8 +689,8 @@ primitive_expanders!(
             return None;
         } else if args.len() == 1 {
             // return as (begin arg true)
-            let arr = Array::from_slice(&ctx, &[args[0], constant(ctx, Value::new(true))]);
-            return Some(seq(ctx, arr));
+
+            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_number_gt(ctx).into(), args, src));
         }
@@ -731,8 +733,8 @@ primitive_expanders!(
             return None;
         } else if args.len() == 1 {
             // return as (begin arg true)
-            let arr = Array::from_slice(&ctx, &[args[0], constant(ctx, Value::new(true))]);
-            return Some(seq(ctx, arr));
+
+            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_number_ge(ctx).into(), args, src));
         }
@@ -776,8 +778,8 @@ primitive_expanders!(
             return None;
         } else if args.len() == 1 {
             // return as (begin arg true)
-            let arr = Array::from_slice(&ctx, &[args[0], constant(ctx, Value::new(true))]);
-            return Some(seq(ctx, arr));
+
+            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_number_le(ctx).into(), args, src));
         }
@@ -1765,13 +1767,13 @@ primitive_expanders!(
             return Some(init);
         } else {
             body.push(lref(ctx, tmp));
-            let arr = Array::from_slice(&ctx, &body);
+
             return Some(let_term(
                 ctx,
                 LetStyle::Let,
                 Array::from_slice(&ctx, &[tmp]),
                 Array::from_slice(&ctx, &[init]),
-                seq(ctx, arr),
+                seq_from_slice(ctx, body),
                 src,
             ));
         }
@@ -1791,13 +1793,13 @@ primitive_expanders!(
             return Some(init);
         } else {
             body.push(lref(ctx, tmp));
-            let arr = Array::from_slice(&ctx, &body);
+
             return Some(let_term(
                 ctx,
                 LetStyle::Let,
                 Array::from_slice(&ctx, &[tmp]),
                 Array::from_slice(&ctx, &[init]),
-                seq(ctx, arr),
+                seq_from_slice(ctx, body),
                 src,
             ));
         }

@@ -146,6 +146,7 @@ pub struct Cont<'gc> {
     pub reified: Cell<bool>,
     pub handler: Lock<LVarRef<'gc>>,
     pub cold: bool,
+    pub noinline: bool,
     pub meta: Value<'gc>,
 }
 
@@ -199,6 +200,7 @@ impl<'gc> Cont<'gc> {
                 variadic: self.variadic,
                 body,
                 source: self.source,
+                noinline: self.noinline,
                 free_vars: Lock::new(self.free_vars.get()),
                 reified: Cell::new(self.reified.get()),
                 handler: Lock::new(self.handler.get()),

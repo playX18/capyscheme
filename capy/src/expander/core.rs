@@ -9,10 +9,7 @@ use rsgc::{
 };
 
 use crate::{
-    expander::{
-        assignment_elimination, fix_letrec::fix_letrec, get_source_property,
-        primitives::resolve_primitives, syntax_annotation,
-    },
+    expander::{get_source_property, syntax_annotation},
     list,
     runtime::{
         Context,
@@ -278,7 +275,7 @@ pub enum TermKind<'gc> {
     Define(Value<'gc>, Value<'gc>, TermRef<'gc>),
 
     If(TermRef<'gc>, TermRef<'gc>, TermRef<'gc>),
-    Seq(ArrayRef<'gc, TermRef<'gc>>),
+    Seq(TermRef<'gc>, TermRef<'gc>),
 
     Let(Let<'gc>),
     Fix(Fix<'gc>),
@@ -492,7 +489,7 @@ pub fn if_term<'gc>(
         },
     )
 }
-
+/*
 pub fn seq<'gc>(ctx: Context<'gc>, terms: ArrayRef<'gc, TermRef<'gc>>) -> TermRef<'gc> {
     Gc::new(
         &ctx,
@@ -501,6 +498,33 @@ pub fn seq<'gc>(ctx: Context<'gc>, terms: ArrayRef<'gc, TermRef<'gc>>) -> TermRe
             kind: TermKind::Seq(terms),
         },
     )
+}*/
+
+pub fn seq<'gc>(ctx: Context<'gc>, head: TermRef<'gc>, tail: TermRef<'gc>) -> TermRef<'gc> {
+    Gc::new(
+        &ctx,
+        Term {
+            source: Lock::new(false.into()),
+            kind: TermKind::Seq(head, tail),
+        },
+    )
+}
+
+pub fn seq_from_slice<'gc>(ctx: Context<'gc>, terms: impl AsRef<[TermRef<'gc>]>) -> TermRef<'gc> {
+    let terms = terms.as_ref();
+    if terms.is_empty() {
+        constant(ctx, Value::undefined())
+    } else if terms.len() == 1 {
+        terms[0].clone()
+    } else if terms.len() == 2 {
+        seq(ctx, terms[0].clone(), terms[1].clone())
+    } else {
+        let mut term = terms[terms.len() - 1].clone();
+        for t in terms[..terms.len() - 1].iter().rev() {
+            term = seq(ctx, t.clone(), term);
+        }
+        term
+    }
 }
 
 pub fn let_term<'gc>(
@@ -1103,7 +1127,7 @@ fn expand_begin<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'
             sourcev: syntax_annotation(cenv.ctx, form),
         }));
     } else {
-        Ok(seq(cenv.ctx, Array::from_slice(&cenv.ctx, seq_)))
+        Ok(seq_from_slice(cenv.ctx, seq_))
     }
 }
 
@@ -1382,7 +1406,7 @@ fn finalize_body<'gc>(
         let seq = if terms.len() == 1 {
             terms[0].clone()
         } else {
-            seq(cenv.ctx, Array::from_slice(&cenv.ctx, terms))
+            seq_from_slice(cenv.ctx, terms)
         };
 
         if lhs.is_empty() {
@@ -1872,7 +1896,8 @@ fn expand_do<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
         loop_call
     } else {
         command_terms.push(loop_call);
-        seq(cenv.ctx, Array::from_slice(&cenv.ctx, command_terms))
+        seq_from_slice(cenv.ctx, command_terms)
+        //seq(cenv.ctx, Array::from_slice(&cenv.ctx, command_terms))
     };
 
     let loop_body = if_term(cenv.ctx, test_term, result_term, false_branch);
@@ -2596,12 +2621,17 @@ impl<'gc> Term<'gc> {
                     .group()
             }
 
-            TermKind::Define(_module, var, exp) => {
+            TermKind::Define(module, var, exp) => {
                 let var_doc = alloc.text(var.to_string());
                 let exp_doc = exp.pretty(alloc);
 
                 alloc
                     .text("define ")
+                    .append(if !module.is_bool() {
+                        alloc.text(format!("{}::", module))
+                    } else {
+                        alloc.nil()
+                    })
                     .append(var_doc)
                     .append(alloc.space())
                     .append(exp_doc)
@@ -2684,15 +2714,38 @@ impl<'gc> Term<'gc> {
                     .group()
             }
 
-            TermKind::Seq(seq) => {
-                let seq_doc =
-                    alloc.intersperse(seq.iter().map(|term| term.pretty(alloc)), alloc.hardline());
+            TermKind::Seq(..) => {
+                /*let head_doc = head.pretty(alloc);
+                let tail_doc = tail.pretty(alloc);
 
                 alloc
                     .text("seq")
                     .append(alloc.line())
-                    .append(seq_doc)
+                    .append()
                     .nest(1)
+                    .parens()
+                    .group()*/
+                let mut terms = Vec::new();
+                let mut current = self;
+
+                // Collect all sequential terms by traversing the seq chain
+                loop {
+                    match &current.kind {
+                        TermKind::Seq(head, tail) => {
+                            terms.push(head.pretty(alloc));
+                            current = &tail;
+                        }
+                        _ => {
+                            terms.push(current.pretty(alloc));
+                            break;
+                        }
+                    }
+                }
+
+                alloc
+                    .text("seq")
+                    .append(alloc.line())
+                    .append(alloc.intersperse(terms, alloc.line()).nest(2))
                     .parens()
                     .group()
             }
@@ -2852,21 +2905,9 @@ impl<'gc> Term<'gc> {
                 test.is_transparent() && cons.is_transparent() && alt.is_transparent()
             }
 
-            TermKind::Seq(seq) => seq.iter().all(|term| term.is_transparent()),
+            TermKind::Seq(head, tail) => head.is_transparent() && tail.is_transparent(),
 
             _ => false,
         }
     }
-}
-
-pub fn optimize<'gc>(
-    ctx: Context<'gc>,
-    mut term: TermRef<'gc>,
-    env: Gc<'gc, Module<'gc>>,
-) -> TermRef<'gc> {
-    term = fix_letrec(ctx, term);
-    term = assignment_elimination::eliminate_assignments(ctx, term);
-    term = resolve_primitives(ctx, term, env);
-
-    term
 }

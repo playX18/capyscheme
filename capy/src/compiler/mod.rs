@@ -4,7 +4,8 @@ use crate::{
     compiler::{linkutils::Linker, ssa::ModuleBuilder},
     cps::{contify::contify, reify, term::FuncRef},
     expander::{
-        assignment_elimination, compile_cps, core::denotations, fix_letrec::fix_letrec, primitives,
+        assignment_elimination, compile_cps, core::denotations, fix_letrec::fix_letrec,
+        free_vars::resolve_free_vars, letrectify::letrectify, primitives,
     },
     runtime::{
         Context,
@@ -76,7 +77,7 @@ pub fn compile_file<'gc>(
 ) -> Result<FuncRef<'gc>, Value<'gc>> {
     let module = env.unwrap_or_else(|| *root_module(ctx));
     let file = file.as_ref();
-    println!(";; Compiling file: {}", file.display());
+    // println!(";; Compiling file: {}", file.display());
     let file_in = std::fs::File::open(file).map_err(|e| {
         make_io_error(
             &ctx,
@@ -125,10 +126,12 @@ pub fn compile_file<'gc>(
     let mut il = crate::expander::core::expand(&mut env, ls)
         .map_err(|err| make_lexical_violation(&ctx, "compile-file", err.to_string()))?;
 
-    il = fix_letrec(ctx, il);
-    il = assignment_elimination::eliminate_assignments(ctx, il);
     il = primitives::resolve_primitives(ctx, il, module);
     il = primitives::expand_primitives(ctx, il);
+    il = resolve_free_vars(ctx, il);
+    il = letrectify(ctx, il);
+    il = fix_letrec(ctx, il);
+    il = assignment_elimination::eliminate_assignments(ctx, il);
 
     let mut cps = compile_cps::cps_toplevel(ctx, &[il]);
 

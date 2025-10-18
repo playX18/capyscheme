@@ -310,6 +310,7 @@ impl<'gc> Term<'gc> {
                     &ctx,
                     Cont {
                         name: f.name,
+                        noinline: false,
                         binding: f.binding,
                         args: f.args,
                         variadic: f.variadic,

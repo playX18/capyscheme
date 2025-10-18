@@ -14,6 +14,23 @@ use cranelift_codegen::ir::{self, BlockArg};
 use cranelift_module::{DataId, Linkage, Module};
 use rsgc::{Gc, Mutation, sync::thread::Thread};
 
+pub enum Callee {
+    /// Callee is obtained by loading code pointer from a closure
+    /// and doing an indirect tail-call.
+    Indirect {
+        target: ir::Value,
+        closure: ir::Value,
+    },
+    /// Callee is a direct function reference, and a direct tail-call can be performed.
+    Direct {
+        target: ir::FuncRef,
+        closure: ir::Value,
+    },
+
+    /// Callee is a self-recursive function, and the function body block is returned.
+    SelfRec(ir::Block),
+}
+
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     pub fn is_self_reference(&mut self, var: LVarRef<'gc>) -> bool {
         match self.target {
@@ -380,8 +397,55 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         block
     }
 
+    pub fn get_callee_k(&mut self, var: LVarRef<'gc>) -> Callee {
+        if let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
+            && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
+        {
+            let func_id = *func_id;
+            let closure = self.var(var);
+            let func_ref = self
+                .module_builder
+                .module
+                .declare_func_in_func(func_id, &mut self.builder.func);
+            return Callee::Direct {
+                target: func_ref,
+                closure,
+            };
+        }
+
+        let callee = self.atom(Atom::Local(var));
+        let code = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            callee,
+            offset_of!(Closure, code) as i32,
+        );
+        Callee::Indirect {
+            target: code,
+            closure: callee,
+        }
+    }
+
     /// Get callee entrypoint or report error to `handler`.
-    pub fn get_callee_code(&mut self, callee: ir::Value, handler: LVarRef<'gc>) -> ir::Value {
+    pub fn get_callee(&mut self, callee: &Atom<'gc>, handler: LVarRef<'gc>) -> Callee {
+        if let Atom::Local(var) = callee {
+            if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(var)
+                && let Some(func_id) = self.module_builder.func_for_func.get(func)
+            {
+                let func_id = *func_id;
+                let closure = self.atom(*callee);
+                let func_ref = self
+                    .module_builder
+                    .module
+                    .declare_func_in_func(func_id, &mut self.builder.func);
+                return Callee::Direct {
+                    target: func_ref,
+                    closure,
+                };
+            }
+        }
+        let callee = self.atom(*callee);
+
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let get_clos_code = self.builder.create_block();
         let error = self.builder.create_block();
@@ -405,7 +469,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 callee,
                 offset_of!(Closure, code) as i32,
             );
-            code
+            Callee::Indirect {
+                target: code,
+                closure: callee,
+            }
         }
     }
 
@@ -500,7 +567,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             return self.builder.ins().jump(block, &block_args);
         }
 
-        let k = self.var(k);
+        /*         let k = self.var(k);
 
         let code = self.builder.ins().load(
             types::I64,
@@ -519,7 +586,34 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 BlockArg::Value(rands),
                 BlockArg::Value(num_rands),
             ],
-        )
+        )*/
+        let callee = self.get_callee_k(k);
+        let rands = self.push_args(args);
+        let num_rands = self.builder.ins().iconst(types::I64, args.len() as i64);
+        match callee {
+            Callee::Indirect { target, closure } => self.builder.ins().jump(
+                self.exit_block,
+                &[
+                    BlockArg::Value(target),
+                    BlockArg::Value(closure),
+                    BlockArg::Value(rands),
+                    BlockArg::Value(num_rands),
+                ],
+            ),
+            Callee::Direct { target, closure } => self
+                .builder
+                .ins()
+                .return_call(target, &[closure, rands, num_rands]),
+
+            Callee::SelfRec(block) => self.builder.ins().jump(
+                block,
+                &[
+                    BlockArg::Value(self.rator),
+                    BlockArg::Value(rands),
+                    BlockArg::Value(num_rands),
+                ],
+            ),
+        }
     }
 
     fn load_free_vars(&mut self) {
@@ -776,13 +870,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             }
 
             Term::App(rator, retk, reth, rands, _) => {
-                let rator = self.atom(*rator);
-
                 let num_rands = rands.len() + 2;
                 let num_rands = self.builder.ins().iconst(types::I64, num_rands as i64);
 
                 let err_handler = self.default_error_handler();
-                let code = self.get_callee_code(rator, err_handler);
+                let callee = self.get_callee(rator, err_handler);
 
                 let retk = self.var(*retk);
                 let reth = self.var(*reth);
@@ -794,7 +886,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 let rands = self.push_args(&rands);
 
-                if self.module_builder.stacktraces {
+                /*if false && self.module_builder.stacktraces {
                     let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
                     self.builder
@@ -810,7 +902,36 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         BlockArg::Value(rands),
                         BlockArg::Value(num_rands),
                     ],
-                );
+                );*/
+
+                match callee {
+                    Callee::Indirect { target, closure } => {
+                        self.builder.ins().jump(
+                            self.exit_block,
+                            &[
+                                BlockArg::Value(target),
+                                BlockArg::Value(closure),
+                                BlockArg::Value(rands),
+                                BlockArg::Value(num_rands),
+                            ],
+                        );
+                    }
+
+                    Callee::Direct { target, closure } => {
+                        self.builder
+                            .ins()
+                            .return_call(target, &[closure, rands, num_rands]);
+                    }
+
+                    Callee::SelfRec(block) => {
+                        // just jump back to entrypoint
+                        let block_args = [self.rator, rands, num_rands]
+                            .into_iter()
+                            .map(|v| ir::BlockArg::Value(v))
+                            .collect::<Vec<_>>();
+                        self.builder.ins().jump(block, &block_args);
+                    }
+                }
             }
 
             Term::Continue(k, rands, _) => {

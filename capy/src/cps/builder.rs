@@ -106,6 +106,63 @@ macro_rules! with_cps {
                     binding: $k,
                     args: args,
                     meta,
+                    noinline: false,
+                    ignore_args: false,
+                    variadic: None,
+                    body,
+                    source: src,
+                    reified: std::cell::Cell::new(false),
+                    free_vars: $crate::rsgc::cell::Lock::new(None),
+                    handler: $crate::rsgc::cell::Lock::new($h),
+                    cold: false
+
+                });
+
+                conts.push(cont);
+            }
+        )*
+        let conts = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &conts);
+        with_cps!($builder;
+            _letk <- $builder.letk(conts);
+            $($rest)+
+        )
+    }
+    };
+
+        ($builder: ident; letk noinline ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
+        let mut conts = Vec::new();
+        $(
+            let $k = $builder.fresh_variable(stringify!($k));
+        )*
+
+        $(
+
+
+            {
+                $(
+                    let $arg = $builder.fresh_variable(stringify!($arg));
+                )*
+                #[allow(unused_mut, unused_assignments)]
+                let mut src = $crate::runtime::value::Value::new(false);
+                #[allow(unused_mut, unused_assignments)]
+                let mut meta = $crate::runtime::value::Value::new(false);
+                $(
+                    src = $src;
+                    $(
+                        meta = $meta;
+                    )?
+                )?
+
+
+                let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg),*]);
+                let body = $e;
+
+                let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
+                    name: $crate::runtime::value::Value::new(false),
+                    binding: $k,
+                    args: args,
+                    meta,
+                    noinline: true,
                     ignore_args: false,
                     variadic: None,
                     body,
@@ -158,6 +215,7 @@ macro_rules! with_cps {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
                     meta,
+                    noinline: false,
                     args: args,
                     variadic: None,
                     body,
@@ -200,6 +258,7 @@ macro_rules! with_cps {
             body,
             source: $src,
             meta,
+            noinline: false,
             free_vars: $crate::rsgc::cell::Lock::new(None),
             reified: std::cell::Cell::new(false),
             handler: $crate::rsgc::cell::Lock::new($h),

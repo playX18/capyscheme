@@ -17,7 +17,7 @@ use crate::{
 
 use cranelift::prelude::{FunctionBuilder, FunctionBuilderContext, InstBuilder, types};
 use cranelift_codegen::{
-    ir::{self, SourceLoc},
+    ir::{self, BlockArg, SourceLoc},
     isa::CallConv,
 };
 
@@ -392,6 +392,10 @@ pub struct SSABuilder<'gc, 'a, 'f> {
 
     pub target: ContOrFunc<'gc>,
     pub exit_block: ir::Block,
+    /// Real entrypoint block of the function/continuation.
+    ///
+    /// We can't jump to entrypoint directly so we hav this extra block.
+    pub entry_block: ir::Block,
     /// A basic-block that performs application of function.
     ///
     /// This is mainly used to save on a code size when multiple
@@ -447,6 +451,18 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         builder.set_val_label(num_rands, func_debug_cx.internal_variable(1));
         builder.set_val_label(rands, func_debug_cx.internal_variable(2));
 
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.ins().jump(
+            entry_block,
+            &[
+                BlockArg::Value(rator),
+                BlockArg::Value(rands),
+                BlockArg::Value(num_rands),
+            ],
+        );
+        builder.switch_to_block(entry_block);
+
         let mut this = Self {
             module_builder,
             builder,
@@ -455,7 +471,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             app_block: None,
             rator,
             func_debug_cx,
-
+            entry_block,
             variables,
             blockmap: HashMap::new(),
             to_generate: Vec::new(),

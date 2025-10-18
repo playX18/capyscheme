@@ -160,8 +160,8 @@ where
                 }
             }
 
-            TermKind::Seq(seq) => {
-                let mut nseq = Vec::with_capacity(seq.len());
+            TermKind::Seq(head, tail) => {
+                /*let mut nseq = Vec::with_capacity(seq.len());
                 let mut changed = false;
                 for stmt in seq.iter() {
                     let nstmt = rec(ctx, pre, post, *stmt);
@@ -178,6 +178,22 @@ where
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::Seq(Array::from_slice(&ctx, &nseq)),
+                        },
+                    );
+                    post(ctx, seqterm)
+                }*/
+
+                let nhead = rec(ctx, pre, post, head);
+                let ntail = rec(ctx, pre, post, tail);
+
+                if Gc::ptr_eq(nhead, head) && Gc::ptr_eq(ntail, tail) {
+                    post(ctx, x)
+                } else {
+                    let seqterm = Gc::new(
+                        &ctx,
+                        Term {
+                            source: x.source.get().into(),
+                            kind: TermKind::Seq(nhead, ntail),
                         },
                     );
                     post(ctx, seqterm)
@@ -378,7 +394,11 @@ pub fn fold_tree<'gc, ACC>(
             TermKind::PrimCall(_, args) => {
                 args.iter().fold(acc, |a, arg| foldts(*arg, down, up, a))
             }
-            TermKind::Seq(seq) => seq.iter().fold(acc, |a, stmt| foldts(*stmt, down, up, a)),
+            TermKind::Seq(head, tail) => {
+                //seq.iter().fold(acc, |a, stmt| foldts(*stmt, down, up, a))
+                let acc = foldts(head, down, up, acc);
+                foldts(tail, down, up, acc)
+            }
             TermKind::Proc(proc) => foldts(proc.body, down, up, acc),
             TermKind::Fix(fix) => {
                 let acc = fix.rhs.iter().fold(acc, |a, r| foldts(r.body, down, up, a));
@@ -423,5 +443,18 @@ impl<'gc> Term<'gc> {
         init: ACC,
     ) -> ACC {
         fold_tree(self, &down, &up, init)
+    }
+
+    pub fn for_each<F>(self: TermRef<'gc>, f: F)
+    where
+        F: Fn(TermRef<'gc>),
+    {
+        self.fold(
+            |t, ()| {
+                f(t);
+            },
+            |_, ()| {},
+            (),
+        );
     }
 }
