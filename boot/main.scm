@@ -438,16 +438,20 @@
 (define make-accessor
   (lambda (rtd k)
     (lambda (obj)
+      (if (not (record? obj))
+        (assertion-violation 'record-accessor "expected a record" obj))
       (if (or (eq? rtd (tuple-ref obj 0))
               (rtd-ancestor? rtd (tuple-ref obj 0)))
           (tuple-ref obj k)
-          (assertion-violation "record accessor" (wrong-type-argument-message (format "record of type ~a" (rtd-name rtd)) obj))))))
+          (assertion-violation "record accessor" "invalid record type" obj rtd)))))
 
 (define (wrong-type-argument-message . args) args)
 
 (define make-mutator
   (lambda (rtd k)
     (lambda (obj datum)
+      (if (not (record? obj))
+        (assertion-violation "record mutator" "expected a record" obj))
       (if (or (eq? rtd (tuple-ref obj 0))
               (rtd-ancestor? rtd (tuple-ref obj 0)))
           (tuple-set! obj k datum)
@@ -455,6 +459,7 @@
 
 (define (make-predicate rtd)
   (lambda (obj)
+    "Predicate for object"
     (and (tuple? obj) (or (eq? rtd (tuple-ref obj 0))
         (rtd-ancestor? rtd (tuple-ref obj 0))))))
 
@@ -1741,8 +1746,22 @@
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")
 (set! %load-extensions 
-  (append '("sls" "sld" "capy.sls" "capy.sld" ".capy.scm" ".sch")
+  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch")
           %load-extensions))
+
+(let* ([host-arch (host-arch)]
+      [host-os (host-os)]
+      [host-family (host-family)]
+      [host-os-sld (string-append host-os ".sld")]
+      [host-family-sld (string-append host-family ".sld")]
+      [arch-sld (string-append host-arch ".sld")]
+      [host-os-sls (string-append host-os ".sls")]
+      [host-family-sls (string-append host-family ".sls")]
+      [arch-sls (string-append host-arch ".sls")])
+  (set! %load-extensions
+    (append (list host-os-sld host-family-sld arch-sld
+                  host-os-sls host-family-sls arch-sls)
+            %load-extensions)))
 
 (let ([user-module (define-module* '(capy user))])
   (current-module user-module))
