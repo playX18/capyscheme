@@ -1,6 +1,8 @@
 use crate::cps::builder::CPSBuilder;
 use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef};
-use crate::expander::core::{LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef};
+use crate::expander::core::{
+    LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, seq_from_slice,
+};
 use crate::runtime::Context;
 use crate::runtime::prelude::*;
 use crate::runtime::value::{Str, Vector};
@@ -8,7 +10,7 @@ use crate::runtime::value::{TypeCode8, Value};
 use crate::{list, static_symbols, with_cps};
 use rsgc::alloc::array::Array;
 use rsgc::cell::Lock;
-use rsgc::{Gc, Global, Rootable, Trace};
+use rsgc::{Gc, Global, Rootable, Trace, barrier};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::mem::offset_of;
@@ -33,6 +35,7 @@ pub fn t_k<'a, 'gc>(
 
             let consumer_k = Cont {
                 meta: cps.current_meta,
+                noinline: false,
                 name: Value::new(false),
                 binding: consumer_k_var,
                 args: formals,
@@ -247,13 +250,14 @@ pub fn t_k<'a, 'gc>(
             }
         }
 
-        TermKind::Seq(seq) => {
-            let last = *seq.last().unwrap();
+        TermKind::Seq(head, tail) => {
+            /*let last = *seq.last().unwrap();
             let before = &seq[..seq.len() - 1];
             with_cps!(cps;
                 @tk* (h) _aexps = &before;
                 # t_k(cps, last, fk, h)
-            )
+            )*/
+            t_k(cps, head, Box::new(move |cps, _| t_k(cps, tail, fk, h)), h)
         }
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
@@ -472,7 +476,7 @@ pub fn t_c<'a, 'gc>(
             }
         }
 
-        TermKind::Seq(seq) =>
+        TermKind::Seq(head, tail) =>
         /*with_cps!(cps;
             @tk* (h) aexps = &seq;
             # {
@@ -481,12 +485,14 @@ pub fn t_c<'a, 'gc>(
             }
         ),*/
         {
-            let last = *seq.last().unwrap();
+            /*let last = *seq.last().unwrap();
             let before = &seq[..seq.len() - 1];
             with_cps!(cps;
                 @tk* (h) _aexps = before;
                 @tc (k, h) last
-            )
+            )*/
+
+            t_k(cps, head, Box::new(move |cps, _| t_c(cps, tail, k, h)), h)
         }
 
         TermKind::If(test, cons, alt) => with_cps!(cps;
@@ -509,6 +515,7 @@ pub fn t_c<'a, 'gc>(
                 binding: consumer_k_var,
                 args: formals,
                 variadic: formals_opt,
+                noinline: false,
                 ignore_args: false,
                 body: t_c(cps, consumer, k, h),
 
@@ -641,14 +648,10 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
             .map(|f| f.source())
             .unwrap_or(Value::new(false));
 
-        let seq = Gc::new(
-            &ctx,
-            super::core::Term {
-                source: Lock::new(source),
-                kind: TermKind::Seq(Array::from_slice(&ctx, forms)),
-            },
-        );
-
+        let seq = seq_from_slice(ctx, forms);
+        barrier::field!(Gc::write(&ctx, seq), super::core::Term, source)
+            .unlock()
+            .set(source);
         seq
     };
 
@@ -1142,7 +1145,8 @@ pub fn cached_toplevel_box<'gc>(
     with_cps!(cps;
         let cached = #% "cache-ref" (h, cache_key) @ src;
         let is_heap_obj = #% "heap-object?" (h, cached) @ src;
-        letk (h) merge (cached) = with_cps!(cps; continue k (cached));
+        // do not inline results of the cache lookup, this can blow up the code size
+        letk noinline (h) merge (cached) = with_cps!(cps; continue k (cached));
         letk cold (h) kinit () = with_cps!(cps;
             let module = #%"cache-ref" (h, Atom::Constant(scope)) @ src;
             # reify_lookup(cps, src, module, name, bound, h, |cps, var| {
@@ -1171,7 +1175,8 @@ pub fn cached_module_box<'gc>(
     with_cps!(cps;
         let cache_entry = #% "cache-ref" (h, cache_key) @ src;
         let is_heap_obj = #% "heap-object?" (h, cache_entry) @ src;
-        letk (h) merge (cached) = with_cps!(cps; continue k (cached));
+        // do not inline results of the cache lookup, this can blow up the code size
+        letk noinline (h) merge (cached) = with_cps!(cps; continue k (cached));
         letk cold (h) kinit () = if public {
             with_cps!(cps;
                 let var = #% "lookup-bound-public" (h, Atom::Constant(module), Atom::Constant(name)) @ src;

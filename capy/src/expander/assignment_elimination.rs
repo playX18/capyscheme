@@ -211,18 +211,20 @@ fn substitute<'gc>(
             )
         }
 
-        TermKind::Seq(seq) => {
-            let terms = seq
+        TermKind::Seq(head, tail) => {
+            /*let terms = seq
                 .iter()
                 .map(|t| substitute(ctx, *t, substs))
                 .collect::<Vec<_>>();
             let terms = Array::from_slice(&ctx, &terms);
-
+            */
+            let head = substitute(ctx, *head, substs);
+            let tail = substitute(ctx, *tail, substs);
             Gc::new(
                 &ctx,
                 Term {
                     source: Lock::new(term.source()),
-                    kind: TermKind::Seq(terms),
+                    kind: TermKind::Seq(head, tail),
                 },
             )
         }
@@ -556,18 +558,20 @@ fn wrap_mutables<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
             prim_call_term(ctx, *prim, args, term.source())
         }
 
-        TermKind::Seq(seq) => {
-            let terms = seq
+        TermKind::Seq(head, tail) => {
+            /*     let terms = seq
                 .iter()
                 .map(|t| wrap_mutables(ctx, *t))
                 .collect::<Vec<_>>();
-            let terms = Array::from_slice(&ctx, &terms);
+            let terms = Array::from_slice(&ctx, &terms);*/
+            let head = wrap_mutables(ctx, *head);
+            let tail = wrap_mutables(ctx, *tail);
 
             Gc::new(
                 &ctx,
                 Term {
                     source: Lock::new(term.source()),
-                    kind: TermKind::Seq(terms),
+                    kind: TermKind::Seq(head, tail),
                 },
             )
         }

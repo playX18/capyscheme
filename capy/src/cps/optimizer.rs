@@ -315,7 +315,9 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
-                .partition::<Vec<_>, _>(|&cont| state.applied_once(cont.binding()));
+                .partition::<Vec<_>, _>(|&cont| {
+                    !cont.noinline && state.applied_once(cont.binding())
+                });
 
             let state = state.with_continuations(&inlined);
             if not_inlined.is_empty() {
@@ -360,6 +362,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: &mut State<'gc>) -> TermRef<'gc> 
             if let Some(k) = state.cenv.get(&k).copied()
                 && k.args().len() == args.len()
                 && k.variadic().is_none()
+                && !k.noinline
             {
                 let state = state.with_vars_to_atoms(&k.args(), &args);
 
@@ -668,6 +671,7 @@ fn copy_c<'gc>(
             args: args1,
             variadic: var1,
             source: cont.source(),
+            noinline: cont.noinline,
             free_vars: Lock::new(cont.free_vars.get()),
             reified: Cell::new(cont.reified.get()),
             handler: Lock::new(handler),
@@ -755,7 +759,8 @@ fn inline_t<'gc>(state: &mut State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -
                 let newk = cnt.with_body(state.ctx, body);
 
                 let my_size = size(orig);
-                let dont = my_size > cnt_limit
+                let dont = cnt.noinline
+                    || my_size > cnt_limit
                     || (my_size > loop_limit && census(body).contains_key(&cnt.binding));
                 (newk, if dont { None } else { Some(newk) })
             });

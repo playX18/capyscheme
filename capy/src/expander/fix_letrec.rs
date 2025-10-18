@@ -4,7 +4,9 @@ use rsgc::{Gc, alloc::Array};
 
 use crate::{
     cps::Map,
-    expander::core::{Fix, LVarRef, Let, LetStyle, Term, TermKind, TermRef, constant, lset, seq},
+    expander::core::{
+        Fix, LVarRef, Let, LetStyle, Term, TermKind, TermRef, constant, lset, seq_from_slice,
+    },
     runtime::{Context, value::Value},
 };
 
@@ -104,10 +106,9 @@ fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
                 rec(&receiver, counter, map);
             }
 
-            TermKind::Seq(seq) => {
-                for term in seq.iter() {
-                    rec(term, counter, map);
-                }
+            TermKind::Seq(head, tail) => {
+                rec(&head, counter, map);
+                rec(&tail, counter, map);
             }
 
             TermKind::Values(values) => {
@@ -190,7 +191,11 @@ fn compute_free_variables<'a, 'gc>(
             ),
             TermKind::PrimCall(_, args) => recurse_many(args.iter().cloned(), sym_id, free),
             TermKind::Define(_, _, val) => rec(val, sym_id, free),
-            TermKind::Seq(seq) => recurse_many(seq.iter().cloned(), sym_id, free),
+            TermKind::Seq(head, tail) => {
+                //recurse_many(seq.iter().cloned(), sym_id, free)
+                rec(head, sym_id, free);
+                rec(tail, sym_id, free);
+            }
             TermKind::If(test, cons, alt) => recurse_many(
                 std::iter::once(*test)
                     .chain(std::iter::once(*cons))
@@ -357,10 +362,9 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
 
     t.post_order(ctx, |ctx, x| match &x.kind {
         // sets to unreferenced variables may be replaced with their expression for side effects
-        TermKind::LSet(var, val) if !referenced.contains(var) => seq(
-            ctx,
-            Array::from_slice(&ctx, [*val, constant(ctx, Value::new(false))]),
-        ),
+        TermKind::LSet(var, val) if !referenced.contains(var) => {
+            seq_from_slice(ctx, [*val, constant(ctx, Value::new(false))])
+        }
 
         TermKind::Let(l) => {
             if matches!(l.style, LetStyle::LetRec | LetStyle::LetRecStar) {
@@ -529,7 +533,7 @@ fn fix_scc<'gc>(
     if binds.len() == 1 {
         let (lhs, rhs) = binds[0];
         if unreferenced(&lhs) {
-            return seq(ctx, Array::from_slice(&ctx, [rhs, body]));
+            return seq_from_slice(ctx, [rhs, body]);
         } else if let TermKind::Proc(rhs) = rhs.kind
             && unassigned(&lhs)
         {
@@ -546,7 +550,7 @@ fn fix_scc<'gc>(
             );
         } else if recursive(&lhs, rhs) {
             let mutation = lset(ctx, lhs, rhs);
-            let body = seq(ctx, Array::from_slice(&ctx, [mutation, body]));
+            let body = seq_from_slice(ctx, [mutation, body]);
             return Gc::new(
                 &ctx,
                 Term {
@@ -583,7 +587,7 @@ fn fix_scc<'gc>(
 
         for (lhs, rhs) in c.iter().rev().copied() {
             let mutation = lset(ctx, lhs, rhs);
-            body = seq(ctx, Array::from_slice(&ctx, [mutation, body]));
+            body = seq_from_slice(ctx, [mutation, body]);
         }
         if !l.is_empty() {
             let (lhs, rhs): (Vec<_>, Vec<_>) = l.iter().copied().unzip();

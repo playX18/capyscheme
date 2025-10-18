@@ -1455,6 +1455,15 @@ prim!(
         PrimValue::Value(ssa.builder.inst_results(call)[0])
     },
 
+    "module-ensure-local-variable!" => ensure_local_var(ssa, args, _handler) {
+        let module = ssa.atom(args[0]);
+        let name = ssa.atom(args[1]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let call = ssa.builder.ins().call(ssa.thunks.module_ensure_local_variable, &[ctx, module, name]);
+        let var = ssa.builder.inst_results(call)[0];
+        PrimValue::Value(var)
+    },
+
     "lookup" => lookup(ssa, args, handler) {
         let module = ssa.atom(args[0]);
         let name = ssa.atom(args[1]);
