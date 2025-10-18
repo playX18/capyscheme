@@ -470,5 +470,6 @@
   (file-io/delete-file filename))
 
 (define port-position io/port-position)
+(define port-fd io/port-fd)
 
 ; eof
