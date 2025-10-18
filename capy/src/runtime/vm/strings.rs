@@ -410,6 +410,12 @@ native_fn!(
         nctx.return_(Ok(s))
     }
 
+    pub ("make-string") fn make_string<'gc>(nctx, length: usize, fill_char: Option<char>) -> Gc<'gc, Str<'gc>> {
+        let ch = fill_char.unwrap_or('\0');
+        let s = Str::from_char(&nctx.ctx, ch, length);
+        nctx.return_(s)
+    }
+
     pub ("string-ref") fn string_ref<'gc>(nctx, str: Gc<'gc, Str<'gc>>, index: usize) -> Result<char, Value<'gc>> {
         if index >= str.len() {
             let ctx = nctx.ctx;

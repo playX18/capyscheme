@@ -44,7 +44,7 @@ pub fn init_scheme() -> Scheme {
     }*/
 
     if (*mmtk_builder.options.plan) == PlanSelector::MarkCompact {
-        println!(";; Warning: MarkCompact is not supported, using MarkSweep instead.");
+        // println!(";; Warning: MarkCompact is not supported, using MarkSweep instead.");
         mmtk_builder.options.plan.set(PlanSelector::MarkSweep);
     }
 

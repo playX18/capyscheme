@@ -1,9 +1,9 @@
 use std::{cell::Cell, collections::HashMap};
 
-use rsgc::{alloc::Array, cell::Lock};
+use rsgc::{alloc::Array, barrier, cell::Lock};
 
 use crate::{
-    expander::core::{self, LVar, LVarRef, Term, TermKind, TermRef},
+    expander::core::{self, LVar, LVarRef, Term, TermKind, TermRef, seq_from_slice},
     global, native_fn,
     runtime::{modules::root_module, prelude::*},
     static_symbols,
@@ -1000,14 +1000,11 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 tail = sequence_tail(self.ctx, tail);
             }
             seq.push(self.convert(tail)?);
-            let seq = Array::from_slice(&self.ctx, &seq);
-            return Ok(Gc::new(
-                &self.ctx,
-                Term {
-                    source: Lock::new(source),
-                    kind: TermKind::Seq(seq),
-                },
-            ));
+            let seq = seq_from_slice(self.ctx, &seq);
+            barrier::field!(Gc::write(&self.ctx, seq), Term, source)
+                .unlock()
+                .set(source);
+            return Ok(seq);
         } else {
             todo!()
         }
