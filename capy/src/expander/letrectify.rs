@@ -405,7 +405,7 @@ impl<'gc> Letrectify<'gc> {
 static_symbols!(SYM_DEFINE_MODULE = "define-module*");
 
 global!(
-    CAPY_MODULE<'gc>: Value<'gc> = (ctx) {
+    pub CAPY_MODULE<'gc>: Value<'gc> = (ctx) {
         let name = ctx.intern("capy");
         list!(ctx, name)
     };

@@ -6,7 +6,7 @@ use super::*;
 use crate::{
     expander::{
         core::{LVarRef, TermKind, TermRef, module_ref, module_set},
-        letrectify::is_define_module_term,
+        letrectify::{capy_module, is_define_module_term},
         primitives::sym_current_module,
     },
     runtime::{Context, modules::resolve_module},
@@ -108,6 +108,18 @@ impl<'gc> ComputeFreeVarResolver<'gc> {
             }
 
             TermKind::Call(proc, args) => {
+                if let TermKind::ModuleRef(mod_name, var_name, _) = proc.kind
+                    && mod_name.r5rs_equal(*capy_module(self.ctx))
+                    && var_name == sym_current_module(self.ctx).into()
+                    && args.len() == 1
+                    && let TermKind::LRef(var) = args[0].kind
+                {
+                    return self
+                        .module_lexicals
+                        .iter()
+                        .find_map(|(modu, v)| if *v == var { Some(*modu) } else { None })
+                        .unwrap_or(Value::new(false));
+                }
                 self.visit(proc);
                 self.visit_star(&args);
                 Value::new(false)
