@@ -660,7 +660,8 @@
 
     (define (compute-exports ifaces specs)
       (define (re-export? sym)
-        (or-map (lambda (iface) (module-variable iface sym)) ifaces))
+        (or-map (lambda (iface) 
+          (module-variable iface sym)) ifaces))
       (define (replace? sym)
         (module-variable the-scm-module sym))
       

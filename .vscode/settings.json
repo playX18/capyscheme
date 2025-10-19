@@ -1,8 +1,13 @@
 {
-    "files.associations": {
-        "*.sld": "scheme",
-        "__config": "c",
-        "locale": "c",
-        "istream": "c"
-    }
+  "files.associations": {
+    "*.sld": "scheme",
+    "*.sls": "scheme",
+    "__config": "c",
+    "locale": "c",
+    "istream": "c",
+    "termios.h": "c",
+    "cdefs.h": "c",
+    "ttydefaults.h": "c",
+    "unistd.h": "c"
+  }
 }

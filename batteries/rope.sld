@@ -18,8 +18,13 @@
         rope-index
         rope-substring
         rope-kill
-        rope-length)
-    (begin
+        rope-length
+        write-rope
+        rope->list
+        rope-map
+        rope-find
+        rope-rfind)
+(begin
 
 (define *short-leaf* (make-parameter 16))
 (define *long-leaf* (make-parameter 128))
@@ -282,9 +287,30 @@ but it is expensive - O(n)."
     (receive (before after) (rope-split rope to)
         (receive (before2 after) (rope-split before from)
             (write-rope before2 #f))))  
+
+(define (rope-find rope char . opts)
+    "Find the first occurrence of char in rope."
+    (let-optionals opts ([start 0] [end (rope-length rope)])
+        (define range (- end start))
+        (let loop ([index start])
+            (cond
+                [(>= index end) #f]
+                [(char=? (rope-index rope index) char) index]
+                [else (loop (+ index 1))]))))
+
+(define (rope-rfind rope char . opts)
+    "Find the last occurrence of char in rope."
+    (let-optionals opts ([start 0] [end (rope-length rope)])
+        (define range (- end start))
+        (let loop ([index (- end 1)])
+            (cond
+                [(< index start) #f]
+                [(char=? (rope-index rope index) char) index]
+                [else (loop (- index 1))]))))
+
 (define (rope-kill rope from . maybe-to)
     "Remove a substring from the rope between from and to."
-    (define to (if maybe-to (car maybe-to) from))
+    (define to (if (null? maybe-to) (+ from 1) (car maybe-to)))
     (receive (before after) (rope-split rope from)
         (receive (before2 after2) (rope-split rope to)
-            (write-rope (rope-concat before after2) #f))))))
+            (rope-concat before after2))))))

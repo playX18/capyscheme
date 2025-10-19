@@ -2,10 +2,6 @@
 (define-library (scheme base)
   (import (rename (core)
                   (define-record-type r6rs:define-record-type)
-                  (current-input-port r6rs:current-input-port)
-                  (current-output-port r6rs:current-output-port)
-                  (current-error-port r6rs:current-error-port)
-                  (flush-output-port r6rs:flush-output-port)
                   (expt r6rs:expt)
                   (error r6rs:error)
                   (string->utf8 r6rs:string->utf8)
@@ -302,6 +298,7 @@
         (let-optionals options ((start 0) (end (string-length str)))
           (substring str start end))))
 
+    
     (define string->list
       (lambda (str . options)
         (let-optionals options ((start 0) (end (string-length str)))
@@ -395,24 +392,6 @@
                   (r6rs:bytevector-copy! (car args) 0 ans p n)
                   (loop (cdr args) (+ p n)))))
           ans)))
-
-    (define current-input-port
-      (make-parameter
-        (r6rs:current-input-port)
-        #f
-        (lambda (x) (set-current-input-port! x) x)))
-
-    (define current-output-port
-      (make-parameter
-        (r6rs:current-output-port)
-        #f
-        (lambda (x) (set-current-output-port! x) x)))
-
-    (define current-error-port
-      (make-parameter
-        (r6rs:current-error-port)
-        #f
-        (lambda (x) (set-current-error-port! x) x)))
 
     (define char-ready?
       (lambda options
@@ -626,12 +605,6 @@
       (syntax-rules ()
         ((_ msg args ...)
          (syntax-violation #f msg '(args ...)))))
-
-    (define flush-output-port
-      (lambda options
-        (let-optionals options ((port (current-output-port)))
-          (r6rs:flush-output-port port))))
-
 
     (define-syntax let-syntax
       (syntax-rules ()
