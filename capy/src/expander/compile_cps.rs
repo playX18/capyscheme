@@ -177,8 +177,18 @@ pub fn t_k<'a, 'gc>(
                 src,
                 id,
                 |cps| {
-                    let t = t_k(cps, form, fk, h);
-                    cps.current_topbox_scope = prev;
+                    let t = t_k(
+                        cps,
+                        form,
+                        // wrap in another higher order continuation
+                        // to restore the previous topbox scope.
+                        Box::new(|cps, atoms| {
+                            cps.current_topbox_scope = prev;
+                            fk(cps, atoms)
+                        }),
+                        h,
+                    );
+
                     t
                 },
                 h,
