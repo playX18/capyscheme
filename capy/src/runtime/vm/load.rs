@@ -407,16 +407,20 @@ native_fn!(
 
         ir = primitives::resolve_primitives(nctx.ctx, ir, m);
         ir = primitives::expand_primitives(nctx.ctx, ir);
+
         ir = resolve_free_vars(nctx.ctx, ir);
+        let free_vars = ir;
         ir = letrectify(nctx.ctx, ir);
+        let letrectify = ir;
         ir = fix_letrec(nctx.ctx, ir);
+        let fix_letrec = ir;
         ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
 
         let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
 
-        if !true {
+        if true {
             let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
@@ -425,6 +429,36 @@ native_fn!(
                 .open(format!("{}.ir.scm", destination))
                 .unwrap();
             println!("IR -> {}.ir.scm", destination);
+            doc.1.render(80, &mut file).unwrap();
+
+            let doc = free_vars.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.free_vars.ir.scm", destination))
+                .unwrap();
+            println!("Free vars IR -> {}.free_vars.ir.scm", destination);
+            doc.1.render(80, &mut file).unwrap();
+
+            let doc = letrectify.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.letrectify.ir.scm", destination))
+                .unwrap();
+            println!("Letrectify IR -> {}.letrectify.ir.scm", destination);
+            doc.1.render(80, &mut file).unwrap();
+
+            let doc = fix_letrec.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.fix_letrec.ir.scm", destination))
+                .unwrap();
+            println!("Fix letrec IR -> {}.fix_letrec.ir.scm", destination);
             doc.1.render(80, &mut file).unwrap();
 
 
@@ -611,7 +645,17 @@ native_cont!(
         cps = crate::cps::rewrite_func(nctx.ctx, cps);
         cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
 
-        if !true {
+        if true {
+            let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.ir.scm", source_and_compiled_path.cdr().downcast::<Str>()))
+                .unwrap();
+            doc.1.render(80, &mut file).unwrap();
+            println!(";; IR {} -> {}.ir.scm", source_and_compiled_path.car(), source_and_compiled_path.cdr());
+
             let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
@@ -619,7 +663,7 @@ native_cont!(
                 .truncate(true)
                 .open(format!("{}.cps.scm", source_and_compiled_path.cdr().downcast::<Str>()))
                 .unwrap();
-            println!("CPS {} -> {}.cps.scm", source_and_compiled_path.car(), source_and_compiled_path.cdr());
+            println!(";; CPS {} -> {}.cps.scm", source_and_compiled_path.car(), source_and_compiled_path.cdr());
             doc.1.render(80, &mut file).unwrap();
         }
 
