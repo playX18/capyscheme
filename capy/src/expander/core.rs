@@ -2703,11 +2703,11 @@ impl<'gc> Term<'gc> {
                 .parens()
                 .group(),
 
-            TermKind::ToplevelSet(_, name, exp) => {
+            TermKind::ToplevelSet(module, name, exp) => {
                 let exp_doc = exp.pretty(alloc);
                 alloc
                     .text("toplevel-set")
-                    .append(format!(" {name}"))
+                    .append(format!(" {module} {name}"))
                     .append(alloc.space())
                     .append(exp_doc)
                     .parens()
