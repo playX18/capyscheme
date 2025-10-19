@@ -283,7 +283,8 @@ fn compute_complex<'gc>(
         HashSet::new(),
     )
 }
-
+// TODO: Fix this pass
+#[allow(dead_code)]
 fn reorder_bindings<'gc>(
     ctx: Context<'gc>,
     lhs: &[LVarRef<'gc>],
@@ -340,6 +341,7 @@ fn reorder_bindings<'gc>(
 
         let mut result = sunk_lambdas.clone();
         result.extend(sunk_exprs.iter().copied());
+
         result
     }
 
@@ -371,16 +373,16 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                 let in_order = matches!(l.style, LetStyle::LetRecStar);
 
                 if in_order {
-                    let (lhs, rhs) = reorder_bindings(ctx, &l.lhs, &l.rhs, &sym_id, &mut fv_cache)
-                        .into_iter()
-                        .unzip::<_, _, Vec<_>, Vec<_>>();
+                    //let (lhs, rhs) = reorder_bindings(ctx, &l.lhs, &l.rhs, &sym_id, &mut fv_cache)
+                    //    .into_iter()
+                    //    .unzip::<_, _, Vec<_>, Vec<_>>();
 
                     fix_term(
                         ctx,
                         x.source(),
                         in_order,
-                        &lhs,
-                        &rhs,
+                        &l.lhs,
+                        &l.rhs,
                         l.body,
                         &sym_id,
                         &referenced,
@@ -439,12 +441,12 @@ fn fix_term<'gc>(
     referenced: &HashSet<LVarRef<'gc>>,
     assigned: &HashSet<LVarRef<'gc>>,
     fv_cache: &mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
-    _complex: &HashSet<u32>,
+    complex: &HashSet<u32>,
 ) -> TermRef<'gc> {
     let unreferenced = |var: &LVarRef<'gc>| !referenced.contains(var);
     let unassigned = |var: &LVarRef<'gc>| !assigned.contains(var);
 
-    let sccs = compute_sccs(lhs, rhs, in_order, sym_id, fv_cache);
+    let sccs = compute_sccs(lhs, rhs, in_order, sym_id, complex, fv_cache);
     let mut recursive = |var: &LVarRef<'gc>, rhs: TermRef<'gc>| {
         compute_free_variables(fv_cache, sym_id, &rhs).contains(&sym_id[var])
     };
@@ -468,9 +470,11 @@ fn compute_sccs<'gc>(
     in_order: bool,
     sym_id: &Map<LVarRef<'gc>, u32>,
 
+    complex: &HashSet<u32>,
+
     fv_cache: &mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
 ) -> Vec<Vec<(LVarRef<'gc>, TermRef<'gc>)>> {
-    let mut graph = petgraph::Graph::new();
+    let mut graph = petgraph::Graph::<Vertex, ()>::new();
     let mut node_ids = Vec::new();
     for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
         node_ids.push(graph.add_node(Vertex {
@@ -490,19 +494,29 @@ fn compute_sccs<'gc>(
         }
     }
     if in_order {
-        let mut w = &node_ids[..];
+        /*let mut w = &node_ids[..];
 
         while !w.is_empty() {
             if w.len() != 1 {
                 let xj = w[1];
                 let xi = w[0];
 
-                if !graph[xi].rhs.is_transparent() {
+                if !graph[xi].rhs.is_transparent() || complex.contains(&sym_id[&graph[xi].lhs]) {
                     graph.add_edge(xj, xi, ());
                 }
                 w = &w[1..];
             } else {
                 break;
+            }
+        }*/
+
+        let mut prev: Option<petgraph::prelude::NodeIndex> = None;
+        for &id in node_ids.iter() {
+            if let Some(p) = prev {
+                graph.add_edge(id, p, ());
+            }
+            if complex.contains(&sym_id[&graph[id].lhs]) {
+                prev = Some(id);
             }
         }
     }
