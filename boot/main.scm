@@ -2,6 +2,42 @@
 (define (eqv? x y) (eqv? x y))
 (define (equal? x y) (equal? x y))
 (define (null? x) (null? x))
+(define (char? x) (char? x))
+(define (char>=? x . ys)
+  (let loop ([ys ys])
+    (cond
+      [(null? ys) #t]
+      [else (and (char>=? x (car ys))
+                 (loop (cdr ys)))])))
+
+(define (char<=? x . ys)  
+  (let loop ([ys ys])
+    (cond
+      [(null? ys) #t]
+      [else (and (char<=? x (car ys))
+                 (loop (cdr ys)))])))
+
+(define (char>? x . ys)
+  (let loop ([ys ys])
+    (cond
+      [(null? ys) #t]
+      [else (and (char>? x (car ys))
+                 (loop (cdr ys)))])))
+
+(define (char<? x . ys)
+  (let loop ([ys ys])
+    (cond
+      [(null? ys) #t]
+      [else (and (char<? x (car ys))
+                 (loop (cdr ys)))])))
+
+(define (char=? x . ys)
+  (let loop ([ys ys])
+    (cond
+      [(null? ys) #t]
+      [else (and (char=? x (car ys))
+                 (loop (cdr ys)))])))
+
 
 (define (tuple->list x)
   (let lp ([i 0] [n (tuple-size x)] [acc '()])
