@@ -270,6 +270,7 @@
                         &lexical make-lexical-violation lexical-violation?
                         &syntax make-syntax-violation syntax-violation? syntax-violation-form syntax-violation-subform
                         &undefined make-undefined-violation undefined-violation?
+                        &stacktrace make-stacktrace-condition stacktrace-condition? condition-stacktrace
                         ; r6rs mutable-pairs
                         set-car!
                         set-cdr!
@@ -516,6 +517,10 @@
                         procedure-name
                         procedure-documentation
                         procedure-sourcev
+                        interpreted-procedure?
+                        interpreted-expression?
+                        interpreted-expression-source
+                        interpreted-procedure-meta
 
                         core-read
                         current-source-comments
@@ -544,6 +549,7 @@
                         process-environment->alist
                         set-current-input-port! set-current-output-port! set-current-error-port!
                         open-builtin-data-input-port
+                        open-string-input-port
                         current-library-infix
                         current-library-suffix
                         current-primitive-prefix
@@ -673,9 +679,12 @@
                         set-pointer-finalizer!
                         dereference-pointer
                         pointer->procedure
+                        errno 
+                        ioctl/pointer
                         dlopen
                         dlsym
                         dlclose
+                        load-native-extension
                         match
                         match-next
                         match-two
@@ -709,6 +718,23 @@
                         match-check-ellipsis
                         match-check-identifier
                         match-bound-identifier-memv
+                        *raw-log*
+                        *raw-log/src*
+                        log:none
+                        log:error
+                        log:warn
+                        log:info
+                        log:debug
+                        log:trace
+
+                        log:max-level
+                        log:set-max-level!
+                        log:max
+                        log:set-logger
+                        *simple-logger*
+                        
+                        shadow-stack
+                        resolve-address-name
                         )
     (import (capy)))
 
@@ -720,7 +746,7 @@
           with-syntax
           _
           ...
-          ;make-variable-transformer
+          make-variable-transformer
           identifier?
           bound-identifier=?
           free-identifier=?

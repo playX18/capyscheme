@@ -5,7 +5,10 @@ use tree_sitter::Node;
 
 use crate::{
     expander::add_source,
-    frontend::num::{NumberParseError, parse_number},
+    frontend::{
+        Directives,
+        num::{NumberParseError, parse_number},
+    },
     global, list,
     runtime::{
         Context,
@@ -119,6 +122,7 @@ pub struct TreeSitter<'a, 'gc> {
     source_file: Value<'gc>,
     #[allow(dead_code)]
     wrap_stx: bool,
+    directives: Directives,
 }
 
 impl<'a, 'gc> TreeSitter<'a, 'gc> {
@@ -136,7 +140,12 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             text,
             tree,
             source_file,
+            directives: Directives::empty(),
         }
+    }
+
+    pub fn directives(&self) -> Directives {
+        self.directives
     }
 
     pub fn ctx(&self) -> Context<'gc> {
@@ -657,6 +666,15 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             "#u8" => {
                 let bv = self.parse_compound_node(node, src, CompoundType::Bytevector)?;
                 Ok(self.wrap(node, bv))
+            }
+
+            "#vu8" => {
+                let bv = self.parse_compound_node(node, src, CompoundType::Bytevector)?;
+                Ok(self.wrap(node, bv))
+            }
+
+            "directive" => {
+                return Ok(Value::null());
             }
 
             _ => todo!(

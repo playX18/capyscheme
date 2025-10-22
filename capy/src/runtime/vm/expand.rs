@@ -3,7 +3,10 @@ use std::{cell::Cell, collections::HashMap};
 use rsgc::{alloc::Array, barrier, cell::Lock};
 
 use crate::{
-    expander::core::{self, LVar, LVarRef, Term, TermKind, TermRef, seq_from_slice},
+    expander::{
+        core::{self, LVar, LVarRef, Term, TermKind, TermRef, seq_from_slice},
+        sym_column, sym_filename, sym_line,
+    },
     global, native_fn,
     runtime::{modules::root_module, prelude::*},
     static_symbols,
@@ -133,7 +136,17 @@ pub fn is_term<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
 
 pub fn term_sourcev<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_term(ctx, v));
-    v.downcast::<Tuple>()[1].get()
+    let src = v.downcast::<Tuple>()[1].get();
+    if src.is_pair() {
+        let filename = src.assq(sym_filename(ctx).into()).unwrap();
+        let line = src.assq(sym_line(ctx).into()).unwrap();
+        let col = src.assq(sym_column(ctx).into()).unwrap();
+        return Vector::from_slice(&ctx, &[filename, line, col]).into();
+    } else if src.is::<Vector>() {
+        return src;
+    } else {
+        return Value::new(false);
+    }
 }
 
 const TERM_SOURCEV: usize = 1;

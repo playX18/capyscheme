@@ -407,14 +407,14 @@
                      (get-token p)))))
            ((#\;)                     ;s-expr/datum comment
             (let lp ((atmosphere '()))
-              (let-values (((type token) (get-token p)))
+              (receive (type token) (get-token p)
                 (cond ((eq? type 'eof)
                        (eof-warning p)
                        (values 'inline-comment (cons (reverse atmosphere) p)))
                       ((atmosphere? type)
                        (lp (cons (cons type token) atmosphere)))
                       (else
-                       (let-values ([(d _) (handle-lexeme p type token #f #t)])
+                       (receive (d _) (handle-lexeme p type token #f #t)
                          (values 'inline-comment (cons (reverse atmosphere) d))))))))
            ((#\|)                     ;nested comment
             (values 'nested-comment (get-nested-comment p)))

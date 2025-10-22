@@ -58,6 +58,7 @@
     ;; Function bindings
     tcgetattr tcsetattr tcdrain tcflow tcflush tcsendbreak)
 
+(format #t "linux??~%~!")
 
 ;; Control characters indices
 (define VINTR     0)

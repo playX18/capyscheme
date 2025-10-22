@@ -443,11 +443,13 @@ macro_rules! fluid {
     ($(#[$outer:meta])* $v: vis $name: ident = $default_value: expr; $($rest:tt)*) => {
         paste::paste! {
             $(#[$outer])*
+            #[unsafe(export_name = concat!("CAPY_", stringify!($name)))]
             $v static [<$name: upper>]: ::std::sync::OnceLock<
                 $crate::rsgc::global::Global<$crate::rsgc::Rootable!($crate::runtime::fluids::FluidRef<'_>)>> = ::std::sync::OnceLock::new();
 
             $(#[$outer])*
-            $v fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
+            #[unsafe(export_name = concat!("capy_", stringify!($name)))]
+            $v extern "C" fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
                 *[<$name: upper>]
                     .get_or_init(|| {
                         $crate::rsgc::global::Global::new($crate::runtime::fluids::Fluid::new(&ctx, $default_value))
@@ -455,11 +457,13 @@ macro_rules! fluid {
             }
 
             #[allow(dead_code)]
-            $v fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::value::Value<'gc> {
+            #[unsafe(export_name = concat!("capy_get_", stringify!($name)))]
+            $v extern "C" fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::value::Value<'gc> {
                 [<$name: snake>](ctx).get(ctx)
             }
             #[allow(dead_code)]
-            $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) -> $crate::runtime::value::Value<'gc> {
+            #[unsafe(export_name = concat!("capy_set_", stringify!($name)))]
+            $v extern "C" fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) -> $crate::runtime::value::Value<'gc> {
                 let old = [<get_ $name: snake>](ctx);
                 [<$name: snake>](ctx).set(ctx, value);
                 old
@@ -472,9 +476,12 @@ macro_rules! fluid {
 
     ($v: vis thread_local $name: ident = $default_value: expr; $($rest:tt)*) => {
         paste::paste! {
+            #[unsafe(export_name = concat!("CAPY_TLS_", stringify!($name)))]
             $v static [<$name: upper>]: ::std::sync::OnceLock<
                 $crate::rsgc::global::Global<$crate::rsgc::Rootable!($crate::runtime::fluids::FluidRef<'_>)>> = ::std::sync::OnceLock::new();
 
+
+            #[unsafe(export_name = concat!("capy_tls_", stringify!($name)))]
             $v fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
                 *[<$name: upper>]
                     .get_or_init(|| {
@@ -482,10 +489,12 @@ macro_rules! fluid {
                     }).fetch(&ctx)
             }
 
+            #[unsafe(export_name = concat!("capy_get_tls_", stringify!($name)))]
             $v fn [<get_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::value::Value<'gc> {
                 [<$name: snake>](ctx).get(ctx)
             }
 
+            #[unsafe(export_name = concat!("capy_set_tls_", stringify!($name)))]
             $v fn [<set_ $name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>, value: $crate::runtime::value::Value<'gc>) {
                 [<$name: snake>](ctx).set(ctx, value);
             }
@@ -503,9 +512,11 @@ macro_rules! global {
         $(
             paste::paste!{
                 #[allow(unused)]
+                #[unsafe(export_name = concat!("CAPY_GLOBAL_", stringify!($name)))]
                 $v static [<$name: upper>]: std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!($l => $t)>> = std::sync::OnceLock::new();
 
                 #[allow(unused)]
+                #[unsafe(export_name = concat!("capy_global_", stringify!($name)))]
                 $v fn [<$name: lower>]<$l>($ctx: $crate::runtime::Context<$l>) -> &$l $t {
                    &[<$name: upper>]
                         .get_or_init(|| {

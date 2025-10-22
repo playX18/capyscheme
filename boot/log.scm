@@ -12,11 +12,11 @@
 (define log:set-logger! #f)
 (define *raw-log* #f)
 (define *raw-log/src* #f)
-(define (*log-time* thunk level target msg . args)
+(define (*log-time* thunk level module target msg . args)
     (define start (current-second))
     (receive ans (thunk)
         (let ([end (current-second)])
-            (*raw-log* level target "~a (took ~a seconds)" (apply format #f msg args) (- end start))
+            (*raw-log* level target module "~a (took ~a seconds)" (apply format #f msg args) (- end start))
             (apply values ans))))
 (define *simple-logger* #f)
 
@@ -61,22 +61,21 @@
     
     (set! log:set-max-level!
         (lambda (level)
+            (set! *log-level* level)
             (max-log-level-filter level)))
     (set! log:max-level (lambda () (max-log-level-filter)))
 
     (set! *raw-log/src* 
-        (lambda (level target file line fmt . args)
-            (define module (module-name (current-module)))
+        (lambda (level module target file line fmt . args)
             (define metadata (make-log-metadata level target))
             (define record (make-log-record metadata fmt args module file line))
             (when (<= level (max-log-level-filter))
                 ((logger) 'log record))))
 
     (set! *raw-log* 
-        (lambda (level target fmt . args)
+        (lambda (level module target fmt . args)
             (define file #f)
             (define line #f)
-            (define module (module-name (current-module)))
             (define metadata (make-log-metadata level target))
             (define record (make-log-record metadata fmt args module file line))
             (when (<= level (max-log-level-filter))

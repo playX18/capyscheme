@@ -1,7 +1,6 @@
 ;; termios bindings 
 
 (define-library (libc termios)
-    (export)
     (import 
         (core foreign)
         (core foreign-library)

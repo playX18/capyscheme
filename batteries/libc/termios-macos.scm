@@ -52,8 +52,44 @@
     tcdrain
     tcflow
     tcflush
-    tcsendbreak)
+    tcsendbreak
 
+    ; winsize 
+    TIOCGWINSZ TIOCSWINSZ
+    get-winsize
+    set-winsize!
+    winsize
+    winsize?
+    winsize-rows
+    winsize-cols
+    winsize-xpixel
+    winsize-ypixel
+    set-winsize-rows!
+    set-winsize-cols!
+    set-winsize-xpixel!
+    set-winsize-ypixel!)
+(begin
+(define-record-type <winsize>
+    (winsize rows cols xpixel ypixel)
+    winsize?
+    (rows winsize-rows set-winsize-rows!)
+    (cols winsize-cols set-winsize-cols!)
+    (xpixel winsize-xpixel set-winsize-xpixel!)
+    (ypixel winsize-ypixel set-winsize-ypixel!))
+    
+(define-c-struct %winsize
+    sizeof-winsize
+    winsize
+    read-winsize
+    write-winsize!
+    (rows uint16)
+    (cols uint16)   
+    (xpixel uint16)
+    (ypixel uint16))
+
+
+(define TIOCGWINSZ 1074295912)
+(define TIOCSWINSZ 2148037735)
 ;; Special Control Characters - Index into c_cc[] character array
 (define VEOF 0)          ; ICANON
 (define VEOL 1)          ; ICANON
@@ -164,10 +200,7 @@
 (define NOKERNINFO #x02000000) ; no kernel output from VSTATUS
 (define PENDIN #x20000000)    ; XXX retype pending input (state)
 (define NOFLSH #x80000000)    ; don't flush after interrupt
-(eval-when (expand load eval)
-    (define tcflag_t unsigned-long)
-    (define cc_t     uint8)
-    (define speed_t  unsigned-long))
+
 
 (define-record-type <termios>
     (termios input-flags output-flags control-flags local-flags
@@ -234,6 +267,30 @@
 (define TCOON     2)
 (define TCIOFF    3)
 (define TCION     4)
+
+(define (get-winsize fd)
+    (define bv (make-bytevector/nonmoving sizeof-winsize))
+    (define res (ioctl/pointer fd TIOCGWINSZ (bytevector->pointer bv)))
+    (unless (zero? res)
+        (assertion-violation 'winsize "ioctl TIOCGWINSZ failed" res))
+    (let* ([ws-struct (read-winsize bv)]
+           [rows (winsize-rows ws-struct)]
+           [cols (winsize-cols ws-struct)]
+           [xpixel (winsize-xpixel ws-struct)]
+           [ypixel (winsize-ypixel ws-struct)])
+        (winsize rows cols xpixel ypixel)))
+
+
+(define (set-winsize! fd ws)
+    (define bv (make-bytevector/nonmoving sizeof-winsize))
+    (write-winsize! bv 0
+        (winsize-rows ws)
+        (winsize-cols ws)
+        (winsize-xpixel ws) 
+        (winsize-ypixel ws))
+    (unless (zero? (%ioctl fd TIOCSWINSZ (bytevector->pointer bv)))
+        (error 'set-winsize! "ioctl TIOCSWINSZ failed" res))
+    (unspecified))
 
 ; begin decls
 (define tcgetattr 
@@ -316,5 +373,8 @@
             (let ([ret (proc fd duration)])
                 (unless (zero? ret)
                     (error 'tcsendbreak "tcsendbreak failed" ret))
-                (unspecified)))))
+                (unspecified))))))
+
+
+
 ; end decls

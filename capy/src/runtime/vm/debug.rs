@@ -1,8 +1,9 @@
 use crate::{
+    expander::{sym_column, sym_filename, sym_line},
     native_fn,
     runtime::{
         Context,
-        value::{Closure, Value},
+        value::{Closure, IntoValue, Str, Symbol, Value, Vector},
     },
 };
 
@@ -109,16 +110,60 @@ native_fn!(
 
         nctx.return_(())
     }
+
+    /// Capture and return the current stacktrace as a list of frames.
+    pub ("shadow-stack") fn stacktrace<'gc>(nctx) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        let state = ctx.state;
+        let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
+
+        let mut frames = Vec::new();
+        shadow_stack.for_each_recent(|frame| {
+            let rands = frame.rands.iter().copied().rev().fold(Value::null(), |acc, rand| {
+                Value::cons(ctx, rand, acc)
+            });
+            let frame_vec = Vector::from_slice(
+                &ctx,
+                &[
+                    frame.ip.into_value(ctx),
+                    frame.meta,
+                    frame.rator,
+                    rands,
+                ]
+            );
+
+            frames.push(frame_vec);
+        });
+
+        let frames = frames.into_iter().rev().fold(Value::null(), |acc, frame| {
+            Value::cons(ctx, frame.into(), acc)
+        });
+
+
+        nctx.return_(frames)
+    }
+
+    /// Attempt to resolve proper name for a given address
+    pub ("resolve-address-name") fn resolve_address_name<'gc>(
+        nctx,
+        addr: u64
+    ) -> Value<'gc> {
+        let mut result = Value::new(false);
+        backtrace::resolve(addr as _, |sym| {
+            if let Some(name) = sym.name() {
+                result = Symbol::from_str(nctx.ctx, &name.to_string()).into();
+            }
+        });
+        nctx.return_(result)
+    }
 );
 
 pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
-    println!("{}", std::backtrace::Backtrace::force_capture());
     let state = ctx.state;
     let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
     backtrace::trace(|_| {
         shadow_stack.for_each_mut(|frame| {
-            let mut loc = None;
-            backtrace::resolve(frame.ip as _, |symbol| {
+            /*backtrace::resolve(frame.ip as _, |symbol| {
                 loc = Some((
                     symbol.filename().map(|f| f.to_string_lossy().to_string()),
                     symbol.lineno(),
@@ -164,7 +209,34 @@ pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
                 buf.push_str(&rand.to_string());
             }
             buf.push(')');
-            println!("{}", buf);
+            println!("{}", buf);*/
+            let src = if frame.meta.is::<Vector>() {
+                let v = frame.meta.downcast::<Vector>();
+                let filename = v[0].get().downcast::<Str>();
+                let line = v[1].get();
+                let col = v[2].get();
+                format!("{}:{}:{}", filename, line, col)
+            } else if frame.meta.is_pair() {
+                let filename = frame
+                    .meta
+                    .assq(sym_filename(ctx).into())
+                    .unwrap()
+                    .downcast::<Str>();
+                let line = frame.meta.assq(sym_line(ctx).into()).unwrap();
+                let col = frame.meta.assq(sym_column(ctx).into()).unwrap();
+                format!("{}:{}:{}", filename, line, col)
+            } else {
+                format!("<unknown>")
+            };
+
+            let proc_name = if frame.rator.is::<Closure>() {
+                let name = frame.rator.downcast::<Closure>().name(ctx);
+                name.map_or("<anonymous>".to_string(), |n| n.to_string())
+            } else {
+                frame.rator.to_string()
+            };
+
+            println!(" at {}: {}(...)", src, proc_name,);
         });
 
         false

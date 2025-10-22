@@ -671,7 +671,7 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
         body: form,
         source: form.source(),
         variadic: None,
-        meta: Value::new(false),
+        meta: Value::null(),
     };
 
     let mut builder = CPSBuilder::new(ctx);
@@ -903,7 +903,7 @@ where
     F: FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
 {
     with_cps!(cps;
-        letk cold (h) not_variable () = assertion_violation(cps, src, op, "not a variable", &[x], h);
+        letk cold (h) not_variable () = assertion_violation(cps, src, op, &format!("not a variable {}", not_variable.name), &[x], h);
         letk (h) k () = with_cps!(cps;
             # {
                 have_variable(cps, x)

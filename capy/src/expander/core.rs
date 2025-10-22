@@ -773,6 +773,25 @@ pub fn fresh_lvar<'gc>(ctx: Context<'gc>, name: Value<'gc>) -> LVarRef<'gc> {
     )
 }
 
+pub fn fresh_lvar_derived<'gc>(
+    ctx: Context<'gc>,
+    base: LVarRef<'gc>,
+    suffix: &str,
+) -> LVarRef<'gc> {
+    let name =
+        Symbol::from_str_uninterned(&ctx, &format!("{}{}:{}", base.name, base.id, suffix), None);
+
+    Gc::new(
+        &ctx,
+        LVar {
+            name: name.into(),
+            id: base.id,
+            set_count: Cell::new(0),
+            ref_count: Cell::new(0),
+        },
+    )
+}
+
 fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
     if form.list_length() != 3 {
         return Err(Box::new(CompileError {
@@ -1350,7 +1369,7 @@ fn finalize_body<'gc>(
                         variadic,
                         body: body_term,
                         source: syntax_annotation(cenv.ctx, def_body),
-                        meta: Value::new(false),
+                        meta: Value::null(),
                     },
                 );
 
@@ -1615,7 +1634,7 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
                 variadic: None,
                 body: body_term,
                 source: syntax_annotation(cenv.ctx, form),
-                meta: Value::new(false),
+                meta: Value::null(),
             },
         );
 
@@ -1911,7 +1930,7 @@ fn expand_do<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
             variadic: None,
             body: loop_body,
             source: syntax_annotation(cenv.ctx, form),
-            meta: Value::new(false),
+            meta: Value::null(),
         },
     );
 

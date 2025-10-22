@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 
-members = ["capy", "capy-driver"]
+members = ["capy", "capy-driver", "extensions/capy-clang"]
 default-members = ["capy"]
 
 [workspace.dependencies]
@@ -46,6 +46,10 @@ which = "8.0.0"
 libffi = { version = "4.1.2" }
 tinyvec = "1.6.0"
 unicode-general-category = "1.1.0"
+clang = { version = "2.0.0", default-features = false }
+
+capy = { path = "capy" }
+
 
 [profile.release]
 lto = true

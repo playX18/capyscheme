@@ -15,7 +15,7 @@ impl<'gc> Atom<'gc> {
     {
         match self {
             Atom::Constant(value) => alloc.text(format!("{}", value)),
-            Atom::Local(var) => alloc.text(format!("{}", var.name)),
+            Atom::Local(var) => alloc.text(format!("{}:{}", var.name, var.id)),
         }
     }
 }

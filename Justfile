@@ -32,10 +32,15 @@ build portable:
     @echo "Version: {{version}}"
     @echo "Target path: {{target-path}}"
     @echo 'Building CapyScheme with profile '{{profile}}' for target '{{target}}''
+    
 
     {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy {{if portable == "true" { "--features portable" } else { "" } }}
     {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-driver {{if portable == "true" { "--features portable" } else { "" } }}
 
+
+build-extensions:
+    @echo 'Building CapyScheme extensions for target '{{target}}''
+    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-clang 
 
 # Perform portable installation of CapyScheme which installs the binary
 # and all necessary resources to the specified install prefix
@@ -43,6 +48,7 @@ build portable:
 install-portable: (build "true")
     @echo 'Installing CapyScheme to {{install-prefix}}/share/capy/{{version}}'
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
+    @-mkdir -p {{install-prefix}}/share/capy/{{version}}/extensions
     cp -r boot {{install-prefix}}/share/capy/{{version}}
     cp -r core {{install-prefix}}/share/capy/{{version}}
     cp -r core.scm {{install-prefix}}/share/capy/{{version}}
@@ -51,9 +57,18 @@ install-portable: (build "true")
     cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
+    cp {{target-path}}/libcapy_clang.* {{install-prefix}}/share/capy/{{version}}/extensions/
     @echo "CapyScheme installed to {{install-prefix}}/share/capy/{{version}}"
     @echo "Add {{install-prefix}}/share/capy/{{version}} to your PATH to use CapyScheme"
 
+install-scm: 
+    @-mkdir -p {{install-prefix}}/share/capy/{{version}}
+    cp -r boot {{install-prefix}}/share/capy/{{version}}
+    cp -r core {{install-prefix}}/share/capy/{{version}}
+    cp -r core.scm {{install-prefix}}/share/capy/{{version}}
+    cp -r stdlib {{install-prefix}}/share/capy/{{version}}
+    cp -r batteries {{install-prefix}}/share/capy/{{version}}
+    
 tar: (build "true")
     @echo 'Creating tarball for CapyScheme version {{version}}'
     @-mkdir -p dist

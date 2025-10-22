@@ -2215,6 +2215,15 @@ prim!(
         PrimValue::Value(result)
     },
 
+    "real?" => is_real(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+
+        let call = ssa.builder.ins().call(ssa.thunks.realp, &[val]);
+        let check = ssa.builder.inst_results(call)[0];
+        PrimValue::Comparison(check)
+    },
+
     "inexact?" => is_inexact(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);

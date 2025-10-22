@@ -29,7 +29,10 @@
                 (cond 
                     [(eof-object? exp) (reverse exps)]
                     [else (lp (cons exp exps))]))))
-
+    (*raw-log* log:debug 
+               '(capy)
+               'compile-file 
+               "Compiling file ~a to ~a" filename compiled-path)
     (call-with-input-file filename 
         (lambda (in)
             (define exps (read-all in))
@@ -53,14 +56,35 @@
             (lambda () 
                 (define thunk-or-path (try-load-thunk-in-vicinity filename #t))
                 (cond 
-                    [(procedure? thunk-or-path) (thunk-or-path)]
+                    [(procedure? thunk-or-path) 
+                     (with-exception-handler 
+                        (lambda (exn)
+                            (format (current-error-port) ";; Error loading file '~a'~%" filename)
+                            ((current-exception-printer) exn (current-error-port))
+                            (flush-output-port (current-error-port))
+                            (raise exn))
+                        (lambda () 
+                            (*raw-log* log:info
+                                       '(capy)
+                                       'load 
+                                       "Loading file ~a" filename)
+                            (thunk-or-path)))]
                     [else 
+                        (*raw-log* log:info 
+                                   '(capy)
+                                   'load 
+                                   "Compiling file ~a" filename)
                         ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))])))))
 
 (set! primitive-load
     (lambda (filename)
-        (save-module-excursion (lambda () (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
-            (thunk))))))
+        (save-module-excursion (lambda () 
+            (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
+                (with-exception-handler 
+                    (lambda (exn)
+                        (format #t ";; (primitive) Error loading file '~a'~%" filename)
+                        (raise exn))
+                    (lambda () (thunk))))))))
 
 (define (eval x . m)
     (save-module-excursion (lambda () 

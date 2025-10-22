@@ -381,22 +381,4 @@
                 (line-buffer-drain lb start pos 'forward cl)
                 #t)]
         [else #f]))
-
-
-(define lb (make-line-buffer))
-
-(line-buffer-insert lb #\H 1 dummy-change-listener)
-(line-buffer-insert lb #\e 1 dummy-change-listener)
-(line-buffer-insert lb #\l 2 dummy-change-listener)
-(line-buffer-insert lb #\o 1 dummy-change-listener)
-(line-buffer-insert lb #\space 4 dummy-change-listener)
-(line-buffer-insert lb #\W 1 dummy-change-listener)
-(line-buffer-insert lb #\o 1 dummy-change-listener)
-(line-buffer-insert lb #\r 1 dummy-change-listener)
-(line-buffer-insert lb #\l 1 dummy-change-listener)
-(line-buffer-insert lb #\d 1 dummy-change-listener)
-
-(format #t "Buffer after inserts: '~a'~%" (line-buffer->string lb))
-(line-buffer-delete-prev-word lb 1 dummy-change-listener)
-(format #t "Buffer after deleting previous word: '~a'~%" (line-buffer->string lb))
 ))

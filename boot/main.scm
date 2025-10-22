@@ -38,6 +38,14 @@
       [else (and (char=? x (car ys))
                  (loop (cdr ys)))])))
 
+(define (integer->char i)
+  (integer->char i))
+(define (char->integer c)
+  (char->integer c))
+
+(define (real? x) (real? x))
+(define (inexact? x) (inexact? x))
+
 
 (define (tuple->list x)
   (let lp ([i 0] [n (tuple-size x)] [acc '()])
@@ -308,6 +316,9 @@
 
 (define tuple-printer (make-parameter #f))
 
+; 0 - no logging, 1 - error, 2 - warning, 3 - info, 4 - debug, 5 - trace
+(define *log-level* 0)
+
 (define (make-rtd name parent uid sealed? opaque? fields)
     (tuple 'type:record-type-descriptor name parent uid sealed? opaque? fields #f))
 
@@ -547,8 +558,8 @@
   (and
     (tuple? obj)
     (record-type-descriptor? (tuple-ref obj 0))))
-(define (record-type-descriptor obj)
-  (record-rtd obj))
+
+
 (define (record-rtd obj)
   (if (record? obj)
     (tuple-ref obj 0)
@@ -602,12 +613,12 @@
     (lambda (rtd obj)
       (assertion-violation
         "condition accessor"
-        (format "expected condition of a subtype of ~s, but got ~r" rtd obj) rtd obj)))
+        (format #f "expected condition of a subtype of ~a, but got ~a" rtd obj) rtd obj)))
 
   (or (rtd-ancestor? (record-type-rtd &condition) rtd)
       (assertion-violation
         'condition-accessor
-        (format "expected record-type-descriptor of a subtype of &condition, but got ~s" rtd) rtd proc))
+        (format #f "expected record-type-descriptor of a subtype of &condition, but got ~a" rtd) rtd proc))
   (lambda (obj)
 
     (if (simple-condition? obj)
@@ -694,6 +705,18 @@
 (define make-who-condition (record-constructor (record-type-rcd &who)))
 (define who-condition? (condition-predicate (record-type-rtd &who)))
 (define condition-who (condition-accessor (record-type-rtd &who) &who-who))
+
+
+(define &stacktrace
+  (let ((rtd (make-record-type-descriptor '&stacktrace (record-type-rtd &condition) (make-condition-uid) #f #f '#((immutable stacktrace)))))
+    (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)))
+      (make-record-type '&stacktrace rtd rcd))))
+(define &stacktrace-stacktrace (record-accessor (record-type-rtd &stacktrace) 0))
+(define make-stacktrace-condition (record-constructor (record-type-rcd &stacktrace)))
+(define stacktrace-condition? (condition-predicate (record-type-rtd &stacktrace)))
+(define condition-stacktrace (condition-accessor (record-type-rtd &stacktrace) &stacktrace-stacktrace))
+
+
 
 (define &non-continuable
   (let ((rtd (make-record-type-descriptor '&non-continuable (record-type-rtd &violation) (make-condition-uid) #f #f '#())))
@@ -930,7 +953,8 @@
   (let ((handlers (*current-exception-handlers*)))
     (with-exception-handler (cadr handlers)
       (lambda () ((car handlers) obj)))))
-  
+
+
 (define (with-exception-handler handler thunk)
   (let* ([previous-handlers (*current-exception-handlers*)]
         [new-handlers (if handler
@@ -945,7 +969,7 @@
 
 
 (define (assertion-violation who message . irritants)
- ;(print-stacktrace)
+  (define stk (shadow-stack))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -957,9 +981,10 @@
               (make-assertion-violation)
               (and who (make-who-condition who))
               (make-message-condition message)
-              (make-irritants-condition irritants)))))
-      (raise #f))
-    (raise #f)))
+              (make-irritants-condition irritants)
+              (make-stacktrace-condition stk)))))
+      (raise message))
+    (raise who)))
 
 (define (syntax-violation who message . irritants)
   (if (or (not who) (string? who) (symbol? who))
@@ -978,6 +1003,7 @@
     #f))
 
 (define (error who message . irritants)
+  (define stk (shadow-stack))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -989,10 +1015,12 @@
               (make-error)
               (and who (make-who-condition who))
               (make-message-condition message)
-              (make-irritants-condition irritants)))))
+              (make-irritants-condition irritants)
+              (make-stacktrace-condition stk)))))
       #f)
     #f))
 (define (implementation-restriction-violation who message . irritants)
+  (define stk (shadow-stack))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -1004,12 +1032,14 @@
               (make-implementation-restriction-violation)
               (and who (make-who-condition who))
               (make-message-condition message)
-              (make-irritants-condition irritants)))))
+              (make-irritants-condition irritants)
+              (make-stacktrace-condition stk)))))
       #f)
     #f))
 
 (define undefined-violation
   (lambda (who . message)
+    (define stk (shadow-stack))
     (raise
       (apply
         condition
@@ -1017,11 +1047,12 @@
           values
           (list
             (make-undefined-violation)
+            (make-stacktrace-condition stk)
             (and who (make-who-condition who))
             (and (pair? message) (make-message-condition (car message)))))))))
 
 (define (.make-undefined-violation who . message)
-  ;(print-stacktrace)
+  (define stk (shadow-stack))
   (if (or (not who) (string? who) (symbol? who))
     (apply
       condition
@@ -1029,6 +1060,7 @@
         values
         (list
           (make-undefined-violation)
+          (make-stacktrace-condition stk)
           (and who (make-who-condition who))
           (and (pair? message) (make-message-condition (car message))))))
     #f))
@@ -1037,6 +1069,7 @@
 
 (define raise-i/o-filename-error
   (lambda (who message filename . irritants)
+    (define stk (shadow-stack))
     (raise
       (apply
         condition
@@ -1046,10 +1079,12 @@
             (make-i/o-filename-error filename)
             (and who (make-who-condition who))
             (make-message-condition message)
-            (and (pair? irritants) (make-irritants-condition irritants))))))))
+            (and (pair? irritants) (make-irritants-condition irritants))
+            (make-stacktrace-condition stk)))))))
 
 (define raise-i/o-error
   (lambda (who message . irritants)
+    (define stk (shadow-stack))
     (raise
       (apply
         condition
@@ -1059,10 +1094,12 @@
             (make-i/o-error)
             (and who (make-who-condition who))
             (make-message-condition message)
-            (and (pair? irritants) (make-irritants-condition irritants))))))))
+            (and (pair? irritants) (make-irritants-condition irritants))
+            (make-stacktrace-condition stk)))))))
 
 (define raise-misc-i/o-error-with-port
   (lambda (constructor who message port . options)
+    (define stk (shadow-stack))
     (raise
       (apply
         condition
@@ -1073,10 +1110,12 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (and port (make-i/o-port-error port))
-            (make-irritants-condition (cons* port options))))))))
+            (make-irritants-condition (cons* port options))
+            (make-stacktrace-condition stk)))))))
 
 (define raise-misc-i/o-error
   (lambda (constructor who message . options)
+    (define stk (shadow-stack))
     (raise
       (apply
         condition
@@ -1086,7 +1125,8 @@
             (apply constructor options)
             (and who (make-who-condition who))
             (make-message-condition message)
-            (and (pair? options) (make-irritants-condition options))))))))
+            (and (pair? options) (make-irritants-condition options))
+            (make-stacktrace-condition stk)))))))
 
 (define raise-i/o-read-error
   (lambda (who message port)
@@ -1125,6 +1165,7 @@
     (raise-misc-i/o-error make-i/o-encoding-error who message port char)))
 (define .make-io-error
   (lambda (who message . irritants)
+    (define stk (shadow-stack))
     (if (or (not who) (string? who) (symbol? who))
       (if (string? message)
         (apply
@@ -1135,12 +1176,14 @@
               (make-i/o-error)
               (and who (make-who-condition who))
               (make-message-condition message)
-              (and (pair? irritants) (make-irritants-condition irritants)))))
+              (and (pair? irritants) (make-irritants-condition irritants))
+              (make-stacktrace-condition stk))))
         #f)
       #f)))
 
 
 (define (.make-assertion-violation who message . irritants)
+  (define stk (shadow-stack))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (apply
@@ -1151,12 +1194,14 @@
             (make-assertion-violation)
             (and who (make-who-condition who))
             (make-message-condition message)
-            (make-irritants-condition irritants))))
+            (make-irritants-condition irritants)
+            (make-stacktrace-condition stk))))
       #f)
     #f))
 
 
 (define (.make-error who message . irritants)
+  (define stk (shadow-stack))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (apply
@@ -1167,11 +1212,13 @@
             (make-error)
             (and who (make-who-condition who))
             (make-message-condition message)
-            (make-irritants-condition irritants))))
+            (make-irritants-condition irritants)
+            (make-stacktrace-condition stk))))
       #f)
     #f))
 
 (define (.make-implementation-restriction-violation who message . irritants)
+  (define stk (shadow-stack))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (apply
@@ -1182,7 +1229,8 @@
             (make-implementation-restriction-violation)
             (and who (make-who-condition who))
             (make-message-condition message)
-            (make-irritants-condition irritants))))
+            (make-irritants-condition irritants)
+            (make-stacktrace-condition stk))))
       #f)
     #f))
 
@@ -1617,6 +1665,31 @@
 (define (caar x) (car (car x)))
 (define (caddr x) (car (cdr (cdr x))))
 (define (cdddr x) (cdr (cdr (cdr x))))
+(define (cadddr x) (car (cdr (cdr (cdr x)))))
+(define (cddddr x) (cdr (cdr (cdr (cdr x)))))
+(define (cdddar x) (cdr (cdr (cdr (car x)))))
+(define (caddar x) (car (cdr (cdr (car x)))))
+(define (cdaadr x) (cdr (car (cdr (car x)))))
+(define (caaddr x) (car (car (cdr (car x)))))
+(define (caaaddr x) (car (car (car (cdr x)))))
+(define (cdaaddr x) (cdr (car (car (cdr x)))))
+(define (cddadr x) (cdr (cdr (car (cdr x)))))
+(define (cddaar x) (cdr (cdr (car (car x)))))
+(define (cdaddr x) (cdr (car (cdr (cdr x)))))
+(define (cdadar x) (cdr (car (cdr (car x)))))
+(define (cdaaar x) (cdr (car (car (car x)))))
+(define (cadadr x) (car (cdr (car (cdr x)))))
+(define (cadaar x) (car (cdr (car (car x)))))
+(define (caadar x) (car (car (cdr (car x)))))
+(define (caaaar x) (car (car (car (car x)))))
+(define (caaadr x) (car (car (cdr (car x)))))
+(define (cddar x) (cdr (cdr (car x))))
+(define (cdadr x) (cdr (car (cdr x))))
+(define (cadar x) (car (cdr (car x))))
+(define (caadr x) (car (cdr (car x))))
+(define (cdaar x) (cdr (car (car x))))
+(define (caaar x) (car (car (car x))))
+
 (define (string->number x . radix) 
   (let ([radix (if (null? radix) 10 (car radix))])
     (string->number x radix)))
@@ -1665,8 +1738,9 @@
   (make-parameter
     (lambda (exn . port)
       (define p (if (null? port) (current-error-port) (car port)))
-      (:print "exception: " p)
-      (format p "Unhandled exception: ~a: ~a" (condition-who exn) (condition-message exn)))))
+   
+      
+      (format p "Unhandled exception: ~a~!: ~a~%~!" (condition-who exn)))))
 
 
 (define (r6rs:bytevector-copy! source source-start target target-start count)
@@ -1719,7 +1793,16 @@
       (let ([p (assq key (procedure-properties proc))])
         (and p (cdr p)))]
     [else #f]))
-  
+
+(define (set-procedure-property! proc key value)
+  (let ([props (procedure-properties proc)])
+    (if props
+      (let ([p (assq key props)])
+        (if p
+          (set-cdr! p value)
+          (set-procedure-properties! proc (cons (cons key value) props))))
+      (set-procedure-properties! proc (list (cons key value))))))
+
 (define (procedure-name proc)
   (procedure-property proc 'name))
 

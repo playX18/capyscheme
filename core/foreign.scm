@@ -37,7 +37,9 @@
 
         define-c-struct
         struct-size
-        struct-alignment)
+        struct-alignment
+        errno
+        ioctl/pointer)
     (import (core control) (core primitives))
 
     (define (string->pointer x)

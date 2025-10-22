@@ -46,7 +46,7 @@ macro_rules! thunks {
         $v: vis fn $name : ident($($arg: ident : $t: ty),*) -> $ret: ty $b : block
     )*) => {
         $(
-            #[unsafe(export_name=concat!("capy_", stringify!($name)))]
+            #[unsafe(export_name=concat!("capy_thunks_", stringify!($name)))]
             $v extern "C-unwind" fn $name<$gl>($($arg: $t),*) -> $ret $b
         )*
 
@@ -79,7 +79,7 @@ macro_rules! thunks {
                         sig.returns.push(cranelift_codegen::ir::AbiParam::new(ty));
                     }
 
-                    let $name = module.declare_function(concat!("capy_", stringify!($name)), cranelift_module::Linkage::Import, &sig).unwrap();
+                    let $name = module.declare_function(concat!("capy_thunks_", stringify!($name)), cranelift_module::Linkage::Import, &sig).unwrap();
                     sig.clear(callconv);
                 )*
 
@@ -347,6 +347,8 @@ thunks! {
         ctx: &Context<'gc>,
         value: Value<'gc>
     ) -> Value<'gc> {
+
+
         Variable::new(*ctx, value).into()
     }
 
@@ -519,6 +521,12 @@ thunks! {
             Value::new(false)
         } else {
             Vector::new::<false>(&ctx, nfree, Value::undefined()).into()
+        };
+
+        let meta = if meta == Value::new(false) {
+            Value::null()
+        } else {
+            meta
         };
 
         let clos = Closure {
@@ -849,12 +857,12 @@ thunks! {
         ThunkResult { code: 0, value: num.negate(*ctx).into_value(*ctx) }
     }
 
-    pub fn debug_trace(ctx: &Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize) -> () {
+    pub fn debug_trace(ctx: &Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize, meta: Value<'gc>) -> () {
         let ip = unsafe { returnaddress(0) };
         let rands = unsafe { std::slice::from_raw_parts(rands, num_rands).to_vec() };
 
         unsafe {
-            let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta: Value::new(false) };
+            let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta };
             (*ctx.state.shadow_stack.get()).push(frame);
         }
     }
@@ -2005,12 +2013,8 @@ thunks! {
     pub fn exact_integerp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
-                code: 1,
-                value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "exact-integer?").into(),
-                    Str::new(ctx, "not a number", true).into(),
-                    &[v],
-                )
+                code: 0,
+                value: Value::new(false)
             }
         };
 
@@ -2725,7 +2729,7 @@ thunks! {
                 value: make_assertion_violation(ctx,
                     Symbol::from_str(*ctx, "variable-set!").into(),
                     Str::new(ctx, "not a variable", true).into(),
-                    &[v],
+                    &[v, new_value],
                 )
             }
         };
@@ -4062,7 +4066,7 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
             value: make_undefined_violation(
                 &ctx,
                 Symbol::from_str(ctx, "resolve-module").into(),
-                "module not found",
+                &format!("module '{name}' not found"),
                 &[name],
             ),
         };

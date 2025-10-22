@@ -3,8 +3,11 @@
         call/cc
         call-with-current-continuation
         dynamic-wind
-        when unless case-lambda)
-    (import (core primitives))
+        when unless case-lambda
+        print-condition
+        stack-trace)
+    (import (core primitives)
+            (core records))
   (define-syntax case-lambda
     (lambda (x)
       (define compile-clause
@@ -34,4 +37,101 @@
                    (else
                     (assertion-violation #f "wrong number of arguments" args))))))))))
 
-)
+  (define (print-condition exn p)
+    (cond 
+      [(condition? exn)
+        (let ([c* (simple-conditions exn)])
+          (format p "The condition has ~a components:~%" (length c*))
+          (do ([i 1 (+ 1 i)]
+               [c* c* (cdr c*)])
+              [(null? c*)]
+            (let* ([c (car c*)]
+                   [rtd (record-rtd c)])
+              (format p " ~a. " i)
+              (let ([supress-type
+                      (and (eq? (record-type-parent rtd)
+                                (record-type-descriptor &condition))
+                           (let ((name (symbol->string (record-type-name rtd)))
+                                 (fields (record-type-field-names rtd)))
+                             (and (not (eqv? 0 (string-length name)))
+                                  (char=? (string-ref name 0) #\&)
+                                  (fx>? (vector-length fields) 0)
+                                  (string=? (substring name 1 (string-length name))
+                                            (symbol->string (vector-ref fields 0))))))])
+                  (if supress-type 
+                    (put-char p #\&)
+                    (let loop ([rtd rtd])
+                      (format p "~a" (record-type-name rtd))
+                      (cond 
+                        [(record-type-parent rtd) => 
+                          (lambda (parent)
+                            (unless (eq? parent (record-type-descriptor &condition))
+                              (format p " ")
+                              (loop parent)))])))
+                  (let loop ([rtd rtd])
+                    (do ([f* (record-type-field-names rtd)]
+                         [i 0 (+ i 1)])
+                        [(= i (vector-length f*))
+                         (cond [(record-type-parent rtd) => loop])]
+                      (unless (and supress-type (eqv? i 0))
+                        (format p "~%     "))
+                      (format p "~a: " (vector-ref f* i))
+                      (let ([x ((record-accessor rtd i) c)])
+                        (cond 
+                          [(and (eq? rtd (record-type-descriptor &stacktrace)))
+                            (display "..." p)]
+                          [(and (eq? rtd (record-type-descriptor &irritants))
+                                (pair? x)
+                                (list? x))
+                            (display "(" p)
+                            (write (car x) p)
+                            (for-each 
+                              (lambda (x)
+                                (display "\n                 " p)
+                                (write x p))
+                              (cdr x))
+                            (display ")" p)]
+                          [else (write x p)]))))))
+              (newline p)))]
+      [else 
+        (format p "A non-condition object was raised:~%~s" exn)]))
+  (define (stack-trace k p)
+    "Print the stacktrace K to port P. If K is #f, use the current stacktrace."
+    (define who 'stack-trace)
+    (define (print . x) (for-each (lambda (x) (display x p)) x) (newline p))
+    (define stack (if k k (shadow-stack)))
+
+    (format p "Stack trace (most recent call first):~%")
+    (let lp ([frame 0] [idx 1] [stk stack])
+      (cond 
+        [(null? stk) (format p "End of stack trace.~%")]
+        [else 
+          (let* ([frame-info (car stk)]
+                 [stk (cdr stk)]
+                 [ip (vector-ref frame-info 0)]
+                 [src (vector-ref frame-info 1)]
+                 [rator (vector-ref frame-info 2)]
+                 [rands  (vector-ref frame-info 3)])
+            ;(define proc-name (if (procedure? rator)
+              ;(if (interpreted-procedure? rator)
+              ;  (assq 'name (interpreted-procedure-meta rator))
+              ;  (assq 'name (procedure-properties rator)))
+              ;#f))
+            (define proc-name (procedure-properties rator))
+            (define real-src (if (and (procedure? rator)
+                                      (interpreted-expression? rator))
+                                 (begin 
+                                  (format #t "DEBUG: getting interpreted-expression-source: ~a~%" (interpreted-expression-source rator))
+                                  (interpreted-expression-source rator))
+                                 src))
+            
+            (format p " at ")
+            (if src
+              (format p "~a:~a:~a" (vector-ref real-src 0) (vector-ref real-src 1) (vector-ref real-src 2))
+              (format p "<unknown file>"))
+            (if proc-name 
+              (format p " ~a~a" proc-name rands))
+            (newline p)
+            (lp frame (+ 1 idx) stk))])))      
+        
+  )

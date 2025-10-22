@@ -24,6 +24,14 @@
 (define ir-macro-transformer-proc (record-accessor (record-type-rtd <ir-macro-transformer>) 0))
 (define ir-macro-transformer (record-constructor (record-type-rcd <ir-macro-transformer>)))
 
+(define <variable-transformer>
+  (let* ([rtd (make-record-type-descriptor '<variable-transformer> #f #f #f #f '#((immutable proc)))]
+         [rcd (make-record-constructor-descriptor rtd #f #f)])
+        (make-record-type '<variable-transformer> rtd rcd)))
+        
+(define make-variable-transformer (record-constructor (record-type-rcd <variable-transformer>)))
+(define variable-transformer? (record-predicate (record-type-rtd <variable-transformer>)))
+(define variable-transformer-procedure (record-accessor (record-type-rtd <variable-transformer>) 0))
 
 (let ([syntax? (module-ref (current-module) 'syntax?)]
       [make-syntax (module-ref (current-module) 'make-syntax)]
@@ -835,7 +843,7 @@
                 '()
                 (cons ((car thunks)) (lp (cdr thunks)))))])
             (if (null? res) (build-void s) (build-sequence s res)))))
-    
+
     
     (define (expand-macro p e r w s rib mod)
       (define transformer (car p))
@@ -907,7 +915,7 @@
             (syntax-violation
             #f
             "encountered raw symbol in macro output"
-            (source-wrap e w (wrap-subst w) mod)
+            e
             x))
           (else (decorate-source x))))
       (define (apply-transformer transform e)
@@ -1955,8 +1963,9 @@
               (lambda () 
                 (expand-top-sequence (list (unstrip x)) null-env top-wrap #f m essew
                   (cons 'hygiene (module-name (current-module)))))
-              log:debug
+              log:trace
               "psyntax"
+              #f
               "macroexpand"))))
 
 
@@ -2096,7 +2105,7 @@
                                      ((eq? key 'global)
                                       (build-global-assignment s value (expand val r w mod) id-mod))
                                      ((eq? key 'macro)
-                                      (if (procedure-property value 'variable-transformer)
+                                      (if (procedure-property (car value) 'variable-transformer)
                                           (expand (expand-macro value e r w s #f mod) r empty-wrap mod)
                                           (syntax-violation
                                            'set!

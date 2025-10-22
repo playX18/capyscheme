@@ -409,8 +409,9 @@ native_fn!(
         }
     }
 
-    pub ("pointer->procedure") fn pointer_to_procedure<'gc>(nctx, return_type: Value<'gc>, func_ptr: Gc<'gc, Pointer>, arg_types: Value<'gc>) -> Value<'gc> {
-        let cif = match make_cif(nctx.ctx, return_type, arg_types) {
+    pub ("pointer->procedure") fn pointer_to_procedure<'gc>(nctx, return_type: Value<'gc>, func_ptr: Gc<'gc, Pointer>, arg_types: Value<'gc>, variadic: Option<bool>) -> Value<'gc> {
+        let variadic = variadic.unwrap_or(false);
+        let cif = match make_cif(nctx.ctx, return_type, arg_types, variadic) {
             Ok(cif) => cif,
             Err(e) => return nctx.conversion_error("pointer->procedure", e),
         };
@@ -429,6 +430,23 @@ native_fn!(
         );
 
         nctx.return_(clos.into())
+    }
+
+    pub ("ioctl/pointer") fn ioctl<'gc>(
+        nctx,
+        fd: i32,
+        request: u64,
+        argp: Gc<'gc, Pointer>
+    ) -> Value<'gc> {
+        unsafe {
+            let res = libc::ioctl(fd, request, argp.value());
+            nctx.return_(Value::new(res))
+        }
+    }
+
+    pub ("errno") fn errno<'gc>(nctx) -> i32 {
+        let err = unsafe { *libc::__error() };
+        nctx.return_(err)
     }
 );
 
@@ -673,6 +691,7 @@ pub struct CIF {
     header: ScmHeader,
     cif: libffi::middle::Cif,
     nargs: u32,
+    variadic: bool,
 }
 
 unsafe impl Tagged for CIF {
@@ -694,6 +713,7 @@ fn make_cif<'gc>(
     ctx: Context<'gc>,
     return_type: Value<'gc>,
     arg_types: Value<'gc>,
+    variadic: bool,
 ) -> Result<Gc<'gc, CIF>, ConversionError<'gc>> {
     if !arg_types.is_list() {
         return Err(ConversionError::type_mismatch(1, "list", arg_types));
@@ -720,11 +740,18 @@ fn make_cif<'gc>(
         walk = walk.cdr();
     }
 
-    let cif = libffi::middle::Cif::new(args, rtype);
+    let cif = if !variadic {
+        libffi::middle::Cif::new(args, rtype)
+    } else {
+        let nargs = args.len();
+        libffi::middle::Cif::new_variadic(args, nargs, rtype)
+    };
+
     let cif = CIF {
         header: ScmHeader::with_type_bits(TypeCode8::CIF.bits() as _),
         cif,
         nargs: arg_types.list_length() as u32,
+        variadic,
     };
 
     Ok(Gc::new(&ctx, cif))
@@ -752,6 +779,17 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
                 + (*(*raw).arg_types.add(i).read()).alignment as usize
                 - 1;
         }
+        if cif.variadic {
+            for rand in rands[cif.nargs as usize..].iter() {
+                let ftype = match guess_ffi_type(*ctx, *rand) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return ThunkResult { code: 1, value: e };
+                    }
+                };
+                arg_size += (*ftype).size + (*ftype).alignment as usize - 1;
+            }
+        }
 
         arg_size +=
             (*(*raw).rtype).size + size_of::<usize>().max((*(*raw).rtype).alignment as usize);
@@ -777,6 +815,32 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
             off = args[i] - data_ptr as usize + (*(*raw).arg_types.add(i).read()).size;
         }
 
+        if cif.variadic {
+            for rand in rands[cif.nargs as usize..].iter() {
+                let ftype = match guess_ffi_type(*ctx, *rand) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return ThunkResult { code: 1, value: e };
+                    }
+                };
+                args.push(round_up(
+                    data_ptr.add(off) as usize,
+                    (*ftype).alignment as usize,
+                ));
+                match unpack(
+                    ctx,
+                    ftype,
+                    *rand,
+                    args.last().copied().unwrap() as *mut (),
+                    false,
+                ) {
+                    Ok(()) => (),
+                    Err(e) => return ThunkResult { code: 1, value: e },
+                }
+                off = args.last().copied().unwrap() - data_ptr as usize + (*ftype).size;
+            }
+        }
+
         let rvalue = round_up(
             data_ptr.wrapping_add(off) as usize,
             size_of::<usize>().max((*(*raw).rtype).alignment as usize),
@@ -794,6 +858,35 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
             value: pack(ctx, (*raw).rtype, rvalue, true),
         }
     }
+}
+
+/// Given a value, try to guess its foreign type. Used for variadic functions.
+fn guess_ffi_type<'gc>(ctx: Context<'gc>, val: Value<'gc>) -> Result<*mut ffi_type, Value<'gc>> {
+    if let Some(number) = val.number() {
+        match number {
+            Number::Rational(_) | Number::Flonum(_) | Number::Complex(_) => {
+                return Ok(libffi::middle::Type::f64().as_raw_ptr());
+            }
+
+            Number::Fixnum(_) => {
+                return Ok(libffi::middle::Type::i32().as_raw_ptr());
+            }
+            Number::BigInt(_) => {
+                return Ok(libffi::middle::Type::i64().as_raw_ptr());
+            }
+        }
+    }
+
+    if val.is::<Pointer>() || val.is::<ByteVector>() {
+        return Ok(libffi::middle::Type::pointer().as_raw_ptr());
+    }
+
+    Err(make_assertion_violation(
+        &ctx,
+        Value::new(false),
+        Str::from_str(&ctx, "cannot guess foreign type for variadic argument").into(),
+        &[val],
+    ))
 }
 
 unsafe fn unpack<'gc>(
@@ -979,8 +1072,9 @@ unsafe fn unpack<'gc>(
                     &[val],
                 ));
             }
+            let orig = n;
             let n = n.coerce_exact_integer_to_u64();
-
+            println!("pass {orig} as u64: {n}");
             if return_value {
                 loc.cast::<ffi_arg>().write(n as u64 as ffi_arg);
             } else {
@@ -1167,15 +1261,23 @@ extern "C-unwind" fn c_foreign_call<'gc>(
         let cif = free[1].get().downcast::<CIF>();
         let pointer = free[2].get().downcast::<Pointer>();
 
-        if cif.nargs != num_rands as u32 {
+        let fits = if cif.variadic {
+            num_rands >= cif.nargs as usize
+        } else {
+            num_rands == cif.nargs as usize
+        };
+
+        if !fits {
             let err = make_assertion_violation(
                 ctx,
                 Value::new(false),
                 Str::from_str(
                     &ctx,
                     &format!(
-                        "wrong number of arguments to foreign function, expected {}, got {}",
-                        cif.nargs, num_rands
+                        "wrong number of arguments to foreign function, expected {}{}, got {}",
+                        if cif.variadic { "at least " } else { "" },
+                        cif.nargs,
+                        num_rands,
                     ),
                 )
                 .into(),
