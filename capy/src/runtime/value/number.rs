@@ -1613,6 +1613,18 @@ impl<'gc> BigInt<'gc> {
         a
     }
 
+    pub fn lcm(this: Gc<'gc, Self>, ctx: Context<'gc>, rhs: Gc<'gc, Self>) -> Gc<'gc, Self> {
+        if this.is_zero() || rhs.is_zero() {
+            return BigInt::zero(ctx);
+        }
+
+        let gcd = Self::gcd(this, ctx, rhs);
+        let abs_this = Self::abs(this, ctx);
+        let abs_rhs = Self::abs(rhs, ctx);
+        let (quotient, _) = Self::div_rem(abs_this, ctx, gcd);
+        Self::times(quotient, ctx, abs_rhs)
+    }
+
     pub fn sqrt(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
         if this.is_zero() {
             return this;
@@ -5335,6 +5347,10 @@ impl<'gc> Number<'gc> {
             Self::Flonum(n) => n.is_finite(),
             Self::Complex(c) => c.real.is_finite() && c.imag.is_finite(),
         }
+    }
+
+    pub fn is_infinite(&self) -> bool {
+        !self.is_finite()
     }
 
     pub fn is_exact_integer(&self) -> bool {

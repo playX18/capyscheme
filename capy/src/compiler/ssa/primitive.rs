@@ -1984,6 +1984,34 @@ prim!(
         PrimValue::Value(result)
     },
 
+    "abs" => abs(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.abs, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+    "ceiling" => ceiling(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.ceiling, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+    "floor" => floor(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.floor, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+    "truncate" => truncate(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.truncate, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
     "+" => plus(ssa, args, _h) {
         if args.is_empty() {
             return PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64));
@@ -2398,12 +2426,6 @@ prim!(
         PrimValue::Value(result)
     },
 
-    "floor" => floor(ssa, args, _h) {
-        let val = ssa.atom(args[0]);
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.floor, &[ctx, val], _h);
-        PrimValue::Value(result)
-    },
 
     "quotient" => quotient(ssa, args, _h) {
         let a = ssa.atom(args[0]);

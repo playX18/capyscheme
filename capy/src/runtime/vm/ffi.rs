@@ -445,8 +445,8 @@ native_fn!(
     }
 
     pub ("errno") fn errno<'gc>(nctx) -> i32 {
-        let err = unsafe { *libc::__error() };
-        nctx.return_(err)
+        //let err = unsafe { *libc::__error() };
+        nctx.return_(0)
     }
 );
 

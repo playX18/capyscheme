@@ -112,13 +112,36 @@
 
           &i/o-decoding make-i/o-decoding-error i/o-decoding-error?
           &i/o-encoding make-i/o-encoding-error i/o-encoding-error? i/o-encoding-error-char
-
-          open-temporary-file-port
           format)
 
-  (import (core primitives)
+  (import 
+          (core primitives)
           (core syntax-case)
           (core lists)
           (core conditions)
           (core bytevectors)
-          (core optargs))) ;[end]
+          (core optargs)
+          (core io assistants)
+          (core enums))
+          
+  ;; 8.2.2  File options
+
+  (define-syntax file-options
+    (lambda (x)
+      (syntax-case x ()
+        ((_ options ...)
+         (let ((lst (syntax->datum (syntax (options ...)))))
+           (or (and (list-of-unique-symbols? lst) (for-all port-lookup-file-option-code lst))
+               (syntax-violation 'file-options "invalid option" x))
+           (syntax (make-file-options '(options ...)))))
+        (_
+         (syntax-violation 'file-options "invalid syntax" x)))))
+
+  (define-syntax file-options->bits
+    (syntax-rules ()
+      ((_ x who args)
+       (begin
+         (or (and (enum-set? x) (enum-set-subset? x (enum-set-universe (file-options))))
+             (assertion-violation 'who (format "expected file-options object, but got ~r, as argument 2" x) args))
+         (apply + (map (lambda (e) (port-lookup-file-option-code e)) (enum-set->list x)))))))
+) ;[end]

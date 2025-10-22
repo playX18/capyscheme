@@ -290,6 +290,12 @@
                         read-char
                         write-char
                         ; r6rs i/o ports
+                        make-custom-binary-input-port
+                        make-custom-binary-input/output-port
+                        make-custom-binary-output-port
+                        make-custom-textual-input-port
+                        make-custom-textual-input/output-port
+                        make-custom-textual-output-port
                         call-with-port
                         eof-object eof-object?
                         standard-input-port standard-output-port standard-error-port
@@ -298,14 +304,6 @@
                         flush-output-port
                         output-port-buffer-mode
                         close-port
-                        native-transcoder-descriptor
-                        port-transcoder-descriptor
-                        extract-accumulated-bytevector
-                        get-accumulated-bytevector
-                        extract-accumulated-string
-                        get-accumulated-string
-                        open-port
-                        nonblock-byte-ready?
                         lookahead-char
                         get-char
                         port-has-port-position?
@@ -341,6 +339,23 @@
                         &i/o-port make-i/o-port-error i/o-port-error? i/o-error-port
                         &i/o-decoding make-i/o-decoding-error i/o-decoding-error?
                         &i/o-encoding make-i/o-encoding-error i/o-encoding-error? i/o-encoding-error-char
+                        make-transcoder
+                        trasncoder-codec
+                        transcoder-eol-style
+                        transcoder-error-handling-mode
+                        eol-style
+                        latin-1-codec
+                        utf-16-codec
+                        utf-8-codec
+                        buffer-mode?
+                        buffer-mode
+                        native-transcoder
+                        native-eol-style
+                        bytevector->string
+                        string->bytevector
+                        binary-port?
+                        textual-port?
+                        port-transcoder
                         ; r6rs files
                         file-exists?
                         delete-file
@@ -349,7 +364,6 @@
                         symbol-hash
                         equal-hash
                         ; r6rs programs
-                        command-line
                         exit
                         ; r6rs bytevector
                         native-endianness
@@ -378,16 +392,32 @@
                         bytevector-ieee-double-set! bytevector-ieee-double-native-set!
                         string->utf8
                         utf8->string
+                        string->utf16
+                        utf16->string
+                        string->utf32
+                        utf32->string
+                        transcoded-port
+                        error-handling-mode
+                        open-file-input/output-port
+                        call-with-string-output-port
+                        open-string-output-port
+                        call-with-bytevector-output-port
+                        open-bytevector-output-port
+                        open-file-output-port
+                        open-bytevector-input-port
+                        open-file-input-port
+                        call-with-output-file
+                        call-with-input-file
+                        with-input-from-file
+                        with-output-to-file
+                        open-output-file
+                        open-input-file
+                        close-output-port
+                        close-input-port
+                        transcoder-codec
+                    
                         ; extensions
-                        put-byte
-                        put-fasl
-                        make-string-output-port
-                        make-string-input-port
-                        make-transcoded-port
-                        make-temporary-file-port
-                        port-device-subtype
-                        core-eval
-                        command-line-shift
+                       
                         unspecified
                         unspecified?
                         generate-temporary-symbol
@@ -408,8 +438,6 @@
                         pretty-print-unwrap-syntax
                         peek-char
                         read
-                        read-with-shared-structure
-                        write-with-shared-structure
                         tuple tuple? make-tuple tuple-ref tuple-set! tuple-size tuple-index tuple->list
                         make-weak-mapping weak-mapping? weak-mapping-key weak-mapping-value
                         make-core-hashtable core-hashtable?
@@ -423,8 +451,6 @@
                         core-hashtable-hash-function
                         usleep
                         macroexpand compile-tree-il
-                        current-environment current-macro-environment current-variable-environment current-dynamic-environment
-                        system-environment interaction-environment
 
                         variable-ref
                         variable-set!
@@ -522,21 +548,8 @@
                         interpreted-expression-source
                         interpreted-procedure-meta
 
-                        core-read
-                        current-source-comments
-                        current-after-expansion-hook
-                        string-contains symbol-contains subr?
-                        make-bytevector-mapping bytevector-mapping?
-                        bytevector->pinned-c-void*
-                        scheme-library-exports
-                        scheme-library-paths
-                        scheme-load-paths
-                        scheme-load-verbose
-                        add-load-path
-                        add-library-path
-                        library-extensions
-                        auto-compile-verbose
-                        auto-compile-cache
+                        string-contains procedure?
+                        bytevector-mapping?
                         directory-list
                         current-directory
                         create-directory
@@ -545,82 +558,28 @@
                         load
                         system-share-path
                         system-extension-path
-                        lookup-process-environment
                         process-environment->alist
-                        set-current-input-port! set-current-output-port! set-current-error-port!
-                        open-builtin-data-input-port
+                       
                         open-string-input-port
-                        current-library-infix
-                        current-library-suffix
-                        current-primitive-prefix
-                        current-rename-delimiter
+                       
                         string->uninterned-symbol
                         uninterned-symbol?
-                        uninterned-symbol-prefix
-                        uninterned-symbol-suffix
 
                         ; socket
-                        socket?
-                        make-socket socket-shutdown socket-close socket->port socket-port
-                        socket-send socket-recv socket-accept
-                        shutdown-output-port
+
                         port-closed?
 
                         ; ffi
-                        c-main-argc
-                        c-main-argv
-                        load-shared-object
-                        lookup-shared-object
-                        bytevector-c-short-ref bytevector-c-unsigned-short-ref bytevector-c-short-set!
-                        bytevector-c-int-ref bytevector-c-unsigned-int-ref bytevector-c-int-set!
-                        bytevector-c-long-ref bytevector-c-unsigned-long-ref bytevector-c-long-set!
-                        bytevector-c-long-long-ref bytevector-c-unsigned-long-long-ref bytevector-c-long-long-set!
-                        bytevector-c-void*-ref bytevector-c-void*-set!
-                        bytevector-c-int8-ref bytevector-c-int16-ref bytevector-c-int32-ref bytevector-c-int64-ref
-                        bytevector-c-uint8-ref bytevector-c-uint16-ref bytevector-c-uint32-ref bytevector-c-uint64-ref
-                        bytevector-c-float-ref bytevector-c-double-ref
-                        bytevector-c-int8-set! bytevector-c-int16-set! bytevector-c-int32-set! bytevector-c-int64-set!
-                        bytevector-c-float-set! bytevector-c-double-set!
                         string->utf8/nul
-                        bytevector-c-strlen
-
-                        codegen-cdecl-callout
-                        codegen-cdecl-callback
-                        codegen-queue-count
-                        codegen-queue-push!
-                        display-codegen-statistics
-                        closure-codegen
-
-                        mat4x4-identity
-                        mat4x4-dup
-                        mat4x4-transpose
-                        mat4x4-invert
-                        mat4x4-orthonormalize
-                        mat4x4-add
-                        mat4x4-sub
-                        mat4x4-mul
-                        mat4x4-scale
-                        mat4x4-translate
-                        mat4x4-frustum
-                        mat4x4-ortho
-                        mat4x4-perspective
-                        mat4x4-look-at
-                        mat4x4-rotate
 
                         getenv
                         gethostname
                         system
-                        process-spawn
-                        process-wait
+
                         errno/string
 
                         make-uuid
-                        time-usage
                         microsecond
-                        microsecond->utc
-                        microsecond->string
-                        decode-microsecond
-                        encode-microsecond
 
                         acquire-lockfile
                         release-lockfile
@@ -639,10 +598,6 @@
                         create-hard-link
                         rename-file
                         change-file-mode
-                        ;; win32-error->string
-                        make-cmwc-random-state
-                        cmwc-random-u32
-                        cmwc-random-real
 
                         drop-last-cdr
                         drop-last-pair
@@ -652,9 +607,6 @@
                         last-n-pair
                         drop-last-n-pair
 
-                        feature-identifiers
-                        fulfill-feature-requirements?
-                        continuation-to-exit
                         void 
                         float
                         float double
@@ -735,6 +687,14 @@
                         
                         shadow-stack
                         resolve-address-name
+
+                        %load-path
+                        %load-extensions
+                        %load-compiled-path
+                        %load-compiled-extensions
+                        %compile-fallback-path
+                        %capy-root
+                        %fresh-auto-compile
                         )
     (import (capy)))
 

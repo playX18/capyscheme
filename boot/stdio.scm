@@ -471,5 +471,8 @@
 
 (define port-position io/port-position)
 (define port-fd io/port-fd)
+(define port-closed? io/port-closed?)
+
+(define eol-style 'lf)
 
 ; eof

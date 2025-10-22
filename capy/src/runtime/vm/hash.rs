@@ -290,258 +290,359 @@ native_fn!(
         nctx.return_(ht.into())
     }
 
+    pub ("make-weak-core-hashtable") fn make_weak_core_hashtable<'gc>(
+        nctx,
+    ) -> Value<'gc> {
+        let ht = WeakTable::new(&nctx.ctx, 8, 0.75);
+        nctx.return_(ht.into())
+    }
+
     pub ("core-hashtable-mutable?") fn core_hashtable_mutablep<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
     ) -> bool {
-        match ht.typ() {
-            HashTableType::Generic(v) => {
-                let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_MUTABLE].get();
-                return nctx.return_call(handler, &[ht.into()]);
-            }
-
-            _ => nctx.return_(ht.is_mutable())
+        match ht {
+            Either::Left(ht) => match ht.typ() {
+                HashTableType::Generic(v) => {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_MUTABLE].get();
+                    return nctx.return_call(handler, &[ht.into()]);
+                }
+                _ => nctx.return_(ht.is_mutable()),
+            },
+            Either::Right(_) => nctx.return_(true),
         }
     }
 
     pub ("core-hashtable-equivalence-function") fn core_hashtable_equivalence_function<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
     ) -> Value<'gc> {
         let ctx = nctx.ctx;
         let module = list!(ctx, sym_capy(ctx));
 
-        match ht.typ() {
-            /* if these lookups fail something is seriously messed up */
-            HashTableType::Eq => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_eq(ctx).into()).value),
-            HashTableType::Eqv => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_eqv(ctx).into()).value),
-            HashTableType::Equal => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_equal(ctx).into()).value),
-            HashTableType::String => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_string(ctx).into()).value),
-            HashTableType::Generic(v) => {
-                let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_EQUIV_FUNC].get();
-                nctx.return_call(handler, &[ht.into()])
+        match ht {
+            Either::Left(ht) => match ht.typ() {
+                /* if these lookups fail something is seriously messed up */
+                HashTableType::Eq => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_eq(ctx).into()).value),
+                HashTableType::Eqv => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_eqv(ctx).into()).value),
+                HashTableType::Equal => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_equal(ctx).into()).value),
+                HashTableType::String => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_string(ctx).into()).value),
+                HashTableType::Generic(v) => {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_EQUIV_FUNC].get();
+                    nctx.return_call(handler, &[ht.into()])
+                }
             }
+
+            _ => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_eq(ctx).into()).value),
         }
     }
 
     pub ("core-hashtable-hash-function") fn core_hashtable_hash_function<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
     ) -> Value<'gc> {
-        match ht.typ() {
+        match ht {
+            Either::Left(ht) =>
+                match ht.typ() {
 
-            HashTableType::Generic(v) => {
-                let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_HASH_FUNC].get();
-                nctx.return_call(handler, &[ht.into()])
-            }
+                HashTableType::Generic(v) => {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_HASH_FUNC].get();
+                    nctx.return_call(handler, &[ht.into()])
+                }
 
-            _ => nctx.return_(Value::new(false))
+                _ => nctx.return_(Value::new(false))
+            },
+
+            _ => nctx.return_(Value::new(false)),
         }
     }
 
     pub ("core-hashtable-set!") fn core_hashtable_set<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>,
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
         key: Value<'gc>,
         value: Value<'gc>
     ) -> Value<'gc> {
-        if !ht.is_mutable() {
-            return nctx.wrong_argument_violation(
-                "core-hashtable-set!",
-                "hashtable is not mutable",
-                Some(ht.into()),
-                Some(0),
-                3,
-                &[ht.into(), key, value],
-            );
-        }
 
-        let typ = ht.typ();
-
-        match typ {
-            HashTableType::Generic(v) => {
-                let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_SET].get();
-                return nctx.return_call(handler, &[ht.into(), key, value]);
+        if let Either::Left(ht) = ht {
+            if !ht.is_mutable() {
+                return nctx.wrong_argument_violation(
+                    "core-hashtable-set!",
+                    "hashtable is not mutable",
+                    Some(ht.into()),
+                    Some(0),
+                    3,
+                    &[ht.into(), key, value],
+                );
             }
-            HashTableType::String => {
-                if !key.is::<Str>() {
-                    return nctx.wrong_argument_violation(
-                        "core-hashtable-set!",
-                        "expected a string key",
-                        Some(key),
-                        Some(1),
-                        3,
-                        &[ht.into(), key, value],
-                    );
+
+            let typ = ht.typ();
+
+            match typ {
+                HashTableType::Generic(v) => {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_SET].get();
+                    return nctx.return_call(handler, &[ht.into(), key, value]);
                 }
+                HashTableType::String => {
+                    if !key.is::<Str>() {
+                        return nctx.wrong_argument_violation(
+                            "core-hashtable-set!",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            3,
+                            &[ht.into(), key, value],
+                        );
+                    }
+                }
+                _ => ()
             }
-            _ => ()
+            ht.put(nctx.ctx, key, value);
+            nctx.return_(Value::undefined())
+        } else if let Either::Right(ht) = ht {
+            if !key.is_cell() {
+                return nctx.wrong_argument_violation(
+                    "core-hashtable-set!",
+                    "expected a non-immediate key",
+                    Some(key),
+                    Some(1),
+                    3,
+                    &[ht.into(), key, value],
+                );
+            }
+
+            ht.put(nctx.ctx, key, value);
+            nctx.return_(Value::undefined())
+        } else {
+            unreachable!()
         }
-        ht.put(nctx.ctx, key, value);
-        nctx.return_(Value::undefined())
     }
 
     pub ("core-hashtable-ref") fn core_hashtable_ref<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>,
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
         key: Value<'gc>,
         default_value: Option<Value<'gc>>
     ) -> Value<'gc> {
-        let typ = ht.typ();
+        if let Either::Left(ht) = ht {
+            let typ = ht.typ();
 
-        match typ {
-            HashTableType::Generic(v) => {
-                let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_REF].get();
-                return nctx.return_call(handler, &[ht.into(), key, default_value.unwrap_or(Value::new(false))]);
-            }
-            HashTableType::String => {
-                if !key.is::<Str>() {
-                    return nctx.wrong_argument_violation(
-                        "core-hashtable-ref",
-                        "expected a string key",
-                        Some(key),
-                        Some(1),
-                        3,
-                        &[ht.into(), key, default_value.unwrap_or(Value::new(false))],
-                    );
+            match typ {
+                HashTableType::Generic(v) => {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_REF].get();
+                    return nctx.return_call(handler, &[ht.into(), key, default_value.unwrap_or(Value::new(false))]);
                 }
+                HashTableType::String => {
+                    if !key.is::<Str>() {
+                        return nctx.wrong_argument_violation(
+                            "core-hashtable-ref",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            3,
+                            &[ht.into(), key, default_value.unwrap_or(Value::new(false))],
+                        );
+                    }
+                }
+                _ => ()
             }
-            _ => ()
-        }
 
-        let res = ht.get(nctx.ctx, key).unwrap_or(default_value.unwrap_or(Value::new(false)));
-        nctx.return_(res)
+            let res = ht.get(nctx.ctx, key).unwrap_or(default_value.unwrap_or(Value::new(false)));
+            nctx.return_(res)
+        } else if let Either::Right(ht) = ht {
+            let res = ht.get(nctx.ctx, key).unwrap_or(default_value.unwrap_or(Value::new(false)));
+            nctx.return_(res)
+        } else {
+            unreachable!()
+        }
     }
 
     pub ("core-hashtable-delete!") fn core_hashtable_delete<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>,
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
         key: Value<'gc>
     ) -> Value<'gc> {
-        if !ht.is_mutable() {
-            return nctx.wrong_argument_violation(
-                "core-hashtable-delete!",
-                "hashtable is not mutable",
-                Some(ht.into()),
-                Some(0),
-                2,
-                &[ht.into(), key],
-            );
-        }
-
-        let typ = ht.typ();
-
-        match typ {
-            HashTableType::Generic(v) => {
-                let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_DELETE].get();
-                return nctx.return_call(handler, &[ht.into(), key]);
-            }
-            HashTableType::String => {
-                if !key.is::<Str>() {
-                    return nctx.wrong_argument_violation(
-                        "core-hashtable-delete!",
-                        "expected a string key",
-                        Some(key),
-                        Some(1),
-                        2,
-                        &[ht.into(), key],
-                    );
-                }
-            }
-            _ => ()
-        }
-        ht.remove(nctx.ctx, key);
-        nctx.return_(Value::undefined())
-    }
-
-    pub ("core-hashtable-clear!") fn core_hashtable_clear<'gc>(
-        nctx,
-        ht: Gc<'gc, HashTable<'gc>>
-    ) -> Value<'gc> {
-        if !ht.is_mutable() {
-            return nctx.wrong_argument_violation(
-                "core-hashtable-clear!",
-                "hashtable is not mutable",
-                Some(ht.into()),
-                Some(0),
-                1, &[ht.into()],
-            );
-        }
-
-        if let HashTableType::Generic(v) = ht.typ() {
-            let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_CLEAR].get();
-            return nctx.return_call(handler, &[ht.into()]);
-        }
-
-        ht.clear(nctx.ctx);
-        nctx.return_(Value::undefined())
-    }
-
-    pub ("core-hashtable-size") fn core_hashtable_size<'gc>(
-        nctx,
-        ht: Gc<'gc, HashTable<'gc>>
-    ) -> usize {
-        if let HashTableType::Generic(v) = ht.typ() {
-            let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_SIZE].get();
-            return nctx.return_call(handler, &[ht.into()]);
-        }
-        let size = ht.len();
-        nctx.return_(size.into())
-    }
-
-    pub ("core-hashtable-contains?") fn core_hashtable_contains<'gc>(
-        nctx,
-        ht: Gc<'gc, HashTable<'gc>>,
-        key: Value<'gc>
-    ) -> bool {
-        let typ = ht.typ();
-        if let HashTableType::Generic(v) = typ {
-            let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_CONTAINS].get();
-            return nctx.return_call(handler, &[ht.into(), key]);
-        } else if let HashTableType::String = typ {
-            if !key.is::<Str>() {
+        if let Either::Left(ht) = ht {
+            if !ht.is_mutable() {
                 return nctx.wrong_argument_violation(
-                    "core-hashtable-contains?",
-                    "expected a string key",
-                    Some(key),
-                    Some(1),
+                    "core-hashtable-delete!",
+                    "hashtable is not mutable",
+                    Some(ht.into()),
+                    Some(0),
                     2,
                     &[ht.into(), key],
                 );
             }
+
+            let typ = ht.typ();
+
+            match typ {
+                HashTableType::Generic(v) => {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_DELETE].get();
+                    return nctx.return_call(handler, &[ht.into(), key]);
+                }
+                HashTableType::String => {
+                    if !key.is::<Str>() {
+                        return nctx.wrong_argument_violation(
+                            "core-hashtable-delete!",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            2,
+                            &[ht.into(), key],
+                        );
+                    }
+                }
+                _ => ()
+            }
+            ht.remove(nctx.ctx, key);
+            nctx.return_(Value::undefined())
+        } else if let Either::Right(ht) = ht {
+
+            ht.remove(nctx.ctx, key);
+            nctx.return_(Value::undefined())
+        } else {
+            unreachable!()
         }
-        let res = ht.get(nctx.ctx, key);
-        nctx.return_(res.is_some())
+    }
+
+    pub ("core-hashtable-clear!") fn core_hashtable_clear<'gc>(
+        nctx,
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
+    ) -> Value<'gc> {
+        match ht {
+            Either::Left(ht) => {
+                if !ht.is_mutable() {
+                    return nctx.wrong_argument_violation(
+                        "core-hashtable-clear!",
+                        "hashtable is not mutable",
+                        Some(ht.into()),
+                        Some(0),
+                        1, &[ht.into()],
+                    );
+                }
+
+                if let HashTableType::Generic(v) = ht.typ() {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_CLEAR].get();
+                    return nctx.return_call(handler, &[ht.into()]);
+                }
+
+                ht.clear(nctx.ctx);
+                nctx.return_(Value::undefined())
+            }
+            Either::Right(ht) => {
+                ht.clear(nctx.ctx);
+                nctx.return_(Value::undefined())
+            }
+        }
+    }
+
+    pub ("core-hashtable-size") fn core_hashtable_size<'gc>(
+        nctx,
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
+    ) -> usize {
+        match ht {
+            Either::Right(ht) => {
+                let size = ht.len();
+                return nctx.return_(size.into());
+            }
+            Either::Left(ht) => {
+                if let HashTableType::Generic(v) = ht.typ() {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_SIZE].get();
+                    return nctx.return_call(handler, &[ht.into()]);
+                }
+                let size = ht.len();
+                nctx.return_(size.into())
+            }
+        }
+    }
+
+    pub ("core-hashtable-contains?") fn core_hashtable_contains<'gc>(
+        nctx,
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
+        key: Value<'gc>
+    ) -> bool {
+        match ht {
+            Either::Left(ht) => {
+                let typ = ht.typ();
+                if let HashTableType::Generic(v) = typ {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_CONTAINS].get();
+                    return nctx.return_call(handler, &[ht.into(), key]);
+                } else if let HashTableType::String = typ {
+                    if !key.is::<Str>() {
+                        return nctx.wrong_argument_violation(
+                            "core-hashtable-contains?",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            2,
+                            &[ht.into(), key],
+                        );
+                    }
+                }
+                let res = ht.get(nctx.ctx, key);
+                nctx.return_(res.is_some())
+            }
+
+            Either::Right(ht) => {
+                let res = ht.get(nctx.ctx, key);
+                nctx.return_(res.is_some())
+            }
+        }
     }
 
     pub ("core-hashtable-copy") fn core_hashtable_copy<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
     ) -> Value<'gc> {
-        if let HashTableType::Generic(v) = ht.typ() {
-            let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_COPY].get();
-            return nctx.return_call(handler, &[ht.into()]);
+        match ht {
+            Either::Right(ht) => {
+                let copy = ht.copy(nctx.ctx);
+                return nctx.return_(copy.into());
+            }
+            Either::Left(ht) => {
+                if let HashTableType::Generic(v) = ht.typ() {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_COPY].get();
+                    return nctx.return_call(handler, &[ht.into()]);
+                }
+                let copy = ht.copy(nctx.ctx);
+                nctx.return_(copy.into())
+            }
         }
-        let copy = ht.copy(nctx.ctx);
-        nctx.return_(copy.into())
     }
 
     pub ("core-hashtable->alist") fn core_hashtable_to_alist<'gc>(
         nctx,
-        ht: Gc<'gc, HashTable<'gc>>
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
     ) -> Value<'gc> {
-        if let HashTableType::Generic(v) = ht.typ() {
-            let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_ALIST].get();
-            return nctx.return_call(handler, &[ht.into()]);
-        }
-        let list = ht.iter().map(|(k, v)| Value::cons(nctx.ctx, k, v)).collect::<Vec<_>>();
+        match ht {
+            Either::Left(ht) => {
+                if let HashTableType::Generic(v) = ht.typ() {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_ALIST].get();
+                    return nctx.return_call(handler, &[ht.into()]);
+                }
+                let list = ht.iter().map(|(k, v)| Value::cons(nctx.ctx, k, v)).collect::<Vec<_>>();
 
-        let mut ls = Value::null();
+                let mut ls = Value::null();
 
-        for pair in list.into_iter().rev() {
-            ls = Value::cons(nctx.ctx, pair, ls);
+                for pair in list.into_iter().rev() {
+                    ls = Value::cons(nctx.ctx, pair, ls);
+                }
+                nctx.return_(ls)
+            }
+
+            Either::Right(ht) => {
+                let ls = ht.fold(nctx.ctx, |k, v, acc| {
+                    Value::cons(nctx.ctx, Value::cons(nctx.ctx, k, v), acc)
+                }, Value::null());
+
+                nctx.return_(ls)
+            }
         }
-        nctx.return_(ls)
+    }
+
+    pub ("weak-core-hashtable?") fn is_weak_hash_table<'gc>(nctx, val: Value<'gc>) -> bool {
+        nctx.return_(val.is::<WeakTable>())
     }
 
     pub ("string-hash") fn string_hash<'gc>(nctx, s: Gc<'gc, Str<'gc>>) -> u64 {

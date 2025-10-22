@@ -1,3 +1,7 @@
+;; The first file that gets loaded during Scheme boot process. This file defines
+;; various core functions, records, module system and then loads rest of the 
+;; standard library. After this file is loaded, it's possible to use CLI.
+
 (define (eq? x y) (eq? x y))
 (define (eqv? x y) (eqv? x y))
 (define (equal? x y) (equal? x y))
@@ -277,12 +281,46 @@
       [(= l 2) (map3 f x (car rest) (car (cdr rest)))]
     )))
 
-(define (for-each proc lst)
+(define (for-each-1 proc lst)
   (let loop ([lst lst])
     (if (pair? lst)
       (begin (proc (car lst)) (loop (cdr lst)))
-      (if (null? lst) '()
+      (if (null? lst) (unspecified)
         (assertion-violation 'for-each "expected a proper list" lst)))))
+
+(define (for-each-2 proc lst1 lst2)
+  (let loop ([lst1 lst1] [lst2 lst2])
+    (if (and (pair? lst1) (pair? lst2))
+      (begin
+        (proc (car lst1) (car lst2))
+        (loop (cdr lst1) (cdr lst2)))
+      (if (or (null? lst1) (null? lst2)) (unspecified)
+        (assertion-violation 'for-each "expected proper lists" (list lst1 lst2))))))
+
+(define (for-each-3 proc lst1 lst2 lst3)
+  (let loop ([lst1 lst1] [lst2 lst2] [lst3 lst3])
+    (if (and (pair? lst1) (pair? lst2) (pair? lst3))
+      (begin
+        (proc (car lst1) (car lst2) (car lst3))
+        (loop (cdr lst1) (cdr lst2) (cdr lst3)))
+      (if (or (null? lst1) (null? lst2) (null? lst3)) (unspecified)
+        (assertion-violation 'for-each "expected proper lists" (list lst1 lst2 lst3))))))
+  
+(define (for-each-n proc lst)
+  (let loop ([lst lst])
+    (if (and (pair? lst) (pair? (car lst)))
+      (begin
+        (apply proc (car lst))
+        (loop (cdr lst)))
+      (if (null? lst) (unspecified)
+        (assertion-violation 'for-each "expected a proper list of proper lists" lst)))))
+
+(define (for-each proc lst1 . lst2)
+  (case (length lst2)
+    ((0) (for-each-1 proc lst1))
+    ((1) (for-each-2 proc lst1 (car lst2)))
+    ((2) (for-each-3 proc lst1 (car lst2) (car (cdr lst2))))
+    (else (for-each-n proc (cons lst1 lst2)))))
 
 (define (and-map pred lst)
   (let loop ([lst lst])
@@ -355,21 +393,38 @@
   (+ (rtd-inherited-field-count rtd) (length (rtd-fields rtd))))
 
 (define (record-type-name rtd)
+  (or (record-type-descriptor? rtd)
+    (assertion-violation 'record-type-name "not a record-type-descriptor" rtd))
   (rtd-name rtd))
 
 (define (record-type-parent rtd)
+  (or (record-type-descriptor? rtd)
+    (assertion-violation 'record-type-parent "not a record-type-descriptor" rtd))
   (rtd-parent rtd))
 
 (define (record-type-uid rtd)
+  (or (record-type-descriptor? rtd)
+    (assertion-violation 'record-type-uid "not a record-type-descriptor" rtd))
   (rtd-uid rtd))
 
+(define (record-type-generative? rtd)
+  (or (record-type-descriptor? rtd)
+    (assertion-violation 'record-type-generative? "not a record-type-descriptor" rtd))
+  (not (rtd-uid rtd)))
+
 (define (record-type-sealed? rtd)
+  (or (record-type-descriptor? rtd)
+    (assertion-violation 'record-type-sealed? "not a record-type-descriptor" rtd))
   (rtd-sealed? rtd))
 
 (define (record-type-opaque? rtd)
+  (or (record-type-descriptor? rtd)
+    (assertion-violation 'record-type-opaque? "not a record-type-descriptor" rtd))
   (rtd-opaque? rtd))
 
 (define (record-type-fields rtd)
+  (or (record-type-descriptor? rtd)
+    (assertion-violation 'record-type-fields "not a record-type-descriptor" rtd))
   (rtd-fields rtd))
 
 (define (record-type-field-names rtd)
@@ -987,6 +1042,7 @@
     (raise who)))
 
 (define (syntax-violation who message . irritants)
+  (:print "syntax-violation, who: " who ", message: " message ", irritants: " irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -1845,6 +1901,176 @@
 (define current-jiffy microsecond)
 (define jiffies-per-second (lambda () 1000000))
 (define current-second (lambda () (/ (microsecond) 1000000.0)))
+
+(define gcd2
+  (lambda (a b)
+    (if (= b 0)
+        (abs (if (inexact? b) (inexact a) a))
+        (gcd2 b (remainder a b)))))
+
+(define gcd
+  (lambda args
+    (for-each
+      (lambda (a)
+        (or (integer-valued? a) (assertion-violation 'gcd (format "expected integer, but got ~s" a) args)))
+      args)
+    (let loop ((lst args))
+      (case (length lst)
+            ((2) (gcd2 (car lst) (cadr lst)))
+            ((1) (abs (car lst)))
+            ((0) 0)
+            (else (loop (cons (gcd2 (car lst) (cadr lst)) (cddr lst))))))))
+
+(define lcm
+  (lambda args
+    (define lcm2
+      (lambda (a b)
+        (if (or (= a 0) (= b 0))
+            (if (and (exact? a) (exact? b)) 0 0.0)
+            (abs (* (quotient a (gcd2 a b)) b)))))
+    (for-each
+      (lambda (a) (or (integer-valued? a) (assertion-violation 'lcm (format "expected integer, but got ~s" a) args)))
+      args)
+    (let loop ((lst args))
+      (case (length lst)
+            ((2) (lcm2 (car lst) (cadr lst)))
+            ((1) (abs (car lst)))
+            ((0) 1)
+            (else (loop (cons (lcm2 (car lst) (cadr lst)) (cddr lst))))))))
+
+(define rationalize
+  (lambda (x e)
+    (or (real? x) (assertion-violation 'rationalize (format "expected real, but got ~s as argument 1" x) (list x e)))
+    (or (real? e) (assertion-violation 'rationalize (format "expected real, but got ~s as argument 2" e) (list x e)))
+    (cond ((infinite? e) (if (infinite? x) +nan.0 0.0))
+          ((= x 0) x)
+          ((= x e) (- x e))
+          ((negative? x) (- (rationalize (- x) e)))
+          (else
+            (let ((e (abs e)))
+              (let loop ((bottom (- x e)) (top (+ x e)))
+                (cond ((= bottom top) bottom)
+                      (else
+                        (let ((x (ceiling bottom)))
+                          (cond ((< x top) x)
+                                (else
+                                  (let ((a (- x 1)))
+                                    (+ a (/ 1 (loop (/ 1 (- top a)) (/ 1 (- bottom a)))))))))))))))))
+
+(define string->list
+  (lambda (s)
+    (define n (string-length s))
+    (let loop ((i 0) (acc '()))
+      (if (= i n)
+          (reverse acc)
+          (loop (+ i 1) (cons (string-ref s i) acc))))))
+
+(define string-for-each
+  (lambda (proc str1 . str2)
+    (apply for-each proc (string->list str1)
+           (map string->list str2))))
+
+(define vector-map
+  (lambda (proc vec1 . vec2)
+    (list->vector
+     (apply map proc (vector->list vec1)
+            (map vector->list vec2)))))
+
+(define vector-for-each
+  (lambda (proc vec1 . vec2)
+    (apply for-each proc (vector->list vec1)
+           (map vector->list vec2))))
+
+(define (bytevector->u8-list bv) (bytevector->list bv))
+
+(define drop-last-cdr
+  (lambda (lst)
+    (cond ((null? lst) '())
+          (else
+            (let loop ((lst lst))
+              (cond ((pair? lst) (cons (car lst) (loop (cdr lst))))
+                    (else '())))))))
+(define drop-last-pair
+  (lambda (lst)
+    (cond ((null? lst) '())
+          (else
+            (let loop ((lst lst))
+              (cond ((pair? (cdr lst)) (cons (car lst) (loop (cdr lst))))
+                    (else '())))))))
+(define last-pair
+  (lambda (lst)
+    (cond ((null? lst) '())
+          (else
+            (let loop ((lst lst))
+              (cond ((pair? (cdr lst)) (loop (cdr lst)))
+                    (else lst)))))))
+(define last-cdr
+  (lambda (lst)
+    (cond ((pair? lst)
+            (let loop ((lst lst))
+              (cond ((pair? (cdr lst)) (loop (cdr lst)))
+                    (else (cdr lst)))))
+          (else lst))))
+(define count-pair
+  (lambda (lst)
+    (let loop ((lst lst) (n 0))
+      (cond ((pair? lst) (loop (cdr lst) (+ n 1)))
+            (else n)))))
+(define last-n-pair
+  (lambda (n lst)
+    (let ((m (count-pair lst)))
+      (cond ((< m n) '())
+            (else (list-tail lst (- m n)))))))
+(define drop-last-n-pair
+  (lambda (n lst)
+    (cond ((null? lst) '())
+          (else
+            (let loop ((lst lst) (m (- (count-pair lst) n)))
+              (cond ((<= m 0) '())
+                    ((pair? (cdr lst)) (cons (car lst) (loop (cdr lst) (- m 1))))
+                    (else '())))))))
+
+(define (cyclic-object? c)
+  (define ht (make-core-hash-eq))
+  
+  (define (rec x)
+    (cond 
+      [(pair? x) 
+        (if (core-hash-ref ht x)
+          #t
+          (begin
+            (core-hash-put! ht x #t)
+            (or (rec (car x)) (rec (cdr x)))))]
+      [(vector? x)
+        (if (core-hash-ref ht x)
+          #t
+          (begin
+            (core-hash-put! ht x #t)
+            (let loop ((i 0) (n (vector-length x))) 
+              (if (>= i n)
+                #f
+                (or (rec (vector-ref x i))
+                    (loop (+ i 1) n))))))]
+      [(syntax? x)
+        (if (core-hash-ref ht x)
+          #t
+          (begin
+            (core-hash-put! ht x #t)
+            (rec (syntax-expression x)
+            (rec (syntax-wrap x)))))]
+      [(core-hashtable? x)
+        (if (core-hash-ref ht x)
+          #t
+          (begin
+            (core-hash-put! ht x #t)
+            (let loop ((lst (core-hash->list x)))
+              (if (null? lst)
+                #f
+                (or (rec (caar lst))
+                    (rec (cdar lst))
+                    (loop (cdr lst)))))))]
+      [else #f]))
+  (rec c))
 
 (primitive-load "boot/expand.scm")
 (primitive-load "boot/interpreter.scm")

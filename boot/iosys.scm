@@ -2065,6 +2065,9 @@
   (tuple-set! p port.state 'closed)
   (io/reset-buffers! p))
 
+(define (io/port-closed? p)
+  (eq? (tuple-ref p port.state) 'closed))
+
 ; Resets buffers to an empty state.
 
 (define (io/reset-buffers! p)

@@ -88,6 +88,8 @@ pub struct HashTable<'gc> {
     inner: Monitor<InnerHashTable<'gc>>,
 }
 
+pub type HashTableRef<'gc> = Gc<'gc, HashTable<'gc>>;
+
 unsafe impl<'gc> Trace for HashTable<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         unsafe {

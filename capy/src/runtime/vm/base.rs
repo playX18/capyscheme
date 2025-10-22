@@ -185,7 +185,7 @@ native_fn!(
             return nctx.wrong_argument_violation("delete!", "expected a list", Some(lst), Some(2), 2, &[item, lst]);
         }
 
-        let mut lst = lst;
+        /*let mut lst = lst;
         let mut walk = lst;
         let mut prev = lst;
 
@@ -202,6 +202,8 @@ native_fn!(
             walk = walk.cdr();
         }
 
+        nctx.return_(lst)*/
+        let lst = lst.destructive_delete(nctx.ctx, item);
         nctx.return_(lst)
     }
 
@@ -209,6 +211,9 @@ native_fn!(
         nctx.return_(Value::undefined())
     }
 
+    pub ("unspecified?") fn is_unspecified<'gc>(nctx, v: Value<'gc>) -> bool {
+        nctx.return_(v == Value::undefined())
+    }
 
     pub ("procedure-properties") fn procedure_metadata<'gc>(
         nctx,
@@ -364,6 +369,40 @@ native_fn!(
         nctx.return_(v.is_eof())
     }
 
+    pub ("make-weak-mapping") fn make_weak_mapping<'gc>(
+        nctx,
+        key: Value<'gc>,
+        value: Value<'gc>
+    ) -> Value<'gc> {
+        if !key.is_cell() {
+            return nctx.wrong_argument_violation("make-weak-mapping", "expected a heap-allocated object as key", Some(key), Some(1), 2, &[key, value]);
+        }
+        let wmap = WeakMapping::new(nctx.ctx, key, value);
+        nctx.return_(Value::new(wmap))
+    }
+
+    pub ("weak-mapping?") fn is_weak_mapping<'gc>(
+        nctx,
+        v: Value<'gc>
+    ) -> bool {
+        nctx.return_(v.is::<WeakMapping>())
+    }
+
+    pub ("weak-mapping-value") fn weak_mapping_value<'gc>(
+        nctx,
+        wm: Gc<'gc, WeakMapping<'gc>>
+    ) -> Value<'gc> {
+        let value = wm.value(&nctx.ctx);
+        nctx.return_(value)
+    }
+
+    pub ("weak-mapping-key") fn weak_mapping_key<'gc>(
+        nctx,
+        wm: Gc<'gc, WeakMapping<'gc>>
+    ) -> Value<'gc> {
+        let key = wm.key(&nctx.ctx);
+        nctx.return_(key)
+    }
 );
 
 native_cont!(

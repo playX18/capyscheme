@@ -6,7 +6,6 @@
             (core exceptions)
             (core control))
 
-(define continuation-to-exit (make-parameter #f))
 (define dump-condition (make-parameter #f))
 (define self-evaluating-vector-constants (make-parameter #t))
 (define ellipsis/underscore-in-literal (make-parameter #t))

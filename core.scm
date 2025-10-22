@@ -1,5 +1,13 @@
 (library (core)
   (export
+
+    %load-path
+    %load-extensions
+    %load-compiled-path
+    %load-compiled-extensions
+    %compile-fallback-path
+    %capy-root
+    %fresh-auto-compile
     &assertion
     &condition
     &error
@@ -43,8 +51,6 @@
     abs
     acos
     acquire-lockfile
-    add-library-path
-    add-load-path
     and
     angle
     append
@@ -59,8 +65,6 @@
     assq
     assv
     atan
-    auto-compile-cache
-    auto-compile-verbose
     backtrace
     backtrace-line-length
     begin
@@ -88,42 +92,8 @@
     break
     buffer-mode
     buffer-mode?
-    bytevector->pinned-c-void*
-    bytevector->sint-list
     bytevector->string
     bytevector->u8-list
-    bytevector->uint-list
-    bytevector-c-double-ref
-    bytevector-c-double-set!
-    bytevector-c-float-ref
-    bytevector-c-float-set!
-    bytevector-c-int-ref
-    bytevector-c-int-set!
-    bytevector-c-int16-ref
-    bytevector-c-int16-set!
-    bytevector-c-int32-ref
-    bytevector-c-int32-set!
-    bytevector-c-int64-ref
-    bytevector-c-int64-set!
-    bytevector-c-int8-ref
-    bytevector-c-int8-set!
-    bytevector-c-long-long-ref
-    bytevector-c-long-long-set!
-    bytevector-c-long-ref
-    bytevector-c-long-set!
-    bytevector-c-short-ref
-    bytevector-c-short-set!
-    bytevector-c-strlen
-    bytevector-c-uint16-ref
-    bytevector-c-uint32-ref
-    bytevector-c-uint64-ref
-    bytevector-c-uint8-ref
-    bytevector-c-unsigned-int-ref
-    bytevector-c-unsigned-long-long-ref
-    bytevector-c-unsigned-long-ref
-    bytevector-c-unsigned-short-ref
-    bytevector-c-void*-ref
-    bytevector-c-void*-set!
     bytevector-copy
     bytevector-copy!
     bytevector-fill!
@@ -242,18 +212,7 @@
     close-input-port
     close-output-port
     close-port
-    closure-code
-    closure-codegen
-    cmwc-random-real
-    cmwc-random-u32
-    codegen-cdecl-callback
-    codegen-cdecl-callout
-    codegen-queue-count
-    codegen-queue-push!
-    collect
-    collect-notify
-    collect-stack-notify
-    collect-trip-bytes
+
     command-line
     command-line-shift
     compile
@@ -269,10 +228,6 @@
     condition?
     cons
     cons*
-    continuation-to-exit
-    copy-environment-macros!
-    copy-environment-variables!
-    core-eval
     core-hashtable->alist
     core-hashtable-clear!
     core-hashtable-contains?
@@ -285,28 +240,17 @@
     core-hashtable-set!
     core-hashtable-size
     core-hashtable?
-    core-read
     coreform-optimize
     cos
     count-pair
     create-directory
     create-hard-link
     create-symbolic-link
-    current-after-expansion-hook
     current-directory
-    current-dynamic-environment
-    current-environment
     current-error-port
     current-exception-printer
     current-input-port
-    current-library-infix
-    current-library-suffix
-    current-macro-environment
     current-output-port
-    current-primitive-prefix
-    current-rename-delimiter
-    current-source-comments
-    current-variable-environment
     cyclic-object?
     datum
     datum->syntax
@@ -357,7 +301,6 @@
     enum-set-universe
     enum-set=?
     enum-set?
-    environment
     eof-object
     eof-object?
     eol-style
@@ -380,9 +323,7 @@
     exp
     expansion-backtrace
     expt
-    extract-accumulated-bytevector
-    extract-accumulated-string
-    feature-identifiers
+
     fields
     file-directory?
     file-executable?
@@ -455,7 +396,6 @@
     force
     format
     free-identifier=?
-    fulfill-feature-requirements?
     fx*
     fx*/carry
     fx+
@@ -566,7 +506,6 @@
     integer->char
     integer-valued?
     integer?
-    interaction-environment
     iota
     irritants-condition?
     lambda
@@ -607,14 +546,11 @@
     log
     lookahead-char
     lookahead-u8
-    lookup-process-environment
     lookup-shared-object
     macro-expand
     magnitude
     make-assertion-violation
     make-bytevector
-    make-bytevector-mapping
-    make-cmwc-random-state
     make-core-hashtable
     make-custom-binary-input-port
     make-custom-binary-input/output-port
@@ -623,7 +559,6 @@
     make-custom-textual-input/output-port
     make-custom-textual-output-port
     make-enumeration
-    make-environment
     make-eq-hashtable
     make-eqv-hashtable
     make-error
@@ -676,21 +611,6 @@
     make-weak-mapping
     make-who-condition
     map
-    mat4x4-add
-    mat4x4-dup
-    mat4x4-frustum
-    mat4x4-identity
-    mat4x4-invert
-    mat4x4-look-at
-    mat4x4-mul
-    mat4x4-ortho
-    mat4x4-orthonormalize
-    mat4x4-perspective
-    mat4x4-rotate
-    mat4x4-scale
-    mat4x4-sub
-    mat4x4-translate
-    mat4x4-transpose
     max
     member
     memp
@@ -709,13 +629,11 @@
     native-endianness
     native-eol-style
     native-transcoder
-    native-transcoder-descriptor
     negative?
     newline
     no-infinities-violation?
     no-nans-violation?
     non-continuable-violation?
-    nonblock-byte-ready?
     nongenerative
     not
     null?
@@ -724,7 +642,6 @@
     numerator
     odd?
     opaque
-    open-builtin-data-input-port
     open-bytevector-input-port
     open-bytevector-output-port
     open-file-input-port
@@ -732,10 +649,8 @@
     open-file-output-port
     open-input-file
     open-output-file
-    open-port
     open-string-input-port
     open-string-output-port
-    open-temporary-file-port
     or
     output-port-buffer-mode
     output-port?
@@ -752,20 +667,11 @@
     port-has-set-port-position!?
     port-position
     port-transcoder
-    port-transcoder-descriptor
     port?
     positive?
-    pretty-print
-    pretty-print-initial-indent
-    pretty-print-line-length
-    pretty-print-maximum-lines
-    pretty-print-unwrap-syntax
     procedure?
     process-environment->alist
-    process-spawn
-    process-wait
     protocol
-    put-byte
     put-bytevector
     put-char
     put-datum
@@ -783,7 +689,6 @@
     rationalize
     read
     read-char
-    read-with-shared-structure
     real->flonum
     real-part
     real-valued?
@@ -820,33 +725,18 @@
     restricted-print-line-length
     reverse
     round
-    scheme-error
-    scheme-library-exports
-    scheme-library-paths
-    scheme-load-paths
-    scheme-load-verbose
     sealed
     serious-condition?
     set!
     set-car!
     set-cdr!
-    set-current-error-port!
-    set-current-input-port!
-    set-current-output-port!
     set-port-position!
     set-top-level-value!
     shutdown-output-port
     simple-conditions
     sin
     sint-list->bytevector
-    socket->port
-    socket-accept
-    socket-close
-    socket-port
-    socket-recv
-    socket-send
-    socket-shutdown
-    socket?
+
     sqrt
     standard-error-port
     standard-input-port
@@ -890,10 +780,9 @@
     string>=?
     string>?
     string?
-    subr?
+    procedure?
     substring
     symbol->string
-    symbol-contains
     symbol-hash
     symbol=?
     symbol?
@@ -906,9 +795,6 @@
     syntax-violation-subform
     syntax-violation?
     system
-    system-environment
-    system-extension-path
-    system-share-path
     take
     tan
     textual-port?
@@ -930,8 +816,6 @@
     u8-list->bytevector
     uint-list->bytevector
     undefined-violation?
-    uninterned-symbol-prefix
-    uninterned-symbol-suffix
     uninterned-symbol?
     unless
     unquote
@@ -975,7 +859,6 @@
     with-syntax
     write
     write-char
-    write-with-shared-structure
     zero?)
   (import
     (core primitives)

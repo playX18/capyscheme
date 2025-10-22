@@ -5,7 +5,11 @@
         dynamic-wind
         when unless case-lambda
         print-condition
-        stack-trace)
+        stack-trace
+        do
+        when
+        unless
+        case-lambda)
     (import (core primitives)
             (core records))
   (define-syntax case-lambda

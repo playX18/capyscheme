@@ -222,6 +222,134 @@ native_fn!(
 
         nctx.return_(Ok(walk))
     }
+
+    pub ("list-transpose") fn list_transpose<'gc>(
+        nctx,
+
+        lists: &'gc [Value<'gc>]
+    ) -> Value<'gc> {
+
+        if lists.is_empty() {
+            return nctx.wrong_argument_violation("list-transpose", "expected at least one list", None, None, 0, &[]);
+        }
+
+
+        if !lists[0].is_list() {
+            return nctx.wrong_argument_violation("list-transpose", "expected a list", Some(lists[0]), Some(1), lists.len(), &[lists[0]]);
+        }
+        let len = lists[0].list_length();
+        for (i, lst) in lists.iter().copied().enumerate().skip(1) {
+            if !lst.is_list() {
+                return nctx.wrong_argument_violation("list-transpose", "expected a list", Some(lst), Some(i + 2), lists.len() + 1, &[lst]);
+            }
+            if lst.list_length() != len {
+                return nctx.wrong_argument_violation("list-transpose", "lists should have different lengths", Some(lst), Some(i + 2), lists.len() + 1, &[lst]);
+            }
+        }
+
+        let result = transpose_impl(nctx.ctx, len, lists);
+        nctx.return_(result)
+    }
+
+    pub ("list-transpose+") fn list_transpose_plus<'gc>(
+        nctx,
+
+        lists: &'gc [Value<'gc>]
+    ) -> Value<'gc> {
+        if lists.is_empty() {
+            return nctx.wrong_number_of_arguments_violation(
+                "list-transpose+",
+                1,
+                None,
+                0,
+                &[],
+            )
+        }
+        if !lists[0].is_list() {
+            return nctx.return_(Value::new(false));
+        }
+        let len = lists[0].list_length();
+        for lst in lists.iter().copied().skip(1) {
+            if !lst.is_list() {
+                return nctx.return_(Value::new(false));
+            }
+            if lst.list_length() != len {
+                return nctx.return_(Value::new(false));
+            }
+        }
+
+        let result = transpose_impl(nctx.ctx, len, lists);
+        nctx.return_(result)
+    }
+
+    pub ("list-transpose*") fn list_transpose_star<'gc>(
+        nctx,
+        lists: &'gc [Value<'gc>]
+    ) -> Value<'gc> {
+
+        let mut finite = false;
+        let mut each_len = usize::MAX;
+        for i in 0..lists.len() {
+            if !lists[i].is_list() {
+                return nctx.wrong_argument_violation("list-transpose*", "expected a list", Some(lists[i]), Some(i + 1), lists.len(), &[lists[i]]);
+            }
+            finite = true;
+            let n = lists[i].list_length();
+            if n < each_len {
+                each_len = n;
+            }
+        }
+
+        if finite {
+            let result = transpose_impl(nctx.ctx, each_len, lists);
+            return nctx.return_(result);
+        } else {
+            return nctx.wrong_argument_violation("list-transpose*", "all lists must be finite", Some(lists[0]), Some(1), lists.len(), &[lists[0]]);
+        }
+    }
+
+    pub ("circular-list?") fn circular_listp<'gc>(nctx, lst: Value<'gc>) -> bool {
+        let mut slow = lst;
+        let mut fast = lst;
+
+        while fast.is_pair() && fast.cdr().is_pair() {
+            slow = slow.cdr();
+            fast = fast.cdr().cdr();
+
+            if slow == fast {
+                return nctx.return_(true);
+            }
+        }
+
+        nctx.return_(false)
+    }
+
+    pub ("list-copy") fn list_copy<'gc>(nctx, lst: Value<'gc>) -> Value<'gc> {
+        if !lst.is_list() {
+            return nctx.wrong_argument_violation("list-copy", "expected a list", Some(lst), Some(1), 1, &[lst]);
+        }
+        if lst.is_pair() {
+            let mut lst = lst;
+            let obj = Value::cons(nctx.ctx, lst.car(), Value::null());
+            let mut tail = obj;
+
+            lst = lst.cdr();
+
+            while lst.is_pair() {
+                let e = Value::cons(nctx.ctx, lst.car(), Value::null());
+                tail.set_cdr(nctx.ctx, e);
+                tail = e;
+                lst = lst.cdr();
+            }
+            tail.set_cdr(nctx.ctx, lst);
+            return nctx.return_(obj);
+        }
+
+        nctx.return_(lst)
+    }
+
+
+
 );
 
 fn append_impl<'gc>(ctx: Context<'gc>, mut ls1: Value<'gc>, ls2: Value<'gc>) -> Option<Value<'gc>> {
@@ -251,4 +379,31 @@ fn append_impl<'gc>(ctx: Context<'gc>, mut ls1: Value<'gc>, ls2: Value<'gc>) -> 
     last.set_cdr(ctx, ls2);
 
     Some(first)
+}
+
+fn transpose_impl<'gc>(ctx: Context<'gc>, each_len: usize, args: &[Value<'gc>]) -> Value<'gc> {
+    let mut args = args.to_vec();
+    let mut ans = Value::null();
+    let mut ans_tail = Value::null();
+
+    for _ in 0..each_len {
+        let elt = Value::cons(ctx, args[0], Value::null());
+        let mut elt_tail = elt;
+        args[0] = args[0].cdr();
+        for arg in args.iter_mut().skip(1) {
+            elt_tail.set_cdr(ctx, Value::cons(ctx, arg.car(), Value::null()));
+            elt_tail = elt_tail.cdr();
+            *arg = arg.cdr();
+        }
+
+        if ans.is_null() {
+            ans = Value::cons(ctx, elt, Value::null());
+            ans_tail = ans;
+        } else {
+            ans_tail.set_cdr(ctx, Value::cons(ctx, elt, Value::null()));
+            ans_tail = ans_tail.cdr();
+        }
+    }
+
+    ans
 }
