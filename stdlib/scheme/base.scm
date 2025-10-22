@@ -400,6 +400,7 @@
 
     (define error
       (lambda (message . irritants)
+        (format #t "RAISE ERROR: message=~a, irritants=~a~%" message irritants)
         (apply r6rs:error #f message irritants)))
 
     (define error-object?

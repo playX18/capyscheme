@@ -223,7 +223,7 @@ impl<'gc> ComputeFreeVarResolver<'gc> {
                     })
                     .collect::<Vec<_>>();
                 let module_ = resolve_module(self.ctx, module, false, false);
-                let resolver = Resolver::new(module_, local_bindings);
+                let resolver = Resolver::new(self.ctx, module_, local_bindings);
                 (module, resolver)
             })
             .collect::<Vec<_>>();
@@ -257,14 +257,18 @@ enum Resolved<'gc> {
 }
 
 impl<'gc> Resolver<'gc> {
-    fn new(module: Option<Gc<'gc, Module<'gc>>>, local_definitions: Vec<Value<'gc>>) -> Self {
+    fn new(
+        ctx: Context<'gc>,
+        module: Option<Gc<'gc, Module<'gc>>>,
+        local_definitions: Vec<Value<'gc>>,
+    ) -> Self {
         let resolvers = if let Some(module) = module {
             let uses = module.uses.get();
             let mut ls = uses;
             let mut resolvers = Vec::new();
             while ls.is_pair() {
                 let iface = ls.car().downcast::<Module>();
-                resolvers.push(ImportedResolver::new(iface));
+                resolvers.push(ImportedResolver::new(ctx, iface));
                 ls = ls.cdr();
             }
             resolvers
@@ -316,11 +320,15 @@ impl<'gc> ImportedResolver<'gc> {
         Some((self.iface.name.get(), *name))
     }
 
-    fn new(iface: Gc<'gc, Module<'gc>>) -> Self {
+    fn new(ctx: Context<'gc>, iface: Gc<'gc, Module<'gc>>) -> Self {
         let mut by_var = HashMap::new();
-        for (name, var) in iface.obarray.get().iter() {
-            by_var.insert(var, name);
+        let public_iface = resolve_module(ctx, iface.name.get(), false, false);
+        if let Some(public_iface) = public_iface {
+            for (name, var) in public_iface.obarray.get().iter() {
+                by_var.insert(var, name);
+            }
         }
+
         Self { iface, by_var }
     }
 }

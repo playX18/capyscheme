@@ -469,11 +469,10 @@
     (for-each (lambda (mod)
                 (module-for-each f mod))
               (module-and-uses mod)))
-
   (syntax-case import-spec (library only except prefix rename srfi)
     ;; (srfi :n ...) -> (srfi srfi-n ...)
     ;; (srfi n ...) -> (srfi srfi-n ...)
-    ((library (srfi n rest ...) (version ...))
+    ((library (srfi n rest ... (version ...)))
      (srfi-name? #'(srfi n rest ...))
      (let ((srfi-n (make-srfi-n #'srfi #'n)))
        (resolve-r6rs-interface
@@ -484,6 +483,7 @@
            ;; SRFI 97 says that the first identifier after the `n'
            ;; is used for the libraries name, so it must be ignored.
            #`(library (srfi #,srfi-n rest ... (version ...))))))))
+   
     
     ((library (name name* ... (version ...)))
       (and-map sym? #'(name name* ...))
@@ -491,7 +491,8 @@
 
     ((library (name name* ...))
      (and-map sym? #'(name name* ...))
-     (resolve-interface (syntax->datum #'(name name* ...)) #f '() #f))
+     (resolve-r6rs-interface #'(library (name name* ... ()))))
+     ;(resolve-interface (syntax->datum #'(name name* ...)) #f '() #f))
 
     
     ((only import-set identifier ...)
@@ -561,10 +562,12 @@
                            to
                            mod
                            (module-uses mod))))
+               
                 (module-add! iface to var)
                 (if replace?
                   (core-hash-put! replacements to #t))))
             out)
+
            iface)
           (else
            (let* ((from (caar in))
@@ -1278,3 +1281,24 @@
      'include-library-declarations
      "use of 'include-library-declarations' outside define-library" x x)))
 
+(define-syntax identifier-syntax
+  (lambda (xx)
+    (syntax-case xx (set!)
+      ((_ e)
+       #'(lambda (x)
+           #((macro-type . identifier-syntax))
+           (syntax-case x ()
+             (id
+              (identifier? #'id)
+              #'e)
+             ((_ x (... ...))
+              #'(e x (... ...))))))
+      ((_ (id exp1) ((set! var val) exp2))
+       (and (identifier? #'id) (identifier? #'var))
+       #'(make-variable-transformer
+          (lambda (x)
+            #((macro-type . variable-transformer))
+            (syntax-case x (set!)
+              ((set! var val) #'exp2)
+              ((id x (... ...)) #'(exp1 x (... ...)))
+              (id (identifier? #'id) #'exp1))))))))

@@ -3,7 +3,8 @@
     
     (import (capy)
             (core parameters)
-            (core exceptions))
+            (core exceptions)
+            (core control))
 
 (define continuation-to-exit (make-parameter #f))
 (define dump-condition (make-parameter #f))
@@ -15,33 +16,10 @@
 
 (define (default-exception-printer c . maybe-out)
   (define out (if (null? maybe-out) (current-error-port) (car maybe-out)))
-  
-  (define output (call-with-string-output-port 
-    (lambda (port)
-      (define (output-who-message)
-        (format port "error")
-        (and (who-condition? c)
-             (format port " in ~a" (condition-who c))))
-      (define (output-irritants)
-        (and (irritants-condition? c)
-             (format port " [~a]" (condition-irritants c))))
-      (define (output-message)
-        (and (message-condition? c)
-             (format port ": ~a" (condition-message c))))
+  (if (stacktrace-condition? c)
+    (stack-trace (condition-stacktrace c) out))
 
-      (cond 
-        [(undefined-violation? c)
-          (format port "error: undefined variable ")
-          (output-who-message)
-          (format port ": ")
-          (output-message)
-          (output-irritants)]
-        [else 
-          (output-who-message)
-          (output-irritants)
-          (output-message)])
-      )))
-  (format out "~a~%" output))
+  (print-condition c out))
 (current-exception-printer default-exception-printer)
 
 

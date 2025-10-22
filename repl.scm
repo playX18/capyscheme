@@ -501,7 +501,7 @@
     (lambda (x)
         (define input (write-rope x #f))
         (with-exception-handler 
-            (lambda (ex) #f)
+            (lambda (ex) (format #t "invalid input ~a: ~a ~a ~%~!" input (condition-who ex) (condition-message ex)) #f)
             (lambda () (read-syntax (open-input-string input))))))
 (set-ln-completion-callback! ln 
     (lambda (input cursor-pos)

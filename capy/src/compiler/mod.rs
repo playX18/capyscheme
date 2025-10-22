@@ -14,6 +14,7 @@ use crate::{
         vm::thunks::{make_io_error, make_lexical_violation},
     },
 };
+
 use cranelift::prelude::Configurable;
 use cranelift_codegen::settings;
 use cranelift_module::default_libcall_names;

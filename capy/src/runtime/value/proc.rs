@@ -100,6 +100,12 @@ impl<'gc> Closure<'gc> {
             Vector::from_slice(&ctx, free).into()
         };
 
+        let meta = if meta == Value::new(false) {
+            Value::null()
+        } else {
+            meta
+        };
+
         Gc::new(
             &ctx,
             Self {
@@ -379,6 +385,7 @@ unsafe impl<'gc> Trace for Procedures<'gc> {
     }
 }
 
+#[unsafe(export_name = "CAPY_PROCEDURES")]
 pub static PROCEDURES: LazyLock<Global<Rootable!(Procedures<'_>)>> = LazyLock::new(|| {
     Global::new(Procedures {
         registered: Monitor::new(HashMap::new()),
@@ -504,14 +511,15 @@ macro_rules! native_fn {
                             // documentation
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "documentation").into(), documentation),
                             // name
-                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "name").into(),  $crate::runtime::prelude::Str::from_str(&ctx, $l).into())
+                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "name").into(),  $crate::runtime::prelude::Symbol::from_str(ctx, $l).into())
                         );
                         $crate::rsgc::global::Global::new(props)
                     })
                         .fetch(&ctx)
                 }
 
-                $v fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
+
+                $v extern "C" fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     let meta = [<get_ $name _meta>](ctx);
                     *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
                         $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _raw>], [<$name: upper _DOC>].clone(), meta))
@@ -519,7 +527,7 @@ macro_rules! native_fn {
                         .fetch(&ctx)
                 }
 
-                $v fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
+                $v extern "C" fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     let meta = [<get_ $name _meta>](ctx);
                     $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _raw>], vars, [<$name: upper _DOC>].clone(), meta)
                 }
@@ -636,7 +644,7 @@ macro_rules! native_cont {
                             // documentation
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "documentation").into(), documentation),
                             // name
-                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "name").into(),  $crate::runtime::prelude::Str::from_str(&ctx, $l).into())
+                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "name").into(),  $crate::runtime::prelude::Symbol::from_str(ctx, $l).into())
                         );
                         $crate::rsgc::global::Global::new(props)
                     })

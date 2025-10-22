@@ -8,6 +8,16 @@ use crate::{
 
 native_fn!(
     register_arith:
+
+    pub ("abs") fn abs<'gc>(nctx, x: Number<'gc>) -> Number<'gc> {
+        let res = x.abs(nctx.ctx);
+        nctx.return_(res)
+    }
+
+    pub ("nan?") fn is_nan<'gc>(nctx, x: Number<'gc>) -> bool {
+        nctx.return_(x.is_nan())
+    }
+
     pub ("exact?") fn is_exact<'gc>(nctx, x: Number<'gc>) -> bool {
         nctx.return_(x.is_exact())
     }
@@ -177,6 +187,13 @@ native_fn!(
                 args.extend_from_slice(rest);
                 return nctx.wrong_argument_violation("/", "argument must be a number", Some(arg.clone()), Some(1), args.len(), &args);
             };
+            if arg.is_zero() {
+                let mut args = Vec::with_capacity(1 + rest.len());
+                args.push(acc.into_value(nctx.ctx));
+                args.extend_from_slice(rest);
+                let arg = arg.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation("/", "division by zero", Some(arg.clone()), Some(1), args.len(), &args);
+            }
             acc = Number::div(nctx.ctx, acc, arg);
         }
 
@@ -288,6 +305,23 @@ native_fn!(
         nctx.return_(tan)
     }
 
+    pub ("atan") fn atan<'gc>(nctx, _x: Number<'gc>) -> Number<'gc> {
+        let atan = Number::atan(nctx.ctx, _x);
+        nctx.return_(atan)
+    }
+
+    pub ("atan2") fn atan2<'gc>(nctx, lhs: Number<'gc>, rhs: Number<'gc>) -> Number<'gc> {
+        let ctx = nctx.ctx;
+        if !lhs.is_real_valued() {
+            return nctx.wrong_argument_violation("atan2", "argument must be a real number", Some(lhs.into_value(ctx)), Some(1), 1, &[lhs.into_value(ctx)]);
+        }
+        if !rhs.is_real_valued() {
+            return nctx.wrong_argument_violation("atan2", "argument must be a real number", Some(rhs.into_value(ctx)), Some(2), 2, &[rhs.into_value(ctx)]);
+        }
+        let atan2 = Number::atan2(ctx, lhs, rhs);
+        nctx.return_(atan2)
+    }
+
     pub ("sqrt") fn sqrt<'gc>(nctx, x: Number<'gc>) -> Number<'gc> {
         let sqrt = Number::sqrt(nctx.ctx, x);
         nctx.return_(sqrt)
@@ -321,6 +355,9 @@ native_fn!(
         let acos = Number::acos(nctx.ctx, x);
         nctx.return_(acos)
     }
+
+
+
 
     pub ("floor") fn floor<'gc>(nctx, x: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
         if !x.is_real() {

@@ -1,6 +1,7 @@
 use super::ffi::*;
 use crate::native_fn;
 use crate::runtime::prelude::*;
+use crate::runtime::vm::VMResult;
 native_fn!(
     register_dynload_fns:
 
@@ -78,6 +79,61 @@ native_fn!(
 
         let ptr = Gc::new(&nctx.ctx, Pointer::new(sym_ptr as _));
         nctx.return_(ptr.into())
+    }
+
+    pub ("load-native-extension") fn load_native_extension<'gc>(
+        nctx,
+        path: StringRef<'gc>
+    ) -> Result<Value<'gc>, Value<'gc>> {
+        let handle = unsafe {
+            libc::dlopen(
+                std::ffi::CString::new(path.to_string()).unwrap().as_ptr(),
+                libc::RTLD_NOW | libc::RTLD_LOCAL,
+            )
+        };
+        if handle.is_null() {
+            let dlerror = unsafe {
+                let err_ptr = libc::dlerror();
+                if err_ptr.is_null() {
+                    "unknown error".to_string()
+                } else {
+                    let cstr = std::ffi::CStr::from_ptr(err_ptr);
+                    cstr.to_string_lossy().into_owned()
+                }
+            };
+            return nctx.raise_error(
+                "load-native-extension",
+                &format!("failed to load {}: {}", path.to_string(), dlerror),
+                &[path.into()],
+            );
+        }
+        let init: extern "C-unwind" fn(&Context<'gc>) -> VMResult<'gc> = unsafe {
+            let symbol = libc::dlsym(handle, b"capy_register_extension\0".as_ptr() as _);
+            if symbol.is_null() {
+                let dlerror = {
+                    let err_ptr = libc::dlerror();
+                    if err_ptr.is_null() {
+                        "unknown error".to_string()
+                    } else {
+                        let cstr = std::ffi::CStr::from_ptr(err_ptr);
+                        cstr.to_string_lossy().into_owned()
+                    }
+                };
+                return nctx.raise_error(
+                    "load-native-extension",
+                    &format!("failed to find symbol 'capy_register_extension' in {path}: {dlerror}"),
+                    &[path.into()],
+                );
+            }
+            std::mem::transmute(symbol)
+        };
+
+        let result = init(&nctx.ctx);
+        match result {
+            VMResult::Ok(v) => nctx.return_(Ok(v)),
+            VMResult::Err(e) => nctx.return_(Err(e)),
+            _ => todo!()
+        }
     }
 );
 

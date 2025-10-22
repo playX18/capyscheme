@@ -4717,6 +4717,49 @@ impl<'gc> Number<'gc> {
         )
     }
 
+    pub fn atan(ctx: Context<'gc>, n: Self) -> Self {
+        if n.is_real_valued() {
+            let x = n.real_to_f64(ctx);
+            if x >= -1.0 && x <= 1.0 {
+                return Self::Flonum(libm::atan(x));
+            }
+        }
+
+        let Number::Complex(cn) = n else {
+            unreachable!()
+        };
+
+        let ans = Self::div(
+            ctx,
+            Self::add(ctx, n, Number::Fixnum(1)),
+            Self::sub(ctx, n, Number::Fixnum(1)),
+        );
+        if let Number::Complex(cn) = ans {
+            return Number::Complex(Complex::new(
+                ctx,
+                Number::mul(ctx, Number::Flonum(0.5), cn.imag),
+                Number::mul(ctx, Number::Flonum(-0.5), cn.real),
+            ));
+        }
+
+        return Number::Complex(Complex::new(
+            ctx,
+            Number::Flonum(0.0),
+            Number::mul(ctx, Number::Flonum(-0.5), cn.real),
+        ));
+    }
+
+    pub fn atan2(ctx: Context<'gc>, lhs: Number<'gc>, rhs: Number<'gc>) -> Number<'gc> {
+        if matches!(lhs, Number::Fixnum(0)) {
+            return Number::Fixnum(0);
+        }
+
+        let lhs = lhs.real_to_f64(ctx);
+        let rhs = rhs.real_to_f64(ctx);
+
+        Number::Flonum(libm::atan2(lhs, rhs))
+    }
+
     pub fn floor(self, ctx: Context<'gc>) -> Self {
         let n = self;
         match n {

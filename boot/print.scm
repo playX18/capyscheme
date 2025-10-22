@@ -1,11 +1,28 @@
 (define procedure-printer 
     (make-parameter 
         (lambda (proc port slashify)
-            (print 
-                (string-append "#<procedure" (let ([name (procedure-name proc)])
-                    (if name (string-append " " (if (symbol? name) (symbol->string name) name)) "")) " " (number->string (hash proc) 16) ">")
-                port 
-                #f))))
+            (define interpreted? (interpreted-procedure? proc))
+            (define meta #f)
+            (define name (if meta (let ([n (assq 'name meta)])
+                (if n (cdr n) #f)) #f))
+
+            (define addr (number->string (hash proc) 16))
+
+            (print "#<procedure" port #f)
+            (when interpreted?
+                (print " (interpreted)" port #f))
+            (when name
+                (print " " port #f)
+                (print name port #f))
+            (print " " port #f)
+            (print addr port #f)
+            (print ">" port #f))))
+
+            ;(print 
+            ;    (string-append "#<procedure" (let ([name (procedure-name proc)])
+            ;        (if name (string-append " " (if (symbol? name) (symbol->string name) name)) "")) " " (number->string (hash proc) 16) ">")
+            ;    port 
+            ;    #f))))
 
 (define (print x p slashify)
     (define write-char io/write-char)    
@@ -256,7 +273,37 @@
                 (else #t))
             (write-char #\u p)
             (write-char #\8 p)
-            (print (bytevector->list x) p slashify (- level 1)))
+            (cond 
+                [slashify (print (bytevector->list x) p slashify (- level 1))]
+                [else 
+                    ; print first 4 and last 4 bytes
+                    ; and put ... in the middle if longer than 8
+                    (write-string "(" p)
+                    (let ((len (bytevector-length x)))
+                        (if (<= len 8)
+                            (begin 
+                                (let loop ([i 0])
+                                    (if (< i len)
+                                        (begin 
+                                            (print (bytevector-ref x i) p slashify (- level 1))
+                                            (write-char #\space p)
+                                            (loop (+ i 1))))))
+                            (begin
+                                (let loop ([i 0])
+                                    (if (< i 4)
+                                        (begin 
+                                            (print (bytevector-ref x i) p slashify (- level 1))
+                                            (write-char #\space p)
+                                            (loop (+ i 1)))))
+                                (printstr "... " p)
+                            
+                                (let loop ([i (- len 4)])
+                                    (if (< i len)
+                                        (begin 
+                                            (print (bytevector-ref x i) p slashify (- level 1))
+                                            (write-char #\space p)
+                                            (loop (+ i 1))))))))
+                    (write-string ")" p)]))
         (define (print-procedure x p slashify)
             ((procedure-printer) x p slashify))
 
@@ -490,7 +537,7 @@
                 (display "#<record-constructor-descriptor " port)
                 (display (record-type-name (rcd-rtd obj)) port)
                 (display ">" port)]
-            [else (display "#<unknown>" port)])))
+            [else (:print obj) (display "#<unknown>" port)])))
 (define (newline . port) (display "\n" (if (null? port) (current-output-port) (car port))))
 
 (define (displayln x . rest)

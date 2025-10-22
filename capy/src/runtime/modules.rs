@@ -279,6 +279,9 @@ impl<'gc> Module<'gc> {
                 let iface = uses.car().downcast::<Module>();
                 let var = iface.variable(ctx, sym);
                 if let Some(var) = var {
+                    if !var.is_bound() {
+                        println!(";; Warning: imported unbound variable {sym}");
+                    }
                     self.import_obarray.put(ctx, sym, var);
                     return Some(var);
                 }
@@ -751,6 +754,15 @@ pub fn convert_module_name<'gc>(ctx: Context<'gc>, name: &str) -> Value<'gc> {
 }
 
 pub fn public_ref<'gc>(ctx: Context<'gc>, module_name: &str, name: &str) -> Option<Value<'gc>> {
+    let module_name = convert_module_name(ctx, module_name);
+    let module = resolve_module(ctx, module_name, false, false)?;
+    module
+        .public_interface
+        .get()?
+        .get(ctx, Symbol::from_str(ctx, name).into())
+}
+
+pub fn private_ref<'gc>(ctx: Context<'gc>, module_name: &str, name: &str) -> Option<Value<'gc>> {
     let module_name = convert_module_name(ctx, module_name);
     let module = resolve_module(ctx, module_name, false, false)?;
     module.get(ctx, Symbol::from_str(ctx, name).into())

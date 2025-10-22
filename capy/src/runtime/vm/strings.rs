@@ -1,8 +1,8 @@
 use rsgc::Gc;
 
 use crate::native_fn;
-
 use crate::runtime::prelude::*;
+use std::cmp::Ordering;
 
 native_fn!(
     register_str_fns:
@@ -29,7 +29,190 @@ native_fn!(
         nctx.return_(true)
     }
 
+    pub ("string-ci=?") fn string_ci_equal<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
+        let s1 = rest[0];
+        let s2 = rest[1];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+
+        if !s2.is::<Str>() {
+            return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(s2), Some(2), rest.len(), rest);
+        }
+
+        let mut s1 = s1.downcast::<Str>();
+        let mut s2 = s2.downcast::<Str>();
+
+        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Equal)) {
+                return nctx.return_(false);
+            }
+            if !r.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
+            }
+            s1 = s2;
+            s2 = r.downcast::<Str>();
+        }
+
+        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+
+        nctx.return_(matches!(cmp, Some(Ordering::Equal)))
+    }
+
+    pub ("string>?") fn string_gt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        }
+
+        let mut s1 = rest[0].downcast::<Str>();
+        let mut s2 = rest[1].downcast::<Str>();
+
+        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Greater)) {
+                return nctx.return_(false);
+            }
+            if !r.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
+            }
+            s1 = s2;
+            s2 = r.downcast::<Str>();
+        }
+
+        let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+
+        nctx.return_(matches!(cmp, Some(Ordering::Greater)))
+    }
+
+    pub ("string-ci>?") fn string_ci_gt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        }
+
+        let mut s1 = rest[0].downcast::<Str>();
+        let mut s2 = rest[1].downcast::<Str>();
+
+        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Greater)) {
+                return nctx.return_(false);
+            }
+            if !r.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
+            }
+            s1 = s2;
+            s2 = r.downcast::<Str>();
+        }
+
+        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+
+        nctx.return_(matches!(cmp, Some(Ordering::Greater)))
+    }
+
+    pub ("string>=?") fn string_ge<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        }
+
+        let mut s1 = rest[0].downcast::<Str>();
+        let mut s2 = rest[1].downcast::<Str>();
+
+        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
+                return nctx.return_(false);
+            }
+            if !r.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
+            }
+            s1 = s2;
+            s2 = r.downcast::<Str>();
+        }
+
+        let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+
+        nctx.return_(matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)))
+    }
+
+    pub ("string-ci>=?") fn string_ci_ge<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        }
+
+        let mut s1 = rest[0].downcast::<Str>();
+        let mut s2 = rest[1].downcast::<Str>();
+
+        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
+                return nctx.return_(false);
+            }
+            if !r.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
+            }
+            s1 = s2;
+            s2 = r.downcast::<Str>();
+        }
+
+        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+
+        nctx.return_(matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)))
+    }
+
+    pub ("string<?") fn string_lt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        }
+
+        let mut s1 = rest[0].downcast::<Str>();
+        let mut s2 = rest[1].downcast::<Str>();
+
+        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Less)) {
+                return nctx.return_(false);
+            }
+            if !r.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
+            }
+            s1 = s2;
+            s2 = r.downcast::<Str>();
+        }
+
+        let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+
+        nctx.return_(matches!(cmp, Some(Ordering::Less)))
+    }
+
+    pub ("string-ci<?") fn string_ci_lt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        }
+
+        let mut s1 = rest[0].downcast::<Str>();
+        let mut s2 = rest[1].downcast::<Str>();
+
+        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Less)) {
+                return nctx.return_(false);
+            }
+            if !r.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
+            }
+            s1 = s2;
+            s2 = r.downcast::<Str>();
+        }
+
+        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+
+        nctx.return_(matches!(cmp, Some(Ordering::Less)))
+    }
 
     pub ("string-length") fn string_length<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> usize {
         let len = str.len();
@@ -432,6 +615,24 @@ native_fn!(
         let ch = str.get(index).unwrap(); // safe due to the bounds check above
 
         nctx.return_(Ok(ch))
+    }
+
+    pub ("string-set!") fn string_set<'gc>(nctx, str: Gc<'gc, Str<'gc>>, index: usize, ch: char) -> Result<(), Value<'gc>> {
+        if index >= str.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "string-set!",
+                "index out of bounds",
+                None,
+                None,
+                3,
+                &[str.into(), index.into_value(ctx), ch.into_value(ctx)]
+            );
+        }
+
+        Str::set(str, &nctx.ctx, index, ch);
+
+        nctx.return_(Ok(()))
     }
 
     pub ("utf8->string") fn utf8_to_string<'gc>(nctx, bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {

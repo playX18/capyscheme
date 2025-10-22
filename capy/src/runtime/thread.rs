@@ -7,6 +7,8 @@ use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
 
 use crate::runtime::{
     fluids::DynamicState,
+    modules::{Module, resolve_module},
+    prelude::VariableRef,
     value::{
         NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols, init_weak_sets,
         init_weak_tables,
@@ -107,6 +109,25 @@ impl<'gc> Context<'gc> {
             value: Value::new(false),
         }
     }
+
+    pub fn module(self, name: &str) -> Option<Gc<'gc, Module<'gc>>> {
+        let name = crate::runtime::modules::convert_module_name(self, name);
+        resolve_module(self, name, false, false)
+    }
+
+    pub fn public_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
+        crate::runtime::modules::public_ref(self, mname, name)
+    }
+
+    pub fn private_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
+        crate::runtime::modules::private_ref(self, mname, name)
+    }
+
+    pub fn define(self, mname: &str, name: &str, value: Value<'gc>) -> Option<VariableRef<'gc>> {
+        let module = self.module(mname)?;
+        let name = self.intern(name);
+        Some(module.define(self, name, value))
+    }
 }
 
 impl<'gc> std::ops::Deref for Context<'gc> {
@@ -195,7 +216,7 @@ impl<'gc> State<'gc> {
     pub fn new(mc: &'gc Mutation<'gc>) -> Self {
         let (runstack_start, _runstack_end) = make_fresh_runstack();
         Self {
-            shadow_stack: UnsafeCell::new(debug::ShadowStack::new(20)),
+            shadow_stack: UnsafeCell::new(debug::ShadowStack::new(64)),
             dynamic_state: DynamicState::new(mc),
             runstack: Cell::new(runstack_start),
             runstack_end: _runstack_end,

@@ -24,7 +24,7 @@ impl<'gc> std::fmt::Display for Atom<'gc> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Constant(c) => write!(f, "{}", c),
-            Self::Local(l) => write!(f, "{}", l.name),
+            Self::Local(l) => write!(f, "{}:{}", l.name, l.id),
         }
     }
 }

@@ -5,7 +5,8 @@ use crate::{
     runtime::{
         Context,
         modules::Variable,
-        value::{Closure, Str, Symbol, Value, Vector},
+        prelude::*,
+        value::{Closure, Str, Symbol, Tuple, Value, Vector},
     },
 };
 
@@ -13,8 +14,27 @@ fluid!(
     pub program_arguments_fluid = Value::null();
 );
 
+pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
+    let log_level = ctx.private_ref("capy", "*log-level*");
+    if let Some(level) = log_level {
+        if level.is_int32() {
+            return level.as_int32();
+        }
+    }
+    0
+}
+
 native_fn!(
     register_base_fns:
+    pub ("native-endianness") fn native_endianness<'gc>(nctx) -> Value<'gc> {
+        let endian = if cfg!(target_endian = "little") {
+            "little"
+        } else {
+            "big"
+        };
+        let endian = nctx.ctx.intern(endian);
+        nctx.return_(endian.into())
+    }
     pub ("host-arch") fn host_target<'gc>(nctx) -> Value<'gc> {
         let target = Str::new(&nctx.ctx, std::env::consts::ARCH, true);
         nctx.return_(target.into())
@@ -294,6 +314,56 @@ native_fn!(
             nctx.return_(sec)
         }
     }
+
+    pub ("tuple-size") fn tuple_size<'gc>(
+        nctx,
+        t: Gc<'gc, Tuple<'gc>>
+    ) -> usize {
+        nctx.return_(t.len())
+    }
+
+    pub ("tuple-set!") fn tuple_set<'gc>(
+        nctx,
+        t: Gc<'gc, Tuple<'gc>>,
+        i: usize,
+        v: Value<'gc>
+    ) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        if i >= t.len() {
+            return nctx.wrong_argument_violation("tuple-set!", "index out of bounds", Some(i.into_value(ctx)), Some(2), 3, &[t.into(), i.into_value(ctx), v]);
+        }
+
+        Gc::write(&nctx.ctx, t)[i].unlock().set(v);
+        nctx.return_(Value::undefined())
+    }
+
+    pub ("tuple-ref") fn tuple_ref<'gc>(
+        nctx,
+        t: Gc<'gc, Tuple<'gc>>,
+        i: usize
+    ) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        if i >= t.len() {
+            return nctx.wrong_argument_violation("tuple-ref", "index out of bounds", Some(i.into_value(ctx)), Some(2), 2, &[t.into(), i.into_value(ctx)]);
+        }
+
+        nctx.return_(t[i].get())
+    }
+
+    pub ("tuple?") fn is_tuple<'gc>(
+        nctx,
+        v: Value<'gc>
+    ) -> bool {
+        nctx.return_(v.is::<Tuple>())
+    }
+
+    pub ("eof-object?") fn is_eof_object<'gc>(
+        nctx,
+        v: Value<'gc>
+    ) -> bool {
+        nctx.return_(v.is_eof())
+    }
+
 );
 
 native_cont!(

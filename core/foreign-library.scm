@@ -85,7 +85,7 @@
                              (global? #f))
             (define (error-not-found)
                 (error 'load-foreign-library 
-                        (format "Could not find foreign library '~a'" filename)))
+                        (format #f "Could not find foreign library '~a'" filename)))
             (define flags
                 (logior (if lazy? RTLD_LAZY RTLD_NOW)
                         (if global? RTLD_GLOBAL RTLD_LOCAL)))
@@ -128,6 +128,7 @@
     (define (foreign-library-function lib name . args) 
         (let-optionals args 
             ([return-type void]
-             [arg-types '()])
+             [arg-types '()]
+             [variadic? #f])
             (let ([ptr (foreign-library-pointer lib name)])
-                (pointer->procedure return-type ptr arg-types)))))
+                (pointer->procedure return-type ptr arg-types variadic?)))))

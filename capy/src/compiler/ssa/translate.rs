@@ -388,12 +388,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.builder.append_block_param(block, types::I64);
         }
 
+        if k.variadic().is_some() {
+            self.builder.append_block_param(block, types::I64);
+        }
+
         for i in 0..k.args.len() {
             self.variables.insert(
                 k.args[i],
                 VarDef::Value(self.builder.block_params(block)[i]),
             );
         }
+        if let Some(rest) = k.variadic() {
+            self.variables.insert(
+                rest,
+                VarDef::Value(self.builder.block_params(block)[k.args.len()]),
+            );
+        }
+
         block
     }
 
@@ -550,10 +561,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let k = *k;
             // TODO: Support `k` where variadic is used and materialize a list.
             let block = self.block_for_cont(k);
-            let block_args = args
+            let mut block_args = args[..k.args.len()]
                 .into_iter()
                 .map(|v| ir::BlockArg::Value(*v))
                 .collect::<Vec<_>>();
+            if k.variadic.is_some() {
+                let mut ls = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, Value::null().bits() as i64);
+                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                for arg in args[k.args.len()..].iter().rev() {
+                    let call = self.builder.ins().call(self.thunks.cons, &[ctx, *arg, ls]);
+                    ls = self.builder.inst_results(call)[0];
+                }
+                block_args.push(ir::BlockArg::Value(ls));
+            }
+
             let bb_args_len = self.builder.block_params(block).len();
             if bb_args_len != block_args.len() {
                 panic!(
@@ -840,7 +864,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn term(&mut self, term: TermRef<'gc>) {
-        self.set_debug_loc(term.source());
+        let src = term.source();
+        self.set_debug_loc(src);
         match &*term {
             Term::Let(var, expr, next) => {
                 match expr {
@@ -886,14 +911,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 let rands = self.push_args(&rands);
 
-                /*if false && self.module_builder.stacktraces {
-                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
-
-                    self.builder
-                        .ins()
-                        .call(self.thunks.debug_trace, &[ctx, rator, rands, num_rands]);
-                }
-
+                /*
                 self.builder.ins().jump(
                     self.exit_block,
                     &[
@@ -906,6 +924,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 match callee {
                     Callee::Indirect { target, closure } => {
+                        if self.module_builder.stacktraces {
+                            let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                            let src = self.atom(Atom::Constant(src));
+                            self.builder.ins().call(
+                                self.thunks.debug_trace,
+                                &[ctx, closure, rands, num_rands, src],
+                            );
+                        }
                         self.builder.ins().jump(
                             self.exit_block,
                             &[
@@ -918,12 +944,28 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     }
 
                     Callee::Direct { target, closure } => {
+                        if self.module_builder.stacktraces {
+                            let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                            let src = self.atom(Atom::Constant(src));
+                            self.builder.ins().call(
+                                self.thunks.debug_trace,
+                                &[ctx, closure, rands, num_rands, src],
+                            );
+                        }
                         self.builder
                             .ins()
                             .return_call(target, &[closure, rands, num_rands]);
                     }
 
                     Callee::SelfRec(block) => {
+                        if self.module_builder.stacktraces {
+                            let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                            let src = self.atom(Atom::Constant(src));
+                            self.builder.ins().call(
+                                self.thunks.debug_trace,
+                                &[ctx, self.rator, rands, num_rands, src],
+                            );
+                        }
                         // just jump back to entrypoint
                         let block_args = [self.rator, rands, num_rands]
                             .into_iter()

@@ -1,9 +1,7 @@
 (define-library (scmline)
-    (import)
-    (export)
+    (import (scmline tty)
+            (scmline layout)
+            (scmline line-buffer))
+            
 (begin 
-    (define (foo x) x)
-    (define (bar y) (foo y))
-    (define x 42)
-    (set! x 1)
-))
+    (format #t "scmline~%~!")))

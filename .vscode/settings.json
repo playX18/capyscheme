@@ -8,6 +8,9 @@
     "termios.h": "c",
     "cdefs.h": "c",
     "ttydefaults.h": "c",
-    "unistd.h": "c"
+    "unistd.h": "c",
+    "time.h": "c",
+    "event.h": "c",
+    "types.h": "c"
   }
 }
