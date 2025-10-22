@@ -43,7 +43,10 @@ backtrace.workspace = true
 which.workspace = true
 libffi.workspace = true
 unicode-general-category.workspace = true
+unicode-normalization.workspace = true
 uuid = { version = "1.18.1", features = ["v4"] }
+hostname = "0.4.1"
+errno = "0.3.14"
 
 [lib]
 crate-type = ["dylib"]

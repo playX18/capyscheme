@@ -506,7 +506,37 @@ impl<'gc> WeakTable<'gc> {
             }
         }
     }
+
+    pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+        let guard = self.inner.lock();
+        let new_table = WeakTable::new(&ctx, guard.entries.get().len(), guard.load_factor);
+
+        for i in 0..guard.entries.get().len() {
+            let mut e = guard.entries.get()[i].get();
+
+            while let Some(entry) = e {
+                let ekey = entry.key(&ctx);
+                if !ekey.is_bwp() && !entry.value(&ctx).is_bwp() {
+                    new_table.put(ctx, ekey, entry.value(&ctx));
+                }
+                e = entry.next.get();
+            }
+        }
+
+        new_table
+    }
+
+    pub fn len(&self) -> usize {
+        let guard = self.inner.lock();
+        guard.count.get()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
+
+pub type WeakTableRef<'gc> = Gc<'gc, WeakTable<'gc>>;
 
 unsafe impl<'gc> Tagged for WeakTable<'gc> {
     const TC8: TypeCode8 = TypeCode8::WEAKTABLE;

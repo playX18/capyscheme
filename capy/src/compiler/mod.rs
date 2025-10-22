@@ -206,6 +206,7 @@ pub fn compile_cps_to_object<'gc>(
     return Ok(product);
 }
 
+#[allow(unused_mut)]
 pub fn link_object_product<'gc>(
     ctx: Context<'gc>,
     mut product: ObjectProduct,

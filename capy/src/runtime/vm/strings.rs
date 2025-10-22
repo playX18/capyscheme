@@ -3,6 +3,9 @@ use rsgc::Gc;
 use crate::native_fn;
 use crate::runtime::prelude::*;
 use std::cmp::Ordering;
+use unicode_general_category::GeneralCategory;
+use unicode_general_category::get_general_category;
+use unicode_normalization::*;
 
 native_fn!(
     register_str_fns:
@@ -65,153 +68,243 @@ native_fn!(
     }
 
     pub ("string>?") fn string_gt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() < 2 {
-            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string>?", "at least 1 argument required", None, None, 0, rest);
         }
 
-        let mut s1 = rest[0].downcast::<Str>();
-        let mut s2 = rest[1].downcast::<Str>();
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
-        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string>?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string>?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
             let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
             if !matches!(cmp, Some(Ordering::Greater)) {
                 return nctx.return_(false);
             }
-            if !r.is::<Str>() {
-                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
-            }
             s1 = s2;
-            s2 = r.downcast::<Str>();
         }
 
-        let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
-
-        nctx.return_(matches!(cmp, Some(Ordering::Greater)))
+        nctx.return_(true)
     }
 
     pub ("string-ci>?") fn string_ci_gt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() < 2 {
-            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string-ci>?", "at least 1 argument required", None, None, 0, rest);
         }
 
-        let mut s1 = rest[0].downcast::<Str>();
-        let mut s2 = rest[1].downcast::<Str>();
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
-        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string-ci>?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci>?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
             let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
             if !matches!(cmp, Some(Ordering::Greater)) {
                 return nctx.return_(false);
             }
-            if !r.is::<Str>() {
-                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
-            }
             s1 = s2;
-            s2 = r.downcast::<Str>();
         }
 
-        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
-
-        nctx.return_(matches!(cmp, Some(Ordering::Greater)))
+        nctx.return_(true)
     }
 
     pub ("string>=?") fn string_ge<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() < 2 {
-            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string>=?", "at least 1 argument required", None, None, 0, rest);
         }
 
-        let mut s1 = rest[0].downcast::<Str>();
-        let mut s2 = rest[1].downcast::<Str>();
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
-        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string>=?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string>=?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
             let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
             if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
                 return nctx.return_(false);
             }
-            if !r.is::<Str>() {
-                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
-            }
             s1 = s2;
-            s2 = r.downcast::<Str>();
         }
 
-        let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
-
-        nctx.return_(matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)))
+        nctx.return_(true)
     }
 
     pub ("string-ci>=?") fn string_ci_ge<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() < 2 {
-            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string-ci>=?", "at least 1 argument required", None, None, 0, rest);
         }
 
-        let mut s1 = rest[0].downcast::<Str>();
-        let mut s2 = rest[1].downcast::<Str>();
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
-        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string-ci>=?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci>=?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
             let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
             if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
                 return nctx.return_(false);
             }
-            if !r.is::<Str>() {
-                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
-            }
             s1 = s2;
-            s2 = r.downcast::<Str>();
         }
 
-        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
-
-        nctx.return_(matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)))
+        nctx.return_(true)
     }
 
     pub ("string<?") fn string_lt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() < 2 {
-            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string<?", "at least 1 argument required", None, None, 0, rest);
         }
 
-        let mut s1 = rest[0].downcast::<Str>();
-        let mut s2 = rest[1].downcast::<Str>();
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
-        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string<?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string<?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
             let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
             if !matches!(cmp, Some(Ordering::Less)) {
                 return nctx.return_(false);
             }
-            if !r.is::<Str>() {
-                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
-            }
             s1 = s2;
-            s2 = r.downcast::<Str>();
         }
 
-        let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
-
-        nctx.return_(matches!(cmp, Some(Ordering::Less)))
+        nctx.return_(true)
     }
 
     pub ("string-ci<?") fn string_ci_lt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() < 2 {
-            return nctx.wrong_argument_violation("string-ci=?", "expected at least two strings", None, None, rest.len(), rest);
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string-ci<?", "at least 1 argument required", None, None, 0, rest);
         }
 
-        let mut s1 = rest[0].downcast::<Str>();
-        let mut s2 = rest[1].downcast::<Str>();
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
-        for (i, r) in rest.iter().skip(2).copied().enumerate() {
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string-ci<?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci<?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
             let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
             if !matches!(cmp, Some(Ordering::Less)) {
                 return nctx.return_(false);
             }
-            if !r.is::<Str>() {
-                return nctx.wrong_argument_violation("string-ci=?", "expected a string", Some(r), Some(i + 2), rest.len(), rest);
-            }
             s1 = s2;
-            s2 = r.downcast::<Str>();
         }
 
-        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+        nctx.return_(true)
+    }
 
-        nctx.return_(matches!(cmp, Some(Ordering::Less)))
+    pub ("string<=?") fn string_le<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string<=?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string<=?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string<=?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
+            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Less) | Some(Ordering::Equal)) {
+                return nctx.return_(false);
+            }
+            s1 = s2;
+        }
+
+        nctx.return_(true)
+    }
+
+    pub ("string-ci<=?") fn string_ci_le<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("string-ci<=?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let s1 = rest[0];
+        if !s1.is::<Str>() {
+            return nctx.wrong_argument_violation("string-ci<=?", "expected a string", Some(s1), Some(1), rest.len(), rest);
+        }
+        let mut s1 = s1.downcast::<Str>();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is::<Str>() {
+                return nctx.wrong_argument_violation("string-ci<=?", "expected a string", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let s2 = val.downcast::<Str>();
+            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            if !matches!(cmp, Some(Ordering::Less) | Some(Ordering::Equal)) {
+                return nctx.return_(false);
+            }
+            s1 = s2;
+        }
+
+        nctx.return_(true)
     }
 
     pub ("string-length") fn string_length<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> usize {
@@ -246,6 +339,7 @@ native_fn!(
         let s = Ok(Str::new(&nctx.ctx, &buffer, false));
         nctx.return_(s)
     }
+
 
     pub ("symbol-append") fn symbol_append<'gc>(nctx, syms: &'gc [Value<'gc>]) -> Result<Gc<'gc, Symbol<'gc>>, Value<'gc>> {
         if syms.len() == 0 {
@@ -291,6 +385,51 @@ native_fn!(
         nctx.return_(sym)
     }
 
+    pub ("uninterned-symbol?") fn is_uninterned_symbol<'gc>(nctx, sym: Gc<'gc, Symbol<'gc>>) -> bool {
+        nctx.return_(sym.is_uninterned())
+    }
+
+    pub ("string-fill!") fn string_fill_destructive<'gc>(
+        nctx,
+        str: Gc<'gc, Str<'gc>>,
+        ch: char,
+        start: Option<usize>,
+        end: Option<usize>
+    ) -> Value<'gc> {
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(str.len());
+
+        if start > end {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "string-fill!",
+                "start greater than end",
+                None,
+                None,
+                3,
+                &[str.into(), start.into_value(ctx), end.into_value(ctx)]
+            );
+        }
+
+        if end > str.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "string-fill!",
+                "end out of bounds",
+                None,
+                None,
+                3,
+                &[str.into(), end.into_value(ctx)]
+            );
+        }
+
+        for i in start..end {
+            Str::set(str, &nctx.ctx, i, ch);
+        }
+
+        nctx.return_(Value::undefined())
+    }
+
     /// prints all arguments using their `Display` implementation, followed by a newline.
     pub (":print") fn print<'gc>(nctx, args: &'gc [Value<'gc>]) -> () {
         for arg in args.iter() {
@@ -329,6 +468,14 @@ native_fn!(
 
     pub ("string-prefix?") fn string_prefix<'gc>(nctx, prefix: Gc<'gc, Str<'gc>>, str: Gc<'gc, Str<'gc>>) -> bool {
         nctx.return_(str.to_string().starts_with(&prefix.to_string()))
+    }
+
+    pub ("string-copy") fn string_copy<'gc>(
+        nctx,
+        s1: Gc<'gc, Str<'gc>>
+    ) -> Gc<'gc, Str<'gc>> {
+        let s2 = Str::substring_copy(s1, &nctx.ctx, 0, s1.len());
+        nctx.return_(s2)
     }
 
     pub ("string-contains") fn string_contains<'gc>(
@@ -661,6 +808,13 @@ native_fn!(
         nctx.return_(bytevec)
     }
 
+    pub ("string->utf8/nul") fn string_to_utf8_nul<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
+        let mut bytes = str.to_string().into_bytes();
+        bytes.push(0); // NUL terminator
+        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        nctx.return_(bytevec)
+    }
+
     pub ("utf16->string") fn utf16_to_string<'gc>(nctx, bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         let utf16_data: Vec<u16> = bytes.as_slice()
             .chunks(2)
@@ -704,6 +858,57 @@ native_fn!(
         nctx.return_(bytevec)
     }
 
+    pub ("string->utf32") fn string_to_utf32<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
+        let utf32_data: Vec<u32> = str.to_string().chars().map(|ch| ch as u32).collect();
+        let mut bytes = Vec::with_capacity(utf32_data.len() * 4);
+        for code_point in utf32_data {
+            bytes.extend_from_slice(&code_point.to_le_bytes());
+        }
+
+        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        nctx.return_(bytevec)
+    }
+
+    pub ("utf32->string") fn utf32_to_string<'gc>(nctx, bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
+        let utf32_data: Vec<u32> = bytes.as_slice()
+            .chunks(4)
+            .map(|chunk| {
+                if chunk.len() == 4 {
+                    u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+                } else {
+                    // Handle incomplete code points by padding with zeros
+                    let mut padded = [0u8; 4];
+                    for i in 0..chunk.len() {
+                        padded[i] = chunk[i];
+                    }
+                    u32::from_le_bytes(padded)
+                }
+            })
+            .collect();
+
+        let chars_result: Result<String, _> = utf32_data.iter().map(|&cp| {
+            std::char::from_u32(cp).ok_or(())
+        }).collect::<Result<String, _>>();
+
+        match chars_result {
+            Ok(s) => {
+                let str = Str::new(&nctx.ctx, &s, false);
+                nctx.return_(Ok(str))
+            },
+            Err(_) => {
+                nctx.wrong_argument_violation(
+                    "utf32->string",
+                    "invalid UTF-32 bytevector",
+                    None,
+                    None,
+                    1,
+                    &[bytes.into()]
+                )
+            }
+        }
+    }
+
+
     pub ("char-general-category") fn char_general_category<'gc>(nctx, ch: char) -> Gc<'gc, Symbol<'gc>> {
         use unicode_general_category::get_general_category;
 
@@ -746,33 +951,6 @@ native_fn!(
         nctx.return_(sym)
     }
 
-    pub ("char-whitespace?") fn char_whitespace<'gc>(nctx, ch: char) -> bool {
-        nctx.return_(ch.is_whitespace())
-    }
-
-    pub ("char-alphabetic?") fn char_alphabetic<'gc>(nctx, ch: char) -> bool {
-        nctx.return_(ch.is_alphabetic())
-    }
-
-    pub ("char-numeric?") fn char_numeric<'gc>(nctx, ch: char) -> bool {
-        nctx.return_(ch.is_numeric())
-    }
-
-    pub ("char-upper-case?") fn char_upper_case<'gc>(nctx, ch: char) -> bool {
-        nctx.return_(ch.is_uppercase())
-    }
-
-    pub ("char-lower-case?") fn char_lower_case<'gc>(nctx, ch: char) -> bool {
-        nctx.return_(ch.is_lowercase())
-    }
-
-    pub ("char-title-case?") fn char_title_case<'gc>(nctx, ch: char) -> bool {
-        use unicode_general_category::get_general_category;
-        use unicode_general_category::GeneralCategory;
-
-        let category = get_general_category(ch);
-        nctx.return_(category == GeneralCategory::TitlecaseLetter)
-    }
 
     pub ("list->string") fn list_to_string<'gc>(nctx, lst: Value<'gc>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         if !lst.is_list() {
@@ -799,7 +977,390 @@ native_fn!(
         nctx.return_(Ok(s))
     }
 
+    pub ("char=?") fn char_equal<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
 
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let ch1 = ch1_val.char();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char();
+            if ch1 != ch2 {
+                return nctx.return_(false);
+            }
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char-ci=?") fn char_ci_equal<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char-ci=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char-ci=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            if ch1 != ch2 {
+                return nctx.return_(false);
+            }
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char<?") fn char_lt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char<?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char<?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char<?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char();
+            if ch1 >= ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char-ci<?") fn char_ci_lt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char-ci<?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char-ci<?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char-ci<?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            if ch1 >= ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char>?") fn char_gt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char>?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char>?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char>?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char();
+            if ch1 <= ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char-ci>?") fn char_ci_gt<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char-ci>?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char-ci>?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char-ci>?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            if ch1 <= ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char<=?") fn char_le<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char<=?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char<=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char<=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char();
+            if ch1 > ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char-ci<=?") fn char_ci_le<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char-ci<=?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char-ci<=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char-ci<=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            if ch1 > ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char>=?") fn char_ge<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char>=?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char>=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char();
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char>=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char();
+            if ch1 < ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+    pub ("char-ci>=?") fn char_ci_ge<'gc>(nctx, rest: &'gc [Value<'gc>]) -> bool {
+        if rest.len() == 0 {
+            return nctx.wrong_argument_violation("char-ci>=?", "at least 1 argument required", None, None, 0, rest);
+        }
+
+        if rest.len() < 2 {
+            return nctx.return_(true);
+        }
+
+        let ch1_val = rest[0];
+        if !ch1_val.is_char() {
+            return nctx.wrong_argument_violation("char-ci>=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
+        }
+        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        for (i, val) in rest.iter().enumerate().skip(1) {
+            if !val.is_char() {
+                return nctx.wrong_argument_violation("char-ci>=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
+            }
+            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            if ch1 < ch2 {
+                return nctx.return_(false);
+            }
+            ch1 = ch2;
+        }
+        nctx.return_(true)
+    }
+
+
+    pub ("char-title-case?") fn char_title_case<'gc>(nctx, ch: char) -> bool {
+
+
+        let category = get_general_category(ch);
+        nctx.return_(category == GeneralCategory::TitlecaseLetter)
+    }
+
+    pub ("char-lower-case?") fn char_lower_casep<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_lowercase())
+    }
+
+    pub ("char-upper-case?") fn char_upper_casep<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_uppercase())
+    }
+
+    pub ("char-whitespace?") fn char_whitespacep<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_whitespace())
+    }
+
+    pub ("char-numeric?") fn char_numericp<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_numeric())
+    }
+
+    pub ("char-alphabetic?") fn char_alphabeticp<'gc>(nctx, ch: char) -> bool {
+        nctx.return_(ch.is_alphabetic())
+    }
+
+    pub ("string-downcase") fn string_downcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        let lowercased = str.to_string().to_lowercase();
+        let s = Str::new(&nctx.ctx, &lowercased, false);
+        nctx.return_(s)
+    }
+
+    pub ("string-foldcase") fn string_foldcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        let folded = str.to_string().to_lowercase();
+        let s = Str::new(&nctx.ctx, &folded, false);
+        nctx.return_(s)
+    }
+
+    pub ("string-upcase") fn string_upcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        let uppercased = str.to_string().to_uppercase();
+        let s = Str::new(&nctx.ctx, &uppercased, false);
+        nctx.return_(s)
+    }
+
+    pub ("string-titlecase") fn string_titlecase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        let mut result = String::new();
+        let mut prev_was_delimiter = true;
+
+        for ch in str.to_string().chars() {
+            if prev_was_delimiter {
+                result.extend(ch.to_uppercase());
+            } else {
+                result.extend(ch.to_lowercase());
+            }
+            prev_was_delimiter = ch.is_whitespace() || get_general_category(ch) == GeneralCategory::DashPunctuation;
+        }
+
+        let s = Str::new(&nctx.ctx, &result, false);
+        nctx.return_(s)
+    }
+
+    pub ("char-upcase") fn char_upcase<'gc>(nctx, ch: char) -> char {
+        let uppercased = ch.to_uppercase().next().unwrap_or(ch);
+        nctx.return_(uppercased)
+    }
+
+    pub ("char-downcase") fn char_downcase<'gc>(nctx, ch: char) -> char {
+        let lowercased = ch.to_lowercase().next().unwrap_or(ch);
+        nctx.return_(lowercased)
+    }
+
+    pub ("char-foldcase") fn char_foldcase<'gc>(nctx, ch: char) -> char {
+        let folded = ch.to_lowercase().next().unwrap_or(ch);
+        nctx.return_(folded)
+    }
+
+    pub ("char-titlecase") fn char_titlecase<'gc>(nctx, ch: char) -> char {
+        let titlecased = ch.to_uppercase().next().unwrap_or(ch);
+        nctx.return_(titlecased)
+    }
+
+    pub ("string-normalize-nfc") fn string_normalize_nfc<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        use unicode_normalization::UnicodeNormalization;
+
+        let normalized: String = str.to_string().nfc().collect();
+        let s = Str::new(&nctx.ctx, &normalized, false);
+        nctx.return_(s)
+    }
+
+    pub ("string-normalize-nfd") fn string_normalize_nfd<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        use unicode_normalization::UnicodeNormalization;
+
+        let normalized: String = str.to_string().nfd().collect();
+        let s = Str::new(&nctx.ctx, &normalized, false);
+        nctx.return_(s)
+    }
+
+    pub ("string-normalize-nfkc") fn string_normalize_nfkc<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        use unicode_normalization::UnicodeNormalization;
+
+        let normalized: String = str.to_string().nfkc().collect();
+        let s = Str::new(&nctx.ctx, &normalized, false);
+        nctx.return_(s)
+    }
+
+    pub ("string-normalize-nfkd") fn string_normalize_nfkd<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        use unicode_normalization::UnicodeNormalization;
+
+        let normalized: String = str.to_string().nfkd().collect();
+        let s = Str::new(&nctx.ctx, &normalized, false);
+        nctx.return_(s)
+    }
 
 );
 

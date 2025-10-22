@@ -537,7 +537,7 @@
                 (display "#<record-constructor-descriptor " port)
                 (display (record-type-name (rcd-rtd obj)) port)
                 (display ">" port)]
-            [else (:print obj) (display "#<unknown>" port)])))
+            [else (display "#<unknown>" port)])))
 (define (newline . port) (display "\n" (if (null? port) (current-output-port) (car port))))
 
 (define (displayln x . rest)

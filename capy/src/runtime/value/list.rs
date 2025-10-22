@@ -676,6 +676,40 @@ impl<'gc> Value<'gc> {
 
         res
     }
+
+    pub fn destructive_filter(
+        self,
+        ctx: Context<'gc>,
+        mut f: impl FnMut(Value<'gc>) -> bool,
+    ) -> Value<'gc> {
+        let mut last: Option<Self> = None;
+        let mut head = self;
+        let mut rest = self;
+
+        loop {
+            if rest.is_null() {
+                if head == self {
+                    return Value::null();
+                } else {
+                    last.unwrap().set_cdr(ctx, Value::null());
+                    return self;
+                }
+            } else if f(rest.car()) {
+                if head != rest {
+                    head.set_car(ctx, rest.car());
+                }
+                last = Some(head);
+                head = head.cdr();
+                rest = rest.cdr();
+            } else {
+                rest = rest.cdr();
+            }
+        }
+    }
+
+    pub fn destructive_delete(self, ctx: Context<'gc>, value: Value<'gc>) -> Value<'gc> {
+        self.destructive_filter(ctx, |x| !x.r5rs_equal(value))
+    }
 }
 
 #[macro_export]

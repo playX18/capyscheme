@@ -716,3 +716,38 @@ impl<'a, 'gc, T: FromValue<'gc>> RestOf<'a, 'gc, T> {
         self.rest.is_empty()
     }
 }
+
+pub enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl<'gc, L, R> FromValue<'gc> for Either<L, R>
+where
+    L: FromValue<'gc>,
+    R: FromValue<'gc>,
+{
+    fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+        match L::try_from_value(ctx, value) {
+            Ok(l) => Ok(Either::Left(l)),
+            Err(_) => {
+                let r = R::try_from_value(ctx, value)?;
+                Ok(Either::Right(r))
+            }
+        }
+    }
+}
+
+impl<'gc, L, R> IntoValue<'gc> for Either<L, R>
+where
+    L: IntoValue<'gc>,
+    R: IntoValue<'gc>,
+{
+    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+        match self {
+            Either::Left(l) => l.into_value(mc),
+            Either::Right(r) => r.into_value(mc),
+        }
+    }
+}
+

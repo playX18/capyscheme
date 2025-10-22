@@ -25,9 +25,18 @@ global!(
     pub loc_compile_fallback_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%compile-fallback-path", Value::null());
 
     pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(&ctx, env!("CARGO_MANIFEST_DIR"), true).into());
+
+    pub loc_fresh_auto_compile<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%fresh-auto-compile", Value::new(false));
 );
 
 pub fn init_load_path<'gc>(ctx: Context<'gc>) {
+    let _ = loc_load_path(ctx);
+    let _ = loc_load_compiled_path(ctx);
+    let _ = loc_compile_fallback_path(ctx);
+    let _ = loc_capy_root(ctx);
+    let _ = loc_fresh_auto_compile(ctx);
+    let _ = loc_load_extensions(ctx);
+    let _ = loc_load_compiled_extensions(ctx);
     const FALLBACK_DIR: &str = concat!("capy/cache/", env!("CARGO_PKG_VERSION"));
 
     let cache_dir = if let Ok(env) = std::env::var("XDG_CACHE_HOME") {
@@ -141,6 +150,10 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
 
 pub fn init_load<'gc>(ctx: Context<'gc>) {
     register_load_fns(ctx);
+}
+
+fn fresh_auto_compile<'gc>(ctx: Context<'gc>) -> bool {
+    loc_fresh_auto_compile(ctx).get() != Value::new(false)
 }
 
 /// Given a file name find the full path to the file and the path to its compiled version.
@@ -305,7 +318,9 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
             .ok()
             .and_then(|m| m.modified().ok())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        if compiled_is_fresh(&source, &compiled, source_time, compiled_time) {
+        if !fresh_auto_compile(ctx)
+            && compiled_is_fresh(&source, &compiled, source_time, compiled_time)
+        {
             compiled_thunk = libs.load(&compiled, ctx).unwrap_or(Value::new(false));
         }
     }

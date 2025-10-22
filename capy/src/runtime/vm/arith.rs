@@ -18,6 +18,14 @@ native_fn!(
         nctx.return_(x.is_nan())
     }
 
+    pub ("infinite?") fn is_infinite<'gc>(nctx, x: Number<'gc>) -> bool {
+        nctx.return_(x.is_infinite())
+    }
+
+    pub ("finite?") fn is_finite<'gc>(nctx, x: Number<'gc>) -> bool {
+        nctx.return_(x.is_finite())
+    }
+
     pub ("exact?") fn is_exact<'gc>(nctx, x: Number<'gc>) -> bool {
         nctx.return_(x.is_exact())
     }
@@ -274,6 +282,31 @@ native_fn!(
         })
     }
 
+    pub ("numerator") fn numerator<'gc>(nctx, x: Number<'gc>) -> Number<'gc> {
+        if !x.is_real_valued() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("numerator", "argument must be a real number", Some(x), Some(1), 1, &[x]);
+        }
+
+        let inexact = !x.is_exact();
+        let obj = x.to_exact(nctx.ctx);
+        if let Number::Rational(rn) = obj {
+            let nume = if inexact {
+                rn.numerator.to_inexact(nctx.ctx)
+            } else {
+                rn.numerator
+            };
+
+            return nctx.return_(nume);
+        }
+        let ctx = nctx.ctx;
+        nctx.return_(if inexact {
+            x.to_inexact(ctx)
+        } else {
+            x
+        })
+    }
+
     pub ("expt") fn expt<'gc>(nctx, x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
         let expt = Number::expt(nctx.ctx, x, y);
 
@@ -322,6 +355,7 @@ native_fn!(
         nctx.return_(atan2)
     }
 
+
     pub ("sqrt") fn sqrt<'gc>(nctx, x: Number<'gc>) -> Number<'gc> {
         let sqrt = Number::sqrt(nctx.ctx, x);
         nctx.return_(sqrt)
@@ -355,8 +389,6 @@ native_fn!(
         let acos = Number::acos(nctx.ctx, x);
         nctx.return_(acos)
     }
-
-
 
 
     pub ("floor") fn floor<'gc>(nctx, x: Number<'gc>) -> Result<Number<'gc>, Value<'gc>> {
@@ -1241,19 +1273,6 @@ native_fn!(
         nctx.return_(Ok(res))
     }
 
-    pub ("flnumerator") fn fl_numerator<'gc>(nctx, x: f64) -> Value<'gc> {
-        if x == 0.0 {
-            return nctx.return_(Value::new(0.0f64));
-        }
-        let ctx = nctx.ctx;
-        let obj = Number::Flonum(x).to_exact(ctx);
-        if let Number::Rational(r) = obj {
-            nctx.return_(r.numerator.into_value(ctx))
-        } else {
-            nctx.return_(obj.to_inexact(ctx).into_value(ctx))
-        }
-    }
-
     pub ("fxmod") fn fx_mod<'gc>(nctx, x: i32, y: i32) -> i32 {
         if y == 0 {
             let ctx = nctx.ctx;
@@ -1290,7 +1309,7 @@ native_fn!(
         nctx.return_(count)
     }
 
-    pub ("bitwise-bit-length") fn bitwise_bit_length<'gc>(nctx, x: ExactInteger<'gc>) -> u32 {
+    pub ("bitwise-length") fn bitwise_bit_length<'gc>(nctx, x: ExactInteger<'gc>) -> u32 {
         let length = x.bit_length(nctx.ctx);
         nctx.return_(length)
     }
@@ -2018,6 +2037,165 @@ native_fn!(
         let mask2 = !(-1 << fx3);
         let mask = mask1 & !mask2;
         nctx.return_((mask & (fx4 << fx2)) | (!mask & fx1))
+    }
+
+    pub ("fixnum->flonum") fn fixnum_to_flonum<'gc>(nctx, x: i32) -> f64 {
+        nctx.return_(x as f64)
+    }
+
+    pub ("real->flonum") fn real_to_flonum<'gc>(nctx, x: Number<'gc>) -> f64 {
+        if !x.is_real() {
+            let x = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("real->flonum", "argument must be a real number", Some(x), Some(1), 1, &[x]);
+        }
+
+        let fl = x.real_to_f64(nctx.ctx);
+
+        nctx.return_(fl)
+    }
+
+    pub ("flsqrt") fn fl_sqrt<'gc>(nctx, x: f64) -> f64 {
+        let res = x.sqrt();
+        nctx.return_(res)
+    }
+
+    pub ("flabs") fn fl_abs<'gc>(nctx, x: f64) -> f64 {
+        let res = x.abs();
+        nctx.return_(res)
+    }
+
+    pub ("flatan") fn fl_atan<'gc>(nctx, x: f64) -> f64 {
+        let res = x.atan();
+        nctx.return_(res)
+    }
+
+    pub ("flacos") fn fl_acos<'gc>(nctx, x: f64) -> f64 {
+        let res = x.acos();
+        nctx.return_(res)
+    }
+
+    pub ("flasin") fn fl_asin<'gc>(nctx, x: f64) -> f64 {
+        let res = x.asin();
+        nctx.return_(res)
+    }
+
+    pub ("fllog") fn fl_log<'gc>(nctx, x: f64) -> f64 {
+        let res = x.ln();
+        nctx.return_(res)
+    }
+
+    pub ("fltan") fn fl_tan<'gc>(nctx, x: f64) -> f64 {
+        let res = x.tan();
+        nctx.return_(res)
+    }
+
+    pub ("flcos") fn fl_cos<'gc>(nctx, x: f64) -> f64 {
+        let res = x.cos();
+        nctx.return_(res)
+    }
+
+    pub ("flsin") fn fl_sin<'gc>(nctx, x: f64) -> f64 {
+        let res = x.sin();
+        nctx.return_(res)
+    }
+
+    pub ("flexpt" ) fn fl_expt<'gc>(nctx, x: f64, y: f64) -> f64 {
+        let res = x.powf(y);
+        nctx.return_(res)
+    }
+
+    pub ("flexp") fn fl_exp<'gc>(nctx, x: f64) -> f64 {
+        let res = x.exp();
+        nctx.return_(res)
+    }
+
+    pub ("flround") fn fl_round<'gc>(nctx, x: f64) -> f64 {
+        let res = x.round();
+        nctx.return_(res)
+    }
+
+    pub ("fltruncate") fn fl_truncate<'gc>(nctx, x: f64) -> f64 {
+        let res = x.trunc();
+        nctx.return_(res)
+    }
+
+    pub ("flceiling") fn fl_ceiling<'gc>(nctx, x: f64) -> f64 {
+        let res = x.ceil();
+        nctx.return_(res)
+    }
+
+    pub ("flfloor") fn fl_floor<'gc>(nctx, x: f64) -> f64 {
+        let res = x.floor();
+        nctx.return_(res)
+    }
+
+    pub ("fldenominator") fn fl_denominator<'gc>(nctx, x: f64) -> Number<'gc> {
+        let n = Number::Flonum(x).to_exact(nctx.ctx);
+        let res = if let Number::Rational(r) = n {
+            r.denominator.to_inexact(nctx.ctx)
+        } else {
+            Number::Flonum(1.0)
+        };
+        nctx.return_(res)
+    }
+
+    pub ("flnumerator") fn fl_numerator<'gc>(nctx, x: f64) -> Number<'gc> {
+        let n = Number::Flonum(x).to_exact(nctx.ctx);
+        let res = if let Number::Rational(r) = n {
+            r.numerator.to_inexact(nctx.ctx)
+        } else {
+            Number::Flonum(x)
+        };
+        nctx.return_(res)
+    }
+
+    pub ("decode-flonum") fn decode_flonum<'gc>(nctx, x: f64) -> (i64, i32, i32) {
+
+        let bits = x.to_bits();
+
+        let mant_bits = bits & 0x000F_FFFF_FFFF_FFFF;
+        let sign_bits = (bits >> 63) & 0x1;
+        let exp_bits = (bits >> 52) & 0x7FF;
+        let exp;
+        let sign;
+        let mantissa = if x == 0.0 {
+            exp = 0;
+            sign = if sign_bits != 0 {
+                -1
+            } else {
+                0
+            };
+            0
+        } else if x.is_nan() {
+            exp = 972;
+            sign = 1;
+            0x18000000000000
+        } else if x.is_infinite() {
+            exp = 972;
+            sign = if sign_bits != 0 {
+                -1
+            } else {
+                1
+            };
+            0x18000000000000
+        } else {
+            exp = if exp_bits != 0 {
+                exp_bits.wrapping_sub(1023) as i32
+            } else {
+                -1022
+            }.wrapping_sub(52);
+            sign = if sign_bits != 0 {
+                -1
+            } else { 1 };
+            mant_bits as i64
+        };
+        let mantissa = if exp_bits != 0 {
+            mantissa | 0x0010_0000_0000_0000
+        } else {
+            mantissa
+        };
+
+        nctx.return_((mantissa, exp, sign))
     }
 );
 

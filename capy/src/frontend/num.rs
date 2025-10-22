@@ -386,6 +386,16 @@ impl<'a> NumberParser<'a> {
     }
 
     fn parse(&mut self) -> Result<Number, NumberParseError> {
+        if self.input == "+nan.0" || self.input == "-nan.0" {
+            return Ok(Number::InexactReal(f64::NAN));
+        }
+        if self.input == "+inf.0" {
+            return Ok(Number::InexactReal(f64::INFINITY));
+        }
+        if self.input == "-inf.0" {
+            return Ok(Number::InexactReal(f64::NEG_INFINITY));
+        }
+
         if self.input.is_empty() {
             return Err(NumberParseError::EmptyNumber);
         }
@@ -464,6 +474,7 @@ impl<'a> NumberParser<'a> {
                     prefix.radix = Radix::Hexadecimal;
                     self.advance();
                 }
+
                 c => {
                     return Err(NumberParseError::InvalidFormat(format!(
                         "Unknown prefix character: {}",

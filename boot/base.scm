@@ -963,6 +963,22 @@
                       '()
                       (cons (datum->syntax #'filename x) (lp))))))))])))
 
+;; TODO: Implement case-insensitive file lookup for include-ci
+(define-syntax include-ci 
+  (lambda (stx)
+    (syntax-case stx ()
+      [(include-ci filename)
+        (call-with-include-port 
+          #'filename
+          (lambda (port)
+            (cons #'begin 
+              (let lp ()
+                (let ([x (read-syntax port)])
+                  (if (eof-object? x)
+                      '()
+                      (cons (datum->syntax #'filename x) (lp))))))))])))
+
+
 (define (generate-temporary-symbol)
   (module-gensym ".L"))
 
@@ -1302,3 +1318,12 @@
               ((set! var val) #'exp2)
               ((id x (... ...)) #'(exp1 x (... ...)))
               (id (identifier? #'id) #'exp1))))))))
+
+(define-syntax error-handling-mode
+  (lambda (x)
+    (syntax-case x ()
+      [(_ style)
+        (or (port-lookup-eol-style-code (syntax->datum #'style))
+            (syntax-violation 'eol-style "invalid eol style" x))
+        (syntax #'style)]
+      [(_) (syntax-violation 'eol-style "missing eol style" x)])))

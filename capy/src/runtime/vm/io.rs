@@ -24,6 +24,50 @@ pub enum IoOperation {
 native_fn!(
     register_io_fns:
 
+    pub ("usleep") fn usleep<'gc>(nctx, microseconds: u64) -> bool {
+        std::thread::sleep(std::time::Duration::from_micros(microseconds as u64));
+        nctx.return_(true)
+    }
+
+    pub ("home-directory") fn home_directory<'gc>(nctx) -> Gc<'gc, Str<'gc>> {
+        match std::env::home_dir() {
+            Some(buf) => {
+                let s = buf.to_string_lossy();
+                let ctx = nctx.ctx;
+                nctx.return_(Str::new(&ctx, &s, true))
+            }
+            None => {
+                nctx.raise_io_error(
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found"),
+                    IoOperation::Open,
+                    "home-directory",
+                    "home directory not found",
+                    Value::new(false)
+                )
+            }
+        }
+    }
+
+    pub ("gethostname") fn gethostname<'gc>(nctx) -> Gc<'gc, Str<'gc>> {
+        match hostname::get() {
+            Ok(name_osstr) => {
+                let name_str = name_osstr.to_string_lossy();
+                let ctx = nctx.ctx;
+                nctx.return_(Str::new(&ctx, &name_str, true))
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "gethostname",
+                    &error,
+                    Value::new(false)
+                )
+            }
+        }
+    }
+
     pub ("dirname") fn dirname<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
         let p = std::path::PathBuf::from(path.to_string());
         let dir = p.parent().unwrap_or_else(|| std::path::Path::new(""));
@@ -74,22 +118,45 @@ native_fn!(
         }
     }
 
-    pub ("current-directory") fn current_directory<'gc>(nctx) -> Gc<'gc, Str<'gc>> {
-        match std::env::current_dir() {
-            Ok(buf) => {
-                let s = buf.to_string_lossy();
-                let ctx = nctx.ctx;
-                nctx.return_(Str::new(&ctx, &s, true))
+    pub ("current-directory") fn current_directory<'gc>(nctx, path: Option<Gc<'gc, Str<'gc>>>) -> Gc<'gc, Str<'gc>> {
+        match path {
+            Some(path) => {
+                match std::env::set_current_dir(path.to_string()) {
+                    Ok(()) => {
+                        let ctx = nctx.ctx;
+                        nctx.return_(Str::new(&ctx, &path.to_string(), true))
+                    }
+                    Err(err) => {
+                        let error = err.to_string();
+                        nctx.raise_io_error(
+                            err,
+                            IoOperation::Open,
+                            "current-directory",
+                            &error,
+                            path.into()
+                        )
+                    }
+                }
             }
-            Err(err) => {
-                let error = err.to_string();
-                nctx.raise_io_error(
-                    err,
-                    IoOperation::Open,
-                    "current-directory",
-                    &error,
-                    Value::new(false)
-                )
+
+            None => {
+                match std::env::current_dir() {
+                    Ok(buf) => {
+                        let s = buf.to_string_lossy();
+                        let ctx = nctx.ctx;
+                        nctx.return_(Str::new(&ctx, &s, true))
+                    }
+                    Err(err) => {
+                        let error = err.to_string();
+                        nctx.raise_io_error(
+                            err,
+                            IoOperation::Open,
+                            "current-directory",
+                            &error,
+                            Value::new(false)
+                        )
+                    }
+                }
             }
         }
     }
@@ -735,6 +802,123 @@ native_fn!(
             let ret = libc::access(cpath.as_ptr(), mode);
             nctx.return_(ret)
         }
+    }
+
+    pub ("process-environment->alist") fn process_environment_to_alist<'gc>(nctx) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        let mut alist = Value::null();
+        for (key, value) in std::env::vars() {
+            let key_str = Str::new(&ctx, &key, true);
+            let value_str = Str::new(&ctx, &value, true);
+            let pair = Value::cons(ctx, key_str.into(), value_str.into());
+            alist = Value::cons(ctx, pair, alist);
+        }
+        alist = alist.list_reverse(ctx);
+        nctx.return_(alist)
+    }
+
+    pub ("system") fn system<'gc>(nctx, command: Gc<'gc, Str<'gc>>) -> i32 {
+        let ccommand = CString::new(command.to_string()).unwrap();
+        unsafe {
+            let ret = libc::system(ccommand.as_ptr());
+            if ret != - 1 {
+                if libc::WIFEXITED(ret) {
+                    nctx.return_(libc::WEXITSTATUS(ret))
+                } else if libc::WIFSIGNALED(ret) {
+                    nctx.return_(-libc::WTERMSIG(ret))
+                } else {
+                    nctx.return_(-1)
+                }
+            } else {
+                let errno = ::errno::errno();
+
+                let message = format!("system() failed: {errno}");
+                let errno_code = errno.0;
+
+                nctx.raise_error(
+                    "system",
+                    &message,
+                    &[errno_code.into(), command.into()])
+            }
+        }
+    }
+
+    pub ("errno/string") fn errno_string<'gc>(nctx) -> (i32, Gc<'gc, Str<'gc>>) {
+        let errno = ::errno::errno();
+        let message = errno.to_string();
+        let ctx = nctx.ctx;
+        nctx.return_((errno.0, Str::new(&ctx, &message, true)))
+    }
+
+    pub ("acquire-lockfile") fn acquire_lockfile<'gc>(
+        nctx,
+        path: Gc<'gc, Str<'gc>>,
+        wait: Option<bool>
+    ) -> i32 {
+        let wait = wait.unwrap_or(true);
+        let fd = unsafe {
+            libc::open(
+                CString::new(path.to_string()).unwrap().as_ptr(),
+                libc::O_CREAT,
+                libc::S_IRUSR | libc::S_IWUSR)
+        };
+
+        if fd < 0 {
+            let err = std::io::Error::last_os_error();
+            let error = err.to_string();
+            return nctx.raise_io_error(
+                err,
+                IoOperation::Open,
+                "acquire-lockfile",
+                &error,
+                path.into()
+            );
+        }
+
+        if unsafe { libc::flock(fd, libc::LOCK_EX | if wait { 0 } else { libc::LOCK_NB }) } != 0 {
+            let err = std::io::Error::last_os_error();
+            let error = err.to_string();
+            return nctx.raise_io_error(
+                err,
+                IoOperation::Open,
+                "acquire-lockfile",
+                &error,
+                path.into()
+            );
+        }
+
+        nctx.return_(fd)
+    }
+
+    pub ("release-lockfile") fn release_lockfile<'gc>(
+        nctx,
+        fd: i32
+    ) -> bool {
+        if unsafe { libc::flock(fd, libc::LOCK_UN) } != 0 {
+            let err = std::io::Error::last_os_error();
+            let error = err.to_string();
+            return nctx.raise_io_error(
+                err,
+                IoOperation::Close,
+                "release-lockfile",
+                &error,
+                Value::new(false)
+            );
+        }
+
+        if unsafe { libc::close(fd) } != 0 {
+            let err = std::io::Error::last_os_error();
+            let error = err.to_string();
+            return nctx.raise_io_error(
+                err,
+                IoOperation::Close,
+                "release-lockfile",
+                &error,
+                Value::new(false)
+            );
+        }
+
+        nctx.return_(true)
     }
 );
 

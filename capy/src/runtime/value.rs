@@ -745,7 +745,7 @@ impl<'gc> std::fmt::Display for Value<'gc> {
                 format_list_contents(f, *self)?;
                 write!(f, ")")
             } else if self.is::<Str>() {
-                write!(f, "\"{}\"", self.downcast::<Str>())
+                write!(f, "{}", self.downcast::<Str>())
             } else if self.is::<Symbol>() {
                 write!(f, "{}", self.downcast::<Symbol>())
             } else if self.is::<Vector>() {

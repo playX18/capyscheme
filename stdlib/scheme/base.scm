@@ -284,15 +284,6 @@
             (r6rs:bytevector-copy! bv start ans 0 (- end start))
             ans))))
 
-    (define string-fill!
-      (lambda (str char . options)
-        (let-optionals options ((start 0) (end (string-length str)))
-          (let loop ((i (- end 1)))
-            (if (>= i start)
-                (begin
-                  (string-set! str i char)
-                  (loop (- i 1))))))))
-
     (define string-copy
       (lambda (str . options)
         (let-optionals options ((start 0) (end (string-length str)))
@@ -307,14 +298,6 @@
                 ans
                 (loop (- i 1) (cons (string-ref str i) ans)))))))
 
-    (define vector-fill!
-      (lambda (vec obj . options)
-        (let-optionals options ((start 0) (end (vector-length vec)))
-          (let loop ((i (- end 1)))
-            (if (>= i start)
-                (begin
-                  (vector-set! vec i obj)
-                  (loop (- i 1))))))))
 
     (define vector->list
       (lambda (vec . options)
@@ -419,9 +402,6 @@
       (lambda (obj)
         (and (integer? obj) (exact? obj))))
 
-    (define features
-      (lambda ()
-        (feature-identifiers)))
 
     (define file-error?
       (lambda (obj)

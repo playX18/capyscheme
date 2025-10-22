@@ -172,14 +172,15 @@ impl<'gc> Letrectify<'gc> {
                 let boxed = if private.get(&(module, name)).is_none() {
                     Some(fresh_lvar(
                         ctx,
-                        Str::new(&ctx, format!("{}#{}", module.0, name).as_str(), true).into(),
+                        Str::new(&ctx, format!("{}_boxed_{}", module.0, name).as_str(), true)
+                            .into(),
                     ))
                 } else {
                     None
                 };
                 let val = fresh_lvar(
                     ctx,
-                    Str::new(&ctx, format!("{}@{}", module.0, name).as_str(), true).into(),
+                    Str::new(&ctx, format!("{}_{}", module.0, name).as_str(), true).into(),
                 );
                 tab.insert((module.into(), name), (boxed, val));
             });

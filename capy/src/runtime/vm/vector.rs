@@ -94,6 +94,45 @@ native_fn! {
         nctx.return_(Ok(value))
     }
 
+    pub ("vector-fill!") fn vector_fill<'gc>(nctx, vec: Gc<'gc, Vector<'gc>>, value: Value<'gc>, start: Option<usize>, end: Option<usize>) -> Value<'gc> {
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(vec.len());
+
+        if start > end {
+            let ctx = nctx.ctx;
+            let start_value = start.into_value(ctx);
+            let end_value = end.into_value(ctx);
+            return nctx.wrong_argument_violation("vector-fill!", "start < end", Some(Value::cons(ctx, start_value, end_value)), Some(1), 4, &[vec.into(), value, start_value, end_value]);
+        }
+
+        if end > vec.len() {
+            let ctx = nctx.ctx;
+            let end_value = end.into_value(ctx);
+            return nctx.wrong_argument_violation("vector-fill!", "end index out of bounds", Some(end_value), Some(1), 4, &[vec.into(), value, end_value]);
+        }
+
+
+        let wvec = Gc::write(&nctx.ctx, vec);
+        for i in start..end {
+            wvec[i].unlock().set(value);
+        }
+        nctx.return_(vec.into())
+    }
+
+    pub ("vector-copy") fn vector_copy<'gc>(nctx, vec: Gc<'gc, Vector<'gc>>, start: Option<usize>, end: Option<usize>) -> Gc<'gc, Vector<'gc>> {
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(vec.len());
+        if start > end || end > vec.len() {
+            let ctx = nctx.ctx;
+            let start_value = start.into_value(ctx);
+            let end_value = end.into_value(ctx);
+            return nctx.wrong_argument_violation("vector-copy", "invalid start or end indices", Some(Value::cons(ctx, start_value, end_value)), Some(1), 3, &[vec.into(), start_value, end_value]);
+        }
+        let slice = &vec.as_slice()[start..end];
+        let new_vec = Vector::from_slice(&nctx.ctx, slice);
+        nctx.return_(new_vec)
+    }
+
     pub ("tuple") fn tuple<'gc>(nctx, values: &'gc [Value<'gc>]) -> Value<'gc> {
         let v = Tuple::from_slice(&nctx.ctx, values);
 
@@ -840,6 +879,10 @@ native_fn! {
         }
         let bv = ByteVector::from_slice(&nctx.ctx, &bytes, false);
         nctx.return_(Ok(bv.into()))
+    }
+
+    pub ("bytevector-mapping?") fn bytevector_mapping_p<'gc>(nctx, bv: Gc<'gc, ByteVector>) -> bool {
+        nctx.return_(bv.is_mapping())
     }
 
 }

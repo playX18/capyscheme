@@ -50,4 +50,4 @@
           error assertion-violation
           apply call-with-current-continuation call/cc
           values call-with-values dynamic-wind)
-  (import (core intrinsics)))
+  (import (core primitives)))

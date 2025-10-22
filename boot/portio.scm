@@ -276,6 +276,11 @@
       (assertion-violation 'output-port-buffer-mode
                            (errmsg 'msg:notoutput) p)))
 
+(define (buffer-mode p)
+  (if (output-port? p)
+      (io/buffer-mode p)
+      (assertion-violation 'buffer-mode
+                           (errmsg 'msg:notoutput) p)))
 ; FIXME: fakes file options
 
 (define (open-file-output-port filename . rest)
