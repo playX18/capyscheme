@@ -448,6 +448,7 @@
     get-bytevector-n!
     get-bytevector-some
     get-char
+    get-output-string
     get-datum
     get-line
     get-string-all

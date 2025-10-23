@@ -1163,12 +1163,7 @@
            (cond ((or byte-posn
                       (and input? output?))
 
-                  (if (and (not input?)
-                           output?
-                           (not (eq? codec 'latin-1))
-                           (not port-position-in-chars))
-                      (issue-warning-deprecated
-                       'set-port-position!...on_Unicode_output_port))
+                  
 
                   (reposition!))
 

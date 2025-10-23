@@ -39,7 +39,7 @@
             (receive (code mod new-mod) (compile-tree-il exps env)
                 (%compile code compiled-path mod)))))
 
-(set! load-in-vicinity 
+(define load-in-vicinity 
     (lambda (filename directory)
         (save-module-excursion 
             (lambda () 
@@ -50,7 +50,7 @@
                         ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))])))))
 
 
-(set! load
+(define load
     (lambda (filename)
         (save-module-excursion 
             (lambda () 
@@ -76,7 +76,7 @@
                                    "Compiling file ~a" filename)
                         ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))])))))
 
-(set! primitive-load
+(define primitive-load
     (lambda (filename)
         (save-module-excursion (lambda () 
             (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
@@ -85,6 +85,7 @@
                         (format #t ";; (primitive) Error loading file '~a'~%" filename)
                         (raise exn))
                     (lambda () (thunk))))))))
+
 
 (define (eval x . m)
     (save-module-excursion (lambda () 

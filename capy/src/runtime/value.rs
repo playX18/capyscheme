@@ -636,6 +636,7 @@ pub mod header;
 pub mod list;
 pub mod number;
 pub mod port;
+pub mod print;
 pub mod proc;
 pub mod string;
 pub mod symbols;
@@ -649,6 +650,7 @@ pub use header::*;
 pub use list::*;
 pub use number::*;
 
+pub use print::*;
 pub use proc::*;
 pub use string::*;
 pub use symbols::*;
@@ -656,14 +658,7 @@ pub use vector::*;
 pub use weak_set::*;
 pub use weak_table::*;
 
-use crate::{
-    frontend::reader::Annotation,
-    runtime::{
-        Context,
-        modules::Module,
-        vm::syntax::{Syntax, SyntaxTransformer},
-    },
-};
+use crate::runtime::{Context, modules::Module, vm::syntax::Syntax};
 
 impl<'gc> fmt::Pointer for Value<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -709,7 +704,7 @@ unsafe impl Trace for GlobalValue {
 impl<'gc> std::fmt::Display for Value<'gc> {
     #[allow(clippy::collapsible_else_if)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(number) = self.number() {
+        /*if let Some(number) = self.number() {
             write!(f, "{number}")?;
             return Ok(());
         }
@@ -817,33 +812,17 @@ impl<'gc> std::fmt::Display for Value<'gc> {
             } else {
                 write!(f, "{:p} with tc={}", self, self.typ16().bits())
             }
-        }
+        }*/
+
+        let mut formatter = print::ValueFmt::new(f);
+
+        formatter.print(*self, false, usize::MAX)
     }
 }
 
 impl<'gc> fmt::Debug for Value<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
-    }
-}
-
-fn format_list_contents<'gc>(f: &mut fmt::Formatter<'_>, list: Value<'gc>) -> fmt::Result {
-    if !list.is_pair() {
-        return Ok(());
-    }
-
-    let car = list.car();
-    let cdr = list.cdr();
-
-    write!(f, "{car}")?;
-
-    if cdr.is_pair() {
-        write!(f, " ")?;
-        format_list_contents(f, cdr)
-    } else if cdr.is_null() {
-        Ok(())
-    } else {
-        write!(f, " . {cdr}")
     }
 }
 

@@ -91,6 +91,7 @@
           newline
           display
           write
+          get-output-string
 
           make-custom-binary-input-port
           make-custom-textual-input-port
@@ -125,17 +126,6 @@
           (core enums))
           
   ;; 8.2.2  File options
-
-  (define-syntax file-options
-    (lambda (x)
-      (syntax-case x ()
-        ((_ options ...)
-         (let ((lst (syntax->datum (syntax (options ...)))))
-           (or (and (list-of-unique-symbols? lst) (for-all port-lookup-file-option-code lst))
-               (syntax-violation 'file-options "invalid option" x))
-           (syntax (make-file-options '(options ...)))))
-        (_
-         (syntax-violation 'file-options "invalid syntax" x)))))
 
   (define-syntax file-options->bits
     (syntax-rules ()

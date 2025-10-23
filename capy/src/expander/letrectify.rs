@@ -102,6 +102,11 @@ fn compute_private_toplevels<'gc>(
     let mut exports = HashMap::new();
     let mut exports_macro = HashMap::new();
     declarative.iter().for_each(|(&(module, _), _)| {
+        // special-case `capy` module to always export everything
+        if module.0.r5rs_equal(*capy_module(ctx)) {
+            exports_macro.insert(module, true);
+            return;
+        }
         if exports_macro.get(&module).is_none() {
             exports_macro.insert(module, false);
             let i = resolve_module(ctx, module.0, false, false);
@@ -144,7 +149,11 @@ fn compute_private_toplevels<'gc>(
 
 pub fn letrectify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     let declarative = compute_declarative_toplvels(ctx, t);
-    let private = compute_private_toplevels(ctx, &declarative);
+    let private = if false {
+        compute_private_toplevels(ctx, &declarative)
+    } else {
+        HashSet::new()
+    };
 
     let mut pass = Letrectify::new(ctx, declarative, private);
 

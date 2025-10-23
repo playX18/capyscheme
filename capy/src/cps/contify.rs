@@ -40,7 +40,7 @@ use rsgc::{
 
 use crate::{
     cps::{
-        Map, Set, SingleValueSet,
+        Map, Set, SingleValueSet, Substitute,
         term::{Atom, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
@@ -81,10 +81,11 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
             let body = rec(ctx, *body);
 
             let fix1 = Gc::new(&ctx, Term::Fix(funs, body));
+
             // (2) Identify contifiable SCCs (each yields (names, common_rc)).
             let cf = fix1.contifiables();
-            // (3) Fold: successively contify each qualifying SCC.
 
+            // (3) Fold: successively contify each qualifying SCC.
             cf.iter()
                 .fold(fix1, |fix, (ns, rc)| fix.contify(ns, *rc, ctx))
         }
@@ -282,6 +283,7 @@ impl<'gc> Term<'gc> {
     ///    as deep as possible (to narrow scope) using `push_down`.
     /// 5. Rewrite tail `App`s to these functions into `Continue`.
     ///
+    /// `ns`: set of function bindings to contify.
     /// `rc`: (return_cont, handler_cont) chosen by `common_return_cont`.
     pub fn contify(
         &self,
@@ -494,8 +496,8 @@ impl<'gc> Term<'gc> {
 
             Self::App(func, k, h, args, src) => {
                 let func = func.subst(ctx, subst);
-                let k = subst.get(k).copied().unwrap_or(*k);
-                let h = subst.get(h).copied().unwrap_or(*h);
+                let k = subst.subst(*k);
+                let h = subst.subst(*h);
                 let args = args
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))
@@ -504,7 +506,7 @@ impl<'gc> Term<'gc> {
             }
 
             Self::Continue(k, args, src) => {
-                let k = subst.get(k).copied().unwrap_or(*k);
+                let k = subst.subst(*k);
                 let args = args
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))
@@ -521,8 +523,8 @@ impl<'gc> Term<'gc> {
                 hints,
             } => {
                 let test = test.subst(ctx, subst);
-                let consequent = subst.get(consequent).copied().unwrap_or(*consequent);
-                let alternative = subst.get(alternative).copied().unwrap_or(*alternative);
+                let consequent = subst.subst(*consequent);
+                let alternative = subst.subst(*alternative);
                 let hints = *hints;
                 let consequent_args = consequent_args.map(|args| {
                     args.iter()
@@ -553,7 +555,7 @@ impl<'gc> Term<'gc> {
 impl<'gc> Atom<'gc> {
     pub fn subst(self, _ctx: Context<'gc>, subst: &Map<LVarRef<'gc>, LVarRef<'gc>>) -> Atom<'gc> {
         match self {
-            Atom::Local(l) => subst.get(&l).copied().map(Atom::Local).unwrap_or(self),
+            Atom::Local(l) => Atom::Local(subst.subst(l)),
             _ => self,
         }
     }
@@ -576,11 +578,7 @@ impl<'gc> Cont<'gc> {
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> ContRef<'gc> {
-        let handler = subst
-            .get(&self.handler.get())
-            .copied()
-            .unwrap_or(self.handler.get());
-
+        let handler = subst.subst(self.handler.get());
         let body = self.body().subst(ctx, subst);
         let k = self.with_body(ctx, body);
 
@@ -599,7 +597,7 @@ impl<'gc> Expression<'gc> {
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))
                     .collect_gc(&ctx);
-                let h = subst.get(&h).copied().unwrap_or(h);
+                let h = subst.subst(h);
                 Self::PrimCall(name, args, h, src)
             }
         }

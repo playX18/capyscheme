@@ -286,6 +286,8 @@
                         ; r6rs i/o simple
                         display
                         write
+                        write-simple
+                        write-shared
                         newline
                         read-char
                         write-char
@@ -306,6 +308,8 @@
                         close-port
                         lookahead-char
                         get-char
+                        get-output-string
+                        file-options
                         port-has-port-position?
                         port-position
                         port-has-set-port-position!?
@@ -606,7 +610,13 @@
                         count-pair
                         last-n-pair
                         drop-last-n-pair
-
+                        char-upcase char-downcase char-titlecase char-foldcase
+                        char-ci=? char-ci<? char-ci>? char-ci<=? char-ci>=?
+                        char-alphabetic? char-numeric? char-whitespace? char-upper-case? char-lower-case? char-title-case?
+                        char-general-category
+                        string-upcase string-downcase string-titlecase string-foldcase
+                        string-ci=? string-ci<? string-ci>? string-ci<=? string-ci>=?
+                        string-normalize-nfd  string-normalize-nfkd string-normalize-nfc string-normalize-nfkc
                         void 
                         float
                         float double
