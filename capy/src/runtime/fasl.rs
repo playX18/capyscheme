@@ -11,7 +11,7 @@ use crate::runtime::{
     Context,
     value::{
         BigInt, ByteVector, Complex, HashTable, HashTableType, IntoValue, Rational, Str, Symbol,
-        Value, Vector,
+        Tuple, Value, Vector,
     },
     vm::syntax::Syntax,
 };
@@ -36,6 +36,7 @@ pub const FASL_TAG_STR: u8 = 16;
 pub const FASL_TAG_UNINTERNED_SYMBOL: u8 = 17;
 pub const FASL_TAG_IMMEDIATE: u8 = 18;
 pub const FASL_TAG_SYNTAX: u8 = 19;
+pub const FASL_TAG_TUPLE: u8 = 20;
 
 pub struct FASLWriter<'gc, W: Write> {
     pub ctx: Context<'gc>,
@@ -91,6 +92,14 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         if obj.is_pair() {
             self.scan(obj.car())?;
             self.scan(obj.cdr())?;
+            return Ok(());
+        }
+
+        if obj.is::<Tuple>() {
+            let tuple = obj.downcast::<Tuple>();
+            for item in tuple.iter() {
+                self.scan(item.get())?;
+            }
             return Ok(());
         }
 
@@ -194,6 +203,16 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             self.put8(FASL_TAG_VECTOR)?;
             self.put32(vec.len() as u32)?;
             for item in vec.iter() {
+                self.put(item.get())?;
+            }
+            return Ok(());
+        }
+
+        if obj.is::<Tuple>() {
+            let tuple = obj.downcast::<Tuple>();
+            self.put8(FASL_TAG_TUPLE)?;
+            self.put32(tuple.len() as u32)?;
+            for item in tuple.iter() {
                 self.put(item.get())?;
             }
             return Ok(());
@@ -427,6 +446,16 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     vec.push(self.read_value()?);
                 }
                 Ok(Value::new(Vector::from_slice(&self.ctx, &vec)))
+            }
+
+            _x @ FASL_TAG_TUPLE => {
+                let count = self.read32()? as usize;
+                let mut vec = Vec::with_capacity(count);
+
+                for _ in 0..count {
+                    vec.push(self.read_value()?);
+                }
+                Ok(Value::new(Tuple::from_slice(&self.ctx, &vec)))
             }
 
             _x @ FASL_TAG_BVECTOR => {

@@ -1,11 +1,9 @@
 use std::{collections::HashSet, rc::Rc};
 
-use rsgc::{Gc, alloc::Array};
-
 use crate::{
     cps::Map,
     expander::core::{
-        Fix, LVarRef, Let, LetStyle, Term, TermKind, TermRef, constant, lset, seq_from_slice,
+        LVarRef, LetStyle, ProcRef, Term, TermKind, TermRef, constant, seq_from_slice,
     },
     runtime::{Context, value::Value},
 };
@@ -154,113 +152,6 @@ fn compute_referenced_and_assigned<'gc>(
     )
 }
 
-fn compute_free_variables<'a, 'gc>(
-    cache: &'a mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
-    sym_id: &Map<LVarRef<'gc>, u32>,
-    t: &Term<'gc>,
-) -> Rc<HashSet<u32>> {
-    fn recurse_many<'gc>(
-        exprs: impl Iterator<Item = TermRef<'gc>>,
-        sym_id: &Map<LVarRef<'gc>, u32>,
-        free: &mut HashSet<u32>,
-    ) {
-        exprs.for_each(|e| rec(&e, sym_id, free));
-    }
-
-    fn rec<'gc>(t: &Term<'gc>, sym_id: &Map<LVarRef<'gc>, u32>, free: &mut HashSet<u32>) {
-        match &t.kind {
-            TermKind::Const(_)
-            | TermKind::ModuleRef(_, _, _)
-            | TermKind::PrimRef(_)
-            | TermKind::ToplevelRef(_, _) => (),
-            TermKind::LRef(var) => {
-                free.insert(sym_id[var]);
-            }
-
-            TermKind::LSet(var, val) => {
-                rec(val, sym_id, free);
-                free.insert(sym_id[var]);
-            }
-
-            TermKind::ToplevelSet(_, _, val) => rec(val, sym_id, free),
-            TermKind::ModuleSet(_, _, _, val) => rec(val, sym_id, free),
-            TermKind::Call(func, args) => recurse_many(
-                std::iter::once(*func).chain(args.iter().cloned()),
-                sym_id,
-                free,
-            ),
-            TermKind::PrimCall(_, args) => recurse_many(args.iter().cloned(), sym_id, free),
-            TermKind::Define(_, _, val) => rec(val, sym_id, free),
-            TermKind::Seq(head, tail) => {
-                //recurse_many(seq.iter().cloned(), sym_id, free)
-                rec(head, sym_id, free);
-                rec(tail, sym_id, free);
-            }
-            TermKind::If(test, cons, alt) => recurse_many(
-                std::iter::once(*test)
-                    .chain(std::iter::once(*cons))
-                    .chain(std::iter::once(*alt)),
-                sym_id,
-                free,
-            ),
-
-            TermKind::Let(let_) => {
-                if matches!(let_.style, LetStyle::LetRec | LetStyle::LetRecStar) {
-                    recurse_many(let_.rhs.iter().copied(), sym_id, free);
-                    rec(&let_.body, sym_id, free);
-                    let_.lhs.iter().for_each(|var| {
-                        free.remove(&sym_id[var]);
-                    });
-                } else {
-                    recurse_many(let_.rhs.iter().copied(), sym_id, free);
-                    rec(&let_.body, sym_id, free);
-                    let_.lhs.iter().for_each(|var| {
-                        free.remove(&sym_id[var]);
-                    });
-                }
-            }
-
-            TermKind::Fix(fix) => {
-                recurse_many(fix.rhs.iter().map(|p| p.body), sym_id, free);
-                rec(&fix.body, sym_id, free);
-                fix.lhs.iter().for_each(|var| {
-                    free.remove(&sym_id[var]);
-                });
-            }
-
-            TermKind::Receive(vars, variadic, producer, receiver) => {
-                rec(producer, sym_id, free);
-                rec(receiver, sym_id, free);
-                vars.iter().for_each(|var| {
-                    free.remove(&sym_id[var]);
-                });
-                if let Some(var) = variadic {
-                    free.remove(&sym_id[var]);
-                }
-            }
-            TermKind::Proc(proc) => {
-                rec(&proc.body, sym_id, free);
-                proc.args.iter().for_each(|var| {
-                    free.remove(&sym_id[var]);
-                });
-                if let Some(var) = proc.variadic {
-                    free.remove(&sym_id[&var]);
-                }
-            }
-            TermKind::Values(values) => recurse_many(values.iter().cloned(), sym_id, free),
-        }
-    }
-
-    if let Some(free) = cache.get(&(t as *const Term)) {
-        free.clone()
-    } else {
-        let mut set = HashSet::new();
-        rec(t, sym_id, &mut set);
-        cache.insert(t as *const Term, Rc::new(set));
-        cache[&(t as *const Term)].clone()
-    }
-}
-
 fn compute_complex<'gc>(
     t: TermRef<'gc>,
     assigned: &HashSet<LVarRef<'gc>>,
@@ -283,8 +174,29 @@ fn compute_complex<'gc>(
         HashSet::new(),
     )
 }
-// TODO: Fix this pass
-#[allow(dead_code)]
+
+#[allow(dead_code, unused_variables)]
+struct ReorderBindings<'gc> {
+    ctx: Context<'gc>,
+    sym_id: Map<LVarRef<'gc>, u32>,
+    fv_cache: Map<*const Term<'gc>, Rc<HashSet<u32>>>,
+    remaining_ids: HashSet<u32>,
+    sunk_lambdas: Vec<(LVarRef<'gc>, TermRef<'gc>)>,
+    sunk_exprs: Vec<(LVarRef<'gc>, TermRef<'gc>)>,
+}
+
+impl<'gc> ReorderBindings<'gc> {
+    #[allow(unused)]
+    fn visit(&mut self, lhs: LVarRef<'gc>, rhs: TermRef<'gc>) -> bool {
+        false
+    }
+}
+
+/// Reorders bindings to minimize false dependencies for letrec*.
+///
+/// This function sinks (moves later) bindings that do not reference
+/// subsequent bindings. Lambdas are sunk further than other expressions.
+#[allow(dead_code, unused_variables)]
 fn reorder_bindings<'gc>(
     ctx: Context<'gc>,
     lhs: &[LVarRef<'gc>],
@@ -292,75 +204,16 @@ fn reorder_bindings<'gc>(
     sym_id: &Map<LVarRef<'gc>, u32>,
     fv_cache: &mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
 ) -> Vec<(LVarRef<'gc>, TermRef<'gc>)> {
-    let mut possibly_references = |expr: TermRef<'gc>, remaining_ids: &HashSet<u32>| {
-        let free = compute_free_variables(fv_cache, sym_id, &expr);
-        free.intersection(remaining_ids).next().is_some()
-    };
-
-    let mut remaining_ids = lhs.iter().map(|var| sym_id[var]).collect::<HashSet<_>>();
-
-    let mut bindings = lhs.iter().copied().zip(rhs.iter().copied());
-    let mut sunk_lambdas = Vec::new();
-    let mut sunk_exprs = Vec::new();
-
-    fn visit<'gc>(
-        ctx: Context<'gc>,
-
-        sym_id: &Map<LVarRef<'gc>, u32>,
-        remaining_ids: &mut HashSet<u32>,
-        bindings: &mut impl Iterator<Item = (LVarRef<'gc>, TermRef<'gc>)>,
-        sunk_lambdas: &mut Vec<(LVarRef<'gc>, TermRef<'gc>)>,
-        sunk_exprs: &mut Vec<(LVarRef<'gc>, TermRef<'gc>)>,
-        possibly_references: &mut dyn FnMut(TermRef<'gc>, &HashSet<u32>) -> bool,
-    ) -> Vec<(LVarRef<'gc>, TermRef<'gc>)> {
-        while let Some(binding) = bindings.next() {
-            remaining_ids.remove(&sym_id[&binding.0]);
-            if matches!(binding.1.kind, TermKind::Proc(_)) {
-                sunk_lambdas.push(binding.clone());
-                continue;
-            } else if possibly_references(binding.1, remaining_ids) {
-                let mut result = sunk_lambdas.clone();
-                result.extend(sunk_exprs.iter().copied());
-
-                result.push(binding.clone());
-                result.extend(visit(
-                    ctx,
-                    sym_id,
-                    remaining_ids,
-                    bindings,
-                    &mut Vec::new(),
-                    &mut Vec::new(),
-                    possibly_references,
-                ));
-                return result;
-            } else {
-                sunk_exprs.push(binding.clone());
-                continue;
-            }
-        }
-
-        let mut result = sunk_lambdas.clone();
-        result.extend(sunk_exprs.iter().copied());
-
-        result
-    }
-
-    visit(
-        ctx,
-        sym_id,
-        &mut remaining_ids,
-        &mut bindings,
-        &mut sunk_lambdas,
-        &mut sunk_exprs,
-        &mut possibly_references,
-    )
+    todo!()
 }
 
 pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+    // remove `let*` bindings. This makes fixing letrec substantially easier.
+    let t = remove_letstar(ctx, t);
     let sym_id = compute_ids(&t);
     let (referenced, assigned) = compute_referenced_and_assigned(t);
     let complex = compute_complex(t, &assigned, &sym_id);
-    let mut fv_cache = Map::default();
+    let mut compute_free_variables = ComputeFreeVariables::new(&sym_id);
 
     t.post_order(ctx, |ctx, x| match &x.kind {
         // sets to unreferenced variables may be replaced with their expression for side effects
@@ -387,7 +240,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                         &sym_id,
                         &referenced,
                         &assigned,
-                        &mut fv_cache,
+                        &mut compute_free_variables,
                         &complex,
                     )
                 } else {
@@ -401,7 +254,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                         &sym_id,
                         &referenced,
                         &assigned,
-                        &mut fv_cache,
+                        &mut compute_free_variables,
                         &complex,
                     )
                 }
@@ -417,7 +270,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                         &sym_id,
                         &referenced,
                         &assigned,
-                        &mut fv_cache,
+                        &mut compute_free_variables,
                         &complex,
                     )
                 } else {
@@ -440,15 +293,15 @@ fn fix_term<'gc>(
     sym_id: &Map<LVarRef<'gc>, u32>,
     referenced: &HashSet<LVarRef<'gc>>,
     assigned: &HashSet<LVarRef<'gc>>,
-    fv_cache: &mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
+    compute_free_variables: &mut ComputeFreeVariables<'gc, '_>,
     complex: &HashSet<u32>,
 ) -> TermRef<'gc> {
     let unreferenced = |var: &LVarRef<'gc>| !referenced.contains(var);
     let unassigned = |var: &LVarRef<'gc>| !assigned.contains(var);
 
-    let sccs = compute_sccs(lhs, rhs, in_order, sym_id, complex, fv_cache);
+    let sccs = compute_sccs(lhs, rhs, in_order, sym_id, complex, compute_free_variables);
     let mut recursive = |var: &LVarRef<'gc>, rhs: TermRef<'gc>| {
-        compute_free_variables(fv_cache, sym_id, &rhs).contains(&sym_id[var])
+        compute_free_variables.get(rhs).contains(&sym_id[var])
     };
 
     sccs.iter().rfold(body, |body, scc| {
@@ -472,18 +325,21 @@ fn compute_sccs<'gc>(
 
     complex: &HashSet<u32>,
 
-    fv_cache: &mut Map<*const Term<'gc>, Rc<HashSet<u32>>>,
+    compute_free_variables: &mut ComputeFreeVariables<'gc, '_>,
 ) -> Vec<Vec<(LVarRef<'gc>, TermRef<'gc>)>> {
     let mut graph = petgraph::Graph::<Vertex, ()>::new();
     let mut node_ids = Vec::new();
+    let mut node_id_map = Map::default();
     for (lhs, rhs) in lhs.iter().zip(rhs.iter()) {
-        node_ids.push(graph.add_node(Vertex {
+        let node = graph.add_node(Vertex {
             lhs: *lhs,
             rhs: *rhs,
-        }));
+        });
+        node_id_map.insert(sym_id[lhs], node);
+        node_ids.push(node);
     }
 
-    for &v in node_ids.iter() {
+    /*for &v in node_ids.iter() {
         for &w in node_ids.iter() {
             if w != v
                 && compute_free_variables(fv_cache, sym_id, &graph[v].rhs)
@@ -492,7 +348,21 @@ fn compute_sccs<'gc>(
                 graph.add_edge(v, w, ());
             }
         }
+    }*/
+
+    for &node in node_ids.iter() {
+        let init = &graph[node].rhs;
+
+        let fv = compute_free_variables.get(*init);
+        for id in fv.iter() {
+            let Some(target) = node_id_map.get(id).copied() else {
+                continue;
+            };
+
+            graph.add_edge(node, target, ());
+        }
     }
+
     if in_order {
         /*let mut w = &node_ids[..];
 
@@ -524,7 +394,8 @@ fn compute_sccs<'gc>(
     let sccs = petgraph::algo::tarjan_scc(&graph);
 
     sccs.into_iter()
-        .map(|scc| {
+        .map(|mut scc| {
+            scc.sort();
             scc.into_iter()
                 .map(|v| {
                     let vertex = &graph[v];
@@ -544,113 +415,245 @@ fn fix_scc<'gc>(
     unassigned: impl Fn(&LVarRef<'gc>) -> bool,
     mut recursive: impl FnMut(&LVarRef<'gc>, TermRef<'gc>) -> bool,
 ) -> TermRef<'gc> {
-    if binds.len() == 1 {
-        let (lhs, rhs) = binds[0];
-        if unreferenced(&lhs) {
-            return seq_from_slice(ctx, [rhs, body]);
-        } else if let TermKind::Proc(rhs) = rhs.kind
-            && unassigned(&lhs)
-        {
-            return Gc::new(
-                &ctx,
-                Term {
-                    source: src.into(),
-                    kind: TermKind::Fix(Fix {
-                        lhs: Array::from_slice(&ctx, [lhs]),
-                        rhs: Array::from_slice(&ctx, [rhs]),
-                        body,
-                    }),
-                },
-            );
-        } else if recursive(&lhs, rhs) {
-            let mutation = lset(ctx, lhs, rhs);
-            let body = seq_from_slice(ctx, [mutation, body]);
-            return Gc::new(
-                &ctx,
-                Term {
-                    source: src.into(),
-                    kind: TermKind::Let(Let {
-                        style: LetStyle::Let,
-                        lhs: Array::from_slice(&ctx, [lhs]),
-                        rhs: Array::from_slice(&ctx, [constant(ctx, Value::undefined())]),
-                        body,
-                    }),
-                },
-            );
-        } else {
-            return Gc::new(
-                &ctx,
-                Term {
-                    source: src.into(),
-                    kind: TermKind::Let(Let {
-                        style: LetStyle::Let,
-                        lhs: Array::from_slice(&ctx, [lhs]),
-                        rhs: Array::from_slice(&ctx, [rhs]),
-                        body,
-                    }),
-                },
-            );
+    match binds {
+        [(name, init)] => {
+            // SCC with just one binding
+            if unreferenced(name) {
+                // (seq <init> ...) for side-effects
+                Term::seq(&ctx, *init, body, src)
+            } else if let TermKind::Proc(proc) = init.kind
+                && unassigned(name)
+            {
+                Term::fix(&ctx, [*name], [proc], body, src)
+            } else if recursive(name, *init) {
+                Term::let_(
+                    &ctx,
+                    LetStyle::Let,
+                    [*name],
+                    [constant(ctx, Value::undefined())],
+                    Term::seq(&ctx, Term::lset(&ctx, *name, *init, src), body, src),
+                    src,
+                )
+            } else {
+                Term::let_(&ctx, LetStyle::Let, [*name], [*init], body, src)
+            }
         }
-    } else {
-        let (l, c): (Vec<_>, Vec<_>) = binds
-            .iter()
-            .copied()
-            .partition(|(lhs, rhs)| matches!(rhs.kind, TermKind::Proc(_)) && unassigned(lhs));
 
-        let mut body = body;
+        _ => {
+            let (lambdas, complex): (Vec<_>, Vec<_>) = binds
+                .iter()
+                .copied()
+                .partition(|(name, init)| init.is_procedure() && unassigned(name));
 
-        for (lhs, rhs) in c.iter().rev().copied() {
-            let mutation = lset(ctx, lhs, rhs);
-            body = seq_from_slice(ctx, [mutation, body]);
-        }
-        if !l.is_empty() {
-            let (lhs, rhs): (Vec<_>, Vec<_>) = l.iter().copied().unzip();
-            let rhs = rhs
-                .into_iter()
-                .map(|t| {
-                    if let TermKind::Proc(p) = t.kind {
-                        p
-                    } else {
-                        unreachable!()
-                    }
+            let bind_complex_vars = |body: TermRef<'gc>| match complex.as_slice() {
+                [] => body,
+                _ => Term::let_(
+                    &ctx,
+                    LetStyle::Let,
+                    complex.iter().map(|(name, _)| *name),
+                    std::iter::repeat_n(constant(ctx, Value::undefined()), complex.len()),
+                    body,
+                    src,
+                ),
+            };
+
+            let bind_lambdas = |body: TermRef<'gc>| match lambdas.as_slice() {
+                [] => body,
+                _ => Term::fix(
+                    &ctx,
+                    lambdas.iter().map(|(name, _)| *name),
+                    lambdas.iter().map(|(_, init)| {
+                        if let TermKind::Proc(proc) = init.kind {
+                            proc
+                        } else {
+                            unreachable!()
+                        }
+                    }),
+                    body,
+                    src,
+                ),
+            };
+
+            let initialize_complex = |body| {
+                complex.iter().rfold(body, |body, (name, init)| {
+                    Term::seq(&ctx, Term::lset(&ctx, *name, *init, src), body, src)
                 })
-                .collect::<Vec<_>>();
-            body = Gc::new(
-                &ctx,
-                Term {
-                    source: src.into(),
-                    kind: TermKind::Fix(Fix {
-                        lhs: Array::from_slice(&ctx, &lhs),
-                        rhs: Array::from_slice(&ctx, &rhs),
-                        body,
-                    }),
-                },
-            );
+            };
+            bind_complex_vars(bind_lambdas(initialize_complex(body)))
         }
-
-        if !c.is_empty() {
-            let (lhs, _init): (Vec<_>, Vec<_>) = c.iter().copied().unzip();
-            body = Gc::new(
-                &ctx,
-                Term {
-                    source: src.into(),
-                    kind: TermKind::Let(Let {
-                        style: LetStyle::Let,
-                        lhs: Array::from_slice(&ctx, &lhs),
-                        rhs: Array::from_slice(
-                            &ctx,
-                            &vec![constant(ctx, Value::undefined()); c.len()],
-                        ),
-                        body,
-                    }),
-                },
-            );
-        }
-
-        body
     }
 }
 struct Vertex<'gc> {
     lhs: LVarRef<'gc>,
     rhs: TermRef<'gc>,
+}
+
+struct ComputeFreeVariables<'gc, 'a> {
+    fv_cache: Map<*const Term<'gc>, Rc<im::HashSet<u32>>>,
+    sym_id: &'a Map<LVarRef<'gc>, u32>,
+}
+
+impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
+    fn new(sym_id: &'a Map<LVarRef<'gc>, u32>) -> Self {
+        Self {
+            fv_cache: Map::default(),
+            sym_id,
+        }
+    }
+
+    pub fn get(&mut self, t: TermRef<'gc>) -> Rc<im::HashSet<u32>> {
+        if let Some(fv) = self.fv_cache.get(&(t.as_ref() as *const Term<'gc>)) {
+            fv.clone()
+        } else {
+            let fv = Rc::new(self.visit(t));
+            self.fv_cache
+                .insert(t.as_ref() as *const Term<'gc>, fv.clone());
+            fv
+        }
+    }
+
+    fn union(set1: im::HashSet<u32>, set2: im::HashSet<u32>) -> im::HashSet<u32> {
+        set1.union(set2)
+    }
+
+    fn difference(set1: im::HashSet<u32>, set2: im::HashSet<u32>) -> im::HashSet<u32> {
+        set1.difference(set2)
+    }
+
+    fn empty() -> im::HashSet<u32> {
+        im::HashSet::new()
+    }
+
+    fn recurse_many(&mut self, exprs: impl Iterator<Item = TermRef<'gc>>) -> im::HashSet<u32> {
+        exprs.fold(Self::empty(), |acc, e| Self::union(acc, self.visit(e)))
+    }
+
+    fn recurse_many_procs(
+        &mut self,
+        procs: impl Iterator<Item = ProcRef<'gc>>,
+    ) -> im::HashSet<u32> {
+        procs.fold(Self::empty(), |acc, p| Self::union(acc, self.visit_proc(p)))
+    }
+
+    fn visit(&mut self, t: TermRef<'gc>) -> im::HashSet<u32> {
+        let empty = || im::HashSet::new();
+        let adjoin = |elt, set: im::HashSet<u32>| {
+            let mut new_set = set;
+            new_set.insert(elt);
+            new_set
+        };
+
+        let union = |set1: im::HashSet<u32>, set2: im::HashSet<u32>| set1.union(set2);
+        let difference = |set1: im::HashSet<u32>, set2: im::HashSet<u32>| set1.difference(set2);
+
+        match &t.kind {
+            TermKind::Const(_)
+            | TermKind::ModuleRef(_, _, _)
+            | TermKind::PrimRef(_)
+            | TermKind::ToplevelRef(_, _) => empty(),
+
+            TermKind::LRef(var) => adjoin(self.sym_id[var], empty()),
+
+            TermKind::LSet(var, val) => {
+                let val_fv = self.visit(*val);
+                adjoin(self.sym_id[var], val_fv)
+            }
+
+            TermKind::ToplevelSet(_, _, val) => self.visit(*val),
+            TermKind::ModuleSet(_, _, _, val) => self.visit(*val),
+            TermKind::Call(func, args) => args
+                .iter()
+                .fold(self.visit(*func), |acc, arg| union(acc, self.visit(*arg))),
+            TermKind::PrimCall(_, args) => args
+                .iter()
+                .fold(empty(), |acc, arg| union(acc, self.visit(*arg))),
+            TermKind::Define(_, _, val) => self.visit(*val),
+            TermKind::Seq(head, tail) => {
+                let head_fv = self.visit(*head);
+                let tail_fv = self.visit(*tail);
+                union(head_fv, tail_fv)
+            }
+            TermKind::If(test, cons, alt) => {
+                let test_fv = self.visit(*test);
+                let cons_fv = self.visit(*cons);
+                let alt_fv = self.visit(*alt);
+                union(union(test_fv, cons_fv), alt_fv)
+            }
+
+            TermKind::Let(let_)
+                if !matches!(let_.style, LetStyle::LetRec | LetStyle::LetRecStar) =>
+            {
+                union(
+                    self.recurse_many(let_.rhs.iter().copied()),
+                    difference(
+                        self.visit(let_.body),
+                        let_.lhs.iter().map(|var| self.sym_id[var]).collect(),
+                    ),
+                )
+            }
+
+            TermKind::Let(let_) => difference(
+                union(
+                    self.recurse_many(let_.rhs.iter().copied()),
+                    self.visit(let_.body),
+                ),
+                let_.lhs.iter().map(|var| self.sym_id[var]).collect(),
+            ),
+
+            TermKind::Proc(proc) => difference(
+                self.visit(proc.body),
+                proc.args
+                    .iter()
+                    .map(|var| self.sym_id[var])
+                    .chain(proc.variadic.iter().map(|var| self.sym_id[var]))
+                    .collect(),
+            ),
+
+            TermKind::Fix(fix) => difference(
+                union(
+                    self.recurse_many_procs(fix.rhs.iter().copied()),
+                    self.visit(fix.body),
+                ),
+                fix.lhs.iter().map(|var| self.sym_id[var]).collect(),
+            ),
+
+            TermKind::Receive(vars, variadic, producer, receiver) => union(
+                self.visit(*producer),
+                difference(
+                    self.visit(*receiver),
+                    vars.iter()
+                        .map(|var| self.sym_id[var])
+                        .chain(variadic.iter().map(|var| self.sym_id[var]))
+                        .collect(),
+                ),
+            ),
+            TermKind::Values(values) => self.recurse_many(values.iter().copied()),
+        }
+    }
+
+    fn visit_proc(&mut self, proc: ProcRef<'gc>) -> im::HashSet<u32> {
+        Self::difference(
+            self.visit(proc.body),
+            proc.args
+                .iter()
+                .map(|var| self.sym_id[var])
+                .chain(proc.variadic.iter().map(|var| self.sym_id[var]))
+                .collect(),
+        )
+    }
+}
+
+/// Convert let* to nested let
+fn remove_letstar<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+    t.post_order(ctx, |ctx, x| match &x.kind {
+        TermKind::Let(l) if l.style == LetStyle::LetStar => {
+            let mut body = l.body;
+            for (var, init) in l.lhs.iter().zip(l.rhs.iter()).rev() {
+                body = Term::let_(&ctx, LetStyle::Let, [*var], [*init], body, x.source());
+            }
+            body
+        }
+
+        _ => x,
+    })
 }

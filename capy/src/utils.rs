@@ -1,6 +1,5 @@
-use std::rc::Rc;
-
 use rsgc::{Gc, Trace, alloc::array::Array};
+use std::rc::Rc;
 
 use crate::runtime::value::Value;
 

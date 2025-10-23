@@ -2,20 +2,22 @@ use crate::{
     cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     expander::core::LVarRef,
 };
-use hashlink::LinkedHashMap as HashMap;
-use hashlink::LinkedHashSet as HashSet;
+//use hashlink::LinkedHashMap as HashMap;
+//use hashlink::LinkedHashSet as HashSet;
+
+use im::{HashMap, HashSet};
 
 type Vars<'gc> = HashSet<LVarRef<'gc>>;
 
 pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarRef<'gc>> {
-    match *term {
+    stacker::maybe_grow(64 * 1024, 16 * 1024 * 1024, || match *term {
         Term::Let(bind, expr, body) => match expr {
             Expression::PrimCall(_, args, h, _) => {
                 let mut map: Vars = args.iter().copied().flat_map(get_fva).collect();
                 map.insert(h);
-                map.union(&get_fvt(body, fv))
-                    .filter(|v| **v != bind)
-                    .copied()
+                map.union(get_fvt(body, fv))
+                    .into_iter()
+                    .filter(|v| *v != bind)
                     .collect()
             }
         },
@@ -28,9 +30,9 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
                 acc.extend(free);
                 acc
             });
-            map.union(&get_fvt(body, fv))
-                .filter(|v| conts.iter().all(|c| c.binding() != **v))
-                .copied()
+            map.union(get_fvt(body, fv))
+                .into_iter()
+                .filter(|v| conts.iter().all(|c| c.binding() != *v))
                 .collect()
         }
 
@@ -43,9 +45,9 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
                 acc.extend(free);
                 acc
             })
-            .union(&get_fvt(body, fv))
-            .filter(|v| funcs.iter().all(|f| f.binding != **v))
-            .copied()
+            .union(get_fvt(body, fv))
+            .into_iter()
+            .filter(|v| funcs.iter().all(|f| f.binding != *v))
             .collect(),
 
         Term::Continue(k, args, _) => args
@@ -89,13 +91,13 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
                     .flat_map(|args| args.iter().copied().flat_map(get_fva)),
             )
             .collect(),
-    }
+    })
 }
 
-fn get_fva<'gc>(atom: Atom<'gc>) -> Vec<LVarRef<'gc>> {
+fn get_fva<'gc>(atom: Atom<'gc>) -> Option<LVarRef<'gc>> {
     match atom {
-        Atom::Local(lvar) => vec![lvar],
-        _ => Vec::new(),
+        Atom::Local(lvar) => Some(lvar),
+        _ => None,
     }
 }
 

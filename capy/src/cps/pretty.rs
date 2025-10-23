@@ -237,6 +237,7 @@ impl<'gc> Cont<'gc> {
                     + binding_doc
                     + alloc.space()
                     + args
+                    + alloc.text(format!(" @ {}", self.handler.get().name))
                     + alloc.hardline()
                     + body.pretty(alloc).indent(2).nest(2))
                 .group()

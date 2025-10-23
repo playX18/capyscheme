@@ -2,6 +2,8 @@
 ;; various core functions, records, module system and then loads rest of the 
 ;; standard library. After this file is loaded, it's possible to use CLI.
 
+
+
 (define (eq? x y) (eq? x y))
 (define (eqv? x y) (eqv? x y))
 (define (equal? x y) (equal? x y))
@@ -1042,7 +1044,6 @@
     (raise who)))
 
 (define (syntax-violation who message . irritants)
-  (:print "syntax-violation, who: " who ", message: " message ", irritants: " irritants)
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -1323,15 +1324,21 @@
         (loop (cdr lst) acc)))))
 
 
+;; These functions are defined in `boot/eval.scm`. Due to the fact that
+;; we now have letrectification overriding them also requires overriding
+;; `resolve-module` so we just keep it simple and make `resolve-module` 
+;; do a global lookup of `load` and `load-in-vicinity`. `primitive-load`
+;; is defined here because we do not depend on its overloaded version from 
+;; here.
 
-(define (load-in-vicinity filename directory)
-  (let ([thunk (load-thunk-in-vicinity filename #t directory )])
-    (thunk)))
-
-(define (load filename)
-  (let ([thunk (load-thunk-in-vicinity filename #t)])
-    (thunk)))
-
+;(define (load-in-vicinity filename directory)
+;  (let ([thunk (load-thunk-in-vicinity filename #t directory )])
+;    (thunk)))
+;
+;(define (load filename)
+;  (let ([thunk (load-thunk-in-vicinity filename #t)])
+;    (thunk)))
+;
 (define (primitive-load filename)
   "Loads file by searching only load path or by its absolute path."
   (let ([thunk (load-thunk-in-vicinity filename #f)])
@@ -1795,7 +1802,7 @@
     (lambda (exn . port)
       (define p (if (null? port) (current-error-port) (car port)))
    
-      
+    
       (format p "Unhandled exception: ~a~!: ~a~%~!" (condition-who exn)))))
 
 
@@ -2094,7 +2101,8 @@
   (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch")
           %load-extensions))
 
-(let* ([host-arch (host-arch)]
+(let* (
+      [host-arch (host-arch)]
       [host-os (host-os)]
       [host-family (host-family)]
       [host-os-sld (string-append host-os ".sld")]

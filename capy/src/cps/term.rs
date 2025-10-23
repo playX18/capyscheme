@@ -208,6 +208,17 @@ impl<'gc> Cont<'gc> {
             },
         )
     }
+
+    pub fn arity_matches(&self, arg_count: usize) -> bool {
+        /*if let Some(_) = self.variadic
+            && false
+        {
+            arg_count >= self.args.len()
+        } else {
+            arg_count == self.args.len()
+        }*/
+        arg_count == self.args.len() && self.variadic.is_none()
+    }
 }
 
 pub type ContRef<'gc> = Gc<'gc, Cont<'gc>>;
@@ -276,9 +287,7 @@ impl<'gc> TreeEq for Term<'gc> {
             (Term::Continue(k, args, _), Term::Continue(l, bargs, _)) => {
                 Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
             }
-            /*(Term::If(f, k, l, hints), Term::If(g, m, n, bhints)) => {
-                f.tree_eq(g) && Gc::ptr_eq(*k, *m) && Gc::ptr_eq(*l, *n) && hints == bhints
-            }*/
+
             (
                 Term::If {
                     test: f,
@@ -364,5 +373,14 @@ impl<'gc> Func<'gc> {
 
     pub fn make_meta(&self, ctx: Context<'gc>) -> Value<'gc> {
         Value::cons(ctx, self.name, self.source)
+    }
+
+    pub fn arity_matches(&self, arg_count: usize) -> bool {
+        /*if let Some(_) = self.variadic {
+            arg_count >= self.args.len()
+        } else {
+            arg_count == self.args.len()
+        }*/
+        arg_count == self.args.len() && self.variadic.is_none()
     }
 }

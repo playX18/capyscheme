@@ -2,7 +2,7 @@ use std::{cell::Cell, collections::HashMap, hash::Hash, sync::OnceLock};
 
 use pretty::{DocAllocator, DocBuilder};
 use rsgc::{
-    Gc, Global, Rootable, Trace,
+    Gc, Global, Mutation, Rootable, Trace,
     alloc::array::{Array, ArrayRef},
     barrier,
     cell::Lock,
@@ -13,7 +13,7 @@ use crate::{
     list,
     runtime::{
         Context,
-        modules::{Module, root_module},
+        modules::{Module, get_current_module, root_module},
         value::{Str, Symbol, Value},
         vm::syntax::props_to_sourcev,
     },
@@ -310,6 +310,22 @@ pub struct Proc<'gc> {
     pub meta: Value<'gc>,
 }
 
+impl<'gc> Proc<'gc> {
+    pub fn with_body(&self, mc: &Mutation<'gc>, body: TermRef<'gc>) -> ProcRef<'gc> {
+        Gc::new(
+            mc,
+            Proc {
+                name: self.name,
+                source: self.source,
+                args: self.args,
+                variadic: self.variadic,
+                body,
+                meta: self.meta,
+            },
+        )
+    }
+}
+
 pub type ProcRef<'gc> = Gc<'gc, Proc<'gc>>;
 
 #[derive(Trace, Debug, Clone, Copy)]
@@ -319,6 +335,17 @@ pub struct Let<'gc> {
     pub lhs: ArrayRef<'gc, LVarRef<'gc>>,
     pub rhs: ArrayRef<'gc, TermRef<'gc>>,
     pub body: TermRef<'gc>,
+}
+
+impl<'gc> Let<'gc> {
+    pub fn with_body(&self, _mc: &Mutation<'gc>, body: TermRef<'gc>) -> Let<'gc> {
+        Let {
+            style: self.style,
+            lhs: self.lhs,
+            rhs: self.rhs,
+            body,
+        }
+    }
 }
 
 #[derive(Trace, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -335,6 +362,16 @@ pub struct Fix<'gc> {
     pub lhs: ArrayRef<'gc, LVarRef<'gc>>,
     pub rhs: ArrayRef<'gc, ProcRef<'gc>>,
     pub body: TermRef<'gc>,
+}
+
+impl<'gc> Fix<'gc> {
+    pub fn with_body(&self, _mc: &Mutation<'gc>, body: TermRef<'gc>) -> Fix<'gc> {
+        Fix {
+            lhs: self.lhs,
+            rhs: self.rhs,
+            body,
+        }
+    }
 }
 
 pub fn constant<'gc>(ctx: Context<'gc>, value: Value<'gc>) -> TermRef<'gc> {
@@ -653,11 +690,14 @@ pub type Error<'gc> = Box<CompileError<'gc>>;
 
 pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
     if let Some(_) = program.try_as::<Symbol>() {
+        // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+        let module = get_current_module(cenv.ctx).downcast::<Module>();
+        let module_name = module.name();
         match cenv.get(program) {
             Some(lvar) => Ok(lref(cenv.ctx, lvar)),
             None => Ok(toplevel_ref(
                 cenv.ctx,
-                Value::new(false),
+                module_name,
                 program,
                 Value::new(false),
             )),
@@ -813,13 +853,10 @@ fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
     let name = form.cadr();
     let source = syntax_annotation(cenv.ctx, form);
     cenv.expression_name = old;
-    Ok(toplevel_set(
-        cenv.ctx,
-        Value::new(false),
-        name,
-        value,
-        source,
-    ))
+    // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+    let module = get_current_module(cenv.ctx).downcast::<Module>();
+    let module_name = module.name();
+    Ok(toplevel_set(cenv.ctx, module_name, name, value, source))
 }
 
 fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
@@ -891,9 +928,12 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
                 },
             );
 
+            // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+            let module = get_current_module(cenv.ctx).downcast::<Module>();
+            let module_name = module.name();
             return Ok(define(
                 cenv.ctx,
-                Value::new(false),
+                module_name,
                 name,
                 proc_term,
                 syntax_annotation(cenv.ctx, form),
@@ -905,9 +945,12 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             cenv.expression_name = name;
             let term = expand(cenv, value)?;
             cenv.expression_name = old;
+            // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+            let module = get_current_module(cenv.ctx).downcast::<Module>();
+            let module_name = module.name();
             Ok(define(
                 cenv.ctx,
-                Value::new(false),
+                module_name,
                 name,
                 term,
                 syntax_annotation(cenv.ctx, form),
@@ -2928,5 +2971,84 @@ impl<'gc> Term<'gc> {
 
             _ => false,
         }
+    }
+
+    pub fn is_procedure(&self) -> bool {
+        match &self.kind {
+            TermKind::Proc(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn fix(
+        mc: &Mutation<'gc>,
+        lhs: impl IntoIterator<Item = LVarRef<'gc>>,
+        rhs: impl IntoIterator<Item = ProcRef<'gc>>,
+        body: TermRef<'gc>,
+        source: Value<'gc>,
+    ) -> TermRef<'gc> {
+        Gc::new(
+            mc,
+            Term {
+                source: Lock::new(source),
+                kind: TermKind::Fix(Fix {
+                    lhs: Array::from_iter(mc, lhs.into_iter()),
+                    rhs: Array::from_iter(mc, rhs.into_iter()),
+                    body,
+                }),
+            },
+        )
+    }
+
+    pub fn let_(
+        mc: &Mutation<'gc>,
+        style: LetStyle,
+        lhs: impl IntoIterator<Item = LVarRef<'gc>>,
+        rhs: impl IntoIterator<Item = TermRef<'gc>>,
+        body: TermRef<'gc>,
+        source: Value<'gc>,
+    ) -> TermRef<'gc> {
+        Gc::new(
+            mc,
+            Term {
+                source: Lock::new(source),
+                kind: TermKind::Let(Let {
+                    style,
+                    lhs: Array::from_iter(mc, lhs.into_iter()),
+                    rhs: Array::from_iter(mc, rhs.into_iter()),
+                    body,
+                }),
+            },
+        )
+    }
+
+    pub fn seq(
+        mc: &Mutation<'gc>,
+        head: TermRef<'gc>,
+        tail: TermRef<'gc>,
+        src: Value<'gc>,
+    ) -> TermRef<'gc> {
+        Gc::new(
+            mc,
+            Term {
+                source: Lock::new(src),
+                kind: TermKind::Seq(head, tail),
+            },
+        )
+    }
+
+    pub fn lset(
+        mc: &Mutation<'gc>,
+        lvar: LVarRef<'gc>,
+        value: TermRef<'gc>,
+        src: Value<'gc>,
+    ) -> TermRef<'gc> {
+        Gc::new(
+            mc,
+            Term {
+                source: Lock::new(src),
+                kind: TermKind::LSet(lvar, value),
+            },
+        )
     }
 }

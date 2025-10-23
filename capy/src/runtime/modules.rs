@@ -121,6 +121,10 @@ impl<'gc> Module<'gc> {
         )
     }
 
+    pub fn name(&self) -> Value<'gc> {
+        self.name.get()
+    }
+
     pub fn search<F, R>(self: Gc<'gc, Self>, f: F) -> Option<R>
     where
         F: Fn(Gc<'gc, Self>) -> Option<R>,
@@ -280,7 +284,10 @@ impl<'gc> Module<'gc> {
                 let var = iface.variable(ctx, sym);
                 if let Some(var) = var {
                     if !var.is_bound() {
-                        println!(";; Warning: imported unbound variable {sym} into {}", self.name.get());
+                        println!(
+                            ";; Warning: imported unbound variable {sym} into {}",
+                            self.name.get()
+                        );
                     }
                     self.import_obarray.put(ctx, sym, var);
                     return Some(var);
@@ -1092,6 +1099,8 @@ native_fn!(
             .set(environment);
         nctx.return_(Value::undefined())
     }
+
+
 );
 
 global!(

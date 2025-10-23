@@ -21,6 +21,7 @@ pub struct ReifyInfo<'gc> {
 /// and also returns all continuations and functions in the program.
 pub fn reify<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ReifyInfo<'gc> {
     let mut fv = FreeVars::new();
+
     let _ = get_fvf(func, &mut fv);
     fv.fvars.insert(func, Default::default());
 

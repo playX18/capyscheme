@@ -9,7 +9,6 @@ use cranelift::prelude::IntCC;
 use cranelift::prelude::types;
 use cranelift_codegen::ir;
 use cranelift_codegen::ir::BlockArg;
-use easy_bitfield::BitFieldTrait;
 use std::collections::HashMap;
 use std::mem::offset_of;
 macro_rules! prim {
@@ -1666,6 +1665,19 @@ prim!(
         PrimValue::Value(vec)
     },
 
+    "tuple" => tuple(ssa, args, _h) {
+        let PrimValue::Value(tup) = make_tuple(ssa, &[Atom::Constant(Value::new(args.len() as i32))], _h) else {
+            panic!("tuple make-tuple failed")
+        };
+
+        for (i, &arg) in args.iter().enumerate() {
+            let arg = ssa.atom(arg);
+            ssa.builder.ins().store(ir::MemFlags::trusted(), arg, tup, offset_of!(Tuple, data) as i32 + i as i32 * size_of::<Value>() as i32);
+        }
+
+        PrimValue::Value(tup)
+    },
+
     "make-tuple" => make_tuple(ssa, args, _h) {
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let size = ssa.atom(args[0]);
@@ -1991,6 +2003,47 @@ prim!(
         PrimValue::Value(result)
     },
 
+    "sqrt" => sqrt(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+
+        let result = ssa.inline_float_unary_op(arg,
+            |ssa, val| {
+                let res = ssa.builder.ins().sqrt(val);
+                res
+            },
+            |ssa, arg| {
+                let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+                ssa.handle_thunk_call_result(ssa.thunks.sqrt, &[ctx, arg], _h)
+            }
+        );
+
+        PrimValue::Value(result)
+    },
+
+    "cos" => cos(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.cos, &[ctx, arg], _h);
+
+        PrimValue::Value(result)
+    },
+
+    "sin" => sin(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.sin, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+    "tan" => tan(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.tan, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+
+
     "ceiling" => ceiling(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
@@ -2315,7 +2368,7 @@ prim!(
         PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::new(true).bits() as i64))
     },
 
-    "tuple" => tuple(ssa, args, _h) {
+   /*  "tuple" => tuple(ssa, args, _h) {
         let mut hdr = ScmHeader::with_type_bits(TypeCode8::TUPLE.bits() as _);
         hdr.word |= TupleLengthBits::encode(args.len() as _);
 
@@ -2335,7 +2388,7 @@ prim!(
         }
         PrimValue::Value(tuple)
     },
-
+*/
 
     "tuple-size" => tuple_size(ssa, args, _h) {
         let arg = ssa.atom(args[0]);

@@ -17,7 +17,6 @@
 ; is worse than useless.
 
 (define (buffer-mode? mode)
-  (issue-warning-deprecated 'buffer-mode?)
   (case mode
    ((none line block) #t)
    (else #f)))
@@ -301,7 +300,6 @@
 ; FIXME:  Doesn't check legitimacy of the transcoder.
 
 (define (open-bytevector-output-port . rest)
-  (issue-warning-deprecated 'open-bytevector-output-port)
   (let ((transcoder (if (null? rest) #f (car rest))))
     (if transcoder
         (let ((out (open-output-string)))
@@ -342,7 +340,6 @@
                            (errmsg 'msg:illegalargs) f)))
 
 (define (open-string-output-port)
-  (issue-warning-deprecated 'open-string-output-port)
   (let* ((transcoder (make-transcoder (utf-8-codec) 'none 'ignore))
          (port (bytevector-io/open-output-bytevector))
          (port (transcoded-port port transcoder))
@@ -402,55 +399,32 @@
 
 (define (make-custom-binary-input-port
          id read! get-position set-position! close)
-  (if get-position
-      (issue-warning-deprecated
-       'make-custom-binary-input-port...get-port-position))
+  
   (customio/make-binary-input-port
    id read! get-position set-position! close))
 
 (define (make-custom-binary-output-port
          id write! get-position set-position! close)
-  (if get-position
-      (issue-warning-deprecated
-       'make-custom-binary-output-port...get-port-position))
   (customio/make-binary-output-port
    id write! get-position set-position! close))
 
 (define (make-custom-binary-input/output-port
          id read! write! get-position set-position! close)
-  (if get-position
-      (issue-warning-deprecated
-       'make-custom-binary-input/output-port...get-port-position))
-  (if (not set-position!)
-      (issue-warning-deprecated
-       'make-custom-binary-input/output-port...set-port-position!))
   (customio/make-binary-input/output-port
    id read! write! get-position set-position! close))
 
 (define (make-custom-textual-input-port
          id read! get-position set-position! close)
-  (if get-position
-      (issue-warning-deprecated
-       'make-custom-textual-input-port...get-port-position))
   (customio/make-textual-input-port
    id read! get-position set-position! close))
 
 (define (make-custom-textual-output-port
          id write! get-position set-position! close)
-  (if get-position
-      (issue-warning-deprecated
-       'make-custom-textual-output-port...get-port-position))
   (customio/make-textual-output-port
    id write! get-position set-position! close))
 
 (define (make-custom-textual-input/output-port
          id read! write! get-position set-position! close)
-  (if get-position
-      (issue-warning-deprecated
-       'make-custom-textual-input/output-port...get-port-position))
-  (if (not set-position!)
-      (issue-warning-deprecated
-       'make-custom-textual-input/output-port...set-port-position!))
   (customio/make-textual-input/output-port
    id read! write! get-position set-position! close))
 
@@ -511,7 +485,6 @@
 ; FIXME:  This is extremely inefficient.
 
 (define (get-bytevector-some p)
-  (issue-warning-deprecated 'get-bytevector-some)
   (if (and (io/input-port? p)
            (io/binary-port? p))
       (let ((byte (get-u8 p)))

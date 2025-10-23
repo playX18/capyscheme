@@ -1375,6 +1375,12 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
         define(ctx, "uintptr_t", ForeignType::Uint64.into());
     }
 
+    if size_of::<libc::ptrdiff_t>() == 4 {
+        define(ctx, "ptrdiff_t", ForeignType::Int32.into());
+    } else if size_of::<libc::ptrdiff_t>() == 8 {
+        define(ctx, "ptrdiff_t", ForeignType::Int64.into());
+    }
+
     let nullp = Gc::new(&ctx, Pointer::new(std::ptr::null_mut()));
 
     define(ctx, "%null-pointer", nullp.into());

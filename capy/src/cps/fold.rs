@@ -1,12 +1,14 @@
 //! Constant-folding for CPS terms.
 #![allow(dead_code, unused_variables, unused_mut, unused_assignments)]
 
+use crate::expander::primitives::sym_tuple;
 use crate::runtime::Context;
 use crate::runtime::value::*;
 use crate::{
     cps::term::Atom,
     runtime::value::{Number, Value},
 };
+use rsgc::Gc;
 use rsgc::Global;
 use rsgc::Rootable;
 use rsgc::Trace;
@@ -81,7 +83,7 @@ impl<'gc> FoldingEntry<'gc> {
     }
 
     pub fn apply(&self, ctx: Context<'gc>, atoms: &[Value<'gc>]) -> Option<Value<'gc>> {
-        if atoms.len() == self.args || (self.variadic && atoms.len() > self.args) {
+        if atoms.len() == self.args || (self.variadic && atoms.len() >= self.args) {
             (self.func)(ctx, atoms)
         } else {
             None
@@ -117,12 +119,12 @@ macro_rules! folding {
 
         )*
 
-        return table
+        table
     }};
 }
 
 fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
-    folding!(ctx;
+    let mut table = folding!(ctx;
         "zero?" => is_zero(ctx, a) {
             let Some(a) = a.number() else { return None };
 
@@ -204,6 +206,45 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
 
+        /*"tuple-ref" => tuple_ref(ctx, tuple, ix) {
+            let Some(tuple) = tuple.try_as::<Tuple>() else {
+                return None;
+            };
+
+            let Some(ix) = ix.number().filter(|n| n.is_fixnum()).map(|n| n.coerce_exact_integer_to_usize()) else {
+                return None;
+            };
+
+            if ix >= tuple.len() {
+                return None;
+            }
+
+            Some(tuple[ix].get())
+        }*/
+
+        /*"make-tuple" => make_tuple(ctx, count, init) {
+            let Some(count) = count.number().filter(|n| n.is_fixnum()).map(|n| n.coerce_exact_integer_to_usize()) else {
+                return None;
+            };
+
+            // Do not fold too large tuples
+            if count > 32 {
+                return None;
+            }
+            let tup = Tuple::new(&ctx, count, init);
+
+            Some(tup.into())
+        }
+
+        "tuple-size" => tuple_size(ctx, tuple) {
+            let Some(tuple) = tuple.try_as::<Tuple>() else {
+                return None;
+            };
+
+            Some(Value::new(tuple.len() as i32))
+        }*/
+
+
         "not" => not(ctx, a) {
             Some(Value::new(!a.as_bool()))
         }
@@ -280,35 +321,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         "symbol->string" => symbol_to_string(ctx, a) {
             if let Some(sym) = a.try_as::<Symbol>() {
                 Some(Value::new(sym.to_str(&ctx)))
-            } else {
-                None
-            }
-        }
-
-        "car" => car(ctx, a) {
-
-            if a.is_pair() {
-                Some(a.car())
-            } else {
-                None
-            }
-        }
-
-        "cdr" => cdr(ctx, a) {
-
-            if a.is_pair() {
-                Some(a.cdr())
-            } else {
-                None
-            }
-        }
-
-        "cons" => cons(ctx, a,b) {
-            Some(Value::cons(ctx, a, b))
-        }
-        "reverse" => reverse(ctx, ls) {
-            if ls.is_list() {
-                Some(Value::new(ls.list_reverse(ctx)))
             } else {
                 None
             }
@@ -890,6 +902,30 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
     );
+
+    table.table.insert(
+        sym_tuple(ctx).into(),
+        FoldingEntry::new(
+            |ctx, args| {
+                if args.len() > 32 {
+                    return None;
+                }
+
+                let tup = Tuple::new(&ctx, args.len(), Value::undefined());
+                let wtup = Gc::write(&ctx, tup);
+
+                for (i, val) in args.iter().enumerate() {
+                    wtup[i].unlock().set(*val);
+                }
+
+                Some(tup.into())
+            },
+            0,
+            true,
+        ),
+    );
+
+    table
 }
 
 static FOLDING_TABLE: OnceLock<Global<Rootable!(FoldingTable<'_>)>> = OnceLock::new();

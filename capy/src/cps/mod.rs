@@ -3,6 +3,7 @@
 pub mod builder;
 pub mod closure;
 pub mod contify;
+pub mod dot;
 pub mod fold;
 pub mod free_vars;
 pub mod optimizer;
@@ -12,7 +13,7 @@ pub mod reify;
 pub mod reify_primitives;
 pub mod term;
 
-use std::hash::BuildHasherDefault;
+use std::{collections::HashMap, hash::BuildHasherDefault};
 
 use hashlink::{LinkedHashMap, LinkedHashSet};
 pub use optimizer::rewrite_func;
@@ -43,5 +44,37 @@ impl<K> SingleValueSet<K> {
             (Self::Singleton(_), Self::Singleton(_)) => Self::Top,
             (Self::Bottom, other) | (other, Self::Bottom) => other,
         }
+    }
+}
+
+pub trait Substitute<K> {
+    fn subst(&self, key: K) -> K;
+}
+
+impl<K, H> Substitute<K> for LinkedHashMap<K, K, H>
+where
+    K: Eq + std::hash::Hash + Clone,
+    H: std::hash::BuildHasher,
+{
+    fn subst(&self, key: K) -> K {
+        let mut key = key;
+        while let Some(new_key) = self.get(&key) {
+            key = new_key.clone();
+        }
+        key
+    }
+}
+
+impl<K, H> Substitute<K> for HashMap<K, K, H>
+where
+    K: Eq + std::hash::Hash + Clone,
+    H: std::hash::BuildHasher,
+{
+    fn subst(&self, key: K) -> K {
+        let mut key = key;
+        while let Some(new_key) = self.get(&key) {
+            key = new_key.clone();
+        }
+        key
     }
 }

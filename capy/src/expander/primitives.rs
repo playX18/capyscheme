@@ -1780,7 +1780,7 @@ primitive_expanders!(
     }
 
     "tuple" ex_tuple<'gc>(ctx, args, src) {
-        let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "tup").into());
+        /*let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "tup").into());
         let len = args.len() as i32;
         let init = prim_call_term(ctx, sym_make_tuple(ctx).into(), &[constant(ctx, Value::new(len)), constant(ctx, Value::new(Value::undefined()))], src);
         let mut body = Vec::new();
@@ -1802,7 +1802,8 @@ primitive_expanders!(
                 seq_from_slice(ctx, body),
                 src,
             ));
-        }
+        }*/
+        Some(prim_call_term(ctx, sym_tuple(ctx).into(), args, src))
     }
 
     "make-tuple" ex_make_tuple<'gc>(ctx, args, src) {

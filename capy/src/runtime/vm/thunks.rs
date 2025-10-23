@@ -3970,7 +3970,9 @@ pub fn make_assertion_violation<'gc>(
             *ctx,
             Symbol::from_str(*ctx, ".make-assertion-violation").into(),
         )
-        .expect("pre boot code");
+        .unwrap_or_else(|| {
+            panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
+        });
 
     match call_scheme(*ctx, assertion_violation, args) {
         VMResult::Ok(val) => val,
@@ -3993,7 +3995,9 @@ pub fn make_undefined_violation<'gc>(
             *ctx,
             Symbol::from_str(*ctx, ".make-undefined-violation").into(),
         )
-        .unwrap_or_else(|| panic!("pre boot code, who={who}, message={message}",));
+        .unwrap_or_else(|| {
+            panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
+        });
     match call_scheme(*ctx, undefined_violation, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,

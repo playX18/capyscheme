@@ -1,6 +1,5 @@
 (current-module (resolve-module '(capy) #f #f))
 
-
 (define-syntax ...
   (lambda (x)
     (syntax-violation '... "bad use of '...' syntactic keyword" x x)))
@@ -888,29 +887,28 @@
                  v))))))))
 
 
-(define-syntax do
-  (syntax-rules ()
-    ((do ((var init step ...) ...)
-         (test expr ...)
-         command ...)
-     (letrec
-       ((loop
-         (lambda (var ...)
-           (if test
-               (begin
-                 (if #f #f)
-                 expr ...)
-               (begin
-                 command
-                 ...
-                 (loop (do "step" var step ...)
-                       ...))))))
-       (loop init ...)))
-    ((do "step" x)
-     x)
-    ((do "step" x y)
-     y)))
-
+  (define-syntax do
+    (lambda (orig-x)
+      (syntax-case orig-x ()
+        ((_ ((var init . step) ...) (e0 e1 ...) c ...)
+         (with-syntax (((step ...)
+                        (map (lambda (v s)
+                               (syntax-case s ()
+                                 (()  v)
+                                 ((e) (syntax e))
+                                 (_   (syntax-violation
+                                       'do "Invalid step" orig-x s))))
+                             (syntax (var ...))
+                             (syntax (step ...)))))
+           (syntax-case (syntax (e1 ...)) ()
+             (()          (syntax (let do ((var init) ...)
+                                    (if (not e0)
+                                        (begin c ... (do step ...))))))
+             ((e1 e2 ...) (syntax (let do ((var init) ...)
+                                    (if e0
+                                        (begin e1 e2 ...)
+                                        (begin c ... (do step ...))))))))))))
+  
 ;; Implements `receive` syntax by translating to `call-with-values`.
 ;; Compiler will later on eliminate `call-with-values` to `receive`.
 (define-syntax receive
