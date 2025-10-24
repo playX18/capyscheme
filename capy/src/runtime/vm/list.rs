@@ -387,7 +387,7 @@ fn transpose_impl<'gc>(ctx: Context<'gc>, each_len: usize, args: &[Value<'gc>]) 
     let mut ans_tail = Value::null();
 
     for _ in 0..each_len {
-        let elt = Value::cons(ctx, args[0], Value::null());
+        let elt = Value::cons(ctx, args[0].car(), Value::null());
         let mut elt_tail = elt;
         args[0] = args[0].cdr();
         for arg in args.iter_mut().skip(1) {

@@ -42,6 +42,24 @@
                     (assertion-violation #f "wrong number of arguments" args))))))))))
 
   (define (print-condition exn p)
+    (define (print-syntax form subform)
+      (define form-src (if (syntax? form) (syntax-sourcev form) #f))
+      (define subform-src (if (and subform (syntax? subform)) (syntax-sourcev subform) #f))
+      (define (fmt-source src)
+        (define file (vector-ref src 0))
+        (define line (vector-ref src 1))
+        (define col  (vector-ref src 2))
+        (format p "~a:~a:~a" file line col))
+      (format p "~a" (syntax->datum form))
+      (when form-src 
+        (format p "~%       in ")
+        (fmt-source form-src))
+      (when subform
+        (format p "~a" (syntax->datum subform))
+        (when subform-src 
+          (format p "~%     in")
+          (fmt-source subform-src))))
+
     (cond 
       [(condition? exn)
         (let ([c* (simple-conditions exn)])
@@ -82,6 +100,8 @@
                       (format p "~a: " (vector-ref f* i))
                       (let ([x ((record-accessor rtd i) c)])
                         (cond 
+                          [(and (eq? rtd (record-type-descriptor &syntax)))
+                            (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
                           [(and (eq? rtd (record-type-descriptor &stacktrace)))
                             (display "..." p)]
                           [(and (eq? rtd (record-type-descriptor &irritants))
@@ -122,19 +142,13 @@
               ;  (assq 'name (procedure-properties rator)))
               ;#f))
             (define proc-name (procedure-properties rator))
-            (define real-src (if (and (procedure? rator)
-                                      (interpreted-expression? rator))
-                                 (begin 
-                                  (format #t "DEBUG: getting interpreted-expression-source: ~a~%" (interpreted-expression-source rator))
-                                  (interpreted-expression-source rator))
-                                 src))
+            (define real-src src)
             
             (format p " at ")
             (if src
               (format p "~a:~a:~a" (vector-ref real-src 0) (vector-ref real-src 1) (vector-ref real-src 2))
               (format p "<unknown file>"))
-            (if proc-name 
-              (format p " ~a~a" proc-name rands))
+           
             (newline p)
             (lp frame (+ 1 idx) stk))])))      
         

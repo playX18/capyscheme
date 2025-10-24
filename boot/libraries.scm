@@ -122,7 +122,6 @@
                          include
                          include-ci
                          ; eval
-                        environment
                         eval
                         ; arith flonum
                         flonum?

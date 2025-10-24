@@ -210,14 +210,11 @@ impl<'gc> Cont<'gc> {
     }
 
     pub fn arity_matches(&self, arg_count: usize) -> bool {
-        /*if let Some(_) = self.variadic
-            && false
-        {
+        if let Some(_) = self.variadic {
             arg_count >= self.args.len()
         } else {
             arg_count == self.args.len()
-        }*/
-        arg_count == self.args.len() && self.variadic.is_none()
+        }
     }
 }
 
@@ -376,11 +373,10 @@ impl<'gc> Func<'gc> {
     }
 
     pub fn arity_matches(&self, arg_count: usize) -> bool {
-        /*if let Some(_) = self.variadic {
+        if let Some(_) = self.variadic {
             arg_count >= self.args.len()
         } else {
             arg_count == self.args.len()
-        }*/
-        arg_count == self.args.len() && self.variadic.is_none()
+        }
     }
 }

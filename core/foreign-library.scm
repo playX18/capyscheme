@@ -73,7 +73,7 @@
                                                     (parse-path "PATH")
                                                     '())))
     (define (default-search-path)
-        '())
+        '("./"))
 
     (define (load-foreign-library . opts)
         
@@ -102,6 +102,7 @@
                             ((file-exists-with-extension filename extensions)
                                 => dlopen*)
                             (else (error-not-found))))
+                    ((file-exists? filename) => dlopen*)
                     ((file-exists-in-path-with-extension filename search-path extensions)
                         => dlopen*)
                     (search-system-paths? 

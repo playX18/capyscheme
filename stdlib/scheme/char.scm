@@ -1,6 +1,6 @@
 
 (define-library (scheme char)
-  (import (core unicode) (core unicode-assistants))
+  (import (core unicode))
   (export char-alphabetic?
           char-ci<?
           char-ci>=?

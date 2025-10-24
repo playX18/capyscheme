@@ -239,10 +239,59 @@
             ((pred (car lst)) (loop (cdr lst) (cons (car lst) acc1) acc2))
             (else (loop (cdr lst) acc1 (cons (car lst) acc2)))))))
 
-(define (for-all pred lst)
-  (if (null? lst) #t
-    (and (pred (car lst)) (for-all pred (cdr lst)))))
+(define for-all
+  (lambda (pred lst1 . lst2)
+    (cond ((null? lst2)
+            (for-all-1 pred lst1))
+          ((apply list-transpose+ lst1 lst2)
+            => (lambda (lst) (for-all-n-quick pred lst)))
+          (else
+            (for-all-n pred (cons lst1 lst2))))))
 
+(define for-all-1
+  (lambda (pred lst)
+    (cond ((null? lst) #t)
+          ((pair? lst)
+            (let loop ((head (car lst)) (rest (cdr lst)))
+              (cond ((null? rest) (pred head))
+                    ((pair? rest)
+                    (and (pred head)
+                          (loop (car rest) (cdr rest))))
+                    (else
+                    (and (pred head)
+                          (assertion-violation 'for-all (format "traversal reached to non-pair element ~s" rest) (list pred lst)))))))
+          (else
+            (assertion-violation 'for-all (format "expected chain of pairs, but got ~r, as argument 2" lst) (list pred lst))))))
+
+(define for-all-n
+  (lambda (pred list-of-lists)
+    (let ((argc (length list-of-lists)))
+
+      (define collect-car
+        (lambda (lst)
+          (let loop ((lst lst))
+            (cond ((null? lst) '())
+                  ((pair? (car lst))
+                    (cons (caar lst) (loop (cdr lst))))
+                  (else
+                    (assertion-violation 'for-all (format "traversal reached to non-pair element ~s" (car lst)) list-of-lists))))))
+
+      (let loop ((head (collect-car list-of-lists)) (rest (collect-cdr list-of-lists)))
+        (or (= (length head) argc)
+            (assertion-violation 'for-all "expected same length chains of pairs" list-of-lists))
+        (if (null? rest)
+            (apply pred head)
+            (and (apply pred head)
+                  (loop (collect-car rest) (collect-cdr rest))))))))
+
+(define for-all-n-quick
+  (lambda (pred lst)
+    (or (null? lst)
+        (let loop ((head (car lst)) (rest (cdr lst)))
+          (if (null? rest)
+              (apply pred head)
+              (and (apply pred head)
+                    (loop (car rest) (cdr rest))))))))
 (define safe-length
   (lambda (lst)
     (let loop ((lst lst) (n 0))
@@ -283,46 +332,24 @@
       [(= l 2) (map3 f x (car rest) (car (cdr rest)))]
     )))
 
-(define (for-each-1 proc lst)
-  (let loop ([lst lst])
-    (if (pair? lst)
-      (begin (proc (car lst)) (loop (cdr lst)))
-      (if (null? lst) (unspecified)
-        (assertion-violation 'for-each "expected a proper list" lst)))))
+(define for-each
+  (lambda (proc lst1 . lst2)
+    (define for-each-1
+      (lambda (proc lst)
+        (if (null? lst)
+            (unspecified)
+            (begin (proc (car lst)) (for-each-1 proc (cdr lst))))))
+    (define for-each-n
+      (lambda (proc lst)
+        (cond ((null? lst) (unspecified))
+              (else (apply proc (car lst)) (for-each-n proc (cdr lst))))))
+    (if (null? lst2)
+        (if (list? lst1)
+            (for-each-1 proc lst1)
+            (assertion-violation 'for-each "not a proper list" (cons* proc lst1 lst2)))
+        (cond ((apply list-transpose+ lst1 lst2) => (lambda (lst) (for-each-n proc lst)))
+              (else (assertion-violation 'for-each "expected same length proper lists" (cons* proc lst1 lst2)))))))
 
-(define (for-each-2 proc lst1 lst2)
-  (let loop ([lst1 lst1] [lst2 lst2])
-    (if (and (pair? lst1) (pair? lst2))
-      (begin
-        (proc (car lst1) (car lst2))
-        (loop (cdr lst1) (cdr lst2)))
-      (if (or (null? lst1) (null? lst2)) (unspecified)
-        (assertion-violation 'for-each "expected proper lists" (list lst1 lst2))))))
-
-(define (for-each-3 proc lst1 lst2 lst3)
-  (let loop ([lst1 lst1] [lst2 lst2] [lst3 lst3])
-    (if (and (pair? lst1) (pair? lst2) (pair? lst3))
-      (begin
-        (proc (car lst1) (car lst2) (car lst3))
-        (loop (cdr lst1) (cdr lst2) (cdr lst3)))
-      (if (or (null? lst1) (null? lst2) (null? lst3)) (unspecified)
-        (assertion-violation 'for-each "expected proper lists" (list lst1 lst2 lst3))))))
-  
-(define (for-each-n proc lst)
-  (let loop ([lst lst])
-    (if (and (pair? lst) (pair? (car lst)))
-      (begin
-        (apply proc (car lst))
-        (loop (cdr lst)))
-      (if (null? lst) (unspecified)
-        (assertion-violation 'for-each "expected a proper list of proper lists" lst)))))
-
-(define (for-each proc lst1 . lst2)
-  (case (length lst2)
-    ((0) (for-each-1 proc lst1))
-    ((1) (for-each-2 proc lst1 (car lst2)))
-    ((2) (for-each-3 proc lst1 (car lst2) (car (cdr lst2))))
-    (else (for-each-n proc (cons lst1 lst2)))))
 
 (define (and-map pred lst)
   (let loop ([lst lst])
@@ -508,7 +535,10 @@
 (define (make-simple-conser desc rtd argc)
   ((rcd-protocol desc)
     (lambda field-values
-      (apply tuple rtd field-values))))
+      (cond 
+        [(= (length field-values) argc) (apply tuple rtd field-values)]
+        [else (assertion-violation 'record-constructor "wrong-number of arguments" field-values)]
+      ))))
 
 (define (make-nested-conser desc rtd argc)
   ((rcd-protocol desc)
@@ -524,7 +554,9 @@
         (lambda extra-field-values
           (lambda this-field-values
               (let ([field-values (append this-field-values extra-field-values)])
-                (apply tuple rtd field-values)))))))))
+                (if (= (length field-values) argc)
+                  (apply tuple rtd field-values)
+                  (assertion-violation 'record-constructor "wrong number of arguments" field-values))))))))))
 
 (define (make-record-constructor-descriptor rtd parent protocol)
   (let ([custom-protocol? (and protocol #t)]
@@ -1043,21 +1075,22 @@
       (raise message))
     (raise who)))
 
-(define (syntax-violation who message . irritants)
-  (if (or (not who) (string? who) (symbol? who))
-    (if (string? message)
-      (raise
-        (apply
-          condition
-          (filter
-            values
-            (list
-              (make-syntax-violation)
-              (and who (make-who-condition who))
-              (make-message-condition message)
-              (make-irritants-condition irritants)))))
-      #f)
-    #f))
+(define (syntax-violation who message form . subform)
+  (if (or (not who) (string? who) (symbol? who) (identifier? who))
+        (if (string? message)
+            (raise
+              (apply
+                condition
+                (filter
+                  values
+                  (list
+                    (make-syntax-violation form (and (pair? subform) (car subform)))
+                    (if who
+                        (make-who-condition who)
+                        #f)
+                    (make-message-condition message)))))
+            (assertion-violation 'syntax-violation "expected string as message" message))
+        (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))
 
 (define (error who message . irritants)
   (define stk (shadow-stack))
@@ -1436,7 +1469,7 @@
                         out
                         (cons iface out))))))])
 
-    (set-module-uses! module (append new cur))
+    (set-module-uses! module (append cur new))
     (core-hash-clear! (module-import-obarray module))))
 
 (define (module-define! module name value)
@@ -1562,6 +1595,12 @@
     (beautify-user-module! m)
     (set-module-declarative! m #f)
     m))
+
+(define (purify-module! module)
+  (let ([use-list (module-uses module)])
+    (if (and (pair? use-list)
+             (eq? (car (last-pair use-list)) the-scm-module))
+        (set-module-uses! module (reverse (cdr (reverse use-list)))))))
 
 (define resolve-module
   (let ([root *resolve-module-root*])
@@ -2078,6 +2117,12 @@
                     (loop (cdr lst)))))))]
       [else #f]))
   (rec c))
+
+(define (inexact->exact num)
+  (inexact->exact))
+
+(define (exact->inexact num)
+  (exact->inexact num))
 
 (primitive-load "boot/expand.scm")
 (primitive-load "boot/interpreter.scm")
