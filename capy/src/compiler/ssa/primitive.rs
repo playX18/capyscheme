@@ -2042,6 +2042,29 @@ prim!(
         PrimValue::Value(result)
     },
 
+    "atan" => atan(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.atan, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+    "asin" => asin(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.asin, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+    "acos" => acos(ssa, args, _h) {
+        let arg = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.acos, &[ctx, arg], _h);
+        PrimValue::Value(result)
+    },
+
+
+
 
 
     "ceiling" => ceiling(ssa, args, _h) {

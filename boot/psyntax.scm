@@ -760,7 +760,7 @@
                                   (apply (lambda (e1) (parse e1 r w s m essew mod)) tmp)
                                   (syntax-violation
                                       #f
-                                      "source expansion failed to match any pattern dada"
+                                      "source expansion failed to match any pattern"
                                       e)))]
                       [(eq? type 'eval-when-form)
                         (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
@@ -800,7 +800,7 @@
                                                      tmp)
                                               (syntax-violation
                                                #f
-                                               "source expression failed to match any pattern dasda"
+                                               "source expression failed to match any pattern"
                                                tmp-1)))]
                       [(or (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
                         (let* ([id (wrap value w mod)]
@@ -967,6 +967,7 @@
           (lambda () 
             (cond 
               [(procedure? transformer) (apply-transformer transformer (source-wrap e (anti-mark w) s mod))]
+              [(variable-transformer? transformer) (apply-transformer (variable-transformer-procedure transformer) (source-wrap e (anti-mark w) s mod))]
               [(er-macro-transformer? transformer) (er-transform (er-macro-transformer-proc transformer) (source-wrap e (anti-mark w) s mod) transformer-stx)]
               [(ir-macro-transformer? transformer) (ir-transform (ir-macro-transformer-proc transformer) (source-wrap e (anti-mark w) s mod) transformer-stx)]
               [else (syntax-violation #f "invalid transformer" p)]))
@@ -975,7 +976,7 @@
 
     (define (eval-local-transformer expanded mod)
       (let ([p (local-eval expanded mod)])
-        (if (not (or (procedure? p) (er-transformer? p) (ir-transformer? p))) (syntax-violation #f "nonprocedure transformer" p))
+        (if (not (or (procedure? p) (variable-transformer? p))) (syntax-violation #f "nonprocedure transformer" p))
         p))
     (define (expand-local-syntax rec? e r w s mod k)
       (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ #(each (any any)) any . each-any))))
@@ -1074,13 +1075,13 @@
                               (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
                                 (if (and tmp (apply (lambda (name val) (id? name)) tmp))
                                     (apply (lambda (name val) (values 'define-syntax-form name e val w s mod)) tmp)
-                                    (syntax-violation #f "source expression failed to match any pattern dasda" tmp-1)))]
+                                    (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
                             [(eq? ftype 'define-syntax-parameter)
                               (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
                                 (if (and tmp (apply (lambda (name val) (id? name)) tmp))
                                     (apply (lambda (name val) (values 'define-syntax-parameter-form name e val w s mod))
                                           tmp)
-                                    (syntax-violation #f "source expression failed to match any pattern xasxa" tmp-1)))]
+                                    (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
                             [(eq? ftype 'define)
                                 (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any))))
                               (if (and tmp-1 (apply (lambda (name val) (id? name)) tmp-1))
@@ -1190,7 +1191,7 @@
                                    (let ((when-list (parse-when-list e x)))
                                      (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
                                  tmp)
-                          (syntax-violation #f "source expression failed to match any pattern www" tmp-1)))]
+                          (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
             [(eq? type 'begin-form)
                 (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any . each-any))))
                   (if tmp-1
@@ -1200,7 +1201,7 @@
                             (apply (lambda ()
                                      (syntax-violation #f "sequence of zero expressions" (source-wrap e w s mod)))
                                    tmp-1)
-                            (syntax-violation #f "source expression failed to match any pattern dadas" tmp)))))]
+                            (syntax-violation #f "source expression failed to match any pattern" tmp)))))]
             [(or (eq? type 'define-form) (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
                 (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
             [(eq? type 'local-syntax-form)
@@ -1214,7 +1215,7 @@
         (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(any . each-any))))
           (if tmp
               (apply (lambda (e0 e1) (build-call s x (map (lambda (e) (expand e r w mod)) e1))) tmp)
-              (syntax-violation #f "source expression failed to match any pattern dasdasd" tmp-1))))
+              (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
 
     (define (expand-body body outer-form r w mod)
 
@@ -1295,7 +1296,7 @@
                                                               bindings
                                                               #f))
                                                      tmp)
-                                              (syntax-violation #f "source expression failed to match any pattern XXXX" tmp-1)))]
+                                              (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
                                     [(eq? type 'define-syntax-form)
                                       (let ((id (wrap value w mod)) (label (gen-label)) (trans-r (macros-only-env er)))
                                        (extend-ribcage! ribcage id label)
@@ -1397,7 +1398,7 @@
                                #f
                                (syntax->datum (cons (make-syntax 'public '((top)) '(hygiene capy)) mod))))
                             tmp)
-                     (syntax-violation #f "source expression failed to match any pattern CCCC" tmp-1))))
+                     (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
 
     (define (expand-private-ref e r w mod)
         (letrec* ((remodulate
@@ -1449,7 +1450,7 @@
                                                         (cons (make-syntax 'private '((top)) '(hygiene capy)) mod))))
                                               (values (remodulate exp mod) r w (source-annotation exp) mod)))
                                           tmp-1)
-                                   (syntax-violation #f "source expression failed to match any pattern DDDDD" tmp)))))))))
+                                   (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
       
 
     (define expand-syntax 
@@ -1744,7 +1745,7 @@
                                no-source
                                'syntax-violation
                                (list (build-data no-source #f)
-                                     (build-data no-source "source expression failed to match any pattern DDDD")
+                                     (build-data no-source "source expression failed to match any pattern")
                                      x))
                               (let* ((tmp-1 (car clauses)) (tmp ($sc-dispatch tmp-1 '(any any))))
                                 (if tmp
@@ -1794,7 +1795,7 @@
                                        (list (expand val r empty-wrap mod))))
                                     (syntax-violation 'syntax-case "invalid literals list" e)))
                               tmp)
-                       (syntax-violation #f "source expression failed to match any pattern AAA" tmp-1))))))
+                       (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))
     
     (set! syntax->datum (lambda (x) (strip x)))
     (set! $sc-dispatch (lambda (e p)
@@ -1989,13 +1990,13 @@
                                 (expand then r w mod)
                                 (expand else r w mod)))
                              tmp-1)
-                      (syntax-violation #f "source expression failed to match any pattern bbb" tmp)))))))
+                      (syntax-violation #f "source expression failed to match any pattern" tmp)))))))
     (global-extend 'core 'quote
       (lambda (e r w s mod)
         (let ([tmp ($sc-dispatch e '(_ any))])
           (if tmp
               (apply (lambda (e) (build-data s (strip e))) tmp)
-              (syntax-violation #f "source expression failed to match any pattern ccc" e)))))
+              (syntax-violation #f "source expression failed to match any pattern" e)))))
     (global-extend 'core 'quote-syntax 
       (lambda (e r w s mod)
                (let* ((tmp-1 (source-wrap e w s mod)) (tmp ($sc-dispatch tmp-1 '(_ any))))
@@ -2105,7 +2106,7 @@
                                      ((eq? key 'global)
                                       (build-global-assignment s value (expand val r w mod) id-mod))
                                      ((eq? key 'macro)
-                                      (if (procedure-property (car value) 'variable-transformer)
+                                      (if (variable-transformer? (car value))
                                           (expand (expand-macro value e r w s #f mod) r empty-wrap mod)
                                           (syntax-violation
                                            'set!
@@ -2135,7 +2136,7 @@
                                                                tmp)
                                                         (syntax-violation
                                                          #f
-                                                         "source expression failed to match any pattern xxx"
+                                                         "source expression failed to match any pattern"
                                                          tmp-1))))))
                                              (build-call
                                               s
@@ -2187,7 +2188,7 @@
                                                 (cons (make-syntax 'let '((top)) '(hygiene capy))
                                                       (cons '() (cons e1 e2))))))
                                   tmp-1)
-                           (syntax-violation #f "source expression failed to match any pattern bbbb" tmp)))))))))
+                           (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
             (make-syntax #f '((top)) '(hygiene capy))))))
 
 (define syntax-error
@@ -2222,7 +2223,7 @@
                                      '(hygiene capy))
                                     (cons '(#f) (cons message arg))))
                             tmp)
-                     (syntax-violation #f "source expression failed to match any pattern erq" tmp-1)))))))
+                     (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))))
                 (make-syntax #f '((top)) '(hygiene capy))))))
                      
 (define let*
@@ -2244,7 +2245,7 @@
                                       (apply (lambda (body binding)
                                                (list (make-syntax 'let '((top)) '(hygiene capy)) (list binding) body))
                                              tmp)
-                                      (syntax-violation #f "source expression failed to match any pattern xca" tmp-1)))))))
+                                      (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))))
                       tmp)
-               (syntax-violation #f "source expression failed to match any pattern daa" tmp-1)))))
+               (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))
           (make-syntax #f '((top)) '(hygiene capy))))))

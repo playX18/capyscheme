@@ -78,7 +78,7 @@
                 (interpreted-expression src 
                     (lambda (env0)
                         (if var 
-                            (variabe-ref var)
+                            (variable-ref var)
                             (begin 
                                 (set! var (lookup-bound module name public?))
                                 (if (or (not var) (not (variable-bound? var)))

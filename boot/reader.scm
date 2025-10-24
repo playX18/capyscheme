@@ -1,3 +1,6 @@
+;; Based on https://github.com/lassik/laesare with some minimal modifications
+;; to run without macro and module system.
+
 
 (define <reader> 
     (let* ([rtd (make-record-type-descriptor '<reader> #f #f #f #f '#(
