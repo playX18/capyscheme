@@ -138,6 +138,9 @@
 ;         4 means output
 ;         6 means input/output
 
+(define (errmsg msg . rest)
+  (symbol->string msg))
+
 (define type-mask:binary/textual  1)
 (define type-mask:direction       6)
 
@@ -1668,8 +1671,8 @@
                         (io/flush-buffer p)
                         (io/put-char p c))
                        ((<= sv #x07ff)
-                        (let ((u0 (logior #b11000000
-                                            (ash sv -6)))
+                        (let ((u0 (logior (logand (ash sv -6)
+                                    #x1f) #xc0))
                               (u1 (logior #b10000000
                                             (logand sv #b00111111)))
                               (pos (tuple-ref p port.mainpos)))

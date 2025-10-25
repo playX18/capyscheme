@@ -445,6 +445,9 @@ impl TypeCode8 {
     pub const NATIVE_PROCEDURE: Self = Self(41);
     pub const CACHE_CELL: Self = Self(42);
     pub const CIF: Self = Self(43);
+    pub const THREAD: Self = Self(44);
+    pub const THREAD_MUTEX: Self = Self(45);
+    pub const THREAD_CONDITION: Self = Self(46);
 
     pub const UNKNOWN: Self = Self(0xFF);
 }

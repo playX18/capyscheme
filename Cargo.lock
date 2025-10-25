@@ -245,6 +245,7 @@ dependencies = [
  "num",
  "num-bigint",
  "object",
+ "parking_lot",
  "paste",
  "petgraph",
  "pretty",

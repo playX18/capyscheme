@@ -273,37 +273,7 @@
                 (else #t))
             (write-char #\u p)
             (write-char #\8 p)
-            (cond 
-                [slashify (print (bytevector->list x) p slashify (- level 1))]
-                [else 
-                    ; print first 4 and last 4 bytes
-                    ; and put ... in the middle if longer than 8
-                    (write-string "(" p)
-                    (let ((len (bytevector-length x)))
-                        (if (<= len 8)
-                            (begin 
-                                (let loop ([i 0])
-                                    (if (< i len)
-                                        (begin 
-                                            (print (bytevector-ref x i) p slashify (- level 1))
-                                            (write-char #\space p)
-                                            (loop (+ i 1))))))
-                            (begin
-                                (let loop ([i 0])
-                                    (if (< i 4)
-                                        (begin 
-                                            (print (bytevector-ref x i) p slashify (- level 1))
-                                            (write-char #\space p)
-                                            (loop (+ i 1)))))
-                                (printstr "... " p)
-                            
-                                (let loop ([i (- len 4)])
-                                    (if (< i len)
-                                        (begin 
-                                            (print (bytevector-ref x i) p slashify (- level 1))
-                                            (write-char #\space p)
-                                            (loop (+ i 1))))))))
-                    (write-string ")" p)]))
+            (print (bytevector->list x) p slashify (- level 1)))
         (define (print-procedure x p slashify)
             ((procedure-printer) x p slashify))
 

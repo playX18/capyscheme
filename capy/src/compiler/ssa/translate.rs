@@ -258,14 +258,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     );
                     self.builder.switch_to_block(cons_block);
                     {
-                        let from = self.builder.ins().iconst(types::I64, params.len() as i64);
-                        let cons = self
-                            .builder
-                            .ins()
-                            .call(self.thunks.cons_rest, &[ctx, rands, num_rands, from]);
-                        let list = self.builder.inst_results(cons)[0];
+                        if rest.is_referenced() {
+                            let from = self.builder.ins().iconst(types::I64, params.len() as i64);
+                            let cons = self
+                                .builder
+                                .ins()
+                                .call(self.thunks.cons_rest, &[ctx, rands, num_rands, from]);
+                            let list = self.builder.inst_results(cons)[0];
 
-                        self.builder.ins().jump(succ, &[BlockArg::Value(list)]);
+                            self.builder.ins().jump(succ, &[BlockArg::Value(list)]);
+                        } else {
+                            // rest list is not referenced: do not waste time materializing it
+                            let null = self
+                                .builder
+                                .ins()
+                                .iconst(types::I64, Value::null().bits() as i64);
+                            self.builder.ins().jump(succ, &[BlockArg::Value(null)]);
+                        }
                     }
                     self.builder.switch_to_block(succ);
                     {
@@ -330,14 +339,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     .brif(need_cons, cons_block, &[], succ, &[BlockArg::Value(null)]);
                 self.builder.switch_to_block(cons_block);
                 {
-                    let from = self.builder.ins().iconst(types::I64, 0);
-                    let cons = self
-                        .builder
-                        .ins()
-                        .call(self.thunks.cons_rest, &[ctx, rands, num_rands, from]);
-                    let list = self.builder.inst_results(cons)[0];
+                    if rest.is_referenced() {
+                        let from = self.builder.ins().iconst(types::I64, 0);
+                        let cons = self
+                            .builder
+                            .ins()
+                            .call(self.thunks.cons_rest, &[ctx, rands, num_rands, from]);
+                        let list = self.builder.inst_results(cons)[0];
 
-                    self.builder.ins().jump(succ, &[BlockArg::Value(list)]);
+                        self.builder.ins().jump(succ, &[BlockArg::Value(list)]);
+                    } else {
+                        // rest list is not referenced: do not waste time materializing it
+                        let null = self
+                            .builder
+                            .ins()
+                            .iconst(types::I64, Value::null().bits() as i64);
+                        self.builder.ins().jump(succ, &[BlockArg::Value(null)]);
+                    }
                 }
                 self.builder.switch_to_block(succ);
                 {
@@ -565,17 +583,26 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .into_iter()
                 .map(|v| ir::BlockArg::Value(*v))
                 .collect::<Vec<_>>();
-            if k.variadic.is_some() {
-                let mut ls = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, Value::null().bits() as i64);
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
-                for arg in args[k.args.len()..].iter().rev() {
-                    let call = self.builder.ins().call(self.thunks.cons, &[ctx, *arg, ls]);
-                    ls = self.builder.inst_results(call)[0];
+            if let Some(variadic) = k.variadic() {
+                if variadic.is_referenced() {
+                    let mut ls = self
+                        .builder
+                        .ins()
+                        .iconst(types::I64, Value::null().bits() as i64);
+                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                    for arg in args[k.args.len()..].iter().rev() {
+                        let call = self.builder.ins().call(self.thunks.cons, &[ctx, *arg, ls]);
+                        ls = self.builder.inst_results(call)[0];
+                    }
+                    block_args.push(ir::BlockArg::Value(ls));
+                } else {
+                    // Do not materialize the list if variadic is not referenced
+                    let null = self
+                        .builder
+                        .ins()
+                        .iconst(types::I64, Value::null().bits() as i64);
+                    block_args.push(ir::BlockArg::Value(null));
                 }
-                block_args.push(ir::BlockArg::Value(ls));
             }
 
             let bb_args_len = self.builder.block_params(block).len();

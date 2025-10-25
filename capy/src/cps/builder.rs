@@ -73,7 +73,7 @@ macro_rules! with_cps {
         }
     };
 
-    ($builder: ident; letk ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
+    ($builder: ident; letk ($h: ident) $($k: ident ($($arg: ident),* $(& $variadic: ident)? ) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
         let mut conts = Vec::new();
         $(
             let $k = $builder.fresh_variable(stringify!($k));
@@ -86,6 +86,12 @@ macro_rules! with_cps {
                 $(
                     let $arg = $builder.fresh_variable(stringify!($arg));
                 )*
+                #[allow(unused_mut, unused_assignments)]
+                let mut variadic = None;
+                $(
+                    let $variadic = $builder.fresh_variable(stringify!($variadic));
+                    variadic = Some($variadic);
+                )?
                 #[allow(unused_mut, unused_assignments)]
                 let mut src = $crate::runtime::value::Value::new(false);
                 #[allow(unused_mut, unused_assignments)]
@@ -108,7 +114,7 @@ macro_rules! with_cps {
                     meta,
                     noinline: false,
                     ignore_args: false,
-                    variadic: None,
+                    variadic,
                     body,
                     source: src,
                     reified: std::cell::Cell::new(false),
@@ -239,7 +245,7 @@ macro_rules! with_cps {
     }
     };
 
-    ($builder: ident; letk ($h: ident) $k: ident ($args: ident ...) @ $src: ident $($meta: ident)? = $e: expr; $($rest:tt)+) => {
+    ($builder: ident; letk ($h: ident) $k: ident ($args: ident ... $(&$variadic: ident)?) @ $src: ident $($meta: ident)? = $e: expr; $($rest:tt)+) => {
         {let $k = $builder.fresh_variable(stringify!($k));
 
             let args = $args;
@@ -249,11 +255,19 @@ macro_rules! with_cps {
             $(
                 meta = $meta;
             )?
+            #[allow(unused_mut, unused_assignments)]
+            let mut variadic = None;
+
+            $(
+                let $variadic = $builder.fresh_variable(stringify!($variadic));
+                variadic = Some($variadic);
+            )?
+
         let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
             name: $crate::runtime::value::Value::new(false),
             binding: $k,
             args,
-            variadic: None,
+            variadic,
             ignore_args: false,
             body,
             source: $src,

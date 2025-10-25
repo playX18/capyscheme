@@ -80,6 +80,7 @@ unsafe impl Trace for NativeProc {
 pub struct Closure<'gc> {
     pub header: ScmHeader,
     pub code: Address,
+    pub direct: Address,
     pub free: Value<'gc>,
     pub meta: Lock<Value<'gc>>,
 }
@@ -90,6 +91,7 @@ impl<'gc> Closure<'gc> {
     pub fn new(
         ctx: Context<'gc>,
         code: Address,
+        direct: Address,
         free: &[Value<'gc>],
         is_cont: bool,
         meta: Value<'gc>,
@@ -114,6 +116,7 @@ impl<'gc> Closure<'gc> {
                 } else {
                     TypeCode16::CLOSURE_PROC.0
                 }),
+                direct,
                 code,
                 free,
                 meta: Lock::new(meta),
@@ -124,6 +127,7 @@ impl<'gc> Closure<'gc> {
     pub fn new_native(
         ctx: Context<'gc>,
         code: Address,
+        direct: Address,
         free: &[Value<'gc>],
         is_cont: bool,
         meta: Value<'gc>,
@@ -147,6 +151,7 @@ impl<'gc> Closure<'gc> {
             Self {
                 header,
                 code,
+                direct,
                 free,
                 meta: Lock::new(meta),
             },
@@ -298,6 +303,7 @@ impl<'gc> Procedures<'gc> {
         let clos = Closure::new(
             ctx,
             get_trampoline_from_scheme(),
+            Address::ZERO,
             &[proc.into()],
             false,
             meta,
@@ -324,6 +330,7 @@ impl<'gc> Procedures<'gc> {
         let clos = Closure::new(
             ctx,
             get_cont_trampoline_from_scheme(),
+            Address::ZERO,
             &[proc.into()],
             true,
             meta,
@@ -348,7 +355,14 @@ impl<'gc> Procedures<'gc> {
         for val in free_vars.into_iter() {
             fv.push(val);
         }
-        Closure::new(ctx, get_trampoline_from_scheme(), &fv, false, meta)
+        Closure::new(
+            ctx,
+            get_trampoline_from_scheme(),
+            Address::ZERO,
+            &fv,
+            false,
+            meta,
+        )
     }
 
     pub fn make_cont_closure(
@@ -365,7 +379,14 @@ impl<'gc> Procedures<'gc> {
         for val in free_vars.into_iter() {
             fv.push(val);
         }
-        Closure::new(ctx, get_cont_trampoline_from_scheme(), &fv, true, meta)
+        Closure::new(
+            ctx,
+            get_cont_trampoline_from_scheme(),
+            Address::ZERO,
+            &fv,
+            true,
+            meta,
+        )
     }
 }
 

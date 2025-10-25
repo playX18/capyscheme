@@ -113,7 +113,13 @@
 
           &i/o-decoding make-i/o-decoding-error i/o-decoding-error?
           &i/o-encoding make-i/o-encoding-error i/o-encoding-error? i/o-encoding-error-char
-          format)
+          format
+          open-binary-fd-output-port
+          open-binary-fd-input-port
+          system
+          process
+          open-process-ports
+          call-with-temporary-output)
 
   (import 
           (core primitives)
@@ -123,7 +129,8 @@
           (core bytevectors)
           (core optargs)
           (core io assistants)
-          (core enums))
+          (core enums)
+          (core io process))
           
   ;; 8.2.2  File options
 
@@ -134,4 +141,15 @@
          (or (and (enum-set? x) (enum-set-subset? x (enum-set-universe (file-options))))
              (assertion-violation 'who (format "expected file-options object, but got ~r, as argument 2" x) args))
          (apply + (map (lambda (e) (port-lookup-file-option-code e)) (enum-set->list x)))))))
+
+  (define (call-with-temporary-output prefix proc)
+   (define fd-and-name -1)
+   (define port #f)
+   (dynamic-wind 
+    (lambda () 
+      (set! fd-and-name (io/mkstemp prefix))
+      (set! port (open-binary-fd-output-port (cadr fd-and-name) (car fd-and-name) 'block)))
+    (lambda () (proc port (cadr fd-and-name)))
+    (lambda () 
+      (close-port port))))
 ) ;[end]

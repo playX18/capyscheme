@@ -384,24 +384,32 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
             {
                 if let Some(variadic) = k.variadic() {
                     let fixed_args = &args[0..k.args.len()];
-                    materialize_list(
-                        state,
-                        k.handler.get(),
-                        &args[k.args.len()..],
-                        Box::new(move |state, rest| {
-                            let mut state = state;
-                            for (arg, &var) in fixed_args
-                                .iter()
-                                .copied()
-                                .chain(std::iter::once(rest))
-                                .zip(k.args().iter().chain(std::iter::once(&variadic)))
-                            {
-                                state = state.with_var_to_atom_subst(var, arg);
-                            }
+                    if variadic.is_referenced() {
+                        materialize_list(
+                            state,
+                            k.handler.get(),
+                            &args[k.args.len()..],
+                            Box::new(move |state, rest| {
+                                let mut state = state;
+                                for (arg, &var) in fixed_args
+                                    .iter()
+                                    .copied()
+                                    .chain(std::iter::once(rest))
+                                    .zip(k.args().iter().chain(std::iter::once(&variadic)))
+                                {
+                                    state = state.with_var_to_atom_subst(var, arg);
+                                }
 
-                            shrink_tree(k.body(), state)
-                        }),
-                    )
+                                shrink_tree(k.body(), state)
+                            }),
+                        )
+                    } else {
+                        // if variadic is never referenced we don't need to materialize the list
+                        let mut state = state.with_vars_to_atoms(&k.args(), fixed_args);
+                        state =
+                            state.with_var_to_atom_subst(variadic, Atom::Constant(Value::null()));
+                        shrink_tree(k.body(), state)
+                    }
                 } else {
                     let state = state.with_vars_to_atoms(&k.args(), &args);
                     shrink_tree(k.body(), state)
@@ -526,7 +534,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
 pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
     let census = census(term);
     let state = State::new(ctx, census);
-
+    term.count_refs();
     shrink_tree(term, state)
 }
 

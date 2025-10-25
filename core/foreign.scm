@@ -1,5 +1,6 @@
 (library (core foreign)
     (export 
+        string->utf8/nul
         void 
         float
         float double

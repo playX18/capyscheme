@@ -536,6 +536,7 @@ thunks! {
                 TypeCode16::CLOSURE_PROC.bits()
             }),
             code: Address::from_ptr(func),
+            direct: Address::ZERO,
             free,
             meta: rsgc::cell::Lock::new(meta),
         };
@@ -1418,7 +1419,6 @@ thunks! {
             ThunkResult { code: 0, value: res.into_value(*ctx) }
         } else {
             let count = count.negate(*ctx);
-
             let Some(res) = n.rsh(*ctx, count) else {
                 return ThunkResult {
                     code: 1,

@@ -380,3 +380,101 @@ impl<'gc> Func<'gc> {
         }
     }
 }
+
+impl<'gc> Term<'gc> {
+    pub fn count_refs(&self) {
+        match self {
+            Term::Let(binding, exp, body) => {
+                binding.ref_count.set(0);
+                match exp {
+                    Expression::PrimCall(_, args, _, _) => {
+                        for arg in args.iter() {
+                            arg.count_refs();
+                        }
+                    }
+                }
+                body.count_refs();
+            }
+
+            Term::Fix(funcs, body) => {
+                for func in funcs.iter() {
+                    func.binding.ref_count.set(0);
+                }
+
+                for func in funcs.iter() {
+                    func.return_cont.ref_count.set(0);
+                    func.handler_cont.ref_count.set(0);
+                    for arg in func.args.iter().chain(func.variadic.iter()) {
+                        arg.ref_count.set(0);
+                    }
+                    func.body.count_refs();
+                }
+                body.count_refs();
+            }
+
+            Term::Letk(conts, body) => {
+                for cont in conts.iter() {
+                    cont.binding.ref_count.set(0);
+                }
+                for cont in conts.iter() {
+                    for arg in cont.args.iter().chain(cont.variadic.iter()) {
+                        arg.ref_count.set(0);
+                    }
+                    cont.body.count_refs();
+                }
+                body.count_refs();
+            }
+
+            Term::App(func, k, h, args, _) => {
+                func.count_refs();
+                k.ref_count.set(k.ref_count.get() + 1);
+                h.ref_count.set(h.ref_count.get() + 1);
+                for arg in args.iter() {
+                    arg.count_refs();
+                }
+            }
+
+            Term::Continue(k, args, _) => {
+                k.ref_count.set(k.ref_count.get() + 1);
+                for arg in args.iter() {
+                    arg.count_refs();
+                }
+            }
+
+            Term::If {
+                test,
+                consequent,
+                consequent_args,
+                alternative,
+                alternative_args,
+                hints,
+            } => {
+                test.count_refs();
+                consequent.ref_count.set(consequent.ref_count.get() + 1);
+                if let Some(args) = consequent_args {
+                    for arg in args.iter() {
+                        arg.count_refs();
+                    }
+                }
+                alternative.ref_count.set(alternative.ref_count.get() + 1);
+                if let Some(args) = alternative_args {
+                    for arg in args.iter() {
+                        arg.count_refs();
+                    }
+                }
+                let _ = hints;
+            }
+        }
+    }
+}
+
+impl<'gc> Atom<'gc> {
+    pub fn count_refs(&self) {
+        match self {
+            Atom::Local(lvar) => {
+                lvar.ref_count.set(lvar.ref_count.get() + 1);
+            }
+            Atom::Constant(_) => {}
+        }
+    }
+}
