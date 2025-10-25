@@ -5478,7 +5478,7 @@ impl<'gc> Number<'gc> {
     }
 
     pub fn rsh(self, ctx: Context<'gc>, count: Self) -> Option<Self> {
-        let count = self.coerce_exact_integer_to_usize();
+        let count = count.coerce_exact_integer_to_usize();
         if count == 0 {
             return Some(self);
         }

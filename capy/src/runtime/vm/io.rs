@@ -1,6 +1,6 @@
+use crate::{native_fn, runtime::prelude::*, runtime::thread::YieldReason, static_symbols};
+use rustix::fd::AsRawFd;
 use std::ffi::CString;
-
-use crate::{native_fn, runtime::prelude::*, static_symbols};
 
 static_symbols!(
     SYM_INPUT = "input"
@@ -602,11 +602,29 @@ native_fn!(
     pub ("io/mkstemp") fn io_mkstemp<'gc>(
         nctx,
         template: Gc<'gc, Str<'gc>>
-    ) -> i32 {
-        let cpath = CString::new(template.to_string()).unwrap();
+    ) -> Value<'gc> {
+        if template.len() > 128 {
+
+            return nctx.wrong_argument_violation(
+                "io/mkstemp",
+                "template too long",
+                None,
+                None,
+                1,
+                &[template.into()]
+            );
+        }
+        let mut arr = [0u8;256];
+        let templ = format!("{template}_XXXXXX");
+        arr[..templ.len()].copy_from_slice(templ.as_bytes());
+
         unsafe {
-            let ret = libc::mkstemp(cpath.as_ptr() as *mut libc::c_char);
-            nctx.return_(ret)
+            let ret = libc::mkstemp(arr.as_mut_ptr() as *mut _);
+            let newname = std::ffi::CStr::from_ptr(arr.as_ptr() as _).to_string_lossy();
+            let ctx = nctx.ctx;
+            let gname = Str::new(&ctx, &newname, true);
+            let res = crate::list!(ctx, ret, gname);
+            nctx.return_(res)
         }
     }
 
@@ -644,7 +662,9 @@ native_fn!(
 
         unsafe {
             let cpath = CString::new(filename.to_string()).unwrap();
-            let ret = libc::open(cpath.as_ptr(), newflags, mode);
+            // make fd non-blocking. syscalls are not exposed publicly thus its fine to
+            // just make our own FDs non-blocking.
+            let ret = libc::open(cpath.as_ptr(), newflags | libc::O_NONBLOCK, mode);
             nctx.return_(ret)
         }
     }
@@ -655,6 +675,9 @@ native_fn!(
     ) -> i32 {
         unsafe {
             let ret = libc::close(fd);
+            if ret == -1 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK) {
+                return nctx.yield_(YieldReason::PollWrite(fd));
+            }
             nctx.return_(ret)
         }
     }
@@ -680,6 +703,9 @@ native_fn!(
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
             let ret = libc::read(fd, ptr, nbytes);
+            if ret == -1 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK) {
+                return nctx.yield_(YieldReason::PollRead(fd));
+            }
             nctx.return_(ret)
         }
     }
@@ -706,6 +732,9 @@ native_fn!(
         unsafe {
             let ptr = buf.as_slice().as_ptr().wrapping_add(offset) as *const libc::c_void;
             let ret = libc::write(fd, ptr, nbytes);
+            if ret == -1 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK) {
+                return nctx.yield_(YieldReason::PollWrite(fd));
+            }
             nctx.return_(ret)
         }
     }
@@ -718,6 +747,9 @@ native_fn!(
     ) -> i64 {
         unsafe {
             let ret = libc::lseek(fd, offset, whence);
+            if ret == -1 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK) {
+                return nctx.yield_(YieldReason::PollWrite(fd));
+            }
             nctx.return_(ret)
         }
     }
@@ -919,6 +951,48 @@ native_fn!(
         }
 
         nctx.return_(true)
+    }
+
+    pub ("%process-spawn") fn process_spawn<'gc>(
+        nctx,
+        string: StringRef<'gc>,
+        pipe_stderr: bool
+    ) -> Value<'gc> {
+
+
+        let child = match std::process::Command::new("sh")
+            .arg("-c")
+            .arg(string.to_string())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+
+                let error = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "%process-spawn",
+                    &error,
+                    string.into()
+                );
+            }
+        };
+
+        let ifd = child.stdin.as_ref().unwrap().as_raw_fd();
+        let ofd = child.stdout.as_ref().unwrap().as_raw_fd();
+        let efd = child.stderr.as_ref().unwrap().as_raw_fd();
+        let pid = child.id() as i32;
+        std::mem::forget(child);
+        let ctx = nctx.ctx;
+        nctx.return_(if pipe_stderr {
+            crate::list!(ctx, ifd, efd, ofd, pid)
+        } else {
+            crate::list!(ctx, ifd, ofd, pid)
+        })
     }
 );
 

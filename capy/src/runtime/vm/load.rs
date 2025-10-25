@@ -97,7 +97,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
 
     if let Ok(load_path) = std::env::var("CAPY_LOAD_PATH") {
         let paths = load_path.split(':').map(|s| Str::new(&ctx, s, true).into());
-        let mut sig = Value::null();
+        let mut sig = path;
         for p in paths.rev() {
             sig = Value::cons(ctx, p, sig);
         }
@@ -108,7 +108,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         let paths = compiled_path
             .split(':')
             .map(|s| Str::new(&ctx, s, true).into());
-        let mut sig = Value::null();
+        let mut sig = cpath;
         for p in paths.rev() {
             sig = Value::cons(ctx, p, sig);
         }

@@ -1072,9 +1072,9 @@ unsafe fn unpack<'gc>(
                     &[val],
                 ));
             }
-            let orig = n;
+
             let n = n.coerce_exact_integer_to_u64();
-            println!("pass {orig} as u64: {n}");
+
             if return_value {
                 loc.cast::<ffi_arg>().write(n as u64 as ffi_arg);
             } else {

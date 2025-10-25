@@ -1,19 +1,21 @@
-use std::{
-    cell::{Cell, UnsafeCell},
-    sync::atomic::AtomicUsize,
-};
-
-use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
-
 use crate::runtime::{
     fluids::DynamicState,
     modules::{Module, resolve_module},
     prelude::VariableRef,
     value::{
-        NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols, init_weak_sets,
-        init_weak_tables,
+        Closure, NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols,
+        init_weak_sets, init_weak_tables,
     },
-    vm::{VMResult, call_scheme_with_k, debug},
+    vm::{
+        VMResult, call_scheme, call_scheme_with_k, continue_to, debug,
+        threading::{Mutex, ThreadObject},
+    },
+};
+use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
+use std::{
+    cell::{Cell, UnsafeCell},
+    ptr::NonNull,
+    sync::atomic::AtomicUsize,
 };
 
 #[derive(Clone, Copy)]
@@ -73,7 +75,7 @@ impl<'gc> Context<'gc> {
                 call.rands[2..].iter().copied(),
             )
         } else {
-            todo!()
+            unsafe { continue_to(self, call.rator, call.rands[..].iter().copied()) }
         }
     }
 
@@ -155,6 +157,11 @@ pub struct State<'gc> {
     pub(crate) saved_call: Cell<Option<Gc<'gc, SavedCall<'gc>>>>,
     pub(crate) shadow_stack: UnsafeCell<debug::ShadowStack<'gc>>,
     pub(crate) last_ret_addr: Cell<Address>,
+    pub(crate) thread_object: Gc<'gc, ThreadObject<'gc>>,
+    pub(crate) yield_reason: Cell<Option<YieldReason<'gc>>>,
+    /// Accumulator field which is used to pass yield interest
+    /// to Rust code.
+    pub(crate) accumulator: Value<'gc>,
 }
 
 #[repr(C)]
@@ -209,12 +216,17 @@ unsafe impl Trace for State<'_> {
         if let Some(saved_call) = self.saved_call.get_mut() {
             visitor.trace(saved_call);
         }
+
+        visitor.trace(&mut self.thread_object);
+        visitor.trace(&mut self.accumulator);
+        visitor.trace(&mut self.yield_reason);
     }
 }
 
 impl<'gc> State<'gc> {
-    pub fn new(mc: &'gc Mutation<'gc>) -> Self {
+    pub fn new(mc: &'gc Mutation<'gc>, thread_object: Gc<'gc, ThreadObject<'gc>>) -> Self {
         let (runstack_start, _runstack_end) = make_fresh_runstack();
+
         Self {
             shadow_stack: UnsafeCell::new(debug::ShadowStack::new(64)),
             dynamic_state: DynamicState::new(mc),
@@ -229,6 +241,9 @@ impl<'gc> State<'gc> {
             },
             last_ret_addr: Cell::new(Address::ZERO),
             saved_call: Cell::new(None),
+            thread_object,
+            yield_reason: Cell::new(None),
+            accumulator: Value::new(false),
         }
     }
 
@@ -260,6 +275,132 @@ impl Scheme {
         result
     }
 
+    /// Calls `entry_name` in module `mod_name`.
+    pub fn call<ARGS, F, R>(&self, mod_name: &str, entry_name: &str, setup: ARGS, finish: F) -> R
+    where
+        F: for<'gc> Fn(&Context<'_>, Result<Value<'gc>, Value<'gc>>) -> R,
+        ARGS: for<'gc> FnOnce(&Context<'gc>, &mut Vec<Value<'gc>>),
+    {
+        let mut result = self.enter(|ctx| {
+            let entry = ctx
+                .public_ref(mod_name, entry_name)
+                .expect("Entrypoint not found");
+
+            if !entry.is::<Closure>() {
+                panic!("Entrypoint is not a procedure");
+            }
+
+            let mut args = Vec::with_capacity(4);
+            setup(&ctx, &mut args);
+
+            let run = call_scheme(ctx, entry, args);
+
+            match run {
+                VMResult::Ok(ok) => Ok(finish(&ctx, Ok(ok))),
+                VMResult::Err(err) => Ok(finish(&ctx, Err(err))),
+                VMResult::Yield => match ctx.state.yield_reason.get() {
+                    Some(YieldReason::Yieldpoint) => Err(Yield::None),
+                    Some(YieldReason::LockMutex(mutex_obj)) => {
+                        let mutex = mutex_obj.downcast::<Mutex>();
+                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
+                        Err(Yield::Lock(PendingLock {
+                            mtx: NonNull::from(&mutex.mutex),
+                        }))
+                    }
+
+                    None => Err(Yield::None),
+                    _ => todo!(),
+                },
+            }
+        });
+
+        loop {
+            if let Ok(res) = result {
+                return res;
+            }
+
+            let pending = result.err().unwrap();
+
+            match pending {
+                Yield::None => {
+                    result = self.enter(|ctx| {
+                        ctx.state.yield_reason.set(None);
+
+                        if ctx.has_suspended_call() {
+                            match ctx.resume_suspended_call() {
+                                VMResult::Ok(ok) => Ok(finish(&ctx, Ok(ok))),
+                                VMResult::Err(err) => Ok(finish(&ctx, Err(err))),
+                                VMResult::Yield => match ctx.state.yield_reason.get() {
+                                    Some(YieldReason::Yieldpoint) => Err(Yield::None),
+                                    Some(YieldReason::LockMutex(mutex_obj)) => {
+                                        let mutex = mutex_obj.downcast::<Mutex>();
+                                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
+                                        Err(Yield::Lock(PendingLock {
+                                            mtx: NonNull::from(&mutex.mutex),
+                                        }))
+                                    }
+
+                                    None => Err(Yield::None),
+                                    _ => todo!(),
+                                },
+                            }
+                        } else {
+                            Ok(finish(&ctx, Err(Value::undefined())))
+                        }
+                    })
+                }
+
+                Yield::Lock(lock) => {
+                    let _guard = lock.resolve();
+                    // should be unlocked in Scheme by means of `mutex-release`, forget the guard
+                    std::mem::forget(_guard);
+                    result = Err(Yield::None);
+                    continue; // retry
+                }
+
+                Yield::PollRead(fd) => unsafe {
+                    let mut readfs = [rustix::event::FdSetElement::default(); 1];
+                    rustix::event::fd_set_insert(&mut readfs, fd);
+
+                    let res = rustix::event::select(
+                        readfs.len() as _,
+                        Some(&mut readfs),
+                        None,
+                        None,
+                        None,
+                    );
+
+                    match res {
+                        Ok(_) => (),
+                        Err(_) => (),
+                    }
+
+                    result = Err(Yield::None);
+                },
+
+                Yield::PollWrite(fd) => unsafe {
+                    let mut writefs = [rustix::event::FdSetElement::default(); 1];
+                    rustix::event::fd_set_insert(&mut writefs, fd);
+
+                    let res = rustix::event::select(
+                        writefs.len() as _,
+                        None,
+                        Some(&mut writefs),
+                        None,
+                        None,
+                    );
+
+                    match res {
+                        Ok(_) => (),
+                        Err(_) => (),
+                    }
+
+                    result = Err(Yield::None);
+                },
+            }
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             mutator: {
@@ -268,13 +409,22 @@ impl Scheme {
                     init_weak_tables(&mc);
                     init_symbols(&mc);
 
-                    State::new(mc)
+                    State::new(mc, ThreadObject::new(&mc, None))
                 });
                 m.mutate(|mc, state: &State<'_>| {
                     super::init(state.context(mc));
                 });
                 m
             },
+        }
+    }
+
+    pub(crate) fn forked(thread_object_bits: u64) -> Self {
+        Self {
+            mutator: Mutator::new(|mc| {
+                let thread_object = unsafe { Gc::from_ptr(thread_object_bits as _) };
+                State::new(mc, thread_object)
+            }),
         }
     }
 }
@@ -307,4 +457,36 @@ fn make_fresh_runstack() -> (Address, Address) {
         let end = Address::from_ptr(ptr.add(RUNSTACK_SIZE));
         (start, end)
     }
+}
+
+#[derive(Clone, Copy, Trace)]
+pub enum YieldReason<'gc> {
+    /// Yield occured from a yieldpoint (function entry).
+    ///
+    /// Code has to determine if GC is required or if there's any pending
+    /// interrupts and handle them.
+    Yieldpoint,
+
+    LockMutex(Value<'gc>),
+    CondWait(Value<'gc>),
+
+    PollRead(i32),
+    PollWrite(i32),
+}
+
+pub struct PendingLock {
+    mtx: NonNull<parking_lot::ReentrantMutex<()>>,
+}
+
+impl PendingLock {
+    pub fn resolve(self) -> parking_lot::ReentrantMutexGuard<'static, ()> {
+        unsafe { self.mtx.as_ref().lock() }
+    }
+}
+
+pub enum Yield {
+    None,
+    Lock(PendingLock),
+    PollRead(i32),
+    PollWrite(i32),
 }

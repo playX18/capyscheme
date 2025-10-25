@@ -11,6 +11,7 @@
     "unistd.h": "c",
     "time.h": "c",
     "event.h": "c",
-    "types.h": "c"
+    "types.h": "c",
+    "features.h": "c"
   }
 }

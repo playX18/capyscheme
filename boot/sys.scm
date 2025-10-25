@@ -171,20 +171,20 @@
 (define (osdep/delete-file fn)
   (if (not (string? fn))
       (error "osdep/delete-file: invalid filename " fn))
-  (zero? (syscall syscall:unlink fn)))
+  (zero? (syscall:unlink fn)))
 
 (define (osdep/rename-file old new)
   (if (not (string? old))
       (error "osdep/rename-file: bad file name " old))
   (if (not (string? new))
       (error "osdep/rename-file: bad file name " new))
-  (zero? (syscall syscall:rename old new)))
+  (zero? (syscall:rename old new)))
 
 (define (osdep/file-modification-time fn)
   (if (not (string? fn))
       (error "osdep/file-modification-time: bad file name " fn))
   (let ((v (make-vector 6)))
-    (if (zero? (syscall syscall:mtime fn v))
+    (if (zero? (syscall:mtime fn v))
         v
         #f)))
 

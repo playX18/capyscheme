@@ -1,16 +1,10 @@
-use capy::{
-    init_scheme,
-    runtime::{
-        modules::public_ref,
-        vm::{VMResult, base::get_program_arguments_fluid, call_scheme},
-    },
-};
+use capy::{init_scheme, runtime::vm::base::get_program_arguments_fluid};
 
 fn main() {
     env_logger::init();
     let scm = init_scheme();
 
-    let mut did_yield = scm.enter(|ctx| {
+    /*let mut did_yield = scm.enter(|ctx| {
         let entry = public_ref(ctx, "boot cli", "enter");
 
         let args = get_program_arguments_fluid(ctx);
@@ -31,5 +25,15 @@ fn main() {
                 did_yield = false;
             }
         })
-    }
+    }*/
+
+    scm.call(
+        "boot cli",
+        "enter",
+        |ctx, args| {
+            let cli = get_program_arguments_fluid(*ctx);
+            args.push(cli);
+        },
+        |_, _| (),
+    );
 }

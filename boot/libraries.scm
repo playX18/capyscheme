@@ -401,6 +401,9 @@
                         utf32->string
                         transcoded-port
                         error-handling-mode
+                        io/mkstemp
+                        open-binary-fd-output-port
+                        open-binary-fd-input-port
                         open-file-input/output-port
                         call-with-string-output-port
                         open-string-output-port
@@ -704,6 +707,7 @@
                         %compile-fallback-path
                         %capy-root
                         %fresh-auto-compile
+                        %process-spawn
                         )
     (import (capy)))
 

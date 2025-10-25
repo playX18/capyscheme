@@ -49,11 +49,11 @@ install-portable: (build "true")
     @echo 'Installing CapyScheme to {{install-prefix}}/share/capy/{{version}}'
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}/extensions
-    cp -r boot {{install-prefix}}/share/capy/{{version}}
-    cp -r core {{install-prefix}}/share/capy/{{version}}
-    cp -r core.scm {{install-prefix}}/share/capy/{{version}}
-    cp -r stdlib {{install-prefix}}/share/capy/{{version}}
-    cp -r batteries {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r boot {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r core {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r core.scm {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r stdlib {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r batteries {{install-prefix}}/share/capy/{{version}}
     cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
@@ -63,22 +63,22 @@ install-portable: (build "true")
 
 install-scm: 
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
-    cp -r boot {{install-prefix}}/share/capy/{{version}}
-    cp -r core {{install-prefix}}/share/capy/{{version}}
-    cp -r core.scm {{install-prefix}}/share/capy/{{version}}
-    cp -r stdlib {{install-prefix}}/share/capy/{{version}}
-    cp -r batteries {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r boot {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r core {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r core.scm {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r stdlib {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r batteries {{install-prefix}}/share/capy/{{version}}
     
 tar: (build "true")
     @echo 'Creating tarball for CapyScheme version {{version}}'
     @-mkdir -p dist
     @-rm -f dist/capy-{{version}}-{{target}}.tar.gz
     @-mkdir -p temp-dist/capy-{{version}}
-    cp -r boot temp-dist/capy-{{version}}/
-    cp -r core temp-dist/capy-{{version}}/
-    cp -r core.scm temp-dist/capy-{{version}}/
-    cp -r scheme temp-dist/capy-{{version}}/
-    cp -r batteries temp-dist/capy-{{version}}/
+    rsync --checksum -r boot temp-dist/capy-{{version}}/
+    rsync --checksum -r core temp-dist/capy-{{version}}/
+    rsync --checksum -r core.scm temp-dist/capy-{{version}}/
+    rsync --checksum -r scheme temp-dist/capy-{{version}}/
+    rsync --checksum -r batteries temp-dist/capy-{{version}}/
     cp '{{target-path}}/capy' temp-dist/capy-{{version}}/
     cp {{target-path}}/libcapy.* temp-dist/capy-{{version}}/
     tar -czf dist/capy-{{version}}-{{target}}.tar.gz -C temp-dist capy-{{version}}

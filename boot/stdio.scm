@@ -475,4 +475,20 @@
 
 (define eol-style 'lf)
 
+(define (open-binary-fd-output-port name fd b-mode)
+  
+  (define p (io/make-port file-io/ioproc 
+                          (file-io/data fd name)
+                          'binary
+                          'output
+                          'flush))
+  p)
+
+(define (open-binary-fd-input-port name fd b-mode)
+  (define p (io/make-port file-io/ioproc 
+                          (file-io/data fd name)
+                          'binary
+                          'input))
+  p)
+
 ; eof

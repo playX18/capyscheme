@@ -18,7 +18,7 @@ simplehash.workspace = true
 num.workspace = true
 tree-sitter.workspace = true
 tree-sitter-scheme.workspace = true
-rustix = { version = "*", features = ["fs"] }
+rustix = { version = "*", features = ["fs", "pipe", "event"] }
 paste.workspace = true
 pretty.workspace = true
 hashlink.workspace = true
@@ -49,6 +49,7 @@ hostname = "0.4.1"
 errno = "0.3.14"
 stacker = "0.1.22"
 im = "15.1.0"
+parking_lot = "0.12.5"
 
 [lib]
 crate-type = ["dylib"]

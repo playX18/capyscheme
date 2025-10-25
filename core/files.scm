@@ -18,7 +18,6 @@
                 &i/o-file-does-not-exist make-i/o-file-does-not-exist-error i/o-file-does-not-exist-error?
                 &i/o-port make-i/o-port-error i/o-port-error? i/o-error-port)
         (import (core primitives)
-                (core io)
                 (core lists)
                 (core optargs))
 

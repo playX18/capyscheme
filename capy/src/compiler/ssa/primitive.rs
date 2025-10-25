@@ -1943,6 +1943,13 @@ prim!(
         PrimValue::Comparison(ssa.has_typ16(val, TypeCode16::COMPLEX.bits()))
     },
 
+    "nan?" => is_nan(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.nanp, &[ctx, val], _h);
+        PrimValue::Value(result)
+    },
+
     "ash" => ash(ssa, args, _h) {
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let lhs = ssa.atom(args[0]);

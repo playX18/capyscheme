@@ -395,7 +395,8 @@
 
 
 (define rtd-name        (lambda (rtd) (tuple-ref rtd 1)))
-(define rtd-parent      (lambda (rtd) (tuple-ref rtd 2)))
+(define rtd-parent      (lambda (rtd) (unless (tuple? rtd)
+  (error 'rtd-parent "NOT A TUPLE" rtd)) (tuple-ref rtd 2)))
 (define rtd-uid         (lambda (rtd) (tuple-ref rtd 3)))
 (define rtd-sealed?     (lambda (rtd) (tuple-ref rtd 4)))
 (define rtd-opaque?     (lambda (rtd) (tuple-ref rtd 5)))

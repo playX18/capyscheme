@@ -78,7 +78,7 @@ pub fn compile_file<'gc>(
 ) -> Result<FuncRef<'gc>, Value<'gc>> {
     let module = env.unwrap_or_else(|| *root_module(ctx));
     let file = file.as_ref();
-    //println!("{}", std::backtrace::Backtrace::force_capture());
+
     //println!(";; (Pre-boot) Compiling file: {}", file.display());
     let file_in = std::fs::File::open(file).map_err(|e| {
         make_io_error(

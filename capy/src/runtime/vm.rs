@@ -6,15 +6,15 @@ use std::{
 };
 
 use crate::runtime::{
-    Context,
+    Context, YieldReason,
     modules::root_module,
     value::{
-        Closure, ConversionError, NativeLocation, NativeReturn, PROCEDURES, ReturnCode, Str,
-        Symbol, TryIntoValues, TypeCode16, Value, Vector,
+        Closure, ConversionError, NativeLocation, NativeReturn, PROCEDURES, ReturnCode, SavedCall,
+        Str, Symbol, TryIntoValues, TypeCode16, Value, Vector,
     },
     vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
 };
-use rsgc::{Gc, Trace};
+use rsgc::{Gc, Trace, alloc::Array};
 
 pub mod arith;
 pub mod base;
@@ -25,6 +25,7 @@ pub mod eval;
 pub mod expand;
 pub mod ffi;
 pub mod hash;
+pub mod interrupts;
 pub mod io;
 pub mod libraries;
 pub mod list;
@@ -33,6 +34,7 @@ pub mod memoize;
 pub mod records;
 pub mod strings;
 pub mod syntax;
+pub mod threading;
 pub mod throw;
 pub mod thunks;
 pub mod trampolines;
@@ -44,7 +46,7 @@ pub mod vector;
 /// from native code use [`return_call`](NativeCallContext::return_call) method.
 ///
 /// Once this function is called, current thread nest level is increased by 1
-/// and if it is greater than 1, GC safepoint will be ignored until
+/// and if it is greater than 1, GC safepoints and interrupts will be ignored until
 /// nested level is back to 1.
 pub fn call_scheme<'gc>(
     ctx: Context<'gc>,
@@ -128,6 +130,71 @@ pub extern "C" fn call_scheme_with_k<'gc>(
         ctx.state.nest_level.store(nest_level, Ordering::Relaxed);
         ctx.state.runstack.set(old_runstack);
 
+        match val.code {
+            ReturnCode::Continue => unreachable!("cannot continue into native code"),
+            ReturnCode::ReturnErr => VMResult::Err(val.value),
+            ReturnCode::ReturnOk => VMResult::Ok(val.value),
+            ReturnCode::Yield => {
+                ctx.state
+                    .saved_call
+                    .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
+
+                VMResult::Yield
+            }
+        }
+    }
+}
+
+pub unsafe extern "C" fn continue_to<'gc>(
+    ctx: &Context<'gc>,
+    cont: Value<'gc>,
+    args: impl IntoIterator<Item = Value<'gc>>,
+) -> VMResult<'gc> {
+    if !cont.is::<Closure>() {
+        return VMResult::Err(cont);
+    }
+    let old_runstack = ctx.state.runstack.get();
+    let nest_level = ctx.state.nest_level.fetch_add(1, Ordering::Relaxed);
+
+    let rands = ctx.state.runstack.get();
+    let mut argc = 0;
+
+    unsafe {
+        for (i, arg) in args.into_iter().enumerate() {
+            if rands.add(i * size_of::<Value>()) >= ctx.state.runstack_end {
+                panic!(
+                    "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
+                    rands.add(i * size_of::<Value>()),
+                    ctx.state.runstack_end,
+                    i,
+                    (ctx.state.runstack_end - ctx.state.runstack_start) / size_of::<Value>()
+                );
+            }
+            if rands.add(i * size_of::<Value>()) < ctx.state.runstack_start {
+                panic!("runstack underflow");
+            }
+            rands.add(i * size_of::<Value>()).store(arg);
+            argc += 1;
+        }
+
+        ctx.state.runstack.set(rands.add(argc * size_of::<Value>()));
+    }
+
+    let num_rands = argc;
+
+    let f = get_trampoline_into_scheme().to_ptr::<()>();
+
+    unsafe {
+        let f: extern "C-unwind" fn(
+            &Context,
+            Value<'gc>,
+            *const Value<'gc>,
+            usize,
+        ) -> NativeReturn<'gc> = std::mem::transmute(f);
+
+        let val = trampoline(&ctx, cont, rands.to_ptr(), num_rands, f);
+        ctx.state.nest_level.store(nest_level, Ordering::Relaxed);
+        ctx.state.runstack.set(old_runstack);
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
             ReturnCode::ReturnErr => VMResult::Err(val.value),
@@ -335,6 +402,57 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             ret: self
                 .ctx
                 .return_call(proc, args.iter().copied(), Some([self.retk, self.reth])),
+        }
+    }
+
+    /// Yield to unmanaged code and return from procedure.
+    ///
+    /// This call will save call to current return continuation
+    /// with the values you want to return.
+    pub fn yield_and_return(
+        self,
+        reason: YieldReason<'gc>,
+        args: &[Value<'gc>],
+    ) -> NativeCallReturn<'gc> {
+        let args = Array::from_slice(&self.ctx, args);
+        let saved_call = Gc::new(
+            &self.ctx,
+            SavedCall {
+                rator: self.retk,
+                rands: args,
+                from_procedure: false,
+            },
+        );
+
+        self.ctx.state.yield_reason.set(Some(reason));
+
+        NativeCallReturn {
+            ret: NativeReturn {
+                code: ReturnCode::Yield,
+                value: Value::from_raw(saved_call.as_ptr() as _),
+            },
+        }
+    }
+
+    pub fn yield_(self, reason: YieldReason<'gc>) -> NativeCallReturn<'gc> {
+        let args = Array::from_slice(&self.ctx, self.rands());
+        self.ctx.state.yield_reason.set(Some(reason));
+
+        NativeCallReturn {
+            ret: NativeReturn {
+                code: ReturnCode::Yield,
+                value: Value::from_raw(
+                    Gc::new(
+                        &self.ctx,
+                        SavedCall {
+                            rator: self.rator(),
+                            rands: args,
+                            from_procedure: self.is_continuation(),
+                        },
+                    )
+                    .as_ptr() as _,
+                ),
+            },
         }
     }
 
