@@ -1,3 +1,5 @@
+use im::HashMap;
+
 use super::*;
 
 impl<'gc> Value<'gc> {
@@ -110,6 +112,140 @@ impl<'gc> Value<'gc> {
             }
         } else {
             <Self as std::hash::Hash>::hash(&self, hasher);
+        }
+    }
+
+    fn is_terminal_list(self) -> usize {
+        let mut count = 1;
+
+        if self.is_null() {
+            return count;
+        }
+
+        let mut fast = self;
+        let mut slow = self;
+
+        while fast.is_pair() {
+            let elt = fast.car();
+            if elt.is_pair() || elt.is::<Vector>() {
+                return 0;
+            }
+
+            fast = fast.cdr();
+            count += 1;
+
+            if fast.is_pair() {
+                let elt = fast.car();
+                if elt.is_pair() || elt.is::<Vector>() {
+                    return 0;
+                }
+            } else {
+                return count;
+            }
+
+            fast = fast.cdr();
+            count += 1;
+            slow = slow.cdr();
+
+            if slow == fast {
+                return 0;
+            }
+        }
+
+        if fast.is::<Vector>() {
+            return 0;
+        }
+
+        count
+    }
+
+    fn find_and_merge_opponent(
+        visited: &mut HashMap<Value<'gc>, Vec<Value<'gc>>>,
+        lst1: Value<'gc>,
+        lst2: Value<'gc>,
+    ) -> bool {
+        let opponents = visited.get_mut(&lst1);
+
+        if let Some(opponents) = opponents {
+            for opponent in opponents.iter() {
+                if *opponent == lst2 {
+                    return true;
+                }
+            }
+
+            opponents.push(lst2);
+        } else {
+            let new_opponents = vec![lst2];
+            visited.insert(lst1, new_opponents);
+        }
+
+        false
+    }
+
+    pub fn equal(self, other: Self, visited: &mut HashMap<Value<'gc>, Vec<Value<'gc>>>) -> bool {
+        let c1 = self.is_terminal_list();
+        if c1 != 0 {
+            if c1 == other.is_terminal_list() {
+                return self.r5rs_equal(other);
+            }
+
+            return false;
+        } else {
+            if other.is_terminal_list() != 0 {
+                return false;
+            }
+        }
+
+        let mut lst1 = self;
+        let mut lst2 = other;
+
+        'top: loop {
+            if lst1 == lst2 {
+                return true;
+            }
+
+            if lst1.is_pair() {
+                if lst2.is_pair() {
+                    if Self::find_and_merge_opponent(visited, lst1, lst2) {
+                        return true;
+                    }
+
+                    if lst1.car().equal(lst2.car(), visited) {
+                        lst1 = lst1.cdr();
+                        lst2 = lst2.cdr();
+                        continue 'top;
+                    }
+                }
+
+                return false;
+            }
+
+            if lst1.is::<Vector>() {
+                if lst2.is::<Vector>() {
+                    if Self::find_and_merge_opponent(visited, lst1, lst2) {
+                        return true;
+                    }
+
+                    let v1 = lst1.downcast::<Vector>();
+                    let v2 = lst2.downcast::<Vector>();
+
+                    if v1.len() != v2.len() {
+                        return false;
+                    }
+
+                    for i in 0..v1.len() {
+                        if !v1[i].get().equal(v2[i].get(), visited) {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                }
+
+                return false;
+            }
+
+            return lst1.r5rs_equal(lst2);
         }
     }
 }

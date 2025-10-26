@@ -283,14 +283,17 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
                 } else {
                     self.put8(FASL_TAG_UNINTERNED_SYMBOL)?;
                 }
-
-                self.put32(sym.len() as u32)?;
-                self.put_many(sym.to_string().as_bytes())?;
+                let str = sym.to_string();
+                let bytes = str.as_bytes();
+                self.put32(bytes.len() as u32)?;
+                self.put_many(bytes)?;
             } else if key.is::<Str>() {
                 let str = key.downcast::<Str>();
                 self.put8(FASL_TAG_STR)?;
-                self.put32(str.len() as u32)?;
-                self.put_many(str.to_string().as_bytes())?;
+                let str = str.to_string();
+                let bytes = str.as_bytes();
+                self.put32(bytes.len() as u32)?;
+                self.put_many(bytes)?;
             } else {
                 println!("CAN'T SERIALIZE LITE: {key}");
                 return Err(io::Error::new(
@@ -358,8 +361,12 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     let len = self.read32()? as usize;
                     let mut buf = vec![0; len];
                     self.reader.read_exact(&mut buf)?;
-                    let str = std::str::from_utf8(&buf)
-                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
+                    let str = std::str::from_utf8(&buf).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Invalid UTF-8 (symbol): {}", String::from_utf8_lossy(&buf)),
+                        )
+                    })?;
 
                     let sym = Value::new(Symbol::from_str(self.ctx, str));
 
@@ -369,8 +376,15 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     let len = self.read32()? as usize;
                     let mut buf = vec![0; len];
                     self.reader.read_exact(&mut buf)?;
-                    let str = std::str::from_utf8(&buf)
-                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
+                    let str = std::str::from_utf8(&buf).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "Invalid UTF-8 (uninterned symbol): {}",
+                                String::from_utf8_lossy(&buf)
+                            ),
+                        )
+                    })?;
 
                     Value::new(Symbol::from_str_uninterned(&self.ctx, str, None))
                 }
@@ -378,8 +392,12 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     let len = self.read32()? as usize;
                     let mut buf = vec![0u8; len];
                     self.reader.read_exact(&mut buf)?;
-                    let str = std::str::from_utf8(&buf)
-                        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid UTF-8"))?;
+                    let str = std::str::from_utf8(&buf).map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Invalid UTF-8 (string): {}", String::from_utf8_lossy(&buf)),
+                        )
+                    })?;
                     Value::new(Str::new(&self.ctx, str, false))
                 }
                 _ => {

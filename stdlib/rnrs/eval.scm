@@ -6,9 +6,11 @@
   (define (environment . import-specs)
     (define module (make-module))
     (define needs-purify? (not (member '(capy) import-specs)))
+    (beautify-user-module! module)
     (for-each (lambda (spec)
       (eval (list 'import spec) module))
       import-specs)
+
     (if needs-purify? 
-      (set-module-uses! (cdr (module-uses module))))
+      (set-module-uses! module (cdr (module-uses module))))
     module))

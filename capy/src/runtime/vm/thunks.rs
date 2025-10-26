@@ -618,7 +618,7 @@ thunks! {
     }
 
     pub fn equal(a: Value<'gc>, b: Value<'gc>) -> bool {
-        a.r5rs_equal(b)
+        a.equal(b, &mut Default::default())
     }
 
 
@@ -634,15 +634,12 @@ thunks! {
         ThunkResult { code: 0, value: num.is_real().into() }
     }
 
-    pub fn is_rational(value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_rational(value: Value<'gc>) -> bool {
         let Some(num) = value.number() else {
-            return ThunkResult {
-                code: 0,
-                value: false.into()
-            }
+            return false;
         };
 
-        ThunkResult { code: 0, value: num.is_rational().into() }
+        num.is_rational()
     }
 
     pub fn is_integer(value: Value<'gc>) -> ThunkResult<'gc> {

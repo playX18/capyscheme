@@ -301,7 +301,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             if a.is_int32() {
                 let c = a.as_int32();
                 if c >= 0 && c <= 0x10FFFF {
-                    Some(Value::new(std::char::from_u32(c as u32).unwrap()))
+                    Some(Value::new(std::char::from_u32(c as u32)?))
                 } else {
                     None
                 }

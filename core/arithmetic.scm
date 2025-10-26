@@ -211,7 +211,12 @@
                             (fx- width 1)))))
             n))))
 
-  (define bitwise-arithmetic-shift-left bitwise-arithmetic-shift)
+  (define bitwise-arithmetic-shift-left 
+    (lambda (ei1 ei2)
+      (if (< ei2 0)
+        (assertion-violation 'bitwise-arithmetic-shift-left
+                             "negative shift count" ei2))
+      (bitwise-arithmetic-shift ei1 ei2)))
 
   (define bitwise-if
     (lambda (ei1 ei2 ei3)
@@ -245,6 +250,9 @@
 
   (define bitwise-arithmetic-shift-right
     (lambda (ei1 ei2)
+      (if (< ei2 0)
+        (assertion-violation 'bitwise-arithmetic-shift-right
+                             "negative shift count" ei2))
       (bitwise-arithmetic-shift ei1 (- ei2))))
 
   (define bitwise-rotate-bit-field

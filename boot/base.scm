@@ -1321,8 +1321,7 @@
   (lambda (x)
     (syntax-case x ()
       [(_ style)
-        (or (port-lookup-eol-style-code (syntax->datum #'style))
-            (syntax-violation 'eol-style "invalid eol style" x))
+        
         (syntax #'style)]
       [(_) (syntax-violation 'eol-style "missing eol style" x)])))
 

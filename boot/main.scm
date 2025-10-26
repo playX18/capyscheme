@@ -480,6 +480,8 @@
 
 (define (cadr x) (car (cdr x)))
 
+(define nongenerative-record-types (make-core-hash-eq))
+
 (define (make-record-type-descriptor name parent uid sealed? opaque? fields)
   (or (symbol? name)
     (assertion-violation 'make-record-type-descriptor "expected a symbol for name" name))
@@ -2159,7 +2161,7 @@
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")
 (set! %load-extensions 
-  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch")
+  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch" "sps")
           %load-extensions))
 
 (let* (

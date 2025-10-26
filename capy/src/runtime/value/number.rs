@@ -1105,6 +1105,10 @@ impl<'gc> BigInt<'gc> {
             res_digits += 1;
         }
 
+        if res.is_empty() {
+            res.push('0');
+        }
+
         if self.is_negative() {
             res = format!("{}{}", minus_sign, res);
         } else if force_sign {
@@ -1553,29 +1557,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn not(this: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
-        let size = if Self::is_most_significant_bit_set(&this) {
-            this.count() + 1
-        } else {
-            this.count()
-        };
-
-        let mut res = Vec::with_capacity(size);
-
-        let mut carry = true;
-
-        for i in 0..size {
-            let mut word = if i < this.count() { this[i] } else { 0 };
-
-            if carry {
-                (word, carry) = (!word).overflowing_add(1);
-            } else {
-                word = !word;
-            }
-
-            res.push(word);
-        }
-
-        Self::from_2sc(ctx, &res)
+        Self::minus(Self::negate(this, ctx), ctx, Self::one(ctx))
     }
 
     pub fn pow(this: Gc<'gc, Self>, ctx: Context<'gc>, exp: u64) -> Gc<'gc, Self> {
@@ -1700,10 +1682,10 @@ impl<'gc> BigInt<'gc> {
         res.reserve(this.len().saturating_sub(swords));
 
         let mut carry = 0;
-        let mut i = this.len() - 1;
+        let mut i = this.len() as isize - 1;
 
-        while i >= swords {
-            let word = this[i];
+        while i >= swords as isize {
+            let word = this[i as usize];
             res.push((word >> sbits) | carry);
             carry = (word << (DIGIT_BIT - sbits)) & Digit::MAX;
             i -= 1;
@@ -1732,9 +1714,10 @@ impl<'gc> BigInt<'gc> {
         if this.is_zero() {
             return 0;
         }
-        let mut size = this.count() * DIGIT_BIT;
-        size -= this.leading_zeros();
-        size
+        let last = this.count() - 1;
+
+        let size = last * DIGIT_BIT;
+        size + DIGIT_BIT - this[last].leading_zeros() as usize
     }
 
     pub fn count_ones(&self) -> usize {
@@ -5064,7 +5047,18 @@ impl<'gc> Number<'gc> {
     pub fn compare(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Option<std::cmp::Ordering> {
         match lhs {
             Number::Fixnum(lhs) => match rhs {
-                Number::Fixnum(rhs) => Some(lhs.cmp(&rhs)),
+                Number::Fixnum(rhs) => {
+                    let n = lhs.wrapping_sub(rhs);
+                    if n == 0 {
+                        return Some(std::cmp::Ordering::Equal);
+                    }
+
+                    if n > 0 {
+                        return Some(std::cmp::Ordering::Greater);
+                    } else {
+                        return Some(std::cmp::Ordering::Less);
+                    }
+                }
                 Number::Flonum(rhs) => {
                     let d = lhs as f64 - rhs;
                     if d == 0.0 {
@@ -5143,9 +5137,9 @@ impl<'gc> Number<'gc> {
             Number::BigInt(lhs) => match rhs {
                 Number::Fixnum(rhs) => {
                     if lhs.is_negative() {
-                        return Some(std::cmp::Ordering::Greater);
-                    } else {
                         return Some(std::cmp::Ordering::Less);
+                    } else {
+                        return Some(std::cmp::Ordering::Greater);
                     }
                 }
 
@@ -5466,11 +5460,11 @@ impl<'gc> Number<'gc> {
                 }
 
                 let bn = BigInt::from_i64(ctx, n as _);
-                return Some(Self::BigInt(BigInt::shift_left(bn, ctx, count)));
+                return Some(Self::BigInt(BigInt::shift_left(bn, ctx, count)).normalize_integer());
             }
 
             Self::BigInt(n) => {
-                return Some(Self::BigInt(BigInt::shift_left(n, ctx, count)));
+                return Some(Self::BigInt(BigInt::shift_left(n, ctx, count)).normalize_integer());
             }
 
             _ => None,
@@ -5489,13 +5483,14 @@ impl<'gc> Number<'gc> {
                 if let Some(n) = s {
                     return Some(Self::Fixnum(n));
                 }
+                println!("BigInt rsh from Fixnum {self} {count}");
 
                 let bn = BigInt::from_i64(ctx, n as _);
-                return Some(Self::BigInt(BigInt::shift_right(bn, ctx, count)));
+                return Some(Self::BigInt(BigInt::shift_right(bn, ctx, count)).normalize_integer());
             }
 
             Self::BigInt(n) => {
-                return Some(Self::BigInt(BigInt::shift_right(n, ctx, count)));
+                return Some(Self::BigInt(BigInt::shift_right(n, ctx, count)).normalize_integer());
             }
 
             _ => None,
@@ -6244,10 +6239,26 @@ impl<'gc> ExactInteger<'gc> {
         }
     }
 
-    pub fn bit_count(&self) -> u32 {
+    pub fn bit_count(self, ctx: Context<'gc>) -> i32 {
         match self {
-            Self::Fixnum(n) => n.count_ones(),
-            Self::BigInt(b) => b.count_ones() as _,
+            Self::Fixnum(n) => {
+                if n == 0 {
+                    return 0;
+                } else if n > 0 {
+                    return nbits32(n as u32) as i32;
+                } else {
+                    return !(nbits32((!n) as u32) as i32);
+                }
+            }
+            Self::BigInt(b) => {
+                if b.is_zero() {
+                    return 0;
+                } else if b.is_positive() {
+                    return b.count_ones() as i32;
+                } else {
+                    return !Self::bit_count(Self::BigInt(BigInt::not(b, ctx)), ctx);
+                }
+            }
         }
     }
 
@@ -6273,7 +6284,7 @@ impl<'gc> ExactInteger<'gc> {
 }
 
 fn i32_to_raidx(n: i32, radix: u8) -> String {
-    if n == 0 {
+    /*if n == 0 {
         return "0".to_string();
     }
     // Use a character map for digits.
@@ -6306,7 +6317,15 @@ fn i32_to_raidx(n: i32, radix: u8) -> String {
         final_string.insert(0, '-');
     }
 
-    final_string
+    final_string*/
+
+    match radix {
+        2 => format!("{:b}", n),
+        8 => format!("{:o}", n),
+        10 => format!("{}", n),
+        16 => format!("{:x}", n),
+        _ => format!("{}", n),
+    }
 }
 
 impl<'gc> Number<'gc> {
@@ -6397,4 +6416,14 @@ impl<'gc> IntoValue<'gc> for ExactInteger<'gc> {
             Self::BigInt(b) => b.into(),
         }
     }
+}
+
+const fn nbits32(mut x: u32) -> u32 {
+    let t;
+    x = x - ((x >> 1) & 0x55555555);
+    t = (x >> 2) & 0x33333333;
+    x = (x & 0x33333333) + t;
+    x = (x + (x >> 4)) & 0x0F0F0F0F;
+    x = x * 0x01010101;
+    return x >> 24;
 }

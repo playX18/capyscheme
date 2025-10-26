@@ -365,16 +365,7 @@ native_fn!(
     ) -> Value<'gc> {
 
         if let Either::Left(ht) = ht {
-            if !ht.is_mutable() {
-                return nctx.wrong_argument_violation(
-                    "core-hashtable-set!",
-                    "hashtable is not mutable",
-                    Some(ht.into()),
-                    Some(0),
-                    3,
-                    &[ht.into(), key, value],
-                );
-            }
+
 
             let typ = ht.typ();
 
@@ -396,6 +387,17 @@ native_fn!(
                     }
                 }
                 _ => ()
+            }
+
+            if !ht.is_mutable() {
+                return nctx.wrong_argument_violation(
+                    "core-hashtable-set!",
+                    "hashtable is not mutable",
+                    Some(ht.into()),
+                    Some(0),
+                    3,
+                    &[ht.into(), key, value],
+                );
             }
             ht.put(nctx.ctx, key, value);
             nctx.return_(Value::undefined())
@@ -463,16 +465,6 @@ native_fn!(
         key: Value<'gc>
     ) -> Value<'gc> {
         if let Either::Left(ht) = ht {
-            if !ht.is_mutable() {
-                return nctx.wrong_argument_violation(
-                    "core-hashtable-delete!",
-                    "hashtable is not mutable",
-                    Some(ht.into()),
-                    Some(0),
-                    2,
-                    &[ht.into(), key],
-                );
-            }
 
             let typ = ht.typ();
 
@@ -495,6 +487,17 @@ native_fn!(
                 }
                 _ => ()
             }
+            if !ht.is_mutable() {
+                return nctx.wrong_argument_violation(
+                    "core-hashtable-delete!",
+                    "hashtable is not mutable",
+                    Some(ht.into()),
+                    Some(0),
+                    2,
+                    &[ht.into(), key],
+                );
+            }
+
             ht.remove(nctx.ctx, key);
             nctx.return_(Value::undefined())
         } else if let Either::Right(ht) = ht {
@@ -512,6 +515,12 @@ native_fn!(
     ) -> Value<'gc> {
         match ht {
             Either::Left(ht) => {
+
+
+                if let HashTableType::Generic(v) = ht.typ() {
+                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_CLEAR].get();
+                    return nctx.return_call(handler, &[ht.into()]);
+                }
                 if !ht.is_mutable() {
                     return nctx.wrong_argument_violation(
                         "core-hashtable-clear!",
@@ -521,12 +530,6 @@ native_fn!(
                         1, &[ht.into()],
                     );
                 }
-
-                if let HashTableType::Generic(v) = ht.typ() {
-                    let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_CLEAR].get();
-                    return nctx.return_call(handler, &[ht.into()]);
-                }
-
                 ht.clear(nctx.ctx);
                 nctx.return_(Value::undefined())
             }
@@ -593,8 +596,10 @@ native_fn!(
 
     pub ("core-hashtable-copy") fn core_hashtable_copy<'gc>(
         nctx,
-        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>
+        ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
+        immutable: Option<bool>
     ) -> Value<'gc> {
+        let _immutable = immutable.unwrap_or(false);
         match ht {
             Either::Right(ht) => {
                 let copy = ht.copy(nctx.ctx);
@@ -605,7 +610,7 @@ native_fn!(
                     let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_COPY].get();
                     return nctx.return_call(handler, &[ht.into()]);
                 }
-                let copy = ht.copy(nctx.ctx);
+                let copy = ht.copy(nctx.ctx, _immutable);
                 nctx.return_(copy.into())
             }
         }
