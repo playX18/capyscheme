@@ -1325,3 +1325,12 @@
             (syntax-violation 'eol-style "invalid eol style" x))
         (syntax #'style)]
       [(_) (syntax-violation 'eol-style "missing eol style" x)])))
+
+(define-syntax with-mutex 
+  (syntax-rules ()
+    [(_ mutex body body* ...)
+      (let ([mtx mutex])
+        (dynamic-wind 
+          (lambda () (mutex-acquire mtx))
+          (lambda () body body* ...)
+          (lambda () (mutex-release mtx))))]))
