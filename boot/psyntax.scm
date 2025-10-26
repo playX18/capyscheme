@@ -979,14 +979,14 @@
         (if (not (or (procedure? p) (variable-transformer? p))) (syntax-violation #f "nonprocedure transformer" p))
         p))
     (define (expand-local-syntax rec? e r w s mod k)
-      (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ #(each (any any)) any . each-any))))
+      (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ #(each (any any)) . each-any))))
                  (if tmp
-                     (apply (lambda (id val e1 e2)
+                     (apply (lambda (id val es)
                               (let ((ids id))
                                 (if (not (valid-bound-ids? ids))
                                     (syntax-violation #f "duplicate bound keyword" e)
                                     (let* ((labels (gen-labels ids)) (new-w (make-binding-wrap ids labels w)))
-                                      (k (cons e1 e2)
+                                      (k es
                                          (extend-env
                                           labels
                                           (let ((w (if rec? new-w w)) (trans-r (macros-only-env r)))

@@ -1297,6 +1297,7 @@ primitive_expanders!(
     }
 
     "negative?" ex_negative<'gc>(ctx, args, src) {
+
         if args.len() != 1 {
             return None;
         }

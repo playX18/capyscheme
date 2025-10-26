@@ -281,7 +281,6 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_bool(self) -> bool {
-        assert!(self.is_bool());
         self.raw_i64() != Value::VALUE_FALSE
     }
 

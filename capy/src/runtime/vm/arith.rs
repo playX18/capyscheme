@@ -1304,8 +1304,8 @@ native_fn!(
         nctx.return_(shifted)
     }
 
-    pub ("bitwise-bit-count") fn bitwise_bit_count<'gc>(nctx, x: ExactInteger<'gc>) -> u32 {
-        let count = x.bit_count();
+    pub ("bitwise-bit-count") fn bitwise_bit_count<'gc>(nctx, x: ExactInteger<'gc>) -> i32 {
+        let count = x.bit_count(nctx.ctx);
         nctx.return_(count)
     }
 
@@ -1643,7 +1643,7 @@ native_fn!(
                     let ctx = nctx.ctx;
                     let acc = acc.into_value(ctx);
                     let arg = arg.into_value(ctx);
-                    return nctx.wrong_argument_violation("fx+", "integer overflow", Some(arg), Some(1), args.len(), &[acc, arg]);
+                    return nctx.implementation_restriction_violation("fx+", "integer overflow", &[acc, arg]);
                 }
             }
         }
@@ -1676,7 +1676,7 @@ native_fn!(
                     let ctx = nctx.ctx;
                     let acc = acc.into_value(ctx);
                     let arg = arg.into_value(ctx);
-                    return nctx.wrong_argument_violation("fx-", "integer overflow", Some(arg), Some(1), rest.len(), &[acc, arg]);
+                    return nctx.implementation_restriction_violation("fx-", "integer overflow", &[acc, arg]);
                 }
             }
         }
@@ -1687,7 +1687,7 @@ native_fn!(
                 let ctx = nctx.ctx;
                 let x = x.into_value(ctx);
                 let acc = acc.into_value(ctx);
-                return nctx.wrong_argument_violation("fx-", "integer overflow", Some(acc), Some(1), 2, &[x, acc]);
+                return nctx.implementation_restriction_violation("fx-", "integer overflow", &[x, acc]);
             }
         }
 
@@ -1720,7 +1720,7 @@ native_fn!(
                     let ctx = nctx.ctx;
                     let acc = acc.into_value(ctx);
                     let arg = arg.into_value(ctx);
-                    return nctx.wrong_argument_violation("fx*", "integer overflow", Some(arg), Some(1), args.len(), &[acc, arg]);
+                    return nctx.implementation_restriction_violation("fx*", "integer overflow", &[acc, arg]);
                 }
             }
         }
@@ -1735,7 +1735,12 @@ native_fn!(
             let y = y.into_value(ctx);
             return nctx.wrong_argument_violation("fxdiv", "division by zero", Some(y), Some(2), 2, &[x, y]);
         }
-        let res = x / y;
+        let Some(res) = x.checked_div(y) else {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.implementation_restriction_violation("fxdiv", "integer overflow", &[x, y]);
+        };
         nctx.return_(Ok(res))
     }
 
@@ -1744,7 +1749,12 @@ native_fn!(
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation("fxdiv0", "division by zero", Some(y), Some(1), 1, &[y]);
         }
-        let div = x / y;
+        let Some(div) = x.checked_div(y) else {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.implementation_restriction_violation("fxdiv0", "integer overflow", &[x, y]);
+        };
         let mod_ = x - (div * y);
         if mod_ < (y / 2).abs() {
             return nctx.return_(Ok(div));
@@ -1917,12 +1927,9 @@ native_fn!(
             let ctx = nctx.ctx;
             let fx1 = fx1.into_value(ctx);
             let fx2 = fx2.into_value(ctx);
-            return nctx.wrong_argument_violation(
+            return nctx.implementation_restriction_violation(
                 "fxarithmetic-shift",
                 "shift amount is too large",
-                Some(fx2),
-                Some(2),
-                2,
                 &[fx1, fx2]
             );
         }
@@ -1930,12 +1937,9 @@ native_fn!(
         let ctx = nctx.ctx;
         let fx1 = fx1.into_value(ctx);
         let fx2 = fx2.into_value(ctx);
-        nctx.wrong_argument_violation(
+        nctx.implementation_restriction_violation(
             "fxarithmetic-shift",
             "shift amount is too large",
-            Some(fx2),
-            Some(2),
-            2,
             &[fx1, fx2]
         )
     }
@@ -1949,12 +1953,9 @@ native_fn!(
             let ctx = nctx.ctx;
             let fx1 = fx1.into_value(ctx);
             let fx2 = fx2.into_value(ctx);
-            return nctx.wrong_argument_violation(
+            return nctx.implementation_restriction_violation(
                 "fxarithmetic-shift-left",
                 "shift amount is too large",
-                Some(fx2),
-                Some(2),
-                2,
                 &[fx1, fx2]
             );
         };
@@ -1970,12 +1971,9 @@ native_fn!(
             let ctx = nctx.ctx;
             let fx1 = fx1.into_value(ctx);
             let fx2 = fx2.into_value(ctx);
-            return nctx.wrong_argument_violation(
+            return nctx.implementation_restriction_violation(
                 "fxarithmetic-shift-right",
                 "shift amount is too large",
-                Some(fx2),
-                Some(2),
-                2,
                 &[fx1, fx2]
             );
         };

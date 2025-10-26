@@ -2335,6 +2335,13 @@ prim!(
         PrimValue::Comparison(check)
     },
 
+    "rational?" => is_rational(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+        let check = ssa.builder.ins().call(ssa.thunks.is_rational, &[val]);
+        PrimValue::Comparison(ssa.builder.inst_results(check)[0])
+    },
+
     "inexact?" => is_inexact(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
@@ -2347,6 +2354,64 @@ prim!(
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let check = ssa.handle_thunk_call_result(ssa.thunks.exactp, &[ctx, val], _h);
         PrimValue::Value(check)
+    },
+
+    "even?" => is_even(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+        let check_int = ssa.builder.create_block();
+        let thunk_call = ssa.builder.create_block();
+        let join = ssa.builder.create_block();
+        ssa.builder.append_block_param(join, types::I8);
+        ssa.branch_if_int32(val, check_int, &[], thunk_call, &[]);
+        ssa.builder.switch_to_block(check_int);
+        {
+            let int32 = ssa.ireduce(types::I32, val);
+            let mask = ssa.builder.ins().band_imm(int32, 1);
+            let is_even = ssa.builder.ins().icmp_imm(IntCC::Equal, mask, 0);
+            ssa.builder.ins().jump(join, &[BlockArg::Value(is_even)]);
+        }
+
+        ssa.builder.switch_to_block(thunk_call);
+        {
+            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let val = ssa.handle_thunk_call_result(ssa.thunks.evenp, &[ctx, val], _h);
+            let is_even = ssa.builder.ins().icmp_imm(IntCC::Equal, val, Value::new(true).bits() as i64);
+            ssa.builder.ins().jump(join, &[BlockArg::Value(is_even)]);
+        }
+
+        ssa.builder.switch_to_block(join);
+        let val = ssa.builder.block_params(join)[0];
+        PrimValue::Comparison(val)
+    },
+
+    "odd?" => is_odd(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+
+        let check_int = ssa.builder.create_block();
+        let thunk_call = ssa.builder.create_block();
+        let join = ssa.builder.create_block();
+        ssa.builder.append_block_param(join, types::I8);
+        ssa.branch_if_int32(val, check_int, &[], thunk_call, &[]);
+        ssa.builder.switch_to_block(check_int);
+        {
+            let int32 = ssa.ireduce(types::I32, val);
+            let mask = ssa.builder.ins().band_imm(int32, 1);
+            let is_odd = ssa.builder.ins().icmp_imm(IntCC::Equal, mask, 1);
+            ssa.builder.ins().jump(join, &[BlockArg::Value(is_odd)]);
+        }
+
+        ssa.builder.switch_to_block(thunk_call);
+        {
+            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let val = ssa.handle_thunk_call_result(ssa.thunks.oddp, &[ctx, val], _h);
+            let is_odd = ssa.builder.ins().icmp_imm(IntCC::Equal, val, Value::new(true).bits() as i64);
+            ssa.builder.ins().jump(join, &[BlockArg::Value(is_odd)]);
+        }
+
+        ssa.builder.switch_to_block(join);
+        let val = ssa.builder.block_params(join)[0];
+        PrimValue::Comparison(val)
     },
 
     "zero?" => is_zero(ssa, args, _h) {

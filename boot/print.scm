@@ -507,6 +507,21 @@
                 (display "#<record-constructor-descriptor " port)
                 (display (record-type-name (rcd-rtd obj)) port)
                 (display ">" port)]
+            [(condition? obj)
+                (display "#<condition " port)
+                (if (who-condition? obj) 
+                    (display (condition-who obj) port))
+                (if (message-condition? obj)
+                    (begin 
+                        (display " \"" port)
+                        (display (condition-message obj) port)
+                        (display "\"" port)))
+                (if (and #f (stacktrace-condition? obj))
+                    (begin 
+                        (display " " port)
+                        (display (condition-stacktrace obj) port)))
+                
+                (display ">" port)]
             [else (display "#<unknown>" port)])))
 (define (newline . port) (display "\n" (if (null? port) (current-output-port) (car port))))
 

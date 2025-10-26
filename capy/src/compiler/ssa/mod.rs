@@ -133,8 +133,8 @@ impl<'gc> ModuleBuilder<'gc> {
                 .define_function(func_id, &mut context)
                 .unwrap_or_else(|err| {
                     panic!(
-                        "error when compiling function {} ({}): {}",
-                        func.binding.name, func.name, err
+                        "error when compiling function {} ({}): {} at {} (src: {})",
+                        func.binding.name, func.name, err, func.meta, func.source
                     )
                 });
             func_debug_cx.finalize(

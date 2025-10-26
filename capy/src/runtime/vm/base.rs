@@ -299,7 +299,8 @@ native_fn!(
     pub ("symbol=?") fn symbol_eq<'gc>(
         nctx,
         a: Value<'gc>,
-        b: Value<'gc>
+        b: Value<'gc>,
+        rest: &'gc [Value<'gc>]
     ) -> Value<'gc> {
         if !a.is::<Symbol>() {
             return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(a), Some(1), 2, &[a, b]);
@@ -307,7 +308,25 @@ native_fn!(
         if !b.is::<Symbol>() {
             return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(b), Some(2), 2, &[a, b]);
         }
-        nctx.return_(Value::new(a == b))
+        if rest.is_empty() {
+            return nctx.return_(Value::new(a == b));
+        }
+
+        let eq = a == b;
+        for &sym in rest {
+            if !eq {
+                return nctx.return_(Value::new(false));
+            }
+            if !sym.is::<Symbol>() {
+                return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(sym), None, rest.len() + 2, &[a, b].iter().chain(rest).cloned().collect::<Vec<_>>().as_slice());
+            }
+
+            if sym != a {
+                return nctx.return_(Value::new(false));
+            }
+        }
+
+        nctx.return_(Value::new(true))
     }
 
     pub ("microsecond") fn microsecond<'gc>(nctx) -> u128 {

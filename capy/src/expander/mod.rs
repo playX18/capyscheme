@@ -16,6 +16,7 @@ pub mod fold;
 pub mod free_vars;
 pub mod letrectify;
 pub mod primitives;
+pub mod inlining;
 
 pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     let Some(props) = get_source_property(ctx, obj) else {

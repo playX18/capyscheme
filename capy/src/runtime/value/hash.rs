@@ -242,6 +242,65 @@ impl<'gc> HashTable<'gc> {
         this
     }
 
+    pub fn new_immutable(
+        mc: &Mutation<'gc>,
+        typ: HashTableType<'gc>,
+        initial_capacity: usize,
+        load_factor: f64,
+    ) -> Gc<'gc, Self> {
+        if let HashTableType::Generic(_) = typ {
+            // generic hashtable: no table, handled separately.
+            let table = Array::with(mc, 0, |_, _| Lock::new(None));
+            let mut hdr = ScmHeader::new();
+            hdr.set_type_bits(TypeCode8::HASHTABLE.bits() as _);
+            return Gc::new(
+                mc,
+                Self {
+                    hdr,
+                    inner: Monitor::new(InnerHashTable {
+                        table: Lock::new(table),
+                        count: Cell::new(0),
+                        threshold: Cell::new(0),
+                        load_factor,
+                        mod_count: Cell::new(0),
+                        typ,
+                    }),
+                },
+            );
+        }
+        let initial_capacity = initial_capacity.min(1);
+        let initial_capacity = (initial_capacity == 0)
+            .then_some(8)
+            .unwrap_or(initial_capacity);
+        if load_factor <= 0.0 {
+            panic!("Load factor must be greater than 0.0");
+        }
+
+        let table = Array::with(mc, initial_capacity, |_, _| Lock::new(None));
+
+        let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
+
+        let mut hdr = ScmHeader::new();
+        hdr.set_type_bits(TypeCode16::IMMUTABLE_HASHTABLE.bits() as _);
+
+        let this = Gc::new(
+            mc,
+            Self {
+                hdr,
+                inner: Monitor::new(InnerHashTable {
+                    table: Lock::new(table),
+                    count: Cell::new(0),
+                    threshold: Cell::new(threshold),
+                    load_factor,
+                    mod_count: Cell::new(0),
+                    typ,
+                }),
+            },
+        );
+
+        this
+    }
+
     pub fn is_mutable(&self) -> bool {
         match self.inner.lock().typ {
             HashTableType::Generic(_) => {
@@ -522,12 +581,17 @@ impl<'gc> HashTable<'gc> {
         self.inner.lock().count.get()
     }
 
-    pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
+    pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>, immutable: bool) -> Gc<'gc, Self> {
         let guard = self.inner.lock();
-        let new_table = HashTable::new(&ctx, guard.typ, guard.table.get().len(), guard.load_factor);
-
+        let new_table = if !immutable {
+            HashTable::new(&ctx, guard.typ, guard.table.get().len(), guard.load_factor)
+        } else {
+            HashTable::new_immutable(&ctx, guard.typ, guard.table.get().len(), guard.load_factor)
+        };
+        drop(guard);
         for (k, v) in self.iter() {
             new_table.put(ctx, k, v);
+            println!("copy {k}: {v}")
         }
 
         new_table
