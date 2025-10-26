@@ -6,7 +6,7 @@ use rsgc::{Mutation, mmtk::AllocationSemantics};
 #[repr(C)]
 pub struct Condition {
     header: ScmHeader,
-    cond: parking_lot::Condvar,
+    pub(crate) cond: parking_lot::Condvar,
 }
 
 unsafe impl Trace for Condition {
@@ -22,7 +22,12 @@ unsafe impl Trace for Condition {
 #[repr(C)]
 pub struct Mutex {
     header: ScmHeader,
-    pub(crate) mutex: parking_lot::ReentrantMutex<()>,
+    pub(crate) mutex: MutexKind,
+}
+
+pub enum MutexKind {
+    Reentrant(parking_lot::ReentrantMutex<()>),
+    Regular(parking_lot::Mutex<()>),
 }
 
 unsafe impl Trace for Mutex {
@@ -83,14 +88,26 @@ crate::native_fn!(
 
         let val: Value<'gc> = thread_obj.into();
         let bits = val.bits();
+        let dynamic_state = nctx.ctx.state.dynamic_state.save(nctx.ctx);
+        let dynamic_state_bits = dynamic_state.bits();
         let thread_started = std::sync::Arc::new(std::sync::Barrier::new(2));
         let thread_started_clone = thread_started.clone();
 
         let _handle = std::thread::spawn(move || {
-            let scm = Scheme::forked(bits);
+            let scm = Scheme::forked(bits, dynamic_state_bits);
             thread_started_clone.wait();
 
-            let _ = scm;
+            scm.call_value(
+                |ctx, _args| {
+                    let thunk = ctx.state.thread_object.entrypoint.unwrap();
+                    thunk
+                },
+                |ctx, result| {
+                    let _ = ctx;
+                    let _ = result;
+                    ()
+                }
+            )
         });
 
 
@@ -100,12 +117,32 @@ crate::native_fn!(
         nctx.return_(val)
     }
 
-    pub ("make-mutex") fn make_mutex<'gc>(
+    pub ("thread?") fn thread_p<'gc>(
+        nctx,
+        obj: Value<'gc>
+    ) -> bool {
+        nctx.return_(obj.is::<ThreadObject>())
+    }
+
+    pub ("current-thread") fn current_thread<'gc>(
         nctx,
     ) -> Value<'gc> {
+        let thread_obj = nctx.ctx.state.thread_object;
+        nctx.return_(thread_obj.into())
+    }
+
+    pub ("make-mutex") fn make_mutex<'gc>(
+        nctx,
+        reentrant: Option<bool>
+    ) -> Value<'gc> {
+        let reentrant = reentrant.unwrap_or(false);
         let mutex = Mutex {
             header: ScmHeader::with_type_bits(TypeCode8::THREAD_MUTEX.bits() as _),
-            mutex: parking_lot::ReentrantMutex::new(()),
+            mutex: if reentrant {
+                MutexKind::Reentrant(parking_lot::ReentrantMutex::new(()))
+            } else {
+                MutexKind::Regular(parking_lot::Mutex::new(()))
+            },
         };
         // mutex has to be non-moving so that parking_lot can use its address as a key.
         let gc_mutex = nctx.ctx.allocate(mutex, AllocationSemantics::NonMoving);
@@ -118,21 +155,24 @@ crate::native_fn!(
         block: Option<bool>
     ) -> bool {
         let block = block.unwrap_or(true);
-
-        /*if let Some(_guard) = mutex_obj.mutex.try_lock() {
-            std::mem::forget(_guard);
-            return nctx.return_(true)
-        }*/
-
         if block {
             return nctx.yield_and_return(YieldReason::LockMutex(mutex_obj.into()), &[Value::new(true)])
         } else {
-            if let Some(_guard) = mutex_obj.mutex.try_lock() {
-                std::mem::forget(_guard);
-                nctx.return_(true)
-            } else {
-                nctx.return_(false)
+            match &mutex_obj.mutex {
+                MutexKind::Reentrant(mutex) => {
+                    if let Some(_guard) = mutex.try_lock() {
+                        std::mem::forget(_guard);
+                        return nctx.return_(true)
+                    }
+                }
+                MutexKind::Regular(mutex) => {
+                    if let Some(_guard) = mutex.try_lock() {
+                        std::mem::forget(_guard);
+                        return nctx.return_(true)
+                    }
+                }
             }
+            return nctx.return_(false)
         }
     }
 
@@ -140,9 +180,86 @@ crate::native_fn!(
         nctx,
         mutex_obj: Gc<'gc, Mutex>
     ) -> Value<'gc> {
-        let guard = unsafe { mutex_obj.mutex.make_guard_unchecked() };
-        drop(guard);
+        match &mutex_obj.mutex {
+            MutexKind::Reentrant(mutex) => {
+                unsafe {
+                    let guard = mutex.make_guard_unchecked();
+                    drop(guard);
+                }
+            }
+            MutexKind::Regular(mutex) => {
+                unsafe {
+                    let guard = mutex.make_guard_unchecked();
+                    drop(guard);
+                }
+            }
+        }
         nctx.return_(Value::undefined())
+    }
+
+    pub ("mutex-reentrant?") fn mutex_reentrant_p<'gc>(
+        nctx,
+        mutex_obj: Gc<'gc, Mutex>
+    ) -> bool {
+        match &mutex_obj.mutex {
+            MutexKind::Reentrant(_) => nctx.return_(true),
+            MutexKind::Regular(_) => nctx.return_(false),
+        }
+    }
+
+    pub ("mutex?") fn mutex_p<'gc>(
+        nctx,
+        obj: Value<'gc>
+    ) -> bool {
+        nctx.return_(obj.is::<Mutex>())
+    }
+
+    pub ("thread-condition?") fn thread_condition_p<'gc>(
+        nctx,
+        obj: Value<'gc>
+    ) -> bool {
+        nctx.return_(obj.is::<Condition>())
+    }
+
+    pub ("make-condition") fn make_condition<'gc>(
+        nctx,
+    ) -> Value<'gc> {
+        let condition = Condition {
+            header: ScmHeader::with_type_bits(TypeCode8::THREAD_CONDITION.bits() as _),
+            cond: parking_lot::Condvar::new(),
+        };
+        let gc_condition = nctx.ctx.allocate(condition, AllocationSemantics::NonMoving);
+        nctx.return_(gc_condition.into())
+    }
+
+    pub ("condition-signal") fn condition_signal<'gc>(
+        nctx,
+        condition_obj: Gc<'gc, Condition>
+    ) -> Value<'gc> {
+        condition_obj.cond.notify_one();
+        nctx.return_(Value::undefined())
+    }
+
+    pub ("condition-broadcast") fn condition_broadcast<'gc>(
+        nctx,
+        condition_obj: Gc<'gc, Condition>
+    ) -> Value<'gc> {
+        condition_obj.cond.notify_all();
+        nctx.return_(Value::undefined())
+    }
+
+    pub ("condition-wait") fn condition_wait<'gc>(
+        nctx,
+        condition_obj: Gc<'gc, Condition>,
+        mutex_obj: Gc<'gc, Mutex>
+    ) -> Value<'gc> {
+        if matches!(mutex_obj.mutex, MutexKind::Reentrant(_)) {
+            return nctx.wrong_argument_violation("condition-wait", "reentrant mutex can't be used with condition-wait", Some(mutex_obj.into()), Some(1), 2, &[condition_obj.into(), mutex_obj.into()])
+        }
+        nctx.yield_and_return(YieldReason::WaitCondition {
+            condition: condition_obj.into(),
+            mutex: mutex_obj.into(),
+        }, &[Value::undefined()])
     }
 );
 

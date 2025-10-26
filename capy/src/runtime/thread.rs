@@ -8,7 +8,7 @@ use crate::runtime::{
     },
     vm::{
         VMResult, call_scheme, call_scheme_with_k, continue_to, debug,
-        threading::{Mutex, ThreadObject},
+        threading::{Condition, Mutex, MutexKind, ThreadObject},
     },
 };
 use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
@@ -275,25 +275,16 @@ impl Scheme {
         result
     }
 
-    /// Calls `entry_name` in module `mod_name`.
-    pub fn call<ARGS, F, R>(&self, mod_name: &str, entry_name: &str, setup: ARGS, finish: F) -> R
+    pub fn call_value<PREP, F, R>(&self, prep: PREP, finish: F) -> R
     where
-        F: for<'gc> Fn(&Context<'_>, Result<Value<'gc>, Value<'gc>>) -> R,
-        ARGS: for<'gc> FnOnce(&Context<'gc>, &mut Vec<Value<'gc>>),
+        F: for<'gc> Fn(&Context<'gc>, Result<Value<'gc>, Value<'gc>>) -> R,
+        PREP: for<'gc> FnOnce(&Context<'gc>, &mut Vec<Value<'gc>>) -> Value<'gc>,
     {
         let mut result = self.enter(|ctx| {
-            let entry = ctx
-                .public_ref(mod_name, entry_name)
-                .expect("Entrypoint not found");
-
-            if !entry.is::<Closure>() {
-                panic!("Entrypoint is not a procedure");
-            }
-
             let mut args = Vec::with_capacity(4);
-            setup(&ctx, &mut args);
+            let rator = prep(&ctx, &mut args);
 
-            let run = call_scheme(ctx, entry, args);
+            let run = call_scheme(ctx, rator, args);
 
             match run {
                 VMResult::Ok(ok) => Ok(finish(&ctx, Ok(ok))),
@@ -340,6 +331,16 @@ impl Scheme {
                                         }))
                                     }
 
+                                    Some(YieldReason::WaitCondition { condition, mutex }) => {
+                                        let mutex = mutex.downcast::<Mutex>();
+                                        let condition = condition.downcast::<Condition>();
+                                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
+                                        Err(Yield::Wait(PendingWait {
+                                            mtx: NonNull::from(&mutex.mutex),
+                                            condition: NonNull::from(&condition.cond),
+                                        }))
+                                    }
+
                                     None => Err(Yield::None),
                                     _ => todo!(),
                                 },
@@ -351,9 +352,15 @@ impl Scheme {
                 }
 
                 Yield::Lock(lock) => {
-                    let _guard = lock.resolve();
-                    // should be unlocked in Scheme by means of `mutex-release`, forget the guard
-                    std::mem::forget(_guard);
+                    lock.lock();
+
+                    result = Err(Yield::None);
+                    continue; // retry
+                }
+
+                Yield::Wait(wait) => {
+                    wait.wait();
+
                     result = Err(Yield::None);
                     continue; // retry
                 }
@@ -401,6 +408,27 @@ impl Scheme {
         }
     }
 
+    /// Calls `entry_name` in module `mod_name`.
+    pub fn call<ARGS, F, R>(&self, mod_name: &str, entry_name: &str, setup: ARGS, finish: F) -> R
+    where
+        F: for<'gc> Fn(&Context<'_>, Result<Value<'gc>, Value<'gc>>) -> R,
+        ARGS: for<'gc> FnOnce(&Context<'gc>, &mut Vec<Value<'gc>>),
+    {
+        self.call_value(
+            move |ctx, args| {
+                setup(ctx, args);
+                let entry = ctx
+                    .public_ref(mod_name, entry_name)
+                    .expect("Entrypoint not found");
+                if !entry.is::<Closure>() {
+                    panic!("Entrypoint is not a procedure");
+                }
+                entry
+            },
+            finish,
+        )
+    }
+
     pub fn new() -> Self {
         Self {
             mutator: {
@@ -419,12 +447,21 @@ impl Scheme {
         }
     }
 
-    pub(crate) fn forked(thread_object_bits: u64) -> Self {
+    pub(crate) fn forked(thread_object_bits: u64, dynamic_state_bits: u64) -> Self {
         Self {
-            mutator: Mutator::new(|mc| {
-                let thread_object = unsafe { Gc::from_ptr(thread_object_bits as _) };
-                State::new(mc, thread_object)
-            }),
+            mutator: {
+                let m = Mutator::new(|mc| {
+                    let thread_object = unsafe { Gc::from_ptr(thread_object_bits as _) };
+                    State::new(mc, thread_object)
+                });
+                m.mutate(|mc, state: &State| {
+                    let ctx = state.context(mc);
+                    ctx.state
+                        .dynamic_state
+                        .restore(ctx, Value::from_raw(dynamic_state_bits));
+                });
+                m
+            },
         }
     }
 }
@@ -468,25 +505,63 @@ pub enum YieldReason<'gc> {
     Yieldpoint,
 
     LockMutex(Value<'gc>),
-    CondWait(Value<'gc>),
+    WaitCondition {
+        condition: Value<'gc>,
+        mutex: Value<'gc>,
+    },
 
     PollRead(i32),
     PollWrite(i32),
 }
 
 pub struct PendingLock {
-    mtx: NonNull<parking_lot::ReentrantMutex<()>>,
+    mtx: NonNull<MutexKind>,
 }
 
 impl PendingLock {
-    pub fn resolve(self) -> parking_lot::ReentrantMutexGuard<'static, ()> {
-        unsafe { self.mtx.as_ref().lock() }
+    pub fn lock(&self) {
+        unsafe {
+            match self.mtx.as_ref() {
+                MutexKind::Reentrant(mutex) => {
+                    let guard = mutex.lock();
+                    std::mem::forget(guard);
+                }
+                MutexKind::Regular(mutex) => {
+                    let guard = mutex.lock();
+                    std::mem::forget(guard);
+                }
+            }
+        }
+    }
+}
+
+pub struct PendingWait {
+    mtx: NonNull<MutexKind>,
+    condition: NonNull<parking_lot::Condvar>,
+}
+
+impl PendingWait {
+    pub fn wait(&self) {
+        unsafe {
+            match self.mtx.as_ref() {
+                MutexKind::Reentrant(_) => {
+                    unreachable!("Reentrant mutexes cannot be used with condition variables");
+                }
+                MutexKind::Regular(mutex) => {
+                    let mut guard = mutex.make_guard_unchecked();
+                    self.condition.as_ref().wait(&mut guard);
+                    std::mem::forget(guard);
+                }
+            }
+        }
     }
 }
 
 pub enum Yield {
     None,
     Lock(PendingLock),
+    Wait(PendingWait),
+
     PollRead(i32),
     PollWrite(i32),
 }

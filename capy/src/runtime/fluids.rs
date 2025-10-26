@@ -247,6 +247,18 @@ impl<'gc> Index<usize> for Cache<'gc> {
 unsafe impl<'gc> IndexWrite<usize> for Cache<'gc> {}
 
 #[derive(Trace)]
+#[repr(C)]
+pub struct DynamicStateObject<'gc> {
+    header: ScmHeader,
+    pub(crate) saved: Value<'gc>,
+}
+
+unsafe impl<'gc> Tagged for DynamicStateObject<'gc> {
+    const TC8: TypeCode8 = TypeCode8::DYNAMIC_STATE;
+    const TYPE_NAME: &'static str = "dynamic-state";
+}
+
+#[derive(Trace)]
 #[collect(no_drop)]
 pub struct DynamicState<'gc> {
     thread_local_values: Gc<'gc, HashTable<'gc>>,
@@ -564,10 +576,38 @@ native_fn!(
     }
 
     pub ("fluid-set!") fn fluid_set<'gc>(nctx, fluid: FluidRef<'gc>, value: Value<'gc>) -> Value<'gc> {
-
         let old_value = fluid.get(nctx.ctx);
         fluid.set(nctx.ctx, value);
         nctx.return_(old_value)
+    }
+
+    pub ("current-dynamic-state") fn current_dynamic_state<'gc>(nctx) -> Value<'gc> {
+        let dynamic_state = nctx.ctx.state.dynamic_state.save(nctx.ctx);
+        let val = Value::from(Gc::new(
+            &nctx.ctx,
+            DynamicStateObject {
+                header: ScmHeader::with_type_bits(TypeCode8::DYNAMIC_STATE.bits() as _),
+                saved: dynamic_state,
+            },
+        ));
+        nctx.return_(val)
+    }
+
+    pub ("dynamic-state?") fn is_dynamic_state<'gc>(nctx, obj: Value<'gc>) -> Value<'gc> {
+        nctx.return_(Value::new(obj.is::<DynamicStateObject>()))
+    }
+
+    pub ("set-current-dynamic-state!") fn set_current_dynamic_state<'gc>(nctx, state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
+        let prev = nctx.ctx.state.dynamic_state.save(nctx.ctx);
+        let prev = Value::from(Gc::new(
+            &nctx.ctx,
+            DynamicStateObject {
+                header: ScmHeader::with_type_bits(TypeCode8::DYNAMIC_STATE.bits() as _),
+                saved: prev,
+            },
+        ));
+        nctx.ctx.state.dynamic_state.restore(nctx.ctx, state_obj.saved);
+        nctx.return_(prev)
     }
 );
 

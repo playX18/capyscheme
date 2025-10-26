@@ -860,7 +860,68 @@
     with-syntax
     write
     write-char
-    zero?)
+    zero?
+    make-thread-parameter
+    with-mutex
+    make-condition
+    thread-condition?
+    condition-wait
+    condition-signal
+    condition-broadcast
+    make-mutex
+    mutex?
+    mutex-acquire
+    mutex-release
+    
+    string->utf8/nul
+    void 
+    float
+    float double
+    complex-float complex-double
+    short
+    unsigned-short
+    int unsigned-int long unsigned-long size_t ssize_t ptrdiff_t
+    int8 uint8
+    uint16 int16
+    uint32 int32
+    uint64 int64
+    intptr_t uintptr_t
+
+    sizeof alignof
+
+    %null-pointer
+    null-pointer?
+    pointer?
+    make-pointer
+    pointer->scm
+    scm->pointer
+    pointer-address
+    pointer->bytevector
+    bytevector->pointer
+    set-pointer-finalizer!
+
+    dereference-pointer
+    string->pointer
+    pointer->string
+
+    pointer->procedure
+
+    read-c-struct write-c-struct
+    make-c-struct parse-c-struct
+
+    define-c-struct
+    struct-size
+    struct-alignment
+    errno
+    ioctl/pointer
+
+    load-foreign-library
+    foreign-library?
+    foreign-library-pointer
+    foreign-library-function
+    foreign-library-handle
+    ->foreign-library
+    )
   (import
     (core primitives)
     (core parameters)
@@ -878,4 +939,7 @@
     (core records)
     (core conditions)
     (core bytevector-transcoders)
-    (core hashtables)))
+    (core hashtables)
+    (core threading)
+    (core foreign)
+    (core foreign-library)))

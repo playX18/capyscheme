@@ -368,9 +368,11 @@
 (define (every? pred lst)
   (and (list? lst) (every1 pred lst)))
 
-(define (make-parameter init . converter)
+(define (make-parameter init . filter)
   (let ([f (make-fluid init)]
-        [conv (if (null? converter) (lambda (x) x)  (car converter))])
+        [conv (if (null? filter) (lambda (x) x)  (car filter))])
+      (unless (procedure? conv)
+        (assertion-violation 'make-parameter "expected a procedure as filter" conv))
       (lambda args
         (if (null? args)
             (fluid-ref f)
@@ -380,6 +382,19 @@
               (fluid-set! f (car args))
               old)))))
 
+(define (make-thread-parameter init . filter)
+  (let ([f (make-thread-local-fluid init)]
+        [conv (if (null? filter) (lambda (x) x)  (car filter))])
+      (unless (procedure? conv)
+        (assertion-violation 'make-thread-parameter "expected a procedure as filter" conv))
+      (lambda args
+        (if (null? args)
+            (thread-fluid-ref f)
+            (let ([old (thread-fluid-ref f)])
+              (if (not (conv (car args)))
+                (assertion-violation 'thread-parameter "bad value for parameter" (car args)))
+              (thread-fluid-set! f (car args))
+              old)))))
 
 (define tuple-printer (make-parameter #f))
 

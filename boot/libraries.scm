@@ -708,6 +708,23 @@
                         %capy-root
                         %fresh-auto-compile
                         %process-spawn
+
+                        ;; threading
+                        fork-thread
+                        thread?
+                        make-condition
+                        thread-condition?
+                        condition-wait
+                        condition-signal
+                        condition-broadcast
+
+                        make-mutex
+                        mutex-acquire
+                        mutex-release
+                        make-thread-parameter
+                        with-mutex
+                        thread?
+                        current-thread
                         )
     (import (capy)))
 
