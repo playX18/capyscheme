@@ -8,6 +8,12 @@
   '(no-create no-fail no-truncate
     spanky0 spanky1 spanky2))
 
+
+
+(define no-create 'no-create)
+(define no-fail 'no-fail)
+(define no-truncate 'no-truncate)
+
 (define (file-options . symbols)
   (filter (lambda (sym) (memq sym *file-option-symbols*))
           symbols))
@@ -104,11 +110,10 @@
                                  (loop (+ i 1)))
                                 ((eq? errmode 'raise)
                                  (let ((c (integer->char sv)))
-                                 (raise-r6rs-exception
-                                  (make-i/o-encoding-error out c)
-                                  'string->bytevector
-                                  (errmsg 'msg:encoding)
-                                  (list c))))
+                                  (raise-i/o-encoding-error 
+                                   'string->bytevector
+                                   "invalid encoding"
+                                   c)))
                                 (else
                                  (loop (+ i 1)))))))))))
             ((utf-8)

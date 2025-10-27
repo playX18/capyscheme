@@ -21,7 +21,7 @@ impl<'gc> Value<'gc> {
                         return false;
                     }
 
-                    return Number::exact_equal(a, b);
+                    return Number::inexact_equal(a, b);
                 }
             }
 
@@ -88,7 +88,7 @@ impl<'gc> Value<'gc> {
                 .r5rs_equal(other.downcast::<Boxed>().val);
         }
 
-        false
+        self.eqv(other)
     }
 
     pub fn hash_equal(self) -> u64 {

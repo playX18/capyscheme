@@ -667,10 +667,12 @@ fn compare_strings<'gc>(
         return None;
     };
 
+    let cm = icu::casemap::CaseMapperBorrowed::new();
+
     while cstart1 < cend1 && cstart2 < cend2 {
         if ci {
-            let a = s1.get(cstart1).unwrap().to_uppercase().next().unwrap();
-            let b = s2.get(cstart2).unwrap().to_uppercase().next().unwrap();
+            let a = cm.simple_fold(s1.get(cstart1).unwrap()); // s1.get(cstart1).unwrap().to_uppercase().next().unwrap();
+            let b = cm.simple_fold(s2.get(cstart2).unwrap()); //s2.get(cstart2).unwrap().to_uppercase().next().unwrap();
             if a < b {
                 return Some(std::cmp::Ordering::Less);
             } else if a > b {

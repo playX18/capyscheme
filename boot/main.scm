@@ -1093,7 +1093,27 @@
       (raise message))
     (raise who)))
 
+(define (unwrap-syntax expr)
+  (let loop ([lst expr])
+    (cond 
+      [(pair? lst)
+        (let ([a (loop (car lst))] [d (loop (cdr lst))])
+          (cond 
+            [(and (eq? a (car lst)) (eq? d (cdr lst))) lst]
+            [else (cons a d)]))]
+      [(syntax? lst) (loop (syntax-expression lst))]
+      [(vector? lst) (list->vector (map loop (vector->list lst)))]
+      [else lst])))
+
 (define (syntax-violation who message form . subform)
+  (define (get-who-from-form form)
+    (define obj (if (syntax? form) (unwrap-syntax form) form))
+
+    (cond 
+      [(symbol? obj) obj]
+      [(and (pair? obj) (symbol? (car obj))) (car obj)]
+      [else #f]))
+
   (if (or (not who) (string? who) (symbol? who) (identifier? who))
         (if (string? message)
             (raise
@@ -1105,7 +1125,7 @@
                     (make-syntax-violation form (and (pair? subform) (car subform)))
                     (if who
                         (make-who-condition who)
-                        #f)
+                        (get-who-from-form form))
                     (make-message-condition message)))))
             (assertion-violation 'syntax-violation "expected string as message" message))
         (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))

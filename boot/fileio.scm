@@ -144,10 +144,9 @@
           (file-io/install-port-position-as-binary! p data)
           (file-io/remember p)
           p)
-        (begin (raise-r6rs-exception (make-i/o-filename-error filename)
-                                     'open-file-input-port
-                                     (errmsg 'msg:openerror)
-                                     (list filename))
+        (begin (raise-i/o-filename-error 'open-file-input-port
+                                     "failed to open file"
+                                     filename)
                #t))))
 
 (define (file-io/open-file-output-port filename options bufmode transcoder)
@@ -172,17 +171,20 @@
                      (display filename out)
                      (newline out))))
               (else
-               (raise-r6rs-exception
-                (make-i/o-file-already-exists-error filename)
-                'open-file-output-port
-                (errmsg 'msg:fileexists)
-                (list filename opts))))))
+               (raise-i/o-file-already-exists-error 'open-file-output-port 
+                "file already exists"
+                filename
+                opts)))))
+               ;(raise-r6rs-exception
+               ; (make-i/o-file-already-exists-error filename)
+               ; 'open-file-output-port
+               ; (errmsg 'msg:fileexists)
+               ; (list filename opts))))))
           ((and (not exists?) dont-create)
-           (raise-r6rs-exception
-            (make-i/o-file-does-not-exist-error filename)
+           (raise-i/o-file-does-not-exist-error 
             'open-file-output-port
-            (errmsg 'msg:nosuchfile)
-            (list filename opts))))
+            "file does not exist"
+            filename)))
     (let ((fd (apply osdep/open-file filename 'output 'binary opts)))
       (if (>= fd 0)
           (let* ((data (file-io/data fd filename))
@@ -194,10 +196,9 @@
             (file-io/install-port-position-as-binary! p data)
             (file-io/remember p)
             p)
-          (begin (raise-r6rs-exception (make-i/o-filename-error filename)
-                                       'open-file-output-port
-                                       (errmsg 'msg:openerror)
-                                       (list filename))
+          (begin (raise-i/o-filename-error 'open-file-output-port
+                                       "failed to open file"
+                                       filename)
                  #t)))))
 
 ; FIXME:  This should be implemented better.
@@ -224,20 +225,18 @@
                      (display filename out)
                      (newline out))))
               (else
-               (raise-r6rs-exception
-                (make-i/o-file-already-exists-error filename)
-                'open-file-input/output-port
-                (errmsg 'msg:fileexists)
-                (list filename opts))))))
+               (raise-i/o-file-already-exists 
+                'open-file-input/output-port 
+                "file already exists"
+                filename opts)))))
           ((and (not exists?)
                 (not dont-create))
            (call-with-port (open-file-output-port filename) values))
           ((not exists?)
-           (raise-r6rs-exception
-            (make-i/o-file-does-not-exist-error filename)
+           (raise-io/file-does-not-exist-error 
             'open-file-input/output-port
-            (errmsg 'msg:nosuchfile)
-            (list filename opts))))
+            "file does not exist"
+            filename)))
     (let ((dir (current-directory)))
       (cond ((not t)
              (let* ((initial-contents

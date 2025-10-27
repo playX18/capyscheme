@@ -661,20 +661,28 @@ native_fn!(
         nctx.return_(w.is_bigint())
     }
 
-    pub ("complex?") fn is_complex<'gc>(nctx, w: Number<'gc>) -> bool {
-        nctx.return_(w.is_complex())
+    pub ("complex?") fn is_complex<'gc>(nctx, w: Value<'gc>) -> bool {
+        nctx.return_(w.is_number())
     }
 
-    pub ("real?") fn is_real<'gc>(nctx, w: Number<'gc>) -> bool {
-        nctx.return_(w.is_real())
+    pub ("real?") fn is_real<'gc>(nctx, w: Value<'gc>) -> bool {
+        let Some(n) = w.number() else {
+            return nctx.return_(false);
+        };
+
+        nctx.return_(n.is_real())
     }
 
     pub ("inexact-real?") fn is_inexact_real<'gc>(nctx, w: Number<'gc>) -> bool {
         nctx.return_(w.is_real() && !w.is_exact())
     }
 
-    pub ("rational?") fn is_rational<'gc>(nctx, w: Number<'gc>) -> bool {
-        nctx.return_(w.is_rational())
+    pub ("rational?") fn is_rational<'gc>(nctx, w: Value<'gc>) -> bool {
+        let Some(n) = w.number() else {
+            return nctx.return_(false);
+        };
+
+        nctx.return_(n.is_rational())
     }
 
     pub ("exact-positive-integer?") fn is_exact_positive_integer<'gc>(nctx, w: Number<'gc>) -> bool {
@@ -689,8 +697,12 @@ native_fn!(
         nctx.return_(w.is_exact_integer())
     }
 
-    pub ("integer?") fn is_integer<'gc>(nctx, w: Number<'gc>) -> bool {
-        nctx.return_(w.is_integer())
+    pub ("integer?") fn is_integer<'gc>(nctx, w: Value<'gc>) -> bool {
+        let Some(n) = w.number() else {
+            return nctx.return_(false);
+        };
+
+        nctx.return_(n.is_integer())
     }
 
     pub ("number?") fn is_number<'gc>(nctx, w: Value<'gc>) -> bool {
@@ -1663,6 +1675,17 @@ native_fn!(
             return nctx.wrong_argument_violation("fx-", "argument must be a fixnum", Some(rest[0].clone()), Some(1), args.len(), &args);
         };
 
+        acc = match x.checked_sub(acc) {
+            Some(v) => v,
+            None => {
+                let ctx = nctx.ctx;
+                let x = x.into_value(ctx);
+                let acc = acc.into_value(ctx);
+                return nctx.implementation_restriction_violation("fx-", "integer overflow", &[x, acc]);
+            }
+        };
+
+
         for arg in rest[1..].iter() {
             let Some(arg) = arg.int32() else {
                 let mut args = Vec::with_capacity(1 + rest.len());
@@ -1670,7 +1693,7 @@ native_fn!(
                 args.extend_from_slice(rest);
                 return nctx.wrong_argument_violation("fx-", "argument must be a fixnum", Some(arg.clone()), Some(1), args.len(), &args);
             };
-            match acc.checked_add(-arg) {
+            match acc.checked_sub(arg) {
                 Some(v) => acc = v,
                 None => {
                     let ctx = nctx.ctx;
@@ -1678,16 +1701,6 @@ native_fn!(
                     let arg = arg.into_value(ctx);
                     return nctx.implementation_restriction_violation("fx-", "integer overflow", &[acc, arg]);
                 }
-            }
-        }
-
-        match acc.checked_neg() {
-            Some(v) => acc = v,
-            None => {
-                let ctx = nctx.ctx;
-                let x = x.into_value(ctx);
-                let acc = acc.into_value(ctx);
-                return nctx.implementation_restriction_violation("fx-", "integer overflow", &[x, acc]);
             }
         }
 

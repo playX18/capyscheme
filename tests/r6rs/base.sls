@@ -508,6 +508,7 @@
               (lambda (x y)
                 (let ([try-x
                        (lambda (x x2)
+                        
                          (test (= x x2) #t)
                          (test (< x x2) #f)
                          (test (> x x2) #f)

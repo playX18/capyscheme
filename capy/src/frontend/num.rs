@@ -266,6 +266,29 @@ impl Number {
             _ => false,
         }
     }
+
+    pub fn normalize(self) -> Self {
+        match self {
+            Number::ExactRational(r) => {
+                if r.denom() == &BigInt::from(1) {
+                    Number::ExactInteger(Rc::new(r.numer().clone()))
+                } else {
+                    Number::ExactRational(r)
+                }
+            }
+
+            Number::ExactComplex(c) => {
+                let (real, imag) = c.as_ref();
+                if imag.is_zero() {
+                    return Number::ExactInteger(Rc::new(real.clone()));
+                }
+
+                Number::ExactComplex(c)
+            }
+
+            _ => self,
+        }
+    }
 }
 
 /// Number prefix information (exactness and radix)
@@ -341,7 +364,7 @@ impl Radix {
 /// Parse a number string into a Number AST node
 pub fn parse_number(text: &str) -> Result<Number, NumberParseError> {
     let mut parser = NumberParser::new(text);
-    parser.parse()
+    parser.parse().map(|x| x.normalize())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

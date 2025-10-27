@@ -1661,9 +1661,13 @@
                                 ((= mode errmode:replace)
                                  (io/put-char p #\?))
                                 ((= mode errmode:raise)
-                                 (raise-r6rs-exception
-                                  (make-i/o-encoding-error p c)
-                                  'put-char "encoding error" (list p c)))
+                                 (raise-i/o-encoding-error 
+                                  'put-char 
+                                  "encoding error"
+                                  p c))
+                                 ;(raise-r6rs-exception
+                                 ; (make-i/o-encoding-error p c)
+                                 ; 'put-char "encoding error" (list p c)))
                                 (else
                                  (assertion-violation 'put-char
                                                       "internal error" p c)))))
@@ -2299,10 +2303,12 @@
              (let* ((line (+ 1 (port-lines-read p)))
                     (msg (string-append "utf-8 decoding error in line "
                                         (number->string line))))
-               (raise-r6rs-exception (make-i/o-decoding-error p)
-                                     'get-char
-                                     msg
-                                     units))))))
+               (raise-i/o-decoding-error 
+                'get-char 
+                "utf-8 decoding error"
+                p msg units)
+               
+               )))))
 
   ; Forces at least one more byte into the active buffer,
   ; and retries.

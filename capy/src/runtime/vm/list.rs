@@ -185,23 +185,32 @@ native_fn!(
         nctx.return_(Ok(ls))
     }
 
-    pub ("list-head") fn list_head<'gc>(nctx, lst: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
-        if !lst.is_list() {
+    pub ("list-head") fn list_head<'gc>(nctx, lst: Value<'gc>, n: usize) -> Value<'gc> {
+
+        if n == 0 {
+            return nctx.return_(Value::null());
+        }
+        if !lst.is_pair() {
             return nctx.wrong_argument_violation("list-head", "expected a list", Some(lst), Some(1), 2, &[lst, Value::new(n as i32)]);
         }
-        let mut walk = lst;
-        let mut count = 0;
+        let obj = Value::cons(nctx.ctx, lst.car(), Value::null());
+        let mut tail = obj;
+        let mut lst = lst;
+        lst = lst.cdr();
 
-        while walk.is_pair() && count < n {
-            walk = walk.cdr();
-            count += 1;
+        for _ in 2..=n {
+            if lst.is_pair() {
+                let e = Value::cons(nctx.ctx, lst.car(), Value::null());
+                tail.set_cdr(nctx.ctx, e);
+                tail = e;
+                lst = lst.cdr();
+            } else {
+                return nctx.wrong_argument_violation("list-head", "list too short", Some(lst), Some(1), 2, &[lst, Value::new(n as i32)]);
+            }
         }
 
-        if count < n && !walk.is_null() {
-            return nctx.wrong_argument_violation("list-head", "list too short", Some(lst), Some(1), 2, &[lst, Value::new(n as i32)]);
-        }
-
-        nctx.return_(Ok(walk))
+        tail.set_cdr(nctx.ctx, Value::null());
+        nctx.return_(obj)
     }
 
     pub ("list-tail") fn list_tail<'gc>(nctx, lst: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
