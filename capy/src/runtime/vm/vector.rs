@@ -147,10 +147,17 @@ native_fn! {
 
 
 
-    pub ("make-bytevector") fn make_bytevector<'gc>(nctx, nelems: usize, init: Option<u8>) -> Value<'gc> {
+    pub ("make-bytevector") fn make_bytevector<'gc>(nctx, nelems: usize, init: Option<i16>) -> Value<'gc> {
+
         let v = ByteVector::new::<false>(&nctx.ctx, nelems, true);
-        if let Some(b) = init {
-            v.fill(b);
+        if let Some(init) = init {
+            if init >= i8::MIN as i16 && init <= u8::MAX as i16 {
+                let byte = (init & 0xff) as u8;
+                v.fill(byte);
+            } else {
+                let ctx = nctx.ctx;
+                return nctx.wrong_argument_violation("make-bytevector", "initial value out of range", Some(init.into_value(ctx)), Some(1), 2, &[v.into(), init.into_value(ctx)]);
+            }
         }
         nctx.return_(v.into())
     }
@@ -830,8 +837,14 @@ native_fn! {
         nctx.return_(bv1.as_slice() == bv2.as_slice())
     }
 
-    pub ("bytevector-fill!") fn bytevector_fill<'gc>(nctx, bv: Gc<'gc, ByteVector>, value: u8) -> Value<'gc> {
-        bv.fill(value);
+    pub ("bytevector-fill!") fn bytevector_fill<'gc>(nctx, bv: Gc<'gc, ByteVector>, value: i16) -> Value<'gc> {
+        let byte = if value >= i8::MIN as i16 && value <= u8::MAX as i16 {
+            value as u8
+        } else {
+            let value = value.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation("bytevector-fill!", "value out of range", Some(value), Some(1), 2, &[bv.into(), value]);
+        };
+        bv.fill(byte);
         nctx.return_(bv.into())
     }
 

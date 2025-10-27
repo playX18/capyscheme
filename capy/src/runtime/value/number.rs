@@ -3363,7 +3363,7 @@ impl<'gc> Number<'gc> {
                     } else if y > 0 {
                         (x - y + 1) / y
                     } else {
-                        (x + y + 1) / y
+                        (x + y + 1).wrapping_div(y)
                     };
 
                     return Number::Fixnum(div);
@@ -4968,7 +4968,13 @@ impl<'gc> Number<'gc> {
 
             Number::Flonum(lhs) => match rhs {
                 Number::Fixnum(rhs) => (lhs - rhs as f64).abs() < f64::EPSILON,
-                Number::Flonum(rhs) => (lhs - rhs).abs() < f64::EPSILON,
+                Number::Flonum(rhs) => {
+                    if lhs.is_infinite() && rhs.is_infinite() {
+                        return lhs.is_sign_positive() == rhs.is_sign_positive();
+                    }
+
+                    (lhs - rhs).abs() < f64::EPSILON
+                }
                 Number::BigInt(rhs) => {
                     if rhs.as_f64() == lhs {
                         return Self::compare(ctx, Self::Flonum(lhs), Self::BigInt(rhs))
@@ -5104,6 +5110,16 @@ impl<'gc> Number<'gc> {
                     }
                 }
                 Number::Flonum(rhs) => {
+                    if lhs.is_infinite() && rhs.is_infinite() {
+                        if lhs.is_sign_positive() == rhs.is_sign_positive() {
+                            return Some(std::cmp::Ordering::Equal);
+                        } else if lhs.is_sign_positive() {
+                            return Some(std::cmp::Ordering::Greater);
+                        } else {
+                            return Some(std::cmp::Ordering::Less);
+                        }
+                    }
+
                     let d = lhs - rhs;
                     if d == 0.0 {
                         return Some(std::cmp::Ordering::Equal);
@@ -5115,11 +5131,21 @@ impl<'gc> Number<'gc> {
                         return Some(std::cmp::Ordering::Less);
                     }
                 }
-                Number::BigInt(rhs) => Some(if rhs.is_negative() {
-                    std::cmp::Ordering::Greater
-                } else {
-                    std::cmp::Ordering::Less
-                }),
+                Number::BigInt(rhs) => {
+                    if Number::Flonum(lhs).is_integer() {
+                        return Self::compare(
+                            ctx,
+                            Self::to_exact(Number::Flonum(lhs), ctx),
+                            Number::BigInt(rhs),
+                        );
+                    }
+
+                    return if lhs > rhs.as_f64() {
+                        Some(std::cmp::Ordering::Greater)
+                    } else {
+                        Some(std::cmp::Ordering::Less)
+                    };
+                }
                 Number::Rational(rn) => {
                     let nume = rn.numerator;
                     let deno = rn.denominator;
@@ -5144,16 +5170,19 @@ impl<'gc> Number<'gc> {
                 }
 
                 Number::Flonum(rhs) => {
-                    let d = lhs.as_f64() - rhs;
-                    if d == 0.0 {
-                        return Some(std::cmp::Ordering::Equal);
+                    if Number::Flonum(rhs).is_integer() {
+                        return Self::compare(
+                            ctx,
+                            Number::BigInt(lhs),
+                            Self::to_exact(Number::Flonum(rhs), ctx),
+                        );
                     }
 
-                    if d > 0.0 {
-                        return Some(std::cmp::Ordering::Greater);
+                    return if lhs.as_f64() > rhs {
+                        Some(std::cmp::Ordering::Greater)
                     } else {
-                        return Some(std::cmp::Ordering::Less);
-                    }
+                        Some(std::cmp::Ordering::Less)
+                    };
                 }
 
                 Number::BigInt(rhs) => {
@@ -6395,7 +6424,11 @@ impl<'gc> Into<Value<'gc>> for ExactInteger<'gc> {
     fn into(self) -> Value<'gc> {
         match self {
             Self::Fixnum(n) => Value::new(n),
-            Self::BigInt(b) => b.into(),
+            Self::BigInt(b) => b
+                .try_as_i64()
+                .filter(|&v| v >= i32::MIN as i64 && v <= i32::MAX as i64)
+                .map(|v| Value::new(v as i32))
+                .unwrap_or_else(|| b.into()),
         }
     }
 }
@@ -6404,7 +6437,11 @@ impl<'gc> Into<Number<'gc>> for ExactInteger<'gc> {
     fn into(self) -> Number<'gc> {
         match self {
             Self::Fixnum(n) => Number::Fixnum(n),
-            Self::BigInt(b) => Number::BigInt(b),
+            Self::BigInt(b) => b
+                .try_as_i64()
+                .filter(|&v| v >= i32::MIN as i64 && v <= i32::MAX as i64)
+                .map(|v| Number::Fixnum(v as i32))
+                .unwrap_or_else(|| Number::BigInt(b)),
         }
     }
 }
@@ -6413,7 +6450,11 @@ impl<'gc> IntoValue<'gc> for ExactInteger<'gc> {
     fn into_value(self, _ctx: Context<'gc>) -> Value<'gc> {
         match self {
             Self::Fixnum(n) => Value::new(n),
-            Self::BigInt(b) => b.into(),
+            Self::BigInt(b) => b
+                .try_as_i64()
+                .filter(|&v| v >= i32::MIN as i64 && v <= i32::MAX as i64)
+                .map(|v| Value::new(v as i32))
+                .unwrap_or_else(|| b.into()),
         }
     }
 }

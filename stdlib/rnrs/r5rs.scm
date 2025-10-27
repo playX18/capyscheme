@@ -3,7 +3,7 @@
   (export exact->inexact inexact->exact
           quotient remainder modulo force delay
           null-environment scheme-report-environment)
-  (import (core primitives) (core r5rs))
+  (import (core primitives) (core r5rs) (rnrs eval (6)))
 
   (define null-environment
     (lambda (n)

@@ -93,7 +93,7 @@
                 'violation))
               (read (open-string-input-port "\\xDDDD;")))
        'violation
-       "out of range escape: `\\xDDDD;'")
+       "Inline hex escape outside valid range")
       
     ;;
     ))

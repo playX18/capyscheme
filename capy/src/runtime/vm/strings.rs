@@ -3,9 +3,17 @@ use rsgc::Gc;
 use crate::native_fn;
 use crate::runtime::prelude::*;
 use std::cmp::Ordering;
+use std::sync::LazyLock;
 use unicode_general_category::GeneralCategory;
 use unicode_general_category::get_general_category;
 use unicode_normalization::*;
+
+pub static LOCALE: LazyLock<icu::locale::Locale> = LazyLock::new(|| {
+    let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string());
+    locale
+        .parse()
+        .unwrap_or_else(|_| icu::locale::Locale::try_from_str("en-US").unwrap())
+});
 
 native_fn!(
     register_str_fns:
@@ -1009,13 +1017,15 @@ native_fn!(
         if !ch1_val.is_char() {
             return nctx.wrong_argument_violation("char-ci=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
         }
-        let ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+
+        let ch1 = cm.simple_fold(ch1_val.char());
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
                 return nctx.wrong_argument_violation("char-ci=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
             }
-            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            let ch2 = cm.simple_fold(val.char());
             if ch1 != ch2 {
                 return nctx.return_(false);
             }
@@ -1036,6 +1046,8 @@ native_fn!(
         if !ch1_val.is_char() {
             return nctx.wrong_argument_violation("char<?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
         }
+
+
         let mut ch1 = ch1_val.char();
 
         for (i, val) in rest.iter().enumerate().skip(1) {
@@ -1064,13 +1076,16 @@ native_fn!(
         if !ch1_val.is_char() {
             return nctx.wrong_argument_violation("char-ci<?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
         }
-        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+
+        let mut ch1 = cm.simple_fold(ch1_val.char());
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
                 return nctx.wrong_argument_violation("char-ci<?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
             }
-            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            let ch2 = cm.simple_fold(val.char());
             if ch1 >= ch2 {
                 return nctx.return_(false);
             }
@@ -1092,6 +1107,7 @@ native_fn!(
         if !ch1_val.is_char() {
             return nctx.wrong_argument_violation("char>?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
         }
+
         let mut ch1 = ch1_val.char();
 
         for (i, val) in rest.iter().enumerate().skip(1) {
@@ -1120,13 +1136,16 @@ native_fn!(
         if !ch1_val.is_char() {
             return nctx.wrong_argument_violation("char-ci>?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
         }
-        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+
+        let mut ch1 = cm.simple_fold(ch1_val.char());
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
                 return nctx.wrong_argument_violation("char-ci>?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
             }
-            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            let ch2 = cm.simple_fold(val.char());
             if ch1 <= ch2 {
                 return nctx.return_(false);
             }
@@ -1176,13 +1195,16 @@ native_fn!(
         if !ch1_val.is_char() {
             return nctx.wrong_argument_violation("char-ci<=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
         }
-        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+
+        let mut ch1 = cm.simple_fold(ch1_val.char());
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
                 return nctx.wrong_argument_violation("char-ci<=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
             }
-            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            let ch2 = cm.simple_fold(val.char());
             if ch1 > ch2 {
                 return nctx.return_(false);
             }
@@ -1232,13 +1254,14 @@ native_fn!(
         if !ch1_val.is_char() {
             return nctx.wrong_argument_violation("char-ci>=?", "expected a character", Some(ch1_val), Some(1), rest.len(), rest);
         }
-        let mut ch1 = ch1_val.char().to_lowercase().next().unwrap_or(ch1_val.char());
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let mut ch1 = cm.simple_fold(ch1_val.char());
 
         for (i, val) in rest.iter().enumerate().skip(1) {
             if !val.is_char() {
                 return nctx.wrong_argument_violation("char-ci>=?", "expected a character", Some(*val), Some(i + 1), rest.len(), rest);
             }
-            let ch2 = val.char().to_lowercase().next().unwrap_or(val.char());
+            let ch2 = cm.simple_fold(val.char());
             if ch1 < ch2 {
                 return nctx.return_(false);
             }
@@ -1276,19 +1299,25 @@ native_fn!(
     }
 
     pub ("string-downcase") fn string_downcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let lowercased = str.to_string().to_lowercase();
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let str = str.to_string();
+        let lowercased = cm.lowercase_to_string(&str, &LOCALE.id);
         let s = Str::new(&nctx.ctx, &lowercased, false);
         nctx.return_(s)
     }
 
     pub ("string-foldcase") fn string_foldcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let folded = str.to_string().to_lowercase();
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let str = str.to_string();
+        let folded = cm.fold_string(&str);
         let s = Str::new(&nctx.ctx, &folded, false);
         nctx.return_(s)
     }
 
     pub ("string-upcase") fn string_upcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let uppercased = str.to_string().to_uppercase();
+        let str = str.to_string();
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let uppercased = cm.uppercase_to_string(&str, &LOCALE.id);
         let s = Str::new(&nctx.ctx, &uppercased, false);
         nctx.return_(s)
     }
@@ -1311,22 +1340,26 @@ native_fn!(
     }
 
     pub ("char-upcase") fn char_upcase<'gc>(nctx, ch: char) -> char {
-        let uppercased = ch.to_uppercase().next().unwrap_or(ch);
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let uppercased = cm.simple_uppercase(ch);
         nctx.return_(uppercased)
     }
 
     pub ("char-downcase") fn char_downcase<'gc>(nctx, ch: char) -> char {
-        let lowercased = ch.to_lowercase().next().unwrap_or(ch);
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let lowercased = cm.simple_lowercase(ch);
         nctx.return_(lowercased)
     }
 
     pub ("char-foldcase") fn char_foldcase<'gc>(nctx, ch: char) -> char {
-        let folded = ch.to_lowercase().next().unwrap_or(ch);
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let folded = cm.simple_fold(ch);
         nctx.return_(folded)
     }
 
     pub ("char-titlecase") fn char_titlecase<'gc>(nctx, ch: char) -> char {
-        let titlecased = ch.to_uppercase().next().unwrap_or(ch);
+        let cm = icu::casemap::CaseMapperBorrowed::new();
+        let titlecased = cm.simple_titlecase(ch);
         nctx.return_(titlecased)
     }
 
@@ -1365,5 +1398,10 @@ native_fn!(
 );
 
 pub fn init_strings<'gc>(ctx: Context<'gc>) {
+    // SAFETY: for compatibility with C libraries that depend on locale
+    unsafe {
+        libc::setlocale(libc::LC_ALL, b"\0".as_ptr() as *const i8);
+    }
+    let _ = &*LOCALE;
     let _ = register_str_fns(ctx);
 }

@@ -309,6 +309,9 @@
                         get-char
                         get-output-string
                         file-options
+                        no-truncate
+                        no-create
+                        no-fail
                         port-has-port-position?
                         port-position
                         port-has-set-port-position!?

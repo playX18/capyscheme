@@ -1940,7 +1940,8 @@ prim!(
     "complex?" => is_complex(ssa, args, _h) {
         let val = ssa.atom(args[0]);
 
-        PrimValue::Comparison(ssa.has_typ16(val, TypeCode16::COMPLEX.bits()))
+        let res = ssa.builder.ins().call(ssa.thunks.complexp, &[val]);
+        PrimValue::Comparison(ssa.builder.inst_results(res)[0])
     },
 
     "nan?" => is_nan(ssa, args, _h) {

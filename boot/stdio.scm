@@ -401,12 +401,19 @@
       str)))
 
 (define (with-input-from-port port thunk)
-  (parameterize ((current-input-port port))
-    (thunk)))
+  (define old (current-input-port))
+  (dynamic-wind 
+    (lambda () (current-input-port port))
+    thunk
+    (lambda () (current-input-port old))))
 
 (define (with-output-to-port port thunk)
-  (parameterize ((current-output-port port))
-    (thunk)))
+  (define old (current-output-port))
+  (dynamic-wind 
+    (lambda () (current-output-port port))
+    thunk
+    (lambda () (current-output-port old))))
+
 
 (define (with-input-from-file fn thunk)
   (call-with-input-file fn
