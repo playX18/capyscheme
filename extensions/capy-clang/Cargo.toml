@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-capy.workspace = true
+capy = { workspace = true, features = ["portable"] }
 # we don't need clang runtime
 clang = { workspace = true, default-features = false }
 paste.workspace = true

@@ -4,13 +4,14 @@ use crate::expander::fix_letrec::fix_letrec;
 use crate::expander::free_vars::resolve_free_vars;
 use crate::expander::letrectify::letrectify;
 use crate::expander::{assignment_elimination, compile_cps, primitives};
+use crate::list;
 use crate::runtime::modules::{Module, Variable, current_module, define};
 use crate::runtime::value::*;
 use crate::runtime::vm::base::scm_log_level;
 use crate::runtime::vm::expand::ScmTermToRsTerm;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::{make_io_error, make_lexical_violation};
-use crate::{list, native_cont, native_fn};
+use capy_derive::scheme;
 use rsgc::Gc;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -24,7 +25,7 @@ global!(
 
     pub loc_compile_fallback_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%compile-fallback-path", Value::null());
 
-    pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(&ctx, env!("CARGO_MANIFEST_DIR"), true).into());
+    pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(&ctx, env!("CARGO_MANIFEST_DIR"), true));
 
     pub loc_fresh_auto_compile<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%fresh-auto-compile", Value::new(false));
 );
@@ -149,7 +150,11 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
 }
 
 pub fn init_load<'gc>(ctx: Context<'gc>) {
-    register_load_fns(ctx);
+    register_compile(ctx);
+    register_scm_find_path_to(ctx);
+    register_scm_load_thunk_in_vicinity(ctx);
+    register_scm_load_thunk_in_vicinity_k(ctx);
+    register_scm_try_load_thunk_in_vicinity(ctx);
 }
 
 fn fresh_auto_compile<'gc>(ctx: Context<'gc>) -> bool {
@@ -372,104 +377,311 @@ pub fn compiled_is_fresh(
     true
 }
 
-native_fn!(
-    register_load_fns:
+#[scheme(name = "%find-path-to")]
+pub fn scm_find_path_to(
+    filename: Gc<'gc, Str<'gc>>,
+    resolve_relative: bool,
+    in_vicinity: Option<Gc<'gc, Str<'gc>>>,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
+    let filename = PathBuf::from(filename.as_ref().to_string());
+    let ctx = nctx.ctx;
+    let result = match find_path_to(ctx, filename, in_vicinity, resolve_relative) {
+        Ok(v) => v,
+        Err(err) => return nctx.return_(Err(err)),
+    };
 
-    pub ("%find-path-to") fn scm_find_path_to<'gc>(
-        nctx,
-        filename: Gc<'gc, Str<'gc>>,
-        resolve_relative: bool,
-        in_vicinity: Option<Gc<'gc, Str<'gc>>>
-    ) -> Result<Value<'gc>, Value<'gc>> {
-        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
-        let filename = PathBuf::from(filename.as_ref().to_string());
-        let ctx = nctx.ctx;
-        let result = match find_path_to(ctx, filename, in_vicinity, resolve_relative) {
-            Ok(v) => v,
-            Err(err) => return nctx.return_(Err(err))
-        };
-
-        match result {
-            Some((source, compiled)) => nctx.return_(Ok(Value::cons(
-                ctx,
-                Str::new(&ctx, &source.to_string_lossy(), true).into(),
-                Str::new(&ctx, &compiled.to_string_lossy(), true).into(),
-            ))),
-            None => nctx.return_(Ok(Value::new(false)))
-        }
+    match result {
+        Some((source, compiled)) => nctx.return_(Ok(Value::cons(
+            ctx,
+            Str::new(&ctx, &source.to_string_lossy(), true).into(),
+            Str::new(&ctx, &compiled.to_string_lossy(), true).into(),
+        ))),
+        None => nctx.return_(Ok(Value::new(false))),
     }
+}
 
-    pub ("%compile") fn compile<'gc>(
-        nctx,
-        expanded: Value<'gc>,
-        destination: Gc<'gc, Str<'gc>>,
-        m: Option<Value<'gc>>
-    ) -> Result<Value<'gc>, Value<'gc>> {
-        let mut reader = ScmTermToRsTerm::new(nctx.ctx);
-        let mut ir = match reader.convert(expanded) {
-            Ok(ir) => ir,
-            Err(err) => return nctx.return_(Err(err))
-        };
+#[scheme(name = "%compile")]
+pub fn compile(
+    expanded: Value<'gc>,
+    destination: Gc<'gc, Str<'gc>>,
+    m: Option<Value<'gc>>,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let mut reader = ScmTermToRsTerm::new(nctx.ctx);
+    let mut ir = match reader.convert(expanded) {
+        Ok(ir) => ir,
+        Err(err) => return nctx.return_(Err(err)),
+    };
 
-        let m = if let Some(m) = m {
-            if m.is::<Module>() {
-                m.downcast()
-            } else {
-                current_module(nctx.ctx).get(nctx.ctx).downcast()
-            }
+    let m = if let Some(m) = m {
+        if m.is::<Module>() {
+            m.downcast()
         } else {
             current_module(nctx.ctx).get(nctx.ctx).downcast()
-        };
+        }
+    } else {
+        current_module(nctx.ctx).get(nctx.ctx).downcast()
+    };
 
-        ir = primitives::resolve_primitives(nctx.ctx, ir, m);
-        ir = primitives::expand_primitives(nctx.ctx, ir);
+    ir = primitives::resolve_primitives(nctx.ctx, ir, m);
+    ir = primitives::expand_primitives(nctx.ctx, ir);
 
-        ir = resolve_free_vars(nctx.ctx, ir);
-        ir = letrectify(nctx.ctx, ir);
-        ir = fix_letrec(nctx.ctx, ir);
-        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
+    ir = resolve_free_vars(nctx.ctx, ir);
+    ir = letrectify(nctx.ctx, ir);
+    ir = fix_letrec(nctx.ctx, ir);
+    ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
 
-        let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
-        cps = crate::cps::rewrite_func(nctx.ctx, cps);
-        cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+    let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
+    cps = crate::cps::rewrite_func(nctx.ctx, cps);
+    cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
 
+    if scm_log_level(nctx.ctx) >= 5 {
+        let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(format!("{}.ir.scm", destination))
+            .unwrap();
+        println!(";; TRACE  (capy)@load: IR -> {}.ir.scm", destination);
+        doc.1.render(80, &mut file).unwrap();
 
-        if scm_log_level(nctx.ctx) >= 5 {
-            let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(format!("{}.ir.scm", destination))
-                .unwrap();
-            println!(";; TRACE  (capy)@load: IR -> {}.ir.scm", destination);
-            doc.1.render(80, &mut file).unwrap();
+        let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(format!("{}.cps.scm", destination))
+            .unwrap();
+        println!(";; TRACE  (capy)@load: CPS -> {}.cps.scm", destination);
+        doc.1.render(80, &mut file).unwrap();
+    }
 
+    let object = match compile_cps_to_object(nctx.ctx, cps) {
+        Ok(product) => product,
+        Err(err) => return nctx.return_(Err(err)),
+    };
+    let compiled_path = destination.to_string();
+    match link_object_product(nctx.ctx, object, &compiled_path) {
+        Ok(_) => (),
+        Err(err) => return nctx.return_(Err(err)),
+    }
+    let ctx = nctx.ctx;
+    let libs = LIBRARY_COLLECTION.fetch(&ctx);
+    match libs.load(&compiled_path, ctx) {
+        Err(err) => nctx.return_(Err(make_io_error(
+            &ctx,
+            "load",
+            Str::new(
+                &ctx,
+                format!("Failed to load compiled library: {err}"),
+                true,
+            )
+            .into(),
+            &[],
+        ))),
+        Ok(thunk) => nctx.return_(Ok(thunk)),
+    }
+}
 
-            let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(format!("{}.cps.scm", destination))
-                .unwrap();
-            println!(";; TRACE  (capy)@load: CPS -> {}.cps.scm", destination);
-            doc.1.render(80, &mut file).unwrap();
+#[scheme(name = "try-load-thunk-in-vicinity")]
+pub fn scm_try_load_thunk_in_vicinity(
+    filename: Gc<'gc, Str<'gc>>,
+    resolve_relative: bool,
+    in_vicinity: Option<Gc<'gc, Str<'gc>>>,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
+    let filename = PathBuf::from(filename.as_ref().to_string());
+    let result =
+        load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative, false);
+
+    nctx.return_(result)
+}
+
+#[scheme]
+pub fn scm_load_thunk_in_vicinity(
+    filename: Gc<'gc, Str<'gc>>,
+    resolve_relative: bool,
+    in_vicinity: Option<Gc<'gc, Str<'gc>>>,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
+    let filename = PathBuf::from(filename.as_ref().to_string());
+    let result =
+        load_thunk_in_vicinity::<true>(nctx.ctx, filename, in_vicinity, resolve_relative, false);
+
+    nctx.return_(result)
+}
+
+/// Same as load-thunk-in-vicinity, but takes closure `k` which is involed
+/// when compilation is required. The job of this closure is to compile provided
+/// source S-expressions into TreeIL and return it for further processing.
+#[scheme(name = "load-thunk-in-vicinity-k")]
+pub fn scm_load_thunk_in_vicinity_k(
+    filename: Gc<'gc, Str<'gc>>,
+    k: Value<'gc>,
+    env: Value<'gc>,
+    resolve_relative: bool,
+    in_vicinity: Option<Gc<'gc, Str<'gc>>>,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
+    let filename = PathBuf::from(filename.as_ref().to_string());
+    let result =
+        load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative, true);
+
+    match result {
+        Ok(thunk) => {
+            if thunk.is::<Closure>() {
+                return nctx.return_(Ok(thunk));
+            }
+            let ctx = nctx.ctx;
+            let file = thunk.car().downcast::<Str>().to_string();
+            let file_in = match std::fs::File::open(&file).map_err(|e| {
+                make_io_error(
+                    &ctx,
+                    "compile-file",
+                    Str::new(
+                        &ctx,
+                        format!("Cannot open input file '{}': {}", file, e),
+                        true,
+                    )
+                    .into(),
+                    &[],
+                )
+            }) {
+                Ok(file_in) => file_in,
+                Err(err) => return nctx.return_(Err(err)),
+            };
+
+            let text = match std::io::read_to_string(&file_in).map_err(|e| {
+                make_io_error(
+                    &ctx,
+                    "compile-file",
+                    Str::new(
+                        &ctx,
+                        format!("Cannot read input file '{}': {}", file, e),
+                        true,
+                    )
+                    .into(),
+                    &[],
+                )
+            }) {
+                Ok(text) => text,
+                Err(err) => return nctx.return_(Err(err)),
+            };
+            let src = Str::new(&ctx, &file, true);
+            let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
+
+            let program = match parser
+                .read_program()
+                .map_err(|err| make_lexical_violation(&ctx, "compile-file", err.to_string(&file)))
+            {
+                Ok(program) => program,
+                Err(err) => return nctx.return_(Err(err)),
+            };
+
+            let reth = nctx.reth;
+            let retk = nctx.retk;
+            let after_call = make_closure_continue_loading_k(ctx, [thunk, retk, reth]);
+            let program = Value::list_from_slice(ctx, program);
+            nctx.call(k, &[program, env], after_call.into(), reth)
         }
 
-        let object = match compile_cps_to_object(nctx.ctx, cps) {
-            Ok(product) => product,
-            Err(err) => return nctx.return_(Err(err)),
-        };
-        let compiled_path = destination.to_string();
-        match link_object_product(nctx.ctx, object, &compiled_path) {
-            Ok(_) => (),
-            Err(err) => return nctx.return_(Err(err))
-        }
-        let ctx = nctx.ctx;
-        let libs = LIBRARY_COLLECTION.fetch(&ctx);
-        match libs.load(&compiled_path, ctx) {
-            Err(err) => nctx.return_(Err(make_io_error(
+        Err(err) => nctx.return_(Err(err)),
+    }
+}
+
+use crate::prelude::*;
+
+#[scheme(continuation)]
+fn continue_loading_k(
+    ir: Value<'gc>,
+    cenv: Value<'gc>,
+    _unused: Value<'gc>,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let rator = nctx.rator().downcast::<Closure>();
+    let free = rator.free.downcast::<Vector>();
+    let source_and_compiled_path = free[1].get();
+    let retk = free[2].get();
+    let reth = free[3].get();
+
+    nctx.reth = reth;
+    nctx.retk = retk;
+
+    let mut reader = ScmTermToRsTerm::new(nctx.ctx);
+    let mut ir = match reader.convert(ir) {
+        Ok(ir) => ir,
+        Err(err) => return nctx.return_(Err(err)),
+    };
+    // println!(";; Compiling file: {} -> {}", source_and_compiled_path.car(), source_and_compiled_path.cdr());
+    let m = if cenv.is::<Module>() {
+        cenv.downcast()
+    } else {
+        current_module(nctx.ctx).get(nctx.ctx).downcast()
+    };
+
+    ir = primitives::resolve_primitives(nctx.ctx, ir, m);
+    ir = primitives::expand_primitives(nctx.ctx, ir);
+    ir = resolve_free_vars(nctx.ctx, ir);
+    ir = letrectify(nctx.ctx, ir);
+    ir = fix_letrec(nctx.ctx, ir);
+    ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
+
+    let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
+
+    cps = crate::cps::rewrite_func(nctx.ctx, cps);
+    cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+
+    if !true {
+        let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(format!(
+                "{}.ir.scm",
+                source_and_compiled_path.cdr().downcast::<Str>()
+            ))
+            .unwrap();
+        doc.1.render(80, &mut file).unwrap();
+        println!(
+            ";; IR {} -> {}.ir.scm",
+            source_and_compiled_path.car(),
+            source_and_compiled_path.cdr()
+        );
+
+        let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(format!(
+                "{}.cps.scm",
+                source_and_compiled_path.cdr().downcast::<Str>()
+            ))
+            .unwrap();
+        println!(
+            ";; CPS {} -> {}.cps.scm",
+            source_and_compiled_path.car(),
+            source_and_compiled_path.cdr()
+        );
+        doc.1.render(80, &mut file).unwrap();
+    }
+
+    let object = match compile_cps_to_object(nctx.ctx, cps) {
+        Ok(product) => product,
+        Err(err) => return nctx.return_(Err(err)),
+    };
+    let compiled_path = source_and_compiled_path.cdr().downcast::<Str>().to_string();
+    match link_object_product(nctx.ctx, object, &compiled_path) {
+        Ok(_) => (),
+        Err(err) => return nctx.return_(Err(err)),
+    }
+    let ctx = nctx.ctx;
+
+    let libs = LIBRARY_COLLECTION.fetch(&ctx);
+    match libs.load(&compiled_path, ctx) {
+        Err(err) => {
+            return nctx.return_(Err(make_io_error(
                 &ctx,
                 "load",
                 Str::new(
@@ -479,204 +691,8 @@ native_fn!(
                 )
                 .into(),
                 &[],
-            ))),
-            Ok(thunk) => nctx.return_(Ok(thunk)),
+            )));
         }
+        Ok(thunk) => unsafe { nctx.continue_to(retk, &[thunk]) },
     }
-
-    pub ("try-load-thunk-in-vicinity")
-        fn scm_try_load_thunk_in_vicinity<'gc>(
-            nctx,
-            filename: Gc<'gc, Str<'gc>>,
-            resolve_relative: bool,
-            in_vicinity: Option<Gc<'gc, Str<'gc>>>
-        ) -> Result<Value<'gc>, Value<'gc>> {
-        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
-        let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative, false);
-
-        nctx.return_(result)
-    }
-
-
-    pub ("load-thunk-in-vicinity")
-        fn scm_load_thunk_in_vicinity<'gc>(
-            nctx,
-            filename: Gc<'gc, Str<'gc>>,
-            resolve_relative: bool,
-            in_vicinity: Option<Gc<'gc, Str<'gc>>>
-        ) -> Result<Value<'gc>, Value<'gc>> {
-        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
-        let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<true>(nctx.ctx, filename, in_vicinity, resolve_relative, false);
-
-        nctx.return_(result)
-    }
-
-    /// Same as load-thunk-in-vicinity, but takes closure `k` which is involed
-    /// when compilation is required. The job of this closure is to compile provided
-    /// source S-expressions into TreeIL and return it for further processing.
-    pub ("load-thunk-in-vicinity-k")
-        fn scm_load_thunk_in_vicinity_k<'gc>(
-            nctx,
-            filename: Gc<'gc, Str<'gc>>,
-            k: Value<'gc>,
-            env: Value<'gc>,
-            resolve_relative: bool,
-            in_vicinity: Option<Gc<'gc, Str<'gc>>>
-        ) -> Result<Value<'gc>, Value<'gc>>
-    {
-        let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
-        let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<false>(nctx.ctx, filename, in_vicinity, resolve_relative, true);
-
-        match result {
-            Ok(thunk) => {
-                if thunk.is::<Closure>() {
-                    return nctx.return_(Ok(thunk));
-                }
-                let ctx = nctx.ctx;
-                let file = thunk.car().downcast::<Str>().to_string();
-                let file_in = match std::fs::File::open(&file).map_err(|e| {
-                    make_io_error(
-                        &ctx,
-                        "compile-file",
-                        Str::new(
-                            &ctx,
-                            format!("Cannot open input file '{}': {}", file, e),
-                            true,
-                        )
-                        .into(),
-                        &[],
-                    )
-                }) {
-                    Ok(file_in) => file_in,
-                    Err(err) => return nctx.return_(Err(err))
-                };
-
-                let text = match std::io::read_to_string(&file_in).map_err(|e| {
-                    make_io_error(
-                        &ctx,
-                        "compile-file",
-                        Str::new(
-                            &ctx,
-                            format!("Cannot read input file '{}': {}", file, e),
-                            true,
-                        )
-                        .into(),
-                        &[],
-                    )
-                }) {
-                    Ok(text) => text,
-                    Err(err) => return nctx.return_(Err(err))
-                };
-                let src = Str::new(&ctx, &file, true);
-                let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
-
-                let program = match parser.read_program().map_err(|err| {
-                    make_lexical_violation(&ctx, "compile-file", err.to_string(&file))
-                }) {
-                    Ok(program) => program,
-                    Err(err) => return nctx.return_(Err(err))
-                };
-
-                let reth = nctx.reth;
-                let retk = nctx.retk;
-                let after_call = make_continue_loading_closure(ctx, [thunk, retk, reth]);
-                let program = Value::list_from_slice(ctx, program);
-                nctx.call(k, &[program, env], after_call.into(), reth)
-            }
-
-            Err(err) => nctx.return_(Err(err))
-        }
-    }
-);
-
-native_cont!(
-    _register_conts:
-    pub ("load-thunk-in-vicinity-k") fn continue_loading<'gc>(nctx, ir: Value<'gc>, cenv: Value<'gc>, _unused: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
-        let rator = nctx.rator().downcast::<Closure>();
-        let free = rator.free.downcast::<Vector>();
-        let source_and_compiled_path = free[1].get();
-        let retk = free[2].get();
-        let reth = free[3].get();
-
-        nctx.reth = reth;
-        nctx.retk = retk;
-
-        let mut reader = ScmTermToRsTerm::new(nctx.ctx);
-        let mut ir = match reader.convert(ir) {
-            Ok(ir) => ir,
-            Err(err) => return nctx.return_(Err(err))
-        };
-        // println!(";; Compiling file: {} -> {}", source_and_compiled_path.car(), source_and_compiled_path.cdr());
-        let m = if cenv.is::<Module>() {
-            cenv.downcast()
-        } else {
-            current_module(nctx.ctx).get(nctx.ctx).downcast()
-        };
-
-        ir = primitives::resolve_primitives(nctx.ctx, ir, m);
-        ir = primitives::expand_primitives(nctx.ctx, ir);
-        ir = resolve_free_vars(nctx.ctx, ir);
-        ir = letrectify(nctx.ctx, ir);
-        ir = fix_letrec(nctx.ctx, ir);
-        ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
-
-
-        let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
-
-        cps = crate::cps::rewrite_func(nctx.ctx, cps);
-        cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
-
-        if !true {
-            let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(format!("{}.ir.scm", source_and_compiled_path.cdr().downcast::<Str>()))
-                .unwrap();
-            doc.1.render(80, &mut file).unwrap();
-            println!(";; IR {} -> {}.ir.scm", source_and_compiled_path.car(), source_and_compiled_path.cdr());
-
-            let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(format!("{}.cps.scm", source_and_compiled_path.cdr().downcast::<Str>()))
-                .unwrap();
-            println!(";; CPS {} -> {}.cps.scm", source_and_compiled_path.car(), source_and_compiled_path.cdr());
-            doc.1.render(80, &mut file).unwrap();
-        }
-
-
-        let object = match compile_cps_to_object(nctx.ctx, cps) {
-            Ok(product) => product,
-            Err(err) => return nctx.return_(Err(err)),
-        };
-        let compiled_path = source_and_compiled_path.cdr().downcast::<Str>().to_string();
-        match link_object_product(nctx.ctx, object, &compiled_path) {
-            Ok(_) => (),
-            Err(err) => return nctx.return_(Err(err))
-        }
-        let ctx = nctx.ctx;
-
-        let libs = LIBRARY_COLLECTION.fetch(&ctx);
-        match libs.load(&compiled_path, ctx) {
-            Err(err) => return nctx.return_(Err(make_io_error(
-                &ctx,
-                "load",
-                Str::new(
-                    &ctx,
-                    format!("Failed to load compiled library: {err}"),
-                    true,
-                )
-                .into(),
-                &[],
-            ))),
-            Ok(thunk) => unsafe { nctx.continue_to(retk, &[thunk]) },
-        }
-    }
-);
+}

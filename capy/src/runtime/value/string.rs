@@ -1,4 +1,5 @@
 use crate::runtime::value::*;
+use abi_stable::std_types::RStr;
 use easy_bitfield::BitFieldTrait;
 use rsgc::{
     Mutation, Rootable, Trace, barrier,
@@ -44,24 +45,35 @@ unsafe impl Trace for Stringbuf {
 
 impl Stringbuf {
     const VT: &'static VTable = &VTable {
-        type_name: "Stringbuf",
+        type_name: RStr::from_str("Stringbuf"),
         instance_size: 0,
         alignment: std::mem::align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some(|sb| unsafe {
-            let sb = sb.to_address().as_ref::<Stringbuf>();
-            let raw_size = sb.length
-                * if sb.is_wide() {
-                    std::mem::size_of::<char>()
-                } else {
-                    1
-                }
-                + std::mem::size_of::<Stringbuf>();
+        compute_size: Some({
+            extern "C" fn sz(sb: GCObject) -> usize {
+                unsafe {
+                    let sb = sb.to_address().as_ref::<Stringbuf>();
+                    let raw_size = sb.length
+                        * if sb.is_wide() {
+                            std::mem::size_of::<char>()
+                        } else {
+                            1
+                        }
+                        + std::mem::size_of::<Stringbuf>();
 
-            raw_align_up(raw_size, align_of::<Stringbuf>())
+                    raw_align_up(raw_size, align_of::<Stringbuf>())
+                }
+            }
+            sz
         }),
-        trace: |_, _| {},
-        weak_proc: |_, _| {},
+        trace: {
+            extern "C" fn notrace(_: GCObject, _: &mut Visitor) {}
+            notrace
+        },
+        weak_proc: {
+            extern "C" fn noweak(_: GCObject, _: &mut rsgc::WeakProcessor) {}
+            noweak
+        },
     };
 
     pub fn contents(&self) -> Address {

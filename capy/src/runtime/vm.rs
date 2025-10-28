@@ -9,8 +9,8 @@ use crate::runtime::{
     Context, YieldReason,
     modules::root_module,
     value::{
-        Closure, ConversionError, NativeLocation, NativeReturn, PROCEDURES, ReturnCode, SavedCall,
-        Str, Symbol, TryIntoValues, TypeCode16, Value, Vector,
+        Closure, ConversionError, NativeReturn, PROCEDURES, ReturnCode, SavedCall, Str, Symbol,
+        TryIntoValues, TypeCode16, Value, Vector,
     },
     vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
 };
@@ -55,18 +55,8 @@ pub fn call_scheme<'gc>(
 ) -> VMResult<'gc> {
     let procs = PROCEDURES.fetch(&ctx);
 
-    let retk = procs.register_static_cont_closure(
-        ctx,
-        default_retk,
-        NativeLocation::unknown(),
-        Value::null(),
-    );
-    let reth = procs.register_static_cont_closure(
-        ctx,
-        default_reth,
-        NativeLocation::unknown(),
-        Value::null(),
-    );
+    let retk = procs.register_static_cont_closure(ctx, default_retk, Value::null());
+    let reth = procs.register_static_cont_closure(ctx, default_reth, Value::null());
 
     call_scheme_with_k(&ctx, retk.into(), reth.into(), rator, args)
 }

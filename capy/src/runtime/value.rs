@@ -16,19 +16,20 @@ use rsgc::{
 /// such as vectors require first word to be an additional header to store the length
 /// or any other information. This header is always 64 bits in size and in case of
 /// vectors can be loaded as a valid fixnum value.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, abi_stable::StableAbi)]
 #[repr(C)]
 pub struct Value<'gc> {
     desc: EncodedValueDescriptor,
     pd: PhantomData<&'gc ()>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, abi_stable::StableAbi)]
 #[repr(C)]
 pub union EncodedValueDescriptor {
     pub as_i64: i64,
     pub as_u64: u64,
     pub as_f64: f64,
+    #[sabi(unsafe_change_type = usize)]
     pub ptr: GCObject,
 }
 

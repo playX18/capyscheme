@@ -1,14 +1,17 @@
-use crate::runtime::{
-    fluids::DynamicState,
-    modules::{Module, resolve_module},
-    prelude::VariableRef,
-    value::{
-        Closure, NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols,
-        init_weak_sets, init_weak_tables,
-    },
-    vm::{
-        VMResult, call_scheme, call_scheme_with_k, continue_to, debug,
-        threading::{Condition, Mutex, MutexKind, ThreadObject},
+use crate::{
+    prelude::{IntoValue, NativeContinuation, NativeFn, PROCEDURES},
+    runtime::{
+        fluids::DynamicState,
+        modules::{Module, resolve_module},
+        prelude::VariableRef,
+        value::{
+            Closure, NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols,
+            init_weak_sets, init_weak_tables,
+        },
+        vm::{
+            VMResult, call_scheme, call_scheme_with_k, continue_to, debug,
+            threading::{Condition, Mutex, MutexKind, ThreadObject},
+        },
     },
 };
 use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
@@ -54,6 +57,48 @@ impl<'gc> Context<'gc> {
 
     pub fn str(&self, s: &str) -> Value<'gc> {
         Str::from_str(&self, s).into()
+    }
+
+    pub fn make_native_closure(
+        &self,
+        proc: NativeFn<'gc>,
+        free_vars: impl IntoIterator<Item = Value<'gc>>,
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Closure<'gc>> {
+        PROCEDURES
+            .fetch(&self)
+            .make_closure(*self, proc, free_vars, meta)
+    }
+
+    pub fn make_native_continuation(
+        &self,
+        proc: NativeContinuation<'gc>,
+        free_vars: impl IntoIterator<Item = Value<'gc>>,
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Closure<'gc>> {
+        PROCEDURES
+            .fetch(&self)
+            .make_cont_closure(*self, proc, free_vars, meta)
+    }
+
+    pub fn make_static_closure(
+        &self,
+        proc: NativeFn<'gc>,
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Closure<'gc>> {
+        PROCEDURES
+            .fetch(&self)
+            .register_static_closure(*self, proc, meta)
+    }
+
+    pub fn make_static_continuation(
+        &self,
+        proc: NativeContinuation<'gc>,
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Closure<'gc>> {
+        PROCEDURES
+            .fetch(&self)
+            .register_static_cont_closure(*self, proc, meta)
     }
 
     pub fn resume_suspended_call(&self) -> VMResult<'gc> {
@@ -117,6 +162,11 @@ impl<'gc> Context<'gc> {
         resolve_module(self, name, false, false)
     }
 
+    pub fn ensure_module(self, name: &str) -> Gc<'gc, Module<'gc>> {
+        let name = crate::runtime::modules::convert_module_name(self, name);
+        resolve_module(self, name, true, false).expect("Failed to ensure module")
+    }
+
     pub fn public_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
         crate::runtime::modules::public_ref(self, mname, name)
     }
@@ -125,7 +175,13 @@ impl<'gc> Context<'gc> {
         crate::runtime::modules::private_ref(self, mname, name)
     }
 
-    pub fn define(self, mname: &str, name: &str, value: Value<'gc>) -> Option<VariableRef<'gc>> {
+    pub fn define(
+        self,
+        mname: &str,
+        name: &str,
+        value: impl IntoValue<'gc>,
+    ) -> Option<VariableRef<'gc>> {
+        let value = value.into_value(self);
         let module = self.module(mname)?;
         let name = self.intern(name);
         Some(module.define(self, name, value))
@@ -352,6 +408,7 @@ impl Scheme {
                 }
 
                 Yield::Lock(lock) => {
+                    println!("Locking mutex...");
                     lock.lock();
 
                     result = Err(Yield::None);
@@ -359,6 +416,7 @@ impl Scheme {
                 }
 
                 Yield::Wait(wait) => {
+                    println!("Waiting on condition...");
                     wait.wait();
 
                     result = Err(Yield::None);
@@ -366,6 +424,7 @@ impl Scheme {
                 }
 
                 Yield::PollRead(fd) => unsafe {
+                    println!("Polling read on fd {}...", fd);
                     let mut readfs = [rustix::event::FdSetElement::default(); 1];
                     rustix::event::fd_set_insert(&mut readfs, fd);
 
@@ -386,6 +445,7 @@ impl Scheme {
                 },
 
                 Yield::PollWrite(fd) => unsafe {
+                    println!("Polling write on fd {}...", fd);
                     let mut writefs = [rustix::event::FdSetElement::default(); 1];
                     rustix::event::fd_set_insert(&mut writefs, fd);
 
