@@ -12,7 +12,14 @@ R6RS/R7RS compiler and runtime written in Rust.
 
 # R6RS/R7RS support
 
-Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment ~39.4% of tests are successfull.
+Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment ~~~39.4%~~ of tests are successfull.
+
+As of 1ee8f0d around 84% of tests are passing. Most of failed tests are related to fixnum (`fx` set of procedures).
+To run tests yourself:
+```sh 
+$ capy -L . -s tests/r6rs/run-via-eval.sps
+```
+
 ## Thanks
 
 Big thanks to authors of [Larceny](https://github.com/larcenists/larceny), [Guile](https://www.gnu.org/software/guile/) and [Ypsilon](https://github.com/fujita-y/ypsilon). CapyScheme uses stdlib parts from all of them and takes inspiration from them.
