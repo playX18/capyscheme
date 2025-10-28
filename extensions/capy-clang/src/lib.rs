@@ -34,11 +34,7 @@ fn parse<'gc>(_ctx: &Context<'gc>, path: &str) {
 pub extern "C-unwind" fn capy_register_extension<'gc>(ctx: &Context<'gc>) -> VMResult<'gc> {
     static REGISTER: OnceLock<()> = OnceLock::new();
     REGISTER.get_or_init(|| {
-        ctx.define(
-            "clang",
-            "clang-parse",
-            get_clang_parse_static_closure(*ctx).into(),
-        );
+        ctx.define("clang", "clang-parse", get_clang_parse_static_closure(*ctx));
     });
 
     VMResult::Ok(Value::new(true))

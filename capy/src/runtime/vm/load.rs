@@ -498,7 +498,7 @@ pub fn scm_try_load_thunk_in_vicinity(
     nctx.return_(result)
 }
 
-#[scheme]
+#[scheme(name = "load-thunk-in-vicinity")]
 pub fn scm_load_thunk_in_vicinity(
     filename: Gc<'gc, Str<'gc>>,
     resolve_relative: bool,
