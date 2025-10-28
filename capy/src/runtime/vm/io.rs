@@ -892,7 +892,8 @@ native_fn!(
             libc::open(
                 CString::new(path.to_string()).unwrap().as_ptr(),
                 libc::O_CREAT,
-                libc::S_IRUSR | libc::S_IWUSR)
+                (libc::S_IRUSR | libc::S_IWUSR) as libc::c_uint
+            )
         };
 
         if fd < 0 {
