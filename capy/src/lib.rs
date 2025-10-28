@@ -96,6 +96,7 @@ pub fn init_scheme() -> Scheme {
 pub mod prelude {
     pub use crate::list;
     pub use crate::runtime::modules::Module;
+    pub use crate::runtime::modules::ModuleRef;
     pub use crate::runtime::modules::current_module;
     pub use crate::runtime::prelude::*;
     pub use crate::runtime::vm::{NativeCallContext, NativeCallReturn};

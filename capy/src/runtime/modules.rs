@@ -41,6 +41,8 @@ pub enum ModuleKind {
     CustomInterface,
 }
 
+pub type ModuleRef<'gc> = Gc<'gc, Module<'gc>>;
+
 #[repr(C)]
 pub struct Module<'gc> {
     pub header: ScmHeader,
@@ -248,6 +250,15 @@ impl<'gc> Module<'gc> {
         let sym = Symbol::from_str(ctx, name.as_ref());
         let val = value.into_value(ctx);
         self.define(ctx, sym.into(), val)
+    }
+
+    pub fn export_one(&self, ctx: Context<'gc>, name: Value<'gc>) {
+        let public_i = self
+            .public_interface
+            .get()
+            .expect("Module has no public interface");
+        let var = self.ensure_local_variable(ctx, name);
+        public_i.add(ctx, name, var);
     }
 
     /// Add `interface` to the list of interfaces used by `self`.

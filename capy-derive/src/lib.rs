@@ -24,10 +24,15 @@ pub fn scheme(
 
     match item {
         syn::Item::Fn(fun) => fun::handle(input, fun)
-            .map(|x| x.to_tokens())
+            .map(|mut x| x.to_tokens())
             .unwrap_or_else(|e| e.to_compile_error())
             .into(),
         syn::Item::Static(static_) => var::handle(input, static_)
+            .map(|x| x.to_tokens())
+            .unwrap_or_else(|e| e.to_compile_error())
+            .into(),
+        syn::Item::Mod(module) => module::handle(input, module)
+            .map(|mut x| x.to_tokens())
             .unwrap_or_else(|e| e.to_compile_error())
             .into(),
 
@@ -36,6 +41,7 @@ pub fn scheme(
 }
 
 mod fun;
+mod module;
 mod var;
 
 pub(crate) struct Input {
@@ -49,6 +55,7 @@ impl syn::parse::Parse for Input {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum ModulePath {
     CurrentModule,
     Concrete(syn::Path),
@@ -177,6 +184,34 @@ pub(crate) fn get_ident(
     }
 
     Ok(ident)
+}
+
+pub(crate) fn get_path(
+    key: Option<&str>,
+    meta: &Punctuated<Meta, syn::token::Comma>,
+) -> syn::Result<Option<syn::Path>> {
+    let mut path = None;
+    let key = key.unwrap_or("path");
+    for meta in meta {
+        match meta {
+            syn::Meta::NameValue(nv) if nv.path.is_ident(key) => {
+                if let syn::Expr::Path(expr_path) = &nv.value {
+                    if path.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            nv,
+                            "Duplicate 'path' attribute for #[scheme]",
+                        ));
+                    }
+                    path = Some(expr_path.path.clone());
+                } else {
+                    return Err(syn::Error::new_spanned(nv, "Expected path for 'path'"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(path)
 }
 
 impl std::fmt::Debug for ModulePath {

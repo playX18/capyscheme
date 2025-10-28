@@ -538,10 +538,29 @@ impl<'a> NumberParser<'a> {
     }
 
     fn is_complex_number(&self, s: &str) -> bool {
-        // Simple heuristic: ends with 'i' or contains '+' or '-' in the middle
-        s.ends_with('i')
-            || s.ends_with('I')
-            || (s.len() > 1 && (s[1..].contains('+') || s[1..].contains('-')))
+        // Check if it ends with 'i' (imaginary number)
+        if s.ends_with('i') || s.ends_with('I') {
+            return true;
+        }
+
+        // Check for '+' or '-' in the middle, but exclude scientific notation
+        // Scientific notation like "1e-6" or "2.5e+10" should not be treated as complex
+        if s.len() > 1 {
+            // Look for '+' or '-' that are not part of scientific notation
+            for (i, ch) in s.char_indices().skip(1) {
+                if ch == '+' || ch == '-' {
+                    // Check if this is part of scientific notation (e.g., "1e-6")
+                    // by looking for 'e' or 'E' before the sign
+                    let before_sign = &s[..i];
+                    if before_sign.to_lowercase().contains('e') {
+                        continue; // This is scientific notation, not complex
+                    }
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     fn parse_integer_number(&mut self, prefix: NumberPrefix) -> Result<Number, NumberParseError> {
@@ -899,6 +918,67 @@ mod tests {
         assert!(
             matches!(parse_number("-2.5"), Ok(Number::InexactReal(f)) if (f + 2.5).abs() < f64::EPSILON)
         );
+    }
+
+    #[test]
+    fn test_parse_scientific_notation() {
+        // Test basic scientific notation
+        assert!(
+            matches!(parse_number("1e-6"), Ok(Number::InexactReal(f)) if (f - 1e-6).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("1.5e-6"), Ok(Number::InexactReal(f)) if (f - 1.5e-6).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("2.5e10"), Ok(Number::InexactReal(f)) if (f - 2.5e10).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("3.14e2"), Ok(Number::InexactReal(f)) if (f - 3.14e2).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("1e6"), Ok(Number::InexactReal(f)) if (f - 1e6).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("1.0e-3"), Ok(Number::InexactReal(f)) if (f - 1.0e-3).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("-2.5e4"), Ok(Number::InexactReal(f)) if (f - (-2.5e4)).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("+1.2e-5"), Ok(Number::InexactReal(f)) if (f - 1.2e-5).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("1e+6"), Ok(Number::InexactReal(f)) if (f - 1e+6).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("2.3e+10"), Ok(Number::InexactReal(f)) if (f - 2.3e+10).abs() < f64::EPSILON)
+        );
+
+        // Test edge cases that could be confused with complex numbers
+        assert!(
+            matches!(parse_number("1e6"), Ok(Number::InexactReal(f)) if (f - 1e6).abs() < f64::EPSILON)
+        );
+        assert!(
+            matches!(parse_number("1.0e-3"), Ok(Number::InexactReal(f)) if (f - 1.0e-3).abs() < f64::EPSILON)
+        );
+
+        // Test that actual complex numbers still work
+        assert!(matches!(
+            parse_number("3+4i"),
+            Ok(Number::InexactComplex {
+                real: 3.0,
+                imag: 4.0
+            })
+        ));
+
+        // Test that numbers with 'e' in scientific notation don't break complex parsing
+        assert!(matches!(
+            parse_number("1e3+2e3i"),
+            Ok(Number::InexactComplex {
+                real: 1000.0,
+                imag: 2000.0
+            })
+        ));
     }
 
     #[test]
