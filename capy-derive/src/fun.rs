@@ -362,7 +362,7 @@ impl FunctionDefinition {
         syn::parse2(tokens).expect("parsing trampoline function")
     }
 
-    pub fn to_tokens(mut self) -> proc_macro2::TokenStream {
+    pub fn to_tokens(&mut self) -> proc_macro2::TokenStream {
         let trampoline = self.make_trampoline();
         let native_ctx = &self.nctx;
         let lifetime = &self.gc_lifetime;
@@ -538,6 +538,18 @@ impl FunctionDefinition {
 
             #trampoline
             #func
+        }
+    }
+
+    pub fn register_call(&self) -> proc_macro2::TokenStream {
+        let register_name = syn::Ident::new(
+            &format!("register_{}", self.transformed_function.sig.ident),
+            self.transformed_function.sig.ident.span(),
+        );
+
+        quote_spanned! {
+            self.transformed_function.span() =>
+            #register_name(ctx);
         }
     }
 }

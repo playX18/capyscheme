@@ -2,7 +2,7 @@ use crate::{
     prelude::{IntoValue, NativeContinuation, NativeFn, PROCEDURES},
     runtime::{
         fluids::DynamicState,
-        modules::{Module, resolve_module},
+        modules::{Module, ModuleRef, resolve_module, scm_module},
         prelude::VariableRef,
         value::{
             Closure, NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols,
@@ -14,7 +14,7 @@ use crate::{
         },
     },
 };
-use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, mmtk::util::Address};
+use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, barrier, mmtk::util::Address};
 use std::{
     cell::{Cell, UnsafeCell},
     ptr::NonNull,
@@ -185,6 +185,35 @@ impl<'gc> Context<'gc> {
         let module = self.module(mname)?;
         let name = self.intern(name);
         Some(module.define(self, name, value))
+    }
+
+    pub fn define_module(&self, name: &str, size_hint: Option<usize>) -> ModuleRef<'gc> {
+        let name = crate::runtime::modules::convert_module_name(*self, name);
+
+        let module = resolve_module(*self, name, false, true).unwrap();
+        let wmodule = Gc::write(&self, module);
+        if module.uses.get().is_null() {
+            barrier::field!(wmodule, Module, uses)
+                .unlock()
+                .set(Value::cons(
+                    *self,
+                    (*scm_module(*self)).into(),
+                    Value::null(),
+                ));
+        }
+
+        if module.public_interface.get().is_none() {
+            let public_interface = Module::new(
+                *self,
+                size_hint.unwrap_or(8),
+                Value::null(),
+                Value::new(false),
+            );
+            barrier::field!(wmodule, Module, public_interface)
+                .unlock()
+                .set(Some(public_interface.into()));
+        }
+        module
     }
 }
 
