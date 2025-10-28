@@ -3923,12 +3923,29 @@ impl<'gc> Number<'gc> {
                                 if rhs == 0 {
                                     return Number::Fixnum(0);
                                 }
+                                let mut rem = lhs.wrapping_rem(rhs);
+                                if rem == 0 {
+                                    return Self::Fixnum(0);
+                                }
 
-                                return Self::Fixnum(lhs % rhs);
+                                if rhs > 0 || rem > 0 {
+                                    rem = rem.wrapping_add(rhs);
+                                }
+
+                                return Self::Fixnum(rem);
                             }
 
                             Number::Flonum(rhs) => {
-                                return Self::Flonum(lhs as f64 % rhs);
+                                let rem = libm::fmod(lhs as f64, rhs);
+                                if rem == 0.0 {
+                                    return Self::Flonum(0.0);
+                                }
+
+                                if rhs > 0.0 || rem > 0.0 {
+                                    return Self::Flonum(rem + rhs);
+                                }
+
+                                return Self::Flonum(rem);
                             }
 
                             Number::BigInt(rhs) => {
@@ -3969,11 +3986,28 @@ impl<'gc> Number<'gc> {
                                     panic!("division by zero");
                                 }
 
-                                return Self::Flonum(lhs % rhs as f64);
+                                let rem = libm::fmod(lhs, rhs as f64);
+                                if rem == 0.0 {
+                                    return Self::Flonum(0.0);
+                                }
+
+                                if rhs > 0 || rem > 0.0 {
+                                    return Self::Flonum(rem + rhs as f64);
+                                }
+
+                                return Self::Flonum(rem);
                             }
 
                             Number::Flonum(rhs) => {
-                                return Self::Flonum(lhs % rhs);
+                                let rem = libm::fmod(lhs, rhs);
+                                if rem == 0.0 {
+                                    return Self::Flonum(0.0);
+                                }
+                                if rhs > 0.0 || rem > 0.0 {
+                                    return Self::Flonum(rem + rhs);
+                                }
+
+                                return Self::Flonum(rem);
                             }
 
                             Number::BigInt(rhs) => {
@@ -4725,13 +4759,11 @@ impl<'gc> Number<'gc> {
     pub fn atan(ctx: Context<'gc>, n: Self) -> Self {
         if n.is_real_valued() {
             let x = n.real_to_f64(ctx);
-            if x >= -1.0 && x <= 1.0 {
-                return Self::Flonum(libm::atan(x));
-            }
+            return Self::Flonum(libm::atan(x));
         }
 
         let Number::Complex(cn) = n else {
-            unreachable!()
+            unreachable!("what? {n}")
         };
 
         let ans = Self::div(

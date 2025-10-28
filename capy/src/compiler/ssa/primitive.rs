@@ -2052,6 +2052,12 @@ prim!(
 
     "atan" => atan(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
+        if args.len() == 2 {
+            let arg2 = ssa.atom(args[1]);
+            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let result = ssa.handle_thunk_call_result(ssa.thunks.atan2, &[ctx, arg, arg2], _h);
+            return PrimValue::Value(result);
+        }
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let result = ssa.handle_thunk_call_result(ssa.thunks.atan, &[ctx, arg], _h);
         PrimValue::Value(result)

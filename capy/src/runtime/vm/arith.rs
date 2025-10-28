@@ -115,6 +115,30 @@ mod arith_operations {
             );
         }
 
+        if !x.is_integer_valued() {
+            let x_val = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation(
+                "modulo",
+                "first argument must be an integer-valued number",
+                Some(x_val),
+                Some(1),
+                2,
+                &[x_val],
+            );
+        }
+
+        if !y.is_integer_valued() {
+            let y_val = y.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation(
+                "modulo",
+                "second argument must be an integer-valued number",
+                Some(y_val),
+                Some(2),
+                2,
+                &[y_val],
+            );
+        }
+
         let result = Number::modulo(nctx.ctx, x, y);
 
         nctx.return_(result)
@@ -1875,7 +1899,7 @@ mod arith_operations {
     }
 
     #[scheme(name = "fldiv0")]
-    pub fn fl_divide0(y: f64) -> Result<f64, Value<'gc>> {
+    pub fn fl_divide0(x: f64, y: f64) -> Number<'gc> {
         if y == 0.0 {
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
@@ -1887,8 +1911,8 @@ mod arith_operations {
                 &[y],
             );
         }
-        let res = 1.0 / y;
-        nctx.return_(Ok(res))
+        let res = Number::integer_div0(ctx, Number::Flonum(x), Number::Flonum(y));
+        nctx.return_(res)
     }
 
     #[scheme(name = "fxmod")]
