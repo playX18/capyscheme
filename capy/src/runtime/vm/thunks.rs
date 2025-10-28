@@ -1863,7 +1863,41 @@ thunks! {
             }
         };
 
-        todo!("atan of {n}")
+
+
+        ThunkResult {
+            code: 0,
+            value: Number::atan(*ctx, n).into_value(*ctx)
+        }
+    }
+
+    pub fn atan2(ctx: &Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> ThunkResult<'gc> {
+        let Some(y) = y.number() else {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "atan2").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[y],
+                )
+            }
+        };
+
+        let Some(x) = x.number() else {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "atan2").into(),
+                    Str::new(ctx, "not a number", true).into(),
+                    &[x],
+                )
+            }
+        };
+
+        ThunkResult {
+            code: 0,
+            value: Number::atan2(*ctx, y, x).into_value(*ctx)
+        }
     }
 
     pub fn not(v: Value<'gc>) -> bool {
