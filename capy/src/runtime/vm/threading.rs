@@ -155,6 +155,21 @@ crate::native_fn!(
         block: Option<bool>
     ) -> bool {
         let block = block.unwrap_or(true);
+        // fast path: try to acquire the lock without yielding to native
+        match &mutex_obj.mutex {
+            MutexKind::Reentrant(mutex) => {
+                if let Some(_guard) = mutex.try_lock() {
+                    std::mem::forget(_guard);
+                    return nctx.return_(true)
+                }
+            }
+            MutexKind::Regular(mutex) => {
+                if let Some(_guard) = mutex.try_lock() {
+                    std::mem::forget(_guard);
+                    return nctx.return_(true)
+                }
+            }
+        }
         if block {
             return nctx.yield_and_return(YieldReason::LockMutex(mutex_obj.into()), &[Value::new(true)])
         } else {

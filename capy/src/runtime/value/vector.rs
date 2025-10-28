@@ -1,4 +1,5 @@
 #![allow(dead_code, unused_variables)]
+use abi_stable::std_types::RStr;
 use easy_bitfield::{BitField, BitFieldTrait};
 use rsgc::{
     Gc, Mutation, WeakProcessor,
@@ -20,7 +21,7 @@ pub struct Vector<'gc> {
     pub(crate) data: [Lock<Value<'gc>>; 0],
 }
 
-fn trace_vector(vec: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
     unsafe {
         let vec = vec
             .to_address()
@@ -30,18 +31,21 @@ fn trace_vector(vec: GCObject, vis: &mut Visitor) {
     }
 }
 
-fn process_weak_vector(_: GCObject, _: &mut WeakProcessor) {}
+extern "C" fn process_weak_vector(_: GCObject, _: &mut WeakProcessor) {}
 
 impl<'gc> Vector<'gc> {
     pub const OFFSET_OF_DATA: usize = offset_of!(Vector, data);
 
     pub const VT: &'static VTable = &VTable {
-        type_name: "Vector",
+        type_name: RStr::from_str("Vector"),
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some(|vec| unsafe {
-            vec.to_address().as_ref::<Vector<'static>>().len() * size_of::<Value>()
+        compute_size: Some({
+            extern "C" fn sz(vec: GCObject) -> usize {
+                unsafe { vec.to_address().as_ref::<Vector<'static>>().len() * size_of::<Value>() }
+            }
+            sz
         }),
         trace: trace_vector,
         weak_proc: process_weak_vector,
@@ -202,25 +206,30 @@ pub struct ByteVector {
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
-fn trace_byte_vector(vec: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_byte_vector(vec: GCObject, vis: &mut Visitor) {
     let _ = vec;
     let _ = vis;
 }
 
-fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
+extern "C" fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
 
 impl ByteVector {
     pub const VT: &'static VTable = &VTable {
-        type_name: "ByteVector",
+        type_name: RStr::from_str("ByteVector"),
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some(|vec| unsafe {
-            let bv = vec.to_address().as_ref::<ByteVector>();
-            if bv.is_mapping() {
-                return 0;
+        compute_size: Some({
+            extern "C" fn sz(vec: GCObject) -> usize {
+                unsafe {
+                    let bv = vec.to_address().as_ref::<ByteVector>();
+                    if bv.is_mapping() {
+                        return 0;
+                    }
+                    vec.to_address().as_ref::<ByteVector>().len * size_of::<u8>()
+                }
             }
-            vec.to_address().as_ref::<ByteVector>().len * size_of::<u8>()
+            sz
         }),
         trace: trace_byte_vector,
         weak_proc: process_weak_byte_vector,
@@ -395,7 +404,7 @@ pub struct Tuple<'gc> {
     pub(crate) data: [Lock<Value<'gc>>; 0],
 }
 
-fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
     unsafe {
         let tuple = tuple
             .to_address()
@@ -406,7 +415,7 @@ fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
     }
 }
 
-fn process_weak_tuple(_: GCObject, _: &mut WeakProcessor) {}
+extern "C" fn process_weak_tuple(_: GCObject, _: &mut WeakProcessor) {}
 
 unsafe impl<'gc> Tagged for Tuple<'gc> {
     const TC8: TypeCode8 = TypeCode8::TUPLE;
@@ -415,12 +424,15 @@ unsafe impl<'gc> Tagged for Tuple<'gc> {
 
 impl<'gc> Tuple<'gc> {
     pub const VT: &'static VTable = &VTable {
-        type_name: "Tuple",
+        type_name: RStr::from_str("Tuple"),
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some(|tuple| unsafe {
-            tuple.to_address().as_ref::<Tuple<'static>>().len() * size_of::<Value>()
+        compute_size: Some({
+            extern "C" fn sz(tuple: GCObject) -> usize {
+                unsafe { tuple.to_address().as_ref::<Tuple<'static>>().len() * size_of::<Value>() }
+            }
+            sz
         }),
         trace: trace_tuple,
         weak_proc: process_weak_tuple,

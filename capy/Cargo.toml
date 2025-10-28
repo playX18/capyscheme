@@ -52,6 +52,8 @@ im = "15.1.0"
 parking_lot = "0.12.5"
 icu = { version = "2.0.0", features = ["compiled_data"] }
 sys-locale = "0.3.2"
+abi_stable = "0.11.3"
+capy-derive.workspace = true
 
 [lib]
 crate-type = ["dylib"]

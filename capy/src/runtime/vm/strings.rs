@@ -1301,7 +1301,7 @@ native_fn!(
     pub ("string-downcase") fn string_downcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let str = str.to_string();
-        let lowercased = cm.lowercase_to_string(&str, &LOCALE.id);
+        let lowercased = cm.lowercase_to_string(&str, &icu::locale::langid!("und"));
         let s = Str::new(&nctx.ctx, &lowercased, false);
         nctx.return_(s)
     }
@@ -1317,7 +1317,7 @@ native_fn!(
     pub ("string-upcase") fn string_upcase<'gc>(nctx, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
         let str = str.to_string();
         let cm = icu::casemap::CaseMapperBorrowed::new();
-        let uppercased = cm.uppercase_to_string(&str, &LOCALE.id);
+        let uppercased = cm.uppercase_to_string(&str, &icu::locale::langid!("und"));
         let s = Str::new(&nctx.ctx, &uppercased, false);
         nctx.return_(s)
     }

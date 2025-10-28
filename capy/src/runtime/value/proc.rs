@@ -38,16 +38,10 @@ pub type ClosureContinuationFlag = BitField<u64, bool, { TypeBits::NEXT_BIT + 1 
 pub struct NativeProc {
     pub header: ScmHeader,
     pub proc: Address,
-    pub loc: NativeLocation,
 }
 
 impl NativeProc {
-    pub fn new<'gc>(
-        ctx: Context<'gc>,
-        proc: Address,
-        is_k: bool,
-        loc: NativeLocation,
-    ) -> Gc<'gc, Self> {
+    pub fn new<'gc>(ctx: Context<'gc>, proc: Address, is_k: bool) -> Gc<'gc, Self> {
         let tc = if is_k {
             TypeCode16::NATIVE_K
         } else {
@@ -58,7 +52,6 @@ impl NativeProc {
             NativeProc {
                 header: ScmHeader::with_type_bits(tc.0),
                 proc,
-                loc,
             },
         )
     }
@@ -254,7 +247,6 @@ impl<'gc> Procedures<'gc> {
         &self,
         ctx: Context<'gc>,
         f: NativeContinuation<'gc>,
-        loc: NativeLocation,
     ) -> Gc<'gc, NativeProc> {
         let mut registered = self.registered.lock();
 
@@ -263,25 +255,20 @@ impl<'gc> Procedures<'gc> {
             return registered;
         }
 
-        let proc = NativeProc::new(ctx, addr, true, loc);
+        let proc = NativeProc::new(ctx, addr, true);
         registered.insert(addr, proc);
 
         proc
     }
 
-    pub fn register_procedure(
-        &self,
-        ctx: Context<'gc>,
-        f: NativeFn<'gc>,
-        loc: NativeLocation,
-    ) -> Gc<'gc, NativeProc> {
+    pub fn register_procedure(&self, ctx: Context<'gc>, f: NativeFn<'gc>) -> Gc<'gc, NativeProc> {
         let mut registered = self.registered.lock();
         let addr = Address::from_ptr(f as *const ());
         if let Some(&registered) = registered.get(&addr) {
             return registered;
         }
 
-        let proc = NativeProc::new(ctx, addr, false, loc);
+        let proc = NativeProc::new(ctx, addr, false);
         registered.insert(addr, proc);
 
         proc
@@ -291,14 +278,14 @@ impl<'gc> Procedures<'gc> {
         &self,
         ctx: Context<'gc>,
         f: NativeFn<'gc>,
-        loc: NativeLocation,
+
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         let mut closures = self.static_closures.lock();
         if let Some(&clos) = closures.get(&Address::from_ptr(f as *const ())) {
             return clos;
         }
-        let proc = self.register_procedure(ctx, f, loc);
+        let proc = self.register_procedure(ctx, f);
 
         let clos = Closure::new(
             ctx,
@@ -318,14 +305,14 @@ impl<'gc> Procedures<'gc> {
         &self,
         ctx: Context<'gc>,
         f: NativeContinuation<'gc>,
-        loc: NativeLocation,
+
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         let mut closures = self.static_closures.lock();
         if let Some(&clos) = closures.get(&Address::from_ptr(f as *const ())) {
             return clos;
         }
-        let proc = self.register_continuation(ctx, f, loc);
+        let proc = self.register_continuation(ctx, f);
 
         let clos = Closure::new(
             ctx,
@@ -346,10 +333,10 @@ impl<'gc> Procedures<'gc> {
         ctx: Context<'gc>,
         f: NativeFn<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
-        loc: NativeLocation,
+
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
-        let proc = self.register_procedure(ctx, f, loc);
+        let proc = self.register_procedure(ctx, f);
         let mut fv = Vec::with_capacity(1);
         fv.push(proc.into());
         for val in free_vars.into_iter() {
@@ -370,10 +357,9 @@ impl<'gc> Procedures<'gc> {
         ctx: Context<'gc>,
         f: NativeContinuation<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
-        loc: NativeLocation,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
-        let proc = self.register_continuation(ctx, f, loc);
+        let proc = self.register_continuation(ctx, f);
         let mut fv = Vec::with_capacity(1);
         fv.push(proc.into());
         for val in free_vars.into_iter() {
@@ -447,11 +433,7 @@ macro_rules! native_fn {
         $v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
         paste::paste! {
             $(
-                pub const [<$name: upper _DOC>]: $crate::runtime::value::proc::NativeLocation = $crate::runtime::value::proc::NativeLocation {
-                    file: ::std::borrow::Cow::Borrowed(file!()),
-                    name: ::std::borrow::Cow::Borrowed($l),
-                    line: line!(),
-                };
+
                 //pub const [<$name: upper _DOCUMENTATION>]: &str = $crate::native_fn!(@get_docs () $(#[$m])*);
                 $(#[$m])*
                 #[allow(unused_parens)]
@@ -524,13 +506,12 @@ macro_rules! native_fn {
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "file").into(),  $crate::runtime::prelude::Str::from_str(&ctx, file!()).into()),
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "line").into(),  Value::new(line!() as i32)),
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "column").into(),  Value::new(column!() as i32)));
-                        let documentation = $crate::list!(ctx,
-                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "documentation").into(),  $crate::runtime::prelude::Str::from_str(&ctx, [<$name: upper _DOC>].name.as_ref()).into()));
+
                         let props = $crate::list!(ctx,
                             // source
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "source").into(), loc),
                             // documentation
-                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "documentation").into(), documentation),
+
                             // name
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "name").into(),  $crate::runtime::prelude::Symbol::from_str(ctx, $l).into())
                         );
@@ -543,14 +524,14 @@ macro_rules! native_fn {
                 $v extern "C" fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     let meta = [<get_ $name _meta>](ctx);
                     *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
-                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _raw>], [<$name: upper _DOC>].clone(), meta))
+                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_closure(ctx, [<c_ $name _raw>],  meta))
                     })
                         .fetch(&ctx)
                 }
 
                 $v extern "C" fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     let meta = [<get_ $name _meta>](ctx);
-                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _raw>], vars, [<$name: upper _DOC>].clone(), meta)
+                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_closure(ctx, [<c_ $name _raw>], vars,  meta)
                 }
 
 
@@ -565,7 +546,7 @@ macro_rules! native_fn {
             fn $register_fn<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) {
                 $(
                     let closure = [<get_ $name _static_closure>](ctx);
-                    let _ = [<$name:upper _LOC>].set($crate::rsgc::global::Global::new($crate::runtime::modules::define(ctx, $l, closure.into())));
+                    let _ = [<$name:upper _LOC>].set($crate::rsgc::global::Global::new($crate::runtime::modules::define(ctx, $l, closure)));
                 )*
             }
 
@@ -590,11 +571,7 @@ macro_rules! native_cont {
         $v: vis ($l: literal) fn $name: ident <$gc:lifetime>($ctx: ident$(,)? $($arg: ident: $arg_ty:ty),*) -> $ret: ty $b: block)*) => {
         paste::paste! {
             $(
-                pub const [<$name: upper _DOC>]: $crate::runtime::value::proc::NativeLocation = $crate::runtime::value::proc::NativeLocation {
-                    file: ::std::borrow::Cow::Borrowed(file!()),
-                    name: ::std::borrow::Cow::Borrowed($l),
-                    line: line!(),
-                };
+
                 $(#[$m])*
                 #[allow(unused_parens)]
                 #[allow(clippy::macro_metavars_in_unsafe)]
@@ -657,13 +634,12 @@ macro_rules! native_cont {
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "file").into(),  $crate::runtime::prelude::Str::from_str(&ctx, file!()).into()),
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "line").into(),  Value::new(line!() as i32)),
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "column").into(),  Value::new(column!() as i32)));
-                        let documentation = $crate::list!(ctx,
-                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "documentation").into(),  $crate::runtime::prelude::Str::from_str(&ctx, [<$name: upper _DOC>].name.as_ref()).into()));
+
                         let props = $crate::list!(ctx,
                             // source
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "source").into(), loc),
                             // documentation
-                            Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "documentation").into(), documentation),
+
                             // name
                             Value::cons(ctx, $crate::runtime::prelude::Symbol::from_str(ctx, "name").into(),  $crate::runtime::prelude::Symbol::from_str(ctx, $l).into())
                         );
@@ -675,14 +651,14 @@ macro_rules! native_cont {
                 $v fn [<get_ $name _static_closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     let meta = [<get_ $name _meta>](ctx);
                     *[<STATIC_ $name: upper _CLOSURE>].get_or_init(|| {
-                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_cont_closure(ctx, [<c_ $name _raw>], [<$name: upper _DOC>].clone(), meta))
+                        $crate::rsgc::global::Global::new($crate::runtime::prelude::PROCEDURES.fetch(&ctx).register_static_cont_closure(ctx, [<c_ $name _raw>], meta))
                     })
                         .fetch(&ctx)
                 }
 
                 $v fn [<make_ $name _closure>]<'gc>(ctx: $crate::runtime::prelude::Context<'gc>, vars: impl IntoIterator<Item = $crate::runtime::prelude::Value<'gc>>) -> $crate::runtime::prelude::ClosureRef<'gc> {
                     let meta = [<get_ $name _meta>](ctx);
-                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_cont_closure(ctx, [<c_ $name _raw>], vars, [<$name: upper _DOC>].clone(), meta)
+                    $crate::runtime::prelude::PROCEDURES.fetch(&ctx).make_cont_closure(ctx, [<c_ $name _raw>], vars, meta)
                 }
 
 
@@ -697,7 +673,7 @@ macro_rules! native_cont {
             fn $register_fn<'gc>(ctx: $crate::runtime::prelude::Context<'gc>) {
                 $(
                     let closure = [<get_ $name _static_closure>](ctx);
-                    let _ = [<$name:upper _LOC>].set($crate::rsgc::global::Global::new($crate::runtime::modules::define(ctx, $l, closure.into())));
+                    let _ = [<$name:upper _LOC>].set($crate::rsgc::global::Global::new($crate::runtime::modules::define(ctx, $l, closure)));
                 )*
             }
 

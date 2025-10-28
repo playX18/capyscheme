@@ -21,6 +21,7 @@ use std::{
     sync::OnceLock,
 };
 
+use abi_stable::std_types::RStr;
 use easy_bitfield::{BitField, BitFieldTrait};
 use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
 
@@ -31,7 +32,7 @@ use rsgc::{
     global::Global,
     mmtk::{AllocationSemantics, util::conversions::raw_align_up},
     mutator::Mutation,
-    object::VTable,
+    object::{GCObject, VTable},
 };
 
 use crate::runtime::{
@@ -341,18 +342,27 @@ impl<'gc> BigInt<'gc> {
     }
 
     const VT: &'static VTable = &VTable {
-        type_name: "BigInt",
+        type_name: RStr::from_str("BigInt"),
         instance_size: 0,
         alignment: align_of::<usize>(),
         compute_alignment: None,
-        compute_size: Some(|object| {
-            let bigint = unsafe { object.to_address().as_ref::<BigInt<'static>>() };
-            // Size of the variable part (the words data)
-            let raw = bigint.num_words() * size_of::<Digit>() + size_of::<Self>();
-            raw_align_up(raw, align_of::<Self>())
+        compute_size: Some({
+            extern "C" fn sz(object: GCObject) -> usize {
+                let bigint = unsafe { object.to_address().as_ref::<BigInt<'static>>() };
+                // Size of the variable part (the words data)
+                let raw = bigint.num_words() * size_of::<Digit>() + size_of::<BigInt>();
+                raw_align_up(raw, align_of::<BigInt>())
+            }
+            sz
         }),
-        trace: |_, _| {},
-        weak_proc: |_, _| {},
+        trace: {
+            extern "C" fn trace(_object: GCObject, _visitor: &mut Visitor<'_>) {}
+            trace
+        },
+        weak_proc: {
+            extern "C" fn weak_proc(_object: GCObject, _weak_processor: &mut rsgc::WeakProcessor) {}
+            weak_proc
+        },
     };
 }
 

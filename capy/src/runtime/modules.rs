@@ -239,6 +239,17 @@ impl<'gc> Module<'gc> {
         var
     }
 
+    pub fn define_rs(
+        &self,
+        ctx: Context<'gc>,
+        name: impl AsRef<str>,
+        value: impl IntoValue<'gc>,
+    ) -> Gc<'gc, Variable<'gc>> {
+        let sym = Symbol::from_str(ctx, name.as_ref());
+        let val = value.into_value(ctx);
+        self.define(ctx, sym.into(), val)
+    }
+
     /// Add `interface` to the list of interfaces used by `self`.
     pub fn use_iface(self: Gc<'gc, Self>, ctx: Context<'gc>, interface: Gc<'gc, Self>) {
         if Gc::ptr_eq(self, interface) || self.uses.get().memq(interface.into()) {
@@ -594,7 +605,7 @@ global!(
 
     loc_resolve_module_root<'gc>: VariableRef<'gc> = (ctx) {
         let root = resolve_module_root(ctx);
-        let var = define(ctx, "*resolve-module-root*", (*root).into());
+        let var = define(ctx, "*resolve-module-root*", *root);
         var
     };
 );
@@ -742,7 +753,12 @@ fluid!(
     pub current_module = Value::new(false);
 );
 
-pub fn define<'gc>(ctx: Context<'gc>, name: &str, value: Value<'gc>) -> Gc<'gc, Variable<'gc>> {
+pub fn define<'gc>(
+    ctx: Context<'gc>,
+    name: &str,
+    value: impl IntoValue<'gc>,
+) -> Gc<'gc, Variable<'gc>> {
+    let value = value.into_value(ctx);
     let sym = Symbol::from_str(ctx, name);
     current_module(ctx)
         .get(ctx)
