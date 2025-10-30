@@ -59,6 +59,7 @@ native_fn!(
 
     pub ("car") fn car<'gc>(nctx, pair: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         if !pair.is_pair() {
+            println!("car: {pair} is not a pair");
             crate::runtime::vm::debug::print_stacktraces_impl(nctx.ctx);
             return nctx.wrong_argument_violation("car", "expected a pair", Some(pair), Some(1), 1, &[pair]);
         }

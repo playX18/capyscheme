@@ -277,7 +277,11 @@ thunks! {
         let msg = if is_cont {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
-                println!("{sym:?}");
+                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}", meta = if subr.is::<Closure>() {
+                    subr.downcast::<Closure>().meta.get()
+                } else {
+                    Value::new(false)
+                });
             });
             if expected < 0 {
                 format!("expected at least {} values, got {}", -expected, got)
@@ -285,6 +289,11 @@ thunks! {
                 format!("expected {} value(s), got {}", expected, got)
             }
         } else {
+            println!("WRONG ARGUMENTS TO {subr} (meta: {meta})", meta = if subr.is::<Closure>() {
+                subr.downcast::<Closure>().meta.get()
+            } else {
+                Value::new(false)
+            });
             crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
             if expected < 0 {
                 format!("procedure expected at least {} arguments, got {}", -expected, got)
@@ -332,6 +341,7 @@ thunks! {
         crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
+            println!("NON-APPLICABLE {subr} called here:");
             println!("{sym:?}");
         });
         make_assertion_violation(
@@ -366,6 +376,7 @@ thunks! {
         let Some(variable) = variable else {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
+                println!("LOOKUP_BOUND: {module}::{name}");
                 println!("{sym:?}");
             });
             return ThunkResult {
@@ -400,6 +411,7 @@ thunks! {
         let Some(var) = variable else {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
+                println!("LOOKUP: {module}::{name}");
                 println!("{sym:?}");
             });
             return ThunkResult {
@@ -493,6 +505,7 @@ thunks! {
         if !module.is::<Module>() {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
+                println!("set-current-module: {module} ");
                 println!("{sym:?}");
             });
             println!("set-current-module: not a module: {}", module);
@@ -1174,7 +1187,7 @@ thunks! {
             }
         };
 
-        if b.is_zero() {
+        if b.is_zero() && b.is_exact() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1211,7 +1224,7 @@ thunks! {
             }
         };
 
-        if b.is_zero() {
+        if b.is_zero() && b.is_exact() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1248,7 +1261,7 @@ thunks! {
             }
         };
 
-        if b.is_zero() {
+        if b.is_zero() && b.is_exact() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1285,7 +1298,7 @@ thunks! {
             }
         };
 
-        if b.is_zero() {
+        if b.is_zero() && b.is_exact() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1434,6 +1447,7 @@ thunks! {
 
     pub fn logand(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
+            println!("logand: {a} is not a number, b={b}");
             print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
@@ -1446,7 +1460,8 @@ thunks! {
         };
 
         let Some(b) = b.number() else {
-             print_stacktraces_impl(*ctx);
+            println!("logand: {b} is not a number, a={a}");
+            print_stacktraces_impl(*ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -2072,6 +2087,7 @@ thunks! {
         if !c.is_char() {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as *mut _, |symbol| {
+                println!("CHAR->INTEGER error {c}");
                 println!("{symbol:?}");
             });
             crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
@@ -3965,13 +3981,13 @@ thunks! {
 }
 
 #[unsafe(no_mangle)]
-pub static BOX_VTABLE: &'static VTable = &VTableOf::<Boxed>::VT;
+pub(crate) static BOX_VTABLE: &'static VTable = &VTableOf::<Boxed>::VT;
 #[unsafe(no_mangle)]
-pub static PAIR_VTABLE: &'static VTable = &VTableOf::<Pair>::VT;
+pub(crate) static PAIR_VTABLE: &'static VTable = &VTableOf::<Pair>::VT;
 #[unsafe(no_mangle)]
-pub static VECTOR_VTABLE: &'static VTable = &Vector::VT;
+pub(crate) static VECTOR_VTABLE: &'static VTable = &Vector::VT;
 #[unsafe(no_mangle)]
-pub static TUPLE_VTABLE: &'static VTable = &Tuple::VT;
+pub(crate) static TUPLE_VTABLE: &'static VTable = &Tuple::VT;
 
 unsafe extern "C" {
     #[link_name = "llvm.returnaddress"]

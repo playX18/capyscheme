@@ -21,7 +21,6 @@ use std::{
     sync::OnceLock,
 };
 
-use abi_stable::std_types::RStr;
 use easy_bitfield::{BitField, BitFieldTrait};
 use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
 
@@ -342,7 +341,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     const VT: &'static VTable = &VTable {
-        type_name: RStr::from_str("BigInt"),
+        type_name: "BigInt",
         instance_size: 0,
         alignment: align_of::<usize>(),
         compute_alignment: None,
@@ -2203,7 +2202,11 @@ impl<'gc> IntoValue<'gc> for Number<'gc> {
         match self {
             Number::Fixnum(i) => Value::new(i),
             Number::Flonum(f) => Value::new(f),
-            Number::BigInt(b) => Value::new(b),
+            Number::BigInt(b) => b
+                .try_as_i64()
+                .and_then(|v| i32::try_from(v).ok())
+                .map(Value::new)
+                .unwrap_or_else(|| Value::new(b)),
             Number::Rational(r) => Value::new(r),
             Number::Complex(c) => Value::new(c),
         }
@@ -3395,7 +3398,7 @@ impl<'gc> Number<'gc> {
             });
         }
 
-        if rhs.is_negative() {
+        if rhs.is_positive() {
             return Self::div(ctx, lhs, rhs).floor(ctx);
         }
 
@@ -3928,7 +3931,7 @@ impl<'gc> Number<'gc> {
                                     return Self::Fixnum(0);
                                 }
 
-                                if rhs > 0 || rem > 0 {
+                                if (rem > 0) as usize + (rhs > 0) as usize == 1 {
                                     rem = rem.wrapping_add(rhs);
                                 }
 
@@ -3941,7 +3944,7 @@ impl<'gc> Number<'gc> {
                                     return Self::Flonum(0.0);
                                 }
 
-                                if rhs > 0.0 || rem > 0.0 {
+                                if (rhs > 0.0) as usize + (rem > 0.0) as usize == 1 {
                                     return Self::Flonum(rem + rhs);
                                 }
 
@@ -3949,8 +3952,20 @@ impl<'gc> Number<'gc> {
                             }
 
                             Number::BigInt(rhs) => {
-                                return BigInt::rem(BigInt::from_i64(ctx, lhs as i64), ctx, rhs)
-                                    .into_number(ctx);
+                                /*return BigInt::rem(BigInt::from_i64(ctx, lhs as i64), ctx, rhs)
+                                .into_number(ctx);*/
+                                let bi_lhs = BigInt::from_i64(ctx, lhs as i64);
+                                let rem = BigInt::rem(bi_lhs, ctx, rhs);
+                                if rem.is_zero() {
+                                    return Self::Fixnum(0);
+                                }
+
+                                if (rhs.is_negative() as usize) + (rem.is_negative() as usize) == 1
+                                {
+                                    return Self::add(ctx, Self::BigInt(rem), Self::BigInt(rhs));
+                                }
+
+                                return rem.into_number(ctx);
                             }
 
                             Number::Rational(_) => unreachable!(),
@@ -3991,7 +4006,7 @@ impl<'gc> Number<'gc> {
                                     return Self::Flonum(0.0);
                                 }
 
-                                if rhs > 0 || rem > 0.0 {
+                                if (rhs > 0) as usize + (rem > 0.0) as usize == 1 {
                                     return Self::Flonum(rem + rhs as f64);
                                 }
 
@@ -4003,7 +4018,7 @@ impl<'gc> Number<'gc> {
                                 if rem == 0.0 {
                                     return Self::Flonum(0.0);
                                 }
-                                if rhs > 0.0 || rem > 0.0 {
+                                if (rhs > 0.0) as usize + (rem > 0.0) as usize == 1 {
                                     return Self::Flonum(rem + rhs);
                                 }
 
@@ -4011,7 +4026,16 @@ impl<'gc> Number<'gc> {
                             }
 
                             Number::BigInt(rhs) => {
-                                return Self::Flonum(lhs % rhs.as_f64());
+                                let rem = libm::fmod(lhs, rhs.as_f64());
+                                if rem == 0.0 {
+                                    return Self::Flonum(0.0);
+                                }
+
+                                if rhs.is_positive() as usize + (rem > 0.0) as usize == 1 {
+                                    return Self::Flonum(rem + rhs.as_f64());
+                                }
+
+                                return Self::Flonum(rem);
                             }
 
                             Number::Rational(_) => unreachable!(),
@@ -4034,23 +4058,43 @@ impl<'gc> Number<'gc> {
                 Number::BigInt(lhs) => 'bigint_again: loop {
                     match rhs {
                         Number::Fixnum(rhs) => {
-                            if rhs == 0 {
-                                panic!("division by zero");
+                            let bi_rhs = BigInt::from_i64(ctx, rhs as i64);
+                            let rem = BigInt::rem(lhs, ctx, bi_rhs.clone());
+                            if rem.is_zero() {
+                                return Self::Fixnum(0);
                             }
 
-                            return Self::BigInt(BigInt::rem(
-                                lhs,
-                                ctx,
-                                BigInt::from_i64(ctx, rhs as i64),
-                            ));
+                            if bi_rhs.is_negative() as usize + rem.is_negative() as usize == 1 {
+                                return Self::add(ctx, Self::BigInt(rem), Self::BigInt(bi_rhs));
+                            }
+
+                            return rem.into_number(ctx);
                         }
 
                         Number::Flonum(rhs) => {
-                            return Self::Flonum(lhs.as_f64() % rhs);
+                            let rem = libm::fmod(lhs.as_f64(), rhs);
+                            if rem == 0.0 {
+                                return Self::Flonum(0.0);
+                            }
+
+                            if rhs.is_sign_positive() as usize + (rem > 0.0) as usize == 1 {
+                                return Self::Flonum(rem + rhs);
+                            }
+
+                            return Self::Flonum(rem);
                         }
 
                         Number::BigInt(rhs) => {
-                            return BigInt::rem(lhs, ctx, rhs).into_number(ctx);
+                            let rem = BigInt::rem(lhs, ctx, rhs.clone());
+                            if rem.is_zero() {
+                                return Self::Fixnum(0);
+                            }
+
+                            if rhs.is_positive() as usize + rem.is_positive() as usize == 1 {
+                                return Self::add(ctx, Self::BigInt(rem), Self::BigInt(rhs));
+                            }
+
+                            return rem.into_number(ctx);
                         }
 
                         Number::Rational(_) => unreachable!(),
@@ -4104,7 +4148,7 @@ impl<'gc> Number<'gc> {
                     if rhs == 0 {
                         return Number::Fixnum(1);
                     } else if let Number::Flonum(lhs) = lhs {
-                        return Number::Flonum(lhs.powi(rhs));
+                        return Number::Flonum(lhs.powf(rhs as _));
                     } else {
                         return Self::expt_impl(ctx, lhs, rhs as _);
                     }
@@ -4864,7 +4908,7 @@ impl<'gc> Number<'gc> {
         match self {
             Self::Fixnum(_) | Self::BigInt(_) => self,
             Self::Flonum(fl) => {
-                let ans = (fl + 0.5).floor();
+                /*let ans = (fl + 0.5).floor();
                 if ans != fl + 0.5 {
                     return Self::Flonum(fl);
                 }
@@ -4873,7 +4917,8 @@ impl<'gc> Number<'gc> {
                     return Self::Flonum(ans - 1.0);
                 } else {
                     return Self::Flonum(ans);
-                }
+                }*/
+                return Self::Flonum(fl.round());
             }
 
             Self::Rational(rn) => {
@@ -5093,6 +5138,9 @@ impl<'gc> Number<'gc> {
     }
 
     pub fn compare(ctx: Context<'gc>, lhs: Self, rhs: Self) -> Option<std::cmp::Ordering> {
+        if lhs.is_nan() || rhs.is_nan() {
+            return None;
+        }
         match lhs {
             Number::Fixnum(lhs) => match rhs {
                 Number::Fixnum(rhs) => {
@@ -5108,6 +5156,9 @@ impl<'gc> Number<'gc> {
                     }
                 }
                 Number::Flonum(rhs) => {
+                    if rhs.is_nan() {
+                        return None;
+                    }
                     let d = lhs as f64 - rhs;
                     if d == 0.0 {
                         return Some(std::cmp::Ordering::Equal);

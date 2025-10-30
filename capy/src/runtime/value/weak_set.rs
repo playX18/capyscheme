@@ -71,11 +71,11 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
             return;
         }
 
-        let new = unsafe { weak_processor.is_live_object(self.value.desc.ptr) };
+        let new = unsafe { weak_processor.is_live_object(self.value.desc.ptr()) };
         if new.is_null() {
             self.value = Value::bwp();
         } else {
-            self.value.desc.ptr = new;
+            self.value.desc.ptr = new.to_address().to_mut_ptr();
         }
     }
 }

@@ -90,7 +90,6 @@
     boolean?
     bound-identifier=?
     break
-    buffer-mode
     buffer-mode?
     bytevector->string
     bytevector->u8-list
@@ -304,6 +303,7 @@
     eof-object
     eof-object?
     eol-style
+    lf cr crlf nel crnel ls
     eq?
     equal-hash
     equal?
@@ -329,6 +329,12 @@
     file-executable?
     file-exists?
     file-options
+    no-create
+    no-truncate
+    no-fail
+    buffer-mode 
+    none line block
+
     file-readable?
     file-regular?
     file-size-in-bytes

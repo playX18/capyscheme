@@ -18,6 +18,17 @@
   (filter (lambda (sym) (memq sym *file-option-symbols*))
           symbols))
 
+(define none 'none)
+(define line 'line)
+(define block 'block)
+
+(define (buffer-mode mode)
+  (case mode 
+    ((none line block) mode)
+    (else 
+      (assertion-violation 'buffer-mode
+                           "invalid buffer mode" mode))))
+
 ; The R6RS specification of buffer-mode? does not allow it
 ; to return true for the datum buffer mode, so this predicate
 ; is worse than useless.
@@ -113,7 +124,7 @@
                                   (raise-i/o-encoding-error 
                                    'string->bytevector
                                    "invalid encoding"
-                                   c)))
+                                   out c)))
                                 (else
                                  (loop (+ i 1)))))))))))
             ((utf-8)
@@ -280,11 +291,6 @@
       (assertion-violation 'output-port-buffer-mode
                            (errmsg 'msg:notoutput) p)))
 
-(define (buffer-mode p)
-  (if (output-port? p)
-      (io/buffer-mode p)
-      (assertion-violation 'buffer-mode
-                           (errmsg 'msg:notoutput) p)))
 ; FIXME: fakes file options
 
 (define (open-file-output-port filename . rest)
@@ -448,7 +454,7 @@
   (if (and (io/input-port? p)
            (io/binary-port? p)
            (fixnum? count)
-           (<=? 0 count))
+           (<= 0 count))
       (let* ((bv (make-bytevector count))
              (n (get-bytevector-n! p bv 0 count)))
         (cond ((not (fixnum? n))
@@ -466,22 +472,22 @@
            (io/binary-port? p)
            (bytevector? bv)
            (fixnum? start)
-           (<=? 0 start)
+           (<= 0 start)
            (fixnum? count)
-           (<=? 0 count)
-           (<=? (+ start count) (bytevector-length bv)))
+           (<= 0 count)
+           (<= (+ start count) (bytevector-length bv)))
       (if (= 0 count)
           0
           (let loop ((i start)
                      (n (+ start count)))
-            (cond ((=? i n)
+            (cond ((= i n)
                    (- i start))
                   (else
                    (let ((byte (get-u8 p)))
                      (cond ((fixnum? byte)
                             (bytevector-set! bv i byte)
                             (loop (+ i 1) n))
-                           ((=? i start)
+                           ((= i start)
                             (eof-object))
                            (else
                             (- i start))))))))

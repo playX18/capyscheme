@@ -480,7 +480,16 @@
 (define port-fd io/port-fd)
 (define port-closed? io/port-closed?)
 
-(define eol-style 'lf)
+(define lf 'lf)
+(define cr 'cr)
+(define crlf 'crlf)
+(define nel 'nel)
+(define crnel 'crnel)
+(define ls 'ls)
+
+
+(define (eol-style style) style)
+
 
 (define (open-binary-fd-output-port name fd b-mode)
   

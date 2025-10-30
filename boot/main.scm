@@ -2174,6 +2174,8 @@
 (primitive-load "boot/conio.scm")
 (primitive-load "boot/stringio.scm")
 (primitive-load "boot/stdio.scm")
+(primitive-load "boot/utf16.scm")
+(primitive-load "boot/customio.scm")
 (primitive-load "boot/print.scm")
 (primitive-load "boot/format.scm")
 (primitive-load "boot/log.scm")

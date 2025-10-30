@@ -24,8 +24,8 @@ impl Default for Endianness {
 }
 
 static_symbols!(
-    SYM_BIG = "big"
-    SYM_LITTLE = "little"
+    pub SYM_BIG = "big"
+    pub SYM_LITTLE = "little"
 );
 
 impl<'gc> FromValue<'gc> for Endianness {

@@ -11,4 +11,4 @@ paste.workspace = true
 
 [lib]
 name = "capy_clang"
-crate-type = ["dylib"]
+crate-type = ["cdylib"]

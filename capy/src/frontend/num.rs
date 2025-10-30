@@ -36,6 +36,11 @@ pub enum Number {
         real: f64,
         imag: f64,
     },
+
+    PartiallyExactComplex {
+        real: f64,
+        imag: Rc<BigInt>,
+    },
 }
 unsafe impl Trace for Number {
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
@@ -80,6 +85,14 @@ impl Number {
                 RNumber::Complex(cn)
             }
 
+            Number::PartiallyExactComplex { real, imag } => {
+                let real = RNumber::Flonum(real);
+                let imag = crate::runtime::value::number::BigInt::from_num_bigint(ctx, &imag);
+                let cn = Complex::new(ctx, real, RNumber::BigInt(imag).normalize_integer());
+
+                RNumber::Complex(cn)
+            }
+
             Number::ExactRational(rational) => {
                 let numerator =
                     crate::runtime::value::number::BigInt::from_num_bigint(ctx, rational.numer());
@@ -117,6 +130,11 @@ impl Hash for Number {
                 real.to_bits().hash(state);
                 imag.to_bits().hash(state);
             }
+
+            Number::PartiallyExactComplex { real, imag } => {
+                real.to_bits().hash(state);
+                imag.hash(state);
+            }
         }
     }
 }
@@ -148,6 +166,7 @@ impl fmt::Display for Number {
                     write!(f, "{}", real)
                 }
             }
+
             Number::ExactComplex(c) => {
                 let (real, imag) = c.as_ref();
                 if real.is_zero() {
@@ -170,6 +189,52 @@ impl fmt::Display for Number {
                     write!(f, "{}{}i", real, imag)
                 }
             }
+
+            Number::PartiallyExactComplex { real, imag } => {
+                let imag = imag.as_ref();
+                if *real == 0.0 {
+                    if *imag == BigInt::one() {
+                        write!(f, "i")
+                    } else if *imag == BigInt::from(-1) {
+                        write!(f, "-i")
+                    } else {
+                        write!(f, "{}i", imag)
+                    }
+                } else if *imag == BigInt::zero() {
+                    if real.fract() == 0.0 {
+                        write!(f, "{}.0", *real as i64)
+                    } else {
+                        write!(f, "{}", real)
+                    }
+                } else if *imag == BigInt::one() {
+                    if real.fract() == 0.0 {
+                        write!(f, "{}.0+i", *real as i64)
+                    } else {
+                        write!(f, "{}+i", real)
+                    }
+                } else if *imag == BigInt::from(-1) {
+                    if real.fract() == 0.0 {
+                        write!(f, "{}.0-i", *real as i64)
+                    } else {
+                        write!(f, "{}-i", real)
+                    }
+                } else if *imag > BigInt::zero() {
+                    let real_str = if real.fract() == 0.0 {
+                        format!("{}.0", *real as i64)
+                    } else {
+                        format!("{}", real)
+                    };
+                    write!(f, "{}+{}i", real_str, imag)
+                } else {
+                    let real_str = if real.fract() == 0.0 {
+                        format!("{}.0", *real as i64)
+                    } else {
+                        format!("{}", real)
+                    };
+                    write!(f, "{}{}i", real_str, imag)
+                }
+            }
+
             Number::InexactComplex { real, imag } => {
                 if *real == 0.0 {
                     if *imag == 1.0 {
@@ -736,11 +801,6 @@ impl<'a> NumberParser<'a> {
             let real_part = &remaining[..pos];
             let imag_part = &remaining[pos..];
 
-            // Parse real part
-            let real_val = real_part.parse::<f64>().map_err(|_| {
-                NumberParseError::InvalidComplex(format!("Invalid real part: {}", real_part))
-            })?;
-
             // Parse imaginary part (remove 'i' at the end)
             let imag_str = if imag_part.ends_with('i') || imag_part.ends_with('I') {
                 &imag_part[..imag_part.len() - 1]
@@ -763,48 +823,120 @@ impl<'a> NumberParser<'a> {
                 })?
             };
 
+            // Determine if real part is exact or inexact
+            let real_is_exact = if real_part.contains('.') || real_part.to_lowercase().contains('e')
+            {
+                false // Contains decimal point or scientific notation - inexact
+            } else {
+                true // Integer format - exact
+            };
+
+            // Determine if imaginary part is exact or inexact
+            let imag_is_exact = if imag_str.contains('.') || imag_str.to_lowercase().contains('e') {
+                false // Contains decimal point or scientific notation - inexact
+            } else {
+                true // Integer format - exact
+            };
+
             let should_be_exact = matches!(prefix.exactness, Some(Exactness::Exact));
+            let should_be_inexact = matches!(prefix.exactness, Some(Exactness::Inexact));
 
-            if should_be_exact {
-                // Convert to exact complex (simplified)
-                let real_big = BigInt::from_str_radix(
-                    real_part.trim_start_matches(['+', '-']),
-                    prefix.radix.base(),
-                )
-                .map_err(|_| {
-                    NumberParseError::InvalidComplex("Invalid exact real part".to_string())
-                })?;
-                let real_big = if real_part.starts_with('-') {
-                    -real_big
-                } else {
-                    real_big
-                };
+            // Override exactness if prefix specifies it
+            let (real_is_exact, imag_is_exact) = if should_be_exact {
+                (true, true)
+            } else if should_be_inexact {
+                (false, false)
+            } else {
+                (real_is_exact, imag_is_exact)
+            };
 
-                let imag_big = if imag_str == "+" {
-                    BigInt::one()
-                } else if imag_str == "-" {
-                    -BigInt::one()
-                } else {
-                    let abs_imag = BigInt::from_str_radix(
-                        imag_str.trim_start_matches(['+', '-']),
+            // Parse real part
+            let real_val = real_part.parse::<f64>().map_err(|_| {
+                NumberParseError::InvalidComplex(format!("Invalid real part: {}", real_part))
+            })?;
+
+            // Handle different combinations of exactness
+            match (real_is_exact, imag_is_exact) {
+                (true, true) => {
+                    // Both exact - create ExactComplex
+                    let real_big = BigInt::from_str_radix(
+                        real_part.trim_start_matches(['+', '-']),
                         prefix.radix.base(),
                     )
                     .map_err(|_| {
-                        NumberParseError::InvalidComplex("Invalid exact imaginary part".to_string())
+                        NumberParseError::InvalidComplex("Invalid exact real part".to_string())
                     })?;
-                    if imag_str.starts_with('-') {
-                        -abs_imag
+                    let real_big = if real_part.starts_with('-') {
+                        -real_big
                     } else {
-                        abs_imag
-                    }
-                };
+                        real_big
+                    };
 
-                Ok(Number::ExactComplex(Rc::new((real_big, imag_big))))
-            } else {
-                Ok(Number::InexactComplex {
-                    real: real_val,
-                    imag: imag_val,
-                })
+                    let imag_big = if imag_str == "+" {
+                        BigInt::one()
+                    } else if imag_str == "-" {
+                        -BigInt::one()
+                    } else {
+                        let abs_imag = BigInt::from_str_radix(
+                            imag_str.trim_start_matches(['+', '-']),
+                            prefix.radix.base(),
+                        )
+                        .map_err(|_| {
+                            NumberParseError::InvalidComplex(
+                                "Invalid exact imaginary part".to_string(),
+                            )
+                        })?;
+                        if imag_str.starts_with('-') {
+                            -abs_imag
+                        } else {
+                            abs_imag
+                        }
+                    };
+
+                    Ok(Number::ExactComplex(Rc::new((real_big, imag_big))))
+                }
+                (false, false) => {
+                    // Both inexact - create InexactComplex
+                    Ok(Number::InexactComplex {
+                        real: real_val,
+                        imag: imag_val,
+                    })
+                }
+                (false, true) => {
+                    // Real inexact, imag exact - create PartiallyExactComplex
+                    let imag_big = if imag_str == "+" {
+                        BigInt::one()
+                    } else if imag_str == "-" {
+                        -BigInt::one()
+                    } else {
+                        let abs_imag = BigInt::from_str_radix(
+                            imag_str.trim_start_matches(['+', '-']),
+                            prefix.radix.base(),
+                        )
+                        .map_err(|_| {
+                            NumberParseError::InvalidComplex(
+                                "Invalid exact imaginary part".to_string(),
+                            )
+                        })?;
+                        if imag_str.starts_with('-') {
+                            -abs_imag
+                        } else {
+                            abs_imag
+                        }
+                    };
+
+                    Ok(Number::PartiallyExactComplex {
+                        real: real_val,
+                        imag: Rc::new(imag_big),
+                    })
+                }
+                (true, false) => {
+                    // Real exact, imag inexact - create InexactComplex (since we don't have ExactPartiallyInexactComplex)
+                    Ok(Number::InexactComplex {
+                        real: real_val,
+                        imag: imag_val,
+                    })
+                }
             }
         } else {
             let without_i = &remaining[..remaining.len() - 1];
@@ -983,8 +1115,10 @@ mod tests {
 
     #[test]
     fn test_parse_complex() {
+        let result = parse_number("3+4i");
+        println!("Debug: parse_number('3+4i') = {:?}", result);
         assert!(matches!(
-            parse_number("3+4i"),
+            result,
             Ok(Number::InexactComplex {
                 real: 3.0,
                 imag: 4.0
@@ -1010,6 +1144,36 @@ mod tests {
                 real: 0.0,
                 imag: -1.0
             })
+        ));
+    }
+
+    #[test]
+    fn test_parse_partially_exact_complex() {
+        // Test cases that should produce PartiallyExactComplex (real inexact, imag exact)
+        assert!(matches!(
+            parse_number("3.14+2i"),
+            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 3.14).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(2)
+        ));
+
+        assert!(matches!(
+            parse_number("2.5-3i"),
+            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 2.5).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(-3)
+        ));
+
+        assert!(matches!(
+            parse_number("0.5+i"),
+            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 0.5).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(1)
+        ));
+
+        assert!(matches!(
+            parse_number("-1.25-i"),
+            Ok(Number::PartiallyExactComplex { real, imag }) if (real - (-1.25)).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(-1)
+        ));
+
+        // Test edge cases
+        assert!(matches!(
+            parse_number("0.0+5i"),
+            Ok(Number::PartiallyExactComplex { real, imag }) if real == 0.0 && imag.as_ref() == &BigInt::from(5)
         ));
     }
 

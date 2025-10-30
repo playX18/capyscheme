@@ -1,5 +1,5 @@
 use crate::runtime::value::*;
-use abi_stable::std_types::RStr;
+
 use easy_bitfield::BitFieldTrait;
 use rsgc::{
     Mutation, Rootable, Trace, barrier,
@@ -45,7 +45,7 @@ unsafe impl Trace for Stringbuf {
 
 impl Stringbuf {
     const VT: &'static VTable = &VTable {
-        type_name: RStr::from_str("Stringbuf"),
+        type_name: "Stringbuf",
         instance_size: 0,
         alignment: std::mem::align_of::<Self>(),
         compute_alignment: None,

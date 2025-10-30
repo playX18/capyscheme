@@ -308,10 +308,17 @@
                         lookahead-char
                         get-char
                         get-output-string
+                        
                         file-options
                         no-truncate
                         no-create
                         no-fail
+
+                        buffer-mode 
+                        none 
+                        line
+                        block
+
                         port-has-port-position?
                         port-position
                         port-has-set-port-position!?

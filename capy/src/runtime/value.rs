@@ -1,11 +1,10 @@
-use std::{fmt, hash::Hash, marker::PhantomData};
-
 use rsgc::{
     Gc, Mutation, ObjectSlot, Trace,
     barrier::Write,
     mmtk::{util::Address, vm::SlotVisitor},
     object::GCObject,
 };
+use std::{fmt, hash::Hash, marker::PhantomData};
 
 /// A Scheme value.
 ///
@@ -16,21 +15,26 @@ use rsgc::{
 /// such as vectors require first word to be an additional header to store the length
 /// or any other information. This header is always 64 bits in size and in case of
 /// vectors can be loaded as a valid fixnum value.
-#[derive(Clone, Copy, abi_stable::StableAbi)]
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Value<'gc> {
     desc: EncodedValueDescriptor,
     pd: PhantomData<&'gc ()>,
 }
 
-#[derive(Clone, Copy, abi_stable::StableAbi)]
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub union EncodedValueDescriptor {
     pub as_i64: i64,
     pub as_u64: u64,
     pub as_f64: f64,
-    #[sabi(unsafe_change_type = usize)]
-    pub ptr: GCObject,
+    pub ptr: *mut (),
+}
+
+impl EncodedValueDescriptor {
+    pub(crate) unsafe fn ptr(self) -> GCObject {
+        unsafe { std::mem::transmute(self.ptr) }
+    }
 }
 
 impl<'gc> Eq for Value<'gc> {}
@@ -44,7 +48,7 @@ impl<'gc> Hash for Value<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         if self.is_cell() {
             unsafe {
-                let obj = self.desc.ptr;
+                let obj = self.desc.ptr();
                 state.write_u64(obj.hashcode());
             }
         } else {
@@ -291,7 +295,7 @@ impl<'gc> Value<'gc> {
 
     pub fn as_cell_raw(self) -> GCObject {
         assert!(self.is_cell());
-        unsafe { self.desc.ptr }
+        unsafe { self.desc.ptr() }
     }
 }
 
@@ -335,7 +339,7 @@ impl<'gc> WeakValue<'gc> {
         }
 
         unsafe {
-            mc.raw_weak_reference_load(self.as_value().desc.ptr);
+            mc.raw_weak_reference_load(self.as_value().desc.ptr());
         }
         self.as_value()
     }
@@ -351,11 +355,11 @@ unsafe impl<'gc> Trace for WeakValue<'gc> {
             let value = self.as_value();
 
             if value.is_cell() {
-                let ptr = weak_processor.is_live_object(value.desc.ptr);
+                let ptr = weak_processor.is_live_object(value.desc.ptr());
                 if ptr.is_null() {
                     self.desc = Value::bwp().desc;
                 } else {
-                    self.desc.ptr = ptr;
+                    self.desc.ptr = ptr.to_address().to_mut_ptr();
                 }
             } else {
                 self.desc = Value::bwp().desc;
@@ -591,7 +595,9 @@ impl<'gc> Value<'gc> {
 
     pub fn from_gc<T: Tagged>(gc: Gc<'gc, T>) -> Self {
         Self {
-            desc: EncodedValueDescriptor { ptr: gc.as_gcobj() },
+            desc: EncodedValueDescriptor {
+                ptr: gc.as_gcobj().to_address().to_mut_ptr(),
+            },
             pd: PhantomData,
         }
     }

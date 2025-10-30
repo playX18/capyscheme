@@ -165,7 +165,11 @@
    &i/o-encoding make-i/o-encoding-error i/o-encoding-error? i/o-encoding-error-char
 
    file-options
-   buffer-mode
+   no-create
+   no-truncate
+   no-fail
+   buffer-mode 
+   none line block
    buffer-mode?
    utf-8-codec
    utf-16-codec

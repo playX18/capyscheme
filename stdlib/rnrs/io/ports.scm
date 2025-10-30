@@ -13,12 +13,15 @@
           &i/o-decoding make-i/o-decoding-error i/o-decoding-error?
           &i/o-encoding make-i/o-encoding-error i/o-encoding-error? i/o-encoding-error-char
           file-options
+          no-create no-truncate no-fail
           buffer-mode
+          line block none 
           buffer-mode?
           utf-8-codec
           utf-16-codec
           latin-1-codec
-          eol-style
+          eol-style 
+          lf cr crlf nel crnel ls
           error-handling-mode
           make-transcoder
           transcoder-codec

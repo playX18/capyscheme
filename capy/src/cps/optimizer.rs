@@ -935,7 +935,7 @@ pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -
 
         let state = State::new(ctx, census(term));
 
-        term = fixedpoint(inline_t(state, term, i), Some(1))(|term| shrink(ctx, *term));
+        term = fixedpoint(inline_t(state, term, i), None)(|term| shrink(ctx, *term));
     }
 
     term

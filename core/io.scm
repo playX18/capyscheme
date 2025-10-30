@@ -1,12 +1,23 @@
 (library (core io)
 
   (export file-options
+          no-truncate 
+          no-create 
+          no-fail
+
+          buffer-mode 
+          none
+          line
+          block
+
           buffer-mode
           buffer-mode?
           utf-8-codec
           utf-16-codec
           latin-1-codec
           eol-style
+          lf cr crlf nel crnel ls
+
           error-handling-mode
           make-transcoder
           transcoder-codec
