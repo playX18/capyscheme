@@ -539,11 +539,11 @@ pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
 }
 
 pub fn rewrite<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
-    let simplified_tree = fixedpoint(term, None)(|term| shrink(ctx, *term));
+    let simplified_tree = fixedpoint(term, Some(3))(|term| shrink(ctx, *term));
     //simplified_tree
     let max_size = size(simplified_tree) * 3 / 2;
 
-    fixedpoint(simplified_tree, Some(8))(|term| inline(ctx, *term, max_size))
+    fixedpoint(simplified_tree, Some(1))(|term| inline(ctx, *term, max_size))
 }
 
 pub fn rewrite_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> FuncRef<'gc> {
@@ -935,7 +935,7 @@ pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -
 
         let state = State::new(ctx, census(term));
 
-        term = fixedpoint(inline_t(state, term, i), None)(|term| shrink(ctx, *term));
+        term = fixedpoint(inline_t(state, term, i), Some(1))(|term| shrink(ctx, *term));
     }
 
     term
