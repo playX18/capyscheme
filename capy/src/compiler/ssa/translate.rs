@@ -863,7 +863,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let block = self.block_for_cont(cont);
             self.builder.switch_to_block(block);
             self.set_debug_loc(cont.source());
-            self.term(cont.body);
+            self.term(cont.body());
         }
 
         self.builder.switch_to_block(self.exit_block);

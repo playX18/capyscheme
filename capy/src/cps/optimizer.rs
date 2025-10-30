@@ -236,7 +236,7 @@ fn census<'gc>(term: TermRef<'gc>) -> im::HashMap<LVarRef<'gc>, Count> {
 
             Term::Fix(funcs, body) => {
                 for fun in funcs.iter() {
-                    rhs.insert(fun.binding, fun.body);
+                    rhs.insert(fun.binding, fun.body());
                 }
 
                 add_to_census(body, census, rhs);
@@ -323,7 +323,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                     if state.is_dead(cont.binding()) {
                         return None;
                     }
-                    let body = shrink_tree(cont.body, state.clone());
+                    let body = shrink_tree(cont.body(), state.clone());
 
                     let newh = state.var_subst(cont.handler.get());
 
@@ -357,7 +357,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                         return None;
                     }
 
-                    let body = shrink_tree(func.body, state.clone());
+                    let body = shrink_tree(func.body(), state.clone());
                     Some(func.with_body(state.ctx, body))
                 })
                 .collect::<Vec<_>>();
@@ -460,12 +460,12 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                                         state = state.with_var_to_atom_subst(var, arg);
                                     }
 
-                                    shrink_tree(fun.body, state)
+                                    shrink_tree(fun.body(), state)
                                 }),
                             );
                         } else {
                             state = state.with_vars_to_atoms(&fun.args, &args);
-                            return shrink_tree(fun.body, state);
+                            return shrink_tree(fun.body(), state);
                         }
                     }
                 }
@@ -547,7 +547,7 @@ pub fn rewrite<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
 }
 
 pub fn rewrite_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> FuncRef<'gc> {
-    let body = rewrite(ctx, func.body);
+    let body = rewrite(ctx, func.body());
     func.with_body(ctx, body)
 }
 
@@ -706,8 +706,8 @@ fn copy_c<'gc>(
         Cont {
             name: cont.name(),
             binding,
-            ignore_args: cont.ignore_args,
-            body,
+
+            body: Lock::new(body),
             args: args1,
             variadic: var1,
             source: cont.source(),
@@ -747,7 +747,7 @@ fn copy_f<'gc>(
         panic!("BUG: expected local binding for function");
     };
 
-    let body = copy_t(ctx, fun.body, subv1, subc1);
+    let body = copy_t(ctx, fun.body(), subv1, subc1);
 
     Gc::new(
         &ctx,
@@ -759,7 +759,7 @@ fn copy_f<'gc>(
             binding,
             args: Array::from_slice(&ctx, args1),
             variadic: var1,
-            body,
+            body: Lock::new(body),
             source: fun.source,
             free_vars: Lock::new(fun.free_vars.get()),
         },
@@ -790,12 +790,12 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
 
         Term::Letk(conts, body) => {
             let conts = conts.iter().copied().map(|cnt| {
-                let orig = cnt.body;
+                let orig = cnt.body();
                 let h = state.var_subst(cnt.handler.get());
                 let wcont = Gc::write(&state.ctx, cnt);
                 barrier::field!(wcont, Cont, handler).unlock().set(h);
 
-                let body = inline_t(state.clone(), cnt.body, cnt_limit);
+                let body = inline_t(state.clone(), cnt.body(), cnt_limit);
                 let newk = cnt.with_body(state.ctx, body);
 
                 let my_size = size(orig);
@@ -819,10 +819,10 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                 .iter()
                 .copied()
                 .map(|func| {
-                    let nbody = inline_t(state.clone(), func.body, cnt_limit);
+                    let nbody = inline_t(state.clone(), func.body(), cnt_limit);
                     let newf = func.with_body(state.ctx, nbody);
 
-                    let my_size = size(func.body);
+                    let my_size = size(func.body());
                     let dont = my_size > fun_limit
                         || (my_size > loop_limit && census(nbody).contains_key(&func.binding));
 
@@ -883,7 +883,7 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                         subc.insert(func.return_cont, retc);
                         subc.insert(func.handler_cont, rete);
 
-                        return copy_t(state.ctx, func.body, &mut subv, &mut subc);
+                        return copy_t(state.ctx, func.body(), &mut subv, &mut subc);
                     }
                 }
             }
@@ -947,7 +947,7 @@ pub fn size<'gc>(term: TermRef<'gc>) -> usize {
         Term::Let(_, _, body) => 1 + size(body),
         Term::Letk(conts, body) => conts.iter().map(|c| size(c.body())).sum::<usize>() + size(body),
 
-        Term::Fix(funcs, body) => funcs.iter().map(|f| size(f.body)).sum::<usize>() + size(body),
+        Term::Fix(funcs, body) => funcs.iter().map(|f| size(f.body())).sum::<usize>() + size(body),
 
         _ => 1,
     }

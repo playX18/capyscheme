@@ -38,7 +38,7 @@ pub fn cps_func<'a, 'gc>(
             return_cont,
             handler_cont,
             variadic: proc.variadic,
-            body,
+            body: Lock::new(body),
             free_vars: Lock::new(None),
         },
     )
@@ -1055,8 +1055,8 @@ pub fn convert<'gc>(
                 args: *vars,
                 variadic: *variadic,
                 noinline: false,
-                ignore_args: false,
-                body: convert(cps, *consumer, k, h),
+
+                body: Lock::new(convert(cps, *consumer, k, h)),
 
                 source: src,
                 free_vars: Lock::new(None),

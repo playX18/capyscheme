@@ -13,9 +13,12 @@ pub mod reify;
 pub mod reify_primitives;
 pub mod term;
 
-use std::{collections::HashMap, hash::BuildHasherDefault};
+use std::{
+    collections::HashMap,
+    hash::{BuildHasher, BuildHasherDefault},
+};
 
-use hashlink::{LinkedHashMap, LinkedHashSet};
+use hashlink::LinkedHashMap;
 pub use optimizer::rewrite_func;
 pub use reify::{ReifyInfo, reify};
 use simplehash::Fnv1aHasher64;
@@ -24,8 +27,8 @@ use simplehash::Fnv1aHasher64;
     Use fnv1a64 in compiler because we mainly hash by pointer
     which is just simple integer
 */
-pub type Set<K> = LinkedHashSet<K, BuildHasherDefault<Fnv1aHasher64>>;
-pub type Map<K, V> = LinkedHashMap<K, V, BuildHasherDefault<Fnv1aHasher64>>;
+pub type Set<K> = im::HashSet<K, BuildHasherDefault<Fnv1aHasher64>>;
+pub type Map<K, V> = im::HashMap<K, V, BuildHasherDefault<Fnv1aHasher64>>;
 
 pub type HMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Fnv1aHasher64>>;
 pub type HSet<K> = std::collections::HashSet<K, BuildHasherDefault<Fnv1aHasher64>>;
@@ -72,6 +75,20 @@ impl<K, H> Substitute<K> for HashMap<K, K, H>
 where
     K: Eq + std::hash::Hash + Clone,
     H: std::hash::BuildHasher,
+{
+    fn subst(&self, key: K) -> K {
+        let mut key = key;
+        while let Some(new_key) = self.get(&key) {
+            key = new_key.clone();
+        }
+        key
+    }
+}
+
+impl<K, H> Substitute<K> for im::HashMap<K, K, H>
+where
+    K: Eq + std::hash::Hash + Clone,
+    H: BuildHasher,
 {
     fn subst(&self, key: K) -> K {
         let mut key = key;

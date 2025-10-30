@@ -36,7 +36,7 @@ impl<'gc> Func<'gc> {
             self.variadic.map(|v| alloc.text(v.name.to_string())),
         );
 
-        (alloc.text("lambda ") + args.group() + alloc.line() + self.body.pretty(alloc).nest(2))
+        (alloc.text("lambda ") + args.group() + alloc.line() + self.body().pretty(alloc).nest(2))
             .nest(2)
             .group()
             .parens()
@@ -239,7 +239,7 @@ impl<'gc> Cont<'gc> {
                     + args
                     + alloc.text(format!(" @ {}", self.handler.get().name))
                     + alloc.hardline()
-                    + body.pretty(alloc).indent(2).nest(2))
+                    + body.get().pretty(alloc).indent(2).nest(2))
                 .group()
                 .parens()
             }
