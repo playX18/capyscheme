@@ -597,9 +597,13 @@ native_fn!(
     pub ("core-hashtable-copy") fn core_hashtable_copy<'gc>(
         nctx,
         ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
-        immutable: Option<bool>
+        mutable: Option<Value<'gc>>
     ) -> Value<'gc> {
-        let _immutable = immutable.unwrap_or(false);
+        let immutable = if mutable != Some(Value::new(false)) {
+            false
+        } else {
+            true
+        };
         match ht {
             Either::Right(ht) => {
                 let copy = ht.copy(nctx.ctx);
@@ -608,9 +612,9 @@ native_fn!(
             Either::Left(ht) => {
                 if let HashTableType::Generic(v) = ht.typ() {
                     let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_COPY].get();
-                    return nctx.return_call(handler, &[ht.into()]);
+                    return nctx.return_call(handler, &[ht.into(), Value::new(!immutable)]);
                 }
-                let copy = ht.copy(nctx.ctx, _immutable);
+                let copy = ht.copy(nctx.ctx, immutable);
                 nctx.return_(copy.into())
             }
         }

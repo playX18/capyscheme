@@ -44,9 +44,9 @@ unsafe impl<'gc> Trace for WeakMapping<'gc> {
         if self._key.is_bwp() {
             self._value = Value::bwp();
         } else {
-            let key = unsafe { weak_processor.is_live_object(self._key.desc.ptr) };
+            let key = unsafe { weak_processor.is_live_object(self._key.desc.ptr()) };
             if !key.is_null() {
-                self._key.desc.ptr = key;
+                self._key.desc.ptr = key.to_address().to_mut_ptr();
                 weak_processor.visitor().trace(&mut self._value);
             } else {
                 self._key = Value::bwp();
@@ -87,7 +87,7 @@ impl<'gc> WeakMapping<'gc> {
             return Value::bwp();
         }
         unsafe {
-            mc.raw_weak_reference_load(self._key.desc.ptr);
+            mc.raw_weak_reference_load(self._key.desc.ptr());
         }
         self._key
     }
@@ -98,7 +98,7 @@ impl<'gc> WeakMapping<'gc> {
         }
 
         unsafe {
-            mc.raw_weak_reference_load(self._value.desc.ptr);
+            mc.raw_weak_reference_load(self._value.desc.ptr());
         }
 
         self._value

@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_variables)]
-use abi_stable::std_types::RStr;
+
 use easy_bitfield::{BitField, BitFieldTrait};
 use rsgc::{
     Gc, Mutation, WeakProcessor,
@@ -37,7 +37,7 @@ impl<'gc> Vector<'gc> {
     pub const OFFSET_OF_DATA: usize = offset_of!(Vector, data);
 
     pub const VT: &'static VTable = &VTable {
-        type_name: RStr::from_str("Vector"),
+        type_name: "Vector",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
@@ -215,7 +215,7 @@ extern "C" fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
 
 impl ByteVector {
     pub const VT: &'static VTable = &VTable {
-        type_name: RStr::from_str("ByteVector"),
+        type_name: "ByteVector",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
@@ -378,6 +378,54 @@ impl<'gc> Index<usize> for ByteVector {
     }
 }
 
+impl<'gc> Index<core::ops::Range<usize>> for ByteVector {
+    type Output = [u8];
+
+    fn index(&self, index: core::ops::Range<usize>) -> &Self::Output {
+        &(**self)[index]
+    }
+}
+
+impl<'gc> Index<core::ops::RangeFrom<usize>> for ByteVector {
+    type Output = [u8];
+
+    fn index(&self, index: core::ops::RangeFrom<usize>) -> &Self::Output {
+        &(**self)[index]
+    }
+}
+
+impl<'gc> Index<core::ops::RangeInclusive<usize>> for ByteVector {
+    type Output = [u8];
+
+    fn index(&self, index: core::ops::RangeInclusive<usize>) -> &Self::Output {
+        &(**self)[index]
+    }
+}
+
+impl<'gc> Index<core::ops::RangeTo<usize>> for ByteVector {
+    type Output = [u8];
+
+    fn index(&self, index: core::ops::RangeTo<usize>) -> &Self::Output {
+        &(**self)[index]
+    }
+}
+
+impl<'gc> Index<core::ops::RangeToInclusive<usize>> for ByteVector {
+    type Output = [u8];
+
+    fn index(&self, index: core::ops::RangeToInclusive<usize>) -> &Self::Output {
+        &(**self)[index]
+    }
+}
+
+impl<'gc> Index<core::ops::RangeFull> for ByteVector {
+    type Output = [u8];
+
+    fn index(&self, index: core::ops::RangeFull) -> &Self::Output {
+        &(**self)[index]
+    }
+}
+
 unsafe impl<'gc> Tagged for Vector<'gc> {
     const ONLY_TC16: bool = false;
     const TC16: &'static [TypeCode16] =
@@ -424,7 +472,7 @@ unsafe impl<'gc> Tagged for Tuple<'gc> {
 
 impl<'gc> Tuple<'gc> {
     pub const VT: &'static VTable = &VTable {
-        type_name: RStr::from_str("Tuple"),
+        type_name: "Tuple",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,

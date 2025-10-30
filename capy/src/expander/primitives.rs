@@ -479,46 +479,29 @@ primitive_expanders!(
             let x = constant(ctx, Value::new(false));
             // effects are preserved by returning (begin key false)
 
-            return Some(seq_from_slice(ctx, [key, x]))
+            return Some(seq_from_slice(ctx, [key, x]));
         }
 
         let len = ls.list_length();
         if len == 1 {
             let v1 = ls.list_ref(0).unwrap();
-            return Some(prim_call_term(ctx, sym_eqvp(ctx).into(), &[key, constant(ctx, v1)], src));
+            let check = prim_call_term(ctx, sym_eqp(ctx).into(), &[key, constant(ctx, v1)], src);
+            return Some(if_term(ctx, check, constant(ctx, ls), constant(ctx, Value::new(false))));
         } else if len > 5 {
             // too much elements to check: reify into a normal call
             return None;
         }
 
-        let mut it = ls.list_reverse(ctx);
-        let last_check = prim_call_term(ctx, sym_eqvp(ctx).into(), &[key, constant(ctx, it.car())], src);
-        it = it.cdr();
-
-        let mut result = last_check;
-        let lvar_key = Symbol::from_str(ctx, "memv-tmp");
+        let mut it = ls;
+        let mut result = constant(ctx, Value::new(false));
 
         while it.is_pair() {
             let val = it.car();
+            let rest_val = it;
             it = it.cdr();
 
-            let lvar = fresh_lvar(ctx, lvar_key.into());
-
-            let if_branch = if_term(
-                ctx,
-                lref(ctx, lvar),
-                lref(ctx, lvar),
-                result,
-            );
-
-            result = let_term(
-                ctx,
-                LetStyle::Let,
-                Array::from_slice(&ctx, &[lvar]),
-                Array::from_slice(&ctx, &[prim_call_term(ctx, sym_eqvp(ctx).into(), &[key, constant(ctx, val)], src)]),
-                if_branch,
-                src,
-            );
+            let check = prim_call_term(ctx, sym_eqvp(ctx).into(), &[key, constant(ctx, val)], src);
+            result = if_term(ctx, check, constant(ctx, rest_val), result);
         }
 
         Some(result)
@@ -813,9 +796,11 @@ primitive_expanders!(
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_plus(ctx).into(), args, src));
         } else {
-            let first = args[0];
-            let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_plus(ctx).into(), &[first, ex_plus(ctx, rest, src)?], src));
+            let mut result = args[0];
+            for arg in &args[1..] {
+                result = prim_call_term(ctx, sym_plus(ctx).into(), &[result, *arg], src);
+            }
+            return Some(result);
         }
     }
 
@@ -827,9 +812,11 @@ primitive_expanders!(
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_multiply(ctx).into(), args, src));
         } else {
-            let first = args[0];
-            let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_multiply(ctx).into(), &[first, ex_multiply(ctx, rest, src)?], src));
+            let mut result = args[0];
+            for arg in &args[1..] {
+                result = prim_call_term(ctx, sym_multiply(ctx).into(), &[result, *arg], src);
+            }
+            return Some(result);
         }
     }
 
@@ -841,9 +828,11 @@ primitive_expanders!(
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_minus(ctx).into(), args, src));
         } else {
-            let first = args[0];
-            let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_minus(ctx).into(), &[first, ex_minus(ctx, rest, src)?], src));
+            let mut result = args[0];
+            for arg in &args[1..] {
+                result = prim_call_term(ctx, sym_minus(ctx).into(), &[result, *arg], src);
+            }
+            return Some(result);
         }
     }
 
@@ -855,15 +844,11 @@ primitive_expanders!(
         } else if args.len() == 2 {
             return Some(prim_call_term(ctx, sym_div(ctx).into(), args, src));
         } else {
-            let first = args[0];
-            let second = args[1];
-            let rest = &args[2..];
-            let first_div = prim_call_term(ctx, sym_div(ctx).into(), &[first, second], src);
-            if rest.len() == 1 {
-                let last_div = prim_call_term(ctx, sym_div(ctx).into(), &[first_div, rest[0]], src);
-                return Some(last_div);
+            let mut result = args[0];
+            for arg in &args[1..] {
+                result = prim_call_term(ctx, sym_div(ctx).into(), &[result, *arg], src);
             }
-            return Some(prim_call_term(ctx, sym_div(ctx).into(), &[first_div, ex_div(ctx, rest, src)?], src));
+            return Some(result);
         }
     }
 

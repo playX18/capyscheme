@@ -1,8 +1,8 @@
 use crate::{
-    prelude::{IntoValue, NativeContinuation, NativeFn, PROCEDURES},
+    prelude::{IntoValue, NativeContinuation, NativeFn, PROCEDURES, current_module},
     runtime::{
         fluids::DynamicState,
-        modules::{Module, ModuleRef, resolve_module, scm_module},
+        modules::{Module, ModuleRef, resolve_module, root_module, scm_module},
         prelude::VariableRef,
         value::{
             Closure, NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols,
@@ -10,6 +10,7 @@ use crate::{
         },
         vm::{
             VMResult, call_scheme, call_scheme_with_k, continue_to, debug,
+            load::load_thunk_in_vicinity,
             threading::{Condition, Mutex, MutexKind, ThreadObject},
         },
     },
@@ -18,7 +19,7 @@ use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, barrier, mmtk::util::Address}
 use std::{
     cell::{Cell, UnsafeCell},
     ptr::NonNull,
-    sync::atomic::AtomicUsize,
+    sync::{Once, atomic::AtomicUsize},
 };
 
 #[derive(Clone, Copy)]
@@ -45,6 +46,10 @@ impl<'gc> Context<'gc> {
 
     pub fn state(&self) -> &'gc State<'gc> {
         self.state
+    }
+
+    pub fn dynamic_state(&self) -> Value<'gc> {
+        self.state.dynamic_state.save(*self)
     }
 
     pub fn has_suspended_call(&self) -> bool {
@@ -519,21 +524,79 @@ impl Scheme {
     }
 
     pub fn new() -> Self {
-        Self {
+        let mut should_init = false;
+
+        // if VM is not initialized yet, we need to run init code
+        SCM_INITIALIZED.call_once(|| {
+            should_init = true;
+        });
+
+        let scm = Self {
             mutator: {
                 let m = Mutator::new(|mc| {
-                    init_weak_sets(&mc);
-                    init_weak_tables(&mc);
-                    init_symbols(&mc);
+                    if should_init {
+                        init_weak_sets(&mc);
+                        init_weak_tables(&mc);
+                        init_symbols(&mc);
+                    }
 
                     State::new(mc, ThreadObject::new(&mc, None))
                 });
                 m.mutate(|mc, state: &State<'_>| {
-                    super::init(state.context(mc));
+                    if should_init {
+                        super::init(state.context(mc));
+                    }
                 });
                 m
             },
+        };
+
+        if should_init { scm.boot() } else { scm }
+    }
+
+    fn boot(self) -> Self {
+        let scm = self;
+        let mut did_yield = scm.enter(|ctx| {
+            current_module(ctx).set(ctx, (*root_module(ctx)).into());
+
+            let thunk =
+                load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, false)
+                    .expect("Failed to load boot/main.scm");
+
+            let result = call_scheme(ctx, thunk, []);
+
+            match result {
+                VMResult::Ok(_) => {}
+                VMResult::Err(err) => {
+                    eprintln!("Failed to boot: {err}");
+                    std::process::exit(1);
+                }
+                VMResult::Yield => {
+                    return true;
+                }
+            }
+
+            false
+        });
+
+        while did_yield {
+            did_yield = scm.enter(|ctx| {
+                if ctx.has_suspended_call() {
+                    match ctx.resume_suspended_call() {
+                        VMResult::Ok(_) => false,
+                        VMResult::Err(err) => {
+                            eprintln!("Failed to boot: {err}");
+                            std::process::exit(1);
+                        }
+                        VMResult::Yield => true,
+                    }
+                } else {
+                    false
+                }
+            })
         }
+
+        scm
     }
 
     pub(crate) fn forked(thread_object_bits: u64, dynamic_state_bits: u64) -> Self {
@@ -654,3 +717,5 @@ pub enum Yield {
     PollRead(i32),
     PollWrite(i32),
 }
+
+pub(crate) static SCM_INITIALIZED: Once = Once::new();

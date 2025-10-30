@@ -62,7 +62,7 @@ mod arith_operations {
 
     #[scheme(name = "quotient")]
     pub fn quotient(x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
-        if y.is_zero() {
+        if y.is_zero() && y.is_exact() {
             let x = x.into_value(nctx.ctx);
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
@@ -82,7 +82,7 @@ mod arith_operations {
 
     #[scheme(name = "remainder")]
     pub fn remainder(x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
-        if y.is_zero() {
+        if y.is_zero() && y.is_exact() {
             let x = x.into_value(nctx.ctx);
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
@@ -102,7 +102,7 @@ mod arith_operations {
 
     #[scheme(name = "modulo")]
     pub fn modulo(x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
-        if y.is_zero() {
+        if y.is_zero() && y.is_exact() {
             let x = x.into_value(nctx.ctx);
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
@@ -287,7 +287,7 @@ mod arith_operations {
     #[scheme(name = "/")]
     pub fn div(acc: Number<'gc>, rest: &'gc [Value<'gc>]) -> Result<Number<'gc>, Value<'gc>> {
         if rest.is_empty() {
-            if acc.is_zero() {
+            if acc.is_zero() && acc.is_exact() {
                 let acc = acc.into_value(nctx.ctx);
                 return nctx.wrong_argument_violation(
                     "/",
@@ -319,7 +319,7 @@ mod arith_operations {
                     &args,
                 );
             };
-            if arg.is_zero() {
+            if arg.is_zero() && arg.is_exact() {
                 let mut args = Vec::with_capacity(1 + rest.len());
                 args.push(acc.into_value(nctx.ctx));
                 args.extend_from_slice(rest);
@@ -377,7 +377,7 @@ mod arith_operations {
             );
         }
 
-        if y.is_zero() {
+        if y.is_zero() && y.is_exact() {
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
                 "div",
@@ -430,7 +430,7 @@ mod arith_operations {
             );
         }
 
-        if rhs.is_zero() {
+        if rhs.is_zero() && rhs.is_exact() {
             let rhs = rhs.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
                 "div0",
@@ -523,15 +523,18 @@ mod arith_operations {
 
     #[scheme(name = "log")]
     pub fn log(x: Number<'gc>, y: Option<Number<'gc>>) -> Number<'gc> {
-        if x.is_zero() {
-            return nctx.implementation_restriction_violation(
+        if x.is_zero() && x.is_exact() {
+            return nctx.wrong_argument_violation(
                 "log",
                 "logarithm of zero is undefined",
-                &[x.into_value(ctx)],
+                Some(x.into_value(ctx)),
+                Some(1),
+                0,
+                &[],
             );
         }
         if let Some(y) = y {
-            if y.is_zero() {
+            if y.is_zero() && y.is_exact() {
                 return nctx.implementation_restriction_violation(
                     "log",
                     "logarithm with base zero is undefined",
@@ -1727,7 +1730,7 @@ mod arith_operations {
                 &args,
             );
         };
-
+        acc = x - acc;
         for arg in rest[1..].iter() {
             let Some(arg) = arg.flonum() else {
                 let mut args = Vec::with_capacity(1 + rest.len());
@@ -1744,8 +1747,6 @@ mod arith_operations {
             };
             acc -= arg;
         }
-
-        acc = x - acc;
 
         nctx.return_(Ok(acc))
     }
@@ -1799,7 +1800,7 @@ mod arith_operations {
     }
 
     #[scheme(name = "fl/")]
-    pub fn fl_div(x: f64, rest: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
+    pub fn fl_quotient(x: f64, rest: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
         if rest.is_empty() {
             if x == 0.0 {
                 let x = x.into_value(nctx.ctx);
@@ -1828,6 +1829,7 @@ mod arith_operations {
                 &args,
             );
         };
+        acc = x / acc;
 
         for arg in rest[1..].iter() {
             let Some(arg) = arg.flonum() else {
@@ -1843,44 +1845,15 @@ mod arith_operations {
                     &args,
                 );
             };
-            if arg == 0.0 {
-                let arg = arg.into_value(nctx.ctx);
-                let mut args = Vec::with_capacity(1 + rest.len());
-                args.push(x.into_value(nctx.ctx));
-                args.extend_from_slice(rest);
-                return nctx.wrong_argument_violation(
-                    "fl/",
-                    "division by zero",
-                    Some(arg),
-                    Some(2),
-                    args.len(),
-                    &args,
-                );
-            }
+
             acc /= arg;
         }
-
-        if acc == 0.0 {
-            let ctx = nctx.ctx;
-            let x = x.into_value(ctx);
-            let acc = acc.into_value(ctx);
-            return nctx.wrong_argument_violation(
-                "fl/",
-                "division by zero",
-                Some(acc),
-                Some(2),
-                2,
-                &[x, acc],
-            );
-        }
-
-        acc = x / acc;
 
         nctx.return_(Ok(acc))
     }
 
     #[scheme(name = "fldiv")]
-    pub fn fl_divide(x: f64, y: f64) -> Result<f64, Value<'gc>> {
+    pub fn fl_divide(x: f64, y: f64) -> Number<'gc> {
         if y == 0.0 {
             let ctx = nctx.ctx;
             let x = x.into_value(ctx);
@@ -1894,8 +1867,8 @@ mod arith_operations {
                 &[x, y],
             );
         }
-        let res = x / y;
-        nctx.return_(Ok(res))
+        let res = Number::integer_div(nctx.ctx, Number::Flonum(x), Number::Flonum(y));
+        nctx.return_(res)
     }
 
     #[scheme(name = "fldiv0")]
@@ -1930,8 +1903,18 @@ mod arith_operations {
                 &[x, y],
             );
         }
+        let fxdiv = if x == 0 {
+            0
+        } else if x > 0 {
+            x / y
+        } else if y > 0 {
+            (x - y + 1) / y
+        } else {
+            (x + y + 1).wrapping_div(y)
+        };
+
         // (fx- x (fx* (fxdiv x y) y))
-        let r = x - ((x / y) * y);
+        let r = x - (fxdiv.wrapping_mul(y));
         nctx.return_(r)
     }
 
@@ -2554,7 +2537,7 @@ mod arith_operations {
     }
 
     #[scheme(name = "fxdiv")]
-    pub fn fx_div(x: i32, y: i32) -> Result<i32, Value<'gc>> {
+    pub fn fx_div(x: i32, y: i32) -> Number<'gc> {
         if y == 0 {
             let ctx = nctx.ctx;
             let x = x.into_value(ctx);
@@ -2568,17 +2551,18 @@ mod arith_operations {
                 &[x, y],
             );
         }
-        let Some(res) = x.checked_div(y) else {
+        /*let Some(res) = x.checked_div(y) else {
             let ctx = nctx.ctx;
             let x = x.into_value(ctx);
             let y = y.into_value(ctx);
             return nctx.implementation_restriction_violation("fxdiv", "integer overflow", &[x, y]);
-        };
-        nctx.return_(Ok(res))
+        };*/
+        let n = Number::integer_div(nctx.ctx, Number::Fixnum(x), Number::Fixnum(y));
+        nctx.return_(n)
     }
 
     #[scheme(name = "fxdiv0")]
-    pub fn fx_div0(x: i32, y: i32) -> Result<i32, Value<'gc>> {
+    pub fn fx_div0(x: i32, y: i32) -> Number<'gc> {
         if y == 0 {
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
@@ -2590,25 +2574,9 @@ mod arith_operations {
                 &[y],
             );
         }
-        let Some(div) = x.checked_div(y) else {
-            let ctx = nctx.ctx;
-            let x = x.into_value(ctx);
-            let y = y.into_value(ctx);
-            return nctx.implementation_restriction_violation(
-                "fxdiv0",
-                "integer overflow",
-                &[x, y],
-            );
-        };
-        let mod_ = x - (div * y);
-        if mod_ < (y / 2).abs() {
-            return nctx.return_(Ok(div));
-        }
-        if y > 0 {
-            return nctx.return_(Ok(div + 1));
-        } else {
-            return nctx.return_(Ok(div - 1));
-        }
+        let n = Number::integer_div0(nctx.ctx, Number::Fixnum(x), Number::Fixnum(y));
+
+        nctx.return_(n)
     }
 
     #[scheme(name = "fxnot")]
@@ -2739,7 +2707,7 @@ mod arith_operations {
         if w == 0 {
             return nctx.return_(0);
         }
-        nctx.return_(32 - w.leading_zeros() as i32)
+        nctx.return_(ExactInteger::Fixnum(w).bit_length(ctx) as i32)
     }
 
     #[scheme(name = "fxfirst-bit-set")]
@@ -2747,7 +2715,7 @@ mod arith_operations {
         if w == 0 {
             return nctx.return_(-1);
         }
-        nctx.return_((w & -w).trailing_zeros() as i32 + 1)
+        nctx.return_(ExactInteger::first_bit_set(ctx, ExactInteger::Fixnum(w)))
     }
 
     #[scheme(name = "fxbit-set?")]
@@ -2918,11 +2886,49 @@ mod arith_operations {
     }
 
     #[scheme(name = "fxcopy-bit-field")]
-    pub fn fxcopy_bit_field(fx1: i32, fx2: i32, fx3: i32, fx4: i32) -> i32 {
-        let mask1 = -1 << fx2;
-        let mask2 = !(-1 << fx3);
-        let mask = mask1 & !mask2;
-        nctx.return_((mask & (fx4 << fx2)) | (!mask & fx1))
+    pub fn fxcopy_bit_field(to: i32, start: i32, end: i32, from: i32) -> i32 {
+        if start >= 0 && start < 32 {
+            if end >= 0 && end < 32 {
+                if start <= end {
+                    let mask = if end - start == 32 {
+                        !0
+                    } else {
+                        (1 << (end - start)) - 1
+                    };
+                    let field = from & mask;
+                    let clear_mask = !(mask << start);
+                    let result = (to & clear_mask) | (field << start);
+                    return nctx.return_(result);
+                } else {
+                    return nctx.wrong_argument_violation(
+                        "fxcopy-bit-field",
+                        "value out of range",
+                        Some(start.into()),
+                        Some(2),
+                        4,
+                        &[to.into(), start.into(), end.into(), from.into()],
+                    );
+                }
+            } else {
+                return nctx.wrong_argument_violation(
+                    "fxcopy-bit-field",
+                    "value out of range",
+                    Some(end.into()),
+                    Some(3),
+                    4,
+                    &[to.into(), start.into(), end.into(), from.into()],
+                );
+            }
+        } else {
+            return nctx.wrong_argument_violation(
+                "fxcopy-bit-field",
+                "value out of range",
+                Some(start.into()),
+                Some(2),
+                4,
+                &[to.into(), start.into(), end.into(), from.into()],
+            );
+        }
     }
 
     #[scheme(name = "fixnum->flonum")]
