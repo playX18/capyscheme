@@ -27,6 +27,9 @@ use simplehash::Fnv1aHasher64;
 pub type Set<K> = LinkedHashSet<K, BuildHasherDefault<Fnv1aHasher64>>;
 pub type Map<K, V> = LinkedHashMap<K, V, BuildHasherDefault<Fnv1aHasher64>>;
 
+pub type HMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<Fnv1aHasher64>>;
+pub type HSet<K> = std::collections::HashSet<K, BuildHasherDefault<Fnv1aHasher64>>;
+
 pub enum SingleValueSet<K> {
     Bottom,
     Singleton(K),

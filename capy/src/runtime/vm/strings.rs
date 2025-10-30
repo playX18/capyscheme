@@ -2016,10 +2016,6 @@ mod string_ops {
 }
 
 pub fn init_strings<'gc>(ctx: Context<'gc>) {
-    // SAFETY: for compatibility with C libraries that depend on locale
-    unsafe {
-        libc::setlocale(libc::LC_ALL, b"\0".as_ptr() as *const i8);
-    }
     let _ = &*LOCALE;
     let _ = string_ops::register(ctx);
 }

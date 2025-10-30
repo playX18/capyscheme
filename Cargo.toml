@@ -51,8 +51,8 @@ capy = { path = "capy" }
 capy-derive = { path = "capy-derive" }
 
 [profile.release]
-lto = false
-debug = false
+lto = true
+debug = true
 incremental = true
 rpath = true
 

@@ -51,7 +51,7 @@ use crate::{
 /// Entry point: repeatedly applies `rec` until no further contifiable
 /// opportunities remain (idempotent fixed point).
 pub fn contify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
-    fixedpoint(t, None)(|&t| rec(ctx, t))
+    fixedpoint(t, Some(2))(|&t| rec(ctx, t))
 }
 
 /// Recursive traversal that performs contification *inside* each `Fix`
