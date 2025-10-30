@@ -76,7 +76,7 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
             // (1) Transform functions & body first so analysis sees normalized children.
             let funs = funs
                 .iter()
-                .map(|f| f.with_body(ctx, rec(ctx, f.body)))
+                .map(|f| f.with_body(ctx, rec(ctx, f.body())))
                 .collect_gc(&ctx);
             let body = rec(ctx, *body);
 
@@ -99,7 +99,7 @@ impl<'gc> Func<'gc> {
     /// tail-calls (only direct tail calls counted; used to build the
     /// call graph restricted to sibling bindings inside the same `Fix`).
     pub fn tailcalls(&self) -> Set<LVarRef<'gc>> {
-        self.body.tailcalls(self.return_cont, self.handler_cont)
+        self.body().tailcalls(self.return_cont, self.handler_cont)
     }
 }
 
@@ -173,7 +173,7 @@ impl<'gc> Term<'gc> {
                         let new_ignore = ns
                             .contains(&fun.binding())
                             .then_some((fun.return_cont, fun.handler_cont));
-                        acc.join(fun.body.common_return_cont(ns, new_ignore))
+                        acc.join(fun.body().common_return_cont(ns, new_ignore))
                     })
             }
 
@@ -239,11 +239,7 @@ impl<'gc> Term<'gc> {
 
         // Build call graph restricted to tail calls among siblings.
         for fun in funs.iter() {
-            let tailcalls = fun
-                .tailcalls()
-                .intersection(&names)
-                .cloned()
-                .collect::<Vec<_>>();
+            let tailcalls = fun.tailcalls().intersection(names.clone());
 
             let from = node_map[&fun.binding()];
             for to_fun in tailcalls {
@@ -316,9 +312,9 @@ impl<'gc> Term<'gc> {
                         binding: f.binding,
                         args: f.args,
                         variadic: f.variadic,
-                        body: f.body.subst(ctx, &subst_map),
+                        body: Lock::new(f.body().subst(ctx, &subst_map)),
                         source: f.source,
-                        ignore_args: false,
+
                         free_vars: Lock::new(None),
                         reified: Cell::new(false),
                         handler: Lock::new(rc.1),
@@ -395,7 +391,7 @@ fn push_in<'gc>(
                 .iter()
                 .copied()
                 .map(|f| {
-                    let (pushed, body1) = push_in(ctx, wrap_with_cnts, f.body, ns);
+                    let (pushed, body1) = push_in(ctx, wrap_with_cnts, f.body(), ns);
                     (pushed, f.with_body(ctx, body1))
                 })
                 .unzip();
@@ -446,7 +442,7 @@ fn transform_apps<'gc>(t: TermRef<'gc>, ns: &Set<LVarRef<'gc>>, ctx: Context<'gc
         Term::Fix(funs, body) => {
             let funs = funs
                 .iter()
-                .map(|f| f.with_body(ctx, transform_apps(f.body, ns, ctx)))
+                .map(|f| f.with_body(ctx, transform_apps(f.body(), ns, ctx)))
                 .collect_gc(&ctx);
 
             let body = transform_apps(body, ns, ctx);
@@ -563,18 +559,18 @@ impl<'gc> Atom<'gc> {
 
 impl<'gc> Func<'gc> {
     pub fn subst(
-        &self,
+        self: Gc<'gc, Self>,
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> FuncRef<'gc> {
-        let body = self.body.subst(ctx, subst);
+        let body = self.body().subst(ctx, subst);
         self.with_body(ctx, body)
     }
 }
 
 impl<'gc> Cont<'gc> {
     pub fn subst(
-        &self,
+        self: Gc<'gc, Self>,
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> ContRef<'gc> {

@@ -3,6 +3,7 @@ use std::{cell::Cell, hash::Hash};
 use rsgc::{
     Gc, Trace,
     alloc::{Array, array::ArrayRef},
+    barrier,
     cell::Lock,
 };
 
@@ -91,15 +92,15 @@ pub struct Func<'gc> {
 
     pub args: Vars<'gc>,
     pub variadic: Option<LVarRef<'gc>>,
-    pub body: TermRef<'gc>,
+    pub body: Lock<TermRef<'gc>>,
 
     pub free_vars: Lock<Option<Vars<'gc>>>,
     pub meta: Value<'gc>,
 }
 
 impl<'gc> Func<'gc> {
-    pub fn with_body(&self, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
-        Gc::new(
+    pub fn with_body(self: FuncRef<'gc>, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
+        /*Gc::new(
             &ctx,
             Func {
                 meta: self.meta,
@@ -113,7 +114,15 @@ impl<'gc> Func<'gc> {
                 body,
                 free_vars: Lock::new(self.free_vars.get()),
             },
-        )
+        )*/
+
+        let this = Gc::write(&ctx, self);
+        barrier::field!(this, Func, body).unlock().set(body);
+        self
+    }
+
+    pub fn body(&self) -> TermRef<'gc> {
+        self.body.get()
     }
 }
 
@@ -143,8 +152,8 @@ pub struct Cont<'gc> {
     pub binding: LVarRef<'gc>,
     pub args: Vars<'gc>,
     pub variadic: Option<LVarRef<'gc>>,
-    pub ignore_args: bool,
-    pub body: TermRef<'gc>,
+
+    pub body: Lock<TermRef<'gc>>,
     pub source: Value<'gc>,
     pub free_vars: Lock<Option<Vars<'gc>>>,
     pub reified: Cell<bool>,
@@ -189,11 +198,15 @@ impl<'gc> Cont<'gc> {
     }
 
     pub fn body(&self) -> TermRef<'gc> {
-        self.body
+        self.body.get()
     }
 
-    pub fn with_body(&self, ctx: Context<'gc>, body: TermRef<'gc>) -> Gc<'gc, Cont<'gc>> {
-        Gc::new(
+    pub fn with_body(
+        self: ContRef<'gc>,
+        ctx: Context<'gc>,
+        body: TermRef<'gc>,
+    ) -> Gc<'gc, Cont<'gc>> {
+        /*Gc::new(
             &ctx,
             Self {
                 meta: self.meta,
@@ -210,7 +223,28 @@ impl<'gc> Cont<'gc> {
                 handler: Lock::new(self.handler.get()),
                 cold: self.cold,
             },
-        )
+        )*/
+
+        let this = Gc::new(
+            &ctx,
+            Self {
+                meta: self.meta,
+                name: self.name,
+                binding: self.binding,
+
+                args: self.args,
+                variadic: self.variadic,
+                body: Lock::new(body),
+                source: self.source,
+                noinline: self.noinline,
+                free_vars: Lock::new(self.free_vars.get()),
+                reified: Cell::new(self.reified.get()),
+                handler: Lock::new(self.handler.get()),
+                cold: self.cold,
+            },
+        );
+
+        this
     }
 
     pub fn arity_matches(&self, arg_count: usize) -> bool {
@@ -275,7 +309,7 @@ impl<'gc> TreeEq for Func<'gc> {
             && Gc::ptr_eq(self.return_cont, other.return_cont)
             && self.args.tree_eq(&other.args)
             && self.variadic.tree_eq(&other.variadic)
-            && self.body.tree_eq(&other.body)
+            && self.body().tree_eq(&other.body())
     }
 }
 
@@ -411,7 +445,7 @@ impl<'gc> Term<'gc> {
                     for arg in func.args.iter().chain(func.variadic.iter()) {
                         arg.ref_count.set(0);
                     }
-                    func.body.count_refs();
+                    func.body().count_refs();
                 }
                 body.count_refs();
             }
@@ -424,7 +458,7 @@ impl<'gc> Term<'gc> {
                     for arg in cont.args.iter().chain(cont.variadic.iter()) {
                         arg.ref_count.set(0);
                     }
-                    cont.body.count_refs();
+                    cont.body().count_refs();
                 }
                 body.count_refs();
             }
@@ -518,8 +552,8 @@ where
                 let mut changed = false;
 
                 for func in procs.iter() {
-                    let nbody = rec(ctx, pre, post, func.body);
-                    if !Gc::ptr_eq(nbody, func.body) {
+                    let nbody = rec(ctx, pre, post, func.body());
+                    if !Gc::ptr_eq(nbody, func.body()) {
                         changed = true;
                         rhs.push(func.with_body(ctx, nbody));
                     } else {
@@ -543,8 +577,8 @@ where
                 let mut changed = false;
 
                 for cont in conts.iter() {
-                    let nbody = rec(ctx, pre, post, cont.body);
-                    if !Gc::ptr_eq(nbody, cont.body) {
+                    let nbody = rec(ctx, pre, post, cont.body());
+                    if !Gc::ptr_eq(nbody, cont.body()) {
                         changed = true;
                         nconts.push(cont.with_body(ctx, nbody));
                     } else {
@@ -605,14 +639,14 @@ pub fn fold_cps<'gc, ACC>(
             Term::Fix(funcs, body) => {
                 let acc = funcs
                     .iter()
-                    .fold(acc, |acc, func| foldts(ctx, down, up, acc, func.body));
+                    .fold(acc, |acc, func| foldts(ctx, down, up, acc, func.body()));
                 foldts(ctx, down, up, acc, *body)
             }
 
             Term::Letk(conts, body) => {
                 let acc = conts
                     .iter()
-                    .fold(acc, |acc, cont| foldts(ctx, down, up, acc, cont.body));
+                    .fold(acc, |acc, cont| foldts(ctx, down, up, acc, cont.body()));
                 foldts(ctx, down, up, acc, *body)
             }
         };

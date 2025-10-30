@@ -123,7 +123,7 @@ impl<'gc> ModuleBuilder<'gc> {
             let mut ssa =
                 SSABuilder::new(self, builder, ContOrFunc::Func(func), thunks, func_debug_cx);
 
-            ssa.term(func.body);
+            ssa.term(func.body());
             ssa.finalize();
 
             ssa.builder.seal_all_blocks();
@@ -158,7 +158,7 @@ impl<'gc> ModuleBuilder<'gc> {
             let mut ssa =
                 SSABuilder::new(self, builder, ContOrFunc::Cont(cont), thunks, func_debug_cx);
 
-            ssa.term(cont.body);
+            ssa.term(cont.body());
             ssa.finalize();
 
             ssa.builder.seal_all_blocks();

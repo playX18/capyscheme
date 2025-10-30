@@ -140,7 +140,7 @@ pub fn compile_file<'gc>(
 
     cps = crate::cps::rewrite_func(ctx, cps);
 
-    cps = cps.with_body(ctx, contify(ctx, cps.body));
+    cps = cps.with_body(ctx, contify(ctx, cps.body()));
 
     let path = file.to_owned();
     if !true {

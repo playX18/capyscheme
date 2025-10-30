@@ -433,7 +433,7 @@ pub fn compile(
 
     let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
     cps = crate::cps::rewrite_func(nctx.ctx, cps);
-    cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+    cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body()));
 
     if scm_log_level(nctx.ctx) >= 5 {
         let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
@@ -629,7 +629,7 @@ fn continue_loading_k(
     let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
 
     cps = crate::cps::rewrite_func(nctx.ctx, cps);
-    cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body));
+    cps = cps.with_body(nctx.ctx, contify(nctx.ctx, cps.body()));
 
     if !true {
         let doc = ir.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
