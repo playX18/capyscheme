@@ -629,18 +629,19 @@
                         string-upcase string-downcase string-titlecase string-foldcase
                         string-ci=? string-ci<? string-ci>? string-ci<=? string-ci>=?
                         string-normalize-nfd  string-normalize-nfkd string-normalize-nfc string-normalize-nfkc
-                        void 
-                        float
-                        float double
-                        complex-float complex-double
-                        short
-                        unsigned-short
-                        int unsigned-int long unsigned-long size_t ssize_t ptrdiff_t
-                        int8 uint8
-                        uint16 int16
-                        uint32 int32
-                        uint64 int64
-                        intptr_t uintptr_t
+                        %native-extension
+                        %void 
+                        %float
+                        %float %double
+                        %complex-float %complex-double
+                        %short
+                        %unsigned-short
+                        %int %unsigned-int %long %unsigned-long %size_t %ssize_t %ptrdiff_t
+                        %int8 %uint8
+                        %uint16 %int16
+                        %uint32 %int32
+                        %uint64 %int64
+                        %intptr_t %uintptr_t
                         sizeof alignof
                         %null-pointer
                         pointer?

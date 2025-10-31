@@ -1321,5 +1321,6 @@
                   host-os-sls host-family-sls arch-sls)
             %load-extensions)))
 
+
 (let ([user-module (define-module* '(capy user))])
   (current-module user-module))

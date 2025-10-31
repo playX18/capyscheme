@@ -453,6 +453,10 @@ impl TypeCode8 {
     pub const THREAD_MUTEX: Self = Self(45);
     pub const THREAD_CONDITION: Self = Self(46);
 
+    /// Native object that has a custom VTable
+    /// and is provided by foreign code.
+    pub const NATIVE_OBJECT: Self = Self(47);
+
     pub const UNKNOWN: Self = Self(0xFF);
 }
 

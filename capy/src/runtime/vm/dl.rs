@@ -1,11 +1,12 @@
 use super::ffi::*;
-use crate::native_fn;
+use crate::prelude::*;
 use crate::runtime::prelude::*;
 use crate::runtime::vm::VMResult;
-native_fn!(
-    register_dynload_fns:
 
-    pub ("dlopen") fn dlopen<'gc>(nctx, name: Value<'gc>, flags: i32) -> Value<'gc> {
+#[scheme(path=capy)]
+mod dl_ops {
+    #[scheme(name = "dlopen")]
+    pub fn dlopen(name: Value<'gc>, flags: i32) -> Value<'gc> {
         let handle = if name == Value::new(false) {
             unsafe { libc::dlopen(std::ptr::null(), flags) }
         } else if name.is::<Str>() {
@@ -13,7 +14,14 @@ native_fn!(
             let cstr = std::ffi::CString::new(s).unwrap();
             unsafe { libc::dlopen(cstr.as_ptr(), flags) }
         } else {
-            return nctx.wrong_argument_violation("dlopen", "expected string or false", None, None, 2, &[name, flags.into()]);
+            return nctx.wrong_argument_violation(
+                "dlopen",
+                "expected string or false",
+                None,
+                None,
+                2,
+                &[name, flags.into()],
+            );
         };
 
         if handle.is_null() {
@@ -26,14 +34,18 @@ native_fn!(
                     cstr.to_string_lossy().into_owned()
                 }
             };
-            return nctx.raise_error("dlopen", &format!("file: {name}, error: {dlerror}"), &[name.into(), flags.into()]);
+            return nctx.raise_error(
+                "dlopen",
+                &format!("file: {name}, error: {dlerror}"),
+                &[name.into(), flags.into()],
+            );
         }
 
         let ptr = Gc::new(&nctx.ctx, Pointer::new(handle as _));
         nctx.return_(ptr.into())
     }
-
-    pub ("dlclose") fn dlclose<'gc>(nctx, handle: Gc<'gc, Pointer>) -> Value<'gc> {
+    #[scheme(name = "dlclose")]
+    pub fn dlclose(handle: Gc<'gc, Pointer>) -> Value<'gc> {
         let handle_ptr = handle.value();
 
         let result = unsafe { libc::dlclose(handle_ptr as _) };
@@ -47,20 +59,32 @@ native_fn!(
                     cstr.to_string_lossy().into_owned()
                 }
             };
-            return nctx.raise_error("dlclose", &format!("handle: {handle:p}, error: {dlerror}"), &[handle.into()]);
+            return nctx.raise_error(
+                "dlclose",
+                &format!("handle: {handle:p}, error: {dlerror}"),
+                &[handle.into()],
+            );
         }
 
         nctx.return_(Value::new(true))
     }
 
-    pub ("dlsym") fn dlsym<'gc>(nctx, handle: Gc<'gc, Pointer>, symbol: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "dlsym")]
+    pub fn dlsym(handle: Gc<'gc, Pointer>, symbol: Value<'gc>) -> Value<'gc> {
         let handle_ptr = handle.value();
 
         let symbol_cstr = if symbol.is::<Str>() {
             let s = symbol.downcast::<Str>().to_string();
             std::ffi::CString::new(s).unwrap()
         } else {
-            return nctx.wrong_argument_violation("dlsym", "expected string", None, None, 2, &[handle.into(), symbol]);
+            return nctx.wrong_argument_violation(
+                "dlsym",
+                "expected string",
+                None,
+                None,
+                2,
+                &[handle.into(), symbol],
+            );
         };
 
         let sym_ptr = unsafe { libc::dlsym(handle_ptr as _, symbol_cstr.as_ptr()) };
@@ -74,17 +98,22 @@ native_fn!(
                     cstr.to_string_lossy().into_owned()
                 }
             };
-            return nctx.raise_error("dlsym", &format!("handle: {handle:p}, symbol: {}, error: {dlerror}", symbol_cstr.to_string_lossy()), &[handle.into(), symbol]);
+            return nctx.raise_error(
+                "dlsym",
+                &format!(
+                    "handle: {handle:p}, symbol: {}, error: {dlerror}",
+                    symbol_cstr.to_string_lossy()
+                ),
+                &[handle.into(), symbol],
+            );
         }
 
         let ptr = Gc::new(&nctx.ctx, Pointer::new(sym_ptr as _));
         nctx.return_(ptr.into())
     }
 
-    pub ("load-native-extension") fn load_native_extension<'gc>(
-        nctx,
-        path: StringRef<'gc>
-    ) -> Result<Value<'gc>, Value<'gc>> {
+    #[scheme(name = "load-native-extension")]
+    pub fn load_native_extension(path: StringRef<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         let handle = unsafe {
             libc::dlopen(
                 std::ffi::CString::new(path.to_string()).unwrap().as_ptr(),
@@ -121,22 +150,23 @@ native_fn!(
                 };
                 return nctx.raise_error(
                     "load-native-extension",
-                    &format!("failed to find symbol 'capy_register_extension' in {path}: {dlerror}"),
+                    &format!(
+                        "failed to find symbol 'capy_register_extension' in {path}: {dlerror}"
+                    ),
                     &[path.into()],
                 );
             }
             std::mem::transmute(symbol)
         };
-        println!("call init on extension");
+
         let result = init(&nctx.ctx);
         match result {
             VMResult::Ok(v) => nctx.return_(Ok(v)),
             VMResult::Err(e) => nctx.return_(Err(e)),
-            _ => todo!()
+            _ => todo!(),
         }
     }
-);
-
+}
 pub(crate) fn init_dl<'gc>(ctx: Context<'gc>) {
-    register_dynload_fns(ctx);
+    dl_ops::register(ctx);
 }

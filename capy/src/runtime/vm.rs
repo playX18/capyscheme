@@ -23,6 +23,7 @@ pub mod dl;
 pub mod errors;
 pub mod eval;
 pub mod expand;
+pub mod extensions;
 pub mod ffi;
 pub mod hash;
 pub mod interrupts;

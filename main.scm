@@ -1,8 +1,8 @@
-(define-library (clang)
-(begin
-    (load-native-extension "./target/x86_64-unknown-linux-gnu/release/libcapy_clang.so")
+;; A wrapper library for Clang API
 
-    (format #t "Clang extension loaded successfully.~%")
+#!r6rs 
 
-    (clang-parse "./wrapper.h")
-))
+(library (clang)
+  (export)
+  (import (core))
+  (load-native-extension (string-append "libcapy_clang." %native-extension)))

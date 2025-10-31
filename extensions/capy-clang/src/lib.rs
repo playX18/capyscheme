@@ -1,9 +1,7 @@
-use std::sync::OnceLock;
-
+use capy::prelude::*;
 use capy::runtime::vm::VMResult;
 use clang::Clang;
-
-use capy::prelude::*;
+use std::sync::OnceLock;
 
 #[scheme(path=clang)]
 mod clang_ops {
@@ -16,6 +14,15 @@ mod clang_ops {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn capy_register_extension<'gc>(ctx: &Context<'gc>) -> VMResult<'gc> {
+    static REGISTER: OnceLock<()> = OnceLock::new();
+    REGISTER.get_or_init(|| {
+        clang_ops::register(*ctx);
+    });
+
+    VMResult::Ok(Value::new(true))
+}
 fn parse<'gc>(_ctx: &Context<'gc>, path: &str) {
     let clang = Clang::new().unwrap();
     let index = clang::Index::new(&clang, false, false);
@@ -24,15 +31,4 @@ fn parse<'gc>(_ctx: &Context<'gc>, path: &str) {
     let entity = translation_unit.get_entity();
 
     println!("Entity: {:?}", entity);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C-unwind" fn capy_register_extension<'gc>(ctx: &Context<'gc>) -> VMResult<'gc> {
-    static REGISTER: OnceLock<()> = OnceLock::new();
-    REGISTER.get_or_init(|| {
-        clang_ops::register(*ctx);
-    });
-
-    println!("clang extension loaded");
-    VMResult::Ok(Value::new(true))
 }

@@ -1,0 +1,12 @@
+[package]
+name = "capy-term"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+capy.workspace = true 
+libc.workspace = true 
+
+
+[lib]
+crate-type = ["cdylib"]

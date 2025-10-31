@@ -40,12 +40,13 @@ build portable:
 
 build-extensions:
     @echo 'Building CapyScheme extensions for target '{{target}}''
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-clang 
+    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-clang
+    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-term 
 
 # Perform portable installation of CapyScheme which installs the binary
 # and all necessary resources to the specified install prefix
 # by default, it installs to ~/.local/share/capy
-install-portable: (build "true")
+install-portable: (build "true") (build-extensions)
     @echo 'Installing CapyScheme to {{install-prefix}}/share/capy/{{version}}'
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}/extensions
@@ -57,6 +58,7 @@ install-portable: (build "true")
     cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
+    cp {{target-path}}/libcapy_*.* {{install-prefix}}/share/capy/{{version}}/extensions/
    
     @echo "CapyScheme installed to {{install-prefix}}/share/capy/{{version}}"
     @echo "Add {{install-prefix}}/share/capy/{{version}} to your PATH to use CapyScheme"

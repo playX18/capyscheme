@@ -17,7 +17,8 @@ $ just prefix=/usr/local/share install-portable
 ```
 
 After everything is installed you should add installed directory into PATH and run `capy` binary for the
-first time to build boot library.
+first time to build boot library. If you wish to use native extensions also add `extensions/` directory under prefix
+into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
 
 First boot should take around 30-40 seconds on decent systems, after that please restart the binary if you're
 entered interactive mode. 
