@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 
-members = ["extensions/capy-term","capy", "capy-derive", "capy-driver", "extensions/capy-clang"]
+members = ["capy", "capy-derive", "capy-driver", "extensions/capy-clang"]
 default-members = ["capy"]
 
 [workspace.dependencies]
