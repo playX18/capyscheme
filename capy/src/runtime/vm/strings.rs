@@ -1178,7 +1178,7 @@ mod string_ops {
         str: Gc<'gc, Str<'gc>>,
         endian: Option<Endianness>,
     ) -> Gc<'gc, ByteVector> {
-        let endian = endian.unwrap_or(Endianness::Little);
+        let endian = endian.unwrap_or(Endianness::Big);
         let utf16_data: Vec<u16> = str.to_string().encode_utf16().collect();
         let mut bytes = Vec::with_capacity(utf16_data.len() * 2);
         for code_unit in utf16_data {
@@ -1203,7 +1203,7 @@ mod string_ops {
         } else if endian == Some(sym_big(ctx).into()) {
             Endianness::Big
         } else if endian.is_none() {
-            Endianness::Little // default
+            Endianness::Big // default
         } else {
             return nctx.wrong_argument_violation(
                 "string->utf32",

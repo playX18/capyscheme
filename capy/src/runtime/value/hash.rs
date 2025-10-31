@@ -591,7 +591,6 @@ impl<'gc> HashTable<'gc> {
         drop(guard);
         for (k, v) in self.iter() {
             new_table.put(ctx, k, v);
-            println!("copy {k}: {v}")
         }
 
         new_table

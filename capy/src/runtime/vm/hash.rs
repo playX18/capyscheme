@@ -599,10 +599,9 @@ native_fn!(
         ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,
         mutable: Option<Value<'gc>>
     ) -> Value<'gc> {
-        let immutable = if mutable != Some(Value::new(false)) {
-            false
-        } else {
-            true
+        let immutable = match mutable {
+            Some(mutable) => !mutable,
+            None => true
         };
         match ht {
             Either::Right(ht) => {
