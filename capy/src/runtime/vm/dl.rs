@@ -127,7 +127,7 @@ native_fn!(
             }
             std::mem::transmute(symbol)
         };
-
+        println!("call init on extension");
         let result = init(&nctx.ctx);
         match result {
             VMResult::Ok(v) => nctx.return_(Ok(v)),

@@ -73,7 +73,7 @@ impl<'gc> Into<Atom<'gc>> for LVarRef<'gc> {
     }
 }
 
-#[derive(Debug, Clone, Trace, Copy)]
+#[derive(Debug, Clone, Trace, Copy, PartialEq, Eq)]
 #[collect(no_drop)]
 pub enum Expression<'gc> {
     PrimCall(Value<'gc>, Atoms<'gc>, LVarRef<'gc>, Value<'gc>),
@@ -100,9 +100,12 @@ pub struct Func<'gc> {
 
 impl<'gc> Func<'gc> {
     pub fn with_body(self: FuncRef<'gc>, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
-        /*Gc::new(
+        /*if Gc::ptr_eq(self.body.get(), body) {
+            return self;
+        }
+        let this = Gc::new(
             &ctx,
-            Func {
+            Self {
                 meta: self.meta,
                 name: self.name,
                 source: self.source,
@@ -111,13 +114,14 @@ impl<'gc> Func<'gc> {
                 handler_cont: self.handler_cont,
                 args: self.args,
                 variadic: self.variadic,
-                body,
+                body: Lock::new(body),
                 free_vars: Lock::new(self.free_vars.get()),
             },
-        )*/
+        );
 
-        let this = Gc::write(&ctx, self);
-        barrier::field!(this, Func, body).unlock().set(body);
+        this*/
+        let wfunc = Gc::write(&ctx, self);
+        barrier::field!(wfunc, Self, body).unlock().set(body);
         self
     }
 
@@ -206,24 +210,9 @@ impl<'gc> Cont<'gc> {
         ctx: Context<'gc>,
         body: TermRef<'gc>,
     ) -> Gc<'gc, Cont<'gc>> {
-        /*Gc::new(
-            &ctx,
-            Self {
-                meta: self.meta,
-                name: self.name,
-                binding: self.binding,
-                ignore_args: self.ignore_args,
-                args: self.args,
-                variadic: self.variadic,
-                body,
-                source: self.source,
-                noinline: self.noinline,
-                free_vars: Lock::new(self.free_vars.get()),
-                reified: Cell::new(self.reified.get()),
-                handler: Lock::new(self.handler.get()),
-                cold: self.cold,
-            },
-        )*/
+        if Gc::ptr_eq(self.body.get(), body) {
+            return self;
+        }
 
         let this = Gc::new(
             &ctx,
