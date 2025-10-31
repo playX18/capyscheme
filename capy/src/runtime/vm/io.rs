@@ -441,9 +441,17 @@ native_fn!(
         nctx.return_(metadata.is_ok())
     }
 
-    pub ("file-name-separator?") fn file_name_separator<'gc>(nctx, s: Gc<'gc, Str<'gc>>) -> bool {
-        let sep = std::path::MAIN_SEPARATOR.to_string();
-        nctx.return_(s.to_string() == sep)
+    pub ("file-name-separator?") fn file_name_separator<'gc>(nctx, s: Either<StringRef<'gc>, char>) -> bool {
+        let sep = std::path::MAIN_SEPARATOR;
+        match s {
+            Either::Left(s) => {
+                let s_str = s.to_string();
+                nctx.return_(s_str.len() == 1 && s_str.chars().next().unwrap() == sep)
+            }
+            Either::Right(c) => {
+                nctx.return_(c == sep)
+            }
+        }
     }
 
     pub ("system-file-name-convention") fn system_filename_conv<'gc>(nctx) -> Gc<'gc, Symbol<'gc>> {

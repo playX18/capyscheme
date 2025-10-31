@@ -42,6 +42,7 @@ pub fn scheme(
 
 mod fun;
 mod module;
+mod structure;
 mod var;
 
 pub(crate) struct Input {

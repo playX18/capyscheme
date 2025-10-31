@@ -21,19 +21,26 @@
 (define (rtd-ancestor? parent rtd)
   (let loop ((rtd rtd))
     (or (eq? rtd parent)
-      (and (rtd-parent rtd)
+      (and rtd
            (loop (rtd-parent rtd))))))
 
-(define (rtd-inherited-field-count rtd)
-  (let loop ([rtd (rtd-parent rtd)] [count 0])
-    (if rtd
-      (loop (rtd-parent rtd) (+ count (length (rtd-fields rtd))))
-      count)))
+(define rtd-inherited-field-count
+  (lambda (rtd)
+    (let loop ((rtd (rtd-parent rtd)) (count 0))
+      (cond (rtd
+             (loop (rtd-parent rtd)
+                   (+ count (length (rtd-fields rtd)))))
+            (else
+             count)))))
 
 
 
-(define (rtd-total-field-count rtd)
-  (+ (rtd-inherited-field-count rtd) (length (rtd-fields rtd))))
+
+
+(define rtd-total-field-count
+  (lambda (rtd)
+    (+ (rtd-inherited-field-count rtd) (length (rtd-fields rtd)))))
+
 
 (define (record-type-name rtd)
   (or (record-type-descriptor? rtd)
@@ -132,10 +139,9 @@
   (tuple-ref rcd 4))
 
 
-(define default-protocol
+(define %default-protocol
   (lambda (rtd)
     (let ([parent (rtd-parent rtd)])
-
       (if parent
         (let ([parent-field-count (rtd-total-field-count parent)])
           (lambda (p)
@@ -174,8 +180,9 @@
                   (assertion-violation 'record-constructor "wrong number of arguments" field-values))))))))))
 
 (define (make-record-constructor-descriptor rtd parent protocol)
+
   (let ([custom-protocol? (and protocol #t)]
-        [protocol (or protocol (default-protocol rtd))]
+        [protocol (or protocol (%default-protocol rtd))]
         [parent
           (or parent
             (if (rtd-parent rtd)

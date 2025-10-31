@@ -1,6 +1,7 @@
 (library (core)
   (export
     cond-expand
+    %native-extension
     %load-path
     %load-extensions
     %load-compiled-path

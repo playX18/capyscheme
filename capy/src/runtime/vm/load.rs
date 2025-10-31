@@ -22,6 +22,11 @@ global!(
     pub loc_load_extensions<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-extensions", list!(ctx, Str::new(&ctx, "scm", true)));
     pub loc_load_compiled_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-compiled-path", Value::null());
     pub loc_load_compiled_extensions<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-compiled-extensions", Value::null());
+    pub loc_native_extension<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%native-extension", Str::new(&ctx, if cfg!(target_vendor="apple") {
+        "dylib"
+    } else {
+        "so"
+    }, true));
 
     pub loc_compile_fallback_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%compile-fallback-path", Value::null());
 
@@ -38,6 +43,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     let _ = loc_fresh_auto_compile(ctx);
     let _ = loc_load_extensions(ctx);
     let _ = loc_load_compiled_extensions(ctx);
+    let _ = loc_native_extension(ctx);
     const FALLBACK_DIR: &str = concat!("capy/cache/", env!("CARGO_PKG_VERSION"));
 
     let cache_dir = if let Ok(env) = std::env::var("XDG_CACHE_HOME") {
