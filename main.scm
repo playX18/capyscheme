@@ -1,8 +1,8 @@
-(define (fac x)
-    (if (< x 2)
-        1
-        (* x (fac (- x 1)))))
+(define-library (clang)
+(begin
+    (load-native-extension "./target/x86_64-unknown-linux-gnu/release/libcapy_clang.so")
 
-(define x (fac 4000))
+    (format #t "Clang extension loaded successfully.~%")
 
-(format #t "fac(4000) = ~a~%" x)
+    (clang-parse "./wrapper.h")
+))

@@ -2,3 +2,8 @@
 
 /.direnv
 .direnv/
+out
+io-tmp*
+tmp-catch-out
+*.h 
+main.scm

@@ -12,6 +12,7 @@ pub mod pretty;
 pub mod reify;
 pub mod reify_primitives;
 pub mod term;
+pub mod reduce;
 
 use std::{
     collections::HashMap,

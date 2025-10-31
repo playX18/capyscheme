@@ -4,10 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-capy = { workspace = true, features = ["portable"] }
+capy = { workspace = true, features = ["portable"], artifact = "cdylib" }
 # we don't need clang runtime
 clang = { workspace = true, default-features = false }
 paste.workspace = true
+
 
 [lib]
 name = "capy_clang"

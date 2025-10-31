@@ -58,17 +58,29 @@ pub fn contify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
 /// after transforming its substructure.
 fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     match &*t {
-        Term::Let(name, expr, body) => {
-            let body = rec(ctx, *body);
+        Term::Let(name, expr, prev_body) => {
+            let body = rec(ctx, *prev_body);
+            if Gc::ptr_eq(body, *prev_body) {
+                return t;
+            }
             Gc::new(&ctx, Term::Let(*name, *expr, body))
         }
 
-        Term::Letk(ks, body) => {
-            let ks = ks
+        Term::Letk(prev_ks, prev_body) => {
+            let ks = prev_ks
                 .iter()
                 .map(|k| k.with_body(ctx, rec(ctx, k.body())))
-                .collect_gc(&ctx);
-            let body = rec(ctx, *body);
+                .collect::<Vec<_>>();
+            let ks = if ks.iter().zip(prev_ks.iter()).all(|(a, b)| a == b) {
+                *prev_ks
+            } else {
+                Array::from_slice(&ctx, ks)
+            };
+
+            let body = rec(ctx, *prev_body);
+            if Gc::ptr_eq(body, *prev_body) && Gc::ptr_eq(ks, *prev_ks) {
+                return t;
+            }
             Gc::new(&ctx, Term::Letk(ks, body))
         }
 
@@ -467,71 +479,143 @@ fn transform_apps<'gc>(t: TermRef<'gc>, ns: &Set<LVarRef<'gc>>, ctx: Context<'gc
 
 impl<'gc> Term<'gc> {
     pub fn subst(
-        &self,
+        self: TermRef<'gc>,
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> TermRef<'gc> {
-        match self {
-            Self::Let(name, expr, body) => {
-                let expr = expr.subst(ctx, subst);
-                let body = body.subst(ctx, subst);
+        match &*self {
+            Self::Let(name, prev_expr, prev_body) => {
+                let expr = prev_expr.subst(ctx, subst);
+                let body = prev_body.subst(ctx, subst);
+                if &expr == prev_expr && Gc::ptr_eq(body, *prev_body) {
+                    return self;
+                }
                 TermRef::new(&ctx, Self::Let(*name, expr, body))
             }
 
-            Self::Letk(ks, body) => {
-                let ks = ks.iter().map(|k| k.subst(ctx, subst)).collect_gc(&ctx);
-                let body = body.subst(ctx, subst);
+            Self::Letk(prev_ks, prev_body) => {
+                let ks = prev_ks
+                    .iter()
+                    .map(|k| k.subst(ctx, subst))
+                    .collect::<Vec<_>>();
+                let ks = if ks.iter().zip(prev_ks.iter()).all(|(a, b)| a == b) {
+                    *prev_ks
+                } else {
+                    Array::from_slice(&ctx, ks)
+                };
+                let body = prev_body.subst(ctx, subst);
+                if Gc::ptr_eq(body, *prev_body) && Gc::ptr_eq(ks, *prev_ks) {
+                    return self;
+                }
                 TermRef::new(&ctx, Self::Letk(ks, body))
             }
 
-            Self::Fix(funs, body) => {
-                let funs = funs.iter().map(|f| f.subst(ctx, subst)).collect_gc(&ctx);
-                let body = body.subst(ctx, subst);
+            Self::Fix(prev_funs, prev_body) => {
+                let funs = prev_funs
+                    .iter()
+                    .map(|f| f.subst(ctx, subst))
+                    .collect::<Vec<_>>();
+                let body = prev_body.subst(ctx, subst);
+                if funs
+                    .iter()
+                    .zip(prev_funs.iter())
+                    .all(|(a, b)| Gc::ptr_eq(*a, *b))
+                    && Gc::ptr_eq(body, *prev_body)
+                {
+                    return self;
+                }
+                let funs = Array::from_slice(&ctx, funs);
                 TermRef::new(&ctx, Self::Fix(funs, body))
             }
 
-            Self::App(func, k, h, args, src) => {
-                let func = func.subst(ctx, subst);
-                let k = subst.subst(*k);
-                let h = subst.subst(*h);
-                let args = args
+            Self::App(prev_func, prev_k, prev_h, prev_args, src) => {
+                let func = prev_func.subst(ctx, subst);
+                let k = subst.subst(*prev_k);
+                let h = subst.subst(*prev_h);
+                let args = prev_args
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))
-                    .collect_gc(&ctx);
+                    .collect::<Vec<_>>();
+                let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                    *prev_args
+                } else {
+                    Array::from_slice(&ctx, args)
+                };
+
+                if &func == prev_func
+                    && *prev_k == k
+                    && *prev_h == h
+                    && Gc::ptr_eq(args, *prev_args)
+                {
+                    return self;
+                }
+
                 TermRef::new(&ctx, Self::App(func, k, h, args, *src))
             }
 
-            Self::Continue(k, args, src) => {
-                let k = subst.subst(*k);
-                let args = args
+            Self::Continue(prev_k, prev_args, src) => {
+                let k = subst.subst(*prev_k);
+                let args = prev_args
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))
-                    .collect_gc(&ctx);
+                    .collect::<Vec<_>>();
+                let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                    *prev_args
+                } else {
+                    Array::from_slice(&ctx, args)
+                };
+                if *prev_k == k && Gc::ptr_eq(args, *prev_args) {
+                    return self;
+                }
                 TermRef::new(&ctx, Self::Continue(k, args, *src))
             }
 
             Self::If {
-                test,
-                consequent,
-                consequent_args,
-                alternative,
-                alternative_args,
+                test: prev_test,
+                consequent: prev_consequent,
+                consequent_args: prev_consequent_args,
+                alternative: prev_alternative,
+                alternative_args: prev_alternative_args,
                 hints,
             } => {
-                let test = test.subst(ctx, subst);
-                let consequent = subst.subst(*consequent);
-                let alternative = subst.subst(*alternative);
+                let test = prev_test.subst(ctx, subst);
+                let consequent = subst.subst(*prev_consequent);
+                let alternative = subst.subst(*prev_alternative);
                 let hints = *hints;
-                let consequent_args = consequent_args.map(|args| {
-                    args.iter()
+                let consequent_args = prev_consequent_args.map(|prev_args| {
+                    let args = prev_args
+                        .iter()
                         .map(|arg| arg.subst(ctx, subst))
-                        .collect_gc(&ctx)
+                        .collect::<Vec<_>>();
+                    if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                        prev_args.clone()
+                    } else {
+                        Array::from_slice(&ctx, args)
+                    }
                 });
-                let alternative_args = alternative_args.map(|args| {
-                    args.iter()
+                let alternative_args = prev_alternative_args.map(|prev_args| {
+                    let args = prev_args
+                        .iter()
                         .map(|arg| arg.subst(ctx, subst))
-                        .collect_gc(&ctx)
+                        .collect::<Vec<_>>();
+                    if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                        prev_args.clone()
+                    } else {
+                        Array::from_slice(&ctx, args)
+                    }
                 });
+
+                if test == *prev_test
+                    && Gc::ptr_eq(consequent, *prev_consequent)
+                    && Gc::ptr_eq(alternative, *prev_alternative)
+                    && (consequent_args
+                        .is_some_and(|args| Gc::ptr_eq(args, prev_consequent_args.unwrap())))
+                    && (alternative_args
+                        .is_some_and(|args| Gc::ptr_eq(args, prev_alternative_args.unwrap())))
+                {
+                    return self;
+                }
+
                 TermRef::new(
                     &ctx,
                     Self::If {
@@ -588,11 +672,16 @@ impl<'gc> Cont<'gc> {
 impl<'gc> Expression<'gc> {
     pub fn subst(self, ctx: Context<'gc>, subst: &Map<LVarRef<'gc>, LVarRef<'gc>>) -> Self {
         match self {
-            Self::PrimCall(name, args, h, src) => {
-                let args = args
+            Self::PrimCall(name, prev_args, h, src) => {
+                let args = prev_args
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))
-                    .collect_gc(&ctx);
+                    .collect::<Vec<_>>();
+                let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                    prev_args
+                } else {
+                    Array::from_slice(&ctx, args)
+                };
                 let h = subst.subst(h);
                 Self::PrimCall(name, args, h, src)
             }

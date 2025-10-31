@@ -3,20 +3,16 @@ use std::sync::OnceLock;
 use capy::runtime::vm::VMResult;
 use clang::Clang;
 
-use capy::native_fn;
-use capy::runtime::prelude::*;
+use capy::prelude::*;
 
-native_fn! {
-    register_clang_fns:
+#[scheme(path=clang)]
+mod clang_ops {
+    #[scheme(name = "clang-parse")]
+    pub fn clang_parse(path: StringRef<'gc>) -> Value<'gc> {
+        let path_str = path.to_string();
+        parse(&ctx, &path_str);
 
-    pub ("clang-parse") fn clang_parse<'gc>(
-        nctx,
-        path: StringRef<'gc>
-    ) -> Value<'gc> {
-        let path = path.to_string();
-        let ctx = nctx.ctx;
-        parse(&ctx, &path);
-        nctx.return_(Value::null())
+        nctx.return_(Value::new(true))
     }
 }
 
@@ -34,8 +30,9 @@ fn parse<'gc>(_ctx: &Context<'gc>, path: &str) {
 pub extern "C-unwind" fn capy_register_extension<'gc>(ctx: &Context<'gc>) -> VMResult<'gc> {
     static REGISTER: OnceLock<()> = OnceLock::new();
     REGISTER.get_or_init(|| {
-        ctx.define("clang", "clang-parse", get_clang_parse_static_closure(*ctx));
+        clang_ops::register(*ctx);
     });
 
+    println!("clang extension loaded");
     VMResult::Ok(Value::new(true))
 }
