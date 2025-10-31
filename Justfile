@@ -41,7 +41,6 @@ build portable:
 build-extensions:
     @echo 'Building CapyScheme extensions for target '{{target}}''
     {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-clang
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-term 
 
 # Perform portable installation of CapyScheme which installs the binary
 # and all necessary resources to the specified install prefix
