@@ -22,6 +22,7 @@
   (let loop ((rtd rtd))
     (or (eq? rtd parent)
       (and rtd
+           (tuple? rtd)
            (loop (rtd-parent rtd))))))
 
 (define rtd-inherited-field-count
