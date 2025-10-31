@@ -119,7 +119,7 @@
         (lambda (ht-custom . opt)
           (let-optionals opt ((k 0))
             (or mutable? (assertion-violation 'hashtable-clear! (format "expected mutable hashtable, but ~s is not" ht-custom) (cons ht-custom opt)))
-            (core-hashtable-clear! ht-root k)
+            (core-hashtable-clear! ht-root)
             (set! size 0))))
 
       (define generic-hashtable->alist
