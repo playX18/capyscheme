@@ -335,8 +335,8 @@
     (define obj (if (syntax? form) (unwrap-syntax form) form))
 
     (cond 
-      [(symbol? obj) obj]
-      [(and (pair? obj) (symbol? (car obj))) (car obj)]
+      [(symbol? obj) (make-who-condition obj)]
+      [(and (pair? obj) (symbol? (car obj))) (make-who-condition (car obj))]
       [else #f]))
 
   (if (or (not who) (string? who) (symbol? who) (identifier? who))
