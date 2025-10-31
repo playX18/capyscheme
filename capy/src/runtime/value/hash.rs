@@ -145,12 +145,12 @@ impl<'gc> Hash for EqualHash<'gc> {
         } else if val.is::<Vector>() {
             let v = val.downcast::<Vector<'gc>>();
             for i in 0..v.len() {
-                v[i].get().hash(state);
+                EqualHash(v[i].get()).hash(state);
             }
         } else if val.is::<Pair>() {
             let p = val.downcast::<Pair>();
-            p.car().hash(state);
-            p.cdr().hash(state);
+            EqualHash(p.car()).hash(state);
+            EqualHash(p.cdr()).hash(state);
         } else if val.is::<ByteVector>() {
             let p = val.downcast::<ByteVector>();
             (**p).hash(state);

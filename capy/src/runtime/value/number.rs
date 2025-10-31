@@ -5605,7 +5605,6 @@ impl<'gc> Number<'gc> {
                 if let Some(n) = s {
                     return Some(Self::Fixnum(n));
                 }
-                println!("BigInt rsh from Fixnum {self} {count}");
 
                 let bn = BigInt::from_i64(ctx, n as _);
                 return Some(Self::BigInt(BigInt::shift_right(bn, ctx, count)).normalize_integer());

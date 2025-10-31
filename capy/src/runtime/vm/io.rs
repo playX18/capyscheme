@@ -437,8 +437,8 @@ native_fn!(
     }
 
     pub ("file-exists?") fn file_exists<'gc>(nctx, path: Gc<'gc, Str<'gc>>) -> bool {
-        let metadata = std::fs::metadata(path.to_string());
-        nctx.return_(metadata.is_ok())
+        let metadata = std::path::Path::new(&path.to_string()).exists();
+        nctx.return_(metadata)
     }
 
     pub ("file-name-separator?") fn file_name_separator<'gc>(nctx, s: Either<StringRef<'gc>, char>) -> bool {
