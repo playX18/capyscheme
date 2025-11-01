@@ -823,7 +823,7 @@
                   (current-module (make-fresh-user-module))
                   (call/cc (lambda (return)
                     (with-exception-handler
-                      (lambda (_x) ((current-exception-printer) _x) (return #f))
+                      (lambda (_x) (return #f))
                       (lambda ()
                         (load (string-append dir-hint name))
                         (set! didit #t)
@@ -1280,6 +1280,27 @@
 (define (exact->inexact num)
   (exact->inexact num))
 
+(set! %load-extensions 
+  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch" "sps")
+          %load-extensions))
+
+(let* (
+      [host-arch (host-arch)]
+      [host-os (host-os)]
+      [host-family (host-family)]
+      [host-os-sld (string-append host-os ".sld")]
+      [host-family-sld (string-append host-family ".sld")]
+      [arch-sld (string-append host-arch ".sld")]
+      [host-os-sls (string-append host-os ".sls")]
+      [host-family-sls (string-append host-family ".sls")]
+      [arch-sls (string-append host-arch ".sls")])
+  (set! %load-extensions
+    (append (list host-os-sld host-family-sld arch-sld
+                  host-os-sls host-family-sls arch-sls)
+            %load-extensions)))
+
+
+
 (primitive-load "boot/records.scm")
 (primitive-load "boot/exceptions.scm")
 (primitive-load "boot/expand.scm")
@@ -1302,25 +1323,6 @@
 (initialize-io-system)
 (primitive-load "boot/reader.scm")
 (primitive-load "boot/eval.scm")
-(set! %load-extensions 
-  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch" "sps")
-          %load-extensions))
-
-(let* (
-      [host-arch (host-arch)]
-      [host-os (host-os)]
-      [host-family (host-family)]
-      [host-os-sld (string-append host-os ".sld")]
-      [host-family-sld (string-append host-family ".sld")]
-      [arch-sld (string-append host-arch ".sld")]
-      [host-os-sls (string-append host-os ".sls")]
-      [host-family-sls (string-append host-family ".sls")]
-      [arch-sls (string-append host-arch ".sls")])
-  (set! %load-extensions
-    (append (list host-os-sld host-family-sld arch-sld
-                  host-os-sls host-family-sls arch-sls)
-            %load-extensions)))
-
 
 (let ([user-module (define-module* '(capy user))])
   (current-module user-module))

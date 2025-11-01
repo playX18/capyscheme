@@ -26,6 +26,13 @@ pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
 
 native_fn!(
     register_base_fns:
+
+    pub ("implementation-version") fn implementation_version<'gc>(nctx) -> Value<'gc> {
+        let version = env!("CARGO_PKG_VERSION");
+        let version = Str::new(&nctx.ctx, version, true);
+        nctx.return_(version.into())
+    }
+
     pub ("native-endianness") fn native_endianness<'gc>(nctx) -> Value<'gc> {
         let endian = if cfg!(target_endian = "little") {
             "little"
