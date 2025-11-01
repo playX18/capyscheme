@@ -25,8 +25,11 @@ entered interactive mode.
 
 ### NOTE
 
-First boot might consume huge amounts of memory (8GiB+). This is fine and should not happen again. The only
+First boot might consume huge amounts of memory (5GiB+). This is fine and should not happen again. The only
 reason this happens is that GC is not able to run during CPS compiler optimizations and it allocates a lot of 
 new IR nodes during that which consume memory *very quickly&*. MMTK also does not help here as it does not
 unmap free pages so you have to either rely on your OS unmapping them or just have a lot of RAM. Build was tested
 on Macbook Air M4 with 16GiB of RAM and i5-13400f wit 64GiB of RAM.
+
+If you have low amounts of RAM try to perform first boot with `MMTK_GC_TRIGGER=DynamicHeapSize:256M,2G` environment
+variable set.

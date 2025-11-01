@@ -100,26 +100,6 @@ pub struct Func<'gc> {
 
 impl<'gc> Func<'gc> {
     pub fn with_body(self: FuncRef<'gc>, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
-        /*if Gc::ptr_eq(self.body.get(), body) {
-            return self;
-        }
-        let this = Gc::new(
-            &ctx,
-            Self {
-                meta: self.meta,
-                name: self.name,
-                source: self.source,
-                binding: self.binding,
-                return_cont: self.return_cont,
-                handler_cont: self.handler_cont,
-                args: self.args,
-                variadic: self.variadic,
-                body: Lock::new(body),
-                free_vars: Lock::new(self.free_vars.get()),
-            },
-        );
-
-        this*/
         let wfunc = Gc::write(&ctx, self);
         barrier::field!(wfunc, Self, body).unlock().set(body);
         self

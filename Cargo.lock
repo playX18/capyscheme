@@ -245,6 +245,7 @@ dependencies = [
  "cbindgen",
  "cranelift",
  "cranelift-codegen",
+ "cranelift-entity",
  "cranelift-jit",
  "cranelift-module",
  "cranelift-object",
@@ -273,6 +274,7 @@ dependencies = [
  "pretty",
  "probe",
  "rand",
+ "refpool",
  "rsgc",
  "rustix",
  "sha3",
@@ -2163,6 +2165,12 @@ checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags 2.10.0",
 ]
+
+[[package]]
+name = "refpool"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "369e86b80fa7dc8c561dd9613a5bf25c59d2d3073cd66c47fd9e39802f0ecb58"
 
 [[package]]
 name = "regalloc2"

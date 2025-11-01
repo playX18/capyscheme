@@ -53,6 +53,8 @@ parking_lot = "0.12.5"
 icu = { version = "2.0.0", features = ["compiled_data"] }
 sys-locale = "0.3.2"
 capy-derive.workspace = true
+cranelift-entity = "0.125.3"
+refpool = "0.4.3"
 
 [dependencies.im]
 version = "15.1.0"
