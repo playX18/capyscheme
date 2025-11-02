@@ -29,6 +29,7 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::ffi::init_ffi(mc);
     vm::dl::init_dl(mc);
     vm::threading::init_threading(mc);
+    vm::control::init_control(mc);
     let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
 }
 

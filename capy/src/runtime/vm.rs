@@ -18,6 +18,7 @@ use rsgc::{Gc, Trace, alloc::Array};
 
 pub mod arith;
 pub mod base;
+pub mod control;
 pub mod debug;
 pub mod dl;
 pub mod errors;

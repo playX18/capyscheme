@@ -1,4 +1,4 @@
-use std::mem::offset_of;
+use std::{io::Write, mem::offset_of};
 
 use crate::{
     compiler::ssa::{ContOrFunc, SSABuilder, VarDef, primitive::PrimValue},
@@ -81,7 +81,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             };
 
             pretty.1.render(80, &mut std::io::stdout()).unwrap();
-
+            println!();
+            std::io::stdout().flush().unwrap();
             panic!(
                 "{}@{:p} var not found when compiling {}({})",
                 var.name,

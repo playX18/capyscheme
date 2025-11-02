@@ -9,7 +9,9 @@ use crate::{
             init_weak_sets, init_weak_tables,
         },
         vm::{
-            VMResult, call_scheme, call_scheme_with_k, continue_to, debug,
+            VMResult, call_scheme, call_scheme_with_k, continue_to,
+            control::CFrameRef,
+            debug,
             load::load_thunk_in_vicinity,
             threading::{Condition, Mutex, MutexKind, ThreadObject},
         },
@@ -253,6 +255,7 @@ pub struct State<'gc> {
     /// Accumulator field which is used to pass yield interest
     /// to Rust code.
     pub(crate) accumulator: Value<'gc>,
+    pub(crate) current_marks: Cell<Option<CFrameRef<'gc>>>,
 }
 
 #[repr(C)]
@@ -311,6 +314,7 @@ unsafe impl Trace for State<'_> {
         visitor.trace(&mut self.thread_object);
         visitor.trace(&mut self.accumulator);
         visitor.trace(&mut self.yield_reason);
+        visitor.trace(&mut self.current_marks);
     }
 }
 
@@ -335,11 +339,26 @@ impl<'gc> State<'gc> {
             thread_object,
             yield_reason: Cell::new(None),
             accumulator: Value::new(false),
+            current_marks: Cell::new(None),
         }
     }
 
     pub fn context(&'gc self, mc: &'gc Mutation<'gc>) -> Context<'gc> {
         Context { mc, state: self }
+    }
+
+    pub fn current_marks(&self) -> Option<CFrameRef<'gc>> {
+        self.current_marks.get()
+    }
+
+    /// Update the current continuation marks.
+    ///
+    /// # Safety
+    ///
+    /// This function is unsafe because it allows setting arbitrary continuation marks
+    /// which may violate invariants expected by the runtime in places like exception handlers.
+    pub unsafe fn set_current_marks(&self, marks: Option<CFrameRef<'gc>>) {
+        self.current_marks.set(marks);
     }
 }
 

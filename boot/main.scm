@@ -402,6 +402,9 @@
 (define *log-level* 0)
 
 
+(define (current-continuation-marks)
+  (current-continuation-marks))
+
 
 (define current-exception-handler
   (let ([f (make-thread-local-fluid #f)])
