@@ -43,6 +43,7 @@ pub fn reify<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ReifyInfo<'gc> {
 
     for var in fv.cvals.iter() {
         let Some(cont) = fv.conts.get(var) else {
+            println!("can't reify {}", var.name);
             continue;
         };
 
@@ -60,6 +61,7 @@ pub fn reify<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ReifyInfo<'gc> {
     }
 
     while let Some(cont) = stack.pop() {
+        println!("reifying continuation {}@{}", cont.name, cont.binding.name);
         if cont.reified.get() {
             continue;
         }

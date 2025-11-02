@@ -178,6 +178,15 @@
             (interpreted-expression 
                 src
                 (lambda (env0) (if #f #f)))]
+        [(wcm? expr)
+            (let* ([key-proc (interpret/preprocess (wcm-key expr) env)]
+                   [val-proc (interpret/preprocess (wcm-mark expr) env)]
+                   [body-proc (interpret/preprocess (wcm-result expr) env)])
+                (interpreted-expression 
+                    src
+                    (lambda (env0)
+                        (with-continuation-mark (key-proc env0) (val-proc env0)
+                            (body-proc env0)))))]
         
         [else (lambda (env0) (assertion-violation #f "unhandled node " expr))]))
 

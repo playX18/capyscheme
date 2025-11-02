@@ -456,6 +456,7 @@ impl TypeCode8 {
     /// Native object that has a custom VTable
     /// and is provided by foreign code.
     pub const NATIVE_OBJECT: Self = Self(47);
+    pub const CMARKS: Self = Self(48);
 
     pub const UNKNOWN: Self = Self(0xFF);
 }

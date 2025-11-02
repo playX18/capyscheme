@@ -5,22 +5,28 @@
 //! in order to make them callable from compiled code.
 
 #![allow(dead_code, unused_variables)]
-use crate::runtime::{
-    Context,
-    fasl::FASLReader,
-    modules::{Module, Variable, root_module},
-    value::{
-        Boxed, ByteVector, Closure, Complex, Pair, SavedCall, ScmHeader, Str, Symbol, Tuple,
-        TypeCode8, TypeCode16, Value, Vector,
-    },
-    vm::{
-        VMResult, call_scheme,
-        debug::{self, print_stacktraces_impl},
+use crate::{
+    compiler::ssa::{SSABuilder, traits::IntoSSA},
+    runtime::{
+        value::{IntoValue, Number},
+        vm::control::ContinuationMarks,
     },
 };
 use crate::{
-    compiler::ssa::{SSABuilder, traits::IntoSSA},
-    runtime::value::{IntoValue, Number},
+    prelude::ClosureRef,
+    runtime::{
+        Context,
+        fasl::FASLReader,
+        modules::{Module, Variable, root_module},
+        value::{
+            Boxed, ByteVector, Closure, Complex, Pair, SavedCall, ScmHeader, Str, Symbol, Tuple,
+            TypeCode8, TypeCode16, Value, Vector,
+        },
+        vm::{
+            VMResult, call_scheme,
+            debug::{self, print_stacktraces_impl},
+        },
+    },
 };
 use cranelift_codegen::ir::InstBuilder;
 use rsgc::{
@@ -3977,6 +3983,33 @@ thunks! {
                 &[start, end],
             )
         }
+    }
+
+    pub fn push_cframe(
+        ctx: &Context<'gc>,
+        key: Value<'gc>,
+        mark: Value<'gc>,
+        retk: ClosureRef<'gc>
+    ) -> Value<'gc> {
+        crate::runtime::vm::control::push_cframe(
+            ctx,
+            key,
+            mark,
+            retk
+        )
+    }
+
+    pub fn current_continuation_marks(
+        ctx: &Context<'gc>
+    ) -> Value<'gc> {
+        let marks = ctx.state().current_marks();
+
+        let obj = Gc::new(&ctx, ContinuationMarks {
+            header: ScmHeader::with_type_bits(TypeCode8::CMARKS.bits() as _),
+            cmarks: marks,
+        });
+
+        obj.into()
     }
 }
 

@@ -351,10 +351,6 @@ pub fn fixnum_in_range_to_usize<'gc>(
 }
 
 primitive_transformers!(
-    "current-continuation-marks" => ccm(cps, src, op, args, k, h) {
-        todo!()
-    }
-
     "string-length" => string_length(cps, src, op, args, k, h) {
         let x = args.first().copied()?;
         if let Atom::Constant(val) = x
@@ -1082,11 +1078,23 @@ pub fn convert<'gc>(
             )
         }
 
-        TermKind::WithContinuationMark(key, mark, result) => {
-            let _ = key;
-            let _ = mark;
-            let _ = result;
-            todo!()
-        }
+        TermKind::WithContinuationMark(key, mark, result) => convert_arg(
+            cps,
+            *key,
+            Box::new(move |cps, key| {
+                convert_arg(
+                    cps,
+                    *mark,
+                    Box::new(move |cps, mark| {
+                        with_cps!(cps;
+                            let cs = #% "push-cframe" (h, key, mark, k) @ src;
+                            # convert(cps, *result, cs, h)
+                        )
+                    }),
+                    h,
+                )
+            }),
+            h,
+        ),
     }
 }

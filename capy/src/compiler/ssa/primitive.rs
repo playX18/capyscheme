@@ -2604,6 +2604,21 @@ prim!(
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let result = ssa.handle_thunk_call_result(ssa.thunks.modulo, &[ctx, a, b], _h);
         PrimValue::Value(result)
+    },
+
+    "push-cframe" => push_cframe(ssa, args, _h) {
+        let key = ssa.atom(args[0]);
+        let value = ssa.atom(args[1]);
+        let retk = ssa.atom(args[2]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let res = ssa.builder.ins().call(ssa.thunks.push_cframe, &[ctx, key, value, retk]);
+        PrimValue::Value(ssa.builder.inst_results(res)[0])
+    },
+
+    "current-continuation-marks" => current_continuation_marks(ssa, _args, _h) {
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.builder.ins().call(ssa.thunks.current_continuation_marks, &[ctx]);
+        PrimValue::Value(ssa.builder.inst_results(result)[0])
     }
 );
 

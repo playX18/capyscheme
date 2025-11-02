@@ -15,6 +15,13 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
             Expression::PrimCall(_, args, h, _) => {
                 let mut map: Vars = args.iter().copied().flat_map(get_fva).collect();
                 map.insert(h);
+                for arg in args.iter() {
+                    if let Atom::Local(lvar) = *arg
+                        && fv.conts.contains_key(&lvar)
+                    {
+                        fv.cvals.insert(lvar);
+                    }
+                }
                 map.union(get_fvt(body, fv))
                     .into_iter()
                     .filter(|v| *v != bind)
