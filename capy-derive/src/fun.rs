@@ -233,8 +233,8 @@ impl FunctionDefinition {
                     rator,
                     rands,
                     num_rands,
-                    Value::new(false),
-                    Value::new(false)
+                    Value::undefined(),
+                    Value::undefined()
                 );
             }
         } else {
@@ -352,6 +352,7 @@ impl FunctionDefinition {
                     num_rands: usize,
                     retk: Value<'gc>,
                     reth: Value<'gc>,
+
                 ) -> NativeReturn<'gc>
                 {
                     #body

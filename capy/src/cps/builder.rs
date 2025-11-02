@@ -497,28 +497,6 @@ macro_rules! with_cps {
         with_cps!($cps; @tk $binder = $e; $($rest)+)
     }};
 
-    ($cps: ident; @tk ($h: expr) $binder: ident = $e: expr; $($rest:tt)+) => {{
-        let e = $e;
-        let h = $h;
-        $crate::expander::compile_cps::t_k($cps, e, Box::new(move |$cps, $binder| {
-            with_cps!($cps; $($rest)+)
-        }), h)
-    }};
-
-    ($cps: ident; @tk* ($h: expr) $binder: ident = $e: expr; $($rest:tt)+) => {{
-        let e = $e;
-        let h = $h;
-        $crate::expander::compile_cps::t_k_many($cps, e, Box::new(move |$cps, $binder| {
-            with_cps!($cps; $($rest)+)
-        }), h)
-    }};
-
-    ($cps: ident; @tc ($k: ident, $h: expr) $e: expr) => {{
-        let e = $e;
-        let h = $h;
-        $crate::expander::compile_cps::t_c($cps, e, $k, h)
-    }};
-
     ($cps: ident; @m $binder: ident = $e: expr; $($rest:tt)+) => {{
         let $binder = $crate::expander::compile_cps::m($cps, $e);
         with_cps!($cps; $($rest)+)

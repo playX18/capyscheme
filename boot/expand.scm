@@ -240,3 +240,14 @@
 
 (define void? (record-predicate (record-type-rtd &void)))
 (define make-void (record-constructor (record-type-rcd &void)))
+
+(define &wcm 
+    (let* ([rtd (make-record-type-descriptor '&wcm (record-type-rtd &term) #f #f #f '#((immutable key) (immutable mark) (immutable result)))]
+           [rcd (make-record-constructor-descriptor rtd (record-type-rcd &term) #f)])
+        (make-record-type '&wcm rtd rcd)))
+(define (wcm? obj)
+    (and (term? obj) (rtd-ancestor? (record-type-rtd &wcm) (record-rtd obj))))
+(define wcm-key (record-accessor (record-type-rtd &wcm) 0))
+(define wcm-mark (record-accessor (record-type-rtd &wcm) 1))
+(define wcm-result (record-accessor (record-type-rtd &wcm) 2))
+(define make-wcm (record-constructor (record-type-rcd &wcm)))

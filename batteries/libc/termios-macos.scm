@@ -88,6 +88,7 @@
     (ypixel uint16))
 
 
+
 (define TIOCGWINSZ 1074295912)
 (define TIOCSWINSZ 2148037735)
 ;; Special Control Characters - Index into c_cc[] character array

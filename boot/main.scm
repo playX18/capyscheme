@@ -403,7 +403,6 @@
 
 
 
-
 (define current-exception-handler
   (let ([f (make-thread-local-fluid #f)])
     (lambda args
@@ -823,7 +822,7 @@
                   (current-module (make-fresh-user-module))
                   (call/cc (lambda (return)
                     (with-exception-handler
-                      (lambda (_x) (return #f))
+                      (lambda (_x) ((current-exception-printer) _x) (return #f))
                       (lambda ()
                         (load (string-append dir-hint name))
                         (set! didit #t)

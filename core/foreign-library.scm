@@ -10,7 +10,8 @@
             (core foreign)
             (core records)
             (core optargs)
-            (core files))
+            (core files)
+            (core match))
 
     (define-record-type 
         (<foreign-library> make-foreign-library foreign-library?)

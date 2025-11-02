@@ -87,7 +87,9 @@ pub struct Func<'gc> {
     pub name: Value<'gc>,
     pub source: Value<'gc>,
     pub binding: LVarRef<'gc>,
+    /// Continuation to return to
     pub return_cont: LVarRef<'gc>,
+    /// Exception handler continuation
     pub handler_cont: LVarRef<'gc>,
 
     pub args: Vars<'gc>,
@@ -436,6 +438,7 @@ impl<'gc> Term<'gc> {
                 func.count_refs();
                 k.ref_count.set(k.ref_count.get() + 1);
                 h.ref_count.set(h.ref_count.get() + 1);
+
                 for arg in args.iter() {
                     arg.count_refs();
                 }

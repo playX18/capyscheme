@@ -628,6 +628,12 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
                 ),
             ),
             TermKind::Values(values) => self.recurse_many(values.iter().copied()),
+            TermKind::WithContinuationMark(key, value, result) => {
+                let key_fv = self.visit(*key);
+                let value_fv = self.visit(*value);
+                let result_fv = self.visit(*result);
+                union(union(key_fv, value_fv), result_fv)
+            }
         }
     }
 

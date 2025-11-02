@@ -240,6 +240,7 @@ fn census<'gc>(term: TermRef<'gc>) -> im::HashMap<LVarRef<'gc>, Count> {
                 inc_app_use_a(fun, census, rhs);
                 inc_val_use_n(ret_c, census, rhs);
                 inc_val_use_n(err_c, census, rhs);
+
                 for arg in args.iter() {
                     inc_val_use_a(*arg, census, rhs);
                 }
@@ -712,6 +713,7 @@ fn copy_t<'gc>(
 
             let retc = subc.subst(retc);
             let rete = subc.subst(rete);
+
             let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
             let args = Array::from_slice(&ctx, args);
 
@@ -799,9 +801,11 @@ fn copy_f<'gc>(
 ) -> FuncRef<'gc> {
     let retc1 = fun.return_cont.copy(ctx);
     let rete1 = fun.handler_cont.copy(ctx);
+
     let subc1 = subc;
     subc1.insert(fun.return_cont, retc1);
     subc1.insert(fun.handler_cont, rete1);
+
     let args1 = fun.args.iter().map(|a| a.copy(ctx)).collect::<Vec<_>>();
     let var1 = fun.variadic.map(|v| v.copy(ctx));
     let subv1 = subv;
@@ -825,8 +829,10 @@ fn copy_f<'gc>(
             meta: fun.meta,
             return_cont: retc1,
             handler_cont: rete1,
+
             name: fun.name,
             binding,
+
             args: Array::from_slice(&ctx, args1),
             variadic: var1,
             body: Lock::new(body),
@@ -948,6 +954,7 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
         Term::App(fun, ret_cp, ret_ep, args, src) => {
             let retc = state.var_subst(ret_cp);
             let rete = state.var_subst(ret_ep);
+
             let args = state
                 .substitute_atoms(args.iter().copied())
                 .collect::<Vec<_>>();

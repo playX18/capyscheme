@@ -33,6 +33,7 @@ static_symbols!(
     SYM_VALUES = "&values"
     SYM_SEQUENCE = "&sequence"
     SYM_PROC = "&proc"
+    SYM_WCM = "&wcm"
 
     SYM_NAME = "name"
     SYM_LET_ = "let"
@@ -127,6 +128,10 @@ global!(
 
     pub loc_proc_type<'gc>: VariableRef<'gc> = (ctx) {
         root_module(ctx).variable(ctx, sym_proc(ctx).into()).unwrap()
+    };
+
+    pub loc_wcm_type<'gc>: VariableRef<'gc> = (ctx) {
+        root_module(ctx).variable(ctx, sym_wcm(ctx).into()).unwrap()
     };
 );
 
@@ -541,6 +546,29 @@ pub fn sequence_head<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 pub fn sequence_tail<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     assert!(is_sequence(ctx, v));
     v.downcast::<Tuple>()[SEQUENCE_TAIL].get()
+}
+
+pub const WCM_KEY: usize = TERM_SOURCEV + 1;
+pub const WCM_VALUE: usize = TERM_SOURCEV + 2;
+pub const WCM_BODY: usize = TERM_SOURCEV + 3;
+
+pub fn is_wcm<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
+    v.is_record_of(ctx, loc_wcm_type(ctx).get().record_type_rtd(ctx))
+}
+
+pub fn wcm_key<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_wcm(ctx, v));
+    v.downcast::<Tuple>()[WCM_KEY].get()
+}
+
+pub fn wcm_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_wcm(ctx, v));
+    v.downcast::<Tuple>()[WCM_VALUE].get()
+}
+
+pub fn wcm_body<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
+    assert!(is_wcm(ctx, v));
+    v.downcast::<Tuple>()[WCM_BODY].get()
 }
 
 native_fn!(
@@ -1018,6 +1046,17 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 .unlock()
                 .set(source);
             return Ok(seq);
+        } else if is_wcm(self.ctx, t) {
+            let key = self.convert(wcm_key(self.ctx, t))?;
+            let value = self.convert(wcm_value(self.ctx, t))?;
+            let body = self.convert(wcm_body(self.ctx, t))?;
+            return Ok(Gc::new(
+                &self.ctx,
+                Term {
+                    source: Lock::new(source),
+                    kind: TermKind::WithContinuationMark(key, value, body),
+                },
+            ));
         } else {
             todo!()
         }

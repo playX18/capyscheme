@@ -1,7 +1,7 @@
 
 
 (library (core intrinsics)
-   (export               match
+   (export               
                          library define-library define define-syntax
                          quote lambda if set!
                          cond case and or
@@ -9,6 +9,8 @@
                          begin
                          quasiquote unquote unquote-splicing
                          let-syntax letrec-syntax syntax-rules
+                         with-continuation-mark
+                         current-continuation-marks
                          identifier-syntax
                          assert
                          else => ... _
@@ -70,6 +72,8 @@
                          begin
                          quasiquote unquote unquote-splicing
                          let-syntax letrec-syntax syntax-rules
+                         with-continuation-mark
+                         current-continuation-marks
                          identifier-syntax
                          assert
                          else => ... _
@@ -660,39 +664,7 @@
                         dlsym
                         dlclose
                         load-native-extension
-                        match
-                        match-next
-                        match-two
-                        match-quasiquote
-                        match-drop-ids
-                        match-tuck-ids
-                        match-drop-first-arg
-                        match-gen-or
-                        match-gen-or-step
-                        match-gen-ellipsis
-                        match-verify-no-ellipsis
-                        match-gen-search
-                        match-vector
-                        match-vector-two
-                        match-vector-step
-                        match-gen-vector-ellipsis
-                        match-vector-tail
-                        match-vector-tail-two
-                        match-record-refs
-                        match-extract-vars
-                        match-extract-vars-step
-                        match-extract-quasiquote-vars
-                        match-extract-quasiquote-vars-step
-                        match-lambda
-                        match-lambda*
-                        match-let
-                        match-letrec
-                        match-let/helper
-                        match-named-let
-                        match-let*
-                        match-check-ellipsis
-                        match-check-identifier
-                        match-bound-identifier-memv
+                        
                         *raw-log*
                         *raw-log/src*
                         log:none
@@ -719,6 +691,7 @@
                         %capy-root
                         %fresh-auto-compile
                         %process-spawn
+                        %search-load-path
 
                         ;; threading
                         fork-thread

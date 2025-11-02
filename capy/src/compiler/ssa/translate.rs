@@ -12,6 +12,7 @@ use crate::{
 use cranelift::prelude::{InstBuilder, IntCC, types};
 use cranelift_codegen::ir::{self, BlockArg};
 use cranelift_module::{DataId, Linkage, Module};
+use pretty::BoxAllocator;
 use rsgc::{Gc, Mutation, sync::thread::Thread};
 
 pub enum Callee {
@@ -73,13 +74,25 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             return self.rator;
         }
         match *self.variables.get(&var).unwrap_or_else(|| {
+            let alloc = ::pretty::BoxAllocator;
+            let pretty = match self.target {
+                ContOrFunc::Func(f) => f.pretty::<_, &BoxAllocator>(&alloc),
+                ContOrFunc::Cont(c) => c.pretty::<_, &BoxAllocator>(&alloc),
+            };
+
+            pretty.1.render(80, &mut std::io::stdout()).unwrap();
+
             panic!(
-                "{}@{:p} var not found when compiling {}",
+                "{}@{:p} var not found when compiling {}({})",
                 var.name,
                 var,
                 match self.target {
                     ContOrFunc::Func(f) => f.binding.name,
                     ContOrFunc::Cont(c) => c.binding.name,
+                },
+                match self.target {
+                    ContOrFunc::Func(f) => f.name,
+                    ContOrFunc::Cont(c) => c.name,
                 }
             )
         }) {

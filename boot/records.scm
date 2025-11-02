@@ -181,7 +181,6 @@
                   (assertion-violation 'record-constructor "wrong number of arguments" field-values))))))))))
 
 (define (make-record-constructor-descriptor rtd parent protocol)
-
   (let ([custom-protocol? (and protocol #t)]
         [protocol (or protocol (%default-protocol rtd))]
         [parent
@@ -242,6 +241,19 @@
   (or (< -1 k (length (rtd-fields rtd)))
       (assertion-violation 'record-accessor "field index out of range"))
   (make-accessor rtd (flat-field-offset rtd k)))
+
+(define (record-accessor-by-name rtd name)
+  (or (record-type-descriptor? rtd)
+        (assertion-violation 'record-accessor-by-name (wrong-type-argument-message "record-type-descriptor" rtd) (list rtd name)))
+  (let loop ((fields (rtd-fields rtd)) (index 0))
+    (cond
+      ((null? fields)
+        (assertion-violation 'record-accessor-by-name (format "no such field ~a in record type ~a" name (rtd-name rtd)) (list rtd name)))
+      ((eq? (cdr (car fields)) name)
+        (make-accessor rtd (flat-field-offset rtd index)))
+      (else
+        (loop (cdr fields) (+ index 1))))))
+
 
 (define (record-mutator rtd k)
   (or (record-type-descriptor? rtd)
