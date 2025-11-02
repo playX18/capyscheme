@@ -6,6 +6,8 @@
    let let* letrec letrec* let-values let*-values
    begin quasiquote unquote unquote-splicing
    let-syntax letrec-syntax syntax-rules
+   with-continuation-mark
+   current-continuation-marks
    identifier-syntax assert
    else => ... _
    eq?

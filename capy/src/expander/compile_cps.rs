@@ -25,7 +25,8 @@ pub fn cps_func<'a, 'gc>(
     builder.current_meta = proc.meta;
     let return_cont = builder.fresh_variable("return");
     let handler_cont = builder.fresh_variable("handler");
-    let body = convert(builder, proc.body, return_cont, handler_cont); // t_c(builder, proc.body, return_cont, handler_cont);
+
+    let body = convert(builder, proc.body, return_cont, handler_cont);
     builder.current_meta = old_meta;
     Gc::new(
         &builder.ctx,
@@ -33,6 +34,7 @@ pub fn cps_func<'a, 'gc>(
             meta: proc.meta,
             args: proc.args,
             name: proc.name,
+
             binding,
             source: proc.source,
             return_cont,
@@ -188,7 +190,7 @@ pub fn assertion_violation<'gc>(
 
             with_cps!(cps;
                 let value = #% "variable-ref" (h, var) @ src;
-                value(h, h, args...) @ src
+                value(h, h,  args...) @ src
             )
         },
         h,
@@ -206,6 +208,7 @@ pub fn ensure_string<'gc, F>(
     op: Value<'gc>,
     x: Atom<'gc>,
     h: LVarRef<'gc>,
+
     have_length: F,
 ) -> TermRef<'gc>
 where
@@ -348,6 +351,10 @@ pub fn fixnum_in_range_to_usize<'gc>(
 }
 
 primitive_transformers!(
+    "current-continuation-marks" => ccm(cps, src, op, args, k, h) {
+        todo!()
+    }
+
     "string-length" => string_length(cps, src, op, args, k, h) {
         let x = args.first().copied()?;
         if let Atom::Constant(val) = x
@@ -708,7 +715,7 @@ pub fn convert_arg<'gc, 'a>(
             with_cps!(cps;
                 letk (h) karg (arg) = k(cps, Atom::Local(arg));
                 # {
-                    convert(cps, exp, karg, h)
+                    convert(cps, exp, karg, h, )
                 }
             )
         }
@@ -716,7 +723,7 @@ pub fn convert_arg<'gc, 'a>(
         _ => {
             with_cps!(cps;
                 letk (h) karg (arg & rest) = k(cps, Atom::Local(arg));
-                # convert(cps, exp, karg, h)
+                # convert(cps, exp, karg, h, )
             )
         }
     }
@@ -734,6 +741,7 @@ pub fn convert_args<'gc, 'a>(
 
     let exp = exps[0];
     let exps = &exps[1..];
+    if exps.is_empty() {}
     convert_arg(
         cps,
         exp,
@@ -779,8 +787,8 @@ pub fn convert<'gc>(
             *test,
             Box::new(move |cps, test| {
                 with_cps!(cps;
-                    letk (h) kconseq () = convert(cps, *consequent, k, h);
-                    letk (h) kalt () = convert(cps, *alternate, k, h);
+                    letk (h) kconseq () = convert(cps, *consequent, k, h,);
+                    letk (h) kalt () = convert(cps, *alternate, k, h,);
                     if test => kconseq | kalt
                 )
             }),
@@ -995,15 +1003,15 @@ pub fn convert<'gc>(
             body
         }
 
-        TermKind::Seq(head, tail) => {
+        TermKind::Seq(head, etail) => {
             if is_zero_valued(*head) {
                 with_cps!(cps;
-                    letk (h) ktail (&vals) = convert(cps, *tail, k, h);
+                    letk (h) ktail (&vals) = convert(cps, *etail, k, h, );
                     # convert(cps, *head, ktail, h)
                 )
             } else {
                 with_cps!(cps;
-                    letk (h) ktail (&vals) = convert(cps, *tail, k, h);
+                    letk (h) ktail (&vals) = convert(cps, *etail, k, h);
                     # convert(cps, *head, ktail, h)
                 )
             }
@@ -1072,6 +1080,13 @@ pub fn convert<'gc>(
                 &cps.ctx,
                 Term::Letk(Array::from_slice(&cps.ctx, &[consumer_k]), letk_body),
             )
+        }
+
+        TermKind::WithContinuationMark(key, mark, result) => {
+            let _ = key;
+            let _ = mark;
+            let _ = result;
+            todo!()
         }
     }
 }

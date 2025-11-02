@@ -73,6 +73,7 @@ impl<'gc> Term<'gc> {
                     + alloc.text(k.name.to_string())
                     + alloc.space()
                     + alloc.text(h.name.to_string())
+                    + alloc.space()
                     + if args.is_empty() {
                         alloc.nil()
                     } else {
@@ -260,6 +261,7 @@ fn name_and_args<'a, 'gc, D, A>(
     name: Value<'gc>,
     k: Option<LVarRef<'gc>>,
     h: Option<LVarRef<'gc>>,
+
     args: impl Iterator<Item = DocBuilder<'a, D, A>>,
     variadic: Option<DocBuilder<'a, D, A>>,
 ) -> DocBuilder<'a, D, A>

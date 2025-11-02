@@ -38,6 +38,7 @@ macro_rules! interesting_prim_names {
 interesting_prim_names!(
     apply = "apply"
     call_with_values = "call-with-values"
+    ccm = "current-continuation-marks"
     values = "values"
     eqp = "eq?"
     eqvp = "eqv?"
@@ -386,7 +387,16 @@ macro_rules! primitive_expanders {
 }
 
 primitive_expanders!(
-     "apply" ex_apply<'gc>(ctx, args, src) {
+
+    "current-continuation-marks" ex_current_continuation_marks<'gc>(ctx, args, src) {
+        if !args.is_empty() {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_ccm(ctx).into(), &[], src))
+    }
+
+    "apply" ex_apply<'gc>(ctx, args, src) {
         // TODO: expand apply into a call when possible?
         // Right now just reify into a normal call...
         let _ = args;

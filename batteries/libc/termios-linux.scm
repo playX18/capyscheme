@@ -56,9 +56,21 @@
     sizeof-termios read-termios write-termios!
     
     ;; Function bindings
-    tcgetattr tcsetattr tcdrain tcflow tcflush tcsendbreak)
+    cfmakeraw tcgetattr tcsetattr tcdrain tcflow tcflush tcsendbreak
 
-(format #t "linux??~%~!")
+    TIOCGWINSZ TIOCSWINSZ
+    get-winsize
+    set-winsize!
+    winsize
+    winsize?
+    winsize-rows
+    winsize-cols
+    winsize-xpixel
+    winsize-ypixel
+    set-winsize-rows!
+    set-winsize-cols!
+    set-winsize-xpixel!
+    set-winsize-ypixel!)
 
 ;; Control characters indices
 (define VINTR     0)
@@ -225,6 +237,23 @@
 (define XTABS  #o014000)
 
 (define NCCS 32)
+(define-record-type <winsize>
+    (winsize rows cols xpixel ypixel)
+    winsize?
+    (rows winsize-rows set-winsize-rows!)
+    (cols winsize-cols set-winsize-cols!)
+    (xpixel winsize-xpixel set-winsize-xpixel!)
+    (ypixel winsize-ypixel set-winsize-ypixel!))
+    
+(define-c-struct %winsize
+    sizeof-winsize
+    winsize
+    read-winsize
+    write-winsize!
+    (rows uint16)
+    (cols uint16)   
+    (xpixel uint16)
+    (ypixel uint16))
 
 
 (define-record-type <termios>
@@ -255,7 +284,30 @@
     (input-speed      unsigned-int)
     (output-speed     unsigned-int))
 
+
+
+
 ; begin decls
+(define cfmakeraw 
+    (let ([proc (foreign-library-function 
+                    #f
+                    "cfmakeraw"
+                    void
+                    `(*))])
+        (lambda (t)
+            (define bv (make-bytevector/nonmoving sizeof-termios))
+            (write-termios! bv 0 
+                (termios-input-flags t)
+                (termios-output-flags t)
+                (termios-control-flags t)
+                (termios-local-flags t)
+                (termios-line-discipline t)
+                (termios-control-chars t)
+                (termios-input-speed t)
+                (termios-output-speed t))
+            (proc (bytevector->pointer bv))
+            (read-termios bv))))
+
 (define tcgetattr 
     (let ([proc (foreign-library-function 
                     #f 
@@ -338,3 +390,31 @@
                 (unless (zero? ret)
                     (error 'tcsendbreak "tcsendbreak failed" ret))
                 (unspecified)))))
+
+
+(define TIOCGWINSZ  21523)
+(define TIOCSWINSZ  21524)
+
+(define (get-winsize fd)
+    (define bv (make-bytevector/nonmoving sizeof-winsize))
+    (define res (ioctl/pointer fd TIOCGWINSZ (bytevector->pointer bv)))
+    (unless (zero? res)
+        (assertion-violation 'winsize "ioctl TIOCGWINSZ failed" res))
+    (let* ([ws-struct (read-winsize bv)]
+           [rows (winsize-rows ws-struct)]
+           [cols (winsize-cols ws-struct)]
+           [xpixel (winsize-xpixel ws-struct)]
+           [ypixel (winsize-ypixel ws-struct)])
+        (winsize rows cols xpixel ypixel)))
+
+
+(define (set-winsize! fd ws)
+    (define bv (make-bytevector/nonmoving sizeof-winsize))
+    (write-winsize! bv 0
+        (winsize-rows ws)
+        (winsize-cols ws)
+        (winsize-xpixel ws) 
+        (winsize-ypixel ws))
+    (unless (zero? (%ioctl fd TIOCSWINSZ (bytevector->pointer bv)))
+        (error 'set-winsize! "ioctl TIOCSWINSZ failed" res))
+    (unspecified))

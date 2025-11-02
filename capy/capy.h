@@ -91,6 +91,12 @@
 
 
 
+#define WCM_KEY (TERM_SOURCEV + 1)
+
+#define WCM_VALUE (TERM_SOURCEV + 2)
+
+#define WCM_BODY (TERM_SOURCEV + 3)
+
 #define RTD_TYPE 0
 
 #define RTD_NAME 1

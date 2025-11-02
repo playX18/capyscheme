@@ -117,6 +117,7 @@ impl<'gc> Context<'gc> {
         if call.from_procedure {
             let retk = call.rands[0];
             let reth = call.rands[1];
+
             call_scheme_with_k(
                 self,
                 retk,

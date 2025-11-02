@@ -1974,6 +1974,20 @@
     (global-extend 'define 'define '())
     (global-extend 'begin 'begin '())
     (global-extend 'eval-when 'eval-when '())
+
+  
+    (global-extend 'core 'with-continuation-mark 
+      (lambda (e r w s mod)
+        (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any . each-any))))
+          (if tmp-1 
+            (apply (lambda (key value body)
+               (make-wcm 
+                s
+                (expand key r w mod)
+                (expand value r w mod)
+                (expand-body body (source-wrap e w s mod) r w mod)))
+              tmp-1)
+            (syntax-violation #f "source expression failed to match any pattern" tmp)))))
     (global-extend 'core 'if
         (lambda (e r w s mod)
           (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any))))

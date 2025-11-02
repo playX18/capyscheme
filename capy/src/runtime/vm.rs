@@ -67,6 +67,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     ctx: &Context<'gc>,
     retk: Value<'gc>,
     reth: Value<'gc>,
+
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> VMResult<'gc> {
@@ -302,6 +303,7 @@ pub struct NativeCallContext<'a, 'gc, R: TryIntoValues<'gc> = Value<'gc>> {
 
     pub(crate) retk: Value<'gc>,
     pub(crate) reth: Value<'gc>,
+
     return_data: PhantomData<R>,
 }
 
@@ -323,6 +325,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             ctx: *ctx,
             rator,
             rands: unsafe { std::slice::from_raw_parts(rands, num_rands) },
+
             reth,
             retk,
             return_data: PhantomData,
@@ -456,6 +459,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         self,
         retk: Value<'gc>,
         reth: Value<'gc>,
+
         proc: Value<'gc>,
         args: &[Value<'gc>],
     ) -> NativeCallReturn<'gc> {
@@ -661,7 +665,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     ) -> NativeCallReturn<'gc> {
         let assertion_violation = root_module(self.ctx)
             .get_str(self.ctx, "assertion-violation")
-            .expect("pre boot error");
+            .unwrap_or_else(|| panic!("pre boot error at {who}: {message} with {irritant}",));
         if irritant != Value::null() {
             self.return_call(assertion_violation, &[who, message, irritant])
         } else {

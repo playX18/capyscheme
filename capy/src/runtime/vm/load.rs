@@ -161,6 +161,7 @@ pub fn init_load<'gc>(ctx: Context<'gc>) {
     register_scm_load_thunk_in_vicinity(ctx);
     register_scm_load_thunk_in_vicinity_k(ctx);
     register_scm_try_load_thunk_in_vicinity(ctx);
+    register_search_load_path(ctx);
 }
 
 fn fresh_auto_compile<'gc>(ctx: Context<'gc>) -> bool {
@@ -587,12 +588,34 @@ pub fn scm_load_thunk_in_vicinity_k(
 
             let reth = nctx.reth;
             let retk = nctx.retk;
+
             let after_call = make_closure_continue_loading_k(ctx, [thunk, retk, reth]);
             let program = Value::list_from_slice(ctx, program);
             nctx.call(k, &[program, env], after_call.into(), reth)
         }
 
         Err(err) => nctx.return_(Err(err)),
+    }
+}
+
+#[scheme(name = "%search-load-path")]
+pub fn search_load_path(filename: StringRef<'gc>) -> Value<'gc> {
+    let ctx = nctx.ctx;
+    let result = find_path_to(
+        ctx,
+        PathBuf::from(filename.as_ref().to_string()),
+        None::<PathBuf>,
+        true,
+    );
+
+    match result {
+        Ok(Some((source, compiled))) => nctx.return_(Value::cons(
+            ctx,
+            Str::new(&ctx, &source.to_string_lossy(), true).into(),
+            Str::new(&ctx, &compiled.to_string_lossy(), true).into(),
+        )),
+        Ok(None) => nctx.return_(Value::new(false)),
+        Err(_err) => nctx.return_(Value::new(false)),
     }
 }
 

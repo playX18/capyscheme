@@ -928,6 +928,13 @@
     foreign-library-function
     foreign-library-handle
     ->foreign-library
+  match
+                        match-lambda
+                        match-lambda*
+                        match-let
+                        match-let*
+                        match-letrec
+   
     )
   (import
     (core primitives)
@@ -949,4 +956,5 @@
     (core hashtables)
     (core threading)
     (core foreign)
-    (core foreign-library)))
+    (core foreign-library)
+    (core match)))

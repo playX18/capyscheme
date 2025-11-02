@@ -48,6 +48,9 @@ use crate::{
     utils::fixedpoint,
 };
 
+/// A pair of (return_cont, handler_cont)
+type ContPair<'gc> = (LVarRef<'gc>, LVarRef<'gc>);
+
 /// Entry point: repeatedly applies `rec` until no further contifiable
 /// opportunities remain (idempotent fixed point).
 pub fn contify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
@@ -131,7 +134,7 @@ impl<'gc> Term<'gc> {
                 })
             }
 
-            Self::App(Atom::Local(f), c, h, ..) if *c == retc && *h == reth => {
+            Self::App(Atom::Local(f), c, h, m, ..) if *c == retc && *h == reth => {
                 [*f].into_iter().collect()
             }
 
@@ -153,8 +156,8 @@ impl<'gc> Term<'gc> {
     pub fn common_return_cont(
         &self,
         ns: &Set<LVarRef<'gc>>,
-        ignore: Option<(LVarRef<'gc>, LVarRef<'gc>)>,
-    ) -> SingleValueSet<(LVarRef<'gc>, LVarRef<'gc>)> {
+        ignore: Option<ContPair<'gc>>,
+    ) -> SingleValueSet<ContPair<'gc>> {
         match self {
             Self::Let(_, expr, body) => match expr {
                 Expression::PrimCall(_, args, _, _) => {
@@ -232,7 +235,7 @@ impl<'gc> Term<'gc> {
     /// Returns a list of (function-name-set, common_return/handler pair) for
     /// all SCCs in the tail-call graph that are eligible for contification.
     /// SCCs without a unique common continuation pair are discarded.
-    pub fn contifiables(&self) -> Vec<(Set<LVarRef<'gc>>, (LVarRef<'gc>, LVarRef<'gc>))> {
+    pub fn contifiables(&self) -> Vec<(Set<LVarRef<'gc>>, ContPair<'gc>)> {
         let Term::Fix(funs, _) = self else {
             return vec![];
         };
@@ -296,7 +299,7 @@ impl<'gc> Term<'gc> {
     pub fn contify(
         &self,
         ns: &Set<LVarRef<'gc>>,
-        rc: (LVarRef<'gc>, LVarRef<'gc>),
+        rc: ContPair<'gc>,
         ctx: Context<'gc>,
     ) -> TermRef<'gc> {
         let Term::Fix(funs, body) = self else {
@@ -532,6 +535,7 @@ impl<'gc> Term<'gc> {
                 let func = prev_func.subst(ctx, subst);
                 let k = subst.subst(*prev_k);
                 let h = subst.subst(*prev_h);
+
                 let args = prev_args
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))

@@ -339,6 +339,24 @@ where
                     post(ctx, recterm)
                 }
             }
+
+            TermKind::WithContinuationMark(key, mark, result) => {
+                let nkey = rec(ctx, pre, post, key);
+                let nmark = rec(ctx, pre, post, mark);
+                let nresult = rec(ctx, pre, post, result);
+                if Gc::ptr_eq(nkey, key) && Gc::ptr_eq(nmark, mark) && Gc::ptr_eq(nresult, result) {
+                    post(ctx, x)
+                } else {
+                    let wcmterm = Gc::new(
+                        &ctx,
+                        Term {
+                            source: x.source.get().into(),
+                            kind: TermKind::WithContinuationMark(nkey, nmark, nresult),
+                        },
+                    );
+                    post(ctx, wcmterm)
+                }
+            }
         }
     }
 
@@ -412,6 +430,12 @@ pub fn fold_tree<'gc, ACC>(
             TermKind::Receive(_, _, producer, receiver) => {
                 let acc = foldts(producer, down, up, acc);
                 foldts(receiver, down, up, acc)
+            }
+
+            TermKind::WithContinuationMark(key, mark, result) => {
+                let acc = foldts(key, down, up, acc);
+                let acc = foldts(mark, down, up, acc);
+                foldts(result, down, up, acc)
             }
         };
         up(tree, acc)

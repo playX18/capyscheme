@@ -125,6 +125,12 @@ impl<'gc> ComputeFreeVarResolver<'gc> {
                 Value::new(false)
             }
 
+            TermKind::WithContinuationMark(key, value, result) => {
+                let mod1 = self.visit_mod(key, module);
+                let mod2 = self.visit_mod(value, mod1);
+                self.visit_mod(result, mod2)
+            }
+
             TermKind::If(test, consequent, alternate) => {
                 let mod1 = self.visit_mod(test, module);
                 self.visit_many(&[consequent, alternate], mod1)

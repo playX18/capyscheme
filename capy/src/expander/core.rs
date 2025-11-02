@@ -51,6 +51,7 @@ pub struct Denotations<'gc> {
     pub denotation_of_or: Value<'gc>,
     pub denotation_of_when: Value<'gc>,
     pub denotation_of_unless: Value<'gc>,
+    pub denotation_of_wcm: Value<'gc>,
 }
 
 static DENOTATIONS: OnceLock<Global<Rootable!(Denotations<'_>)>> = OnceLock::new();
@@ -76,6 +77,7 @@ static_symbols!(
     DENOTATION_OF_DO = "do"
     DENOTATION_OF_WHEN = "when"
     DENOTATION_OF_UNLESS = "unless"
+    DENOTATION_OF_WCM = "with-continuation-mark"
 );
 
 pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
@@ -102,6 +104,7 @@ pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
                 denotation_of_receive: denotation_of_receive(ctx).into(),
                 denotation_of_when: denotation_of_when(ctx).into(),
                 denotation_of_unless: denotation_of_unless(ctx).into(),
+                denotation_of_wcm: denotation_of_wcm(ctx).into(),
             })
         })
         .fetch(&ctx)
@@ -289,6 +292,13 @@ pub enum TermKind<'gc> {
         TermRef<'gc>,
         TermRef<'gc>,
     ),
+
+    WithContinuationMark(
+        TermRef<'gc>, /* key */
+        TermRef<'gc>, /* value */
+        TermRef<'gc>, /* result */
+    ),
+
     Values(ArrayRef<'gc, TermRef<'gc>>),
     Proc(ProcRef<'gc>),
 
@@ -724,6 +734,8 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_when(cenv, program)
         } else if proc == cenv.denotations.denotation_of_unless {
             expand_unless(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_wcm {
+            expand_wcm(cenv, program)
         } else if proc == cenv.denotations.denotation_of_and {
             expand_and(cenv, program)
         } else if proc == cenv.denotations.denotation_of_or {
@@ -1229,6 +1241,33 @@ fn expand_body<'gc>(
     }
 
     rec(cenv, body, sourcev, Vec::new())
+}
+
+fn expand_wcm<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
+    if form.list_length() != 4 {
+        return Err(Box::new(CompileError {
+            message: "with-continuation-mark requires key, value and result expressions"
+                .to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let key = form.cadr();
+    let value = form.caddr();
+    let body = form.cdddr();
+
+    let key_term = expand(cenv, key)?;
+    let value_term = expand(cenv, value)?;
+    let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?;
+
+    Ok(Gc::new(
+        &cenv.ctx,
+        Term {
+            source: Lock::new(syntax_annotation(cenv.ctx, form)),
+            kind: TermKind::WithContinuationMark(key_term, value_term, body_term),
+        },
+    ))
 }
 
 #[derive(Debug)]
@@ -2586,6 +2625,24 @@ impl<'gc> Term<'gc> {
 
                 alloc.text("values ").append(vals_doc).parens().group()
             }
+
+            TermKind::WithContinuationMark(key, mark, result) => {
+                let key_doc = key.pretty(alloc);
+                let mark_doc = mark.pretty(alloc);
+                let result_doc = result.pretty(alloc);
+
+                alloc
+                    .text("with-continuation-mark ")
+                    .append(key_doc)
+                    .append(alloc.space())
+                    .append(mark_doc)
+                    .append(alloc.line())
+                    .append(result_doc.nest(1).indent(1))
+                    .nest(1)
+                    .parens()
+                    .group()
+            }
+
             TermKind::Receive(formals, opt_formal, producer, consumer) => {
                 let formals_doc = alloc.intersperse(
                     formals.iter().map(|f| alloc.text(f.name.to_string())),

@@ -242,6 +242,32 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; force compile-time syntax errors with useful messages
 
+(library (core match)
+  (export match
+            match-lambda
+            match-lambda*
+            match-let
+            match-let*
+            match-letrec)
+  (import (capy))
+ 
+
+(define-syntax slot-ref 
+  (syntax-rules ()
+    ((_ rtd rec n)
+     (tuple-ref rec (+ 1 n)))))
+
+(define-syntax slot-set! 
+  (syntax-rules ()
+    ((_ rtd rec n val)
+     (tuple-set! rec (+ 1 n) val))))
+
+(define-syntax is-a? 
+  (syntax-rules ()
+    ((_ rec rtd)
+      (and (record? rec)
+        (eq? (record-type-rtd rtd) (record-rtd rec))))))
+
 (define-syntax match-syntax-error
   (syntax-rules ()
     ((_) (match-syntax-error "invalid match-syntax-error usage"))))
@@ -953,3 +979,4 @@
         (memv? random-sym-to-match sk fk))
       fk))))
 
+) ; [end]

@@ -60,6 +60,7 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
         Term::App(func, k, h, args, _) => {
             fv.cvals.insert(k);
             fv.cvals.insert(h);
+
             args.iter()
                 .copied()
                 .flat_map(get_fva)

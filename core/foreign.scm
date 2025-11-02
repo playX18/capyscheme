@@ -41,7 +41,7 @@
         struct-alignment
         errno
         ioctl/pointer)
-    (import (core control) (core primitives))
+    (import (core control) (core primitives) (core match))
   (eval-when (expand load eval)
     (define void %void)
     (define float %float)

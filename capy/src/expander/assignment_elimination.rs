@@ -286,6 +286,19 @@ fn rec<'gc>(
             )
         }
 
+        TermKind::WithContinuationMark(key, value, result) => {
+            let key = rec(ctx, *key, substitutions);
+            let value = rec(ctx, *value, substitutions);
+            let result = rec(ctx, *result, substitutions);
+            Gc::new(
+                &ctx,
+                Term {
+                    source: Lock::new(term.source()),
+                    kind: TermKind::WithContinuationMark(key, value, result),
+                },
+            )
+        }
+
         TermKind::ModuleSet(module, name, public, val) => {
             let val = rec(ctx, *val, substitutions);
             Gc::new(
@@ -416,6 +429,12 @@ impl<'gc> Term<'gc> {
                 }
                 producer.count_refs();
                 consumer.count_refs();
+            }
+
+            TermKind::WithContinuationMark(key, mark, result) => {
+                key.count_refs();
+                mark.count_refs();
+                result.count_refs();
             }
 
             TermKind::Seq(head, tail) => {
