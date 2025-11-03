@@ -5,8 +5,8 @@ members = ["capy", "capy-derive", "capy-driver", "extensions/capy-clang"]
 default-members = ["capy"]
 
 [workspace.dependencies]
-rsgc = { path = "../RSGC", default-features = false }
-#rsgc = { git = "https://codeberg.org/playxe/rsgc", default-features = false }
+#rsgc = { path = "../RSGC", default-features = false }
+rsgc = { git = "https://codeberg.org/playxe/rsgc", default-features = false }
 cranelift-jit = "0.125.3"
 cranelift = "0.125.3"
 cranelift-codegen = "0.125.3"

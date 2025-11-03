@@ -348,9 +348,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.43"
+version = "1.2.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "739eb0f94557554b3ca9a86d2d37bebd49c5e6d0c1d2bda35ba5bdac830befc2"
+checksum = "37521ac7aabe3d13122dc382493e20c9416f299d2ccd5b3a5340a2570cdeb0f3"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -2231,6 +2231,7 @@ dependencies = [
 [[package]]
 name = "rsgc"
 version = "0.1.0"
+source = "git+https://codeberg.org/playxe/rsgc#78399124045a641a7c2eeb270f57425d15b2434f"
 dependencies = [
  "atomic",
  "bytemuck",
@@ -2247,6 +2248,7 @@ dependencies = [
 [[package]]
 name = "rsgc-derive"
 version = "0.1.0"
+source = "git+https://codeberg.org/playxe/rsgc#78399124045a641a7c2eeb270f57425d15b2434f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2296,9 +2298,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "ruzstd"
-version = "0.8.1"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3640bec8aad418d7d03c72ea2de10d5c646a598f9883c7babc160d91e3c1b26c"
+checksum = "e5ff0cc5e135c8870a775d3320910cd9b564ec036b4dc0b8741629020be63f01"
 dependencies = [
  "twox-hash",
 ]
