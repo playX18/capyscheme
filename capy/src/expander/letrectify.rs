@@ -1,10 +1,8 @@
-use crate::list;
 use crate::runtime::value::ValueEqual;
 use crate::{
     expander::core::{
         LVarRef, Let, LetStyle, Term, TermKind, TermRef, constant, fresh_lvar, lref, prim_call_term,
     },
-    global,
     runtime::{
         Context,
         modules::{Variable, resolve_module},
@@ -103,7 +101,7 @@ fn compute_private_toplevels<'gc>(
     let mut exports_macro = HashMap::new();
     declarative.iter().for_each(|(&(module, _), _)| {
         // special-case `capy` module to always export everything
-        if module.0.r5rs_equal(capy_module(ctx)) {
+        if module.0.r5rs_equal(ctx.globals().capy_module_name()) {
             exports_macro.insert(module, true);
             return;
         }
@@ -414,13 +412,6 @@ impl<'gc> Letrectify<'gc> {
 
 static_symbols!(SYM_DEFINE_MODULE = "define-module*");
 
-global!(
-    pub CAPY_MODULE<'gc>: Value<'gc> = (ctx) {
-        let name = ctx.intern("capy");
-        list!(ctx, name)
-    };
-);
-
 // check if `t` is a `((@ (capy) define-module*) mod)` call.
 pub fn is_define_module_term<'gc>(
     ctx: Context<'gc>,
@@ -429,7 +420,7 @@ pub fn is_define_module_term<'gc>(
     match t.kind {
         TermKind::Call(rator, args) => {
             if let TermKind::ModuleRef(module, name, _) = rator.kind
-                && module.r5rs_equal(capy_module(ctx))
+                && module.r5rs_equal(ctx.globals().capy_module_name())
                 && name == sym_define_module(ctx).into()
                 && args.len() == 1
                 && let TermKind::Const(mod_name) = args[0].kind

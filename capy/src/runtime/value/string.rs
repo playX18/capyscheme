@@ -46,7 +46,7 @@ unsafe impl Trace for Stringbuf {
 impl Stringbuf {
     const VT: &'static VTable = &VTable {
         type_name: "Stringbuf",
-        instance_size: 0,
+        instance_size: size_of::<Self>(),
         alignment: std::mem::align_of::<Self>(),
         compute_alignment: None,
         compute_size: Some({
@@ -58,8 +58,7 @@ impl Stringbuf {
                             std::mem::size_of::<char>()
                         } else {
                             1
-                        }
-                        + std::mem::size_of::<Stringbuf>();
+                        };
 
                     raw_align_up(raw_size, align_of::<Stringbuf>())
                 }

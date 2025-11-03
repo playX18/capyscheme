@@ -65,6 +65,16 @@
 
 #define TYPE_BWP 9
 
+/**
+ * Closure from dynamic library: dlsym from library[ix] and sname.
+ */
+#define TYPE_CLOSURE_DYNLIB 20
+
+/**
+ * Native closure: read from vec of native function pointers
+ */
+#define TYPE_CLOSURE_NATIVE 21
+
 #define PURE_NAN_BITS 9221120237041090560
 
 #define IMPURE_NAN_BITS 18446462598732840960ull

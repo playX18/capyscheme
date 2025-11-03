@@ -13,7 +13,7 @@ use crate::{
     list,
     runtime::{
         Context,
-        modules::{Module, get_current_module, root_module},
+        modules::{Module, get_current_module},
         value::{Str, Symbol, Value},
         vm::syntax::props_to_sourcev,
     },
@@ -114,7 +114,7 @@ impl<'gc> Cenv<'gc> {
     pub fn toplevel(ctx: Context<'gc>) -> Self {
         Cenv {
             ctx,
-            current_module: root_module(ctx),
+            current_module: ctx.globals().root_module(),
             expression_name: Value::undefined(),
             frames: None,
             denotations: denotations(ctx),

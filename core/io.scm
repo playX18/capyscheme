@@ -140,8 +140,7 @@
           (core bytevectors)
           (core optargs)
           (core io assistants)
-          (core enums)
-          (core io process))
+          (core enums))
           
   ;; 8.2.2  File options
 

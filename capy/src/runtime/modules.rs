@@ -6,7 +6,6 @@ use crate::{
     fluid, global, list,
     runtime::{
         Context,
-        prelude::VariableRef,
         value::{
             Boxed, HashTable, HashTableType, IntoValue, ScmHeader, Str, Symbol, Tagged, TypeCode8,
             Value,
@@ -381,8 +380,10 @@ impl<'gc> Module<'gc> {
                 .set(Some(interface));
         }
 
-        if self.uses.get().memq((scm_module(ctx)).into()) && !Gc::ptr_eq(self, root_module(ctx)) {
-            self.use_iface(ctx, scm_module(ctx));
+        if self.uses.get().memq((ctx.globals().scm_module()).into())
+            && !Gc::ptr_eq(self, ctx.globals().root_module())
+        {
+            self.use_iface(ctx, ctx.globals().scm_module());
         }
     }
 
@@ -606,28 +607,15 @@ impl<'gc> Module<'gc> {
     }
 }
 
-global!(
-    resolve_module_root<'gc>: Gc<'gc, Module<'gc>> = (ctx) {
-        let root = Module::new(ctx, 0, Value::null(), Value::new(false));
-        barrier::field!(Gc::write(&ctx, root), Module, name).unlock().set(Value::null());
-        root.define_submodule(ctx, Symbol::from_str(ctx, "capy").into(), root_module(ctx));
-        root
-    };
-
-    loc_resolve_module_root<'gc>: VariableRef<'gc> = (ctx) {
-        let root = resolve_module_root(ctx);
-        let var = define(ctx, "*resolve-module-root*", root);
-        var
-    };
-);
-
 pub fn resolve_module<'gc>(
     ctx: Context<'gc>,
     name: Value<'gc>,
     autoload: bool,
     ensure: bool,
 ) -> Option<Gc<'gc, Module<'gc>>> {
-    if let Some(loaded) = loc_resolve_module_root(ctx)
+    if let Some(loaded) = ctx
+        .globals()
+        .loc_resolve_module_root()
         .get()
         .downcast::<Module>()
         .nested_ref_module(ctx, name)
@@ -639,7 +627,7 @@ pub fn resolve_module<'gc>(
     if ensure {
         Some(make_modules_in(
             ctx,
-            loc_resolve_module_root(ctx).get().downcast(),
+            ctx.globals().loc_resolve_module_root().get().downcast(),
             name,
         ))
     } else {
@@ -738,27 +726,6 @@ unsafe impl<'gc> Tagged for Variable<'gc> {
     const TC8: TypeCode8 = TypeCode8::VARIABLE;
     const TYPE_NAME: &'static str = "variable";
 }
-
-global!(
-    pub root_module<'gc>: Gc<'gc, Module<'gc>> = (ctx) {
-        let m = Module::new(ctx, 0, Value::null(), Value::new(false));
-        let wm = Gc::write(&ctx, m);
-        barrier::field!(wm, Module, name).unlock().set(Value::cons(ctx, Symbol::from_str(ctx, "capy").into(), Value::null()));
-        barrier::field!(wm, Module, obarray).unlock().set(scm_module(ctx).obarray.get());
-        barrier::field!(wm, Module, public_interface).unlock().set(Some(scm_module(ctx)));
-        m
-    };
-
-    pub scm_module<'gc>: Gc<'gc, Module<'gc>> = (ctx) {
-        let m = Module::new(ctx, 0, Value::null(), Value::new(false));
-        let wm = Gc::write(&ctx, m);
-        barrier::field!(wm, Module, name).unlock().set(Value::cons(ctx, Symbol::from_str(ctx, "capy").into(), Value::null()));
-        m.kind.set(ModuleKind::Interface);
-
-        barrier::field!(wm, Module, public_interface).unlock().set(Some(m));
-        m
-    };
-);
 
 fluid!(
     pub current_module = Value::new(false);
@@ -1223,27 +1190,6 @@ pub mod module_ops {
     }
 }
 
-global!(
-    loc_the_root_module<'gc>: Gc<'gc, Variable<'gc>> = (ctx) {
-        let module = root_module(ctx);
-        module.define(ctx, Symbol::from_str(ctx, "the-root-module").into(), module.into())
-    };
-
-    loc_the_scm_module<'gc>: Gc<'gc, Variable<'gc>> = (ctx) {
-        let module = scm_module(ctx);
-        module.define(ctx, Symbol::from_str(ctx, "the-scm-module").into(), module.into())
-    };
-);
-
 pub fn init_modules<'gc>(ctx: Context<'gc>) {
     module_ops::register(ctx);
-    let _ = loc_the_root_module(ctx);
-    let _ = loc_the_scm_module(ctx);
-
-    let scm_module = scm_module(ctx);
-    let root_module = root_module(ctx);
-    barrier::field!(Gc::write(&ctx, scm_module), Module, obarray)
-        .unlock()
-        .set(root_module.obarray.get());
-    let _ = loc_resolve_module_root(ctx);
 }

@@ -1,8 +1,11 @@
 use crate::{
-    prelude::{IntoValue, NativeContinuation, NativeFn, PROCEDURES, current_module},
+    prelude::{
+        IntoValue, NativeContinuation, NativeFn, PROCEDURES, ScmHeader, TypeCode8, current_module,
+    },
     runtime::{
         fluids::DynamicState,
-        modules::{Module, ModuleRef, resolve_module, root_module, scm_module},
+        global::{Globals, VM_GLOBALS},
+        modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
             Closure, NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols,
@@ -10,7 +13,7 @@ use crate::{
         },
         vm::{
             VMResult, call_scheme, call_scheme_with_k, continue_to,
-            control::CFrameRef,
+            control::{CFrameRef, ContinuationMarks},
             debug,
             load::load_thunk_in_vicinity,
             threading::{Condition, Mutex, MutexKind, ThreadObject},
@@ -52,6 +55,16 @@ impl<'gc> Context<'gc> {
 
     pub fn dynamic_state(&self) -> Value<'gc> {
         self.state.dynamic_state.save(*self)
+    }
+
+    pub fn current_continuation_marks(&self) -> Gc<'gc, ContinuationMarks<'gc>> {
+        Gc::new(
+            &self,
+            ContinuationMarks {
+                header: ScmHeader::with_type_bits(TypeCode8::CMARKS.bits() as _),
+                cmarks: self.state.current_marks(),
+            },
+        )
     }
 
     pub fn has_suspended_call(&self) -> bool {
@@ -175,6 +188,13 @@ impl<'gc> Context<'gc> {
         resolve_module(self, name, true, false).expect("Failed to ensure module")
     }
 
+    pub fn globals(&self) -> &'gc Globals<'gc> {
+        VM_GLOBALS
+            .get()
+            .expect("VM globals not initialized")
+            .fetch(&self)
+    }
+
     pub fn public_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
         crate::runtime::modules::public_ref(self, mname, name)
     }
@@ -205,7 +225,7 @@ impl<'gc> Context<'gc> {
                 .unlock()
                 .set(Value::cons(
                     *self,
-                    (scm_module(*self)).into(),
+                    self.globals().scm_module().into(),
                     Value::null(),
                 ));
         }
@@ -543,6 +563,10 @@ impl Scheme {
         )
     }
 
+    pub fn collect_garbage(&self) {
+        self.mutator.collect_garbage();
+    }
+
     pub fn new() -> Self {
         let mut should_init = false;
 
@@ -577,7 +601,7 @@ impl Scheme {
     fn boot(self) -> Self {
         let scm = self;
         let mut did_yield = scm.enter(|ctx| {
-            current_module(ctx).set(ctx, (root_module(ctx)).into());
+            current_module(ctx).set(ctx, (ctx.globals().root_module()).into());
 
             let thunk =
                 load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, false)

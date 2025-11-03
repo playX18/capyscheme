@@ -7,7 +7,6 @@ use std::{
 
 use crate::runtime::{
     Context, YieldReason,
-    modules::root_module,
     value::{
         Closure, ConversionError, NativeReturn, PROCEDURES, ReturnCode, SavedCall, Str, Symbol,
         TryIntoValues, TypeCode16, Value, Vector,
@@ -664,7 +663,10 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         message: Value<'gc>,
         irritant: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
-        let assertion_violation = root_module(self.ctx)
+        let assertion_violation = self
+            .ctx
+            .globals()
+            .root_module()
             .get_str(self.ctx, "assertion-violation")
             .unwrap_or_else(|| panic!("pre boot error at {who}: {message} with {irritant}",));
         if irritant != Value::null() {
@@ -680,7 +682,10 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         message: &str,
         irritants: &[Value<'gc>],
     ) -> NativeCallReturn<'gc> {
-        let error = root_module(self.ctx)
+        let error = self
+            .ctx
+            .globals()
+            .root_module()
             .get_str(self.ctx, "undefined-violation")
             .expect("pre boot error");
         let who = Value::new(Symbol::from_str(self.ctx, who));
@@ -698,7 +703,10 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         message: &str,
         irritants: &[Value<'gc>],
     ) -> NativeCallReturn<'gc> {
-        let error = root_module(self.ctx)
+        let error = self
+            .ctx
+            .globals()
+            .root_module()
             .get_str(self.ctx, "implementation-restriction-violation")
             .expect("pre boot error");
         let who = Value::new(Symbol::from_str(self.ctx, who));
@@ -716,7 +724,10 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         message: &str,
         irritants: &[Value<'gc>],
     ) -> NativeCallReturn<'gc> {
-        let error = root_module(self.ctx)
+        let error = self
+            .ctx
+            .globals()
+            .root_module()
             .get_str(self.ctx, "error")
             .expect("pre boot error");
         let who = Value::new(Symbol::from_str(self.ctx, who));
@@ -751,34 +762,49 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         match operation {
             IoOperation::Open => match err.raw_os_error() {
                 Some(libc::ENOENT) => {
-                    let error = root_module(self.ctx)
+                    let error = self
+                        .ctx
+                        .globals()
+                        .root_module()
                         .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
                         .expect("pre boot error");
                     return self.return_call(error, &[who, message, filename]);
                 }
 
                 Some(libc::EEXIST) => {
-                    let error = root_module(self.ctx)
+                    let error = self
+                        .ctx
+                        .globals()
+                        .root_module()
                         .get_str(self.ctx, "raise-i/o-file-already-exists-error")
                         .expect("pre boot error");
                     return self.return_call(error, &[who, message, filename]);
                 }
 
                 Some(libc::EROFS) | Some(libc::EISDIR) | Some(libc::ETXTBSY) => {
-                    let error = root_module(self.ctx)
+                    let error = self
+                        .ctx
+                        .globals()
+                        .root_module()
                         .get_str(self.ctx, "raise-i/o-file-is-read-only-error")
                         .expect("pre boot error");
                     return self.return_call(error, &[who, message, filename]);
                 }
                 Some(libc::EACCES) => {
-                    let error = root_module(self.ctx)
+                    let error = self
+                        .ctx
+                        .globals()
+                        .root_module()
                         .get_str(self.ctx, "raise-i/o-file-protection-error")
                         .expect("pre boot error");
                     return self.return_call(error, &[who, message, filename]);
                 }
 
                 _ => {
-                    let error = root_module(self.ctx)
+                    let error = self
+                        .ctx
+                        .globals()
+                        .root_module()
                         .get_str(self.ctx, "raise-i/o-error")
                         .expect("pre boot error");
                     return self.return_call(error, &[who, message, filename]);
@@ -786,27 +812,39 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             },
 
             IoOperation::Read => {
-                let error = root_module(self.ctx)
+                let error = self
+                    .ctx
+                    .globals()
+                    .root_module()
                     .get_str(self.ctx, "raise-i/o-read-error")
                     .expect("pre boot error");
                 return self.return_call(error, &[who, message, filename]);
             }
 
             IoOperation::Write => {
-                let error = root_module(self.ctx)
+                let error = self
+                    .ctx
+                    .globals()
+                    .root_module()
                     .get_str(self.ctx, "raise-i/o-write-error")
                     .expect("pre boot error");
                 return self.return_call(error, &[who, message, filename]);
             }
 
             IoOperation::Seek => {
-                let error = root_module(self.ctx)
+                let error = self
+                    .ctx
+                    .globals()
+                    .root_module()
                     .get_str(self.ctx, "raise-i/o-seek-error")
                     .expect("pre boot error");
                 return self.return_call(error, &[who, message, filename]);
             }
             _ => {
-                let error = root_module(self.ctx)
+                let error = self
+                    .ctx
+                    .globals()
+                    .root_module()
                     .get_str(self.ctx, "raise-i/o-error")
                     .expect("pre boot error");
                 return self.return_call(error, &[who, message, filename]);
@@ -836,21 +874,30 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
 
         match err.kind() {
             ErrorKind::NotFound | ErrorKind::DirectoryNotEmpty => {
-                let error = root_module(self.ctx)
+                let error = self
+                    .ctx
+                    .globals()
+                    .root_module()
                     .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
                     .expect("pre boot error");
                 self.return_call(error, &[who, message, old_filename])
             }
 
             ErrorKind::AlreadyExists => {
-                let error = root_module(self.ctx)
+                let error = self
+                    .ctx
+                    .globals()
+                    .root_module()
                     .get_str(self.ctx, "raise-i/o-file-already-exists-error")
                     .expect("pre boot error");
                 self.return_call(error, &[who, message, new_filename])
             }
 
             _ => {
-                let error = root_module(self.ctx)
+                let error = self
+                    .ctx
+                    .globals()
+                    .root_module()
                     .get_str(self.ctx, "raise-i/o-error")
                     .expect("pre boot error");
                 self.return_call(error, &[who, message, old_filename, new_filename])

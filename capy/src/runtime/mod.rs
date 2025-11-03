@@ -10,7 +10,14 @@ pub mod vmthread;
 
 pub(crate) fn init<'gc>(mc: Context<'gc>) {
     let _ = &*VM_THREAD;
-    modules::current_module(mc).set(mc, (modules::root_module(mc)).into());
+
+    VM_GLOBALS
+        .set(rsgc::Global::new(global::Globals::new(mc)))
+        .unwrap_or_else(|_| {
+            panic!("VM_GLOBALS already initialized");
+        });
+
+    // modules::current_module(mc).set(mc, (modules::root_module(mc)).into());
 
     fluids::init_fluids(mc);
     vm::load::init_load_path(mc);
@@ -32,12 +39,12 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::dl::init_dl(mc);
     vm::threading::init_threading(mc);
     vm::control::init_control(mc);
-    let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
+    //let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
 }
 
 pub use thread::*;
 
-use crate::runtime::vmthread::VM_THREAD;
+use crate::runtime::{global::VM_GLOBALS, vmthread::VM_THREAD};
 
 #[allow(ambiguous_glob_imports)]
 pub mod prelude {
