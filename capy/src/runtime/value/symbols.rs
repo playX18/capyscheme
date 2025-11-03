@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cell::Cell,
     fmt::Write,
     hash::Hasher,
@@ -193,9 +194,33 @@ impl<'gc> Symbol<'gc> {
             self.substring(&ctx, 0, offset as usize)
         }
     }
+
+    pub fn as_str(&self) -> Cow<'gc, str> {
+        if let Some(ascii) = self.chars() {
+            let s = unsafe { std::str::from_utf8_unchecked(ascii) };
+            Cow::Borrowed(s)
+        } else if let Some(wide) = self.wide_chars() {
+            let s: String = wide.iter().collect();
+            Cow::Owned(s)
+        } else {
+            unreachable!()
+        }
+    }
 }
 
 impl<'gc> Str<'gc> {
+    pub fn as_str(self) -> Cow<'gc, str> {
+        if let Some(ascii) = self.chars() {
+            let s = unsafe { std::str::from_utf8_unchecked(ascii) };
+            Cow::Borrowed(s)
+        } else if let Some(wide) = self.wide_chars() {
+            let s: String = wide.iter().collect();
+            Cow::Owned(s)
+        } else {
+            unreachable!()
+        }
+    }
+
     pub fn to_symbol(self: Gc<'gc, Self>, mc: Context<'gc>) -> Gc<'gc, Symbol<'gc>> {
         Symbol::from_string(mc, self)
     }

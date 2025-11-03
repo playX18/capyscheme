@@ -363,6 +363,50 @@ impl FunctionDefinition {
         syn::parse2(tokens).expect("parsing trampoline function")
     }
 
+    pub fn raw_name(&self) -> syn::Ident {
+        if self.is_continuation() {
+            syn::Ident::new(
+                &format!("_raw_scm_cont_{}", self.transformed_function.sig.ident),
+                self.transformed_function.sig.ident.span(),
+            )
+        } else {
+            syn::Ident::new(
+                &format!("_raw_scm_proc_{}", self.transformed_function.sig.ident),
+                self.transformed_function.sig.ident.span(),
+            )
+        }
+    }
+
+    pub fn meta_name(&self) -> syn::Ident {
+        let meta_static_name = syn::Ident::new(
+            &format!(
+                "_SCHEME_META_{}",
+                self.transformed_function
+                    .sig
+                    .ident
+                    .to_string()
+                    .to_uppercase()
+            ),
+            self.transformed_function.sig.ident.span(),
+        );
+        meta_static_name
+    }
+
+    pub fn get_meta_name(&self) -> syn::Ident {
+        let get_meta_name = syn::Ident::new(
+            &format!(
+                "_scheme_meta_{}",
+                self.transformed_function
+                    .sig
+                    .ident
+                    .to_string()
+                    .to_lowercase()
+            ),
+            self.transformed_function.sig.ident.span(),
+        );
+        get_meta_name
+    }
+
     pub fn to_tokens(&mut self) -> proc_macro2::TokenStream {
         let trampoline = self.make_trampoline();
         let native_ctx = &self.nctx;
@@ -510,7 +554,7 @@ impl FunctionDefinition {
                 ctx.#make(
                     #raw_name,
                     free_vars,
-                    *#get_meta_name(ctx),
+                    #get_meta_name(ctx),
                 )
             }
 
@@ -521,7 +565,7 @@ impl FunctionDefinition {
             {
                 ctx.#make_static(
                     #raw_name,
-                    *#get_meta_name(ctx),
+                    #get_meta_name(ctx),
                 )
             }
 

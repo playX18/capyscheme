@@ -1,6 +1,6 @@
 use crate::{
     expander::{sym_column, sym_filename, sym_line},
-    native_fn,
+    prelude::*,
     runtime::{
         Context,
         value::{Closure, IntoValue, Str, Symbol, Value, Vector},
@@ -99,37 +99,36 @@ impl<'gc> ShadowStack<'gc> {
 }
 
 pub(crate) fn init_debug<'gc>(ctx: Context<'gc>) {
-    register_debug_fns(ctx);
+    debug_ops::register(ctx);
 }
 
-native_fn!(
-    register_debug_fns:
-
-    pub ("print-stacktrace") fn print_stacktrace<'gc>(nctx, _args: &'gc [Value<'gc>]) -> () {
+#[scheme(path=capy)]
+pub mod debug_ops {
+    #[scheme(name = "print-stacktrace")]
+    pub fn print_stacktrace(_args: &'gc [Value<'gc>]) -> () {
         print_stacktraces_impl(nctx.ctx);
 
         nctx.return_(())
     }
 
     /// Capture and return the current stacktrace as a list of frames.
-    pub ("shadow-stack") fn stacktrace<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "shadow-stack")]
+    pub fn shadow_stack() -> Value<'gc> {
         let ctx = nctx.ctx;
         let state = ctx.state;
         let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
 
         let mut frames = Vec::new();
         shadow_stack.for_each_recent(|frame| {
-            let rands = frame.rands.iter().copied().rev().fold(Value::null(), |acc, rand| {
-                Value::cons(ctx, rand, acc)
-            });
+            let rands = frame
+                .rands
+                .iter()
+                .copied()
+                .rev()
+                .fold(Value::null(), |acc, rand| Value::cons(ctx, rand, acc));
             let frame_vec = Vector::from_slice(
                 &ctx,
-                &[
-                    frame.ip.into_value(ctx),
-                    frame.meta,
-                    frame.rator,
-                    rands,
-                ]
+                &[frame.ip.into_value(ctx), frame.meta, frame.rator, rands],
             );
 
             frames.push(frame_vec);
@@ -139,15 +138,12 @@ native_fn!(
             Value::cons(ctx, frame.into(), acc)
         });
 
-
         nctx.return_(frames)
     }
 
     /// Attempt to resolve proper name for a given address
-    pub ("resolve-address-name") fn resolve_address_name<'gc>(
-        nctx,
-        addr: u64
-    ) -> Value<'gc> {
+    #[scheme(name = "resolve-address-name")]
+    pub fn resolve_address_name(addr: u64) -> Value<'gc> {
         let mut result = Value::new(false);
         backtrace::resolve(addr as _, |sym| {
             if let Some(name) = sym.name() {
@@ -156,8 +152,7 @@ native_fn!(
         });
         nctx.return_(result)
     }
-);
-
+}
 pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
     let state = ctx.state;
     let shadow_stack = unsafe { &mut *state.shadow_stack.get() };

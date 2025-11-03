@@ -1,5 +1,7 @@
 pub mod fasl;
 pub mod fluids;
+pub mod global;
+pub mod image;
 pub mod modules;
 pub mod thread;
 pub mod value;
@@ -8,7 +10,7 @@ pub mod vmthread;
 
 pub(crate) fn init<'gc>(mc: Context<'gc>) {
     let _ = &*VM_THREAD;
-    modules::current_module(mc).set(mc, (*modules::root_module(mc)).into());
+    modules::current_module(mc).set(mc, (modules::root_module(mc)).into());
 
     fluids::init_fluids(mc);
     vm::load::init_load_path(mc);
@@ -41,13 +43,13 @@ use crate::runtime::vmthread::VM_THREAD;
 pub mod prelude {
     use crate::runtime::modules::*;
 
+    pub use super::global::Global;
     pub use super::thread::Context;
     pub use super::value::*;
     pub use super::vm::{self, NativeCallContext, NativeCallReturn, call_scheme};
     pub use rsgc::Gc;
     pub use rsgc::Rootable;
     pub use rsgc::Trace;
-    pub use rsgc::global::Global;
 
     pub type VariableRef<'gc> = Gc<'gc, Variable<'gc>>;
     pub type StringRef<'gc> = Gc<'gc, Str<'gc>>;

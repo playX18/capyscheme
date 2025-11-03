@@ -1,7 +1,8 @@
 use rsgc::{Gc, barrier};
 
 use crate::{
-    fluid, native_cont, native_fn,
+    fluid,
+    prelude::*,
     runtime::{
         Context,
         modules::Variable,
@@ -24,16 +25,17 @@ pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
     0
 }
 
-native_fn!(
-    register_base_fns:
-
-    pub ("implementation-version") fn implementation_version<'gc>(nctx) -> Value<'gc> {
+#[scheme(path=capy)]
+pub mod base_ops {
+    #[scheme(name = "implementation-version")]
+    pub fn implementation_version() -> Value<'gc> {
         let version = env!("CARGO_PKG_VERSION");
         let version = Str::new(&nctx.ctx, version, true);
         nctx.return_(version.into())
     }
 
-    pub ("native-endianness") fn native_endianness<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "native-endianness")]
+    pub fn native_endianness() -> Value<'gc> {
         let endian = if cfg!(target_endian = "little") {
             "little"
         } else {
@@ -42,22 +44,27 @@ native_fn!(
         let endian = nctx.ctx.intern(endian);
         nctx.return_(endian.into())
     }
-    pub ("host-arch") fn host_target<'gc>(nctx) -> Value<'gc> {
+
+    #[scheme(name = "host-arch")]
+    pub fn host_target() -> Value<'gc> {
         let target = Str::new(&nctx.ctx, std::env::consts::ARCH, true);
         nctx.return_(target.into())
     }
 
-    pub ("host-os") fn host_os<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "host-os")]
+    pub fn host_os() -> Value<'gc> {
         let os = Str::new(&nctx.ctx, std::env::consts::OS, true);
         nctx.return_(os.into())
     }
 
-    pub ("host-family") fn host_family<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "host-family")]
+    pub fn host_family() -> Value<'gc> {
         let family = Str::new(&nctx.ctx, std::env::consts::FAMILY, true);
         nctx.return_(family.into())
     }
 
-    pub ("host-triple") fn host_triple<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "host-triple")]
+    pub fn host_triple() -> Value<'gc> {
         let triple = format!(
             "{}-{}-{}",
             std::env::consts::ARCH,
@@ -68,80 +75,86 @@ native_fn!(
         nctx.return_(triple.into())
     }
 
-    pub ("dll-suffix") fn dll_suffix<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "dll-suffix")]
+    pub fn dll_suffix() -> Value<'gc> {
         let suffix = std::env::consts::DLL_SUFFIX;
         let suffix = Str::new(&nctx.ctx, suffix, true);
         nctx.return_(suffix.into())
     }
 
-    pub ("dll-prefix") fn dll_prefix<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "dll-prefix")]
+    pub fn dll_prefix() -> Value<'gc> {
         let prefix = std::env::consts::DLL_PREFIX;
         let prefix = Str::new(&nctx.ctx, prefix, true);
         nctx.return_(prefix.into())
     }
 
-    pub ("procedure?") fn is_procedure<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "procedure?")]
+    pub fn is_procedure(v: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(v.is::<Closure>()))
     }
 
-    pub ("program-arguments") fn program_arguments<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "program-arguments")]
+    pub fn program_arguments() -> Value<'gc> {
         let ctx = nctx.ctx;
         nctx.return_(program_arguments_fluid(ctx).get(ctx))
     }
 
-    pub ("set-program-arguments!") fn set_program_arguments<'gc>(
-        nctx,
-        args: Value<'gc>
-    ) -> Value<'gc> {
+    #[scheme(name = "set-program-arguments!")]
+    pub fn set_program_arguments(args: Value<'gc>) -> Value<'gc> {
         if !args.is_list() {
-            return nctx.wrong_argument_violation("set-program-arguments!", "expected a list", Some(args), Some(1), 1, &[args]);
+            return nctx.wrong_argument_violation(
+                "set-program-arguments!",
+                "expected a list",
+                Some(args),
+                Some(1),
+                1,
+                &[args],
+            );
         }
         let ctx = nctx.ctx;
         program_arguments_fluid(ctx).set(ctx, args);
         nctx.return_(args)
     }
 
-
-    pub ("eof-object") fn eof_object<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "eof-object")]
+    pub fn eof_object() -> Value<'gc> {
         nctx.return_(Value::eof())
     }
-    pub ("exit") fn exit<'gc>(_nctx, code: Value<'gc>) -> () {
-        let code = if code.is_int32() {
-            code.as_int32()
-        } else {
-            -1
-        };
+
+    #[scheme(name = "exit")]
+    pub fn exit(code: Value<'gc>) -> () {
+        let code = if code.is_int32() { code.as_int32() } else { -1 };
 
         std::process::exit(code);
     }
 
-    pub (".return-error") fn return_error<'gc>(nctx, err: Value<'gc>) -> () {
+    #[scheme(name = ".return-error")]
+    pub fn return_error(err: Value<'gc>) -> () {
         nctx.return_error(err)
     }
 
-    pub ("values") fn values<'gc>(nctx, args: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
+    #[scheme(name = "values")]
+    pub fn values(args: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
         nctx.return_(args)
     }
 
-    pub (".call/cc-unsafe") fn call_cc_unsafe<'gc>(
-        nctx,
-        proc: Value<'gc>
-    ) -> Result<Value<'gc>, Value<'gc>> {
+    #[scheme(name = ".call/cc-unsafe")]
+    pub fn call_cc_unsafe(proc: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         let k = nctx.retk;
-        let k = make_call_cc_cont_closure(nctx.ctx, [k]);
+        let k = make_closure_call_cc_cont(nctx.ctx, [k]);
         nctx.return_call(proc, &[k.into()])
     }
 
-    pub (".call/cc-cont") fn call_cc_cont<'gc>(
-        nctx,
-        ans: &'gc [Value<'gc>]
-    ) -> &'gc [Value<'gc>] {
+    #[scheme(name = " .call/cc-cont ")]
+    pub fn call_cc_cont(ans: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
         let k = nctx.rator().downcast::<Closure>().free.downcast::<Vector>()[1].get();
         // SAFETY: only `.call/cc-unsafe` can construct us and variable at 1 is always a continuation
         unsafe { nctx.continue_to(k, ans) }
     }
 
-    pub ("not") fn not<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "not")]
+    pub fn not(v: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(v == Value::new(false)))
     }
 
@@ -149,32 +162,42 @@ native_fn!(
     ///
     /// This function will make handler to return to `retk` and `reth` of the caller of
     /// `.with-handler`.
-    pub (".with-handler") fn with_exception_handler<'gc>(
-        nctx,
+    #[scheme(name = ".with-handler")]
+    pub fn with_exception_handler(
         handler: Value<'gc>,
-        thunk: Value<'gc>
+        thunk: Value<'gc>,
     ) -> Result<Value<'gc>, Value<'gc>> {
         let retk = nctx.retk;
         let reth = nctx.reth;
-        let handler_closure = make_handler_cont_closure(nctx.ctx, [retk, reth, handler]);
+        let handler_closure = make_closure_handler_cont(nctx.ctx, [retk, reth, handler]);
         unsafe { nctx.return_call_unsafe(retk, handler_closure.into(), thunk, &[]) }
     }
 
-    pub (".raise") fn raise<'gc>(nctx, e: Value<'gc>) -> () {
+    #[scheme(name = ".raise")]
+    pub fn raise(e: Value<'gc>) -> () {
         unsafe {
             let reth = nctx.reth;
             nctx.continue_to(reth, &[e])
         }
     }
 
-    pub ("gensym") fn gensym<'gc>(nctx, prefix: Option<Gc<'gc, Str<'gc>>>) -> Value<'gc> {
+    #[scheme(name = "gensym")]
+    pub fn gensym(prefix: Option<Gc<'gc, Str<'gc>>>) -> Value<'gc> {
         let sym = Symbol::gensym(nctx.ctx, prefix);
         nctx.return_(sym.into())
     }
 
-    pub ("values-list") fn values_list<'gc>(nctx, lst: Value<'gc>) -> () {
+    #[scheme(name = "values-list")]
+    pub fn values_list(lst: Value<'gc>) -> () {
         if !lst.is_list() {
-            return nctx.wrong_argument_violation("values-list", "expected a list", Some(lst), Some(1), 1, &[lst]);
+            return nctx.wrong_argument_violation(
+                "values-list",
+                "expected a list",
+                Some(lst),
+                Some(1),
+                1,
+                &[lst],
+            );
         }
         let mut values = Vec::new();
         let mut walk = lst;
@@ -183,137 +206,86 @@ native_fn!(
             walk = walk.cdr();
         }
 
-
         nctx.return_many(&values)
     }
 
-    pub ("delete!") fn delete<'gc>(nctx, item: Value<'gc>, lst: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "delete!")]
+    pub fn delete(item: Value<'gc>, lst: Value<'gc>) -> Value<'gc> {
         if !lst.is_list() {
-            return nctx.wrong_argument_violation("delete!", "expected a list", Some(lst), Some(2), 2, &[item, lst]);
+            return nctx.wrong_argument_violation(
+                "delete!",
+                "expected a list",
+                Some(lst),
+                Some(2),
+                2,
+                &[item, lst],
+            );
         }
 
-        /*let mut lst = lst;
-        let mut walk = lst;
-        let mut prev = lst;
-
-        while walk.is_pair() {
-            if walk.car().r5rs_equal(item) {
-                if prev == lst {
-                    lst = walk.cdr();
-                } else {
-                    prev.set_cdr(nctx.ctx, walk.cdr());
-                }
-            } else {
-                prev = walk;
-            }
-            walk = walk.cdr();
-        }
-
-        nctx.return_(lst)*/
         let lst = lst.destructive_delete(nctx.ctx, item);
         nctx.return_(lst)
     }
 
-    pub ("unspecified") fn unspecified<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "unspecified")]
+    pub fn unspecified() -> Value<'gc> {
         nctx.return_(Value::undefined())
     }
 
-    pub ("unspecified?") fn is_unspecified<'gc>(nctx, v: Value<'gc>) -> bool {
+    #[scheme(name = "unspecified?")]
+    pub fn is_unspecified(v: Value<'gc>) -> bool {
         nctx.return_(v == Value::undefined())
     }
 
-    pub ("procedure-properties") fn procedure_metadata<'gc>(
-        nctx,
-        proc: Gc<'gc, Closure<'gc>>
-    ) -> Value<'gc> {
+    #[scheme(name = "procedure-properties")]
+    pub fn procedure_metadata(proc: Gc<'gc, Closure<'gc>>) -> Value<'gc> {
         nctx.return_(proc.meta.get())
     }
 
-    pub ("set-procedure-properties!") fn set_procedure_metadata<'gc>(
-        nctx,
-        proc: Gc<'gc, Closure<'gc>>,
-        meta: Value<'gc>
-    ) -> Value<'gc> {
+    #[scheme(name = "set-procedure-properties!")]
+    pub fn set_procedure_metadata(proc: Gc<'gc, Closure<'gc>>, meta: Value<'gc>) -> Value<'gc> {
         let wproc = Gc::write(&nctx.ctx, proc);
         barrier::field!(wproc, Closure, meta).unlock().set(meta);
         nctx.return_(meta)
     }
 
-    pub ("memv") fn memv<'gc>(
-        nctx,
-        item: Value<'gc>,
-        lst: Value<'gc>
-    ) -> Value<'gc> {
-        if !lst.is_list() {
-            return nctx.wrong_argument_violation("memv", "expected a list", Some(lst), Some(2), 2, &[item, lst]);
-        }
-        let mut walk = lst;
-
-        while walk.is_pair() {
-            if walk.car().eqv(item) {
-                return nctx.return_(walk);
-            }
-            walk = walk.cdr();
-        }
-
-        nctx.return_(Value::new(false))
-    }
-
-    pub ("memq") fn memq<'gc>(
-        nctx,
-        item: Value<'gc>,
-        lst: Value<'gc>
-    ) -> Value<'gc> {
-        if !lst.is_list() {
-            return nctx.wrong_argument_violation("memq", "expected a list", Some(lst), Some(2), 2, &[item, lst]);
-        }
-        let mut walk = lst;
-
-        while walk.is_pair() {
-            if walk.car() == item {
-                return nctx.return_(walk);
-            }
-            walk = walk.cdr();
-        }
-
-        nctx.return_(Value::new(false))
-    }
-
-    pub ("make-uuid") fn make_uuid<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "make-uuid")]
+    pub fn make_uuid() -> Value<'gc> {
         let uuid = uuid::Uuid::new_v4();
         let ctx = nctx.ctx;
         nctx.return_(Str::new(&ctx, &uuid.to_string(), true).into())
     }
 
-    pub ("boolean=?") fn boolean_eq<'gc>(
-        nctx,
-        a: Value<'gc>,
-        b: Value<'gc>
-    ) -> Value<'gc> {
-        if !a.is_bool() {
-            return nctx.wrong_argument_violation("boolean=?", "expected a boolean", Some(a), Some(1), 2, &[a, b]);
-        }
-        if !b.is_bool() {
-            return nctx.wrong_argument_violation("boolean=?", "expected a boolean", Some(b), Some(2), 2, &[a, b]);
-        }
-        nctx.return_(Value::new(a.as_bool() == b.as_bool()))
+    #[scheme(name = "boolean=?")]
+    pub fn boolean_eq(a: bool, b: bool) -> bool {
+        nctx.return_(a == b)
     }
 
-    pub ("variable?") fn is_variable<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "variable?")]
+    pub fn is_variable(v: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(v.is::<Variable>()))
     }
 
-    pub ("symbol=?") fn symbol_eq<'gc>(
-        nctx,
-        a: Value<'gc>,
-        b: Value<'gc>,
-        rest: &'gc [Value<'gc>]
-    ) -> Value<'gc> {
+    #[scheme(name = "symbol=?")]
+    fn symbol_eq(a: Value<'gc>, b: Value<'gc>, rest: &'gc [Value<'gc>]) -> Value<'gc> {
         if !a.is::<Symbol>() {
-            return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(a), Some(1), 2, &[a, b]);
+            return nctx.wrong_argument_violation(
+                "symbol=?",
+                "expected a symbol",
+                Some(a),
+                Some(1),
+                2,
+                &[a, b],
+            );
         }
         if !b.is::<Symbol>() {
-            return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(b), Some(2), 2, &[a, b]);
+            return nctx.wrong_argument_violation(
+                "symbol=?",
+                "expected a symbol",
+                Some(b),
+                Some(2),
+                2,
+                &[a, b],
+            );
         }
         if rest.is_empty() {
             return nctx.return_(Value::new(a == b));
@@ -325,7 +297,19 @@ native_fn!(
                 return nctx.return_(Value::new(false));
             }
             if !sym.is::<Symbol>() {
-                return nctx.wrong_argument_violation("symbol=?", "expected a symbol", Some(sym), None, rest.len() + 2, &[a, b].iter().chain(rest).cloned().collect::<Vec<_>>().as_slice());
+                return nctx.wrong_argument_violation(
+                    "symbol=?",
+                    "expected a symbol",
+                    Some(sym),
+                    None,
+                    rest.len() + 2,
+                    &[a, b]
+                        .iter()
+                        .chain(rest)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                );
             }
 
             if sym != a {
@@ -335,8 +319,8 @@ native_fn!(
 
         nctx.return_(Value::new(true))
     }
-
-    pub ("microsecond") fn microsecond<'gc>(nctx) -> u128 {
+    #[scheme(name = "microsecond")]
+    pub fn microsecond() -> u128 {
         unsafe {
             let mut tv: std::mem::MaybeUninit<libc::timeval> = std::mem::MaybeUninit::uninit();
             libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut());
@@ -346,114 +330,102 @@ native_fn!(
         }
     }
 
-    pub ("tuple-size") fn tuple_size<'gc>(
-        nctx,
-        t: Gc<'gc, Tuple<'gc>>
-    ) -> usize {
+    #[scheme(name = "tuple-size")]
+    pub fn tuple_size(t: Gc<'gc, Tuple<'gc>>) -> usize {
         nctx.return_(t.len())
     }
 
-    pub ("tuple-set!") fn tuple_set<'gc>(
-        nctx,
-        t: Gc<'gc, Tuple<'gc>>,
-        i: usize,
-        v: Value<'gc>
-    ) -> Value<'gc> {
+    #[scheme(name = "tuple-set!")]
+    pub fn tuple_set(t: Gc<'gc, Tuple<'gc>>, i: usize, v: Value<'gc>) -> Value<'gc> {
         let ctx = nctx.ctx;
         if i >= t.len() {
-            return nctx.wrong_argument_violation("tuple-set!", "index out of bounds", Some(i.into_value(ctx)), Some(2), 3, &[t.into(), i.into_value(ctx), v]);
+            return nctx.wrong_argument_violation(
+                "tuple-set!",
+                "index out of bounds",
+                Some(i.into_value(ctx)),
+                Some(2),
+                3,
+                &[t.into(), i.into_value(ctx), v],
+            );
         }
 
         Gc::write(&nctx.ctx, t)[i].unlock().set(v);
         nctx.return_(Value::undefined())
     }
 
-    pub ("tuple-ref") fn tuple_ref<'gc>(
-        nctx,
-        t: Gc<'gc, Tuple<'gc>>,
-        i: usize
-    ) -> Value<'gc> {
+    #[scheme(name = "tuple-ref")]
+    pub fn tuple_ref(t: Gc<'gc, Tuple<'gc>>, i: usize) -> Value<'gc> {
         let ctx = nctx.ctx;
         if i >= t.len() {
-            return nctx.wrong_argument_violation("tuple-ref", "index out of bounds", Some(i.into_value(ctx)), Some(2), 2, &[t.into(), i.into_value(ctx)]);
+            return nctx.wrong_argument_violation(
+                "tuple-ref",
+                "index out of bounds",
+                Some(i.into_value(ctx)),
+                Some(2),
+                2,
+                &[t.into(), i.into_value(ctx)],
+            );
         }
 
         nctx.return_(t[i].get())
     }
 
-    pub ("tuple?") fn is_tuple<'gc>(
-        nctx,
-        v: Value<'gc>
-    ) -> bool {
+    #[scheme(name = "tuple?")]
+    pub fn is_tuple(v: Value<'gc>) -> bool {
         nctx.return_(v.is::<Tuple>())
     }
 
-    pub ("eof-object?") fn is_eof_object<'gc>(
-        nctx,
-        v: Value<'gc>
-    ) -> bool {
+    #[scheme(name = "eof-object?")]
+    pub fn is_eof_object(v: Value<'gc>) -> bool {
         nctx.return_(v.is_eof())
     }
 
-    pub ("make-weak-mapping") fn make_weak_mapping<'gc>(
-        nctx,
-        key: Value<'gc>,
-        value: Value<'gc>
-    ) -> Value<'gc> {
+    #[scheme(name = "make-weak-mapping")]
+    pub fn make_weak_mapping(key: Value<'gc>, value: Value<'gc>) -> Value<'gc> {
         if !key.is_cell() {
-            return nctx.wrong_argument_violation("make-weak-mapping", "expected a heap-allocated object as key", Some(key), Some(1), 2, &[key, value]);
+            return nctx.wrong_argument_violation(
+                "make-weak-mapping",
+                "expected a heap-allocated object as key",
+                Some(key),
+                Some(1),
+                2,
+                &[key, value],
+            );
         }
         let wmap = WeakMapping::new(nctx.ctx, key, value);
         nctx.return_(Value::new(wmap))
     }
 
-    pub ("weak-mapping?") fn is_weak_mapping<'gc>(
-        nctx,
-        v: Value<'gc>
-    ) -> bool {
+    #[scheme(name = "weak-mapping?")]
+    pub fn is_weak_mapping(v: Value<'gc>) -> bool {
         nctx.return_(v.is::<WeakMapping>())
     }
 
-    pub ("weak-mapping-value") fn weak_mapping_value<'gc>(
-        nctx,
-        wm: Gc<'gc, WeakMapping<'gc>>
-    ) -> Value<'gc> {
+    #[scheme(name = "weak-mapping-value")]
+    pub fn weak_mapping_value(wm: Gc<'gc, WeakMapping<'gc>>) -> Value<'gc> {
         let value = wm.value(&nctx.ctx);
         nctx.return_(value)
     }
 
-    pub ("weak-mapping-key") fn weak_mapping_key<'gc>(
-        nctx,
-        wm: Gc<'gc, WeakMapping<'gc>>
-    ) -> Value<'gc> {
+    #[scheme(name = "weak-mapping-key")]
+    pub fn weak_mapping_key(wm: Gc<'gc, WeakMapping<'gc>>) -> Value<'gc> {
         let key = wm.key(&nctx.ctx);
         nctx.return_(key)
     }
-);
+}
 
-native_cont!(
-    register_base_conts:
+#[scheme(continuation)]
+pub fn handler_cont(ans: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+    let free = nctx.rator().downcast::<Closure>().free.downcast::<Vector>();
+    let retk = free[1].get();
+    let reth = free[2].get();
+    let handler = free[3].get();
 
-    pub (".handler-cont") fn handler_cont<'gc>(
-        nctx,
-        ans: Value<'gc>
-    ) -> Result<Value<'gc>, Value<'gc>> {
-        let free = nctx.rator().downcast::<Closure>().free.downcast::<Vector>();
-        let retk = free[1].get();
-        let reth = free[2].get();
-        let handler = free[3].get();
-
-        unsafe {
-            nctx.return_call_unsafe(retk, reth, handler, &[ans])
-        }
-    }
-
-
-);
+    unsafe { nctx.return_call_unsafe(retk, reth, handler, &[ans]) }
+}
 
 pub fn init_base<'gc>(ctx: Context<'gc>) {
-    register_base_fns(ctx);
-    let _ = register_base_conts;
+    base_ops::register(ctx);
 
     let args = std::env::args().rev().fold(Value::null(), |acc, arg| {
         Value::cons(ctx, Str::new(&ctx, arg, true).into(), acc)

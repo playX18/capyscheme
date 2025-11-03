@@ -205,7 +205,7 @@ impl<'gc> Context<'gc> {
                 .unlock()
                 .set(Value::cons(
                     *self,
-                    (*scm_module(*self)).into(),
+                    (scm_module(*self)).into(),
                     Value::null(),
                 ));
         }
@@ -577,7 +577,7 @@ impl Scheme {
     fn boot(self) -> Self {
         let scm = self;
         let mut did_yield = scm.enter(|ctx| {
-            current_module(ctx).set(ctx, (*root_module(ctx)).into());
+            current_module(ctx).set(ctx, (root_module(ctx)).into());
 
             let thunk =
                 load_thunk_in_vicinity::<true>(ctx, "boot/main.scm", None::<&str>, false, false)

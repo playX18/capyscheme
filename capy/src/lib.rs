@@ -27,6 +27,7 @@ pub use rsgc;
 pub mod prelude {
     pub use crate::global;
     pub use crate::list;
+    pub use crate::runtime::global::Global;
     pub use crate::runtime::modules::Module;
     pub use crate::runtime::modules::ModuleRef;
     pub use crate::runtime::modules::current_module;
@@ -34,7 +35,7 @@ pub mod prelude {
     pub use crate::runtime::vm::{NativeCallContext, NativeCallReturn};
     pub use crate::vector;
     pub use capy_derive::scheme;
-    pub use rsgc::{Global, Rootable, Trace, barrier};
+    pub use rsgc::{Rootable, Trace, barrier};
 }
 
 pub use capy_derive::scheme;

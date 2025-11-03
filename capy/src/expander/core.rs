@@ -114,7 +114,7 @@ impl<'gc> Cenv<'gc> {
     pub fn toplevel(ctx: Context<'gc>) -> Self {
         Cenv {
             ctx,
-            current_module: *root_module(ctx),
+            current_module: root_module(ctx),
             expression_name: Value::undefined(),
             frames: None,
             denotations: denotations(ctx),

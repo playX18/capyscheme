@@ -41,13 +41,13 @@
 
         (define stash-set!
           (lambda (key value)
-            (and (core-hashtable-ref stash key #f)
+            (and (core-hash-ref stash key #f)
                  (syntax-violation 'define-record-type (format #f "duplicate ~a clause" key) x))
-            (core-hashtable-set! stash key (list value))))
+            (core-hash-set! stash key (list value))))
 
         (define stash-ref
           (lambda (key default)
-            (cond ((core-hashtable-ref stash key #f) => car)
+            (cond ((core-hash-ref stash key #f) => car)
                   (else default))))
 
         (define parse-record-clauses

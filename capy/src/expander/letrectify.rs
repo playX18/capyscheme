@@ -103,7 +103,7 @@ fn compute_private_toplevels<'gc>(
     let mut exports_macro = HashMap::new();
     declarative.iter().for_each(|(&(module, _), _)| {
         // special-case `capy` module to always export everything
-        if module.0.r5rs_equal(*capy_module(ctx)) {
+        if module.0.r5rs_equal(capy_module(ctx)) {
             exports_macro.insert(module, true);
             return;
         }
@@ -429,7 +429,7 @@ pub fn is_define_module_term<'gc>(
     match t.kind {
         TermKind::Call(rator, args) => {
             if let TermKind::ModuleRef(module, name, _) = rator.kind
-                && module.r5rs_equal(*capy_module(ctx))
+                && module.r5rs_equal(capy_module(ctx))
                 && name == sym_define_module(ctx).into()
                 && args.len() == 1
                 && let TermKind::Const(mod_name) = args[0].kind

@@ -55,6 +55,7 @@ sys-locale = "0.3.2"
 capy-derive.workspace = true
 cranelift-entity = "0.125.3"
 refpool = "0.4.3"
+zstd = "0.13.3"
 
 [dependencies.im]
 version = "15.1.0"

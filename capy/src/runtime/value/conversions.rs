@@ -15,6 +15,47 @@ pub enum ConversionError<'gc> {
     },
 }
 
+impl<'gc> std::fmt::Display for ConversionError<'gc> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TypeMismatch {
+                pos,
+                expected,
+                found,
+            } => write!(
+                f,
+                "ConversionError at argument {}: expected type {}, found value {}",
+                pos, expected, found
+            ),
+            Self::ArityMismatch {
+                pos,
+                expected,
+                found,
+            } => {
+                if let Some(max) = expected.max {
+                    write!(
+                        f,
+                        "ConversionError at argument {}: expected arity between {} and {}, found {}",
+                        pos, expected.min, max, found
+                    )
+                } else {
+                    write!(
+                        f,
+                        "ConversionError at argument {}: expected arity at least {}, found {}",
+                        pos, expected.min, found
+                    )
+                }
+            }
+        }
+    }
+}
+
+impl<'gc> std::fmt::Debug for ConversionError<'gc> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 impl<'gc> ConversionError<'gc> {
     pub fn with_appended_pos(self, offset: usize) -> Self {
         match self {
@@ -750,4 +791,3 @@ where
         }
     }
 }
-

@@ -4,7 +4,8 @@ use std::{
 };
 
 use crate::{
-    global, native_fn,
+    global,
+    prelude::*,
     runtime::{
         modules::define,
         prelude::*,
@@ -221,39 +222,43 @@ unsafe impl Tagged for Pointer {
     const TYPE_NAME: &'static str = "pointer";
 }
 
-native_fn!(
-    register_ffi_fns:
-
-    pub ("pointer?") fn pointerp<'gc>(nctx, x: Value<'gc>) -> bool {
+#[scheme(path=capy)]
+pub mod ffi_ops {
+    #[scheme(name = "pointer?")]
+    pub fn pointerp(x: Value<'gc>) -> bool {
         nctx.return_(x.is::<Pointer>())
     }
 
-    pub ("make-pointer") fn make_pointer<'gc>(nctx, addr: usize) -> Value<'gc> {
+    #[scheme(name = "make-pointer")]
+    pub fn make_pointer(addr: usize) -> Value<'gc> {
         let ptr = Pointer::new(addr as *mut std::ffi::c_void);
         let ptr = Gc::new(&nctx.ctx, ptr);
         nctx.return_(ptr.into())
     }
 
-    pub ("pointer-address") fn pointer_address<'gc>(nctx, p: Gc<'gc, Pointer>) -> usize {
+    #[scheme(name = "pointer-address")]
+    pub fn pointer_address(p: Gc<'gc, Pointer>) -> usize {
         nctx.return_(p.value() as usize)
     }
 
     /// unsafely convert a pointer to a Scheme value.
-    pub ("pointer->scm") fn pointer_to_value<'gc>(nctx, p: Gc<'gc, Pointer>) -> Value<'gc> {
+    #[scheme(name = "pointer->scm")]
+    pub fn pointer_to_value(p: Gc<'gc, Pointer>) -> Value<'gc> {
         nctx.return_(Value::from_raw(p.value() as u64))
     }
 
-    pub ("scm->pointer") fn value_to_pointer<'gc>(nctx, v: Value<'gc>) -> Gc<'gc, Pointer> {
+    #[scheme(name = "scm->pointer")]
+    pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
         let p = Gc::new(&nctx.ctx, p);
         nctx.return_(p)
     }
 
-    pub ("pointer->bytevector") fn pointer_to_bytevector<'gc>(
-        nctx,
+    #[scheme(name = "pointer->bytevector")]
+    pub fn pointer_to_bytevector(
         pointer: Gc<'gc, Pointer>,
         length: usize,
-        offset: Option<usize>
+        offset: Option<usize>,
     ) -> Gc<'gc, ByteVector> {
         let value = pointer.value();
         if value.is_null() {
@@ -263,7 +268,7 @@ native_fn!(
                 Some(pointer.into()),
                 None,
                 1,
-                &[pointer.into()]
+                &[pointer.into()],
             );
         }
 
@@ -273,10 +278,10 @@ native_fn!(
         nctx.return_(bvec)
     }
 
-    pub ("bytevector->pointer") fn bytevector_to_pointer<'gc>(
-        nctx,
+    #[scheme(name = "bytevector->pointer")]
+    pub fn bytevector_to_pointer(
         bv: Gc<'gc, ByteVector>,
-        offset: Option<usize>
+        offset: Option<usize>,
     ) -> Gc<'gc, Pointer> {
         let offset = offset.unwrap_or(0);
         if offset >= bv.len() {
@@ -286,7 +291,7 @@ native_fn!(
                 Some(bv.into()),
                 None,
                 1,
-                &[bv.into()]
+                &[bv.into()],
             );
         }
 
@@ -302,10 +307,10 @@ native_fn!(
     }
 
     /// If `len` is -1 or None then string is null-terminated
-    pub ("pointer->string") fn pointer_to_string<'gc>(
-        nctx,
+    #[scheme(name = "pointer->string")]
+    pub fn pointer_to_string(
         pointer: Gc<'gc, Pointer>,
-        length: Option<isize>
+        length: Option<isize>,
     ) -> Gc<'gc, Str<'gc>> {
         let value = pointer.value();
         if value.is_null() {
@@ -319,14 +324,16 @@ native_fn!(
             let cstr = unsafe { std::ffi::CStr::from_ptr(value.cast::<std::ffi::c_char>()) };
             let string = match cstr.to_str() {
                 Ok(s) => s,
-                Err(_) => return nctx.wrong_argument_violation(
-                    "pointer->string",
-                    "invalid UTF-8 sequence",
-                    Some(pointer.into()),
-                    None,
-                    1,
-                    &[pointer.into()]
-                )
+                Err(_) => {
+                    return nctx.wrong_argument_violation(
+                        "pointer->string",
+                        "invalid UTF-8 sequence",
+                        Some(pointer.into()),
+                        None,
+                        1,
+                        &[pointer.into()],
+                    );
+                }
             };
             let str_obj = Str::from_str(&nctx.ctx, string);
             nctx.return_(str_obj)
@@ -339,51 +346,48 @@ native_fn!(
                     Some(Value::new(length as i32)),
                     None,
                     2,
-                    &[pointer.into(), Value::new(length as i32)]
+                    &[pointer.into(), Value::new(length as i32)],
                 );
             }
             let slice = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length as usize) };
             let string = match std::str::from_utf8(slice) {
                 Ok(s) => s,
-                Err(_) => return nctx.wrong_argument_violation(
-                    "pointer->string",
-                    "invalid UTF-8 sequence",
-                    Some(pointer.into()),
-                    None,
-                    1,
-                    &[pointer.into()]
-                ),
+                Err(_) => {
+                    return nctx.wrong_argument_violation(
+                        "pointer->string",
+                        "invalid UTF-8 sequence",
+                        Some(pointer.into()),
+                        None,
+                        1,
+                        &[pointer.into()],
+                    );
+                }
             };
             let str_obj = Str::from_str(&nctx.ctx, string);
             nctx.return_(str_obj)
         }
     }
 
-    pub ("set-pointer-finalizer!") fn set_pointer_finalizer<'gc>(
-        nctx,
-        p: Gc<'gc, Pointer>,
-        finalizer: Gc<'gc, Pointer>
-    ) -> Value<'gc> {
-
+    #[scheme(name = "set-pointer-finalizer!")]
+    pub fn set_pointer_finalizer(p: Gc<'gc, Pointer>, finalizer: Gc<'gc, Pointer>) -> Value<'gc> {
         if p.value().is_null() {
             return null_pointer_error(nctx, "set-pointer-finalizer!");
         }
         let mc = &nctx.ctx;
-        mc.finalizers().register_finalizer(
-            &POINTERS_WITH_FINALIZERS,
-            p
-        );
-        POINTERS_WITH_FINALIZERS.finalizers.lock().unwrap().insert(
-            p.as_gcobj().to_objref().unwrap(),
-            unsafe { std::mem::transmute(finalizer.value()) }
-        );
+        mc.finalizers()
+            .register_finalizer(&POINTERS_WITH_FINALIZERS, p);
+        POINTERS_WITH_FINALIZERS
+            .finalizers
+            .lock()
+            .unwrap()
+            .insert(p.as_gcobj().to_objref().unwrap(), unsafe {
+                std::mem::transmute(finalizer.value())
+            });
         nctx.return_(Value::undefined())
     }
 
-    pub ("dereference-pointer") fn dereference_pointer<'gc>(
-        nctx,
-        p: Gc<'gc, Pointer>
-    ) -> Gc<'gc, Pointer> {
+    #[scheme(name = "dereference-pointer")]
+    pub fn dereference_pointer(p: Gc<'gc, Pointer>) -> Gc<'gc, Pointer> {
         if p.value().is_null() {
             return null_pointer_error(nctx, "dereference-pointer");
         }
@@ -393,7 +397,8 @@ native_fn!(
         nctx.return_(new_ptr)
     }
 
-    pub ("alignof") fn alignof_scm<'gc>(nctx, ftype: Value<'gc>) -> usize {
+    #[scheme(name = "alignof")]
+    pub fn alignof_scm(ftype: Value<'gc>) -> usize {
         let ctx = nctx.ctx;
         match alignof(ctx, ftype) {
             Ok(align) => nctx.return_(align),
@@ -401,7 +406,8 @@ native_fn!(
         }
     }
 
-    pub ("sizeof") fn sizeof_scm<'gc>(nctx, ftype: Value<'gc>) -> usize {
+    #[scheme(name = "sizeof")]
+    pub fn sizeof_scm(ftype: Value<'gc>) -> usize {
         let ctx = nctx.ctx;
         match sizeof(ctx, ftype) {
             Ok(size) => nctx.return_(size),
@@ -409,7 +415,13 @@ native_fn!(
         }
     }
 
-    pub ("pointer->procedure") fn pointer_to_procedure<'gc>(nctx, return_type: Value<'gc>, func_ptr: Gc<'gc, Pointer>, arg_types: Value<'gc>, variadic: Option<bool>) -> Value<'gc> {
+    #[scheme(name = "pointer->procedure")]
+    pub fn pointer_to_procedure(
+        return_type: Value<'gc>,
+        func_ptr: Gc<'gc, Pointer>,
+        arg_types: Value<'gc>,
+        variadic: Option<bool>,
+    ) -> Value<'gc> {
         let variadic = variadic.unwrap_or(false);
         let cif = match make_cif(nctx.ctx, return_type, arg_types, variadic) {
             Ok(cif) => cif,
@@ -421,29 +433,26 @@ native_fn!(
             nctx.ctx,
             c_foreign_call,
             [cif.into(), func_ptr.into()],
-            Value::null()
+            Value::null(),
         );
 
         nctx.return_(clos.into())
     }
 
-    pub ("ioctl/pointer") fn ioctl<'gc>(
-        nctx,
-        fd: i32,
-        request: u64,
-        argp: Gc<'gc, Pointer>
-    ) -> Value<'gc> {
+    #[scheme(name = "ioctl/pointer")]
+    pub fn ioctl(fd: i32, request: u64, argp: Gc<'gc, Pointer>) -> Value<'gc> {
         unsafe {
             let res = libc::ioctl(fd, request, argp.value());
             nctx.return_(Value::new(res))
         }
     }
 
-    pub ("errno") fn errno<'gc>(nctx) -> i32 {
+    #[scheme(name = "errno")]
+    pub fn errno() -> i32 {
         //let err = unsafe { *libc::__error() };
         nctx.return_(0)
     }
-);
+}
 
 pub fn alignof<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<usize, ConversionError<'gc>> {
     if ftype.is_int32() {
@@ -1291,7 +1300,7 @@ extern "C-unwind" fn c_foreign_call<'gc>(
 }
 
 pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
-    register_ffi_fns(ctx);
+    ffi_ops::register(ctx);
 
     define(ctx, "%void", ForeignType::Void);
     define(ctx, "%float", ForeignType::Float);

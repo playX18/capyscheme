@@ -1,15 +1,22 @@
-use crate::{native_fn, runtime::prelude::*};
-
+use crate::prelude::*;
+use crate::runtime::prelude::*;
 pub(crate) fn init_eval<'gc>(ctx: Context<'gc>) {
-    register_eval_fns(ctx);
+    eval_ops::register(ctx);
 }
 
-native_fn!(
-    register_eval_fns:
-
-    pub ("apply") fn apply<'gc>(nctx, rator: Value<'gc>, rands: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
+#[scheme(path=capy)]
+pub mod eval_ops {
+    #[scheme(name = "apply")]
+    pub fn apply(rator: Value<'gc>, rands: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
         if !rator.is::<Closure>() {
-            return nctx.wrong_argument_violation("apply", "attempt to call non-procedure", Some(rator), Some(0), 1, &[rator])
+            return nctx.wrong_argument_violation(
+                "apply",
+                "attempt to call non-procedure",
+                Some(rator),
+                Some(0),
+                1,
+                &[rator],
+            );
         }
 
         if rands.len() == 0 {
@@ -22,7 +29,14 @@ native_fn!(
         }
 
         if !rands[rands.len() - 1].is_list() {
-            return nctx.wrong_argument_violation("apply", "last argument must be a list", Some(rands[rands.len() - 1]), Some(rands.len() - 1), rands.len(), rands);
+            return nctx.wrong_argument_violation(
+                "apply",
+                "last argument must be a list",
+                Some(rands[rands.len() - 1]),
+                Some(rands.len() - 1),
+                rands.len(),
+                rands,
+            );
         }
 
         let mut ls = rands[rands.len() - 1];
@@ -34,7 +48,8 @@ native_fn!(
         nctx.return_call(rator, &args)
     }
 
-    pub ("procedure?") fn procedure_p<'gc>(nctx, v: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "procedure?")]
+    pub fn procedure_p(v: Value<'gc>) -> Value<'gc> {
         nctx.return_((v.is::<Closure>()).into())
     }
-);
+}
