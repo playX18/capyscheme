@@ -3,11 +3,11 @@ use crate::expander::core::{
     LetStyle, Term, TermKind, TermRef, call_term, constant, fresh_lvar, if_term, let_term, lref,
     prim_call_term, seq_from_slice,
 };
+use crate::list;
 use crate::runtime::Context;
-use crate::runtime::modules::{Module, Variable, resolve_module, root_module};
+use crate::runtime::modules::{Module, Variable, resolve_module};
 use crate::runtime::prelude::*;
-use crate::runtime::value::{HashTable, HashTableType, Symbol};
-use crate::{global, list};
+use crate::runtime::value::Symbol;
 use crate::{runtime::value::Value, static_symbols};
 use rsgc::Gc;
 use rsgc::alloc::Array;
@@ -23,7 +23,7 @@ macro_rules! interesting_prim_names {
                 )*
             }
 
-            fn for_each_prim_name<'gc, F: FnMut(&'static str, Value<'gc>)>(ctx: Context<'gc>, mut f: F) {
+            pub fn for_each_prim_name<'gc, F: FnMut(&'static str, Value<'gc>)>(ctx: Context<'gc>, mut f: F) {
                 $(
                     let name = paste::paste! {
                         [<sym_ $sname: lower>](ctx)
@@ -233,35 +233,13 @@ interesting_prim_names!(
     bytevector_s64_native_set = "bytevector-s64-native-set!"
 );
 
-global!(
-    interesting_primitive_vars<'gc>: Gc<'gc, HashTable<'gc>> = (ctx) {
-        let mut ht = HashTable::new(&ctx, HashTableType::Eq, 128, 0.75);
-
-        for_each_prim_name(ctx, |name_str, name| {
-            let var: Value = root_module(ctx).ensure_local_variable(ctx, name.into()).into();
-
-            ht.put(ctx, name, var);
-        });
-
-
-        ht
-    };
-
-    pub interesting_primitive_vars_loc<'gc>: VariableRef<'gc> = (ctx) {
-        let sym = Symbol::from_str(ctx, "*interesting-primitive-vars*");
-        let var = root_module(ctx).ensure_local_variable(ctx, sym.into());
-        var.set(ctx, (interesting_primitive_vars(ctx)).into());
-        var
-    };
-);
-
 pub fn resolve_primitives<'gc>(
     ctx: Context<'gc>,
     x: TermRef<'gc>,
     m: Gc<'gc, Module<'gc>>,
 ) -> TermRef<'gc> {
     let mut local_definitions = Set::default();
-    if !Gc::ptr_eq(m, root_module(ctx)) {
+    if !Gc::ptr_eq(m, ctx.globals().root_module()) {
         fn collect_local_definitions<'gc>(
             x: TermRef<'gc>,
             local_definitions: &mut Set<Value<'gc>>,
@@ -287,7 +265,7 @@ pub fn resolve_primitives<'gc>(
     x.post_order(ctx, |ctx, x| match &x.kind {
         TermKind::ToplevelRef(_, name) => {
             if let Some(var) = m.variable(ctx, *name)
-                && let Some(prim) = interesting_primitive_vars(ctx).get(ctx, *name)
+                && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
                 && Gc::ptr_eq(var, prim.downcast::<Variable>())
                 && !local_definitions.contains(&name)
             {
@@ -312,7 +290,7 @@ pub fn resolve_primitives<'gc>(
                 };
 
                 if let Some(v) = iface.variable(ctx, *name)
-                    && let Some(name) = interesting_primitive_vars(ctx).get(ctx, v)
+                    && let Some(name) = ctx.globals().interesting_primitive_vars().get(ctx, v)
                 {
                     return Gc::new(
                         &ctx,

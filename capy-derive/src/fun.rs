@@ -317,6 +317,7 @@ impl FunctionDefinition {
 
     fn make_trampoline(&mut self) -> syn::ItemFn {
         let body = self.trampoline_body();
+        let vis = self.transformed_function.vis.clone();
         let tokens = if self.is_continuation() {
             let raw_name = syn::Ident::new(
                 &format!("_raw_scm_cont_{}", self.transformed_function.sig.ident),
@@ -326,7 +327,7 @@ impl FunctionDefinition {
             quote_spanned! {
                 self.transformed_function.span() =>
                 #[allow(unused_parens, unused_mut)]
-                extern "C-unwind" fn #raw_name<'gc>(
+                #vis extern "C-unwind" fn #raw_name<'gc>(
                     ctx: &Context<'gc>,
                     rator: Value<'gc>,
                     rands: *const Value<'gc>,
@@ -345,7 +346,7 @@ impl FunctionDefinition {
             quote_spanned! {
                 self.transformed_function.span() =>
                 #[allow(unused_parens, unused_mut)]
-                extern "C-unwind" fn #raw_name<'gc>(
+                #vis extern "C-unwind" fn #raw_name<'gc>(
                     ctx: &Context<'gc>,
                     rator: Value<'gc>,
                     rands: *const Value<'gc>,

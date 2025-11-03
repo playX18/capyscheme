@@ -1643,6 +1643,7 @@ prim!(
     },
 
     "vector" => vector(ssa, args, _h) {
+
         let size = size_of::<Vector>() as i64 + args.len() as i64 * size_of::<Value>() as i64;
         let size = ssa.builder.ins().iconst(types::I64, size);
         let vt = ssa.import_static("VECTOR_VTABLE", types::I64);

@@ -9,8 +9,8 @@ use rsgc::{
     mmtk::AllocationSemantics,
     object::VTable,
 };
-use std::mem::offset_of;
 use std::ops::{Deref, Index};
+use std::{mem::offset_of, ops::IndexMut};
 
 use crate::runtime::{Context, value::*};
 
@@ -21,17 +21,22 @@ pub struct Vector<'gc> {
     pub(crate) data: [Lock<Value<'gc>>; 0],
 }
 
+#[inline(never)]
 extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
     unsafe {
-        let vec = vec
-            .to_address()
-            .as_mut_ref::<Vector<'static>>()
-            .as_slice_mut_unchecked();
-        vec.trace(vis);
+        let vec = vec.to_address().as_mut_ref::<Vector<'static>>();
+        for i in 0..vec.len() {
+            vec[i].trace(vis);
+        }
     }
 }
 
 extern "C" fn process_weak_vector(_: GCObject, _: &mut WeakProcessor) {}
+
+#[inline(never)]
+extern "C" fn compute_vector_size(vec: GCObject) -> usize {
+    unsafe { vec.to_address().as_ref::<Vector<'static>>().len() * size_of::<Value>() }
+}
 
 impl<'gc> Vector<'gc> {
     pub const OFFSET_OF_DATA: usize = offset_of!(Vector, data);
@@ -41,12 +46,7 @@ impl<'gc> Vector<'gc> {
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some({
-            extern "C" fn sz(vec: GCObject) -> usize {
-                unsafe { vec.to_address().as_ref::<Vector<'static>>().len() * size_of::<Value>() }
-            }
-            sz
-        }),
+        compute_size: Some(compute_vector_size),
         trace: trace_vector,
         weak_proc: process_weak_vector,
     };
@@ -164,6 +164,13 @@ impl<'gc> Index<usize> for Vector<'gc> {
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.len(), "Index out of bounds");
         unsafe { &std::slice::from_raw_parts(self.data.as_ptr(), self.len())[index] }
+    }
+}
+
+impl<'gc> IndexMut<usize> for Vector<'gc> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        assert!(index < self.len(), "Index out of bounds");
+        unsafe { &mut std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), self.len())[index] }
     }
 }
 

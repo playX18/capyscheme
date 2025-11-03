@@ -9,7 +9,7 @@ use crate::{
     },
     runtime::{
         Context,
-        modules::{Module, root_module},
+        modules::Module,
         value::{Str, Value},
         vm::thunks::{make_io_error, make_lexical_violation},
     },
@@ -76,7 +76,7 @@ pub fn compile_file<'gc>(
 
     env: Option<Gc<'gc, Module<'gc>>>,
 ) -> Result<FuncRef<'gc>, Value<'gc>> {
-    let module = env.unwrap_or_else(|| root_module(ctx));
+    let module = env.unwrap_or_else(|| ctx.globals().root_module());
     let file = file.as_ref();
 
     //println!(";; (Pre-boot) Compiling file: {}", file.display());

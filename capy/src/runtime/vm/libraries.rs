@@ -8,6 +8,7 @@ pub struct SchemeLibrary<'gc> {
     pub library: *mut (),
     pub path: std::path::PathBuf,
     pub entrypoint: Value<'gc>,
+    pub init_fn: extern "C-unwind" fn(&Context<'gc>) -> Value<'gc>,
     pub fbase: Address,
 
     pub globals: &'static [*mut Value<'static>],
@@ -116,6 +117,7 @@ impl<'gc> SchemeLibrary<'gc> {
             Ok(Self {
                 path: std::path::PathBuf::from(path),
                 library: lib.cast(),
+                init_fn: module_init,
                 fbase,
                 globals,
                 entrypoint,

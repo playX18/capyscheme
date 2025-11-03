@@ -108,36 +108,39 @@ pub(crate) fn push_cframe<'gc>(
     }
 }
 
-#[scheme(name = "continuation-marks?")]
-pub fn is_continuation_marks(val: Value<'gc>) -> bool {
-    nctx.return_(val.is::<ContinuationMarks<'gc>>())
-}
+#[scheme(path = capy)]
+pub mod control_ops {
 
-#[scheme(name = "continuation-mark-set->list")]
-pub fn continuation_mark_set_to_list(
-    set: Gc<'gc, ContinuationMarks<'gc>>,
-    key: Value<'gc>,
-) -> Value<'gc> {
-    let mut set = set.cmarks;
-
-    let mut result = Vec::new();
-    while let Some(cmarks) = set {
-        let mark_set = cmarks.mark_set.get();
-
-        if let Some(val) = mark_set.assq(key) {
-            result.push(val.cdr());
-        }
-        set = cmarks.parent;
+    #[scheme(name = "continuation-marks?")]
+    pub fn is_continuation_marks(val: Value<'gc>) -> bool {
+        nctx.return_(val.is::<ContinuationMarks<'gc>>())
     }
 
-    nctx.return_(
-        result
-            .into_iter()
-            .rfold(Value::null(), |acc, x| Value::cons(ctx, x, acc)),
-    )
+    #[scheme(name = "continuation-mark-set->list")]
+    pub fn continuation_mark_set_to_list(
+        set: Gc<'gc, ContinuationMarks<'gc>>,
+        key: Value<'gc>,
+    ) -> Value<'gc> {
+        let mut set = set.cmarks;
+
+        let mut result = Vec::new();
+        while let Some(cmarks) = set {
+            let mark_set = cmarks.mark_set.get();
+
+            if let Some(val) = mark_set.assq(key) {
+                result.push(val.cdr());
+            }
+            set = cmarks.parent;
+        }
+
+        nctx.return_(
+            result
+                .into_iter()
+                .rfold(Value::null(), |acc, x| Value::cons(ctx, x, acc)),
+        )
+    }
 }
 
 pub fn init_control<'gc>(ctx: Context<'gc>) {
-    register_is_continuation_marks(ctx);
-    register_continuation_mark_set_to_list(ctx);
+    control_ops::register(ctx);
 }

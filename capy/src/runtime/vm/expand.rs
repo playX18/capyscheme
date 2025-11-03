@@ -7,8 +7,7 @@ use crate::{
         core::{self, LVar, LVarRef, Term, TermKind, TermRef, seq_from_slice},
         sym_column, sym_filename, sym_line,
     },
-    global,
-    runtime::{modules::root_module, prelude::*},
+    runtime::prelude::*,
     static_symbols,
 };
 
@@ -42,101 +41,11 @@ static_symbols!(
     SYM_LETREC_STAR = "letrec*"
 );
 
-global!(
-    pub loc_term_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_term(ctx).into()).unwrap()
-    };
-
-    pub loc_lref_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_lref(ctx).into()).unwrap()
-    };
-
-    pub loc_lset_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_lset(ctx).into()).unwrap()
-    };
-
-    pub loc_let_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_let_type(ctx).into()).unwrap()
-    };
-
-    pub loc_module_ref_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_module_ref(ctx).into()).unwrap()
-    };
-
-    pub loc_module_set_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_module_set(ctx).into()).unwrap()
-    };
-
-    pub loc_toplevel_ref_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_toplevel_ref(ctx).into()).unwrap_or_else(|| {
-            println!("Not found {} in root module", sym_toplevel_ref(ctx));
-            for (var, _) in root_module(ctx).obarray.get().iter() {
-                println!("  var: {var}");
-            }
-            panic!();
-        })
-    };
-
-    pub loc_toplevel_set_type<'gc>: VariableRef<'gc> = (ctx) {
-
-        root_module(ctx).variable(ctx, sym_toplevel_set(ctx).into()).unwrap()
-    };
-
-    pub loc_toplevel_define_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_toplevel_define(ctx).into()).unwrap()
-    };
-
-    pub loc_if_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_if(ctx).into()).unwrap()
-    };
-
-    pub loc_fix_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_fix(ctx).into()).unwrap()
-    };
-
-    pub loc_receive_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_receive(ctx).into()).unwrap()
-    };
-
-    pub loc_application_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_application(ctx).into()).unwrap()
-    };
-
-    pub loc_primcall_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_primcall(ctx).into()).unwrap()
-    };
-
-    pub loc_primref_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_primref(ctx).into()).unwrap()
-    };
-
-    pub loc_constant_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_constant(ctx).into()).unwrap()
-    };
-
-    pub loc_void_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_void(ctx).into()).unwrap()
-    };
-
-    pub loc_values_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_values(ctx).into()).unwrap()
-    };
-
-    pub loc_sequence_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_sequence(ctx).into()).unwrap()
-    };
-
-    pub loc_proc_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_proc(ctx).into()).unwrap()
-    };
-
-    pub loc_wcm_type<'gc>: VariableRef<'gc> = (ctx) {
-        root_module(ctx).variable(ctx, sym_wcm(ctx).into()).unwrap()
-    };
-);
-
 pub fn is_term<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_term_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_term_type().get().record_type_rtd(ctx),
+    )
 }
 
 pub fn term_sourcev<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -159,7 +68,10 @@ const LREF_VARIABLE: usize = TERM_SOURCEV + 1;
 const LREF_SYM: usize = TERM_SOURCEV + 2;
 
 pub fn is_lref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_lref_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_lref_type().get().record_type_rtd(ctx),
+    )
 }
 
 pub fn lref_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -177,7 +89,10 @@ const LSET_SYM: usize = TERM_SOURCEV + 2;
 const LSET_VALUE: usize = TERM_SOURCEV + 3;
 
 pub fn is_lset<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_lset_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_lset_type().get().record_type_rtd(ctx),
+    )
 }
 
 pub fn lset_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -196,7 +111,13 @@ pub fn lset_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 }
 
 pub fn is_module_ref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_module_ref_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals()
+            .loc_module_ref_type()
+            .get()
+            .record_type_rtd(ctx),
+    )
 }
 
 const MODULE_REF_MODULE: usize = TERM_SOURCEV + 1;
@@ -219,7 +140,13 @@ pub fn module_ref_public<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
 }
 
 pub fn is_module_set<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_module_set_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals()
+            .loc_module_set_type()
+            .get()
+            .record_type_rtd(ctx),
+    )
 }
 
 const MODULE_SET_MODULE: usize = TERM_SOURCEV + 1;
@@ -251,7 +178,13 @@ const TOPLEVEL_REF_MOD: usize = TERM_SOURCEV + 1;
 const TOPLEVEL_REF_NAME: usize = TERM_SOURCEV + 2;
 
 pub fn is_toplevel_ref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_toplevel_ref_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals()
+            .loc_toplevel_ref_type()
+            .get()
+            .record_type_rtd(ctx),
+    )
 }
 
 pub fn toplevel_ref_mod<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -269,7 +202,13 @@ const TOPLEVEL_SET_NAME: usize = TERM_SOURCEV + 2;
 const TOPLEVEL_SET_VALUE: usize = TERM_SOURCEV + 3;
 
 pub fn is_toplevel_set<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_toplevel_set_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals()
+            .loc_toplevel_set_type()
+            .get()
+            .record_type_rtd(ctx),
+    )
 }
 
 pub fn toplevel_set_mod<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -294,7 +233,10 @@ const TOPLEVEL_DEFINE_VALUE: usize = TERM_SOURCEV + 3;
 pub fn is_toplevel_define<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
     v.is_record_of(
         ctx,
-        loc_toplevel_define_type(ctx).get().record_type_rtd(ctx),
+        ctx.globals()
+            .loc_toplevel_define_type()
+            .get()
+            .record_type_rtd(ctx),
     )
 }
 
@@ -318,7 +260,7 @@ const IF_THEN: usize = TERM_SOURCEV + 2;
 const IF_ELSE: usize = TERM_SOURCEV + 3;
 
 pub fn is_if<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_if_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(ctx, ctx.globals().loc_if_type().get().record_type_rtd(ctx))
 }
 
 pub fn if_cond<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -343,7 +285,7 @@ const LET_RHS: usize = TERM_SOURCEV + 4;
 const LET_BODY: usize = TERM_SOURCEV + 5;
 
 pub fn is_let<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    let res = v.is_record_of(ctx, loc_let_type(ctx).get().record_type_rtd(ctx));
+    let res = v.is_record_of(ctx, ctx.globals().loc_let_type().get().record_type_rtd(ctx));
 
     res
 }
@@ -379,7 +321,7 @@ const FIX_RHS: usize = TERM_SOURCEV + 3;
 const FIX_BODY: usize = TERM_SOURCEV + 4;
 
 pub fn is_fix<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_fix_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(ctx, ctx.globals().loc_fix_type().get().record_type_rtd(ctx))
 }
 
 pub fn fix_ids<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -403,7 +345,10 @@ pub fn fix_body<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 }
 
 pub fn is_receive<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_receive_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_receive_type().get().record_type_rtd(ctx),
+    )
 }
 
 const RECEIVE_IDS: usize = TERM_SOURCEV + 1;
@@ -432,7 +377,13 @@ pub fn receive_consumer<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 }
 
 pub fn is_application<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_application_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals()
+            .loc_application_type()
+            .get()
+            .record_type_rtd(ctx),
+    )
 }
 
 const APP_OPERATOR: usize = TERM_SOURCEV + 1;
@@ -449,7 +400,10 @@ pub fn application_operands<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc>
 }
 
 pub fn is_primcall<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_primcall_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_primcall_type().get().record_type_rtd(ctx),
+    )
 }
 
 const PRIMCALL_PRIM: usize = TERM_SOURCEV + 1;
@@ -466,7 +420,10 @@ pub fn primcall_args<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 }
 
 pub fn is_primref<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_primref_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_primref_type().get().record_type_rtd(ctx),
+    )
 }
 
 const PRIMREF_NAME: usize = TERM_SOURCEV + 1;
@@ -477,7 +434,10 @@ pub fn primref_name<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 }
 
 pub fn is_constant<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_constant_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_constant_type().get().record_type_rtd(ctx),
+    )
 }
 
 const CONSTANT_VALUE: usize = TERM_SOURCEV + 1;
@@ -488,11 +448,17 @@ pub fn constant_value<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
 }
 
 pub fn is_void<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_void_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_void_type().get().record_type_rtd(ctx),
+    )
 }
 
 pub fn is_values<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_values_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_values_type().get().record_type_rtd(ctx),
+    )
 }
 
 const VALUES_VALUES: usize = TERM_SOURCEV + 1;
@@ -507,7 +473,10 @@ const PROC_META: usize = TERM_SOURCEV + 3;
 const PROC_IDS: usize = TERM_SOURCEV + 4;
 
 pub fn is_proc<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_proc_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_proc_type().get().record_type_rtd(ctx),
+    )
 }
 
 pub fn proc_args<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -535,7 +504,10 @@ const SEQUENCE_HEAD: usize = TERM_SOURCEV + 1;
 const SEQUENCE_TAIL: usize = TERM_SOURCEV + 2;
 
 pub fn is_sequence<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_sequence_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(
+        ctx,
+        ctx.globals().loc_sequence_type().get().record_type_rtd(ctx),
+    )
 }
 
 pub fn sequence_head<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
@@ -553,7 +525,7 @@ pub const WCM_VALUE: usize = TERM_SOURCEV + 2;
 pub const WCM_BODY: usize = TERM_SOURCEV + 3;
 
 pub fn is_wcm<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-    v.is_record_of(ctx, loc_wcm_type(ctx).get().record_type_rtd(ctx))
+    v.is_record_of(ctx, ctx.globals().loc_wcm_type().get().record_type_rtd(ctx))
 }
 
 pub fn wcm_key<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {

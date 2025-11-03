@@ -47,6 +47,11 @@ impl NativeProc {
         } else {
             TypeCode16::NATIVE_PROC
         };
+        /*println!(
+            "Registering native procedure at {}\n{}",
+            proc,
+            std::backtrace::Backtrace::force_capture()
+        );*/
         Gc::new(
             &ctx,
             NativeProc {
@@ -220,6 +225,7 @@ unsafe impl<'gc> Tagged for Closure<'gc> {
 unsafe impl<'gc> Trace for Closure<'gc> {
     unsafe fn trace(&mut self, vis: &mut Visitor) {
         vis.trace(&mut self.free);
+        vis.trace(&mut self.meta);
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {

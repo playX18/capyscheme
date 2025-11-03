@@ -223,7 +223,7 @@
 (define port.alist      20) ; association list: used mainly by custom ports
 (define port.r7rstype   21) ; copy of port.type but unaltered by closing
 (define port.reader     22)
-(define port.structure-size 23)      ; size of port structure
+(define port.structure-size 24)      ; size of port structure
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;

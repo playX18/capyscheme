@@ -17,7 +17,7 @@ use crate::{
     runtime::{
         Context,
         fasl::FASLReader,
-        modules::{Module, Variable, root_module},
+        modules::{Module, Variable},
         value::{
             Boxed, ByteVector, Closure, Complex, Pair, SavedCall, ScmHeader, Str, Symbol, Tuple,
             TypeCode8, TypeCode16, Value, Vector,
@@ -4045,7 +4045,9 @@ pub fn make_assertion_violation<'gc>(
         .chain(irritants.iter().cloned())
         .collect::<Vec<_>>();
 
-    let assertion_violation = root_module(*ctx)
+    let assertion_violation = ctx
+        .globals()
+        .root_module()
         .get(
             *ctx,
             Symbol::from_str(*ctx, ".make-assertion-violation").into(),
@@ -4070,7 +4072,9 @@ pub fn make_undefined_violation<'gc>(
     let message: Value = Str::new(&ctx, message, true).into();
     let mut args = vec![who, message];
     args.extend_from_slice(irritants);
-    let undefined_violation = root_module(*ctx)
+    let undefined_violation = ctx
+        .globals()
+        .root_module()
         .get(
             *ctx,
             Symbol::from_str(*ctx, ".make-undefined-violation").into(),
@@ -4096,7 +4100,9 @@ pub fn make_error<'gc>(
         .chain(irritants.iter().cloned())
         .collect::<Vec<_>>();
 
-    let error = root_module(*ctx)
+    let error = ctx
+        .globals()
+        .root_module()
         .get(*ctx, Symbol::from_str(*ctx, ".make-error").into())
         .expect("pre boot code");
 
@@ -4119,7 +4125,9 @@ pub fn make_io_error<'gc>(
         .chain(irritants.iter().cloned())
         .collect::<Vec<_>>();
 
-    let io_error = root_module(*ctx)
+    let io_error = ctx
+        .globals()
+        .root_module()
         .get(*ctx, Symbol::from_str(*ctx, ".make-io-error").into())
         .unwrap_or_else(|| {
             panic!(
@@ -4144,7 +4152,9 @@ pub fn make_lexical_violation<'gc>(
     let message: Value = Str::new(&ctx, message, true).into();
     let args = vec![who, message];
 
-    let lexical_violation = root_module(*ctx)
+    let lexical_violation = ctx
+        .globals()
+        .root_module()
         .get(
             *ctx,
             Symbol::from_str(*ctx, ".make-lexical-violation").into(),

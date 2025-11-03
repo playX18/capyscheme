@@ -36,14 +36,6 @@ global!(
 );
 
 pub fn init_load_path<'gc>(ctx: Context<'gc>) {
-    let _ = loc_load_path(ctx);
-    let _ = loc_load_compiled_path(ctx);
-    let _ = loc_compile_fallback_path(ctx);
-    let _ = loc_capy_root(ctx);
-    let _ = loc_fresh_auto_compile(ctx);
-    let _ = loc_load_extensions(ctx);
-    let _ = loc_load_compiled_extensions(ctx);
-    let _ = loc_native_extension(ctx);
     const FALLBACK_DIR: &str = concat!("capy/cache/", env!("CARGO_PKG_VERSION"));
 
     let cache_dir = if let Ok(env) = std::env::var("XDG_CACHE_HOME") {
@@ -63,7 +55,9 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         if !path.exists() {
             std::fs::create_dir_all(path).expect("Failed to create cache directory");
         }
-        loc_compile_fallback_path(ctx).set(ctx, Str::new(&ctx, &cache_dir, true).into());
+        ctx.globals()
+            .loc_compile_fallback_path()
+            .set(ctx, Str::new(&ctx, &cache_dir, true).into());
     }
 
     let mut path = Value::null();
@@ -122,15 +116,15 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         cpath = sig;
     }
 
-    loc_load_path(ctx).set(ctx, path);
-    loc_load_compiled_path(ctx).set(ctx, cpath);
+    ctx.globals().loc_load_path().set(ctx, path);
+    ctx.globals().loc_load_compiled_path().set(ctx, cpath);
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let workspace_dir = Path::new(manifest_dir)
         .parent()
         .unwrap_or(Path::new(manifest_dir));
 
-    loc_capy_root(ctx).set(
+    ctx.globals().loc_capy_root().set(
         ctx,
         Str::new(&ctx, workspace_dir.to_string_lossy(), true).into(),
     );
@@ -152,6 +146,7 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     let bytes = hasher.finalize();
 
     let hex_string = hex::encode(bytes);
+
     PathBuf::from(hex_string)
 }
 
@@ -160,7 +155,7 @@ pub fn init_load<'gc>(ctx: Context<'gc>) {
 }
 
 fn fresh_auto_compile<'gc>(ctx: Context<'gc>) -> bool {
-    loc_fresh_auto_compile(ctx).get() != Value::new(false)
+    ctx.globals().loc_fresh_auto_compile().get() != Value::new(false)
 }
 
 /// Given a file name find the full path to the file and the path to its compiled version.
@@ -195,7 +190,7 @@ pub fn find_path_to<'gc>(
             candidates.push(filename.to_owned());
         }
 
-        let mut exts = loc_load_extensions(ctx).get();
+        let mut exts = ctx.globals().loc_load_extensions().get();
         if exts.is_null() {
             candidates.push(filename.with_extension("scm"));
         } else {
@@ -205,7 +200,7 @@ pub fn find_path_to<'gc>(
                 exts = exts.cdr();
             }
         }
-        let paths = loc_load_path(ctx).get();
+        let paths = ctx.globals().loc_load_path().get();
 
         for name in candidates {
             if let Some(dir) = dir.as_ref() {
@@ -253,7 +248,7 @@ pub fn find_path_to<'gc>(
     let hashed = hash_filename(&source_path);
     let mut compiled_file = None;
 
-    let mut cpath = loc_load_compiled_path(ctx).get();
+    let mut cpath = ctx.globals().loc_load_compiled_path().get();
 
     while cpath.is_pair() {
         let dir = PathBuf::from(cpath.car().downcast::<Str>().to_string());
@@ -268,7 +263,9 @@ pub fn find_path_to<'gc>(
     }
 
     if compiled_file.is_none() {
-        let fallback = loc_compile_fallback_path(ctx)
+        let fallback = ctx
+            .globals()
+            .loc_compile_fallback_path()
             .get()
             .downcast::<Str>()
             .to_string();
@@ -633,7 +630,7 @@ pub mod load_ops {
 use crate::prelude::*;
 
 #[scheme(continuation)]
-fn continue_loading_k(
+pub(crate) fn continue_loading_k(
     ir: Value<'gc>,
     cenv: Value<'gc>,
     _unused: Value<'gc>,
