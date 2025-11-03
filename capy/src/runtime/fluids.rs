@@ -1,9 +1,6 @@
-use crate::{
-    native_fn,
-    runtime::{
-        Context,
-        value::{HashTable, ScmHeader, Tagged, TypeBits, TypeCode8, Value, WeakTable},
-    },
+use crate::runtime::{
+    Context,
+    value::{HashTable, ScmHeader, Tagged, TypeBits, TypeCode8, Value, WeakTable},
 };
 use easy_bitfield::{BitField, BitFieldTrait};
 use rsgc::{
@@ -334,7 +331,7 @@ type FluidThreadLocal = BitField<u64, bool, { TypeBits::NEXT_BIT }, 1, false>;
 #[repr(C)]
 pub struct Fluid<'gc> {
     header: ScmHeader,
-    value: Value<'gc>,
+    pub(crate) value: Value<'gc>,
 }
 
 impl<'gc> Fluid<'gc> {
@@ -518,35 +515,13 @@ macro_rules! fluid {
     () => {}
 }
 
-#[macro_export]
-macro_rules! global {
-    ($($v: vis $name: ident <$l: lifetime>: $t: ty = ($ctx: ident) $init: expr;)*) => {
-        $(
-            paste::paste!{
-                #[allow(unused)]
-                #[unsafe(export_name = concat!("CAPY_GLOBAL_", stringify!($name)))]
-                $v static [<$name: upper>]: std::sync::OnceLock<$crate::rsgc::global::Global<$crate::rsgc::Rootable!($l => $t)>> = std::sync::OnceLock::new();
+use crate::prelude::*;
 
-                #[allow(unused)]
-                #[unsafe(export_name = concat!("capy_global_", stringify!($name)))]
-                $v fn [<$name: lower>]<$l>($ctx: $crate::runtime::Context<$l>) -> &$l $t {
-                   &[<$name: upper>]
-                        .get_or_init(|| {
-                            let init: $t = $init;
-                            $crate::rsgc::global::Global::new(init)
-                        }).fetch(&$ctx)
-                }
+#[scheme(path=capy)]
+pub mod fluid_ops {
 
-
-            }
-        )*
-    };
-}
-
-native_fn!(
-    register_fluid_fns:
-
-    pub ("make-fluid") fn make_fluid<'gc>(nctx, default_value: Option<Value<'gc>>) -> Value<'gc> {
+    #[scheme(name = "make-fluid")]
+    pub fn make_fluid(default_value: Option<Value<'gc>>) -> Value<'gc> {
         let default_value = default_value.unwrap_or(Value::new(false));
 
         let fluid = Fluid::new(&nctx.ctx, default_value);
@@ -554,7 +529,8 @@ native_fn!(
         nctx.return_(fluid.into())
     }
 
-    pub ("make-thread-local-fluid") fn make_thread_local_fluid<'gc>(nctx, default_value: Option<Value<'gc>>) -> Value<'gc> {
+    #[scheme(name = "make-thread-local-fluid")]
+    pub fn make_thread_local_fluid(default_value: Option<Value<'gc>>) -> Value<'gc> {
         let default_value = default_value.unwrap_or(Value::new(false));
 
         let fluid = Fluid::new_thread_local(&nctx.ctx, default_value);
@@ -562,26 +538,31 @@ native_fn!(
         nctx.return_(fluid.into())
     }
 
-    pub ("fluid?") fn is_fluid<'gc>(nctx, obj: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "fluid?")]
+    pub fn is_fluid(obj: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(obj.is::<Fluid>()))
     }
 
-    pub ("fluid-thread-local?") fn is_fluid_thread_local<'gc>(nctx, fluid: FluidRef<'gc>) -> Value<'gc> {
+    #[scheme(name = "fluid-thread-local?")]
+    pub fn is_fluid_thread_local(fluid: FluidRef<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(fluid.is_thread_local()))
     }
 
-    pub ("fluid-ref") fn fluid_ref<'gc>(nctx, fluid: FluidRef<'gc>) -> Value<'gc> {
+    #[scheme(name = "fluid-ref")]
+    pub fn fluid_ref(fluid: FluidRef<'gc>) -> Value<'gc> {
         let value = fluid.get(nctx.ctx);
         nctx.return_(value)
     }
 
-    pub ("fluid-set!") fn fluid_set<'gc>(nctx, fluid: FluidRef<'gc>, value: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "fluid-set!")]
+    pub fn fluid_set(fluid: FluidRef<'gc>, value: Value<'gc>) -> Value<'gc> {
         let old_value = fluid.get(nctx.ctx);
         fluid.set(nctx.ctx, value);
         nctx.return_(old_value)
     }
 
-    pub ("current-dynamic-state") fn current_dynamic_state<'gc>(nctx) -> Value<'gc> {
+    #[scheme(name = "current-dynamic-state")]
+    pub fn current_dynamic_state() -> Value<'gc> {
         let dynamic_state = nctx.ctx.state.dynamic_state.save(nctx.ctx);
         let val = Value::from(Gc::new(
             &nctx.ctx,
@@ -593,11 +574,13 @@ native_fn!(
         nctx.return_(val)
     }
 
-    pub ("dynamic-state?") fn is_dynamic_state<'gc>(nctx, obj: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "dynamic-state?")]
+    pub fn is_dynamic_state(obj: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(obj.is::<DynamicStateObject>()))
     }
 
-    pub ("set-current-dynamic-state!") fn set_current_dynamic_state<'gc>(nctx, state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
+    #[scheme(name = "set-current-dynamic-state!")]
+    pub fn set_current_dynamic_state(state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
         let prev = nctx.ctx.state.dynamic_state.save(nctx.ctx);
         let prev = Value::from(Gc::new(
             &nctx.ctx,
@@ -606,11 +589,14 @@ native_fn!(
                 saved: prev,
             },
         ));
-        nctx.ctx.state.dynamic_state.restore(nctx.ctx, state_obj.saved);
+        nctx.ctx
+            .state
+            .dynamic_state
+            .restore(nctx.ctx, state_obj.saved);
         nctx.return_(prev)
     }
-);
+}
 
 pub(crate) fn init_fluids<'gc>(ctx: Context<'gc>) {
-    register_fluid_fns(ctx);
+    fluid_ops::register(ctx);
 }

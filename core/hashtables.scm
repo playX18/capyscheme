@@ -8,21 +8,21 @@
           (rename (make-weak-core-hashtable make-weak-hashtable)
                   (weak-core-hashtable? weak-hashtable?))
           (rename (core-hashtable? hashtable?)
-                  (core-hashtable-size hashtable-size)
-                  (core-hashtable-ref hashtable-ref)
-                  (core-hashtable-set! hashtable-set!)
-                  (core-hashtable-delete! hashtable-delete!)
-                  (core-hashtable-contains? hashtable-contains?))
+                  (core-hash-size hashtable-size)
+                  (core-hash-ref hashtable-ref)
+                  (core-hash-set! hashtable-set!)
+                  (core-hash-delete! hashtable-delete!)
+                  (core-hash-contains? hashtable-contains?))
           hashtable-update!
-          (rename (core-hashtable-copy hashtable-copy)
-                  (core-hashtable-clear! hashtable-clear!))
+          (rename (core-hash-copy hashtable-copy)
+                  (core-hash-clear! hashtable-clear!))
           hashtable-keys
           hashtable-entries
-          (rename (core-hashtable-equivalence-function hashtable-equivalence-function)
-                  (core-hashtable-hash-function hashtable-hash-function)
-                  (core-hashtable-mutable? hashtable-mutable?))
+          (rename (core-hash-equivalence-function hashtable-equivalence-function)
+                  (core-hash-hash-function hashtable-hash-function)
+                  (core-hash-mutable? hashtable-mutable?))
           equal-hash string-hash string-ci-hash symbol-hash
-          (rename (core-hashtable->alist hashtable->alist)))
+          (rename (core-hash->alist hashtable->alist)))
 
   (import (core intrinsics)
           (only (core primitives)
@@ -30,17 +30,17 @@
                 core-hashtable?
                 make-weak-core-hashtable
                 weak-core-hashtable?
-                core-hashtable-size
-                core-hashtable-ref
-                core-hashtable-set!
-                core-hashtable-delete!
-                core-hashtable-contains?
-                core-hashtable-copy
-                core-hashtable-clear!
-                core-hashtable-equivalence-function
-                core-hashtable-hash-function
-                core-hashtable-mutable?
-                core-hashtable->alist
+                core-hash-size
+                core-hash-ref
+                core-hash-set!
+                core-hash-delete!
+                core-hash-contains?
+                core-hash-copy
+                core-hash-clear!
+                core-hash-equivalence-function
+                core-hash-hash-function
+                core-hash-mutable?
+                core-hash->alist
                 set-cdr! unspecified equal-hash string-hash symbol-hash
                 format)
           (core lists)
@@ -56,7 +56,7 @@
         (lambda (ht-custom key default)
           (let ((slot (hash-function key))
                 (equiv? (lambda (e) (equiv-function e key))))
-            (cond ((core-hashtable-ref ht-root slot #f)
+            (cond ((core-hash-ref ht-root slot #f)
                    => (lambda (alist)
                         (cond ((assp equiv? alist) => cdr)
                               (else default))))
@@ -67,35 +67,35 @@
           (or mutable? (assertion-violation 'hashtable-set! (format "expected mutable hashtable, but ~s is not" ht-custom) (list ht-custom key obj)))
           (let ((slot (hash-function key))
                 (equiv? (lambda (e) (equiv-function e key))))
-            (cond ((core-hashtable-ref ht-root slot #f)
+            (cond ((core-hash-ref ht-root slot #f)
                    => (lambda (alist)
                         (cond ((assp equiv? alist)
                                => (lambda (a) (set-cdr! a obj)))
                               (else
                                (set! size (+ size 1))
-                               (core-hashtable-set! ht-root slot (cons (cons key obj) alist))))))
+                               (core-hash-set! ht-root slot (cons (cons key obj) alist))))))
                   (else
                    (set! size (+ size 1))
-                   (core-hashtable-set! ht-root slot (list (cons key obj))))))))
+                   (core-hash-set! ht-root slot (list (cons key obj))))))))
 
       (define generic-hashtable-delete!
         (lambda (ht-custom key)
           (or mutable? (assertion-violation 'hashtable-delete! (format "expected mutable hashtable, but ~s is not" ht-custom) (list ht-custom key)))
           (let ((slot (hash-function key))
                 (equiv? (lambda (e) (equiv-function e key))))
-            (cond ((core-hashtable-ref ht-root slot #f)
+            (cond ((core-hash-ref ht-root slot #f)
                    => (lambda (alist)
                         (cond ((assp equiv? alist)
                                => (lambda (p)
                                     (set! size (- size 1))
-                                    (core-hashtable-set! ht-root slot (remq p alist)))))))))
+                                    (core-hash-set! ht-root slot (remq p alist)))))))))
           (unspecified)))
 
       (define generic-hashtable-contains?
         (lambda (ht-custom key)
           (let ((slot (hash-function key))
                 (equiv? (lambda (e) (equiv-function e key))))
-            (cond ((core-hashtable-ref ht-root slot #f)
+            (cond ((core-hash-ref ht-root slot #f)
                    => (lambda (alist)
                         (and (assp equiv? alist) #t)))
                   (else #f)))))
@@ -105,26 +105,26 @@
           (let-optionals opt ((new-mutable? #f))
             (if mutable?
                 (let ((ht-new-root (make-core-hashtable)))
-                  (for-each (lambda (a) (core-hashtable-set!
+                  (for-each (lambda (a) (core-hash-set!
                                          ht-new-root
                                          (car a)
                                          (map (lambda (e) (cons (car e) (cdr e))) (cdr a))))
-                            (core-hashtable->alist ht-root))
+                            (core-hash->alist ht-root))
                   (if new-mutable?
                       (make-generic-hashtable hash-function equiv-function ht-new-root size new-mutable?)
-                      (make-generic-hashtable hash-function equiv-function (core-hashtable-copy ht-new-root) size new-mutable?)))
-                (make-generic-hashtable hash-function equiv-function (core-hashtable-copy ht-root new-mutable?) size new-mutable?)))))
+                      (make-generic-hashtable hash-function equiv-function (core-hash-copy ht-new-root) size new-mutable?)))
+                (make-generic-hashtable hash-function equiv-function (core-hash-copy ht-root new-mutable?) size new-mutable?)))))
 
       (define generic-hashtable-clear!
         (lambda (ht-custom . opt)
           (let-optionals opt ((k 0))
             (or mutable? (assertion-violation 'hashtable-clear! (format "expected mutable hashtable, but ~s is not" ht-custom) (cons ht-custom opt)))
-            (core-hashtable-clear! ht-root)
+            (core-hash-clear! ht-root)
             (set! size 0))))
 
       (define generic-hashtable->alist
         (lambda (ht-custom)
-          (let loop ((lst (core-hashtable->alist ht-root)) (ans '()))
+          (let loop ((lst (core-hash->alist ht-root)) (ans '()))
             (cond ((null? lst) ans)
                   (else
                    (loop (cdr lst) (append (cdar lst) ans)))))))
@@ -177,17 +177,17 @@
 
   (define hashtable-update!
     (lambda (ht key proc default)
-      (or (core-hashtable-mutable? ht)
+      (or (core-hash-mutable? ht)
           (assertion-violation 'hashtable-update! "expected mutable hashtable" (list ht key proc default)))
-      (core-hashtable-set! ht key (proc (core-hashtable-ref ht key default)))))
+      (core-hash-set! ht key (proc (core-hash-ref ht key default)))))
 
   (define hashtable-keys
     (lambda (ht)
-      (list->vector (map car (core-hashtable->alist ht)))))
+      (list->vector (map car (core-hash->alist ht)))))
 
   (define hashtable-entries
     (lambda (ht)
-      (let ((lst (core-hashtable->alist ht)))
+      (let ((lst (core-hash->alist ht)))
         (values (list->vector (map car lst))
                 (list->vector (map cdr lst))))))
 

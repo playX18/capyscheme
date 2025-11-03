@@ -707,7 +707,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         let stx = Syntax::new(
             self.ctx,
             val,
-            *empty_wrap(self.ctx),
+            empty_wrap(self.ctx),
             Value::new(false),
             v.into(),
         );

@@ -7,7 +7,7 @@ use crate::{
         core::{self, LVar, LVarRef, Term, TermKind, TermRef, seq_from_slice},
         sym_column, sym_filename, sym_line,
     },
-    global, native_fn,
+    global,
     runtime::{modules::root_module, prelude::*},
     static_symbols,
 };
@@ -571,25 +571,8 @@ pub fn wcm_body<'gc>(ctx: Context<'gc>, v: Value<'gc>) -> Value<'gc> {
     v.downcast::<Tuple>()[WCM_BODY].get()
 }
 
-native_fn!(
-    register_expand_fns:
-    pub ("pretty-print-ir") fn pretty_print_ir<'gc>(nctx, t: Value<'gc>) -> () {
-
-        let mut converter = ScmTermToRsTerm::new(nctx.ctx);
-        let term = converter.convert(t).unwrap_or_else(|t| {
-            panic!("not a term: {t}")
-        });
-
-        let doc = term.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        doc.1.render(80, &mut std::io::stdout()).unwrap();
-        println!();
-
-        nctx.return_(())
-    }
-);
-
 pub fn init_expand<'gc>(ctx: Context<'gc>) {
-    register_expand_fns(ctx);
+    let _ = ctx;
 }
 
 pub(crate) struct ScmTermToRsTerm<'gc> {

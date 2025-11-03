@@ -21,7 +21,7 @@ use std::{
 pub(crate) struct Stringbuf {
     hdr: ScmHeader,
     pub(crate) length: usize,
-    mutable: Cell<bool>,
+    pub(crate) mutable: Cell<bool>,
     pad: [u8; 7],
     data: [UnsafeCell<u8>; 0],
 }
@@ -80,39 +80,39 @@ impl Stringbuf {
         Address::from_ptr(self.data.as_ptr())
     }
 
-    fn is_wide(&self) -> bool {
+    pub(crate) fn is_wide(&self) -> bool {
         self.hdr.type_bits() == STRINGBUF_TC16_WIDE.0
     }
 
-    fn is_narrow(&self) -> bool {
+    pub(crate) fn is_narrow(&self) -> bool {
         self.hdr.type_bits() == STRINGBUF_TC16_NARROW.0
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.length
     }
 
-    fn chars<'a>(&self) -> &'a [u8] {
+    pub(crate) fn chars<'a>(&self) -> &'a [u8] {
         assert!(self.is_narrow());
         unsafe { std::slice::from_raw_parts(self.contents().to_ptr(), self.len()) }
     }
 
-    fn wide_chars<'a>(&self) -> &'a [char] {
+    pub(crate) fn wide_chars<'a>(&self) -> &'a [char] {
         assert!(self.is_wide());
         unsafe { std::slice::from_raw_parts(self.contents().to_ptr(), self.len()) }
     }
 
-    fn wide_chars_mut<'a>(&self) -> &'a mut [char] {
+    pub(crate) fn wide_chars_mut<'a>(&self) -> &'a mut [char] {
         assert!(self.is_wide());
         unsafe { std::slice::from_raw_parts_mut(self.contents().to_mut_ptr(), self.len()) }
     }
 
-    fn chars_mut<'a>(&self) -> &'a mut [u8] {
+    pub(crate) fn chars_mut<'a>(&self) -> &'a mut [u8] {
         assert!(self.is_narrow());
         unsafe { std::slice::from_raw_parts_mut(self.contents().to_mut_ptr(), self.len()) }
     }
 
-    fn new<'gc>(mc: &Mutation<'gc>, length: usize, is_wide: bool) -> Gc<'gc, Self> {
+    pub(crate) fn new<'gc>(mc: &Mutation<'gc>, length: usize, is_wide: bool) -> Gc<'gc, Self> {
         let size =
             std::mem::size_of::<Self>() + length * if is_wide { size_of::<char>() } else { 1 };
         let bytesize_data = length * if is_wide { size_of::<char>() } else { 1 };
@@ -149,7 +149,7 @@ impl Stringbuf {
     }
 
     #[allow(dead_code)]
-    fn wide<'gc>(&self, mc: &Mutation<'gc>) -> Gc<'gc, Self> {
+    pub(crate) fn wide<'gc>(&self, mc: &Mutation<'gc>) -> Gc<'gc, Self> {
         if self.is_wide() {
             return unsafe { Gc::from_ptr(self) };
         }
@@ -187,11 +187,11 @@ impl Stringbuf {
         new_stringbuf
     }
 
-    fn is_mutable(&self) -> bool {
+    pub(crate) fn is_mutable(&self) -> bool {
         self.mutable.get()
     }
 
-    fn set_mutable(&self, mutable: bool) {
+    pub(crate) fn set_mutable(&self, mutable: bool) {
         self.mutable.set(mutable);
     }
 }
@@ -844,7 +844,7 @@ impl<'gc> Symbol<'gc> {
         self.stringbuf.is_narrow()
     }
 
-    pub fn chars(&self) -> Option<&[u8]> {
+    pub fn chars(&self) -> Option<&'gc [u8]> {
         if self.stringbuf.is_narrow() {
             Some(unsafe {
                 std::slice::from_raw_parts(self.stringbuf.contents().to_ptr(), self.len())
@@ -854,7 +854,7 @@ impl<'gc> Symbol<'gc> {
         }
     }
 
-    pub fn wide_chars(&self) -> Option<&[char]> {
+    pub fn wide_chars(&self) -> Option<&'gc [char]> {
         if self.stringbuf.is_wide() {
             Some(unsafe {
                 std::slice::from_raw_parts(self.stringbuf.contents().to_ptr(), self.len())

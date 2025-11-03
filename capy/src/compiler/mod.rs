@@ -76,7 +76,7 @@ pub fn compile_file<'gc>(
 
     env: Option<Gc<'gc, Module<'gc>>>,
 ) -> Result<FuncRef<'gc>, Value<'gc>> {
-    let module = env.unwrap_or_else(|| *root_module(ctx));
+    let module = env.unwrap_or_else(|| root_module(ctx));
     let file = file.as_ref();
 
     //println!(";; (Pre-boot) Compiling file: {}", file.display());

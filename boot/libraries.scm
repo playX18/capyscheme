@@ -462,13 +462,13 @@
                         make-weak-mapping weak-mapping? weak-mapping-key weak-mapping-value
                         make-core-hashtable core-hashtable?
                         make-weak-core-hashtable weak-core-hashtable?
-                        core-hashtable-contains?
-                        core-hashtable-ref core-hashtable-set! core-hashtable-delete! core-hashtable-clear!
-                        core-hashtable->alist core-hashtable-size
-                        core-hashtable-copy
-                        core-hashtable-mutable?
-                        core-hashtable-equivalence-function
-                        core-hashtable-hash-function
+                        core-hash-contains?
+                        core-hash-ref core-hash-set! core-hash-delete! core-hash-clear!
+                        core-hash->alist core-hash-size
+                        core-hash-copy
+                        core-hash-mutable?
+                        core-hash-equivalence-function
+                        core-hash-hash-function
                         usleep
                         macroexpand compile-tree-il
 

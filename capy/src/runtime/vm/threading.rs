@@ -1,6 +1,7 @@
 //! Multi-threading support for CapyScheme.
 
-use crate::runtime::{Scheme, YieldReason, prelude::*};
+use crate::prelude::*;
+use crate::runtime::{Scheme, YieldReason};
 use rsgc::{Mutation, mmtk::AllocationSemantics};
 
 #[repr(C)]
@@ -76,14 +77,10 @@ unsafe impl<'gc> Tagged for ThreadObject<'gc> {
     const TYPE_NAME: &'static str = "thread";
 }
 
-crate::native_fn!(
-
-    register_threading_fns:
-
-    pub ("fork-thread") fn fork_thread<'gc>(
-        nctx,
-        thunk: Gc<'gc, Closure<'gc>>
-    ) -> Value<'gc> {
+#[scheme(path=capy)]
+pub mod threading_ops {
+    #[scheme(name = "fork-thread")]
+    pub fn fork_thread(thunk: Gc<'gc, Closure<'gc>>) -> Value<'gc> {
         let thread_obj = ThreadObject::new(&nctx.ctx, Some(thunk.into()));
 
         let val: Value<'gc> = thread_obj.into();
@@ -106,35 +103,28 @@ crate::native_fn!(
                     let _ = ctx;
                     let _ = result;
                     ()
-                }
+                },
             )
         });
-
-
 
         thread_started.wait();
 
         nctx.return_(val)
     }
 
-    pub ("thread?") fn thread_p<'gc>(
-        nctx,
-        obj: Value<'gc>
-    ) -> bool {
+    #[scheme(name = "thread?")]
+    pub fn thread_p(obj: Value<'gc>) -> bool {
         nctx.return_(obj.is::<ThreadObject>())
     }
 
-    pub ("current-thread") fn current_thread<'gc>(
-        nctx,
-    ) -> Value<'gc> {
+    #[scheme(name = "current-thread")]
+    pub fn current_thread() -> Value<'gc> {
         let thread_obj = nctx.ctx.state.thread_object;
         nctx.return_(thread_obj.into())
     }
 
-    pub ("make-mutex") fn make_mutex<'gc>(
-        nctx,
-        reentrant: Option<bool>
-    ) -> Value<'gc> {
+    #[scheme(name = "make-mutex")]
+    pub fn make_mutex(reentrant: Option<bool>) -> Value<'gc> {
         let reentrant = reentrant.unwrap_or(false);
         let mutex = Mutex {
             header: ScmHeader::with_type_bits(TypeCode8::THREAD_MUTEX.bits() as _),
@@ -148,97 +138,83 @@ crate::native_fn!(
         let gc_mutex = nctx.ctx.allocate(mutex, AllocationSemantics::NonMoving);
         nctx.return_(gc_mutex.into())
     }
-
-    pub ("mutex-acquire") fn mutex_acquire<'gc>(
-        nctx,
-        mutex_obj: Gc<'gc, Mutex>,
-        block: Option<bool>
-    ) -> bool {
+    #[scheme(name = "mutex-acquire")]
+    pub fn mutex_acquire(mutex_obj: Gc<'gc, Mutex>, block: Option<bool>) -> bool {
         let block = block.unwrap_or(true);
         // fast path: try to acquire the lock without yielding to native
         match &mutex_obj.mutex {
             MutexKind::Reentrant(mutex) => {
                 if let Some(_guard) = mutex.try_lock() {
                     std::mem::forget(_guard);
-                    return nctx.return_(true)
+                    return nctx.return_(true);
                 }
             }
             MutexKind::Regular(mutex) => {
                 if let Some(_guard) = mutex.try_lock() {
                     std::mem::forget(_guard);
-                    return nctx.return_(true)
+                    return nctx.return_(true);
                 }
             }
         }
         if block {
-            return nctx.yield_and_return(YieldReason::LockMutex(mutex_obj.into()), &[Value::new(true)])
+            return nctx.yield_and_return(
+                YieldReason::LockMutex(mutex_obj.into()),
+                &[Value::new(true)],
+            );
         } else {
             match &mutex_obj.mutex {
                 MutexKind::Reentrant(mutex) => {
                     if let Some(_guard) = mutex.try_lock() {
                         std::mem::forget(_guard);
-                        return nctx.return_(true)
+                        return nctx.return_(true);
                     }
                 }
                 MutexKind::Regular(mutex) => {
                     if let Some(_guard) = mutex.try_lock() {
                         std::mem::forget(_guard);
-                        return nctx.return_(true)
+                        return nctx.return_(true);
                     }
                 }
             }
-            return nctx.return_(false)
+            return nctx.return_(false);
         }
     }
 
-    pub ("mutex-release") fn mutex_release<'gc>(
-        nctx,
-        mutex_obj: Gc<'gc, Mutex>
-    ) -> Value<'gc> {
+    #[scheme(name = "mutex-release")]
+    pub fn mutex_release(mutex_obj: Gc<'gc, Mutex>) -> Value<'gc> {
         match &mutex_obj.mutex {
-            MutexKind::Reentrant(mutex) => {
-                unsafe {
-                    let guard = mutex.make_guard_unchecked();
-                    drop(guard);
-                }
-            }
-            MutexKind::Regular(mutex) => {
-                unsafe {
-                    let guard = mutex.make_guard_unchecked();
-                    drop(guard);
-                }
-            }
+            MutexKind::Reentrant(mutex) => unsafe {
+                let guard = mutex.make_guard_unchecked();
+                drop(guard);
+            },
+            MutexKind::Regular(mutex) => unsafe {
+                let guard = mutex.make_guard_unchecked();
+                drop(guard);
+            },
         }
         nctx.return_(Value::undefined())
     }
 
-    pub ("mutex-reentrant?") fn mutex_reentrant_p<'gc>(
-        nctx,
-        mutex_obj: Gc<'gc, Mutex>
-    ) -> bool {
+    #[scheme(name = "mutex-reentrant?")]
+    pub fn mutex_reentrant_p(mutex_obj: Gc<'gc, Mutex>) -> bool {
         match &mutex_obj.mutex {
             MutexKind::Reentrant(_) => nctx.return_(true),
             MutexKind::Regular(_) => nctx.return_(false),
         }
     }
 
-    pub ("mutex?") fn mutex_p<'gc>(
-        nctx,
-        obj: Value<'gc>
-    ) -> bool {
+    #[scheme(name = "mutex?")]
+    pub fn mutex_p(obj: Value<'gc>) -> bool {
         nctx.return_(obj.is::<Mutex>())
     }
 
-    pub ("thread-condition?") fn thread_condition_p<'gc>(
-        nctx,
-        obj: Value<'gc>
-    ) -> bool {
+    #[scheme(name = "thread-condition?")]
+    pub fn thread_condition_p(obj: Value<'gc>) -> bool {
         nctx.return_(obj.is::<Condition>())
     }
 
-    pub ("make-condition") fn make_condition<'gc>(
-        nctx,
-    ) -> Value<'gc> {
+    #[scheme(name = "make-condition")]
+    pub fn make_condition() -> Value<'gc> {
         let condition = Condition {
             header: ScmHeader::with_type_bits(TypeCode8::THREAD_CONDITION.bits() as _),
             cond: parking_lot::Condvar::new(),
@@ -247,37 +223,43 @@ crate::native_fn!(
         nctx.return_(gc_condition.into())
     }
 
-    pub ("condition-signal") fn condition_signal<'gc>(
-        nctx,
-        condition_obj: Gc<'gc, Condition>
-    ) -> Value<'gc> {
+    #[scheme(name = "condition-signal")]
+    pub fn condition_signal(condition_obj: Gc<'gc, Condition>) -> Value<'gc> {
         condition_obj.cond.notify_one();
         nctx.return_(Value::undefined())
     }
 
-    pub ("condition-broadcast") fn condition_broadcast<'gc>(
-        nctx,
-        condition_obj: Gc<'gc, Condition>
-    ) -> Value<'gc> {
+    #[scheme(name = "condition-broadcast")]
+    pub fn condition_broadcast(condition_obj: Gc<'gc, Condition>) -> Value<'gc> {
         condition_obj.cond.notify_all();
         nctx.return_(Value::undefined())
     }
 
-    pub ("condition-wait") fn condition_wait<'gc>(
-        nctx,
+    #[scheme(name = "condition-wait")]
+    pub fn condition_wait(
         condition_obj: Gc<'gc, Condition>,
-        mutex_obj: Gc<'gc, Mutex>
+        mutex_obj: Gc<'gc, Mutex>,
     ) -> Value<'gc> {
         if matches!(mutex_obj.mutex, MutexKind::Reentrant(_)) {
-            return nctx.wrong_argument_violation("condition-wait", "reentrant mutex can't be used with condition-wait", Some(mutex_obj.into()), Some(1), 2, &[condition_obj.into(), mutex_obj.into()])
+            return nctx.wrong_argument_violation(
+                "condition-wait",
+                "reentrant mutex can't be used with condition-wait",
+                Some(mutex_obj.into()),
+                Some(1),
+                2,
+                &[condition_obj.into(), mutex_obj.into()],
+            );
         }
-        nctx.yield_and_return(YieldReason::WaitCondition {
-            condition: condition_obj.into(),
-            mutex: mutex_obj.into(),
-        }, &[Value::undefined()])
+        nctx.yield_and_return(
+            YieldReason::WaitCondition {
+                condition: condition_obj.into(),
+                mutex: mutex_obj.into(),
+            },
+            &[Value::undefined()],
+        )
     }
-);
+}
 
 pub(crate) fn init_threading<'gc>(ctx: Context<'gc>) {
-    register_threading_fns(ctx);
+    threading_ops::register(ctx);
 }

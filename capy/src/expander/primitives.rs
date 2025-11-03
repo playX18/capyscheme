@@ -9,9 +9,9 @@ use crate::runtime::prelude::*;
 use crate::runtime::value::{HashTable, HashTableType, Symbol};
 use crate::{global, list};
 use crate::{runtime::value::Value, static_symbols};
+use rsgc::Gc;
 use rsgc::alloc::Array;
 use rsgc::cell::Lock;
-use rsgc::{Gc, Trace};
 use std::collections::HashMap;
 
 macro_rules! interesting_prim_names {
@@ -250,7 +250,7 @@ global!(
     pub interesting_primitive_vars_loc<'gc>: VariableRef<'gc> = (ctx) {
         let sym = Symbol::from_str(ctx, "*interesting-primitive-vars*");
         let var = root_module(ctx).ensure_local_variable(ctx, sym.into());
-        var.set(ctx, (*interesting_primitive_vars(ctx)).into());
+        var.set(ctx, (interesting_primitive_vars(ctx)).into());
         var
     };
 );
@@ -261,7 +261,7 @@ pub fn resolve_primitives<'gc>(
     m: Gc<'gc, Module<'gc>>,
 ) -> TermRef<'gc> {
     let mut local_definitions = Set::default();
-    if !Gc::ptr_eq(m, *root_module(ctx)) {
+    if !Gc::ptr_eq(m, root_module(ctx)) {
         fn collect_local_definitions<'gc>(
             x: TermRef<'gc>,
             local_definitions: &mut Set<Value<'gc>>,
@@ -345,44 +345,33 @@ macro_rules! primitive_expanders {
             fn $fname<$gc>($ctx: Context<$gc>, $args: &[TermRef<$gc>], $src: Value<$gc>) -> Option<TermRef<$gc>> $b
         )*
 
-        type Expander<'gc> = fn(Context<'gc>, &[TermRef<'gc>], Value<'gc>) -> Option<TermRef<'gc>>;
+        type Expander = for<'gc> fn(Context<'gc>, &[TermRef<'gc>], Value<'gc>) -> Option<TermRef<'gc>>;
 
 
-        struct ExpanderTable<'gc> {
-            table: HashMap<SymbolRef<'gc>, Expander<'gc>>,
+        struct ExpanderTable {
+            table: HashMap<&'static str, Expander>,
         }
 
-        unsafe impl<'gc> Trace for ExpanderTable<'gc> {
-            unsafe fn trace(&mut self, vis: &mut rsgc::collection::Visitor) {
-                for (k, _) in self.table.iter() {
-                    let p = k as *const SymbolRef as *mut SymbolRef;
-                    unsafe { (*p).trace(vis) };
-                }
-            }
-
-            unsafe fn process_weak_refs(&mut self, _vis: &mut rsgc::WeakProcessor) {}
-        }
-
-        impl<'gc> ExpanderTable<'gc> {
-            fn new(ctx: Context<'gc>) -> Self {
+        impl ExpanderTable {
+            fn new() -> Self {
                 let mut table = HashMap::new();
                 $(
-                    let sym = Symbol::from_str(ctx, $name);
-                    table.insert(sym, $fname as Expander<'gc>);
+                    table.insert($name, $fname as Expander);
                 )*
                 ExpanderTable { table }
             }
 
-            fn get(&self, _ctx: Context<'gc>, name: SymbolRef<'gc>) -> Option<Expander<'gc>> {
-                self.table.get(&name).copied()
+            fn get<'gc>(&self, _ctx: Context<'gc>, name: SymbolRef<'gc>) -> Option<Expander> {
+                let key = name.as_str();
+                self.table.get(&*key).copied()
             }
         }
 
-        global!(
-            primitive_expanders<'gc>: ExpanderTable<'gc> = (ctx) {
-                ExpanderTable::new(ctx)
-            };
-        );
+        use std::sync::LazyLock;
+
+        static PRIMITIVE_EXPANDERS: LazyLock<ExpanderTable> = LazyLock::new(|| {
+            ExpanderTable::new()
+        });
     };
 }
 
@@ -1879,7 +1868,8 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
     let capy_module = list!(ctx, Symbol::from_str(ctx, "capy"));
     t.pre_order(ctx, |ctx, t| match &t.kind {
         TermKind::PrimCall(name, args) => {
-            if let Some(f) = primitive_expanders(ctx).get(ctx, name.downcast()) {
+            let expanders = &*PRIMITIVE_EXPANDERS;
+            if let Some(f) = expanders.get(ctx, name.downcast()) {
                 if let Some(expanded) = f(ctx, args.as_slice(), t.source()) {
                     return expanded;
                 } else {

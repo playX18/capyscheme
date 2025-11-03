@@ -31,7 +31,7 @@
                       symbol-list
                       (lambda (set)
                         (lambda (symbol)
-                          (core-hashtable-ref (enum-type-universe (enum-set-type set)) symbol #f)))
+                          (core-hash-ref (enum-type-universe (enum-set-type set)) symbol #f)))
                       (lambda (set)
                         (lambda (symbol-list)
                           (let ((lst (remove-duplicate-symbols symbol-list))
@@ -39,7 +39,7 @@
                             (for-each (lambda (e)
                                         (or (symbol? e)
                                             (assertion-violation "enum-set constructor" (format "expected list of symbols, but got ~r as argument 1" symbol-list)))
-                                        (or (core-hashtable-ref universe e #f)
+                                        (or (core-hash-ref universe e #f)
                                             (assertion-violation "enum-set constructor" (format "excpectd symbols which belong to the universe, but got ~r as argument 1" symbol-list))))
                                       lst)
                             (make-enum-set (enum-set-type set) lst)))))))
@@ -51,7 +51,7 @@
           (for-each (lambda (e)
                       (or (symbol? e)
                           (assertion-violation 'make-enumeration (format "expected list of symbols, but got ~r as argument 1" symbol-list)))
-                      (core-hashtable-set! ht e index)
+                      (core-hash-set! ht e index)
                       (set! index (+ index 1)))
                     symbol-list)
           (let ((type (construct-enum-type ht symbol-list)))
@@ -83,7 +83,7 @@
       (let ((universe (enum-type-universe (enum-set-type set))))
         (map car
              (list-sort (lambda (a b) (< (cdr a) (cdr b)))
-                        (map (lambda (e) (cons e (core-hashtable-ref universe e #f)))
+                        (map (lambda (e) (cons e (core-hash-ref universe e #f)))
                              (enum-set-members set)))))))
 
   (define enum-set-member?

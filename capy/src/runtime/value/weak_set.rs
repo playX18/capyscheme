@@ -596,6 +596,25 @@ impl<'gc> WeakSet<'gc> {
 
         drop(inner);
     }
+
+    pub fn for_each<F>(self: Gc<'gc, Self>, mc: &Mutation<'gc>, mut f: F)
+    where
+        F: FnMut(Value<'gc>),
+    {
+        let inner = self.inner.lock();
+
+        let entries = inner.entries.get();
+
+        for i in 0..entries.len() {
+            let entry = entries[i].get();
+            if entry.hash != 0 {
+                let value = entry.get(mc);
+                if !value.is_bwp() {
+                    f(value);
+                }
+            }
+        }
+    }
 }
 
 struct AllWeakSets<'gc>(Monitor<Vec<Weak<'gc, WeakSet<'gc>>>>);

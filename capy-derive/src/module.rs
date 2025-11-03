@@ -160,6 +160,36 @@ impl Module {
             .collect::<Vec<_>>()
             .join(" ");
         let hint = exports.len();
+
+        let metas = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ModuleItem::Function(fun) => Some(fun.meta_name()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let metas = &metas;
+        let get_metas = self
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ModuleItem::Function(fun) => Some(fun.get_meta_name()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let fns = self.items.iter().filter_map(|item| match item {
+            ModuleItem::Function(fun) if !fun.is_continuation() => Some(fun.raw_name()),
+            _ => None,
+        });
+
+        let conts = self.items.iter().filter_map(|item| match item {
+            ModuleItem::Function(fun) if fun.is_continuation() => Some(fun.raw_name()),
+            _ => None,
+        });
+
         items.extend(quote_spanned! {
             rust_name.span() =>
 
@@ -172,6 +202,57 @@ impl Module {
 
                 current_module(ctx).set(ctx, old.into());
                 module
+            }
+
+            #[allow(unused)]
+            pub fn for_each_global<'gc, F>(ctx: Context<'gc>, mut f: F)
+            where
+                F: FnMut(Value<'gc>)
+            {
+                #(
+                    f(#get_metas(ctx));
+                )*
+                let _ = f;
+            }
+
+            #[doc(hidden)]
+            #[allow(unused)]
+            pub unsafe fn init_globals<'gc>(ctx: Context<'gc>, mut indexes: impl Iterator<Item = usize>) {
+                unsafe { 
+                    #(
+                        let index = indexes.next().expect("Not enough global variable indexes provided");
+                        #metas.set(Global::from_index(index))
+                            .unwrap_or_else(|_| panic!("Global variable index out of bounds"));
+                    )*
+                }
+            }
+
+            #[doc(hidden)]
+            #[allow(unused)]
+            pub unsafe fn for_each_fn<'gc>(
+                ctx: Context<'gc>,
+                mut f: impl FnMut(*const ())
+            ) {
+                unsafe { 
+                    #(
+                       f(#fns as *const ());
+                    )*
+                }
+                let _ = f;
+            }
+
+            #[doc(hidden)]
+            #[allow(unused)]
+            pub unsafe fn for_each_continuation<'gc>(
+                ctx: Context<'gc>,
+                mut f: impl FnMut(*const ())
+            ) {
+                unsafe { 
+                    #(
+                        f(#conts as *const ());
+                    )*
+                }
+                let _ = f;
             }
         });
 

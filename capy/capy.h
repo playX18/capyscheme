@@ -45,6 +45,26 @@
 
 #define FASL_TAG_TUPLE 20
 
+#define TYPE_IMMEDIATE 0
+
+#define TYPE_REF 1
+
+#define TYPE_TRUE 2
+
+#define TYPE_FALSE 3
+
+#define TYPE_I32 4
+
+#define TYPE_CHAR 5
+
+#define TYPE_EOF 6
+
+#define TYPE_NULL 7
+
+#define TYPE_UNDEFINED 8
+
+#define TYPE_BWP 9
+
 #define PURE_NAN_BITS 9221120237041090560
 
 #define IMPURE_NAN_BITS 18446462598732840960ull

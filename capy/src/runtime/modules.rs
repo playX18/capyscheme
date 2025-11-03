@@ -3,7 +3,7 @@ use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 use rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
 use crate::{
-    fluid, global, list, native_fn,
+    fluid, global, list,
     runtime::{
         Context,
         prelude::VariableRef,
@@ -381,8 +381,8 @@ impl<'gc> Module<'gc> {
                 .set(Some(interface));
         }
 
-        if self.uses.get().memq((*scm_module(ctx)).into()) && !Gc::ptr_eq(self, *root_module(ctx)) {
-            self.use_iface(ctx, *scm_module(ctx));
+        if self.uses.get().memq((scm_module(ctx)).into()) && !Gc::ptr_eq(self, root_module(ctx)) {
+            self.use_iface(ctx, scm_module(ctx));
         }
     }
 
@@ -610,13 +610,13 @@ global!(
     resolve_module_root<'gc>: Gc<'gc, Module<'gc>> = (ctx) {
         let root = Module::new(ctx, 0, Value::null(), Value::new(false));
         barrier::field!(Gc::write(&ctx, root), Module, name).unlock().set(Value::null());
-        root.define_submodule(ctx, Symbol::from_str(ctx, "capy").into(), *root_module(ctx));
+        root.define_submodule(ctx, Symbol::from_str(ctx, "capy").into(), root_module(ctx));
         root
     };
 
     loc_resolve_module_root<'gc>: VariableRef<'gc> = (ctx) {
         let root = resolve_module_root(ctx);
-        let var = define(ctx, "*resolve-module-root*", *root);
+        let var = define(ctx, "*resolve-module-root*", root);
         var
     };
 );
@@ -745,7 +745,7 @@ global!(
         let wm = Gc::write(&ctx, m);
         barrier::field!(wm, Module, name).unlock().set(Value::cons(ctx, Symbol::from_str(ctx, "capy").into(), Value::null()));
         barrier::field!(wm, Module, obarray).unlock().set(scm_module(ctx).obarray.get());
-        barrier::field!(wm, Module, public_interface).unlock().set(Some(*scm_module(ctx)));
+        barrier::field!(wm, Module, public_interface).unlock().set(Some(scm_module(ctx)));
         m
     };
 
@@ -802,31 +802,37 @@ pub fn private_ref<'gc>(ctx: Context<'gc>, module_name: &str, name: &str) -> Opt
     module.get(ctx, Symbol::from_str(ctx, name).into())
 }
 
-native_fn!(
-    register_module_fns:
+use crate::prelude::*;
 
-    pub ("variable-ref") fn variable_ref<'gc>(nctx, var: Gc<'gc, Variable<'gc>>) -> Value<'gc> {
+#[scheme(path=capy)]
+pub mod module_ops {
+    #[scheme(name = "variable-ref")]
+    pub fn variable_ref(var: Gc<'gc, Variable<'gc>>) -> Value<'gc> {
         nctx.return_(var.get())
     }
 
-    pub ("variable-set!") fn variable_set<'gc>(nctx, var: Gc<'gc, Variable<'gc>>, value: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "variable-set!")]
+    pub fn variable_set(var: Gc<'gc, Variable<'gc>>, value: Value<'gc>) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, var), Variable, value)
             .unlock()
             .set(value);
         nctx.return_(Value::undefined())
     }
 
-    pub ("make-variable") fn make_variable<'gc>(nctx, value: Option<Value<'gc>>) -> Gc<'gc, Variable<'gc>> {
+    #[scheme(name = "make-variable")]
+    pub fn make_variable(value: Option<Value<'gc>>) -> Gc<'gc, Variable<'gc>> {
         let value = value.unwrap_or(Value::undefined());
         let var = Variable::new(nctx.ctx, value);
         nctx.return_(var)
     }
 
-    pub ("variable-bound?") fn variable_bound<'gc>(nctx, var: Gc<'gc, Variable<'gc>>) -> bool {
+    #[scheme(name = "variable-bound?")]
+    pub fn variable_bound(var: Gc<'gc, Variable<'gc>>) -> bool {
         nctx.return_(var.is_bound())
     }
 
-    pub ("current-module") fn current_module_fn<'gc>(nctx, new_module: Option<Gc<'gc, Module<'gc>>>) -> Gc<'gc, Module<'gc>> {
+    #[scheme(name = "current-module")]
+    pub fn current_module_fn(new_module: Option<Gc<'gc, Module<'gc>>>) -> Gc<'gc, Module<'gc>> {
         let fluid = current_module(nctx.ctx);
         let old = fluid.get(nctx.ctx);
 
@@ -837,50 +843,54 @@ native_fn!(
         nctx.return_(old.downcast())
     }
 
-    pub ("make-module") fn make_module<'gc>(
-        nctx,
-        size: Option<usize>,
-        uses: Option<Value<'gc>>
-    ) -> Gc<'gc, Module<'gc>> {
+    #[scheme(name = "make-module")]
+    pub fn make_module(size: Option<usize>, uses: Option<Value<'gc>>) -> Gc<'gc, Module<'gc>> {
         let size = size.unwrap_or(0);
         let uses = uses.unwrap_or(Value::null());
         let module = Module::new(nctx.ctx, size, uses, Value::new(false));
         nctx.return_(module)
     }
 
-    pub ("module?") fn module_p<'gc>(nctx, value: Value<'gc>) -> bool {
+    #[scheme(name = "module?")]
+    pub fn module_p(value: Value<'gc>) -> bool {
         nctx.return_(value.is::<Module>())
     }
 
-    pub ("module-obarray") fn module_obarray<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
+    #[scheme(name = "module-obarray")]
+    pub fn module_obarray(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
         nctx.return_(module.obarray.get())
     }
 
-    pub ("module-uses") fn module_uses<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-uses")]
+    pub fn module_uses(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.uses.get())
     }
 
-    pub ("module-binder") fn module_binder<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-binder")]
+    pub fn module_binder(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.binder)
     }
 
-    pub ("module-declarative?") fn module_declarative<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> bool {
+    #[scheme(name = "module-declarative?")]
+    pub fn module_declarative(module: Gc<'gc, Module<'gc>>) -> bool {
         nctx.return_(module.declarative.get())
     }
 
-    pub ("module-transformer") fn module_transformer<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-transformer")]
+    pub fn module_transformer(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.transformer)
     }
-
-    pub ("raw-module-name") fn module_name<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "raw-module-name")]
+    pub fn module_name(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.name.get())
     }
 
-    pub ("module-version") fn module_version<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-version")]
+    pub fn module_version(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.version.get())
     }
-
-    pub ("module-kind") fn module_kind<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-kind")]
+    pub fn module_kind(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         let kind = match module.kind.get() {
             ModuleKind::Directory => Symbol::from_str(nctx.ctx, "directory"),
             ModuleKind::Interface => Symbol::from_str(nctx.ctx, "interface"),
@@ -889,140 +899,198 @@ native_fn!(
         nctx.return_(kind.into())
     }
 
-    pub ("module-import-obarray") fn module_import_obarray<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
+    #[scheme(name = "module-import-obarray")]
+    pub fn module_import_obarray(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
         nctx.return_(module.import_obarray.clone())
     }
 
-    pub ("module-submodules") fn module_submodules<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
+    #[scheme(name = "module-submodules")]
+    pub fn module_submodules(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
         nctx.return_(module.submodules.clone())
     }
 
-    pub ("module-filename") fn module_filename<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-filename")]
+    pub fn module_filename(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.filename.get())
     }
-
-    pub ("module-public-interface") fn module_public_interface<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        nctx.return_(module.public_interface.get().map(Value::new).unwrap_or(Value::new(false)))
+    #[scheme(name = "module-public-interface")]
+    pub fn module_public_interface(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+        nctx.return_(
+            module
+                .public_interface
+                .get()
+                .map(Value::new)
+                .unwrap_or(Value::new(false)),
+        )
     }
 
-    pub ("module-next-unique-id") fn module_next_unique_id<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
-        let val = module.next_unique_id.load(std::sync::atomic::Ordering::SeqCst).into_value(nctx.ctx);
+    #[scheme(name = "module-next-unique-id")]
+    pub fn module_next_unique_id(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+        let val = module
+            .next_unique_id
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .into_value(nctx.ctx);
         nctx.return_(val)
     }
 
-    pub ("module-replacements") fn module_replacements<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-replacements")]
+    pub fn module_replacements(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.replacements.get())
     }
 
-    pub ("module-inlinable-exports") fn module_inlinable_exports<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-inlinable-exports")]
+    pub fn module_inlinable_exports(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.inlinable_exports.get())
     }
 
-    pub ("set-module-obarray!") fn set_module_obarray<'gc>(nctx, module: Gc<'gc, Module<'gc>>, obarray: Gc<'gc, HashTable<'gc>>) -> Value<'gc> {
+    #[scheme(name = "set-module-obarray!")]
+    pub fn set_module_obarray(
+        module: Gc<'gc, Module<'gc>>,
+        obarray: Gc<'gc, HashTable<'gc>>,
+    ) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, obarray)
             .unlock()
             .set(obarray);
         nctx.return_(Value::undefined())
     }
-    pub ("set-module-uses!") fn set_module_uses<'gc>(nctx, module: Gc<'gc, Module<'gc>>, uses: Value<'gc>) -> Value<'gc> {
+
+    #[scheme(name = "set-module-uses!")]
+    pub fn set_module_uses(module: Gc<'gc, Module<'gc>>, uses: Value<'gc>) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, uses)
             .unlock()
             .set(uses);
         nctx.return_(Value::undefined())
     }
 
-
-    pub ("set-module-declarative!") fn set_module_declarative<'gc>(nctx, module: Gc<'gc, Module<'gc>>, declarative: bool) -> Value<'gc> {
+    #[scheme(name = "set-module-declarative!")]
+    pub fn set_module_declarative(module: Gc<'gc, Module<'gc>>, declarative: bool) -> Value<'gc> {
         module.declarative.set(declarative);
         nctx.return_(Value::undefined())
     }
 
-
-    pub ("set-module-name!") fn set_module_name<'gc>(nctx, module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "set-module-name!")]
+    pub fn set_module_name(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, name)
             .unlock()
             .set(name);
         nctx.return_(Value::undefined())
     }
 
-    pub ("set-module-version!") fn set_module_version<'gc>(nctx, module: Gc<'gc, Module<'gc>>, version: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "set-module-version!")]
+    pub fn set_module_version(module: Gc<'gc, Module<'gc>>, version: Value<'gc>) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, version)
             .unlock()
             .set(version);
         nctx.return_(Value::undefined())
     }
 
-    pub ("set-module-kind!") fn set_module_kind<'gc>(nctx, module: Gc<'gc, Module<'gc>>, kind: Gc<'gc, Symbol<'gc>>) -> Value<'gc> {
+    #[scheme(name = "set-module-kind!")]
+    pub fn set_module_kind(module: Gc<'gc, Module<'gc>>, kind: Gc<'gc, Symbol<'gc>>) -> Value<'gc> {
         let kind = match kind.to_string().as_str() {
             "directory" => ModuleKind::Directory,
             "interface" => ModuleKind::Interface,
             "custom-interface" => ModuleKind::CustomInterface,
             _ => {
-                return nctx.wrong_argument_violation("set-module-kind!", "expected 'directory, 'interface, or 'custom-interface", Some(kind.into()), Some(2), 2, &[module.into(), kind.into()]);
+                return nctx.wrong_argument_violation(
+                    "set-module-kind!",
+                    "expected 'directory, 'interface, or 'custom-interface",
+                    Some(kind.into()),
+                    Some(2),
+                    2,
+                    &[module.into(), kind.into()],
+                );
             }
         };
         module.kind.set(kind);
         nctx.return_(Value::undefined())
     }
 
-    pub ("set-module-filename!") fn set_module_filename<'gc>(nctx, module: Gc<'gc, Module<'gc>>, filename: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "set-module-filename!")]
+    pub fn set_module_filename(module: Gc<'gc, Module<'gc>>, filename: Value<'gc>) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, filename)
             .unlock()
             .set(filename);
         nctx.return_(Value::undefined())
     }
 
-    pub ("set-module-public-interface!") fn set_module_public_interface<'gc>(nctx, module: Gc<'gc, Module<'gc>>, public_interface: Option<Gc<'gc, Module<'gc>>>) -> Value<'gc> {
+    #[scheme(name = "set-module-public-interface!")]
+    pub fn set_module_public_interface(
+        module: Gc<'gc, Module<'gc>>,
+        public_interface: Option<Gc<'gc, Module<'gc>>>,
+    ) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, public_interface)
             .unlock()
             .set(public_interface);
         nctx.return_(Value::undefined())
     }
 
-    pub ("set-module-next-unique-id!") fn set_module_next_unique_id<'gc>(nctx, module: Gc<'gc, Module<'gc>>, next_unique_id: usize) -> Value<'gc> {
-        module.next_unique_id.store(next_unique_id, std::sync::atomic::Ordering::SeqCst);
+    #[scheme(name = "set-module-next-unique-id!")]
+    pub fn set_module_next_unique_id(
+        module: Gc<'gc, Module<'gc>>,
+        next_unique_id: usize,
+    ) -> Value<'gc> {
+        module
+            .next_unique_id
+            .store(next_unique_id, std::sync::atomic::Ordering::SeqCst);
         nctx.return_(Value::undefined())
     }
-
-    pub ("set-module-replacements!") fn set_module_replacements<'gc>(nctx, module: Gc<'gc, Module<'gc>>, replacements: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "set-module-replacements!")]
+    pub fn set_module_replacements(
+        module: Gc<'gc, Module<'gc>>,
+        replacements: Value<'gc>,
+    ) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, replacements)
             .unlock()
             .set(replacements);
         nctx.return_(Value::undefined())
     }
 
-    pub ("set-module-inlinable-exports!") fn set_module_inlinable_exports<'gc>(nctx, module: Gc<'gc, Module<'gc>>, inlinable_exports: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "set-module-inlinable-exports!")]
+    pub fn set_module_inlinable_exports(
+        module: Gc<'gc, Module<'gc>>,
+        inlinable_exports: Value<'gc>,
+    ) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, inlinable_exports)
             .unlock()
             .set(inlinable_exports);
         nctx.return_(Value::undefined())
     }
 
-    pub ("module-local-variable") fn module_local_variable<'gc>(nctx, module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
-        let res = module.local_variable(nctx.ctx, name).map(Value::new).unwrap_or(Value::new(false));
+    #[scheme(name = "module-local-variable")]
+    pub fn module_local_variable(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
+        let res = module
+            .local_variable(nctx.ctx, name)
+            .map(Value::new)
+            .unwrap_or(Value::new(false));
         nctx.return_(res)
     }
 
-    pub ("module-locally-bound?") fn module_locally_bound<'gc>(nctx, module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> bool {
+    #[scheme(name = "module-locally-bound?")]
+    pub fn module_locally_bound(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> bool {
         let res = module.is_locally_bound(nctx.ctx, name);
         nctx.return_(res)
     }
 
-    pub ("module-bound?") fn module_bound<'gc>(nctx, module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> bool {
+    #[scheme(name = "module-bound?")]
+    pub fn module_bound(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> bool {
         let res = module.is_bound(nctx.ctx, name);
         nctx.return_(res)
     }
 
-    pub ("module-variable") fn module_variable<'gc>(nctx, module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
-        let res = module.variable(nctx.ctx, name).map(Value::new).unwrap_or(Value::new(false));
+    #[scheme(name = "module-variable")]
+    pub fn module_variable(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
+        let res = module
+            .variable(nctx.ctx, name)
+            .map(Value::new)
+            .unwrap_or(Value::new(false));
         nctx.return_(res)
     }
 
-    pub ("module-symbol-binding") fn module_symbol_binding<'gc>(
-        nctx,
+    #[scheme(name = "module-symbol-binding")]
+    pub fn module_symbol_binding(
         module: Gc<'gc, Module<'gc>>,
         name: Value<'gc>,
-        opt_value: Option<Value<'gc>>
+        opt_value: Option<Value<'gc>>,
     ) -> Value<'gc> {
         let binding = module.binding(nctx.ctx, name);
 
@@ -1030,7 +1098,7 @@ native_fn!(
             if let Some(value) = opt_value {
                 return nctx.return_(value);
             } else {
-                return nctx.raise_error("module-binding", "unbound variable", &[name])
+                return nctx.raise_error("module-binding", "unbound variable", &[name]);
             }
         }
 
@@ -1039,11 +1107,11 @@ native_fn!(
         nctx.return_(binding)
     }
 
-    pub ("module-symbol-local-binding") fn module_symbol_local_binding<'gc>(
-        nctx,
+    #[scheme(name = "module-symbol-local-binding")]
+    pub fn module_symbol_local_binding(
         module: Gc<'gc, Module<'gc>>,
         name: Value<'gc>,
-        opt_value: Option<Value<'gc>>
+        opt_value: Option<Value<'gc>>,
     ) -> Value<'gc> {
         let binding = module.local_binding(nctx.ctx, name);
 
@@ -1051,7 +1119,11 @@ native_fn!(
             if let Some(value) = opt_value {
                 return nctx.return_(value);
             } else {
-                return nctx.raise_error("module-local-binding", "locally unbound variable", &[name])
+                return nctx.raise_error(
+                    "module-local-binding",
+                    "locally unbound variable",
+                    &[name],
+                );
             }
         }
 
@@ -1060,10 +1132,10 @@ native_fn!(
         nctx.return_(binding)
     }
 
-    pub ("module-make-local-var!") fn module_make_local_var<'gc>(
-        nctx,
+    #[scheme(name = "module-make-local-var!")]
+    pub fn module_make_local_var(
         module: Gc<'gc, Module<'gc>>,
-        name: Value<'gc>
+        name: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
         if let Some(var) = module.obarray.get().get(nctx.ctx, name) {
             if var.is::<Variable>() {
@@ -1076,79 +1148,100 @@ native_fn!(
         nctx.return_(local_var)
     }
 
-    pub ("module-ensure-local-variable!") fn module_ensure_local_variable<'gc>(
-        nctx,
+    #[scheme(name = "module-ensure-local-variable!")]
+    pub fn module_ensure_local_variable(
         module: Gc<'gc, Module<'gc>>,
-        name: Value<'gc>
+        name: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
         let var = module.ensure_local_variable(nctx.ctx, name);
         nctx.return_(var)
     }
 
-    pub ("module-add!") fn module_add<'gc>(nctx, module: Gc<'gc, Module<'gc>>, name: Value<'gc>, var: Gc<'gc, Variable<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-add!")]
+    pub fn module_add(
+        module: Gc<'gc, Module<'gc>>,
+        name: Value<'gc>,
+        var: Gc<'gc, Variable<'gc>>,
+    ) -> Value<'gc> {
         module.add(nctx.ctx, name, var);
         nctx.return_(Value::undefined())
     }
 
-    pub ("module-remove!") fn module_remove<'gc>(nctx, module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "module-remove!")]
+    pub fn module_remove(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
         module.remove(nctx.ctx, name);
         nctx.return_(Value::undefined())
     }
 
-    pub ("module-clear!") fn module_clear<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-clear!")]
+    pub fn module_clear(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         module.clear(nctx.ctx);
         nctx.return_(Value::undefined())
     }
 
-    pub ("module-gensym") fn module_gensym<'gc>(nctx, id: Option<Gc<'gc, Str<'gc>>>, m: Option<Gc<'gc ,Module<'gc>>>) -> Value<'gc> {
-        let id = id.map(|x| x.to_string()).unwrap_or_else(|| " mg".to_owned());
+    #[scheme(name = "module-gensym")]
+    pub fn module_gensym(
+        id: Option<Gc<'gc, Str<'gc>>>,
+        m: Option<Gc<'gc, Module<'gc>>>,
+    ) -> Value<'gc> {
+        let id = id
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| " mg".to_owned());
         let m = m.unwrap_or_else(|| current_module(nctx.ctx).get(nctx.ctx).downcast());
-        let unique_id = m.next_unique_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let unique_id = m
+            .next_unique_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let sym = format!("{}-{}-{}", id, m.name.get().hash_equal(), unique_id);
         let str = Str::new(&nctx.ctx, sym, true);
         let sym = Symbol::gensym(nctx.ctx, Some(str));
         nctx.return_(sym.into())
     }
 
-    pub ("module-generate-unique-id!") fn module_generate_unique_id<'gc>(nctx, m: Option<Gc<'gc ,Module<'gc>>>) -> usize {
+    #[scheme(name = "module-generate-unique-id!")]
+    pub fn module_generate_unique_id(m: Option<Gc<'gc, Module<'gc>>>) -> usize {
         let m = m.unwrap_or_else(|| current_module(nctx.ctx).get(nctx.ctx).downcast());
-        let unique_id = m.next_unique_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let unique_id = m
+            .next_unique_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         nctx.return_(unique_id)
     }
 
-    pub ("module-environment") fn module_environment<'gc>(nctx, module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
+    #[scheme(name = "module-environment")]
+    pub fn module_environment(module: Gc<'gc, Module<'gc>>) -> Value<'gc> {
         nctx.return_(module.environment.get())
     }
 
-    pub ("set-module-environment!") fn set_module_environment<'gc>(nctx, module: Gc<'gc, Module<'gc>>, environment: Value<'gc>) -> Value<'gc> {
+    #[scheme(name = "set-module-environment!")]
+    pub fn set_module_environment(
+        module: Gc<'gc, Module<'gc>>,
+        environment: Value<'gc>,
+    ) -> Value<'gc> {
         barrier::field!(Gc::write(&nctx.ctx, module), Module, environment)
             .unlock()
             .set(environment);
         nctx.return_(Value::undefined())
     }
-
-
-);
+}
 
 global!(
     loc_the_root_module<'gc>: Gc<'gc, Variable<'gc>> = (ctx) {
-        let module = *root_module(ctx);
+        let module = root_module(ctx);
         module.define(ctx, Symbol::from_str(ctx, "the-root-module").into(), module.into())
     };
 
     loc_the_scm_module<'gc>: Gc<'gc, Variable<'gc>> = (ctx) {
-        let module = *scm_module(ctx);
+        let module = scm_module(ctx);
         module.define(ctx, Symbol::from_str(ctx, "the-scm-module").into(), module.into())
     };
 );
 
 pub fn init_modules<'gc>(ctx: Context<'gc>) {
-    register_module_fns(ctx);
+    module_ops::register(ctx);
     let _ = loc_the_root_module(ctx);
     let _ = loc_the_scm_module(ctx);
 
-    let scm_module = *scm_module(ctx);
-    let root_module = *root_module(ctx);
+    let scm_module = scm_module(ctx);
+    let root_module = root_module(ctx);
     barrier::field!(Gc::write(&ctx, scm_module), Module, obarray)
         .unlock()
         .set(root_module.obarray.get());

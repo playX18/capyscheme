@@ -228,17 +228,17 @@
     condition?
     cons
     cons*
-    core-hashtable->alist
-    core-hashtable-clear!
-    core-hashtable-contains?
-    core-hashtable-copy
-    core-hashtable-delete!
-    core-hashtable-equivalence-function
-    core-hashtable-hash-function
-    core-hashtable-mutable?
-    core-hashtable-ref
-    core-hashtable-set!
-    core-hashtable-size
+    core-hash->alist
+    core-hash-clear!
+    core-hash-contains?
+    core-hash-copy
+    core-hash-delete!
+    core-hash-equivalence-function
+    core-hash-hash-function
+    core-hash-mutable?
+    core-hash-ref
+    core-hash-set!
+    core-hash-size
     core-hashtable?
     coreform-optimize
     cos
