@@ -23,6 +23,7 @@ use rsgc::{
     Trace,
     finalizer::FinalizerQueue,
     mmtk::util::{Address, ObjectReference},
+    object::GCObject,
 };
 use tinyvec::TinyVec;
 
@@ -691,21 +692,24 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
 }
 
 #[repr(C)]
-pub struct CIF {
-    header: ScmHeader,
-    cif: libffi::middle::Cif,
-    nargs: u32,
-    variadic: bool,
+pub struct CIF<'gc> {
+    pub(crate) header: ScmHeader,
+    pub(crate) cif: libffi::middle::Cif,
+    pub(crate) nargs: u32,
+    pub(crate) variadic: bool,
+    pub(crate) args: Value<'gc>,
+    pub(crate) return_type: Value<'gc>,
 }
 
-unsafe impl Tagged for CIF {
+unsafe impl<'gc> Tagged for CIF<'gc> {
     const TC8: TypeCode8 = TypeCode8::CIF;
     const TYPE_NAME: &'static str = "cif";
 }
 
-unsafe impl Trace for CIF {
+unsafe impl<'gc> Trace for CIF<'gc> {
     unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
-        let _ = visitor;
+        visitor.trace(&mut self.args);
+        visitor.trace(&mut self.return_type);
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
@@ -713,12 +717,67 @@ unsafe impl Trace for CIF {
     }
 }
 
+pub(crate) fn make_cif_at<'gc>(
+    ctx: Context<'gc>,
+    obj: GCObject,
+    arg_types: Value<'gc>,
+    return_type: Value<'gc>,
+    variadic: bool,
+) -> Result<(), ConversionError<'gc>> {
+    if !arg_types.is_list() {
+        return Err(ConversionError::type_mismatch(1, "list", arg_types));
+    }
+
+    if !parse_ffi_type(ctx, return_type, true, &mut 0, &mut 0) {
+        return Err(ConversionError::type_mismatch(
+            0,
+            "foreign type",
+            return_type,
+        ));
+    }
+
+    let rtype = make_ffi_type(ctx, return_type)?;
+
+    let mut walk = arg_types;
+    let mut args = Vec::with_capacity(arg_types.list_length());
+    while walk.is_pair() {
+        let atype = walk.car();
+        if !parse_ffi_type(ctx, atype, false, &mut 0, &mut 0) {
+            return Err(ConversionError::type_mismatch(1, "foreign type", atype));
+        }
+        args.push(make_ffi_type(ctx, atype)?);
+        walk = walk.cdr();
+    }
+
+    let cif = if !variadic {
+        libffi::middle::Cif::new(args, rtype)
+    } else {
+        let nargs = args.len();
+        libffi::middle::Cif::new_variadic(args, nargs, rtype)
+    };
+
+    let cif = CIF {
+        header: unsafe { obj.to_address().to_mut_ptr::<ScmHeader>().read() },
+        cif,
+        nargs: arg_types.list_length() as u32,
+        variadic,
+        args: arg_types,
+        return_type,
+    };
+
+    unsafe {
+        obj.to_address().to_mut_ptr::<CIF>().write(cif);
+    }
+
+    Ok(())
+}
+
 fn make_cif<'gc>(
     ctx: Context<'gc>,
     return_type: Value<'gc>,
     arg_types: Value<'gc>,
     variadic: bool,
-) -> Result<Gc<'gc, CIF>, ConversionError<'gc>> {
+) -> Result<Gc<'gc, CIF<'gc>>, ConversionError<'gc>> {
     if !arg_types.is_list() {
         return Err(ConversionError::type_mismatch(1, "list", arg_types));
     }
@@ -756,6 +815,8 @@ fn make_cif<'gc>(
         cif,
         nargs: arg_types.list_length() as u32,
         variadic,
+        args: arg_types,
+        return_type,
     };
 
     Ok(Gc::new(&ctx, cif))
@@ -1250,7 +1311,7 @@ unsafe fn pack<'gc>(
     }
 }
 
-extern "C-unwind" fn c_foreign_call<'gc>(
+pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
     ctx: &Context<'gc>,
     rator: Value<'gc>,
     rands: *const Value<'gc>,

@@ -270,9 +270,9 @@ pub fn sourcev_to_props<'gc>(ctx: Context<'gc>, sourcev: Value<'gc>) -> Value<'g
 #[collect(no_drop)]
 pub struct SyntaxTransformer<'gc> {
     header: ScmHeader,
-    name: Value<'gc>,
-    typ: Value<'gc>,
-    binding: Value<'gc>,
+    pub(crate) name: Value<'gc>,
+    pub(crate) typ: Value<'gc>,
+    pub(crate) binding: Value<'gc>,
 }
 
 impl<'gc> SyntaxTransformer<'gc> {

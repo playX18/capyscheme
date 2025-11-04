@@ -5,6 +5,7 @@ use crate::{
     runtime::{
         fluids::DynamicState,
         global::{Globals, VM_GLOBALS},
+        image::reader::ImageReader,
         modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
@@ -20,7 +21,11 @@ use crate::{
         },
     },
 };
-use rsgc::{Gc, Mutation, Mutator, Rootable, Trace, barrier, mmtk::util::Address};
+use rsgc::{
+    Gc, Mutation, Mutator, Rootable, Trace,
+    barrier::{self},
+    mmtk::util::Address,
+};
 use std::{
     cell::{Cell, UnsafeCell},
     ptr::NonNull,
@@ -55,6 +60,10 @@ impl<'gc> Context<'gc> {
 
     pub fn dynamic_state(&self) -> Value<'gc> {
         self.state.dynamic_state.save(*self)
+    }
+
+    pub fn set_dynamic_state(&self, state: Value<'gc>) {
+        self.state.dynamic_state.restore(*self, state);
     }
 
     pub fn current_continuation_marks(&self) -> Gc<'gc, ContinuationMarks<'gc>> {
@@ -203,6 +212,10 @@ impl<'gc> Context<'gc> {
         crate::runtime::modules::private_ref(self, mname, name)
     }
 
+    pub fn accumulator(&self) -> Value<'gc> {
+        self.state.accumulator.get()
+    }
+
     pub fn define(
         self,
         mname: &str,
@@ -253,6 +266,30 @@ impl<'gc> std::ops::Deref for Context<'gc> {
     }
 }
 
+pub struct DeferYield<'gc> {
+    ctx: Context<'gc>,
+}
+
+impl<'gc> DeferYield<'gc> {
+    pub fn new(ctx: Context<'gc>) -> Self {
+        ctx.state
+            .nest_level
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self { ctx }
+    }
+}
+
+impl<'gc> Drop for DeferYield<'gc> {
+    fn drop(&mut self) {
+        let nest_level = self
+            .ctx
+            .state
+            .nest_level
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(nest_level > 0, "Mismatched DeferYield drop");
+    }
+}
+
 /// Hardcoded limit for runstack to not make calls too slow and runstack too large.
 const RUNSTACK_SIZE: usize = 4096;
 
@@ -274,7 +311,7 @@ pub struct State<'gc> {
     pub(crate) yield_reason: Cell<Option<YieldReason<'gc>>>,
     /// Accumulator field which is used to pass yield interest
     /// to Rust code.
-    pub(crate) accumulator: Value<'gc>,
+    pub(crate) accumulator: Cell<Value<'gc>>,
     pub(crate) current_marks: Cell<Option<CFrameRef<'gc>>>,
 }
 
@@ -358,7 +395,7 @@ impl<'gc> State<'gc> {
             saved_call: Cell::new(None),
             thread_object,
             yield_reason: Cell::new(None),
-            accumulator: Value::new(false),
+            accumulator: Cell::new(Value::new(false)),
             current_marks: Cell::new(None),
         }
     }
@@ -429,6 +466,18 @@ impl Scheme {
                         }))
                     }
 
+                    Some(YieldReason::WaitCondition { condition, mutex }) => {
+                        let mutex = mutex.downcast::<Mutex>();
+                        let condition = condition.downcast::<Condition>();
+                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
+                        Err(Yield::Wait(PendingWait {
+                            mtx: NonNull::from(&mutex.mutex),
+                            condition: NonNull::from(&condition.cond),
+                        }))
+                    }
+
+                    Some(YieldReason::CollectGarbage) => Err(Yield::GC),
+
                     None => Err(Yield::None),
                     _ => todo!(),
                 },
@@ -471,6 +520,7 @@ impl Scheme {
                                         }))
                                     }
 
+                                    Some(YieldReason::CollectGarbage) => Err(Yield::GC),
                                     None => Err(Yield::None),
                                     _ => todo!(),
                                 },
@@ -478,11 +528,10 @@ impl Scheme {
                         } else {
                             Ok(finish(&ctx, Err(Value::undefined())))
                         }
-                    })
+                    });
                 }
 
                 Yield::Lock(lock) => {
-                    println!("Locking mutex...");
                     lock.lock();
 
                     result = Err(Yield::None);
@@ -490,7 +539,6 @@ impl Scheme {
                 }
 
                 Yield::Wait(wait) => {
-                    println!("Waiting on condition...");
                     wait.wait();
 
                     result = Err(Yield::None);
@@ -498,7 +546,6 @@ impl Scheme {
                 }
 
                 Yield::PollRead(fd) => unsafe {
-                    println!("Polling read on fd {}...", fd);
                     let mut readfs = [rustix::event::FdSetElement::default(); 1];
                     rustix::event::fd_set_insert(&mut readfs, fd);
 
@@ -519,7 +566,6 @@ impl Scheme {
                 },
 
                 Yield::PollWrite(fd) => unsafe {
-                    println!("Polling write on fd {}...", fd);
                     let mut writefs = [rustix::event::FdSetElement::default(); 1];
                     rustix::event::fd_set_insert(&mut writefs, fd);
 
@@ -538,6 +584,12 @@ impl Scheme {
 
                     result = Err(Yield::None);
                 },
+
+                Yield::GC => {
+                    self.collect_garbage();
+
+                    result = Err(Yield::None);
+                }
             }
         }
     }
@@ -596,6 +648,37 @@ impl Scheme {
         };
 
         if should_init { scm.boot() } else { scm }
+    }
+
+    pub fn from_image(image: &[u8]) -> Self {
+        let scm = Self {
+            mutator: {
+                let m = Mutator::new(|mc| {
+                    init_weak_sets(&mc);
+                    init_weak_tables(&mc);
+                    State::new(mc, ThreadObject::new(&mc, None))
+                });
+                m
+            },
+        };
+
+        //let mut decoder = lz4::Decoder::new(image).expect("Failed to create LZ4 decoder");
+        //let mut image = Vec::new();
+        //std::io::copy(&mut decoder, &mut image).expect("Failed to decompress image");
+
+        scm.enter(|ctx| {
+            let mut reader = ImageReader::new(ctx, image);
+
+            let img = reader.deserialize().expect("Failed to read image");
+            let entrypoint = match img.boot(ctx) {
+                VMResult::Ok(entry) => entry,
+                _ => unreachable!(),
+            };
+
+            ctx.state.accumulator.set(entrypoint);
+        });
+
+        scm
     }
 
     fn boot(self) -> Self {
@@ -708,6 +791,8 @@ pub enum YieldReason<'gc> {
 
     PollRead(i32),
     PollWrite(i32),
+
+    CollectGarbage,
 }
 
 pub struct PendingLock {
@@ -757,6 +842,7 @@ pub enum Yield {
     None,
     Lock(PendingLock),
     Wait(PendingWait),
+    GC,
 
     PollRead(i32),
     PollWrite(i32),

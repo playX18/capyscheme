@@ -68,12 +68,18 @@
 /**
  * Closure from dynamic library: dlsym from library[ix] and sname.
  */
-#define TYPE_CLOSURE_DYNLIB 20
+#define TYPE_CLOSURE_SCM 20
 
 /**
  * Native closure: read from vec of native function pointers
  */
-#define TYPE_CLOSURE_NATIVE 21
+#define TYPE_CLOSURE_NATIVE_PROC 21
+
+#define TYPE_CLOSURE_NATIVE_CONT 22
+
+#define TYPE_POINTER_NULL 30
+
+#define TYPE_POINTER_DYLIB 31
 
 #define PURE_NAN_BITS 9221120237041090560
 
@@ -143,6 +149,8 @@
 
 typedef struct Scm Scm;
 
+typedef struct State State;
+
 typedef struct Scm *ScmRef;
 
 typedef union EncodedValueDescriptor {
@@ -194,6 +202,11 @@ typedef void *(*ThreadFn)(ScmRef parent, void *arg);
 
 typedef int (*ScmEnterFn)(ContextRef ctx, void *arg);
 
+typedef struct Context {
+  const Mutation *mc;
+  const struct State *state;
+} Context;
+
 /**
  * Create a new Scheme thread instance.
  *
@@ -222,3 +235,13 @@ struct Value scm_fork(ContextRef parent, ThreadFn init, void *arg);
  * `enter` function with a context reference and the provided argument.
  */
 int scm_enter(ScmRef scm, ScmEnterFn enter, void *arg);
+
+struct Value scm_public_ref(const struct Context *ctx,
+                            const char *module_name,
+                            const char *name,
+                            struct Value default_value);
+
+struct Value scm_private_ref(const struct Context *ctx,
+                             const char *module_name,
+                             const char *name,
+                             struct Value default_value);

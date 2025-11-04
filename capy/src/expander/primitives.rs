@@ -131,6 +131,7 @@ interesting_prim_names!(
     cons = "cons"
     cons_star = "cons*"
     append = "append"
+    make_syntax = "make-syntax"
 
     list = "list"
     vector = "vector"
@@ -1837,8 +1838,17 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_define(ctx).into(), args, src))
     }
 
-    "make-syntax-transformer" ex_mkstx<'gc>(_ctx, _args, _src) {
+    "make-syntax-transformer" ex_mkstx_transformer<'gc>(_ctx, _args, _src) {
         None
+    }
+
+    "make-syntax" ex_mkstx<'gc>(ctx, args, src) {
+
+        if args.len() != 4 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_make_syntax(ctx).into(), args, src))
     }
 );
 

@@ -329,6 +329,12 @@ pub mod hash_ops {
                     HashTable::new(&ctx, HashTableType::Generic(handlers), 0, 0.0).into(),
                 );
             } else {
+                println!(
+                    "kind: {} at {:p}, string=? at {:p}",
+                    kind,
+                    kind,
+                    sym_string(ctx)
+                );
                 return nctx.wrong_argument_violation(
                     "make-core-hash",
                     "expected 'eq?, 'eqv?, 'equal?, 'string=? or 'generic",

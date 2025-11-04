@@ -1,10 +1,37 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use parking_lot::Mutex;
+use rsgc::mmtk::util::Address;
+
 use super::ffi::*;
 use crate::prelude::*;
 use crate::runtime::prelude::*;
 use crate::runtime::vm::VMResult;
 
+pub(crate) struct DynLib {
+    pub path: Option<std::path::PathBuf>,
+    #[allow(dead_code)]
+    pub handle: Address,
+    pub flags: i32,
+}
+
+pub(crate) static OPEN_HANDLES: LazyLock<Mutex<HashMap<Address, DynLib>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[allow(dead_code)]
+pub(crate) struct Extension {
+    pub path: std::path::PathBuf,
+    pub handle: Address,
+}
+
+pub(crate) static LOADED_EXTENSIONS: LazyLock<Mutex<Vec<Extension>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
 #[scheme(path=capy)]
 mod dl_ops {
+    use std::path::PathBuf;
+
     #[scheme(name = "dlopen")]
     pub fn dlopen(name: Value<'gc>, flags: i32) -> Value<'gc> {
         let handle = if name == Value::new(false) {
@@ -40,7 +67,18 @@ mod dl_ops {
                 &[name.into(), flags.into()],
             );
         }
-
+        OPEN_HANDLES.lock().insert(
+            Address::from_ptr(handle),
+            DynLib {
+                handle: Address::from_ptr(handle),
+                path: if name.is::<Str>() {
+                    Some(PathBuf::from(name.downcast::<Str>().to_string()))
+                } else {
+                    None
+                },
+                flags,
+            },
+        );
         let ptr = Gc::new(&nctx.ctx, Pointer::new(handle as _));
         nctx.return_(ptr.into())
     }
@@ -65,6 +103,10 @@ mod dl_ops {
                 &[handle.into()],
             );
         }
+
+        OPEN_HANDLES
+            .lock()
+            .remove(&Address::from_ptr(handle_ptr as _));
 
         nctx.return_(Value::new(true))
     }
@@ -161,7 +203,13 @@ mod dl_ops {
 
         let result = init(&nctx.ctx);
         match result {
-            VMResult::Ok(v) => nctx.return_(Ok(v)),
+            VMResult::Ok(v) => {
+                LOADED_EXTENSIONS.lock().push(Extension {
+                    path: PathBuf::from(path.to_string()),
+                    handle: Address::from_ptr(handle),
+                });
+                nctx.return_(Ok(v))
+            }
             VMResult::Err(e) => nctx.return_(Err(e)),
             _ => todo!(),
         }

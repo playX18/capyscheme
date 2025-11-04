@@ -29,7 +29,11 @@ unsafe impl<'gc> Trace for SchemeLibrary<'gc> {
 }
 
 impl<'gc> SchemeLibrary<'gc> {
-    pub fn load(ctx: Context<'gc>, path: impl AsRef<OsStr>) -> std::io::Result<Self> {
+    pub fn load(
+        ctx: Context<'gc>,
+        path: impl AsRef<OsStr>,
+        initialize: bool,
+    ) -> std::io::Result<Self> {
         unsafe {
             let path = path.as_ref();
 
@@ -112,7 +116,11 @@ impl<'gc> SchemeLibrary<'gc> {
             let dladdr = dladdr.assume_init();
             let fbase = Address::from_ptr(dladdr.dli_fbase);
 
-            let entrypoint = module_init(&ctx);
+            let entrypoint = if initialize {
+                module_init(&ctx)
+            } else {
+                Value::new(false)
+            };
 
             Ok(Self {
                 path: std::path::PathBuf::from(path),
@@ -122,6 +130,17 @@ impl<'gc> SchemeLibrary<'gc> {
                 globals,
                 entrypoint,
             })
+        }
+    }
+
+    pub fn for_each_global<F>(&self, mut f: F)
+    where
+        F: FnMut(&'static mut Value<'static>),
+    {
+        unsafe {
+            for global in self.globals.iter() {
+                f(&mut **global);
+            }
         }
     }
 }
@@ -150,10 +169,23 @@ impl<'gc> LibraryCollection<'gc> {
     }
 
     pub fn load(&self, path: impl AsRef<OsStr>, ctx: Context<'gc>) -> std::io::Result<Value<'gc>> {
-        let lib = SchemeLibrary::load(ctx, path)?;
+        let lib = SchemeLibrary::load(ctx, path, true)?;
         let entrypoint = lib.entrypoint;
         self.libs.lock().push(lib);
         Ok(entrypoint)
+    }
+
+    pub fn load_and_get_fbase(
+        &self,
+        path: impl AsRef<OsStr>,
+        ctx: Context<'gc>,
+    ) -> std::io::Result<(Address, *mut (), Value<'gc>)> {
+        let lib = SchemeLibrary::load(ctx, path, false)?;
+        let fbase = lib.fbase;
+        let handle = lib.library;
+        let entrypoint = lib.entrypoint;
+        self.libs.lock().push(lib);
+        Ok((fbase, handle, entrypoint))
     }
 
     pub fn for_each_library<F>(&self, mut f: F)

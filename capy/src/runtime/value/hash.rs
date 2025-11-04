@@ -62,7 +62,7 @@ impl<'gc> HashTableType<'gc> {
         match self {
             Self::Eq => lhs == rhs,
             Self::Eqv => lhs.eqv(rhs),
-            Self::Equal => lhs.r5rs_equal(rhs),
+            Self::Equal => lhs.equal(rhs, &mut Default::default()),
             Self::String => {
                 if lhs.is::<Str>() && rhs.is::<Str>() {
                     let lhs_str = lhs.downcast::<Str<'gc>>();
@@ -85,7 +85,7 @@ impl<'gc> HashTableType<'gc> {
 pub struct HashTable<'gc> {
     #[allow(dead_code)]
     hdr: ScmHeader,
-    inner: Monitor<InnerHashTable<'gc>>,
+    pub(crate) inner: Monitor<InnerHashTable<'gc>>,
 }
 
 pub type HashTableRef<'gc> = Gc<'gc, HashTable<'gc>>;
@@ -183,6 +183,70 @@ pub struct InnerHashTable<'gc> {
 }
 
 impl<'gc> HashTable<'gc> {
+    pub(crate) unsafe fn at_object(
+        ctx: Context<'gc>,
+
+        obj: GCObject,
+        typ: HashTableType<'gc>,
+        kvs: Vec<(Value<'gc>, Value<'gc>)>,
+    ) {
+        if let HashTableType::Generic(_) = typ {
+            let inner = InnerHashTable {
+                table: Lock::new(Array::with(&ctx, 0, |_, _| Lock::new(None))),
+                count: Cell::new(0),
+                threshold: Cell::new(0),
+                load_factor: 0.75,
+                mod_count: Cell::new(0),
+                typ,
+            };
+
+            unsafe {
+                let hdr = obj
+                    .to_address()
+                    .to_mut_ptr::<ScmHeader>()
+                    .cast::<ScmHeader>()
+                    .read();
+                obj.to_address().to_mut_ptr::<Self>().write(HashTable {
+                    hdr,
+                    inner: Monitor::new(inner),
+                });
+            }
+            return;
+        }
+
+        let size = kvs.len().max(8);
+        let table = Array::with(&ctx, size, |_, _| Lock::new(None));
+        let threshold = (size as f64 * 0.75).ceil() as usize;
+
+        let inner = InnerHashTable {
+            table: Lock::new(table),
+            count: Cell::new(0),
+            threshold: Cell::new(threshold),
+            load_factor: 0.75,
+            mod_count: Cell::new(0),
+            typ,
+        };
+
+        unsafe {
+            let hdr = obj
+                .to_address()
+                .to_mut_ptr::<ScmHeader>()
+                .cast::<ScmHeader>()
+                .read();
+
+            obj.to_address().to_mut_ptr::<Self>().write(HashTable {
+                hdr,
+                inner: Monitor::new(inner),
+            });
+
+            let ht: Gc<'gc, Self> = Gc::from_gcobj(obj);
+
+            for (k, v) in kvs {
+                ht.put(ctx, k, v);
+            }
+        }
+    }
+
     pub fn new(
         mc: &Mutation<'gc>,
         typ: HashTableType<'gc>,

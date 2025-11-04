@@ -82,5 +82,4 @@
         (cond 
             [val val]
             [(option-multiple? opt) (or (option-defaults-to opt) '())]
-            [else (option-defaults-to opt)]))
-)
+            [else (option-defaults-to opt)])))

@@ -4,6 +4,7 @@
 use crate::expander::primitives::sym_tuple;
 use crate::runtime::Context;
 use crate::runtime::value::*;
+use crate::runtime::vm::syntax::Syntax;
 use crate::{
     cps::term::Atom,
     runtime::value::{Number, Value},
@@ -325,6 +326,21 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 None
             }
         }
+
+        "cons" => cons(ctx, a, b) {
+            Some(Value::cons(ctx, a, b))
+        }
+
+        "make-syntax" => make_syntax(ctx, exp, wrap, module, source) {
+            Some(Syntax::new(
+                ctx,
+                exp,
+                wrap,
+                module,
+                source,
+            ).into())
+        }
+
 
         /*
             raw primitive operations

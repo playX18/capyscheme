@@ -17,6 +17,7 @@ use rsgc::mmtk::util::Address;
 use crate::runtime::Context;
 
 pub mod builder;
+pub mod reader;
 
 /// Collects all native procedures' addresses in the runtime.
 ///
@@ -166,6 +167,8 @@ pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
         native_procedures.push(Address::from_ptr(
             vm::base::_raw_scm_cont_handler_cont as *const (),
         ));
+
+        native_procedures.push(Address::from_ptr(vm::ffi::c_foreign_call as *const ()));
     }
 
     native_procedures

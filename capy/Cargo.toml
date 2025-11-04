@@ -56,6 +56,8 @@ capy-derive.workspace = true
 cranelift-entity = "0.125.3"
 refpool = "0.4.3"
 zstd = "0.13.3"
+tempfile = "3.23.0"
+lz4 = "1.28.1"
 
 [dependencies.im]
 version = "15.1.0"

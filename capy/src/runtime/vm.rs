@@ -916,7 +916,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     ) -> NativeCallReturn<'gc> {
         let message = if let Some(value) = value {
             if let Some(position) = position {
-                format!("{description} {value}, as argument {}", position + 1)
+                format!("{description}, got {value}, as argument {}", position + 1)
             } else {
                 format!("{description} {value}")
             }
