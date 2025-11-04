@@ -39,14 +39,11 @@ build portable:
     {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std -Z build-std-features="optimize_for_size" --target {{target}} -p capy-bin {{if portable == "true" { "--features portable" } else { "" } }}
 
 
-build-extensions:
-    @echo 'Building CapyScheme extensions for target '{{target}}''
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-clang
 
 # Perform portable installation of CapyScheme which installs the binary
 # and all necessary resources to the specified install prefix
 # by default, it installs to ~/.local/share/capy
-install-portable: (build "true") (build-extensions)
+install-portable: (build "true")
     @echo 'Installing CapyScheme to {{install-prefix}}/share/capy/{{version}}'
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}/extensions

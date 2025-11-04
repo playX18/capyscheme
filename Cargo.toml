@@ -60,9 +60,7 @@ capy-derive = { path = "capy-derive" }
 lto = false
 incremental = true
 rpath = true
-opt-level = "z"
-codegen-units = 1
-debug = false
+
 
 [profile.dev]
 incremental = true
