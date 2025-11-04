@@ -384,7 +384,7 @@ impl<'gc> PartialEq<Value<'gc>> for WeakValue<'gc> {
 /// 8 bit type codes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[repr(transparent)]
-pub struct TypeCode8(u8);
+pub struct TypeCode8(pub(crate) u8);
 
 impl TypeCode8 {
     pub const fn bits(self) -> u8 {
@@ -625,6 +625,10 @@ impl<'gc> Value<'gc> {
         unsafe { Gc::from_gcobj(self.as_cell_raw()) }
     }
 
+    pub unsafe fn downcast_unchecked<T: Tagged>(self) -> Gc<'gc, T> {
+        unsafe { Gc::from_gcobj(self.as_cell_raw()) }
+    }
+
     pub fn try_as<T: Tagged>(self) -> Option<Gc<'gc, T>> {
         if self.is::<T>() {
             Some(self.downcast())
@@ -858,13 +862,13 @@ impl<'gc> From<Value<'gc>> for ValueEqual<'gc> {
 
 impl<'gc> PartialEq<Value<'gc>> for ValueEqual<'gc> {
     fn eq(&self, other: &Value<'gc>) -> bool {
-        self.0.r5rs_equal(*other)
+        self.0.equal(*other, &mut Default::default())
     }
 }
 
 impl<'gc> PartialEq for ValueEqual<'gc> {
     fn eq(&self, other: &Self) -> bool {
-        self.0.r5rs_equal(other.0)
+        self.0.equal(other.0, &mut Default::default())
     }
 }
 
@@ -890,6 +894,14 @@ impl<'gc> std::hash::Hash for ValueEqual<'gc> {
             v.hash(state);
         } else if val.is::<Boxed>() {
             ValueEqual(val.downcast::<Boxed>().val).hash(state);
+        } else if val.is::<Tuple>() {
+            let v = val.downcast::<Tuple>();
+
+            for val in v.iter() {
+                ValueEqual(val.get()).hash(state);
+            }
+        } else if let Some(n) = val.number() {
+            n.hash(state);
         } else {
             val.hash(state);
         }

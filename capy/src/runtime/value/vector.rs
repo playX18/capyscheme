@@ -207,8 +207,8 @@ type BytevectorMappingField = BitField<u64, bool, { TypeBits::NEXT_BIT }, 1, fal
 #[repr(C, align(8))]
 pub struct ByteVector {
     hdr: ScmHeader,
-    len: usize,
-    contents: Address,
+    pub(crate) len: usize,
+    pub(crate) contents: Address,
 }
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;

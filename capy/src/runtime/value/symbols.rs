@@ -213,7 +213,7 @@ impl<'gc> Symbol<'gc> {
 }
 
 impl<'gc> Str<'gc> {
-    pub fn as_str(self) -> Cow<'gc, str> {
+    pub fn as_str(&self) -> Cow<'gc, str> {
         if let Some(ascii) = self.chars() {
             let s = unsafe { std::str::from_utf8_unchecked(ascii) };
             Cow::Borrowed(s)

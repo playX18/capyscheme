@@ -264,6 +264,7 @@ dependencies = [
  "libloading",
  "libm",
  "log",
+ "lz4",
  "memmap2",
  "num",
  "num-bigint",
@@ -282,6 +283,7 @@ dependencies = [
  "stacker",
  "sys-locale",
  "target-lexicon",
+ "tempfile",
  "tinyvec",
  "tree-sitter",
  "tree-sitter-scheme",
@@ -290,6 +292,13 @@ dependencies = [
  "uuid",
  "which",
  "zstd",
+]
+
+[[package]]
+name = "capy-bin"
+version = "0.1.0"
+dependencies = [
+ "capy",
 ]
 
 [[package]]
@@ -1701,6 +1710,25 @@ name = "log"
 version = "0.4.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
+
+[[package]]
+name = "lz4"
+version = "1.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a20b523e860d03443e98350ceaac5e71c6ba89aea7d960769ec3ce37f4de5af4"
+dependencies = [
+ "lz4-sys",
+]
+
+[[package]]
+name = "lz4-sys"
+version = "1.11.1+lz4-1.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6"
+dependencies = [
+ "cc",
+ "libc",
+]
 
 [[package]]
 name = "mach2"

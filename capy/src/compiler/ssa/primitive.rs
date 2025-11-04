@@ -2620,6 +2620,16 @@ prim!(
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let result = ssa.builder.ins().call(ssa.thunks.current_continuation_marks, &[ctx]);
         PrimValue::Value(ssa.builder.inst_results(result)[0])
+    },
+
+    "make-syntax" => make_syntax(ssa, args, _h) {
+        let exp = ssa.atom(args[0]);
+        let wrap = ssa.atom(args[1]);
+        let module = ssa.atom(args[2]);
+        let source = ssa.atom(args[3]);
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.builder.ins().call(ssa.thunks.make_syntax, &[ctx, exp, wrap, module, source]);
+        PrimValue::Value(ssa.builder.inst_results(result)[0])
     }
 );
 

@@ -88,6 +88,16 @@ impl<'gc> Value<'gc> {
                 .r5rs_equal(other.downcast::<Boxed>().val);
         }
 
+        if self.is::<Syntax>() && other.is::<Syntax>() {
+            let s1 = self.downcast::<Syntax>();
+            let s2 = other.downcast::<Syntax>();
+
+            return s1.expr.r5rs_equal(s2.expr)
+                && s1.wrap.r5rs_equal(s2.wrap)
+                && s1.module.r5rs_equal(s2.module)
+                && s1.source.r5rs_equal(s2.source);
+        }
+
         self.eqv(other)
     }
 

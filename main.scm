@@ -1,4 +1,7 @@
-(define (make-counter n)
-  (lambda ()
-    (set! n (+ n 1))
-    n))
+
+
+(define (main args)
+  ((@@ (boot cli) enter) args))
+
+(collect-garbage)
+(dump-heap "capy.heap" main)

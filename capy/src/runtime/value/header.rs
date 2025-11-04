@@ -3,7 +3,7 @@ use rsgc::Trace;
 
 pub type TypeBits = BitField<u64, u16, 0, 16, false>;
 
-#[derive(Trace, Debug, Clone)]
+#[derive(Trace, Debug, Clone, Copy)]
 #[collect(no_drop)]
 #[repr(C, align(8))]
 pub struct ScmHeader {

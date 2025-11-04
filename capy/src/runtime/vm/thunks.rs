@@ -9,7 +9,7 @@ use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
     runtime::{
         value::{IntoValue, Number},
-        vm::control::ContinuationMarks,
+        vm::{control::ContinuationMarks, syntax::Syntax},
     },
 };
 use crate::{
@@ -4010,6 +4010,16 @@ thunks! {
         });
 
         obj.into()
+    }
+
+    pub fn make_syntax(
+        ctx: &Context<'gc>,
+        exp: Value<'gc>,
+        wrap: Value<'gc>,
+        module: Value<'gc>,
+        source: Value<'gc>
+    ) -> Value<'gc> {
+        Syntax::new(*ctx, exp, wrap, module, source).into()
     }
 }
 

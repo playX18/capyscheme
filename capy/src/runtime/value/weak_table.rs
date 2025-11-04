@@ -31,8 +31,8 @@ use super::{WeakValue, *};
 pub struct WeakMapping<'gc> {
     #[allow(dead_code)]
     header: ScmHeader,
-    _key: Value<'gc>,
-    _value: Value<'gc>,
+    pub(crate) _key: Value<'gc>,
+    pub(crate) _value: Value<'gc>,
 }
 
 unsafe impl<'gc> Trace for WeakMapping<'gc> {
@@ -232,6 +232,45 @@ impl<'gc> WeakTable<'gc> {
             .lock()
             .push(Gc::downgrade(table));
         table
+    }
+
+    pub(crate) unsafe fn at_object(
+        ctx: Context<'gc>,
+        obj: GCObject,
+        kvs: Vec<(Value<'gc>, Value<'gc>)>,
+    ) {
+        unsafe {
+            let hdr = obj.to_address().to_mut_ptr::<ScmHeader>().read();
+            let entries = Array::with(&ctx, 8, |_, _| Lock::new(None));
+            let inner = WeakTableInner {
+                entries: Lock::new(entries),
+                count: Cell::new(0),
+                threshold: Cell::new((8.0 * 0.75) as usize),
+                load_factor: 0.75,
+                mod_count: Cell::new(0),
+            };
+
+            obj.to_address()
+                .to_mut_ptr::<WeakTable<'gc>>()
+                .write(WeakTable {
+                    header: hdr,
+                    inner: Monitor::new(inner),
+                });
+
+            let ht: Gc<Self> = Gc::from_gcobj(obj);
+
+            for (k, v) in kvs {
+                ht.put(ctx, k, v);
+            }
+
+            ALL_WEAK_TABLES
+                .get()
+                .expect("Weak tables not initialized")
+                .fetch(&ctx)
+                .tables
+                .lock()
+                .push(Gc::downgrade(ht));
+        }
     }
 
     fn rehash(inner: &Write<WeakTableInner<'gc>>, ctx: Context<'gc>) {

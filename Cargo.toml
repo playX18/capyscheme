@@ -1,7 +1,13 @@
 [workspace]
 resolver = "3"
 
-members = ["capy", "capy-derive", "capy-driver", "extensions/capy-clang"]
+members = [
+    "capy",
+    "capy-bin",
+    "capy-derive",
+    "capy-driver",
+    "extensions/capy-clang",
+]
 default-members = ["capy"]
 
 [workspace.dependencies]
@@ -52,9 +58,11 @@ capy-derive = { path = "capy-derive" }
 
 [profile.release]
 lto = false
-debug = true
 incremental = true
 rpath = true
+opt-level = "z"
+codegen-units = 1
+debug = false
 
 [profile.dev]
 incremental = true

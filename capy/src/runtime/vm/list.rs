@@ -4,6 +4,7 @@ use rsgc::Gc;
 pub fn init_lists<'gc>(ctx: Context<'gc>) {
     list_ops::register(ctx);
 }
+
 #[scheme(path=capy)]
 pub mod list_ops {
     #[scheme(name = "pair?")]

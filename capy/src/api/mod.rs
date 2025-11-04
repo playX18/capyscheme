@@ -122,6 +122,7 @@ pub unsafe extern "C" fn scm_enter<'gc>(
     res
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn scm_public_ref<'gc>(
     ctx: &Context<'gc>,
     module_name: *const c_char,
@@ -134,6 +135,7 @@ pub extern "C" fn scm_public_ref<'gc>(
     ctx.public_ref(module_name, name).unwrap_or(default_value)
 }
 
+#[unsafe(no_mangle)]
 pub extern "C" fn scm_private_ref<'gc>(
     ctx: &Context<'gc>,
     module_name: *const c_char,

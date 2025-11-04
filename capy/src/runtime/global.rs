@@ -615,6 +615,50 @@ impl<'gc> Globals<'gc> {
             loc_wcm_type: Cell::new(loc_wcm_type.into()),
         }
     }
+
+    pub fn undefined() -> Self {
+        Self {
+            capy_module_name: Cell::new(Value::undefined()),
+            interesting_primitive_vars: Cell::new(Value::undefined()),
+            interesting_primitive_vars_loc: Cell::new(Value::undefined()),
+            empty_wrap: Cell::new(Value::undefined()),
+            resolve_module_root: Cell::new(Value::undefined()),
+            root_module: Cell::new(Value::undefined()),
+            scm_module: Cell::new(Value::undefined()),
+            loc_resolve_module_root: Cell::new(Value::undefined()),
+            loc_load_path: Cell::new(Value::undefined()),
+            loc_load_extensions: Cell::new(Value::undefined()),
+            loc_load_compiled_path: Cell::new(Value::undefined()),
+            loc_load_compiled_extensions: Cell::new(Value::undefined()),
+            loc_native_extension: Cell::new(Value::undefined()),
+            loc_compile_fallback_path: Cell::new(Value::undefined()),
+            loc_capy_root: Cell::new(Value::undefined()),
+            loc_fresh_auto_compile: Cell::new(Value::undefined()),
+            loc_the_root_module: Cell::new(Value::undefined()),
+            loc_the_scm_module: Cell::new(Value::undefined()),
+            loc_term_type: Cell::new(Value::undefined()),
+            loc_lref_type: Cell::new(Value::undefined()),
+            loc_lset_type: Cell::new(Value::undefined()),
+            loc_let_type: Cell::new(Value::undefined()),
+            loc_fix_type: Cell::new(Value::undefined()),
+            loc_module_ref_type: Cell::new(Value::undefined()),
+            loc_module_set_type: Cell::new(Value::undefined()),
+            loc_toplevel_ref_type: Cell::new(Value::undefined()),
+            loc_toplevel_set_type: Cell::new(Value::undefined()),
+            loc_toplevel_define_type: Cell::new(Value::undefined()),
+            loc_if_type: Cell::new(Value::undefined()),
+            loc_receive_type: Cell::new(Value::undefined()),
+            loc_application_type: Cell::new(Value::undefined()),
+            loc_primcall_type: Cell::new(Value::undefined()),
+            loc_primref_type: Cell::new(Value::undefined()),
+            loc_constant_type: Cell::new(Value::undefined()),
+            loc_void_type: Cell::new(Value::undefined()),
+            loc_values_type: Cell::new(Value::undefined()),
+            loc_sequence_type: Cell::new(Value::undefined()),
+            loc_proc_type: Cell::new(Value::undefined()),
+            loc_wcm_type: Cell::new(Value::undefined()),
+        }
+    }
 }
 
 pub(crate) static VM_GLOBALS: OnceLock<rsgc::Global<Rootable!(Globals<'_>)>> = OnceLock::new();

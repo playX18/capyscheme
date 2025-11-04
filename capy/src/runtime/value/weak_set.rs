@@ -26,9 +26,9 @@ use crate::runtime::{
 use super::{Tagged, TypeCode8, Value};
 #[repr(C, align(8))]
 #[derive(Debug)]
-struct WeakEntry<'gc> {
-    value: Value<'gc>,
-    hash: u64,
+pub(crate) struct WeakEntry<'gc> {
+    pub(crate) value: Value<'gc>,
+    pub(crate) hash: u64,
 }
 
 impl<'gc> WeakEntry<'gc> {
@@ -93,17 +93,17 @@ type Entries<'gc> = Gc<'gc, Array<Lock<WeakEntry<'gc>>>>;
 pub struct WeakSet<'gc> {
     #[allow(dead_code)]
     header: ScmHeader,
-    inner: Monitor<WeakSetInner<'gc>>,
+    pub(crate) inner: Monitor<WeakSetInner<'gc>>,
 }
 
-struct WeakSetInner<'gc> {
-    entries: Lock<Entries<'gc>>,
-    size: Cell<usize>,
-    n_items: Cell<usize>,
-    lower: Cell<usize>,
-    upper: Cell<usize>,
-    size_index: Cell<usize>,
-    min_size_index: Cell<usize>,
+pub(crate) struct WeakSetInner<'gc> {
+    pub(crate) entries: Lock<Entries<'gc>>,
+    pub(crate) size: Cell<usize>,
+    pub(crate) n_items: Cell<usize>,
+    pub(crate) lower: Cell<usize>,
+    pub(crate) upper: Cell<usize>,
+    pub(crate) size_index: Cell<usize>,
+    pub(crate) min_size_index: Cell<usize>,
 }
 
 const fn hash_to_index(hash: u64, size: usize) -> usize {
@@ -309,7 +309,7 @@ impl<'gc> WeakSetInner<'gc> {
         }
     }
 
-    fn vacuum(this: &Write<Self>, mc: &Mutation<'gc>) {
+    pub fn vacuum(this: &Write<Self>, mc: &Mutation<'gc>) {
         let entries = this.entries.get();
         let size = this.size.get();
 
@@ -542,6 +542,39 @@ impl<'gc> WeakSet<'gc> {
 
         weak_set
     }
+
+    /*pub(crate) unsafe fn at_object(ctx: Context<'gc>, obj: GCObject, keys: &[Value<'gc>]) {
+        let mut i = 0;
+        let mut n = keys.len().min(31);
+
+        while i + 1 < HASHSET_SIZES.len() && n > HASHSET_SIZES[i] {
+            i += 1;
+        }
+
+        n = HASHSET_SIZES[i];
+
+        let entries = Array::with(&ctx, n, |_, _| Lock::new(WeakEntry::broken()));
+
+        unsafe {
+            let hdr = obj.to_address().to_mut_ptr::<ScmHeader>().read();
+            let inner = WeakSetInner {
+                entries: Lock::new(entries),
+                size: Cell::new(n),
+                n_items: Cell::new(0),
+                lower: Cell::new(0),
+                upper: Cell::new(9 * n / 10),
+                size_index: Cell::new(i),
+                min_size_index: Cell::new(i),
+            };
+
+            obj.to_address()
+                .to_mut_ptr::<WeakSet<'gc>>()
+                .write(WeakSet {
+                    header: hdr,
+                    inner: Monitor::new(inner),
+                });
+        }
+    }*/
 
     #[cold]
     #[inline(never)]

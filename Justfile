@@ -34,8 +34,9 @@ build portable:
     @echo 'Building CapyScheme with profile '{{profile}}' for target '{{target}}''
     
 
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy {{if portable == "true" { "--features portable" } else { "" } }}
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std --target {{target}} -p capy-driver {{if portable == "true" { "--features portable" } else { "" } }}
+    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std -Z build-std-features="optimize_for_size" --target {{target}} -p capy {{if portable == "true" { "--features portable" } else { "" } }}
+    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std -Z build-std-features="optimize_for_size" --target {{target}} -p capy-driver {{if portable == "true" { "--features portable" } else { "" } }}
+    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std -Z build-std-features="optimize_for_size" --target {{target}} -p capy-bin {{if portable == "true" { "--features portable" } else { "" } }}
 
 
 build-extensions:
@@ -55,6 +56,7 @@ install-portable: (build "true") (build-extensions)
     rsync --checksum -r stdlib {{install-prefix}}/share/capy/{{version}}
     rsync --checksum -r batteries {{install-prefix}}/share/capy/{{version}}
     cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
+    cp '{{target-path}}/capyvm' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
     cp {{target-path}}/libcapy_*.* {{install-prefix}}/share/capy/{{version}}/extensions/

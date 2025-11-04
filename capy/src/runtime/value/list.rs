@@ -413,6 +413,56 @@ impl<'gc> Value<'gc> {
         }
     }
 
+    pub fn is_simple(&self) -> bool {
+        self.is_simple_list() || self.is_simple_vector()
+    }
+
+    pub fn is_simple_list(&self) -> bool {
+        if !self.is_list() {
+            return false;
+        }
+
+        let mut current = *self;
+        while current.is_pair() {
+            if current.is_immediate() {
+                current = current.cdr();
+                continue;
+            } else if let Some(_) = current.cdr().try_as::<Symbol>() {
+                current = current.cdr();
+                continue;
+            } else if current.cdr().is_null() {
+                current = current.cdr();
+                continue;
+            } else {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub fn is_simple_vector(&self) -> bool {
+        if !self.is::<Vector>() {
+            return false;
+        }
+
+        let vector = self.downcast::<Vector>();
+        for i in 0..vector.len() {
+            let elem = vector[i].get();
+            if elem.is_immediate() {
+                continue;
+            } else if let Some(_) = elem.try_as::<Symbol>() {
+                continue;
+            } else if let Some(_) = elem.try_as::<Str>() {
+                continue;
+            } else {
+                return false;
+            }
+        }
+
+        true
+    }
+
     pub fn list_to_vector(self, mc: Context<'gc>) -> Gc<'gc, Vector<'gc>> {
         if !self.is_list() {
             unreachable!("not a list")

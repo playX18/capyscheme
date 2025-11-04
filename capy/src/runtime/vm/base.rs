@@ -27,6 +27,8 @@ pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
 
 #[scheme(path=capy)]
 pub mod base_ops {
+    use crate::runtime::{YieldReason, image::builder::ImageBuilder};
+
     #[scheme(name = "implementation-version")]
     pub fn implementation_version() -> Value<'gc> {
         let version = env!("CARGO_PKG_VERSION");
@@ -411,6 +413,58 @@ pub mod base_ops {
     pub fn weak_mapping_key(wm: Gc<'gc, WeakMapping<'gc>>) -> Value<'gc> {
         let key = wm.key(&nctx.ctx);
         nctx.return_(key)
+    }
+
+    #[scheme(name = "dump-heap")]
+    pub fn dump_heap(filename: Gc<'gc, Str<'gc>>, proc: Value<'gc>) -> Value<'gc> {
+        let mut image_builder = ImageBuilder::new(nctx.ctx);
+
+        let buffer = match image_builder.serialize(proc) {
+            Ok(buf) => buf,
+            Err(e) => {
+                return nctx.raise_assertion_violation(
+                    ctx.intern("dump-heap"),
+                    ctx.str("failed to serialize heap image"),
+                    ctx.str(&e.to_string()),
+                );
+            }
+        };
+
+        let path = filename.as_str();
+
+        let mut dest = match std::fs::OpenOptions::new()
+            .truncate(true)
+            .create(true)
+            .write(true)
+            .open(&*path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                return nctx.raise_assertion_violation(
+                    ctx.intern("dump-heap"),
+                    ctx.str("failed to open file for writing heap image"),
+                    ctx.str(&e.to_string()),
+                );
+            }
+        };
+        use std::io::Write;
+        /*let mut lz4_encoder = lz4::EncoderBuilder::new()
+            .level(10)
+            .favor_dec_speed(true)
+            .build(&mut dest)
+            .expect("Failed to create lz4 encoder");
+
+        lz4_encoder
+            .write_all(&buffer)
+            .expect("Failed to write compressed heap image");*/
+        dest.write_all(&buffer).unwrap();
+
+        nctx.return_(Value::undefined())
+    }
+
+    #[scheme(name = "collect-garbage")]
+    pub fn collect_garbage() -> Value<'gc> {
+        nctx.yield_and_return(YieldReason::CollectGarbage, &[Value::new(true)])
     }
 }
 

@@ -33,6 +33,10 @@
 (define variable-transformer? (record-predicate (record-type-rtd <variable-transformer>)))
 (define variable-transformer-procedure (record-accessor (record-type-rtd <variable-transformer>) 0))
 
+(define syntax-error #f)
+
+
+
 (let ([syntax? (module-ref (current-module) 'syntax?)]
       [make-syntax (module-ref (current-module) 'make-syntax)]
       [syntax-expression (module-ref (current-module) 'syntax-expression)]
@@ -308,7 +312,9 @@
     (define (set-ribcage-labels! r v) (vector-set! r 3 v))
 
     (define empty-wrap '(()))
+    (define top-mark '(top))
     (define top-wrap '((top)))
+    (define top-wrap-v '#((top)))
     (define the-anti-mark #f)
     (define (anti-mark w) (make-wrap (cons the-anti-mark (wrap-marks w)) (cons 'shift (wrap-subst w))))
     (define (new-mark) (gen-unique))
@@ -679,7 +685,7 @@
                                 (cons (or (syntax-module id) mod)
                                         (wrap var top-wrap mod)))))
         (define (macro-introduced-identifier? id)
-            (not (equal? (wrap-marks (syntax-wrap id)) '(top))))
+            (not (equal? (wrap-marks (syntax-wrap id)) top-mark)))
         (define (ensure-fresh-name var)
            
             (letrec* ((ribcage-has-var?
@@ -1097,7 +1103,7 @@
                                                   (wrap name w mod)
                                                   (wrap e w mod)
                                                   (source-wrap
-                                                   (cons (make-syntax 'lambda '((top)) '(hygiene capy))
+                                                   (cons (make-syntax 'lambda top-wrap '(hygiene capy))
                                                          (wrap (cons args (cons e1 e2)) w mod))
                                                    empty-wrap
                                                    s
@@ -1113,7 +1119,7 @@
                                                         'define-form
                                                         (wrap name w mod)
                                                         (wrap e w mod)
-                                                        (list (make-syntax 'if '((top)) '(hygiene capy)) #f #f)
+                                                        (list (make-syntax 'if top-wrap '(hygiene capy)) #f #f)
                                                         empty-wrap
                                                         s
                                                         mod))
@@ -1367,7 +1373,7 @@
             (lambda (type value mod)
               (if (eq? type 'ellipsis)
                   (bound-id=? e value)
-                  (free-id=? e (make-syntax '... '((top)) '(hygiene capy))))))))
+                  (free-id=? e (make-syntax '... top-wrap '(hygiene capy))))))))
     (define lambda-formals
       (lambda (orig-args)
                (letrec* ((req (lambda (args rreq)
@@ -1396,7 +1402,7 @@
                                r
                                top-wrap
                                #f
-                               (syntax->datum (cons (make-syntax 'public '((top)) '(hygiene capy)) mod))))
+                               (syntax->datum (cons (make-syntax 'public top-wrap '(hygiene capy)) mod))))
                             tmp)
                      (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
 
@@ -1421,7 +1427,7 @@
                  (let* ((tmp e)
                         (tmp-1 ($sc-dispatch
                                 tmp
-                                (list '_ (vector 'free-id (make-syntax 'primitive '((top)) '(hygiene capy))) 'any))))
+                                (list '_ (vector 'free-id (make-syntax 'primitive top-wrap '(hygiene capy))) 'any))))
                    (if (and tmp-1
                             (apply (lambda (id)
                                      (and (id? id)
@@ -1436,18 +1442,18 @@
                                        r
                                        top-wrap
                                        #f
-                                       (syntax->datum (cons (make-syntax 'private '((top)) '(hygiene capy)) mod))))
+                                       (syntax->datum (cons (make-syntax 'private top-wrap '(hygiene capy)) mod))))
                                     tmp-1)
                              (let ((tmp-1 ($sc-dispatch
                                            tmp
                                            (list '_
-                                                 (vector 'free-id (make-syntax '@@ '((top)) '(hygiene capy)))
+                                                 (vector 'free-id (make-syntax '@@ top-wrap '(hygiene capy)))
                                                  'each-any
                                                  'any))))
                                (if (and tmp-1 (apply (lambda (mod exp) (and-map id? mod)) tmp-1))
                                    (apply (lambda (mod exp)
                                             (let ((mod (syntax->datum
-                                                        (cons (make-syntax 'private '((top)) '(hygiene capy)) mod))))
+                                                        (cons (make-syntax 'private top-wrap '(hygiene capy)) mod))))
                                               (values (remodulate exp mod) r w (source-annotation exp) mod)))
                                           tmp-1)
                                    (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
@@ -1623,7 +1629,7 @@
                                            (if (id? p)
                                                (cond
                                                  ((bound-id-member? p keys) (values (vector 'free-id p) ids))
-                                                 ((free-id=? p (make-syntax '_ '((top)) '(hygiene capy)))
+                                                 ((free-id=? p (make-syntax '_ top-wrap '(hygiene capy)))
                                            
                                                   (values '_ ids))
                                                  (else (values 'any (cons (cons p n) ids))))
@@ -1753,8 +1759,8 @@
                                              (if (and (id? pat)
                                                       (and-map
                                                        (lambda (x) (not (free-id=? pat x)))
-                                                       (cons (make-syntax '... '((top)) '(hygiene capy)) keys)))
-                                                 (if (free-id=? pat (make-syntax '_ '((top)) '(hygiene capy)))
+                                                       (cons (make-syntax '... top-wrap '(hygiene capy)) keys)))
+                                                 (if (free-id=? pat (make-syntax '_ top-wrap '(hygiene capy)))
                                                      (expand exp r empty-wrap mod)
                                                      (let ((labels (list (gen-label))) (var (gen-var pat)))
                                                        (build-call
@@ -2155,7 +2161,7 @@
                                              (build-call
                                               s
                                               (expand
-                                               (list (make-syntax 'setter '((top)) '(hygiene capy)) head)
+                                               (list (make-syntax 'setter top-wrap '(hygiene capy)) head)
                                                r
                                                w
                                                mod)
@@ -2169,7 +2175,44 @@
     (global-extend 'define-syntax 'define-syntax '())
     (global-extend 'define-syntax-parameter 'define-syntax-parameter '())
     (global-extend 'module-ref '@ expand-public-ref)
-    (global-extend 'module-ref '@@ expand-private-ref))
+    (global-extend 'module-ref '@@ expand-private-ref)
+    
+  (set! syntax-error
+    (let ((make-syntax make-syntax))
+    (make-syntax-transformer
+     'syntax-error
+     'macro
+     (cons (lambda (x)
+       (let ((tmp-1 x))
+         (let ((tmp ($sc-dispatch tmp-1 '(_ (any . any) any . each-any))))
+           (if (if tmp (apply (lambda (keyword operands message arg) (string? (syntax->datum message))) tmp) #f)
+               (apply (lambda (keyword operands message arg)
+                        (syntax-violation
+                         (syntax->datum keyword)
+                         (string-join
+                          (cons (syntax->datum message) (map (lambda (x) (object->string (syntax->datum x))) arg)))
+                         (if (syntax->datum keyword) (cons keyword operands) #f)))
+                      tmp)
+               (let ((tmp ($sc-dispatch tmp-1 '(_ any . each-any))))
+                 (if (if tmp (apply (lambda (message arg) (string? (syntax->datum message))) tmp) #f)
+                     (apply (lambda (message arg)
+                              (cons (make-syntax
+                                     'syntax-error
+                                     (list top-mark
+                                           (vector
+                                            'ribcage
+                                            '#(syntax-error)
+                                            top-wrap-v
+                                            (vector
+                                             (cons '(hygiene capy)
+                                                   (make-syntax 'syntax-error top-wrap '(hygiene capy))))))
+                                     '(hygiene capy))
+                                    (cons '(#f) (cons message arg))))
+                            tmp)
+                     (syntax-violation #f "source expression failed to match any pattern" tmp-1)))))))
+                (make-syntax #f top-wrap '(hygiene capy))))))
+    
+    )
 
 
 (define with-syntax

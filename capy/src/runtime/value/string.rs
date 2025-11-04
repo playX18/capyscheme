@@ -26,8 +26,10 @@ pub(crate) struct Stringbuf {
     data: [UnsafeCell<u8>; 0],
 }
 
-const STRINGBUF_TC16_WIDE: TypeCode16 = TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 1 * 256);
-const STRINGBUF_TC16_NARROW: TypeCode16 = TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 2 * 256);
+pub const STRINGBUF_TC16_WIDE: TypeCode16 =
+    TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 1 * 256);
+pub const STRINGBUF_TC16_NARROW: TypeCode16 =
+    TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 2 * 256);
 
 unsafe impl Tagged for Stringbuf {
     const TC16: &[TypeCode16] = &[STRINGBUF_TC16_WIDE, STRINGBUF_TC16_NARROW];
@@ -44,7 +46,7 @@ unsafe impl Trace for Stringbuf {
 }
 
 impl Stringbuf {
-    const VT: &'static VTable = &VTable {
+    pub const VT: &'static VTable = &VTable {
         type_name: "Stringbuf",
         instance_size: size_of::<Self>(),
         alignment: std::mem::align_of::<Self>(),

@@ -340,7 +340,7 @@ impl<'gc> BigInt<'gc> {
         Self::new::<true>(ctx, &words, negative)
     }
 
-    const VT: &'static VTable = &VTable {
+    pub const VT: &'static VTable = &VTable {
         type_name: "BigInt",
         instance_size: 0,
         alignment: align_of::<usize>(),

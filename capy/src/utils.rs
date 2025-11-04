@@ -1,6 +1,6 @@
 use crate::runtime::value::Value;
-use rsgc::{Gc, Trace, alloc::array::Array};
-use std::rc::Rc;
+use rsgc::{Gc, Trace, alloc::array::Array, mmtk::util::Address};
+use std::{mem::MaybeUninit, rc::Rc};
 
 pub struct FormattedSize {
     size: usize,
@@ -107,6 +107,53 @@ impl<T: TreeEq> TreeEq for Option<T> {
             (None, None) => true,
             _ => false,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DlInfo {
+    pub fname: Option<String>,
+    pub fbase: Address,
+    pub sname: Option<String>,
+    pub saddr: Address,
+}
+
+pub fn dladdr(addr: Address) -> std::io::Result<DlInfo> {
+    unsafe {
+        let mut dl_info = MaybeUninit::<libc::Dl_info>::uninit();
+        let result = libc::dladdr(addr.to_mut_ptr(), dl_info.as_mut_ptr());
+        if result == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "dladdr failed",
+            ));
+        }
+
+        let dl_info = dl_info.assume_init();
+        let fname = if dl_info.dli_fname.is_null() {
+            None
+        } else {
+            Some(
+                std::ffi::CStr::from_ptr(dl_info.dli_fname)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        };
+        let sname = if dl_info.dli_sname.is_null() {
+            None
+        } else {
+            Some(
+                std::ffi::CStr::from_ptr(dl_info.dli_sname)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        };
+        Ok(DlInfo {
+            fname,
+            fbase: Address::from_ptr(dl_info.dli_fbase),
+            sname,
+            saddr: Address::from_ptr(dl_info.dli_saddr),
+        })
     }
 }
 
