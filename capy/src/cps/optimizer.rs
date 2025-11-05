@@ -624,7 +624,9 @@ pub fn rewrite_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> FuncRef<'gc> 
 
 const FIBONACCI: &[usize] = &[1, 2, 3, 5, 8, 13];
 
-const LOOP_UNROLL: &[usize] = &[1, 2, 4, 5, 6, 7];
+//const LOOP_UNROLL: &[usize] = &[1, 2, 4, 5, 6, 7];
+
+const LOOP_UNROLL: &[usize] = &[1, 1, 1, 1, 1, 1];
 
 fn copy_t<'gc>(
     ctx: Context<'gc>,

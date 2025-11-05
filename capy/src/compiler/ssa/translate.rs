@@ -632,26 +632,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             return self.builder.ins().jump(block, &block_args);
         }
 
-        /*         let k = self.var(k);
-
-        let code = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            k,
-            offset_of!(Closure, code) as i32,
-        );
-        let rands = self.push_args(args);
-        let num_rands = self.builder.ins().iconst(types::I64, args.len() as i64);
-
-        self.builder.ins().jump(
-            self.exit_block,
-            &[
-                BlockArg::Value(code),
-                BlockArg::Value(k),
-                BlockArg::Value(rands),
-                BlockArg::Value(num_rands),
-            ],
-        )*/
         let callee = self.get_callee_k(k);
         let rands = self.push_args(args);
         let num_rands = self.builder.ins().iconst(types::I64, args.len() as i64);
@@ -1130,7 +1110,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .ins()
                 .brif(is_nested, on_no_yieldpoint, &[], on_not_nested, &[]);
             self.builder.switch_to_block(on_not_nested);
-
+            self.builder.func.layout.set_cold(on_not_nested);
             let saved_call = self
                 .builder
                 .ins()
