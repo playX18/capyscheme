@@ -321,6 +321,7 @@ pub fn resolve_primitives<'gc>(
 macro_rules! primitive_expanders {
     ($($name: literal $fname: ident <$gc: lifetime>($ctx : ident, $args: ident, $src: ident) $b: block)*) => {
         $(
+            #[allow(unused)]
             fn $fname<$gc>($ctx: Context<$gc>, $args: &[TermRef<$gc>], $src: Value<$gc>) -> Option<TermRef<$gc>> $b
         )*
 
@@ -541,293 +542,42 @@ primitive_expanders!(
 
 
     "=" ex_num_eq<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return None;
-        } else if args.len() == 1 {
-            // return as (begin arg true)
-
-            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_number_eq(ctx).into(), args, src));
-        }
-
-        // For = with more than 2 arguments, expand into a series of comparisons
-        // (= a b c d) => (let ([tmp (= a b)]) (if tmp (= b c d) #f))
-        let first = args[0];
-        let second = args[1];
-        let rest = &args[2..];
-
-        let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "=-tmp").into());
-        let initial_cmp = prim_call_term(ctx, sym_number_eq(ctx).into(), &[first, second], src);
-
-        let remaining_cmp = if rest.len() == 1 {
-            prim_call_term(ctx, sym_number_eq(ctx).into(), &[second, rest[0]], src)
-        } else {
-            let mut new_args = vec![second];
-            new_args.extend_from_slice(rest);
-            ex_num_eq(ctx, &new_args, src)?
-        };
-
-        let if_branch = if_term(
-            ctx,
-            lref(ctx, tmp),
-            remaining_cmp,
-            constant(ctx, Value::new(false)),
-        );
-
-        Some(let_term(
-            ctx,
-            LetStyle::Let,
-            Array::from_slice(&ctx, &[tmp]),
-            Array::from_slice(&ctx, &[initial_cmp]),
-            if_branch,
-            src,
-        ))
+        multi_compare(ctx, src, "=", args, false, false)
     }
 
     "<" ex_num_lt<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return None;
-        } else if args.len() == 1 {
-            // return as (begin arg true)
-
-            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_number_lt(ctx).into(), args, src));
-        }
-
-        // For < with more than 2 arguments, expand into a series of comparisons
-        // (< a b c d) => (let ([tmp (< a b)]) (if tmp (< b c d) #f))
-        let first = args[0];
-        let second = args[1];
-        let rest = &args[2..];
-
-        let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "<-tmp").into());
-        let initial_cmp = prim_call_term(ctx, sym_number_lt(ctx).into(), &[first, second], src);
-
-        let remaining_cmp = if rest.len() == 1 {
-            prim_call_term(ctx, sym_number_lt(ctx).into(), &[second, rest[0]], src)
-        } else {
-            let mut new_args = vec![second];
-            new_args.extend_from_slice(rest);
-            ex_num_lt(ctx, &new_args, src)?
-        };
-
-        let if_branch = if_term(
-            ctx,
-            lref(ctx, tmp),
-            remaining_cmp,
-            constant(ctx, Value::new(false)),
-        );
-
-        Some(let_term(
-            ctx,
-            LetStyle::Let,
-            Array::from_slice(&ctx, &[tmp]),
-            Array::from_slice(&ctx, &[initial_cmp]),
-            if_branch,
-            src,
-        ))
+        multi_compare(ctx, src, "<", args, false, false)
     }
 
     ">" ex_num_gt<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return None;
-        } else if args.len() == 1 {
-            // return as (begin arg true)
-
-            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_number_gt(ctx).into(), args, src));
-        }
-        // For > with more than 2 arguments, expand into a series of comparisons
-        // (> a b c d) => (let ([tmp (> a b)]) (if tmp (> b c d) #f))
-        let first = args[0];
-        let second = args[1];
-        let rest = &args[2..];
-
-        let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, ">-tmp").into());
-        let initial_cmp = prim_call_term(ctx, sym_number_gt(ctx).into(), &[first, second], src);
-
-        let remaining_cmp = if rest.len() == 1 {
-            prim_call_term(ctx, sym_number_gt(ctx).into(), &[second, rest[0]], src)
-        } else {
-            let mut new_args = vec![second];
-            new_args.extend_from_slice(rest);
-            ex_num_gt(ctx, &new_args, src)?
-        };
-
-        let if_branch = if_term(
-            ctx,
-            lref(ctx, tmp),
-            remaining_cmp,
-            constant(ctx, Value::new(false)),
-        );
-
-        Some(let_term(
-            ctx,
-            LetStyle::Let,
-            Array::from_slice(&ctx, &[tmp]),
-            Array::from_slice(&ctx, &[initial_cmp]),
-            if_branch,
-            src,
-        ))
+        multi_compare(ctx, src, ">", args, false, false)
     }
 
     ">=" ex_num_ge<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return None;
-        } else if args.len() == 1 {
-            // return as (begin arg true)
-
-            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_number_ge(ctx).into(), args, src));
-        }
-
-        // For >= with more than 2 arguments, expand into a series of comparisons
-        // (>= a b c d) => (let ([tmp (>= a b)]) (if tmp (>= b c d) #f))
-        let first = args[0];
-        let second = args[1];
-        let rest = &args[2..];
-
-        let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, ">=-tmp").into());
-        let initial_cmp = prim_call_term(ctx, sym_number_ge(ctx).into(), &[first, second], src);
-
-        let remaining_cmp = if rest.len() == 1 {
-            prim_call_term(ctx, sym_number_ge(ctx).into(), &[second, rest[0]], src)
-        } else {
-            let mut new_args = vec![second];
-            new_args.extend_from_slice(rest);
-            ex_num_ge(ctx, &new_args, src)?
-        };
-
-        let if_branch = if_term(
-            ctx,
-            lref(ctx, tmp),
-            remaining_cmp,
-            constant(ctx, Value::new(false)),
-        );
-
-        Some(let_term(
-            ctx,
-            LetStyle::Let,
-            Array::from_slice(&ctx, &[tmp]),
-            Array::from_slice(&ctx, &[initial_cmp]),
-            if_branch,
-            src,
-        ))
+        multi_compare(ctx, src, ">=", args, false, false)
     }
 
     "<=" ex_num_le<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return None;
-        } else if args.len() == 1 {
-            // return as (begin arg true)
-
-            return Some(seq_from_slice(ctx, [args[0], constant(ctx, Value::new(true))]));
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_number_le(ctx).into(), args, src));
-        }
-
-        // For <= with more than 2 arguments, expand into a series of comparisons
-            // (<= a b c d) => (let ([tmp (<= a b)]) (if tmp (<= b c d) #f))
-            let first = args[0];
-            let second = args[1];
-            let rest = &args[2..];
-
-            let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "<=-tmp").into());
-            let initial_cmp = prim_call_term(ctx, sym_number_le(ctx).into(), &[first, second], src);
-
-            let remaining_cmp = if rest.len() == 1 {
-                prim_call_term(ctx, sym_number_le(ctx).into(), &[second, rest[0]], src)
-            } else {
-                let mut new_args = vec![second];
-                new_args.extend_from_slice(rest);
-                ex_num_le(ctx, &new_args, src)?
-            };
-
-            let if_branch = if_term(
-                ctx,
-                lref(ctx, tmp),
-                remaining_cmp,
-                constant(ctx, Value::new(false)),
-            );
-
-            Some(let_term(
-                ctx,
-                LetStyle::Let,
-                Array::from_slice(&ctx, &[tmp]),
-                Array::from_slice(&ctx, &[initial_cmp]),
-                if_branch,
-                src,
-            ))
-
+        multi_compare(ctx, src, "<=", args, false, false)
     }
 
 
     "+" ex_plus<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return Some(constant(ctx, Value::new(0i32)));
-        } else if args.len() == 1 {
-            return Some(args[0]);
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_plus(ctx).into(), args, src));
-        } else {
-            let mut result = args[0];
-            for arg in &args[1..] {
-                result = prim_call_term(ctx, sym_plus(ctx).into(), &[result, *arg], src);
-            }
-            return Some(result);
-        }
+        transitive(ctx, src, "+", args, Some(Value::new(0i32)), true, None)
     }
 
     "*" ex_multiply<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return Some(constant(ctx, Value::new(1i32)));
-        } else if args.len() == 1 {
-            return Some(args[0]);
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_multiply(ctx).into(), args, src));
-        } else {
-            let mut result = args[0];
-            for arg in &args[1..] {
-                result = prim_call_term(ctx, sym_multiply(ctx).into(), &[result, *arg], src);
-            }
-            return Some(result);
-        }
+        transitive(ctx, src, "*", args, Some(Value::new(1i32)), true, None)
     }
 
     "-" ex_minus<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return None;
-        } else if args.len() == 1 {
-            return Some(prim_call_term(ctx, sym_minus(ctx).into(), &[constant(ctx, Value::new(0i32)), args[0]], src));
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_minus(ctx).into(), args, src));
-        } else {
-            let mut result = args[0];
-            for arg in &args[1..] {
-                result = prim_call_term(ctx, sym_minus(ctx).into(), &[result, *arg], src);
-            }
-            return Some(result);
-        }
+        transitive(ctx, src, "-", args, None, true, None)
     }
 
     "/" ex_div<'gc>(ctx, args, src) {
-        if args.is_empty() {
-            return None;
-        } else if args.len() == 1 {
-            return Some(prim_call_term(ctx, sym_div(ctx).into(), &[constant(ctx, Value::new(1i32)), args[0]], src));
-        } else if args.len() == 2 {
-            return Some(prim_call_term(ctx, sym_div(ctx).into(), args, src));
-        } else {
-            let mut result = args[0];
-            for arg in &args[1..] {
-                result = prim_call_term(ctx, sym_div(ctx).into(), &[result, *arg], src);
-            }
-            return Some(result);
-        }
+        transitive(ctx, src, "/", args, None, true, Some(|ctx, src, arg|
+            Term::prims(ctx, "/", [constant(ctx, 1i32.into()), arg], src)
+        ))
     }
 
     "quotient" ex_quotient<'gc>(ctx, args, src) {
@@ -1857,9 +1607,12 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
     t.pre_order(ctx, |ctx, t| match &t.kind {
         TermKind::PrimCall(name, args) => {
             let expanders = &*PRIMITIVE_EXPANDERS;
+
             if let Some(f) = expanders.get(ctx, name.downcast()) {
-                if let Some(expanded) = f(ctx, args.as_slice(), t.source()) {
-                    return expanded;
+                let term = f(ctx, args.as_slice(), t.source());
+
+                if let Some(term) = term {
+                    return term;
                 } else {
                     // failed expansion: reify primitive into a function call to it instead
                     let module_ref = Gc::new(
@@ -1870,7 +1623,7 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
                         },
                     );
 
-                    call_term(ctx, module_ref, args.as_slice(), t.source())
+                    return call_term(ctx, module_ref, args.as_slice(), t.source());
                 }
             } else {
                 // failed expansion: reify primitive into a function call to it instead
@@ -1882,10 +1635,156 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
                     },
                 );
 
-                call_term(ctx, module_ref, args.as_slice(), t.source())
+                return call_term(ctx, module_ref, args.as_slice(), t.source());
             }
         }
 
         _ => t,
     })
+}
+
+pub fn multi_compare<'gc>(
+    ctx: Context<'gc>,
+    src: Value<'gc>,
+    predicate: &str,
+    args: &[TermRef<'gc>],
+    not: bool,
+    accept_zero: bool,
+) -> Option<TermRef<'gc>> {
+    if args.is_empty() && !accept_zero {
+        return None;
+    }
+
+    if args.is_empty() && accept_zero {
+        return Some(constant(ctx, Value::new(true)));
+    }
+
+    if args.len() == 1 {
+        return Some(Term::seq(
+            &ctx,
+            args[0],
+            constant(ctx, Value::new(true)),
+            src,
+        ));
+    }
+
+    if args.len() == 2 {
+        if not {
+            return Some(Term::cond(
+                &ctx,
+                Term::prims(ctx, predicate, [args[0], args[1]], src),
+                constant(ctx, Value::new(false)),
+                constant(ctx, Value::new(true)),
+                src,
+            ));
+        } else {
+            // valid comparison, no need to expand further
+            return Some(Term::prims(ctx, predicate, [args[0], args[1]], src));
+        }
+    }
+
+    let scmp = ctx.intern("cmp0");
+    let mut last;
+    let mut current = fresh_lvar(ctx, scmp);
+    let mut vars = vec![current];
+    let mut result = constant(ctx, Value::new(true));
+    for i in (0..args.len() - 1).rev() {
+        let scmp = ctx.str(format!("cmp{}", i + 1).as_str());
+        let next = fresh_lvar(ctx, scmp);
+        vars.push(next);
+        last = current;
+        current = next;
+        let params = if not {
+            [lref(ctx, current), lref(ctx, last)]
+        } else {
+            [lref(ctx, last), lref(ctx, current)]
+        };
+        let cons = if not {
+            constant(ctx, Value::new(false))
+        } else {
+            result
+        };
+
+        let alt = if not {
+            result
+        } else {
+            constant(ctx, Value::new(false))
+        };
+
+        result = Term::cond(
+            &ctx,
+            Term::prims(ctx, predicate, params, src),
+            cons,
+            alt,
+            src,
+        );
+    }
+
+    let mut inits = Vec::new();
+    for &arg in args {
+        inits.push(arg);
+    }
+
+    result = let_term(
+        ctx,
+        LetStyle::Let,
+        Array::from_slice(&ctx, &vars),
+        Array::from_slice(&ctx, &inits),
+        result,
+        src,
+    );
+
+    Some(result)
+}
+
+pub fn transitive<'gc>(
+    ctx: Context<'gc>,
+    src: Value<'gc>,
+    op: &str,
+    args: &[TermRef<'gc>],
+    identity: Option<Value<'gc>>,
+    one: bool,
+    prefix: Option<fn(Context<'gc>, Value<'gc>, TermRef<'gc>) -> TermRef<'gc>>,
+) -> Option<TermRef<'gc>> {
+    if args.is_empty() {
+        return identity.map(|id| Some(constant(ctx, id))).unwrap_or(None);
+    }
+
+    if args.len() == 1 && one {
+        return Some(prefix.map(|f| f(ctx, src, args[0])).unwrap_or(args[0]));
+    }
+
+    if args.len() == 1 && !one {
+        return None;
+    }
+
+    if args.len() == 2 {
+        return Some(Term::prims(ctx, op, [args[0], args[1]], src));
+    } else {
+        let first = args[0];
+        let rest = &args[1..];
+        return Some(associate_args(ctx, src, op, first, rest));
+    }
+}
+
+pub fn associate_args<'gc>(
+    ctx: Context<'gc>,
+    src: Value<'gc>,
+    op: &str,
+    first_arg: TermRef<'gc>,
+    args: &[TermRef<'gc>],
+) -> TermRef<'gc> {
+    let next = &args[1..];
+    let arg = args[0];
+    if next.is_empty() {
+        return Term::prims(ctx, op, [first_arg, arg], src);
+    } else {
+        associate_args(
+            ctx,
+            src,
+            op,
+            Term::prims(ctx, op, [first_arg, arg], src),
+            next,
+        )
+    }
 }

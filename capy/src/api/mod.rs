@@ -2,16 +2,16 @@
 //!
 //! Exports most of the runtime functionality to C-compatible interface.
 
+use crate::runtime::value::conversions::*;
+use libc::c_char;
 use std::{
     ffi::{CStr, c_void},
     marker::PhantomData,
     sync::Arc,
 };
 
-use libc::c_char;
-
 use crate::{
-    prelude::Value,
+    prelude::*,
     runtime::{Context, Scheme, vm::threading::ThreadObject},
 };
 
@@ -124,7 +124,7 @@ pub unsafe extern "C" fn scm_enter<'gc>(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_public_ref<'gc>(
-    ctx: &Context<'gc>,
+    ctx: ContextRef<'gc>,
     module_name: *const c_char,
     name: *const c_char,
     default_value: Value<'gc>,
@@ -137,7 +137,7 @@ pub extern "C" fn scm_public_ref<'gc>(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_private_ref<'gc>(
-    ctx: &Context<'gc>,
+    ctx: ContextRef<'gc>,
     module_name: *const c_char,
     name: *const c_char,
     default_value: Value<'gc>,
@@ -146,4 +146,78 @@ pub extern "C" fn scm_private_ref<'gc>(
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
 
     ctx.private_ref(module_name, name).unwrap_or(default_value)
+}
+
+/// Intern a symbol with the given name in the Scheme context.
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_intern_symbol<'gc>(ctx: &Context<'gc>, name: *const c_char) -> Value<'gc> {
+    let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
+    ctx.intern(name)
+}
+
+/// Create a new Scheme string with the given data in the Scheme context.
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_string<'gc>(ctx: ContextRef<'gc>, data: *const c_char) -> Value<'gc> {
+    let data = unsafe { CStr::from_ptr(data).to_str().unwrap() };
+    ctx.str(data)
+}
+
+/// Create Scheme number from a 32-bit unsigned integer.
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_uint32<'gc>(ctx: ContextRef<'gc>, value: u32) -> Value<'gc> {
+    value.into_value(*ctx)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_uint64<'gc>(ctx: ContextRef<'gc>, value: u64) -> Value<'gc> {
+    value.into_value(*ctx)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_int64<'gc>(ctx: ContextRef<'gc>, value: i64) -> Value<'gc> {
+    value.into_value(*ctx)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_u8<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u8) -> bool {
+    match u8::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_u16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u16) -> bool {
+    match u16::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_u32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u32) -> bool {
+    match u32::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_u64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u64) -> bool {
+    match u64::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
 }

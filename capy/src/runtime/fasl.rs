@@ -3,9 +3,13 @@
 //! Serialzies/deserializes Scheme values to/from a binary format
 //! that can be loaded quickly at runtime.
 
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::{self, BufReader, BufWriter, Read, Write},
+};
 
-use rsgc::Gc;
+use im::HashSet;
+use rsgc::{Gc, mmtk::util::Address};
 
 use crate::runtime::{
     Context,
@@ -38,11 +42,17 @@ pub const FASL_TAG_IMMEDIATE: u8 = 18;
 pub const FASL_TAG_SYNTAX: u8 = 19;
 pub const FASL_TAG_TUPLE: u8 = 20;
 
+/// Reference to an object.
+pub const FASL_TAG_REF: u8 = 0xFF;
+pub const FASL_TAG_REF_INIT: u8 = 0xFE;
+
 pub struct FASLWriter<'gc, W: Write> {
     pub ctx: Context<'gc>,
     pub writer: BufWriter<W>,
     pub lites: Gc<'gc, HashTable<'gc>>,
     pub stack: Vec<Value<'gc>>,
+    pub reference_map: BTreeMap<Address, u32>,
+    pub initmap: HashSet<Address>,
 }
 
 impl<'gc, W: Write> FASLWriter<'gc, W> {
@@ -89,6 +99,14 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
 
+        if let Some(_) = self.reference_map.get(&obj.as_cell_raw().to_address()) {
+            return Ok(());
+        }
+
+        let ref_id = self.reference_map.len() as u32;
+        self.reference_map
+            .insert(obj.as_cell_raw().to_address(), ref_id);
+
         if obj.is_pair() {
             self.scan(obj.car())?;
             self.scan(obj.cdr())?;
@@ -134,33 +152,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         ));
     }
 
-    pub fn put_list(&mut self, mut obj: Value<'gc>) -> io::Result<()> {
-        let mut count = 0;
-
-        while obj.is_pair() {
-            self.push(obj.car());
-            obj = obj.cdr();
-            count += 1;
-        }
-
-        if obj.is_null() {
-            self.put8(FASL_TAG_PLIST)?;
-            self.put32(count as u32)?;
-        } else {
-            self.put8(FASL_TAG_DLIST)?;
-            self.put32(count as u32)?;
-            self.put(obj)?;
-        }
-
-        while count > 0 {
-            count -= 1;
-            let item = self.pop().unwrap();
-
-            self.put(item)?;
-        }
-
-        Ok(())
-    }
+    /*
 
     pub fn put(&mut self, obj: Value<'gc>) -> io::Result<()> {
         if obj.is_immediate() {
@@ -267,6 +259,146 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             io::ErrorKind::Unsupported,
             "Unsupported type for FASL serialization",
         ));
+    }*/
+
+    pub fn put(&mut self, obj: Value<'gc>) -> io::Result<()> {
+        if obj.is_immediate() {
+            if obj.is_int32() {
+                self.put8(FASL_TAG_FIXNUM)?;
+                self.put32(obj.as_int32() as u32)?;
+            } else if obj.is_bool() {
+                self.put8(if obj.as_bool() {
+                    FASL_TAG_T
+                } else {
+                    FASL_TAG_F
+                })?;
+            } else if obj.is_null() {
+                self.put8(FASL_TAG_NIL)?;
+            } else if obj.is_char() {
+                self.put8(FASL_TAG_CHAR)?;
+                self.put32(obj.char() as u32)?;
+            } else {
+                self.put8(FASL_TAG_IMMEDIATE)?;
+                self.put64(obj.bits())?;
+            }
+
+            return Ok(());
+        }
+
+        if obj.is::<Symbol>() || obj.is::<Str>() {
+            let id = self.lites.get(self.ctx, obj).unwrap().as_int32();
+            self.put8(FASL_TAG_LOOKUP)?;
+            self.put32(id as u32)?;
+            return Ok(());
+        }
+
+        if self.initmap.contains(&obj.as_cell_raw().to_address()) {
+            let ref_id = self.reference_map[&obj.as_cell_raw().to_address()];
+            self.put8(FASL_TAG_REF)?;
+            self.put32(ref_id)?;
+            return Ok(());
+        }
+
+        self.initmap.insert(obj.as_cell_raw().to_address());
+
+        self.put8(FASL_TAG_REF_INIT)?;
+        let ix = self.reference_map[&obj.as_cell_raw().to_address()];
+        self.put32(ix)?;
+
+        if obj.is_pair() {
+            self.put_list(obj)?;
+            return Ok(());
+        }
+
+        if obj.is::<Vector>() {
+            let vec = obj.downcast::<Vector>();
+            self.put8(FASL_TAG_VECTOR)?;
+            self.put32(vec.len() as u32)?;
+            for item in vec.iter() {
+                self.put(item.get())?;
+            }
+            return Ok(());
+        }
+
+        if obj.is::<Tuple>() {
+            let tuple = obj.downcast::<Tuple>();
+            self.put8(FASL_TAG_TUPLE)?;
+            self.put32(tuple.len() as u32)?;
+            for item in tuple.iter() {
+                self.put(item.get())?;
+            }
+            return Ok(());
+        }
+
+        if obj.is::<ByteVector>() {
+            let bvec = obj.downcast::<ByteVector>();
+            self.put8(FASL_TAG_BVECTOR)?;
+            self.put64(bvec.len() as u64)?;
+            self.put_many(bvec.as_slice())?;
+            return Ok(());
+        }
+
+        if obj.is::<BigInt>() {
+            let bigint = obj.downcast::<BigInt>();
+            self.put8(FASL_TAG_BIGINT)?;
+            self.put8(bigint.negative() as u8)?;
+            self.put32(bigint.len() as u32)?;
+            for digit in bigint.iter() {
+                self.put64(*digit)?;
+            }
+            return Ok(());
+        }
+
+        if obj.is::<Complex>() {
+            let complex = obj.downcast::<Complex>();
+            self.put8(FASL_TAG_COMPLEX)?;
+            self.put(complex.real.into_value(self.ctx))?;
+            self.put(complex.imag.into_value(self.ctx))?;
+            return Ok(());
+        }
+
+        if obj.is::<Syntax>() {
+            let syntax = obj.downcast::<Syntax>();
+            self.put8(FASL_TAG_SYNTAX)?;
+            self.put(syntax.expr())?;
+            self.put(syntax.module())?;
+            self.put(syntax.source())?;
+            self.put(syntax.wrap())?;
+            return Ok(());
+        }
+
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("Unsupported type for FASL serialization: {}", obj),
+        ));
+    }
+
+    pub fn put_list(&mut self, mut obj: Value<'gc>) -> io::Result<()> {
+        let mut count = 0;
+
+        while obj.is_pair() {
+            self.push(obj.car());
+            obj = obj.cdr();
+            count += 1;
+        }
+
+        if obj.is_null() {
+            self.put8(FASL_TAG_PLIST)?;
+            self.put32(count as u32)?;
+        } else {
+            self.put8(FASL_TAG_DLIST)?;
+            self.put32(count as u32)?;
+            self.put(obj)?;
+        }
+
+        while count > 0 {
+            count -= 1;
+            let item = self.pop().unwrap();
+
+            self.put(item)?;
+        }
+
+        Ok(())
     }
 
     pub fn put_lites(&mut self) -> io::Result<()> {
@@ -320,6 +452,8 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             writer: BufWriter::new(writer),
             lites: HashTable::new(&ctx, HashTableType::Eq, 32, 0.75),
             stack: Vec::new(),
+            reference_map: BTreeMap::new(),
+            initmap: HashSet::new(),
         }
     }
 }
@@ -328,6 +462,7 @@ pub struct FASLReader<'gc, R: io::Read> {
     pub ctx: Context<'gc>,
     pub reader: BufReader<R>,
     pub lites: Gc<'gc, HashTable<'gc>>,
+    pub reference_map: HashMap<u32, Address>,
 }
 
 impl<'gc, R: io::Read> FASLReader<'gc, R> {
@@ -433,6 +568,26 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             _x @ FASL_TAG_IMMEDIATE => {
                 let value = self.read64()?;
                 Ok(Value::from_raw_i64(value as i64))
+            }
+
+            _x @ FASL_TAG_REF => {
+                let ref_id = self.read32()?;
+                if let Some(addr) = self.reference_map.get(&ref_id) {
+                    Ok(Value::from_raw(addr.as_usize() as u64))
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Unknown reference ID: {ref_id}"),
+                    ))
+                }
+            }
+
+            _x @ FASL_TAG_REF_INIT => {
+                let ref_id = self.read32()?;
+                let value = self.read_value()?;
+                self.reference_map
+                    .insert(ref_id, value.as_cell_raw().to_address());
+                Ok(value)
             }
 
             _x @ FASL_TAG_PLIST => {
@@ -572,6 +727,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             ctx,
             reader: BufReader::new(reader),
             lites: HashTable::new(&ctx, HashTableType::Eq, 32, 0.75),
+            reference_map: HashMap::new(),
         }
     }
 }

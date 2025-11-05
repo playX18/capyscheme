@@ -3094,6 +3094,40 @@ impl<'gc> Term<'gc> {
         )
     }
 
+    pub fn cond(
+        mc: &Mutation<'gc>,
+        cond: TermRef<'gc>,
+        cons: TermRef<'gc>,
+        alt: TermRef<'gc>,
+        src: Value<'gc>,
+    ) -> TermRef<'gc> {
+        Gc::new(
+            mc,
+            Term {
+                source: Lock::new(src),
+                kind: TermKind::If(cond, cons, alt),
+            },
+        )
+    }
+
+    pub fn prims(
+        ctx: Context<'gc>,
+        name: &str,
+        args: impl IntoIterator<Item = TermRef<'gc>>,
+        src: Value<'gc>,
+    ) -> TermRef<'gc> {
+        Gc::new(
+            &ctx,
+            Term {
+                source: Lock::new(src),
+                kind: TermKind::PrimCall(
+                    Symbol::from_str(ctx, name).into(),
+                    Array::from_iter(&ctx, args.into_iter()),
+                ),
+            },
+        )
+    }
+
     pub fn lset(
         mc: &Mutation<'gc>,
         lvar: LVarRef<'gc>,

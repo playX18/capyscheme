@@ -45,6 +45,13 @@
 
 #define FASL_TAG_TUPLE 20
 
+/**
+ * Reference to an object.
+ */
+#define FASL_TAG_REF 255
+
+#define FASL_TAG_REF_INIT 254
+
 #define TYPE_IMMEDIATE 0
 
 #define TYPE_REF 1
@@ -236,12 +243,39 @@ struct Value scm_fork(ContextRef parent, ThreadFn init, void *arg);
  */
 int scm_enter(ScmRef scm, ScmEnterFn enter, void *arg);
 
-struct Value scm_public_ref(const struct Context *ctx,
+struct Value scm_public_ref(ContextRef ctx,
                             const char *module_name,
                             const char *name,
                             struct Value default_value);
 
-struct Value scm_private_ref(const struct Context *ctx,
+struct Value scm_private_ref(ContextRef ctx,
                              const char *module_name,
                              const char *name,
                              struct Value default_value);
+
+/**
+ * Intern a symbol with the given name in the Scheme context.
+ */
+struct Value scm_intern_symbol(const struct Context *ctx, const char *name);
+
+/**
+ * Create a new Scheme string with the given data in the Scheme context.
+ */
+struct Value scm_string(ContextRef ctx, const char *data);
+
+/**
+ * Create Scheme number from a 32-bit unsigned integer.
+ */
+struct Value scm_uint32(ContextRef ctx, uint32_t value);
+
+struct Value scm_uint64(ContextRef ctx, uint64_t value);
+
+struct Value scm_int64(ContextRef ctx, int64_t value);
+
+bool scm_to_u8(ContextRef ctx, struct Value value, uint8_t *res);
+
+bool scm_to_u16(ContextRef ctx, struct Value value, uint16_t *res);
+
+bool scm_to_u32(ContextRef ctx, struct Value value, uint32_t *res);
+
+bool scm_to_u64(ContextRef ctx, struct Value value, uint64_t *res);

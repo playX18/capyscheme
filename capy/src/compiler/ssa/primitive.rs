@@ -2178,7 +2178,7 @@ prim!(
             // handle 2 args without introducing more blocks
             let lhs = ssa.atom(args[0]);
             let rhs = ssa.atom(args[1]);
-            let eq = emit_icmp(ssa, lhs, rhs, IntCC::Equal,  _h);
+            let eq = emit_icmp(ssa, lhs, rhs, IntCC::Equal, _h);
             return PrimValue::Comparison(eq);
         }
 
@@ -2297,7 +2297,7 @@ prim!(
             let rhs = ssa.atom(*arg);
             let lte = emit_icmp(ssa, acc,rhs, IntCC::SignedLessThanOrEqual, _h);
             if ssa.builder.func.dfg.value_type(lte) != ssa.builder.func.dfg.value_type(acc) {
-                unreachable!("type mismatch in <=: {:?} vs {:?}", ssa.builder.func.dfg.value_type(lte), ssa.builder.func.dfg.value_type(acc))
+                unreachable!("type mismatch in <=: {:?} vs {:?}, args: {:?}", ssa.builder.func.dfg.value_type(lte), ssa.builder.func.dfg.value_type(acc), args)
             }
             acc = ssa.builder.ins().band(acc, lte);
         }

@@ -56,7 +56,7 @@ install-portable: (build "true")
     cp '{{target-path}}/capyvm' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
-    cp {{target-path}}/libcapy_*.* {{install-prefix}}/share/capy/{{version}}/extensions/
+    #cp {{target-path}}/libcapy_*.* {{install-prefix}}/share/capy/{{version}}/extensions/
    
     @echo "CapyScheme installed to {{install-prefix}}/share/capy/{{version}}"
     @echo "Add {{install-prefix}}/share/capy/{{version}} to your PATH to use CapyScheme"
