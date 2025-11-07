@@ -130,15 +130,15 @@
             (lambda ()
                 (define res (parse-args parser (cdr args)))
                 
-                (if (arg-results-ref res "log:warn")
+                (if (arg-results-ref res "log-warn")
                     (log:set-max-level! log:warn))
-                (if (arg-results-ref res "log:error")
+                (if (arg-results-ref res "log-error")
                     (log:set-max-level! log:error))
-                (if (arg-results-ref res "log:info")
+                (if (arg-results-ref res "log-info")
                     (log:set-max-level! log:info))
-                (if (arg-results-ref res "log:debug")
+                (if (arg-results-ref res "log-debug")
                     (log:set-max-level! log:debug))
-                (if (or #t (arg-results-ref res "log:trace"))
+                (if (arg-results-ref res "log-trace")
                     (log:set-max-level! log:trace))
                 (if (not (zero? (log:max-level)))
                     (log:set-logger! *simple-logger*))
@@ -204,19 +204,19 @@
         (help "Enable fresh auto compilation of loaded files"))
     (argparser-add-separator! parser "Logging options:")
     (add-flag! parser 
-        "log:trace"          
+        "log-trace"          
         (help "Enable trace logging"))
     (add-flag! parser 
-        "log:info"
+        "log-info"
         (help "Enable info logging"))
     (add-flag! parser 
-        "log:debug"
+        "log-debug"
         (help "Enable debug logging"))
     (add-flag! parser 
-        "log:warn"
+        "log-warn"
         (help "Enable warn logging"))
     (add-flag! parser 
-        "log:error"
+        "log-error"
         (help "Enable error logging"))
 
     
