@@ -7,13 +7,15 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
     ffi::CStr,
-    io::{Write},
+    io::Write,
     mem::MaybeUninit,
 };
 
 use crate::{
     prelude::{
-        Boxed, ByteVector, Closure, ClosureRef, HashTable, HashTableType, IntoValue, Module, NativeProc, Number, ScmHeader, Str, Stringbuf, Symbol, Tagged, Tuple, Value, Vector, WeakMapping, WeakSet, WeakTable, symbol_table
+        Boxed, ByteVector, Closure, ClosureRef, HashTable, HashTableType, IntoValue, Module,
+        NativeProc, Number, ScmHeader, Str, Stringbuf, Symbol, Tagged, Tuple, Value, Vector,
+        WeakMapping, WeakSet, WeakTable, symbol_table,
     },
     runtime::{
         Context,
@@ -93,15 +95,10 @@ impl<'gc> ImageBuilder<'gc> {
 
     pub fn serialize(&mut self, proc: Value<'gc>) -> Result<'gc, Vec<u8>> {
         let mut scan = ReferenceMapBuilder::new(self.ctx);
-        let scan_start = std::time::Instant::now();
+
         scan.scan_context(proc);
         scan.run_to_end()?;
 
-        println!(
-            ";; Reference map scan took {:.4}ms for {} objects",
-            scan_start.elapsed().as_secs_f64() * 1000.0,
-            scan.reference_map.len()
-        );
         self.dylibs = scan.dylibs;
         self.reference_map = scan.reference_map;
         self.native_procedures = super::all_native_procedures(self.ctx);
@@ -118,7 +115,9 @@ impl<'gc> ImageBuilder<'gc> {
             self.write_globals();
 
             let dynstate = self.ctx.dynamic_state();
+            let winders = self.ctx.winders();
             self.write_value(dynstate)?;
+            self.write_value(winders)?;
             let cstart = self.write32(0)?;
             let mut count = 0;
             let mut cur = self.ctx.state().current_marks();
@@ -273,11 +272,7 @@ impl<'gc> ImageBuilder<'gc> {
 
             let mut reader = std::io::BufReader::new(file);
             let mut buffer = Vec::with_capacity(1024 * 1024);
-            /*reader
-                .read_to_end(&mut buffer)
-                .expect("Failed to read library file");
-            let compressed = zstd::encode_all(&buffer[..], 0).expect("Failed to compress library");*/
-            
+
             std::io::copy(&mut reader, &mut buffer).expect("Failed to read library file");
             let mut lib_globals = Vec::with_capacity(128);
             lib.for_each_global(|global| {
@@ -672,17 +667,14 @@ impl<'gc> ImageBuilder<'gc> {
         self.write32(inner.size_index.get() as u32)?;
         self.write32(inner.min_size_index.get() as u32)?;
 
-
         Ok(())
     }
 
     pub fn write_syntax(&mut self, syntax: Gc<'gc, Syntax<'gc>>) -> Result<'gc, ()> {
-       
         self.write_value(syntax.expr)?;
         self.write_value(syntax.wrap)?;
         self.write_value(syntax.module)?;
         self.write_value(syntax.source)?;
-        
 
         Ok(())
     }
@@ -912,7 +904,7 @@ impl<'gc> ReferenceMapBuilder<'gc> {
         let mut index = 0;
 
         let mut globals_to_scan = Vec::with_capacity(128);
-        let global_start = std::time::Instant::now();
+
         LIBRARY_COLLECTION.fetch(&self.ctx).for_each_library(|lib| {
             let fbase = lib.fbase;
             self.fbase_to_lib.insert(fbase, index);
@@ -927,11 +919,6 @@ impl<'gc> ReferenceMapBuilder<'gc> {
             self.enqueue_value(global);
         }
 
-        println!(
-            ";; library constants scanned in {:.4}ms",
-            global_start.elapsed().as_secs_f64() * 1000.0
-        );
-
         let symbols = symbol_table(&self.ctx);
         self.enqueue_value(symbols.into_value(self.ctx));
 
@@ -941,7 +928,9 @@ impl<'gc> ReferenceMapBuilder<'gc> {
         });
 
         let dynstate = self.ctx.dynamic_state();
+        let winders = self.ctx.winders();
         self.enqueue_value(dynstate);
+        self.enqueue_value(winders);
         let mut cur = self.ctx.state().current_marks();
 
         while let Some(marks) = cur {
@@ -956,15 +945,10 @@ impl<'gc> ReferenceMapBuilder<'gc> {
     }
 
     pub fn run_to_end(&mut self) -> Result<'gc> {
-        let mark_start = std::time::Instant::now();
         while let Some(val) = self.to_process.pop() {
             self.scan_value(val)?;
         }
-        println!(
-            ";; marking completed in {:.4}ms, found {} objects",
-            mark_start.elapsed().as_secs_f64() * 1000.0,
-            self.reference_map.len()
-        );
+
         Ok(())
     }
 

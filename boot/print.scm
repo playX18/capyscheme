@@ -213,6 +213,8 @@
                 (printstr (string-append "#<variable " (number->string (hash x) 16) ">") p)]
             [(pointer? x)
                 (printstr (string-append "#<pointer " (number->string (pointer-address x) 16) ">") p)]
+            [(continuation-marks? x)
+                (display "#<continuation-mark-set>" p)]
             [else (printstr "<TODO>" p)]))
     
     (define (printnumber n p slashify)

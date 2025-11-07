@@ -114,6 +114,8 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
 
         let dynstate = self.read_value().unwrap();
         self.ctx.set_dynamic_state(dynstate);
+        let winders = self.read_value().unwrap();
+        self.ctx.set_winders(winders);
 
         let count_marks = self.read32().unwrap();
 

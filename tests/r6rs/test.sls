@@ -34,7 +34,6 @@
     (syntax-rules ()
       [(_ expr expected)
        (begin
-         ;; (write 'expr) (newline)
          (run-test 'expr
                    (catch-exns (lambda () expr))
                    expected))]))

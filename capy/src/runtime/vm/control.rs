@@ -139,6 +139,63 @@ pub mod control_ops {
                 .rfold(Value::null(), |acc, x| Value::cons(ctx, x, acc)),
         )
     }
+
+    #[scheme(name = "continuation-mark-set-first")]
+    pub fn contination_mark_set_first(
+        set: Gc<'gc, ContinuationMarks<'gc>>,
+        key: Value<'gc>,
+        default_value: Option<Value<'gc>>,
+    ) -> Value<'gc> {
+        let default_value = default_value.unwrap_or(Value::new(false));
+        let mut set = set.cmarks;
+
+        while let Some(cmarks) = set {
+            let mark_set = cmarks.mark_set.get();
+
+            if let Some(val) = mark_set.assq(key) {
+                return nctx.return_(val.cdr());
+            }
+            set = cmarks.parent;
+        }
+
+        nctx.return_(default_value)
+    }
+
+    #[scheme(name = "continuation-mark-set->list*")]
+    pub fn continuation_mark_set_list_many(
+        set: Gc<'gc, ContinuationMarks<'gc>>,
+        keys: Value<'gc>,
+        default_value: Option<Value<'gc>>,
+    ) -> Value<'gc> {
+        let default_value = default_value.unwrap_or(Value::new(false));
+
+        fn rec<'gc>(
+            mark_set: Option<CFrameRef<'gc>>,
+            keys: Value<'gc>,
+            default_value: Value<'gc>,
+            ctx: Context<'gc>,
+        ) -> Value<'gc> {
+            match mark_set {
+                None => Value::null(),
+                Some(cmarks) if !keys.list_any(|key| cmarks.mark_set.get().assq(key).is_some()) => {
+                    rec(cmarks.parent, keys, default_value, ctx)
+                }
+
+                Some(cmarks) => Value::cons(
+                    ctx,
+                    keys.map(ctx, |key| match cmarks.mark_set.get().assq(key) {
+                        Some(val) => val.cdr(),
+                        None => default_value,
+                    })
+                    .list_to_vector(ctx)
+                    .into(),
+                    rec(cmarks.parent, keys, default_value, ctx),
+                ),
+            }
+        }
+
+        nctx.return_(rec(set.cmarks, keys, default_value, ctx))
+    }
 }
 
 pub fn init_control<'gc>(ctx: Context<'gc>) {

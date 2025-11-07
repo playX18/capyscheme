@@ -357,6 +357,14 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
 
+        if obj.is::<Rational>() {
+            let rational = obj.downcast::<Rational>();
+            self.put8(FASL_TAG_RATIONAL)?;
+            self.put(rational.numerator.into_value(self.ctx))?;
+            self.put(rational.denominator.into_value(self.ctx))?;
+            return Ok(());
+        }
+
         if obj.is::<Syntax>() {
             let syntax = obj.downcast::<Syntax>();
             self.put8(FASL_TAG_SYNTAX)?;
