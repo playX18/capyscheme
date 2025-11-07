@@ -6,7 +6,7 @@ members = [
     "capy-bin",
     "capy-derive",
     "capy-driver",
-    "extensions/capy-clang",
+
 ]
 default-members = ["capy"]
 
