@@ -302,6 +302,7 @@
 
 (define (assertion-violation who message . irritants)
   (define stk (shadow-stack))
+
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -395,6 +396,7 @@
 (define undefined-violation
   (lambda (who . message)
     (define stk (shadow-stack))
+
     (raise
       (apply
         condition
@@ -407,7 +409,9 @@
             (and (pair? message) (make-message-condition (car message)))))))))
 
 (define (.make-undefined-violation who . message)
+
   (define stk (shadow-stack))
+
   (if (or (not who) (string? who) (symbol? who))
     (apply
       condition

@@ -2017,19 +2017,6 @@ mod arith_operations {
             return nctx.return_(n);
         }
 
-        if rest.len() == 2 {
-            let a = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
-                Ok(a) => a,
-                Err(e) => return nctx.conversion_error("bitwise-and", e),
-            };
-            let b = match ExactInteger::try_from_value(nctx.ctx, rest[1]) {
-                Ok(b) => b,
-                Err(e) => return nctx.conversion_error("bitwise-and", e),
-            };
-            let res = ExactInteger::bitand(nctx.ctx, a, b);
-            return nctx.return_(res.into());
-        }
-
         let mut acc = match ExactInteger::try_from_value(nctx.ctx, rest[0]) {
             Ok(a) => a,
             Err(e) => return nctx.conversion_error("bitwise-and", e),
@@ -2965,8 +2952,11 @@ mod arith_operations {
     }
 
     #[scheme(name = "flatan")]
-    pub fn fl_atan(x: f64) -> f64 {
-        let res = x.atan();
+    pub fn fl_atan(x: f64, y: Option<f64>) -> f64 {
+        let res = match y {
+            Some(y) => x.atan2(y),
+            None => x.atan(),
+        };
         nctx.return_(res)
     }
 

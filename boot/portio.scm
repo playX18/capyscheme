@@ -14,9 +14,26 @@
 (define no-fail 'no-fail)
 (define no-truncate 'no-truncate)
 
+(define *file-options-enumeration-set* #f)
+
+(define (file-options-enumeration-set)
+  (unless *file-options-enumeration-set* 
+    (set! *file-options-enumeration-set*
+           (make-enumeration *file-option-symbols*)))
+  *file-options-enumeration-set*)
+
+(define (make-file-options-set syms)
+  ((enum-set-constructor (file-options-enumeration-set)) syms))
+
+(define (file-options->list options)
+  (enum-set->list options))
+
+
+
 (define (file-options . symbols)
-  (filter (lambda (sym) (memq sym *file-option-symbols*))
-          symbols))
+  (make-file-options-set
+    (filter (lambda (sym) (memq sym *file-option-symbols*))
+           symbols)))
 
 (define none 'none)
 (define line 'line)
