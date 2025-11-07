@@ -132,9 +132,13 @@ mod string_ops {
         let mut s1 = s1.downcast::<Str>();
         let mut s2 = s2.downcast::<Str>();
 
+        let cm = icu::casemap::CaseMapperBorrowed::new();
         for (i, r) in rest.iter().skip(2).copied().enumerate() {
-            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
-            if !matches!(cmp, Some(Ordering::Equal)) {
+            let s1str = s1.as_str();
+            let s2str = s2.as_str();
+            let s1l = cm.fold_string(&s1str);
+            let s2l = cm.fold_string(&s2str);
+            if s1l != s2l {
                 return nctx.return_(false);
             }
             if !r.is::<Str>() {
@@ -151,7 +155,16 @@ mod string_ops {
             s2 = r.downcast::<Str>();
         }
 
-        let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+        let s1str = s1.as_str();
+        let s2str = s2.as_str();
+        let s1l = cm.fold_string(&s1str);
+        let s2l = cm.fold_string(&s2str);
+
+        let cmp = if s1l == s2l {
+            Some(Ordering::Equal)
+        } else {
+            None
+        };
 
         nctx.return_(matches!(cmp, Some(Ordering::Equal)))
     }
