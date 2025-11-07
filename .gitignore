@@ -7,3 +7,4 @@ io-tmp*
 tmp-catch-out
 *.h 
 main.scm
+capy.heap
