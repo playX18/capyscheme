@@ -9,7 +9,15 @@
         do
         when
         unless
-        case-lambda)
+        case-lambda
+        with-continuation-mark
+        current-continuation-marks
+        continuation-marks?
+        continuation-mark-set->list
+        continuation-mark-set->list*
+        continuation-mark-set-first 
+        continuation-marks
+        continuation?)
     (import (core primitives)
             (core records))
   (define-syntax case-lambda
