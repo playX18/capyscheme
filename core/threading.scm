@@ -24,7 +24,8 @@
         (define cv (make-condition))
         (define mutex (make-mutex))
         (define thread #f)
-        (fork-thread 
+
+        (let ([t (fork-thread 
             (lambda ()
                 (call-with-values 
                     (lambda ()
@@ -38,7 +39,16 @@
                     (lambda vals 
                         (with-mutex mutex 
                             (hashtable-set! %thread-results cv vals)
-                            (condition-broadcast cv)))))))
+                            (condition-broadcast cv))))))])
+                            
+            (with-mutex mutex 
+                (let loop () 
+                    (cond 
+                        [(hashtable-ref %thread-join-data t #f) => 
+                            (lambda (_) thread)]
+                        [else 
+                            (condition-wait cv mutex)
+                            (loop)])))))
 
     (define (join-thread thread)
         (define data (hashtable-ref %thread-join-data thread #f))

@@ -92,18 +92,34 @@ pub mod hash_ops {
     }
 
     #[scheme(name = "core-hash->list")]
-    pub fn hash_to_list(ht: Gc<'gc, HashTable<'gc>>) -> Value<'gc> {
-        let list = ht
-            .iter()
-            .map(|(k, v)| Value::cons(nctx.ctx, k, v))
-            .collect::<Vec<_>>();
+    pub fn hash_to_list(
+        ht: Either<Gc<'gc, HashTable<'gc>>, Gc<'gc, WeakTable<'gc>>>,
+    ) -> Value<'gc> {
+        match ht {
+            Either::Right(ht) => {
+                let ls = ht.fold(
+                    nctx.ctx,
+                    |k, v, acc| Value::cons(nctx.ctx, Value::cons(nctx.ctx, k, v), acc),
+                    Value::null(),
+                );
 
-        let mut ls = Value::null();
+                nctx.return_(ls)
+            }
 
-        for pair in list.into_iter().rev() {
-            ls = Value::cons(nctx.ctx, pair, ls);
+            Either::Left(ht) => {
+                let list = ht
+                    .iter()
+                    .map(|(k, v)| Value::cons(nctx.ctx, k, v))
+                    .collect::<Vec<_>>();
+
+                let mut ls = Value::null();
+
+                for pair in list.into_iter().rev() {
+                    ls = Value::cons(nctx.ctx, pair, ls);
+                }
+                nctx.return_(ls)
+            }
         }
-        nctx.return_(ls)
     }
 
     #[scheme(name = "list->core-hash-eq")]
