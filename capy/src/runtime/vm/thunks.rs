@@ -4012,6 +4012,32 @@ thunks! {
         obj.into()
     }
 
+    pub fn set_attachments(
+        ctx: &Context<'gc>,
+        marks: Value<'gc>
+    ) -> ThunkResult<'gc> {
+        if !marks.is::<ContinuationMarks>() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(*ctx, "set-attachments").into(),
+                    Str::new(ctx, "not continuation-marks", true).into(),
+                    &[marks],
+                )
+            }
+        }
+        unsafe {
+            ctx.state().set_current_marks(
+                marks.downcast::<ContinuationMarks>().cmarks.clone()
+            );
+        }
+
+        ThunkResult {
+            code: 0,
+            value: Value::undefined()
+        }
+    }
+
     pub fn make_syntax(
         ctx: &Context<'gc>,
         exp: Value<'gc>,

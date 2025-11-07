@@ -549,6 +549,22 @@ impl<'gc> Value<'gc> {
         new_head
     }
 
+    pub fn list_any<F>(self, mut f: F) -> bool
+    where
+        F: FnMut(Value<'gc>) -> bool,
+    {
+        let mut current = self;
+
+        while current.is_pair() {
+            if f(current.car()) {
+                return true;
+            }
+            current = current.cdr();
+        }
+
+        false
+    }
+
     #[inline]
     pub fn cons(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
         let pair = Pair::new(mc, car, cdr);

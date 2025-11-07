@@ -1,7 +1,9 @@
 (library (boot cli)
     (export enter eval-string)
     (import (capy)
-            (core repl))
+            (core repl)
+            (args)
+            (args argparser))
     
 
 (define (eval-string str)
@@ -24,6 +26,8 @@
     (define load-path '())
     (define load-compiled-path '())
     (define extensions '())
+
+    (define parser (argparser))
    
     (define (error fmt . args)
         (apply format #t fmt args)
@@ -113,15 +117,107 @@
                 ((current-exception-printer) c)
                 (exit 1))
             (lambda ()
-                (unless (null? load-path)
-                    (set! %load-path (append (reverse load-path) %load-path)))
                 (eval `(begin 
                     ,@(reverse out)
                     ,(if interactive? 
                         `((@ (core repl) read-eval-print-loop))
                         '(exit 0)))))))
-    (if (pair? args)
-        (begin 
-            (set! arg0 (car args))
-            (parse (cdr args) '()))
-        (parse args '()))))
+    (define (run)
+        (with-exception-handler 
+            (lambda (c)
+                (format #t "Failed to parse command line arguments: ~a~%" (condition-message c))
+                (exit 1))
+            (lambda ()
+                (define res (parse-args parser (cdr args)))
+                
+                (if (arg-results-ref res "log:warn")
+                    (log:set-max-level! log:warn))
+                (if (arg-results-ref res "log:error")
+                    (log:set-max-level! log:error))
+                (if (arg-results-ref res "log:info")
+                    (log:set-max-level! log:info))
+                (if (arg-results-ref res "log:debug")
+                    (log:set-max-level! log:debug))
+                (if (or #t (arg-results-ref res "log:trace"))
+                    (log:set-max-level! log:trace))
+                (if (not (zero? (log:max-level)))
+                    (log:set-logger! *simple-logger*))
+                (when (arg-results-ref res "help")
+                    (format #t "CapyScheme ~a~%" (implementation-version))
+                    (format #t "Usage:~%~a~%" (argparser-usage parser))
+                    (exit 0))
+                (set! entrypoint (arg-results-ref res "entrypoint"))
+                (set! %load-path (append (reverse (arg-results-ref res "load-path")) %load-path))
+                (set! %load-compiled-path (append (reverse (arg-results-ref res "compiled-load-path")) %load-compiled-path))
+                (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
+                
+                (define out '())
+                (when (arg-results-ref res "script")
+                    (set! interactive? #f)
+                    (set! out (cons `((@@ (capy) load) ,(arg-results-ref res "script")) out)))
+                (when (arg-results-ref res "command")
+                    (set! interactive? #f)
+                    (set! out (cons `((@@ (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
+                (finish (arg-results-rest res) out))))
+    (add-flag! parser 
+        "help"
+        (help "Show this help message and exit"))
+    (add-option! parser 
+        "script"
+        (abbreviation "s")
+        (help "Run specified file as a script")
+        (value-help "FILE"))
+    (add-option! parser 
+        "command"
+        (abbreviation "c")
+        (help "Evaluate a command string")
+        (value-help "STRING"))
+    (add-multi-option! parser 
+        "load-path"
+        (abbreviation "L")
+        (defaults-to '())
+        (value-help "DIR")
+        split-commas
+        (help "Add a directory to the load path"))
+    (add-multi-option! parser 
+        "compiled-load-path"
+        (abbreviation "C")
+        (defaults-to '())
+        (value-help "DIR")
+        split-commas
+        (help "Add a directory to the compiled load path"))
+    (add-multi-option! parser 
+        "extensions"
+        (abbreviation "x")
+        (defaults-to '())
+        (value-help "EXTENSION")
+        split-commas
+        (help "Add specified extension to list of extensions"))                    
+    (add-option! parser 
+        "entrypoint"
+        (abbreviation "e")
+        (defaults-to #f)
+        (help "Specify the entrypoint function to call"))
+    (add-flag! parser 
+        "fresh-auto-compile"
+        (defaults-to #f)
+        (help "Enable fresh auto compilation of loaded files"))
+    (argparser-add-separator! parser "Logging options:")
+    (add-flag! parser 
+        "log:trace"          
+        (help "Enable trace logging"))
+    (add-flag! parser 
+        "log:info"
+        (help "Enable info logging"))
+    (add-flag! parser 
+        "log:debug"
+        (help "Enable debug logging"))
+    (add-flag! parser 
+        "log:warn"
+        (help "Enable warn logging"))
+    (add-flag! parser 
+        "log:error"
+        (help "Enable error logging"))
+
+    
+    (run)))

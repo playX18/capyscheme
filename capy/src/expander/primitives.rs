@@ -39,6 +39,7 @@ interesting_prim_names!(
     apply = "apply"
     call_with_values = "call-with-values"
     ccm = "current-continuation-marks"
+    set_ccm = "$set-attachments!"
     values = "values"
     eqp = "eq?"
     eqvp = "eqv?"
@@ -232,6 +233,11 @@ interesting_prim_names!(
     bytevector_u64_native_set = "bytevector-u64-native-set!"
     bytevector_s64_native_ref = "bytevector-s64-native-ref"
     bytevector_s64_native_set = "bytevector-s64-native-set!"
+
+    winders = "$winders"
+
+    callcc = "call/cc"
+    call_with_current_continuation = "call-with-current-continuation"
 );
 
 pub fn resolve_primitives<'gc>(
@@ -363,6 +369,14 @@ primitive_expanders!(
         }
 
         Some(prim_call_term(ctx, sym_ccm(ctx).into(), &[], src))
+    }
+
+    "$set-attachments!" ex_set_ccm<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_set_ccm(ctx).into(), args, src))
     }
 
     "apply" ex_apply<'gc>(ctx, args, src) {
@@ -571,7 +585,9 @@ primitive_expanders!(
     }
 
     "-" ex_minus<'gc>(ctx, args, src) {
-        transitive(ctx, src, "-", args, None, true, None)
+        transitive(ctx, src, "-", args, None, true, Some(|ctx, src, arg| {
+            Term::prims(ctx, "-", [constant(ctx, 0i32.into()), arg], src)
+        }))
     }
 
     "/" ex_div<'gc>(ctx, args, src) {
@@ -1599,6 +1615,13 @@ primitive_expanders!(
         }
 
         Some(prim_call_term(ctx, sym_make_syntax(ctx).into(), args, src))
+    }
+
+    "$winders" ex_winders<'gc>(ctx, args, src) {
+        if args.len() > 1 {
+            return None;
+        }
+        Some(prim_call_term(ctx, sym_winders(ctx).into(), args, src))
     }
 );
 

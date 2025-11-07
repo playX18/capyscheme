@@ -1,7 +1,13 @@
-
-
-(define (main args)
-  ((@@ (boot cli) enter) args))
-
-(collect-garbage)
-(dump-heap "capy.heap" main)
+(import (rnrs))
+(define (pos-count-bits n)
+    (display n)
+    (newline)
+    (if (zero? n) 
+        0
+        (let ([c (count-bits (bitwise-arithmetic-shift-right n 1))])
+          (if (even? n) c (+ c 1)))))
+  (define (count-bits n)
+    (if (>= n 0)
+        (pos-count-bits n)
+        (bitwise-not (pos-count-bits (bitwise-not n)))))
+(count-bits 1)

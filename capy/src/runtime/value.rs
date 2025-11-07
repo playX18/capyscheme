@@ -513,8 +513,13 @@ impl TypeCode16 {
     pub const VALUES: Self = Self(TypeCode8::VALUES.0 as u16);
 
     pub const CLOSURE_PROC: Self = Self(TypeCode8::CLOSURE.0 as u16);
+
+    /// A continuation, real one. Does not represent a regular procedure.
     pub const CLOSURE_K: Self = Self(TypeCode8::CLOSURE.0 as u16 + 1 * 256);
     pub const CLOSURE_FOREIGN: Self = Self(TypeCode8::CLOSURE.0 as u16 + 2 * 256);
+    /// Procedure marked as a continuation. Differs from `CLOSURE_K`
+    /// in that it represents a continuation closure.
+    pub const CLOSURE_CONTINUATION: Self = Self(TypeCode8::CLOSURE.0 as u16 + 3 * 256);
 
     pub const NATIVE_PROC: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16);
     pub const NATIVE_K: Self = Self(TypeCode8::NATIVE_PROCEDURE.0 as u16 + 1 * 256);

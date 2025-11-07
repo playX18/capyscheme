@@ -2,6 +2,7 @@ use super::SSABuilder;
 use crate::cps::term::Atom;
 use crate::expander::core::LVarRef;
 use crate::runtime::Context;
+use crate::runtime::State;
 use crate::runtime::modules::Variable;
 use crate::runtime::value::*;
 use cranelift::prelude::InstBuilder;
@@ -2620,6 +2621,28 @@ prim!(
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let result = ssa.builder.ins().call(ssa.thunks.current_continuation_marks, &[ctx]);
         PrimValue::Value(ssa.builder.inst_results(result)[0])
+    },
+
+    "$set-attachments!" => set_attachments(ssa, args, _h) {
+        let attachments = ssa.atom(args[0]);
+
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let res = ssa.handle_thunk_call_result(ssa.thunks.set_attachments, &[ctx, attachments], _h);
+        PrimValue::Value(res)
+    },
+
+    "$winders" => winders(ssa, args, _h) {
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let state = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), ctx, offset_of!(Context, state) as i32);
+
+        if args.is_empty() {
+            let winders = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), state, offset_of!(State, winders) as i32);
+            return PrimValue::Value(winders);
+        }
+
+        let new_winders = ssa.atom(args[0]);
+        ssa.builder.ins().store(ir::MemFlags::trusted(), new_winders, state, offset_of!(State, winders) as i32);
+        PrimValue::Value(new_winders)
     },
 
     "make-syntax" => make_syntax(ssa, args, _h) {

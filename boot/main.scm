@@ -442,33 +442,57 @@
             ((x (if (> nx ny) (list-tail x (- nx ny)) x) (cdr x))
              (y (if (> ny nx) (list-tail y (- ny nx)) y) (cdr y)))
             ((eq? x y) x)))))
-    (let ((tail (common-tail new (current-dynamic-wind-record))))
-      (let loop ((rec (current-dynamic-wind-record)))
-        (cond ((not (eq? rec tail)) (current-dynamic-wind-record (cdr rec)) ((cdar rec)) (loop (cdr rec)))))
+    (let ((tail (common-tail new ($winders))))
+      (let loop ((rec ($winders)))
+        (cond ((not (eq? rec tail)) ($winders (cdr rec)) ((cdar rec)) (loop (cdr rec)))))
       (let loop ((rec new))
-        (cond ((not (eq? rec tail)) (loop (cdr rec)) ((caar rec)) (current-dynamic-wind-record rec)))))
+        (cond ((not (eq? rec tail)) (loop (cdr rec)) ((caar rec)) ($winders rec)))))
     (apply cont args))
 
 (define (dynamic-wind in body out)
   (in)
-  (current-dynamic-wind-record (cons (cons in out) (current-dynamic-wind-record)))
+  ($winders (cons (cons in out) ($winders)))
   (call-with-values 
     body
     (lambda ans 
-      (current-dynamic-wind-record (cdr (current-dynamic-wind-record)))
+      ($winders (cdr ($winders)))
       (out)
       (apply values ans))))
 
 (define (call/cc f)
-  (define saved-record (current-dynamic-wind-record))
+  (define (attach-cont-props winders attachments k)
+    (set-procedure-property! k 'continuation
+      (tuple winders attachments))
+    k)
+
+  (define saved-record ($winders))
+  (define marks (current-continuation-marks))
   (.call/cc-unsafe 
     (lambda (k)
-      (f (lambda args 
-        (perform-dynamic-wind saved-record k args))))))
+      (f (attach-cont-props 
+        saved-record
+        marks
+        (lambda args 
+          ($set-attachments! marks)
+          (perform-dynamic-wind saved-record k args)))))))
+
 (define call-with-current-continuation call/cc)
+
+(define (continuation? x)
+  (and (procedure? x)
+       (if (procedure-property x 'continuation)
+         #t
+         #f)))
+
+(define (continuation-marks k)
+  (unless (continuation? k)
+    (assertion-violation 'continuation-marks "expected a continuation" k))
+  (let ([props (procedure-property k 'continuation)])
+    (tuple-ref props 1)))
 
 (define (unhandled-exception-error val)
   (.return-error val))
+
 
 (define *basic-exception-handlers* (list unhandled-exception-error))
 
@@ -490,10 +514,9 @@
     (with-exception-handler (cadr handlers)
       (lambda () ((car handlers) obj)))))
 
-
 (define (with-exception-handler handler thunk)
   (let* ([previous-handlers (*current-exception-handlers*)]
-        [new-handlers (if handler
+         [new-handlers (if handler
                           (cons handler previous-handlers)
                           previous-handlers)])
     (dynamic-wind
@@ -550,13 +573,7 @@
 (define (core-hash-for-each proc ht)
   (for-each proc (core-hash->list ht)))
 
-(define (core-hash-copy ht)
-  (let ([new (make-core-hash)])
-    (core-hash-for-each
-      (lambda (pair)
-        (core-hash-put! new (car pair) (cdr pair)))
-      ht)
-    new))
+
 
 (define (module-for-each proc module)
   (for-each (lambda (kv) (proc (car kv) (cdr kv))) (core-hash->list (module-obarray module))))

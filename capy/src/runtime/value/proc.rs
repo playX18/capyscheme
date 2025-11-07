@@ -47,11 +47,7 @@ impl NativeProc {
         } else {
             TypeCode16::NATIVE_PROC
         };
-        /*println!(
-            "Registering native procedure at {}\n{}",
-            proc,
-            std::backtrace::Backtrace::force_capture()
-        );*/
+
         Gc::new(
             &ctx,
             NativeProc {
@@ -236,6 +232,10 @@ unsafe impl<'gc> Trace for Closure<'gc> {
 impl<'gc> Closure<'gc> {
     pub fn is_continuation(&self) -> bool {
         self.header.type_bits() == TypeCode16::CLOSURE_K.bits()
+    }
+
+    pub fn is_reified_continuation(&self) -> bool {
+        self.header.type_bits() == TypeCode16::CLOSURE_CONTINUATION.bits()
     }
 
     pub fn is_foreign(&self) -> bool {

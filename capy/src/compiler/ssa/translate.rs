@@ -593,6 +593,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let k = *k;
             // TODO: Support `k` where variadic is used and materialize a list.
             let block = self.block_for_cont(k);
+            if k.args.len() > args.len() {
+                panic!(
+                    "not enough args when jumping to continuation {}@{:p}, expected {}, got {}",
+                    k.binding.name,
+                    k.binding,
+                    k.args.len(),
+                    args.len()
+                );
+            }
             let mut block_args = args[..k.args.len()]
                 .into_iter()
                 .map(|v| ir::BlockArg::Value(*v))

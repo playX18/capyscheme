@@ -256,6 +256,14 @@ impl<'gc> Context<'gc> {
         }
         module
     }
+
+    pub(crate) fn winders(&self) -> Value<'gc> {
+        self.state.winders.get()
+    }
+
+    pub(crate) fn set_winders(&self, winders: Value<'gc>) {
+        self.state.winders.set(winders);
+    }
 }
 
 impl<'gc> std::ops::Deref for Context<'gc> {
@@ -313,6 +321,7 @@ pub struct State<'gc> {
     /// to Rust code.
     pub(crate) accumulator: Cell<Value<'gc>>,
     pub(crate) current_marks: Cell<Option<CFrameRef<'gc>>>,
+    pub(crate) winders: Cell<Value<'gc>>,
 }
 
 #[repr(C)]
@@ -372,6 +381,7 @@ unsafe impl Trace for State<'_> {
         visitor.trace(&mut self.accumulator);
         visitor.trace(&mut self.yield_reason);
         visitor.trace(&mut self.current_marks);
+        visitor.trace(&mut self.winders);
     }
 }
 
@@ -397,6 +407,7 @@ impl<'gc> State<'gc> {
             yield_reason: Cell::new(None),
             accumulator: Cell::new(Value::new(false)),
             current_marks: Cell::new(None),
+            winders: Cell::new(Value::null()),
         }
     }
 
@@ -670,6 +681,7 @@ impl Scheme {
             let mut reader = ImageReader::new(ctx, image);
 
             let img = reader.deserialize().expect("Failed to read image");
+
             let entrypoint = match img.boot(ctx) {
                 VMResult::Ok(entry) => entry,
                 _ => unreachable!(),

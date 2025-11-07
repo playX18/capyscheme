@@ -255,6 +255,7 @@
                              "negative shift count" ei2))
       (bitwise-arithmetic-shift ei1 (- ei2))))
 
+      
   (define bitwise-rotate-bit-field
     (lambda (ei1 ei2 ei3 ei4)
       (let* ((n ei1)

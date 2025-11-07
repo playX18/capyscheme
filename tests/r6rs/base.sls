@@ -1016,7 +1016,7 @@
     (test (boolean? #f)   #t)
     (test (boolean? 0)           #f)
     (test (boolean? '())         #f)
-
+  
     (test (boolean=? #f #f) #t)
     (test (boolean=? #t #t) #t)
     (test (boolean=? #t #f) #f)

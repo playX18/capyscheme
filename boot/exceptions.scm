@@ -326,17 +326,19 @@
           (cond 
             [(and (eq? a (car lst)) (eq? d (cdr lst))) lst]
             [else (cons a d)]))]
+      [(identifier? lst) lst]
       [(syntax? lst) (loop (syntax-expression lst))]
       [(vector? lst) (list->vector (map loop (vector->list lst)))]
       [else lst])))
+
 
 (define (syntax-violation who message form . subform)
   (define (get-who-from-form form)
     (define obj (if (syntax? form) (unwrap-syntax form) form))
 
     (cond 
-      [(symbol? obj) (make-who-condition obj)]
-      [(and (pair? obj) (symbol? (car obj))) (make-who-condition (car obj))]
+      [(identifier? obj) (make-who-condition (syntax-expression obj))]
+      [(and (pair? obj) (identifier? (car obj))) (make-who-condition (syntax-expression (car obj)))]
       [else #f]))
 
   (if (or (not who) (string? who) (symbol? who) (identifier? who))

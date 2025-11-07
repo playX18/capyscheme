@@ -2,8 +2,8 @@ use capy::runtime::{Scheme, vm::base::get_program_arguments_fluid};
 
 fn main() {
     env_logger::init();
-    let scm = Scheme::new();
 
+    let scm = Scheme::new();
     scm.call(
         "boot cli",
         "enter",
