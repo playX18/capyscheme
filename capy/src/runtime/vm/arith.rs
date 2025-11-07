@@ -2775,15 +2775,12 @@ mod arith_operations {
     #[scheme(name = "fxarithmetic-shift")]
     pub fn fxarithmetic_shift(fx1: i32, fx2: i32) -> i32 {
         if fx2 > -32 && fx2 < 32 {
-            let n;
             if fx2 > 0 {
-                n = fx1.wrapping_shl(fx2 as u32);
-                if (n.wrapping_shr(fx2 as u32) == fx1) && (n >= i32::MIN) && n <= i32::MAX {
+                if let Some(n) = fx1.checked_shl(fx2 as u32) {
                     return nctx.return_(n);
                 }
             } else {
-                n = fx1.wrapping_shr((-fx2) as u32);
-                if (n.wrapping_shl((-fx2) as u32) == fx1) && (n >= i32::MIN) && n <= i32::MAX {
+                if let Some(n) = fx1.checked_shr((-fx2) as u32) {
                     return nctx.return_(n);
                 }
             }
@@ -2792,7 +2789,7 @@ mod arith_operations {
             let fx2 = fx2.into_value(ctx);
             return nctx.implementation_restriction_violation(
                 "fxarithmetic-shift",
-                "shift amount is too large",
+                "shift amount is too largeaaa",
                 &[fx1, fx2],
             );
         }
@@ -2986,8 +2983,11 @@ mod arith_operations {
     }
 
     #[scheme(name = "fllog")]
-    pub fn fl_log(x: f64) -> f64 {
-        let res = x.ln();
+    pub fn fl_log(x: f64, y: Option<f64>) -> f64 {
+        let res = match y {
+            Some(base) => x.log(base),
+            None => x.ln(),
+        };
         nctx.return_(res)
     }
 
