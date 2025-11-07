@@ -235,6 +235,7 @@
                         assq assv assoc
                         cons*
                         list-head
+                        list-sort
                         ; r6rs exceptions
                         raise raise-continuable with-exception-handler
                         ; r6rs records
@@ -715,6 +716,22 @@
                         with-mutex
                         thread?
                         current-thread
+
+
+                        make-enumeration
+                        enum-set?
+                        enum-set-universe
+                        enum-set-indexer
+                        enum-set-constructor
+                        enum-set->list
+                        enum-set-member?
+                        enum-set-subset?
+                        enum-set=?
+                        enum-set-union
+                        enum-set-intersection
+                        enum-set-difference
+                        enum-set-complement
+                        enum-set-projection
                         )
     (import (capy)))
 

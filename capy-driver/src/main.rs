@@ -4,6 +4,7 @@ fn main() {
     env_logger::init();
 
     let scm = Scheme::new();
+
     scm.call(
         "boot cli",
         "enter",
