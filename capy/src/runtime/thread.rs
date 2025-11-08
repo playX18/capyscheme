@@ -32,6 +32,7 @@ use std::{
     sync::{Once, atomic::AtomicUsize},
 };
 
+/// cbindgen:ignore
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Context<'gc> {

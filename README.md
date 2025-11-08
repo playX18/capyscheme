@@ -12,9 +12,8 @@ R6RS/R7RS compiler and runtime written in Rust.
 
 # R6RS/R7RS support
 
-Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment ~~39.4%~~ 84% of tests are successfull.
+Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment 97.15% of tests are passing.
 
-As of 1ee8f0d around 84% of tests are passing. Most of failed tests are related to fixnums (`fx` set of procedures).
 To run tests yourself:
 ```sh 
 $ capy -L . -s tests/r6rs/run-via-eval.sps

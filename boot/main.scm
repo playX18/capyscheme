@@ -517,9 +517,11 @@
                         (apply c vals))) ]))
 
 (define $null-continuation 
-  (attach-cont-props '() '()
-    (lambda args
-      (exit 0))))
+  (let ([k (lambda () (exit 1))])
+    (set-procedure-property! k 'continuation
+      (tuple '() '()))
+    k 
+  ))
 
 
 (define (unhandled-exception-error val)
