@@ -11,6 +11,11 @@ use crate::{
 fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
     fn rec<'gc>(t: &Term<'gc>, counter: &mut u32, map: &mut Map<LVarRef<'gc>, u32>) {
         match t.kind {
+            TermKind::Const(_)
+            | TermKind::PrimRef(_)
+            | TermKind::LRef(_)
+            | TermKind::ModuleRef(_, _, _)
+            | TermKind::ToplevelRef(_, _) => {}
             TermKind::Let(l) => {
                 for &var in l.lhs.iter() {
                     let id = *counter;
@@ -115,7 +120,11 @@ fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
                 }
             }
 
-            _ => (),
+            TermKind::WithContinuationMark(continuation, body, mark) => {
+                rec(&continuation, counter, map);
+                rec(&mark, counter, map);
+                rec(&body, counter, map);
+            }
         }
     }
 
@@ -552,7 +561,13 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
             | TermKind::PrimRef(_)
             | TermKind::ToplevelRef(_, _) => empty(),
 
-            TermKind::LRef(var) => adjoin(self.sym_id[var], empty()),
+            TermKind::LRef(var) => adjoin(
+                self.sym_id
+                    .get(&var)
+                    .copied()
+                    .unwrap_or_else(|| panic!("{} not found", var.name)),
+                empty(),
+            ),
 
             TermKind::LSet(var, val) => {
                 let val_fv = self.visit(*val);
