@@ -484,11 +484,43 @@
          #t
          #f)))
 
-(define (continuation-marks k)
+(define (continuation-next-marks k)
   (unless (continuation? k)
     (assertion-violation 'continuation-marks "expected a continuation" k))
   (let ([props (procedure-property k 'continuation)])
     (tuple-ref props 1)))
+  
+(define (call-in-continuation c proc . args)
+    (define (cont-attachments c)
+        (tuple-ref (cdr (procedure-property c 'continuation)) 1))
+    (unless (continuation? c)
+        (error 'call-in-continuation "not a continuation" c))
+
+    (cond 
+        [(null? args)
+            ($set-attachments! (cont-attachments c))
+            (receive vals (proc)
+                (apply c vals))]
+        [else 
+            (let ([set proc]
+                  [proc (car args)])
+                (unless (continuation-marks? set)
+                    (error 'call-in-continuation 
+                        "expected continuation-marks object" set))
+                (let* ([markss ($continuation-marks-markss set)]
+                       [c-marks (cont-attachments c)])
+                    (unless (or (eq? markss c-marks)
+                                (and (pair? markss) (eq? (cdr markss) c-markss)))
+                        (error 'call-in-continuation "mark set is not an extension of current marks" set c)))
+                    ($set-attachments! markss)
+                    (receive vals (proc)
+                        (apply c vals))) ]))
+
+(define $null-continuation 
+  (attach-cont-props '() '()
+    (lambda args
+      (exit 0))))
+
 
 (define (unhandled-exception-error val)
   (.return-error val))

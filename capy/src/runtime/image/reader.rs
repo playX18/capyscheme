@@ -30,7 +30,7 @@ use crate::{
         modules::{ModuleKind, Variable},
         vm::{
             VMResult,
-            control::{CFrame, ContinuationMarks},
+            control::ContinuationMarks,
             ffi::{CIF, Pointer},
             libraries::LIBRARY_COLLECTION,
             syntax::{Syntax, SyntaxTransformer},
@@ -116,29 +116,7 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
         self.ctx.set_dynamic_state(dynstate);
         let winders = self.read_value().unwrap();
         self.ctx.set_winders(winders);
-
-        let count_marks = self.read32().unwrap();
-
-        let mut marks_vec = Vec::with_capacity(count_marks as usize);
-
-        for _ in 0..count_marks {
-            let mark_set = self.read_value().unwrap();
-            let retk = self.read_value().unwrap();
-            marks_vec.push((mark_set, retk));
-        }
-
-        let marks = marks_vec
-            .into_iter()
-            .fold(None, |parent, (mark_set, retk)| {
-                Some(Gc::new(
-                    &self.ctx,
-                    CFrame {
-                        parent,
-                        mark_set: Lock::new(mark_set),
-                        retk: retk.downcast(),
-                    },
-                ))
-            });
+        let marks = self.read_value()?;
         unsafe {
             self.ctx.state.set_current_marks(marks);
         }
@@ -1362,32 +1340,9 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
     }
 
     pub fn read_cmarks(&mut self, obj: GCObject) -> std::io::Result<()> {
-        let count = self.read32()? as usize;
-
-        let mut cmarks_vec = Vec::with_capacity(count);
-
-        for _ in 0..count {
-            let mark_set = self.read_value().unwrap();
-            let retk = self.read_value().unwrap();
-            cmarks_vec.push((mark_set, retk));
-        }
-
-        let frame = cmarks_vec
-            .into_iter()
-            .fold(None, |parent, (mark_set, retk)| {
-                Some(Gc::new(
-                    &self.ctx,
-                    CFrame {
-                        mark_set: Lock::new(mark_set),
-                        retk: retk.downcast(),
-                        parent,
-                    },
-                ))
-            });
-
+        let marks = self.read_value().unwrap();
         unsafe {
-            let cmarks = obj.to_address().as_mut_ref::<ContinuationMarks>();
-            cmarks.cmarks = frame;
+            obj.to_address().as_mut_ref::<ContinuationMarks>().cmarks = marks;
         }
 
         Ok(())
