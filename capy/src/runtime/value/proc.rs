@@ -234,8 +234,27 @@ impl<'gc> Closure<'gc> {
         self.header.type_bits() == TypeCode16::CLOSURE_K.bits()
     }
 
-    pub fn is_reified_continuation(&self) -> bool {
-        self.header.type_bits() == TypeCode16::CLOSURE_CONTINUATION.bits()
+    /// Check if this closure is a continuation produced by `call/cc`.
+    pub fn is_reified_continuation(&self, ctx: Context<'gc>) -> bool {
+        let meta = self.meta.get();
+        meta.is_list() && meta.assq(ctx.intern("continuation")).is_some()
+    }
+
+    /// Returns winders and continuation marks associated with this reified continuation.
+    pub fn reified_continuation_attachments(
+        &self,
+        ctx: Context<'gc>,
+    ) -> Option<(Value<'gc>, Value<'gc>)> {
+        let meta = self.meta.get();
+        if !meta.is_list() {
+            return None;
+        }
+        let cont_info = meta.assq(ctx.intern("continuation"))?;
+        let cont_info = cont_info.cdr().downcast::<Tuple>();
+        let winders = cont_info[0].get();
+        let cmarks = cont_info[1].get();
+
+        Some((winders, cmarks))
     }
 
     pub fn is_foreign(&self) -> bool {

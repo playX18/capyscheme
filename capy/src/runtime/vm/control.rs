@@ -15,7 +15,7 @@ pub struct CFrame<'gc> {
 #[derive(Trace)]
 pub struct ContinuationMarks<'gc> {
     pub header: ScmHeader,
-    pub cmarks: Option<CFrameRef<'gc>>,
+    pub cmarks: Value<'gc>,
 }
 
 unsafe impl<'gc> Tagged for ContinuationMarks<'gc> {
@@ -26,27 +26,17 @@ unsafe impl<'gc> Tagged for ContinuationMarks<'gc> {
 
 pub type CFrameRef<'gc> = Gc<'gc, CFrame<'gc>>;
 
-#[derive(Trace, Copy, Clone)]
-pub enum CFrameKind<'gc> {
-    /// Boundary frame: Created at `with-continuation-marks` call
-    /// and is used to restore old continuation marks on exit.
-    Boundary(ClosureRef<'gc>, Option<CFrameRef<'gc>>),
-
-    /// Normal frame: key-value pair for continuation marks.
-    Set(Value<'gc>),
-}
-
 use crate::prelude::*;
 
 /// A `C*` continuation that restores continuation marks from the captured frame.
 #[scheme(continuation)]
 pub(crate) fn c_star(results: &'gc [Value<'gc>]) -> Value<'gc> {
     let cm = ctx.state().current_marks();
-    let marks = cm.expect("C* continuation must have captured continuation marks");
+    let marks = cm.car();
     unsafe {
-        ctx.state().set_current_marks(marks.parent);
+        ctx.state().set_current_marks(cm.cdr());
         let results = results.to_vec();
-        return nctx.continue_to(marks.retk.into(), &results);
+        return nctx.continue_to(marks.cdr(), &results);
     };
 }
 
@@ -82,26 +72,28 @@ pub(crate) fn push_cframe<'gc>(
 
     // retk == C*: we're in tail position of another wcm
     if Gc::ptr_eq(retk, cont_closure) {
-        let first_marks = old_marks.unwrap();
-        let new_marks = replace_or_add_mark(*ctx, first_marks.mark_set.get(), key, pair);
-        let wmarks = Gc::write(&ctx, first_marks);
+        let first_marks = old_marks.car();
+        let new_marks = replace_or_add_mark(*ctx, first_marks.car(), key, pair);
+        /*let wmarks = Gc::write(&ctx, first_marks);
         barrier::field!(wmarks, CFrame, mark_set)
             .unlock()
             .set(new_marks);
-
+        */
+        first_marks.set_car(*ctx, new_marks);
         return cont_closure.into();
     } else {
         let new_marks = list!(*ctx, pair);
-        let cframe = Gc::new(
+        /*let cframe = Gc::new(
             ctx,
             CFrame {
                 parent: old_marks,
                 retk,
                 mark_set: Lock::new(new_marks),
             },
-        );
+        );*/
+        let cframe = Value::cons(*ctx, Value::cons(*ctx, new_marks, retk.into()), old_marks);
         unsafe {
-            ctx.state().set_current_marks(Some(cframe));
+            ctx.state().set_current_marks(cframe);
         }
 
         return cont_closure.into();
@@ -124,13 +116,22 @@ pub mod control_ops {
         let mut set = set.cmarks;
 
         let mut result = Vec::new();
-        while let Some(cmarks) = set {
+        /*while let Some(cmarks) = set {
             let mark_set = cmarks.mark_set.get();
 
             if let Some(val) = mark_set.assq(key) {
                 result.push(val.cdr());
             }
             set = cmarks.parent;
+        }*/
+
+        while !set.is_null() {
+            let mark_set = set.caar();
+            if let Some(val) = mark_set.assq(key) {
+                result.push(val.cdr());
+            }
+
+            set = set.cdr();
         }
 
         nctx.return_(
@@ -149,13 +150,22 @@ pub mod control_ops {
         let default_value = default_value.unwrap_or(Value::new(false));
         let mut set = set.cmarks;
 
-        while let Some(cmarks) = set {
+        /*while let Some(cmarks) = set {
             let mark_set = cmarks.mark_set.get();
 
             if let Some(val) = mark_set.assq(key) {
                 return nctx.return_(val.cdr());
             }
             set = cmarks.parent;
+        }*/
+
+        while !set.is_null() {
+            let mark_set = set.caar();
+            if let Some(val) = mark_set.assq(key) {
+                return nctx.return_(val.cdr());
+            }
+
+            set = set.cdr();
         }
 
         nctx.return_(default_value)
@@ -170,12 +180,12 @@ pub mod control_ops {
         let default_value = default_value.unwrap_or(Value::new(false));
 
         fn rec<'gc>(
-            mark_set: Option<CFrameRef<'gc>>,
+            mark_set: Value<'gc>,
             keys: Value<'gc>,
             default_value: Value<'gc>,
             ctx: Context<'gc>,
         ) -> Value<'gc> {
-            match mark_set {
+            /*match mark_set {
                 None => Value::null(),
                 Some(cmarks) if !keys.list_any(|key| cmarks.mark_set.get().assq(key).is_some()) => {
                     rec(cmarks.parent, keys, default_value, ctx)
@@ -191,10 +201,34 @@ pub mod control_ops {
                     .into(),
                     rec(cmarks.parent, keys, default_value, ctx),
                 ),
+            }*/
+            if mark_set.is_null() {
+                Value::null()
+            } else if !keys.list_any(|key| mark_set.caar().assq(key).is_some()) {
+                rec(mark_set.cdr(), keys, default_value, ctx)
+            } else {
+                Value::cons(
+                    ctx,
+                    keys.map(ctx, |key| match mark_set.caar().assq(key) {
+                        Some(val) => val.cdr(),
+                        None => default_value,
+                    })
+                    .list_to_vector(ctx)
+                    .into(),
+                    rec(mark_set.cdr(), keys, default_value, ctx),
+                )
             }
         }
 
         nctx.return_(rec(set.cmarks, keys, default_value, ctx))
+    }
+
+    /// Return a raw list of continuation frames.
+    ///
+    /// Note that changes to the continuation marks will be reflected in the frames.
+    #[scheme(name = "$continuation-marks-markss")]
+    pub fn continuation_marks_markss(marks: Gc<'gc, ContinuationMarks<'gc>>) -> Value<'gc> {
+        nctx.return_(marks.cmarks)
     }
 }
 

@@ -16,7 +16,7 @@
         continuation-mark-set->list
         continuation-mark-set->list*
         continuation-mark-set-first 
-        continuation-marks
+        continuation-next-marks
         continuation?)
     (import (core primitives)
             (core records))

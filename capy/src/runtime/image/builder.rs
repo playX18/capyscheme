@@ -116,19 +116,10 @@ impl<'gc> ImageBuilder<'gc> {
 
             let dynstate = self.ctx.dynamic_state();
             let winders = self.ctx.winders();
+            let marks = self.ctx.state().current_marks();
             self.write_value(dynstate)?;
             self.write_value(winders)?;
-            let cstart = self.write32(0)?;
-            let mut count = 0;
-            let mut cur = self.ctx.state().current_marks();
-            while let Some(marks) = cur {
-                self.write_value(marks.mark_set.get())?;
-                self.write_value(marks.retk.into())?;
-                cur = marks.parent;
-                count += 1;
-            }
-
-            self.patch32(cstart, count)?;
+            self.write_value(marks)?;
 
             let current_module = current_module(&self.ctx);
             self.write_value(current_module)?;
@@ -821,16 +812,7 @@ impl<'gc> ImageBuilder<'gc> {
     }
 
     pub fn write_cmarks(&mut self, cmarks: Gc<'gc, ContinuationMarks>) -> Result<'gc, ()> {
-        let mut cur = cmarks.cmarks;
-        let cstart = self.write32(0)?;
-        let mut count = 0;
-        while let Some(marks) = cur {
-            self.write_value(marks.mark_set.get())?;
-            self.write_value(marks.retk.into())?;
-            cur = marks.parent;
-            count += 1;
-        }
-        self.patch32(cstart, count)?;
+        self.write_value(cmarks.cmarks)?;
         Ok(())
     }
 
@@ -931,14 +913,8 @@ impl<'gc> ReferenceMapBuilder<'gc> {
         let winders = self.ctx.winders();
         self.enqueue_value(dynstate);
         self.enqueue_value(winders);
-        let mut cur = self.ctx.state().current_marks();
-
-        while let Some(marks) = cur {
-            self.enqueue_value(marks.mark_set.get());
-            self.enqueue_value(marks.retk.into());
-            cur = marks.parent;
-        }
-
+        let cur = self.ctx.state().current_marks();
+        self.enqueue_value(cur);
         let current_module = current_module(&self.ctx);
         self.enqueue_value(current_module);
         self.enqueue_value(proc);
@@ -1223,13 +1199,7 @@ impl<'gc> ReferenceMapBuilder<'gc> {
     }
 
     pub fn scan_continuation_marks(&mut self, wcm: Gc<'gc, ContinuationMarks<'gc>>) {
-        let mut cmarks = wcm.cmarks;
-
-        while let Some(marks) = cmarks {
-            self.enqueue_value(marks.mark_set.get());
-            self.enqueue_value(marks.retk.into());
-            cmarks = marks.parent;
-        }
+        self.enqueue_value(wcm.cmarks);
     }
 
     pub fn scan_syntax(&mut self, syntax: Gc<'gc, Syntax<'gc>>) {

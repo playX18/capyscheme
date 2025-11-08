@@ -14,7 +14,7 @@ use crate::{
         },
         vm::{
             VMResult, call_scheme, call_scheme_with_k, continue_to,
-            control::{CFrameRef, ContinuationMarks},
+            control::ContinuationMarks,
             debug,
             load::load_thunk_in_vicinity,
             threading::{Condition, Mutex, MutexKind, ThreadObject},
@@ -320,7 +320,7 @@ pub struct State<'gc> {
     /// Accumulator field which is used to pass yield interest
     /// to Rust code.
     pub(crate) accumulator: Cell<Value<'gc>>,
-    pub(crate) current_marks: Cell<Option<CFrameRef<'gc>>>,
+    pub(crate) current_marks: Cell<Value<'gc>>,
     pub(crate) winders: Cell<Value<'gc>>,
 }
 
@@ -406,7 +406,7 @@ impl<'gc> State<'gc> {
             thread_object,
             yield_reason: Cell::new(None),
             accumulator: Cell::new(Value::new(false)),
-            current_marks: Cell::new(None),
+            current_marks: Cell::new(Value::null()),
             winders: Cell::new(Value::null()),
         }
     }
@@ -415,7 +415,7 @@ impl<'gc> State<'gc> {
         Context { mc, state: self }
     }
 
-    pub fn current_marks(&self) -> Option<CFrameRef<'gc>> {
+    pub fn current_marks(&self) -> Value<'gc> {
         self.current_marks.get()
     }
 
@@ -425,7 +425,7 @@ impl<'gc> State<'gc> {
     ///
     /// This function is unsafe because it allows setting arbitrary continuation marks
     /// which may violate invariants expected by the runtime in places like exception handlers.
-    pub unsafe fn set_current_marks(&self, marks: Option<CFrameRef<'gc>>) {
+    pub unsafe fn set_current_marks(&self, marks: Value<'gc>) {
         self.current_marks.set(marks);
     }
 }
