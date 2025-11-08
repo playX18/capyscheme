@@ -16,5 +16,5 @@ fn main() {
         .with_define("GCObject", "void*", "<GCObject>")
         .generate()
         .expect("Unable to generate bindings")
-        .write_to_file("capy.h");
+        .write_to_file("capy-priv.h");
 }

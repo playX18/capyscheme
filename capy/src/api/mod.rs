@@ -62,6 +62,18 @@ pub extern "C" fn scm_new() -> ScmRef {
     ScmRef(Box::into_raw(Box::new(capy)))
 }
 
+/// Create a Scheme thread instance and VM from the given heap image.
+///
+/// This function can only be invoked once per process.
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_from_image(image_data: *const u8, image_size: usize) -> ScmRef {
+    let image_slice = unsafe { std::slice::from_raw_parts(image_data, image_size) };
+    let scm = Scheme::from_image(image_slice);
+    let capy = Scm { scheme: scm };
+    ScmRef(Box::into_raw(Box::new(capy)))
+}
+
+/// Free the Scheme thread instance created by [`scm_new()`](scm_new)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_free(scm: ScmRef) {
     unsafe {
@@ -122,6 +134,19 @@ pub unsafe extern "C" fn scm_enter<'gc>(
     res
 }
 
+/// Given a Scheme context, module name, and variable name,
+/// return the public variable reference or the default value
+///
+/// Example:
+///
+/// ```c
+/// ScmRef scm = scm_new();
+///
+/// scm_enter(scm, [](ContextRef ctx, void*){
+///     Value var = scm_public_ref(ctx, "boot cli", "enter", VALUE_NULL);
+/// }, NULL);
+///
+/// ```
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_public_ref<'gc>(
     ctx: ContextRef<'gc>,
@@ -135,6 +160,16 @@ pub extern "C" fn scm_public_ref<'gc>(
     ctx.public_ref(module_name, name).unwrap_or(default_value)
 }
 
+/// Given a Scheme context, module name, and variable name,
+/// return the private variable reference or the default value
+///
+/// Example:
+/// ```c
+/// ScmRef scm = scm_new();
+/// scm_enter(scm, [](ContextRef ctx, void*){
+///     Value var = scm_private_ref(ctx, "boot cli", "internal-variable", VALUE_NULL);
+/// }, NULL);
+/// ```
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_private_ref<'gc>(
     ctx: ContextRef<'gc>,
@@ -150,7 +185,7 @@ pub extern "C" fn scm_private_ref<'gc>(
 
 /// Intern a symbol with the given name in the Scheme context.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_intern_symbol<'gc>(ctx: &Context<'gc>, name: *const c_char) -> Value<'gc> {
+pub extern "C" fn scm_intern_symbol<'gc>(ctx: ContextRef<'gc>, name: *const c_char) -> Value<'gc> {
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
     ctx.intern(name)
 }
@@ -220,4 +255,216 @@ pub extern "C" fn scm_to_u64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
         }
         Err(_) => false,
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_i64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i64) -> bool {
+    match i64::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_f64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut f64) -> bool {
+    match f64::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_real_to_f64<'gc>(
+    ctx: ContextRef<'gc>,
+    value: Value<'gc>,
+    res: &mut f64,
+) -> bool {
+    match value.number() {
+        Some(n) => {
+            *res = n.real_to_f64(*ctx);
+            true
+        }
+        None => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_i32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i32) -> bool {
+    match i32::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_f32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut f32) -> bool {
+    match f32::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_i16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i16) -> bool {
+    match i16::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_to_i8<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i8) -> bool {
+    match i8::try_from_value(*ctx, value) {
+        Ok(v) => {
+            *res = v;
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_cons<'gc>(
+    ctx: ContextRef<'gc>,
+    car: Value<'gc>,
+    cdr: Value<'gc>,
+) -> Value<'gc> {
+    Value::cons(*ctx, car, cdr)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_set_car<'gc>(ctx: ContextRef<'gc>, pair: Value<'gc>, car: Value<'gc>) {
+    pair.set_car(*ctx, car);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_set_cdr<'gc>(ctx: ContextRef<'gc>, pair: Value<'gc>, cdr: Value<'gc>) {
+    pair.set_cdr(*ctx, cdr);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_vector_set<'gc>(
+    ctx: ContextRef<'gc>,
+    vector: Value<'gc>,
+    index: usize,
+    value: Value<'gc>,
+) {
+    let vector = vector.downcast::<Vector>();
+    let wvector = Gc::write(&ctx, vector);
+    wvector[index].unlock().set(value);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_tuple_set<'gc>(
+    ctx: ContextRef<'gc>,
+    tuple: Value<'gc>,
+    index: usize,
+    value: Value<'gc>,
+) {
+    let t = tuple.downcast::<Tuple>();
+    let wt = Gc::write(&ctx, t);
+    wt[index].unlock().set(value);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_string_set<'gc>(
+    ctx: ContextRef<'gc>,
+    string: Value<'gc>,
+    index: usize,
+    ch: u32,
+) {
+    const REPLACEMENT_CHAR: char = '\u{FFFD}';
+    let ch = std::char::from_u32(ch).unwrap_or(REPLACEMENT_CHAR);
+
+    Str::set(string.downcast(), &ctx, index, ch);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_string_ref<'gc>(
+    _ctx: ContextRef<'gc>,
+    string: Value<'gc>,
+    index: usize,
+) -> u32 {
+    string.downcast::<Str>().get(index).unwrap() as u32
+}
+
+pub type PrepareCallFn =
+    for<'gc> extern "C" fn(ctx: ContextRef<'gc>, args: &mut Value<'gc>, data: *mut c_void);
+
+pub type FinishCallFn = for<'gc> extern "C" fn(
+    ctx: ContextRef<'gc>,
+    success: bool,
+    result: Value<'gc>,
+    data: *mut c_void,
+) -> libc::c_int;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_call(
+    scm: ScmRef,
+    mod_name: *const c_char,
+    func_name: *const c_char,
+    prepare: PrepareCallFn,
+    data1: *mut c_void,
+    finish: FinishCallFn,
+    data2: *mut c_void,
+) -> libc::c_int {
+    unsafe {
+        let mod_name = CStr::from_ptr(mod_name).to_str().unwrap();
+        let func_name = CStr::from_ptr(func_name).to_str().unwrap();
+        scm.scheme.call(
+            mod_name,
+            func_name,
+            |ctx, args| {
+                let mut ls = Value::null();
+                let _ = prepare(
+                    ContextRef(&ctx as *const _ as *mut _, PhantomData),
+                    &mut ls,
+                    data1,
+                );
+                while !ls.is_null() {
+                    let next = ls.cdr();
+                    args.push(ls.car());
+                    ls = next;
+                }
+            },
+            |ctx, result| {
+                let (succ, val) = match result {
+                    Ok(v) => (true, v),
+                    Err(e) => (false, e),
+                };
+
+                finish(
+                    ContextRef(&ctx as *const _ as *mut _, PhantomData),
+                    succ,
+                    val,
+                    data2,
+                )
+            },
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_program_arguments<'gc>(ctx: ContextRef<'gc>) -> Value<'gc> {
+    crate::runtime::vm::base::get_program_arguments_fluid(*ctx)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_set_program_arguments<'gc>(ctx: ContextRef<'gc>, args: Value<'gc>) {
+    crate::runtime::vm::base::program_arguments_fluid(*ctx).set(*ctx, args);
 }
