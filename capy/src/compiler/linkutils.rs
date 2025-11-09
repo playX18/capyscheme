@@ -86,4 +86,12 @@ fn rlpaths(command: &mut Command) {
             .expect("Failed to get parent directory of current exe");
         command.arg("-L").arg(dir);
     }
+
+    if let Some(env) = std::env::var_os("LIBRARY_PATH") {
+        command.arg("-L").arg(env);
+    }
+
+    if let Some(env) = std::env::var_os("LD_LIBRARY_PATH") {
+        command.arg("-L").arg(env);
+    }
 }

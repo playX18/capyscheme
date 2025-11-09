@@ -2,7 +2,8 @@
 //!
 //! Exports most of the runtime functionality to C-compatible interface.
 
-use crate::runtime::value::conversions::*;
+use crate::runtime::{value::conversions::*, vm::load::load_thunk_in_vicinity};
+
 use libc::c_char;
 use std::{
     ffi::{CStr, c_void},
@@ -52,7 +53,7 @@ impl<'gc> std::ops::Deref for ContextRef<'gc> {
 /// Create a new Scheme thread instance.
 ///
 /// The thread instance will be attached to currently active VM or
-/// will initialize a new VM if there isn't any.    
+/// will initialize a new VM if there isn't any.
 ///
 /// For thread creation look at [`scm_fork()`](scm_fork).
 #[unsafe(no_mangle)]
@@ -71,6 +72,16 @@ pub extern "C" fn scm_from_image(image_data: *const u8, image_size: usize) -> Sc
     let scm = Scheme::from_image(image_slice);
     let capy = Scm { scheme: scm };
     ScmRef(Box::into_raw(Box::new(capy)))
+}
+
+#[unsafe(no_mangle)]
+pub fn scm_accumulator(ctx: ContextRef) -> Value {
+    ctx.state().accumulator.get()
+}
+
+#[unsafe(no_mangle)]
+pub fn scm_set_accumulator<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>) {
+    ctx.state().accumulator.set(value);
 }
 
 /// Free the Scheme thread instance created by [`scm_new()`](scm_new)
@@ -431,11 +442,8 @@ pub extern "C" fn scm_call(
             func_name,
             |ctx, args| {
                 let mut ls = Value::null();
-                let _ = prepare(
-                    ContextRef(&ctx as *const _ as *mut _, PhantomData),
-                    &mut ls,
-                    data1,
-                );
+                let ptr: *const Context = ctx as *const Context;
+                let _ = prepare(ContextRef(ptr as *mut _, PhantomData), &mut ls, data1);
                 while !ls.is_null() {
                     let next = ls.cdr();
                     args.push(ls.car());
@@ -449,7 +457,7 @@ pub extern "C" fn scm_call(
                 };
 
                 finish(
-                    ContextRef(&ctx as *const _ as *mut _, PhantomData),
+                    ContextRef(ctx as *const _ as *mut _, PhantomData),
                     succ,
                     val,
                     data2,
@@ -460,8 +468,76 @@ pub extern "C" fn scm_call(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn scm_resume_accumulator<'gc>(
+    scm: ScmRef,
+    prepare: PrepareCallFn,
+    data1: *mut c_void,
+    finish: FinishCallFn,
+    data2: *mut c_void,
+) -> libc::c_int {
+    let x = scm.scheme.call_value(
+        |ctx, real_args| {
+            let acc = ctx.state().accumulator.get();
+            let mut args = Value::null();
+            let ptr: *const Context = ctx as *const Context;
+            let _ = prepare(ContextRef(ptr as *mut _, PhantomData), &mut args, data1);
+            while !args.is_null() {
+                let next = args.cdr();
+                real_args.push(args.car());
+                args = next;
+            }
+            acc
+        },
+        |ctx, res| {
+            let ctx = ContextRef(ctx as *const _ as *mut _, PhantomData);
+            finish(
+                ctx,
+                res.is_ok(),
+                match res {
+                    Ok(val) => val,
+                    Err(val) => val,
+                },
+                data2,
+            )
+        },
+    );
+
+    x
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int {
+    let name = unsafe { CStr::from_ptr(name as _).to_str().unwrap() };
+
+    let x = scm.scheme.call_value(
+        |ctx, _| load_thunk_in_vicinity::<true>(*ctx, &name, None::<String>, true, None).unwrap(),
+        |_, res| matches!(res, Ok(_)),
+    );
+
+    if x { 0 } else { -1 }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn scm_program_arguments<'gc>(ctx: ContextRef<'gc>) -> Value<'gc> {
     crate::runtime::vm::base::get_program_arguments_fluid(*ctx)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_program_arguments_init<'gc>(
+    ctx: ContextRef<'gc>,
+    argc: usize,
+    argv: *const *const c_char,
+) {
+    unsafe {
+        let mut ls = Value::null();
+        for i in (0..argc).rev() {
+            let arg = CStr::from_ptr(*argv.add(i)).to_str().unwrap();
+            let str_value = ctx.str(arg);
+            ls = Value::cons(*ctx, str_value, ls);
+        }
+
+        crate::runtime::vm::base::program_arguments_fluid(*ctx).set(*ctx, ls);
+    }
 }
 
 #[unsafe(no_mangle)]

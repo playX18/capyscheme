@@ -120,6 +120,7 @@
                     ,(if interactive? 
                         `((@ (core repl) read-eval-print-loop))
                         '(exit 0)))))))
+    (format #t "args=~a~%" args)
     (if (pair? args)
         (begin 
             (set! arg0 (car args))

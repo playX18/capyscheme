@@ -631,7 +631,7 @@ impl Scheme {
         self.mutator.collect_garbage();
     }
 
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut should_init = false;
 
         // if VM is not initialized yet, we need to run init code

@@ -1,13 +1,7 @@
 [workspace]
 resolver = "3"
 
-members = [
-    "capy",
-    "capy-bin",
-    "capy-derive",
-    "capy-driver",
-
-]
+members = ["capy", "capy-derive"]
 default-members = ["capy"]
 
 [workspace.dependencies]
@@ -57,10 +51,9 @@ capy = { path = "capy" }
 capy-derive = { path = "capy-derive" }
 
 [profile.release]
-lto = false
 incremental = true
 rpath = true
-
+lto = true
 
 [profile.dev]
 incremental = true

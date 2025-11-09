@@ -7,13 +7,13 @@ target-path := if profile == "release" {
 } else {
     target-dir/'debug'
 }
-
+cc := 'clang'
 install-prefix := '~/.local'
 version := `cargo info capy | awk '/^version:/ {print $2}' | head -n 1`
 cross := "false"
 
 cargo-bin := if host-target != target {
-    
+
     "cross"
 } else {
     "cargo"
@@ -32,11 +32,16 @@ build portable:
     @echo "Version: {{version}}"
     @echo "Target path: {{target-path}}"
     @echo 'Building CapyScheme with profile '{{profile}}' for target '{{target}}''
-    
 
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std -Z build-std-features="optimize_for_size" --target {{target}} -p capy {{if portable == "true" { "--features portable" } else { "" } }}
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std -Z build-std-features="optimize_for_size" --target {{target}} -p capy-driver {{if portable == "true" { "--features portable" } else { "" } }}
-    {{cargo-bin}} build --profile {{profile}} -Zbuild-std=std -Z build-std-features="optimize_for_size" --target {{target}} -p capy-bin {{if portable == "true" { "--features portable" } else { "" } }}
+
+    {{cargo-bin}} build --profile {{profile}} --target {{target}} -p capy {{if portable == "true" { "--features portable" } else { "" } }}
+
+    @echo "Build boot binary & produce image"
+    {{cc}} bin/boot.c -o bin/boot -lcapy -L{{target-path}}
+    LD_LIBRARY_PATH={{target-path}} LIBRARY_PATH={{target-path}} CAPY_LOAD_PATH=./lib ./bin/boot
+    rm bin/boot
+    @echo "Build main capy binary"
+    {{cc}} bin/capy.c -L{{target-path}} -o bin/capy -lcapy -Wl,-rpath,"\$ORIGIN/"
 
 
 
@@ -48,20 +53,23 @@ install-portable: (build "true")
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}/extensions
     rsync --checksum -r lib {{install-prefix}}/share/capy/{{version}}
-    cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
-    cp '{{target-path}}/capyvm' {{install-prefix}}/share/capy/{{version}}/
+    cp 'bin/capy' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
-    #cp {{target-path}}/libcapy_*.* {{install-prefix}}/share/capy/{{version}}/extensions/
-   
+    cp capy.heap {{install-prefix}}/share/capy/{{version}}/
+    rm capy.heap
+    rm bin/capy
+    rm bin/boot
+
+
     @echo "CapyScheme installed to {{install-prefix}}/share/capy/{{version}}"
     @echo "Add {{install-prefix}}/share/capy/{{version}} to your PATH to use CapyScheme"
 
-install-scm: 
+install-scm:
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     rsync --checksum -r lib {{install-prefix}}/share/capy/{{version}}
 
-    
+
 tar: (build "true")
     @echo 'Creating tarball for CapyScheme version {{version}}'
     @-mkdir -p dist

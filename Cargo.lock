@@ -295,36 +295,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "capy-bin"
-version = "0.1.0"
-dependencies = [
- "capy",
-]
-
-[[package]]
 name = "capy-derive"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.108",
-]
-
-[[package]]
-name = "capy-driver"
-version = "0.1.0"
-dependencies = [
- "capy",
- "cranelift",
- "cranelift-codegen",
- "cranelift-jit",
- "cranelift-module",
- "cranelift-object",
- "env_logger",
- "libc",
- "libloading",
- "pretty",
- "target-lexicon",
 ]
 
 [[package]]
