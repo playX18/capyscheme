@@ -213,6 +213,7 @@ pub struct Globals<'gc> {
     pub loc_native_extension: Cell<Value<'gc>>,
     pub loc_compile_fallback_path: Cell<Value<'gc>>,
     pub loc_capy_root: Cell<Value<'gc>>,
+    pub loc_capy_sysroot: Cell<Value<'gc>>,
     pub loc_fresh_auto_compile: Cell<Value<'gc>>,
     pub loc_the_root_module: Cell<Value<'gc>>,
     pub loc_the_scm_module: Cell<Value<'gc>>,
@@ -409,6 +410,7 @@ impl<'gc> Globals<'gc> {
             loc_native_extension,
             loc_compile_fallback_path,
             loc_capy_root,
+            loc_capy_sysroot,
             loc_fresh_auto_compile,
             loc_the_root_module,
             loc_the_scm_module,
@@ -450,6 +452,7 @@ impl<'gc> Globals<'gc> {
         f(loc_native_extension);
         f(loc_compile_fallback_path);
         f(loc_capy_root);
+        f(loc_capy_sysroot);
         f(loc_fresh_auto_compile);
         f(loc_the_root_module);
         f(loc_the_scm_module);
@@ -589,6 +592,7 @@ impl<'gc> Globals<'gc> {
             loc_native_extension: Cell::new(loc_native_extension.into()),
             loc_compile_fallback_path: Cell::new(loc_compile_fallback_path.into()),
             loc_capy_root: Cell::new(loc_capy_root.into()),
+            loc_capy_sysroot: Cell::new(loc_capy_root.into()),
             loc_fresh_auto_compile: Cell::new(loc_fresh_auto_compile.into()),
             loc_the_root_module: Cell::new(loc_the_root_module.into()),
             loc_the_scm_module: Cell::new(loc_the_scm_module.into()),
@@ -633,6 +637,7 @@ impl<'gc> Globals<'gc> {
             loc_native_extension: Cell::new(Value::undefined()),
             loc_compile_fallback_path: Cell::new(Value::undefined()),
             loc_capy_root: Cell::new(Value::undefined()),
+            loc_capy_sysroot: Cell::new(Value::undefined()),
             loc_fresh_auto_compile: Cell::new(Value::undefined()),
             loc_the_root_module: Cell::new(Value::undefined()),
             loc_the_scm_module: Cell::new(Value::undefined()),

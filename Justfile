@@ -47,11 +47,7 @@ install-portable: (build "true")
     @echo 'Installing CapyScheme to {{install-prefix}}/share/capy/{{version}}'
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}/extensions
-    rsync --checksum -r boot {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r core {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r core.scm {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r stdlib {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r batteries {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r lib {{install-prefix}}/share/capy/{{version}}
     cp '{{target-path}}/capy' {{install-prefix}}/share/capy/{{version}}/
     cp '{{target-path}}/capyvm' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
@@ -63,11 +59,8 @@ install-portable: (build "true")
 
 install-scm: 
     @-mkdir -p {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r boot {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r core {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r core.scm {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r stdlib {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r batteries {{install-prefix}}/share/capy/{{version}}
+    rsync --checksum -r lib {{install-prefix}}/share/capy/{{version}}
+
     
 tar: (build "true")
     @echo 'Creating tarball for CapyScheme version {{version}}'
