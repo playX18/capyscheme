@@ -30,6 +30,7 @@ global!(
 
     pub loc_compile_fallback_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%compile-fallback-path", Value::null());
 
+    pub loc_sysroot<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%sysroot", Str::new(&ctx, env!("CARGO_MANIFEST_DIR"), true));
     pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(&ctx, env!("CARGO_MANIFEST_DIR"), true));
 
     pub loc_fresh_auto_compile<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%fresh-auto-compile", Value::new(false));
@@ -64,24 +65,16 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     let mut cpath = Value::null();
 
     if cfg!(feature = "portable") {
-        let exe_dir = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| PathBuf::from("."));
-        path = Value::cons(
-            ctx,
-            Str::new(&ctx, &exe_dir.to_string_lossy(), true).into(),
-            path,
-        );
+        let exe_dir = match std::env::var("CAPY_SYSROOT")
+        {
+            Ok(dir) => PathBuf::from(dir),
+            Err(_) => {
+                let exe_path = std::env::current_exe().expect("Failed to get current executable path");
+                exe_path.parent().expect("Failed to get executable directory").to_owned()
+            }
+        };
 
-        let batteris_dir = exe_dir.join("batteries");
-        path = Value::cons(
-            ctx,
-            Str::new(&ctx, &batteris_dir.to_string_lossy(), true).into(),
-            path,
-        );
-
-        let stdlib_dir = exe_dir.join("stdlib");
+        let stdlib_dir = exe_dir.join("lib");
         path = Value::cons(
             ctx,
             Str::new(&ctx, &stdlib_dir.to_string_lossy(), true).into(),
@@ -94,6 +87,8 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
             Str::new(&ctx, &_cpath.to_string_lossy(), true).into(),
             cpath,
         );
+
+        
     }
 
     if let Ok(load_path) = std::env::var("CAPY_LOAD_PATH") {
@@ -142,7 +137,9 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     use sha3::{Digest, Sha3_256};
 
     let mut hasher = Sha3_256::new();
-    hasher.update(path.as_ref().to_string_lossy().as_bytes());
+    let path = path.as_ref();
+
+    hasher.update(path.to_string_lossy().as_bytes());
     let bytes = hasher.finalize();
 
     let hex_string = hex::encode(bytes);
@@ -164,7 +161,9 @@ pub fn find_path_to<'gc>(
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
+    arch: Option<&str>,
 ) -> Result<Option<(PathBuf, PathBuf)>, Value<'gc>> {
+    let arch = arch.unwrap_or(std::env::consts::ARCH);
     let filename = filename.as_ref();
     let dir = in_vicinity.map(|p| p.as_ref().to_owned());
 
@@ -245,6 +244,7 @@ pub fn find_path_to<'gc>(
         })?,
         None => return Ok(None),
     };
+
     let hashed = hash_filename(&source_path);
     let mut compiled_file = None;
 
@@ -253,7 +253,7 @@ pub fn find_path_to<'gc>(
     while cpath.is_pair() {
         let dir = PathBuf::from(cpath.car().downcast::<Str>().to_string());
         if dir.is_dir() {
-            let candidate = dir.join(&hashed).with_extension(DYNLIB_EXTENSION);
+            let candidate = dir.join(arch).join(&hashed);
             if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some() {
                 compiled_file = Some(candidate);
             }
@@ -287,10 +287,12 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
-    _stx: bool,
+
+    arch: Option<&str>,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let filename = filename.as_ref();
-    let (source, compiled) = match find_path_to(ctx, filename, in_vicinity, resolve_relative)? {
+    let (source, compiled) = match find_path_to(ctx, filename, in_vicinity, resolve_relative, arch)?
+    {
         Some(v) => v,
         None => {
             return Err(make_io_error(
@@ -382,11 +384,19 @@ pub mod load_ops {
         filename: Gc<'gc, Str<'gc>>,
         resolve_relative: bool,
         in_vicinity: Option<Gc<'gc, Str<'gc>>>,
+        arch: Option<Gc<'gc, Str<'gc>>>,
     ) -> Result<Value<'gc>, Value<'gc>> {
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
         let filename = PathBuf::from(filename.as_ref().to_string());
+        let arch = arch.map(|s| s.as_str());
         let ctx = nctx.ctx;
-        let result = match find_path_to(ctx, filename, in_vicinity, resolve_relative) {
+        let result = match find_path_to(
+            ctx,
+            filename,
+            in_vicinity,
+            resolve_relative,
+            arch.as_ref().map(|x| x.as_ref()),
+        ) {
             Ok(v) => v,
             Err(err) => return nctx.return_(Err(err)),
         };
@@ -497,7 +507,7 @@ pub mod load_ops {
             filename,
             in_vicinity,
             resolve_relative,
-            false,
+            None,
         );
 
         nctx.return_(result)
@@ -511,13 +521,8 @@ pub mod load_ops {
     ) -> Result<Value<'gc>, Value<'gc>> {
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
         let filename = PathBuf::from(filename.as_ref().to_string());
-        let result = load_thunk_in_vicinity::<true>(
-            nctx.ctx,
-            filename,
-            in_vicinity,
-            resolve_relative,
-            false,
-        );
+        let result =
+            load_thunk_in_vicinity::<true>(nctx.ctx, filename, in_vicinity, resolve_relative, None);
 
         nctx.return_(result)
     }
@@ -540,7 +545,7 @@ pub mod load_ops {
             filename,
             in_vicinity,
             resolve_relative,
-            true,
+            None,
         );
 
         match result {
@@ -606,13 +611,15 @@ pub mod load_ops {
     }
 
     #[scheme(name = "%search-load-path")]
-    pub fn search_load_path(filename: StringRef<'gc>) -> Value<'gc> {
+    pub fn search_load_path(filename: StringRef<'gc>, arch: Option<StringRef<'gc>>) -> Value<'gc> {
         let ctx = nctx.ctx;
+        let arch = arch.map(|s| s.as_str());
         let result = find_path_to(
             ctx,
             PathBuf::from(filename.as_ref().to_string()),
             None::<PathBuf>,
             true,
+            arch.as_ref().map(|x| x.as_ref()),
         );
 
         match result {
