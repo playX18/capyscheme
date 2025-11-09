@@ -2400,7 +2400,17 @@ mod arith_operations {
     #[scheme(name = "fx-")]
     pub fn fx_minus(x: i32, rest: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
         if rest.is_empty() {
-            return nctx.return_(Ok(-x));
+            match x.checked_neg() {
+                Some(v) => return nctx.return_(Ok(v)),
+                None => {
+                    let x = x.into_value(nctx.ctx);
+                    return nctx.implementation_restriction_violation(
+                        "fx-",
+                        "integer overflow",
+                        &[x],
+                    );
+                }
+            }
         }
 
         let Some(mut acc) = rest[0].int32() else {
