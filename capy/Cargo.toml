@@ -64,7 +64,7 @@ version = "15.1.0"
 package = "im-rc"
 
 [lib]
-crate-type = ["dylib"]
+crate-type = ["cdylib"]
 
 [features]
 portable = []

@@ -65,12 +65,15 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     let mut cpath = Value::null();
 
     if cfg!(feature = "portable") {
-        let exe_dir = match std::env::var("CAPY_SYSROOT")
-        {
+        let exe_dir = match std::env::var("CAPY_SYSROOT") {
             Ok(dir) => PathBuf::from(dir),
             Err(_) => {
-                let exe_path = std::env::current_exe().expect("Failed to get current executable path");
-                exe_path.parent().expect("Failed to get executable directory").to_owned()
+                let exe_path =
+                    std::env::current_exe().expect("Failed to get current executable path");
+                exe_path
+                    .parent()
+                    .expect("Failed to get executable directory")
+                    .to_owned()
             }
         };
 
@@ -87,17 +90,15 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
             Str::new(&ctx, &_cpath.to_string_lossy(), true).into(),
             cpath,
         );
-
-        
     }
 
     if let Ok(load_path) = std::env::var("CAPY_LOAD_PATH") {
         let paths = load_path.split(':').map(|s| Str::new(&ctx, s, true).into());
-        let mut sig = path;
+        let mut sig = Value::null();
         for p in paths.rev() {
             sig = Value::cons(ctx, p, sig);
         }
-        path = sig;
+        path = sig.append(ctx, path);
     }
 
     if let Ok(compiled_path) = std::env::var("CAPY_LOAD_COMPILED_PATH") {
