@@ -16,20 +16,15 @@ $ just prefix=/usr/local/share install-portable
 
 ```
 
-After everything is installed you should add installed directory into PATH and run `capy` binary for the
-first time to build boot library. If you wish to use native extensions also add `extensions/` directory under prefix
+After everything is installed you should add installed directory into PATH.
+If you wish to use native extensions also add `extensions/` directory under prefix
 into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
 
-First boot should take around 30-40 seconds on decent systems, after that please restart the binary if you're
-entered interactive mode. 
+## GC limitations
 
-### NOTE
+Once the `capy` binary and heap image are built the GC algorithm is locked in. For example
+if you built with `MMTK_PLAN=GenImmix` env variable set you can only change GC plans to GenCopy 
+or StickyImmix when running this binary. 
 
-First boot might consume huge amounts of memory (5GiB+). This is fine and should not happen again. The only
-reason this happens is that GC is not able to run during CPS compiler optimizations and it allocates a lot of 
-new IR nodes during that which consume memory *very quickly&*. MMTK also does not help here as it does not
-unmap free pages so you have to either rely on your OS unmapping them or just have a lot of RAM. Build was tested
-on Macbook Air M4 with 16GiB of RAM and i5-13400f wit 64GiB of RAM.
-
-If you have low amounts of RAM try to perform first boot with `MMTK_GC_TRIGGER=DynamicHeapSize:256M,2G` environment
-variable set.
+If you want to run with concurrent Immix simply perform build with `MMTK_PLAN=ConcurrentImmix` env variable
+set.

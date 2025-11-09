@@ -5,7 +5,7 @@ use crate::{
     runtime::{
         fluids::DynamicState,
         global::{Globals, VM_GLOBALS},
-        image::reader::ImageReader,
+        image::{ALLOWED_GC, AllowedGC, reader::ImageReader},
         modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
@@ -22,9 +22,9 @@ use crate::{
     },
 };
 use rsgc::{
-    Gc, Mutation, Mutator, Rootable, Trace,
+    GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Rootable, Trace,
     barrier::{self},
-    mmtk::util::Address,
+    mmtk::util::{Address, options::PlanSelector},
 };
 use std::{
     cell::{Cell, UnsafeCell},
@@ -637,6 +637,22 @@ impl Scheme {
         // if VM is not initialized yet, we need to run init code
         SCM_INITIALIZED.call_once(|| {
             should_init = true;
+
+            let mmtk_builder = MMTKBuilder::new();
+            match *mmtk_builder.options.plan {
+                PlanSelector::GenImmix | PlanSelector::StickyImmix | PlanSelector::GenCopy => {
+                    let _ = ALLOWED_GC.set(AllowedGC::Generational).unwrap();
+                }
+
+                PlanSelector::ConcurrentImmix => {
+                    let _ = ALLOWED_GC.set(AllowedGC::Concurrent).unwrap();
+                }
+
+                _ => {
+                    let _ = ALLOWED_GC.set(AllowedGC::Regular).unwrap();
+                }
+            }
+            GarbageCollector::init(mmtk_builder);
         });
 
         let scm = Self {
@@ -663,6 +679,20 @@ impl Scheme {
     }
 
     pub fn from_image(image: &[u8]) -> Self {
+        let allowed_gc = match image[0] {
+            0 => AllowedGC::Generational,
+            1 => AllowedGC::Concurrent,
+            2 => AllowedGC::Regular,
+            _ => panic!("Invalid allowed GC type in image"),
+        };
+
+        let _ = ALLOWED_GC.set(allowed_gc).unwrap();
+        SCM_INITIALIZED.call_once(|| {
+            let mut mmtk_builder = MMTKBuilder::new();
+            allowed_gc.adjust_mmtk_options(&mut mmtk_builder.options);
+            GarbageCollector::init(mmtk_builder);
+        });
+
         let scm = Self {
             mutator: {
                 let m = Mutator::new(|mc| {

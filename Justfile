@@ -59,7 +59,7 @@ install-portable: (build "true")
     cp capy.heap {{install-prefix}}/share/capy/{{version}}/
     rm capy.heap
     rm bin/capy
-    rm bin/boot
+
 
 
     @echo "CapyScheme installed to {{install-prefix}}/share/capy/{{version}}"
