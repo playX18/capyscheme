@@ -91,12 +91,12 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
     //#[track_caller]
     pub fn deserialize(&mut self) -> std::io::Result<Image<'gc>> {
         self.native_procedures = super::all_native_procedures(self.ctx);
-
-        self.uncompress_libraries().unwrap();
-        self.read_dylibs().unwrap();
-        self.allocate_references().unwrap();
-        self.initialize_references().unwrap();
-        self.read_libraries_globals().unwrap();
+        let _ = self.read8()?;
+        self.uncompress_libraries()?;
+        self.read_dylibs()?;
+        self.allocate_references()?;
+        self.initialize_references()?;
+        self.read_libraries_globals()?;
 
         self.input.set_position(self.reference_map_end as u64);
 

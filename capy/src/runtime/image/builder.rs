@@ -20,6 +20,7 @@ use crate::{
     runtime::{
         Context,
         fluids::{DynamicStateObject, Fluid},
+        image::ALLOWED_GC,
         modules::Variable,
         vm::{
             control::ContinuationMarks,
@@ -105,6 +106,7 @@ impl<'gc> ImageBuilder<'gc> {
         self.fbase_to_lib = scan.fbase_to_lib;
         self.fbase_names = scan.fbase_names;
 
+        self.write8((*ALLOWED_GC.get().unwrap()) as u8)?;
         self.serialize_libraries()?;
         self.serialize_dylibs()?;
 

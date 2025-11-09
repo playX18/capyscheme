@@ -12,7 +12,12 @@
 //! When you add a new global variable through `global!`, `fluid!`, or similar macros
 //! you need to make sure to register them for iamge serialization appropriately.
 
-use rsgc::mmtk::util::Address;
+use std::sync::OnceLock;
+
+use rsgc::mmtk::util::{
+    Address,
+    options::{Options, PlanSelector},
+};
 
 use crate::runtime::Context;
 
@@ -173,3 +178,67 @@ pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
 
     native_procedures
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AllowedGC {
+    /// Allow only to enable generational GC plans:
+    /// - StickyImmix
+    /// - GenImmix
+    /// - GenCopy
+    Generational,
+    /// Allow only to enable concurrent GC plans:
+    /// - ConcurrentImmix
+    Concurrent,
+    /// Allow only to enable regular GC plans:
+    /// - MarkSweep
+    /// - Immix
+    /// - SemiSpace
+    Regular,
+}
+
+impl AllowedGC {
+    pub fn adjust_mmtk_options(&self, opts: &mut Options) {
+        match self {
+            AllowedGC::Generational => {
+                if !matches!(
+                    *opts.plan,
+                    PlanSelector::StickyImmix | PlanSelector::GenImmix | PlanSelector::GenCopy
+                ) {
+                    println!(
+                        ";; WARN: The loaded heap image only allows generational GC plans. Switching to GenImmix plan."
+                    );
+                    opts.plan.set(PlanSelector::GenImmix);
+                }
+            }
+
+            AllowedGC::Concurrent => {
+                if !matches!(*opts.plan, PlanSelector::ConcurrentImmix) {
+                    println!(
+                        ";; WARN: The loaded heap image only allows concurrent GC plans. Switching to ConcurrentImmix plan."
+                    );
+                    opts.plan.set(PlanSelector::ConcurrentImmix);
+                }
+            }
+
+            AllowedGC::Regular => {
+                if !matches!(
+                    *opts.plan,
+                    PlanSelector::MarkSweep | PlanSelector::Immix | PlanSelector::SemiSpace
+                ) {
+                    println!(
+                        ";; WARN: The loaded heap image only allows regular GC plans. Switching to Immix plan."
+                    );
+                    opts.plan.set(PlanSelector::Immix);
+                }
+            }
+        }
+    }
+}
+
+/// A global static which indicates which GC strategies are allowed when
+/// deserialized through the image. Image stores this information at the start.
+///
+/// If you build heap image with a specific GC flavor, you *only* can use similar
+/// algorithms.
+pub static ALLOWED_GC: OnceLock<AllowedGC> = OnceLock::new();

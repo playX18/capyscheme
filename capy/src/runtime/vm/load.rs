@@ -5,6 +5,7 @@ use crate::expander::free_vars::resolve_free_vars;
 use crate::expander::letrectify::letrectify;
 use crate::expander::{assignment_elimination, compile_cps, primitives};
 use crate::list;
+use crate::runtime::image::ALLOWED_GC;
 use crate::runtime::modules::{Module, Variable, current_module, define};
 use crate::runtime::value::*;
 use crate::runtime::vm::base::scm_log_level;
@@ -140,7 +141,10 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     let mut hasher = Sha3_256::new();
     let path = path.as_ref();
 
+    let gc_typ = ALLOWED_GC.get().unwrap();
+    let gc_typ = (*gc_typ) as u8;
     hasher.update(path.to_string_lossy().as_bytes());
+    hasher.update(&[gc_typ]);
     let bytes = hasher.finalize();
 
     let hex_string = hex::encode(bytes);
