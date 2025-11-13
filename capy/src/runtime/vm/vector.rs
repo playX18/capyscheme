@@ -920,6 +920,18 @@ pub mod vector_ops {
             );
         }
 
+        if (k + 4) & 0x3 != 0 {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "bytevector-ieee-single-native-ref",
+                "unaligned access",
+                Some(k.into_value(ctx)),
+                Some(1),
+                2,
+                &[bv.into(), k.into_value(ctx)],
+            );
+        }
+
         let bytes = &bv.as_slice()[k..k + 4];
         let value = f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         nctx.return_(Ok(value))
@@ -936,6 +948,18 @@ pub mod vector_ops {
             return nctx.wrong_argument_violation(
                 "bytevector-ieee-single-native-set!",
                 "index out of bounds",
+                Some(k.into_value(ctx)),
+                Some(1),
+                3,
+                &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
+            );
+        }
+
+        if (k + 4) & 0x3 != 0 {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "bytevector-ieee-single-native-set!",
+                "unaligned access",
                 Some(k.into_value(ctx)),
                 Some(1),
                 3,
@@ -971,6 +995,18 @@ pub mod vector_ops {
             );
         }
 
+        if (k + 8) & 0x7 != 0 {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "bytevector-ieee-double-native-ref",
+                "unaligned access",
+                Some(k.into_value(ctx)),
+                Some(1),
+                2,
+                &[bv.into(), k.into_value(ctx)],
+            );
+        }
+
         let bytes = &bv.as_slice()[k..k + 8];
         let value = f64::from_ne_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
@@ -989,6 +1025,18 @@ pub mod vector_ops {
             return nctx.wrong_argument_violation(
                 "bytevector-ieee-double-native-set!",
                 "index out of bounds",
+                Some(k.into_value(ctx)),
+                Some(1),
+                3,
+                &[bv.into(), k.into_value(ctx), value.into_value(ctx)],
+            );
+        }
+
+        if (k + 8) & 0x7 != 0 {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "bytevector-ieee-double-native-set!",
+                "unaligned access",
                 Some(k.into_value(ctx)),
                 Some(1),
                 3,
