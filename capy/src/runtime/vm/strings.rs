@@ -1077,7 +1077,7 @@ mod string_ops {
 
     #[scheme(name = "make-string")]
     pub fn make_string(length: usize, fill_char: Option<char>) -> Gc<'gc, Str<'gc>> {
-        let ch = fill_char.unwrap_or('\0');
+        let ch = fill_char.unwrap_or(0x20u8 as char);
         let s = Str::from_char(&nctx.ctx, ch, length);
         nctx.return_(s)
     }
