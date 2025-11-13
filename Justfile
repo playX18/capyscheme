@@ -24,7 +24,11 @@ install_cross := if cargo-bin == "cross" {
 } else {
     "Using cargo, no need to install cross"
 }
-
+rpath := if os() == "macos" {
+    "@loader_path/"
+} else {
+    "$ORIGIN"
+}
 
 # Build the project with the specified profile and target
 # by default, it builds in release mode for the host target
@@ -38,10 +42,10 @@ build portable:
 
     @echo "Build boot binary & produce image"
     {{cc}} bin/boot.c -o bin/boot -lcapy -L{{target-path}}
-    LD_LIBRARY_PATH={{target-path}} LIBRARY_PATH={{target-path}} CAPY_LOAD_PATH=./lib ./bin/boot
+    DYLD_FALLBACK_LIBRARY_PATH={{target-path}} LD_LIBRARY_PATH={{target-path}} LIBRARY_PATH={{target-path}} CAPY_LOAD_PATH=./lib ./bin/boot
     rm bin/boot
     @echo "Build main capy binary"
-    {{cc}} bin/capy.c -L{{target-path}} -o bin/capy -lcapy -Wl,-rpath,"\$ORIGIN/"
+    {{cc}} bin/capy.c -L{{target-path}} -o bin/capy -lcapy -Wl,-rpath,{{rpath}}
 
 
 
