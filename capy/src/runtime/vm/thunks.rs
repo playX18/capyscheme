@@ -585,8 +585,6 @@ thunks! {
     ) -> Gc<'gc, SavedCall<'gc>> {
         ctx.state.runstack.set(ctx.state.runstack_start);
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-
-
         let arr = Array::from_slice(&ctx, args);
 
         Gc::new(&ctx, SavedCall { rands: arr, rator, from_procedure: true })
