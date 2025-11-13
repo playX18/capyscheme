@@ -269,9 +269,10 @@
         (define (print-bytevector x p slashify level)
             (write-char #\# p)
             (cond 
-                ((io/port-allows-r7rs-weirdness? p) #t)
                 ((io/port-allows-r6rs-weirdness? p)
                     (write-char #\v p))
+                ((io/port-allows-r7rs-weirdness? p) #t)
+                
                 (else #t))
             (write-char #\u p)
             (write-char #\8 p)

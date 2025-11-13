@@ -3382,6 +3382,8 @@ impl<'gc> Number<'gc> {
         match lhs {
             Self::Fixnum(x) => match rhs {
                 Number::Fixnum(y) => {
+                    let x = x as i64;
+                    let y = y as i64;
                     let div = if x == 0 {
                         0
                     } else if x > 0 {
@@ -3389,10 +3391,10 @@ impl<'gc> Number<'gc> {
                     } else if y > 0 {
                         (x - y + 1) / y
                     } else {
-                        (x + y + 1).wrapping_div(y)
+                        (x + y + 1) / y
                     };
 
-                    return Number::Fixnum(div);
+                    return div.into_number(ctx);
                 }
 
                 _ => (),

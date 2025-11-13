@@ -1,4 +1,95 @@
 
+(define with-exception-handler #f)
+(define raise #f)
+(define raise-continuable #f)
+
+(let () 
+  (define (create-exception-stack p)
+    (let ([ls (list p)])
+      (set-cdr! ls ls)
+      ls))
+
+  (define (unhandled-exception-error val)
+    (.return-error val))
+
+  (define base-exception-handler 
+    (let ([p (make-thread-local-fluid unhandled-exception-error)])
+      (lambda args 
+        (cond 
+          [(null? args) (fluid-ref p)]
+          [else 
+            (let ([old (fluid-ref p)])
+              (fluid-set! p (car args))
+              old)]))))
+  
+  (define default-handler 
+    (lambda (x)
+      ((base-exception-handler) x)))
+
+  (define default-handler-stack (create-exception-stack default-handler))   
+
+  (define $current-handler-stack 
+    (let ([f (make-thread-local-fluid default-handler-stack)])
+      (lambda args
+        (if (null? args)
+            (fluid-ref f)
+            (let ([old (fluid-ref f)])
+              (fluid-set! f (car args))
+              old)))))
+
+  (set! with-exception-handler 
+    (lambda (handler thunk)
+      (unless (procedure? handler)
+        (error 'with-exception-handler "handler is not a procedure" handler))
+      (unless (procedure? thunk)
+        (error 'with-exception-handler "thunk is not a procedure" thunk))
+      
+      (let ([p $current-handler-stack] [y (cons handler ($current-handler-stack))])
+        (define (swap)
+          (let ([t (p)])
+            (p y)
+            (set! y t)))
+        (dynamic-wind 
+          swap
+          (lambda () (.with-handler handler thunk))
+          swap))))
+  (set! raise 
+    (lambda (obj)
+      (define stack (or ($current-handler-stack) default-handler-stack))
+      (define handler (car stack))
+
+      (let ([p $current-handler-stack] [y (cdr stack)])
+        (define (swap)
+          (let ([t (p)])
+            (p y)
+            (set! y t)))
+        (dynamic-wind 
+          swap 
+          (lambda ()
+            (handler obj)
+            (raise (make-non-continuable-violation)))
+          swap))))
+  
+  (set! raise-continuable 
+    (lambda (obj)
+      (define stack (or ($current-handler-stack) default-handler-stack))
+      (define handler (car stack))
+
+      (let ([p $current-handler-stack] [y (cdr stack)])
+        (define (swap)
+          (let ([t (p)])
+            (p y)
+            (set! y t)))
+        (dynamic-wind 
+          swap 
+          (lambda ()
+            (handler obj))
+          swap))))
+  
+      
+)
+
+
 (define (current-continuation-marks)
   (current-continuation-marks))
 
@@ -119,42 +210,4 @@
   (let ([k (lambda () (exit 1))])
     (set-procedure-property! k 'continuation
       (tuple '() '()))
-    k 
-  ))
-
-
-(define (unhandled-exception-error val)
-  (.return-error val))
-
-
-(define *basic-exception-handlers* (list unhandled-exception-error))
-
-(define *current-exception-handlers*
-  (let ([f (make-thread-local-fluid *basic-exception-handlers*)])
-    (lambda args
-      (if (null? args)
-          (fluid-ref f)
-          (let ([old (fluid-ref f)])
-            (fluid-set! f (car args))
-            old)))))
-
-
-(define (raise obj)
-  (.raise obj))
-
-(define (raise-continuable obj)
-  (let ((handlers (*current-exception-handlers*)))
-    (with-exception-handler (cadr handlers)
-      (lambda () ((car handlers) obj)))))
-
-(define (with-exception-handler handler thunk)
-  (let* ([previous-handlers (*current-exception-handlers*)]
-         [new-handlers (if handler
-                          (cons handler previous-handlers)
-                          previous-handlers)])
-    (dynamic-wind
-      (lambda ()
-        (*current-exception-handlers* new-handlers))
-      (lambda() (.with-handler handler thunk))
-      (lambda ()
-        (*current-exception-handlers* previous-handlers)))))
+    k))

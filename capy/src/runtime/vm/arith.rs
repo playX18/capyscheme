@@ -2555,6 +2555,12 @@ mod arith_operations {
             return nctx.implementation_restriction_violation("fxdiv", "integer overflow", &[x, y]);
         };*/
         let n = Number::integer_div(nctx.ctx, Number::Fixnum(x), Number::Fixnum(y));
+        if !matches!(n, Number::Fixnum(_)) {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.implementation_restriction_violation("fxdiv", "integer overflow", &[x, y]);
+        }
         nctx.return_(n)
     }
 
@@ -2572,7 +2578,16 @@ mod arith_operations {
             );
         }
         let n = Number::integer_div0(nctx.ctx, Number::Fixnum(x), Number::Fixnum(y));
-
+        if !matches!(n, Number::Fixnum(_)) {
+            let ctx = nctx.ctx;
+            let x = x.into_value(ctx);
+            let y = y.into_value(ctx);
+            return nctx.implementation_restriction_violation(
+                "fxdiv0",
+                "integer overflow",
+                &[x, y],
+            );
+        }
         nctx.return_(n)
     }
 
@@ -2696,7 +2711,7 @@ mod arith_operations {
 
     #[scheme(name = "fxbit-count")]
     pub fn fxbit_count(w: i32) -> i32 {
-        nctx.return_(w.count_ones() as i32)
+        nctx.return_(ExactInteger::Fixnum(w).bit_count(ctx) as i32)
     }
 
     #[scheme(name = "fxlength")]
@@ -2772,13 +2787,17 @@ mod arith_operations {
     #[scheme(name = "fxarithmetic-shift")]
     pub fn fxarithmetic_shift(fx1: i32, fx2: i32) -> i32 {
         if fx2 > -32 && fx2 < 32 {
+            let fx1 = fx1 as i64;
+            let fx2 = fx2 as i64;
             if fx2 > 0 {
-                if let Some(n) = fx1.checked_shl(fx2 as u32) {
-                    return nctx.return_(n);
+                let n = fx1 << fx2;
+                if (n >> fx2) == fx1 && (n >= i32::MIN as i64) && (n <= i32::MAX as i64) {
+                    return nctx.return_(n as i32);
                 }
             } else {
-                if let Some(n) = fx1.checked_shr((-fx2) as u32) {
-                    return nctx.return_(n);
+                let n = fx1 >> -fx2;
+                if n >= i32::MIN as i64 && n <= i32::MAX as i64 {
+                    return nctx.return_(n as i32);
                 }
             }
             let ctx = nctx.ctx;
@@ -2803,17 +2822,23 @@ mod arith_operations {
 
     #[scheme(name = "fxarithmetic-shift-left")]
     pub fn fxarithmetic_shift_left(fx1: i32, fx2: u32) -> i32 {
-        let Some(n) = fx1.checked_shl(fx2) else {
-            let ctx = nctx.ctx;
-            let fx1 = fx1.into_value(ctx);
-            let fx2 = fx2.into_value(ctx);
-            return nctx.implementation_restriction_violation(
-                "fxarithmetic-shift-left",
-                "shift amount is too large",
-                &[fx1, fx2],
-            );
-        };
-        nctx.return_(n)
+        let fx1 = fx1 as i64;
+        let fx2 = fx2 as i64;
+        if fx2 >= 0 && fx2 < 32 {
+            let n = fx1 << fx2;
+            if (n >> fx2) == fx1 && (n >= i32::MIN as i64) && (n <= i32::MAX as i64) {
+                return nctx.return_(n as i32);
+            }
+        }
+
+        let ctx = nctx.ctx;
+        let fx1 = fx1.into_value(ctx);
+        let fx2 = fx2.into_value(ctx);
+        return nctx.implementation_restriction_violation(
+            "fxarithmetic-shift-left",
+            "shift amount is too large",
+            &[fx1, fx2],
+        );
     }
 
     #[scheme(name = "fxarithmetic-shift-right")]

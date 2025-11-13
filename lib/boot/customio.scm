@@ -185,12 +185,15 @@
                        (n4 (quotient n0 4))
                        (s  (make-string n4))
                        (n  (read! s 0 n4)))
+                  
                   (cond ((not (fixnum? n)) 'error)
-                        ((fx=? 0) 'eof)
+                        ((fx=? 0 n) 'eof)
                         ((fx>? n 0)
+                          
                          (let* ((s  (if (= n n4) s (substring s 0 n)))
                                 (bv (string->utf8 s))
                                 (k  (bytevector-length bv)))
+                           
                            (r6rs:bytevector-copy! bv 0 buffer 0 k)
                            k))
                         (else 'error))))))

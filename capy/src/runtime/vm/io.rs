@@ -799,9 +799,27 @@ pub mod io_ops {
 
     #[scheme(name = "syscall:access")]
     pub fn syscall_access(filename: Gc<'gc, Str<'gc>>, mode: i32) -> i32 {
+        let mut rmode = 0;
+
+        if mode & 0x01 != 0 {
+            rmode |= libc::F_OK;
+        }
+
+        if mode & 0x02 != 0 {
+            rmode |= libc::R_OK;
+        }
+
+        if mode & 0x04 != 0 {
+            rmode |= libc::W_OK;
+        }
+
+        if mode & 0x08 != 0 {
+            rmode |= libc::X_OK;
+        }
+
         let cpath = CString::new(filename.to_string()).unwrap();
         unsafe {
-            let ret = libc::access(cpath.as_ptr(), mode);
+            let ret = libc::access(cpath.as_ptr(), rmode);
             nctx.return_(ret)
         }
     }
