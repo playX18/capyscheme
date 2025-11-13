@@ -40,7 +40,7 @@
 ;     if that's possible.)
 
 
-(define (format port-spec format-string . args)
+(define ($format port-spec format-string . args)
   (let ((port (cond ((output-port? port-spec) 
                      port-spec)
 		    ((eq? port-spec #t) 
@@ -188,4 +188,24 @@
         (get-output-string port)
         (unspecified))))
 
+
+(define (format arg1 . args)
+  (cond 
+    [(and (not (null? args)) (port? arg1))
+     (unless (and (output-port? arg1) (textual-port? arg1))
+      (error 'format "not a textual output port" arg1))
+     (apply $format arg1 args)]
+    [(boolean? arg1) (apply $format arg1 args)]
+    [else (apply $format #f (cons arg1 args))]))
+
+(define (printf cntl . args)
+  (apply format (current-output-port) cntl args))
+(define (fprintf port cntl . args)
+  (unless (and (output-port? port) (textual-port? port))
+    (error 'fprintf "not a textual output port" port))
+  (apply format port cntl args))
+
+
+
 ; eof
+
