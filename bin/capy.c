@@ -6,6 +6,11 @@
 #include <string.h>
 #include <unistd.h>
 
+
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
+
 char *find_heap(int *argc, char ***argv) {
   char *heap_path = NULL;
   char exe_path[PATH_MAX];
