@@ -192,7 +192,7 @@ impl<'gc> HashTable<'gc> {
     ) {
         if let HashTableType::Generic(_) = typ {
             let inner = InnerHashTable {
-                table: Lock::new(Array::with(&ctx, 0, |_, _| Lock::new(None))),
+                table: Lock::new(Array::with(*ctx, 0, |_, _| Lock::new(None))),
                 count: Cell::new(0),
                 threshold: Cell::new(0),
                 load_factor: 0.75,
@@ -215,7 +215,7 @@ impl<'gc> HashTable<'gc> {
         }
 
         let size = kvs.len().max(8);
-        let table = Array::with(&ctx, size, |_, _| Lock::new(None));
+        let table = Array::with(*ctx, size, |_, _| Lock::new(None));
         let threshold = (size as f64 * 0.75).ceil() as usize;
 
         let inner = InnerHashTable {
@@ -248,7 +248,7 @@ impl<'gc> HashTable<'gc> {
     }
 
     pub fn new(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         typ: HashTableType<'gc>,
         initial_capacity: usize,
         load_factor: f64,
@@ -307,7 +307,7 @@ impl<'gc> HashTable<'gc> {
     }
 
     pub fn new_immutable(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         typ: HashTableType<'gc>,
         initial_capacity: usize,
         load_factor: f64,
@@ -384,7 +384,7 @@ impl<'gc> HashTable<'gc> {
 
         let new_capacity = (old_capacity << 1) * 2;
 
-        let new_map = Array::with(&ctx, new_capacity, |_, _| Lock::new(None));
+        let new_map = Array::with(*ctx, new_capacity, |_, _| Lock::new(None));
 
         inner.mod_count.set(inner.mod_count.get() + 1);
         inner
@@ -400,11 +400,11 @@ impl<'gc> HashTable<'gc> {
             while let Some(entry) = old {
                 old = entry.next.get();
                 let index = (entry.hash % new_capacity as u64) as usize;
-                let wentry = Gc::write(&ctx, entry);
+                let wentry = Gc::write(*ctx, entry);
                 barrier::field!(wentry, Entry, next)
                     .unlock()
                     .set(new_map[index].get());
-                Gc::write(&ctx, new_map)[index].unlock().set(Some(entry));
+                Gc::write(*ctx, new_map)[index].unlock().set(Some(entry));
             }
         }
     }
@@ -424,11 +424,11 @@ impl<'gc> HashTable<'gc> {
             index = (inner.typ.hash(key) % inner.table.get().len() as u64) as usize;
         }
 
-        let tab = Gc::write(&ctx, inner.table.get());
+        let tab = Gc::write(*ctx, inner.table.get());
         let e = tab[index].get();
 
         tab[index].unlock().set(Some(Gc::new(
-            &ctx,
+            *ctx,
             Entry {
                 hash,
                 key,
@@ -450,7 +450,7 @@ impl<'gc> HashTable<'gc> {
         let value = value.into_value(ctx);
 
         let guard = self.inner.lock();
-        Gc::write(&ctx, self);
+        Gc::write(*ctx, self);
         let hash = guard.typ.hash(key);
         let index = (hash % guard.table.get().len() as u64) as usize;
 
@@ -459,7 +459,7 @@ impl<'gc> HashTable<'gc> {
         while let Some(entry) = e {
             if entry.hash == hash && guard.typ.equal(entry.key, key) {
                 let old_value = entry.value.get();
-                barrier::field!(Gc::write(&ctx, entry), Entry, value)
+                barrier::field!(Gc::write(*ctx, entry), Entry, value)
                     .unlock()
                     .set(value);
                 return Some(old_value);
@@ -481,7 +481,7 @@ impl<'gc> HashTable<'gc> {
 
     pub fn remove(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
         let guard = self.inner.lock();
-        Gc::write(&ctx, self);
+        Gc::write(*ctx, self);
         let hash = guard.typ.hash(key);
         let index = (hash % guard.table.get().len() as u64) as usize;
 
@@ -491,11 +491,11 @@ impl<'gc> HashTable<'gc> {
         while let Some(entry) = e {
             if entry.hash == hash && guard.typ.equal(entry.key, key) {
                 if let Some(prev_entry) = prev {
-                    barrier::field!(Gc::write(&ctx, prev_entry), Entry, next)
+                    barrier::field!(Gc::write(*ctx, prev_entry), Entry, next)
                         .unlock()
                         .set(entry.next.get());
                 } else {
-                    Gc::write(&ctx, guard.table.get())[index]
+                    Gc::write(*ctx, guard.table.get())[index]
                         .unlock()
                         .set(entry.next.get());
                 }
@@ -512,8 +512,8 @@ impl<'gc> HashTable<'gc> {
 
     pub fn clear(self: Gc<'gc, Self>, ctx: Context<'gc>) {
         let guard = self.inner.lock();
-        Gc::write(&ctx, self);
-        let table = Gc::write(&ctx, guard.table.get());
+        Gc::write(*ctx, self);
+        let table = Gc::write(*ctx, guard.table.get());
         for i in 0..table.len() {
             table[i].unlock().set(None);
         }
@@ -554,7 +554,7 @@ impl<'gc> HashTable<'gc> {
         let key = key.into_value(ctx);
 
         let guard = self.inner.lock();
-        Gc::write(&ctx, self);
+        Gc::write(*ctx, self);
         let hash = guard.typ.hash(key);
         let index = (hash % guard.table.get().len() as u64) as usize;
 
@@ -648,9 +648,9 @@ impl<'gc> HashTable<'gc> {
     pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>, immutable: bool) -> Gc<'gc, Self> {
         let guard = self.inner.lock();
         let new_table = if !immutable {
-            HashTable::new(&ctx, guard.typ, guard.table.get().len(), guard.load_factor)
+            HashTable::new(*ctx, guard.typ, guard.table.get().len(), guard.load_factor)
         } else {
-            HashTable::new_immutable(&ctx, guard.typ, guard.table.get().len(), guard.load_factor)
+            HashTable::new_immutable(*ctx, guard.typ, guard.table.get().len(), guard.load_factor)
         };
         drop(guard);
         for (k, v) in self.iter() {

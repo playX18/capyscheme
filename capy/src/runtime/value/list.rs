@@ -18,7 +18,7 @@ impl<'gc> Pair<'gc> {
         let mut hdr = ScmHeader::new();
         hdr.set_type_bits(TypeCode8::PAIR.bits() as _);
         let pair = Gc::new(
-            &mc,
+            *mc,
             Self {
                 header: hdr,
                 car: Lock::new(car),
@@ -48,13 +48,13 @@ impl<'gc> Pair<'gc> {
     }
 
     pub fn set_car(self: Gc<'gc, Self>, mc: Context<'gc>, value: Value<'gc>) {
-        barrier::field!(Gc::write(&mc, self), Pair, car)
+        barrier::field!(Gc::write(*mc, self), Pair, car)
             .unlock()
             .set(value);
     }
 
     pub fn set_cdr(self: Gc<'gc, Self>, mc: Context<'gc>, value: Value<'gc>) {
-        barrier::field!(Gc::write(&mc, self), Pair, cdr)
+        barrier::field!(Gc::write(*mc, self), Pair, cdr)
             .unlock()
             .set(value);
     }
@@ -189,7 +189,7 @@ impl<'gc> Value<'gc> {
     pub fn set_car(self, mc: Context<'gc>, value: Value<'gc>) {
         let pair = self.downcast::<Pair>();
 
-        barrier::field!(Gc::write(&mc, pair), Pair, car)
+        barrier::field!(Gc::write(*mc, pair), Pair, car)
             .unlock()
             .set(value);
     }
@@ -197,7 +197,7 @@ impl<'gc> Value<'gc> {
     pub fn set_cdr(self, mc: Context<'gc>, value: Value<'gc>) {
         let pair = self.downcast::<Pair>();
 
-        barrier::field!(Gc::write(&mc, pair), Pair, cdr)
+        barrier::field!(Gc::write(*mc, pair), Pair, cdr)
             .unlock()
             .set(value);
     }
@@ -468,12 +468,12 @@ impl<'gc> Value<'gc> {
             unreachable!("not a list")
         }
 
-        let vector = Vector::new::<false>(&mc, self.list_length(), Value::null());
+        let vector = Vector::new::<false>(*mc, self.list_length(), Value::null());
         let mut current = self;
         let mut index = 0;
 
         while current.is_pair() {
-            Gc::write(&mc, vector)[index].unlock().set(current.car());
+            Gc::write(*mc, vector)[index].unlock().set(current.car());
             index += 1;
             current = current.cdr();
         }

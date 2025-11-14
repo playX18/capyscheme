@@ -66,7 +66,7 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
             if Gc::ptr_eq(body, *prev_body) {
                 return t;
             }
-            Gc::new(&ctx, Term::Let(*name, *expr, body))
+            Gc::new(*ctx, Term::Let(*name, *expr, body))
         }
 
         Term::Letk(prev_ks, prev_body) => {
@@ -77,14 +77,14 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
             let ks = if ks.iter().zip(prev_ks.iter()).all(|(a, b)| a == b) {
                 *prev_ks
             } else {
-                Array::from_slice(&ctx, ks)
+                Array::from_slice(*ctx, ks)
             };
 
             let body = rec(ctx, *prev_body);
             if Gc::ptr_eq(body, *prev_body) && Gc::ptr_eq(ks, *prev_ks) {
                 return t;
             }
-            Gc::new(&ctx, Term::Letk(ks, body))
+            Gc::new(*ctx, Term::Letk(ks, body))
         }
 
         Term::Fix(funs, body) => {
@@ -92,10 +92,10 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
             let funs = funs
                 .iter()
                 .map(|f| f.with_body(ctx, rec(ctx, f.body())))
-                .collect_gc(&ctx);
+                .collect_gc(*ctx);
             let body = rec(ctx, *body);
 
-            let fix1 = Gc::new(&ctx, Term::Fix(funs, body));
+            let fix1 = Gc::new(*ctx, Term::Fix(funs, body));
 
             // (2) Identify contifiable SCCs (each yields (names, common_rc)).
             let cf = fix1.contifiables();
@@ -320,7 +320,7 @@ impl<'gc> Term<'gc> {
                         .collect();
 
                 Gc::new(
-                    &ctx,
+                    *ctx,
                     Cont {
                         name: f.name,
                         noinline: false,
@@ -338,20 +338,20 @@ impl<'gc> Term<'gc> {
                     },
                 )
             })
-            .collect_gc(&ctx);
-        let untouched: ArrayRef<'gc, FuncRef<'gc>> = untouched.into_iter().collect_gc(&ctx);
+            .collect_gc(*ctx);
+        let untouched: ArrayRef<'gc, FuncRef<'gc>> = untouched.into_iter().collect_gc(*ctx);
 
         let fix = if untouched.is_empty() {
             *body
         } else {
-            Gc::new(&ctx, Term::Fix(untouched, *body))
+            Gc::new(*ctx, Term::Fix(untouched, *body))
         };
 
         // Insert Letk as deep as possible; then rewrite Apps to Continue.
         transform_apps(
             push_down(
                 ctx,
-                &|body| TermRef::new(&ctx, Term::Letk(contified, body)),
+                &|body| TermRef::new(*ctx, Term::Letk(contified, body)),
                 fix,
                 ns,
             ),
@@ -373,7 +373,7 @@ fn push_in<'gc>(
     match *t {
         Term::Let(name, expr, body) => {
             let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, ns);
-            (pushed, TermRef::new(&ctx, Term::Let(name, expr, body1)))
+            (pushed, TermRef::new(*ctx, Term::Let(name, expr, body1)))
         }
 
         Term::Letk(ks, body) => {
@@ -386,7 +386,7 @@ fn push_in<'gc>(
                     (pushed, k.with_body(ctx, cbody1))
                 })
                 .unzip();
-            let ks1 = Array::from_slice(&ctx, ks1);
+            let ks1 = Array::from_slice(*ctx, ks1);
             let (pushed, body1) = push_in(ctx, wrap_with_cnts, body, ns);
             let pushed_count = pushed as usize + pushed_k.iter().filter(|&&x| x).count();
             // If more than one branch pushed the site, wrap above them
@@ -396,7 +396,7 @@ fn push_in<'gc>(
             } else {
                 (
                     pushed_count == 1,
-                    TermRef::new(&ctx, Term::Letk(ks1, body1)),
+                    TermRef::new(*ctx, Term::Letk(ks1, body1)),
                 )
             }
         }
@@ -417,7 +417,7 @@ fn push_in<'gc>(
 
             (
                 pushed_count == 1,
-                TermRef::new(&ctx, Term::Fix(Array::from_slice(&ctx, funs1), body1)),
+                TermRef::new(*ctx, Term::Fix(Array::from_slice(*ctx, funs1), body1)),
             )
         }
 
@@ -446,34 +446,34 @@ fn transform_apps<'gc>(t: TermRef<'gc>, ns: &Set<LVarRef<'gc>>, ctx: Context<'gc
     match *t {
         Term::App(Atom::Local(f), _, _, args, src) if ns.contains(&f) => {
             // Tail call now becomes a continuation jump.
-            Gc::new(&ctx, Term::Continue(f, args, src))
+            Gc::new(*ctx, Term::Continue(f, args, src))
         }
 
         Term::Let(name, expr, body) => {
             let body = transform_apps(body, ns, ctx);
-            Gc::new(&ctx, Term::Let(name, expr, body))
+            Gc::new(*ctx, Term::Let(name, expr, body))
         }
 
         Term::Fix(funs, body) => {
             let funs = funs
                 .iter()
                 .map(|f| f.with_body(ctx, transform_apps(f.body(), ns, ctx)))
-                .collect_gc(&ctx);
+                .collect_gc(*ctx);
 
             let body = transform_apps(body, ns, ctx);
 
-            Gc::new(&ctx, Term::Fix(funs, body))
+            Gc::new(*ctx, Term::Fix(funs, body))
         }
 
         Term::Letk(ks, body) => {
             let ks = ks
                 .iter()
                 .map(|k| k.with_body(ctx, transform_apps(k.body(), ns, ctx)))
-                .collect_gc(&ctx);
+                .collect_gc(*ctx);
 
             let body = transform_apps(body, ns, ctx);
 
-            Gc::new(&ctx, Term::Letk(ks, body))
+            Gc::new(*ctx, Term::Letk(ks, body))
         }
 
         _ => t,
@@ -493,7 +493,7 @@ impl<'gc> Term<'gc> {
                 if &expr == prev_expr && Gc::ptr_eq(body, *prev_body) {
                     return self;
                 }
-                TermRef::new(&ctx, Self::Let(*name, expr, body))
+                TermRef::new(*ctx, Self::Let(*name, expr, body))
             }
 
             Self::Letk(prev_ks, prev_body) => {
@@ -504,13 +504,13 @@ impl<'gc> Term<'gc> {
                 let ks = if ks.iter().zip(prev_ks.iter()).all(|(a, b)| a == b) {
                     *prev_ks
                 } else {
-                    Array::from_slice(&ctx, ks)
+                    Array::from_slice(*ctx, ks)
                 };
                 let body = prev_body.subst(ctx, subst);
                 if Gc::ptr_eq(body, *prev_body) && Gc::ptr_eq(ks, *prev_ks) {
                     return self;
                 }
-                TermRef::new(&ctx, Self::Letk(ks, body))
+                TermRef::new(*ctx, Self::Letk(ks, body))
             }
 
             Self::Fix(prev_funs, prev_body) => {
@@ -527,8 +527,8 @@ impl<'gc> Term<'gc> {
                 {
                     return self;
                 }
-                let funs = Array::from_slice(&ctx, funs);
-                TermRef::new(&ctx, Self::Fix(funs, body))
+                let funs = Array::from_slice(*ctx, funs);
+                TermRef::new(*ctx, Self::Fix(funs, body))
             }
 
             Self::App(prev_func, prev_k, prev_h, prev_args, src) => {
@@ -543,7 +543,7 @@ impl<'gc> Term<'gc> {
                 let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                     *prev_args
                 } else {
-                    Array::from_slice(&ctx, args)
+                    Array::from_slice(*ctx, args)
                 };
 
                 if &func == prev_func
@@ -554,7 +554,7 @@ impl<'gc> Term<'gc> {
                     return self;
                 }
 
-                TermRef::new(&ctx, Self::App(func, k, h, args, *src))
+                TermRef::new(*ctx, Self::App(func, k, h, args, *src))
             }
 
             Self::Continue(prev_k, prev_args, src) => {
@@ -566,12 +566,12 @@ impl<'gc> Term<'gc> {
                 let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                     *prev_args
                 } else {
-                    Array::from_slice(&ctx, args)
+                    Array::from_slice(*ctx, args)
                 };
                 if *prev_k == k && Gc::ptr_eq(args, *prev_args) {
                     return self;
                 }
-                TermRef::new(&ctx, Self::Continue(k, args, *src))
+                TermRef::new(*ctx, Self::Continue(k, args, *src))
             }
 
             Self::If {
@@ -594,7 +594,7 @@ impl<'gc> Term<'gc> {
                     if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                         prev_args.clone()
                     } else {
-                        Array::from_slice(&ctx, args)
+                        Array::from_slice(*ctx, args)
                     }
                 });
                 let alternative_args = prev_alternative_args.map(|prev_args| {
@@ -605,7 +605,7 @@ impl<'gc> Term<'gc> {
                     if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                         prev_args.clone()
                     } else {
-                        Array::from_slice(&ctx, args)
+                        Array::from_slice(*ctx, args)
                     }
                 });
 
@@ -621,7 +621,7 @@ impl<'gc> Term<'gc> {
                 }
 
                 TermRef::new(
-                    &ctx,
+                    *ctx,
                     Self::If {
                         test,
                         consequent,
@@ -666,7 +666,7 @@ impl<'gc> Cont<'gc> {
         let body = self.body().subst(ctx, subst);
         let k = self.with_body(ctx, body);
 
-        barrier::field!(Gc::write(&ctx, k), Cont, handler)
+        barrier::field!(Gc::write(*ctx, k), Cont, handler)
             .unlock()
             .set(handler);
         k
@@ -684,7 +684,7 @@ impl<'gc> Expression<'gc> {
                 let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                     prev_args
                 } else {
-                    Array::from_slice(&ctx, args)
+                    Array::from_slice(*ctx, args)
                 };
                 let h = subst.subst(h);
                 Self::PrimCall(name, args, h, src)

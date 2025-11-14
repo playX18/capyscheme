@@ -393,13 +393,13 @@ unsafe impl<'gc, T: Trace> Trace for NarrowGc<'gc, T> {
 }
 
 pub trait FromIteratorGc<'gc, A>: Sized {
-    fn from_iter_gc<T>(mc: &Mutation<'gc>, iter: T) -> Gc<'gc, Self>
+    fn from_iter_gc<T>(mc: Mutation<'gc>, iter: T) -> Gc<'gc, Self>
     where
         T: IntoIterator<Item = A>;
 }
 
 impl<'gc, A: Trace + Clone> FromIteratorGc<'gc, A> for Array<A> {
-    fn from_iter_gc<T>(mc: &Mutation<'gc>, iter: T) -> Gc<'gc, Self>
+    fn from_iter_gc<T>(mc: Mutation<'gc>, iter: T) -> Gc<'gc, Self>
     where
         T: IntoIterator<Item = A>,
     {
@@ -410,7 +410,7 @@ impl<'gc, A: Trace + Clone> FromIteratorGc<'gc, A> for Array<A> {
 pub trait IterGc<'gc> {
     type Item;
 
-    fn collect_gc<T>(self, mc: &Mutation<'gc>) -> Gc<'gc, T>
+    fn collect_gc<T>(self, mc: Mutation<'gc>) -> Gc<'gc, T>
     where
         T: FromIteratorGc<'gc, Self::Item>;
 }
@@ -418,7 +418,7 @@ pub trait IterGc<'gc> {
 impl<'gc, T: Iterator<Item = A>, A: Trace> IterGc<'gc> for T {
     type Item = A;
 
-    fn collect_gc<I>(self, mc: &Mutation<'gc>) -> Gc<'gc, I>
+    fn collect_gc<I>(self, mc: Mutation<'gc>) -> Gc<'gc, I>
     where
         I: FromIteratorGc<'gc, Self::Item>,
     {

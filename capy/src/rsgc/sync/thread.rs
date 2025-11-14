@@ -2,6 +2,7 @@ use crate::rsgc::{
     GarbageCollector, lab::LocalAllocationBuffer, mm::MemoryManager, mutator::MutatorState,
     sync::monitor::Monitor, traits::Trace,
 };
+use crate::runtime::State;
 use crate::utils::easy_bitfield::*;
 use mmtk::{
     AllocationSemantics, BarrierSelector, Mutator,
@@ -11,6 +12,7 @@ use mmtk::{
     },
 };
 use parking_lot::{Condvar, Mutex};
+use std::mem::MaybeUninit;
 use std::{
     cell::{RefCell, UnsafeCell},
     ptr::NonNull,
@@ -107,12 +109,14 @@ type ShouldBlockForGC = BitField<u64, bool, { IsBlockedForHandshake::NEXT_BIT },
 type IsBlockedForGC = BitField<u64, bool, { ShouldBlockForGC::NEXT_BIT }, 1, false>;
 type IsAboutToTerminate = BitField<u64, bool, { IsBlockedForGC::NEXT_BIT }, 1, false>;
 type ActiveMutatorContext = BitField<u64, bool, { IsAboutToTerminate::NEXT_BIT }, 1, false>;
+type ThreadStateInitialized = BitField<u64, bool, { ActiveMutatorContext::NEXT_BIT }, 1, false>;
 
+/// cbindgen:ignore
 #[repr(C)]
 #[derive()]
 pub struct Thread {
-    pub(crate) take_yieldpoint: AtomicI32,
     native_data: UnsafeCell<ThreadNativeData>,
+    pub(crate) take_yieldpoint: AtomicI32,
     yieldpoints_enabled_count: AtomicI32,
     id: AtomicU64,
     status_word: AtomicBitfieldContainer<u64>,
@@ -124,6 +128,10 @@ pub struct Thread {
 
 impl Thread {
     pub const TAKE_YIELDPOINT_OFFSET: usize = std::mem::offset_of!(Self, take_yieldpoint);
+    pub const NATIVE_DATA_OFFSET: usize = std::mem::offset_of!(Self, native_data);
+    pub const RT_STATE_OFFSET: usize =
+        Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, state);
+
     #[inline(always)]
     pub fn heap_base(&self) -> Address {
         self.heap_base
@@ -467,6 +475,23 @@ impl Thread {
         unsafe { self.native_data.get().as_mut().unwrap() }
     }
 
+    pub fn is_thread_state_initialized(&self) -> bool {
+        self.status_word.read::<ThreadStateInitialized>()
+    }
+
+    pub(crate) unsafe fn initialize_state<'gc>(&self, state: State<'gc>) {
+        unsafe {
+            assert!(!self.is_thread_state_initialized());
+            let state_ptr = self.native_data_mut().state.get();
+            state_ptr.write(MaybeUninit::new(std::mem::transmute(state)));
+            self.status_word.update::<ThreadStateInitialized>(true);
+        }
+    }
+
+    pub(crate) fn state_ptr(&self) -> *mut State<'static> {
+        self.native_data().state.get() as *mut State<'static>
+    }
+
     /// Create a new thread handle. The returned value
     /// is not a real system thread but rather an object that can be managed
     /// through [`ThreadManager`] efficiently. Once thread is actually spawned (`Mutator::try_new_with_thread` is called)
@@ -488,7 +513,7 @@ impl Thread {
         } else {
             (mmtk::memory_manager::starting_heap_address() - 4096, 3)
         };
-        Arc::new(Thread {
+        let this = Arc::new(Thread {
             heap_base,
             heap_shift,
             id: AtomicU64::new(0),
@@ -506,9 +531,12 @@ impl Thread {
                 lab: LocalAllocationBuffer::new(),
                 max_non_los_default_alloc_bytes: 0,
                 alloc_fastpath: AllocFastPath::None,
+                state: UnsafeCell::new(MaybeUninit::uninit()),
             }),
             index_in_thread_list: AtomicUsize::new(usize::MAX),
-        })
+        });
+
+        this 
     }
 
     /// Returns true if thread is managed by thread subsystem.
@@ -620,6 +648,8 @@ pub enum AllocFastPath {
     TLAB,
     None,
 }
+
+/// cbindgen:ignore
 #[repr(C)]
 pub struct ThreadNativeData {
     pub(crate) lab: LocalAllocationBuffer,
@@ -628,6 +658,7 @@ pub struct ThreadNativeData {
     pub(crate) barrier_selector: BarrierSelector,
     pub(crate) max_non_los_default_alloc_bytes: usize,
     pub(crate) alloc_fastpath: AllocFastPath,
+    pub(crate) state: UnsafeCell<MaybeUninit<State<'static>>>,
 }
 
 thread_local! {
@@ -703,6 +734,7 @@ impl BlockAdapter for GCBlockAdapter {
     }
 }
 
+/// cbindgen:ignore
 pub struct ThreadManager {
     threads: Mutex<Vec<Arc<Thread>>>,
     handshake_threads: Mutex<Vec<Arc<Thread>>>,
@@ -816,3 +848,4 @@ impl ThreadManager {
         }
     }
 }
+

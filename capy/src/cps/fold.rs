@@ -231,7 +231,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             if count > 32 {
                 return None;
             }
-            let tup = Tuple::new(&ctx, count, init);
+            let tup = Tuple::new(ctx, count, init);
 
             Some(tup.into())
         }
@@ -320,7 +320,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "symbol->string" => symbol_to_string(ctx, a) {
             if let Some(sym) = a.try_as::<Symbol>() {
-                Some(Value::new(sym.to_str(&ctx)))
+                Some(Value::new(sym.to_str(*ctx)))
             } else {
                 None
             }
@@ -926,8 +926,8 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                     return None;
                 }
 
-                let tup = Tuple::new(&ctx, args.len(), Value::undefined());
-                let wtup = Gc::write(&ctx, tup);
+                let tup = Tuple::new(*ctx, args.len(), Value::undefined());
+                let wtup = Gc::write(*ctx, tup);
 
                 for (i, val) in args.iter().enumerate() {
                     wtup[i].unlock().set(*val);
@@ -951,5 +951,5 @@ pub fn folding_table<'gc>(ctx: Context<'gc>) -> &'gc FoldingTable<'gc> {
             let table = build_table(ctx);
             Global::new(table)
         })
-        .fetch(&ctx)
+        .fetch(*ctx)
 }

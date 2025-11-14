@@ -29,7 +29,7 @@ pub fn cps_func<'a, 'gc>(
     let body = convert(builder, proc.body, return_cont, handler_cont);
     builder.current_meta = old_meta;
     Gc::new(
-        &builder.ctx,
+        *builder.ctx,
         Func {
             meta: proc.meta,
             args: proc.args,
@@ -59,14 +59,14 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
             .unwrap_or(Value::new(false));
 
         let seq = seq_from_slice(ctx, forms);
-        barrier::field!(Gc::write(&ctx, seq), super::core::Term, source)
+        barrier::field!(Gc::write(*ctx, seq), super::core::Term, source)
             .unlock()
             .set(source);
         seq
     };
 
     let proc = Proc {
-        args: Array::from_slice(&ctx, &[]),
+        args: Array::from_slice(*ctx, &[]),
         name: Value::new(false),
         body: form,
         source: form.source(),
@@ -137,7 +137,7 @@ pub fn get_primitive_table<'gc>(ctx: Context<'gc>) -> &'gc PrimitiveTable<'gc> {
             let table = make_primitive_table(ctx);
             Global::new(PrimitiveTable { table })
         })
-        .fetch(&ctx)
+        .fetch(*ctx)
 }
 
 impl<'gc> PrimitiveTable<'gc> {
@@ -179,7 +179,7 @@ pub fn assertion_violation<'gc>(
 ) -> TermRef<'gc> {
     let assertion_violation = Value::new(Symbol::from_str(cps.ctx, "assertion-violation"));
     let module = list!(cps.ctx, Value::new(Symbol::from_str(cps.ctx, "capy")));
-    let message = Atom::Constant(Value::new(Str::new(&cps.ctx, message, true)));
+    let message = Atom::Constant(Value::new(Str::new(*cps.ctx, message, true)));
     let opc = Atom::Constant(opc);
 
     module_box(
@@ -902,8 +902,8 @@ pub fn convert<'gc>(
                 );
 
                 return Gc::new(
-                    &cps.ctx,
-                    Term::Fix(Array::from_slice(&cps.ctx, &[func]), body),
+                    *cps.ctx,
+                    Term::Fix(Array::from_slice(*cps.ctx, &[func]), body),
                 );
             }
 
@@ -983,7 +983,7 @@ pub fn convert<'gc>(
             let mut body = convert(cps, let_.body, k, h);
 
             for (binding, expr) in let_.lhs.iter().zip(let_.rhs.iter()) {
-                let single = Array::from_slice(&cps.ctx, &[*binding]);
+                let single = Array::from_slice(*cps.ctx, &[*binding]);
                 if is_single_valued(*expr) {
                     body = with_cps!(cps;
                         letk (h) r#let (single...) @ src = body;
@@ -1029,8 +1029,8 @@ pub fn convert<'gc>(
                 let body = convert(cps, fix.body, k, h);
 
                 return Gc::new(
-                    &cps.ctx,
-                    Term::Fix(Array::from_slice(&cps.ctx, &funcs), body),
+                    *cps.ctx,
+                    Term::Fix(Array::from_slice(*cps.ctx, &funcs), body),
                 );
             }
 
@@ -1071,11 +1071,11 @@ pub fn convert<'gc>(
             };
 
             let letk_body = convert(cps, *producer, consumer_k_var, h);
-            let consumer_k = Gc::new(&cps.ctx, consumer_k);
+            let consumer_k = Gc::new(*cps.ctx, consumer_k);
 
             Gc::new(
-                &cps.ctx,
-                Term::Letk(Array::from_slice(&cps.ctx, &[consumer_k]), letk_body),
+                *cps.ctx,
+                Term::Letk(Array::from_slice(*cps.ctx, &[consumer_k]), letk_body),
             )
         }
 

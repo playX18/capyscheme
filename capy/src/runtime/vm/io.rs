@@ -36,7 +36,7 @@ pub mod io_ops {
             Some(buf) => {
                 let s = buf.to_string_lossy();
                 let ctx = nctx.ctx;
-                nctx.return_(Str::new(&ctx, &s, true))
+                nctx.return_(Str::new(*ctx, &s, true))
             }
             None => nctx.raise_io_error(
                 std::io::Error::new(std::io::ErrorKind::NotFound, "home directory not found"),
@@ -54,7 +54,7 @@ pub mod io_ops {
             Ok(name_osstr) => {
                 let name_str = name_osstr.to_string_lossy();
                 let ctx = nctx.ctx;
-                nctx.return_(Str::new(&ctx, &name_str, true))
+                nctx.return_(Str::new(*ctx, &name_str, true))
             }
             Err(err) => {
                 let error = err.to_string();
@@ -75,7 +75,7 @@ pub mod io_ops {
         let dir = p.parent().unwrap_or_else(|| std::path::Path::new(""));
         let s = dir.to_string_lossy();
         let ctx = nctx.ctx;
-        nctx.return_(Str::new(&ctx, &s, true))
+        nctx.return_(Str::new(*ctx, &s, true))
     }
 
     #[scheme(name = "getenv")]
@@ -83,7 +83,7 @@ pub mod io_ops {
         match std::env::var(var.to_string()) {
             Ok(s) => {
                 let ctx = nctx.ctx;
-                nctx.return_(Str::new(&ctx, &s, true).into())
+                nctx.return_(Str::new(*ctx, &s, true).into())
             }
             Err(_) => nctx.return_(Value::new(false)),
         }
@@ -100,7 +100,7 @@ pub mod io_ops {
                 for entry in entries {
                     if let Ok(entry) = entry {
                         let name = entry.file_name().to_string_lossy().into_owned();
-                        ls = Value::cons(ctx, Str::new(&ctx, &name, true).into(), ls);
+                        ls = Value::cons(ctx, Str::new(*ctx, &name, true).into(), ls);
                     }
                 }
                 ls = ls.list_reverse(ctx);
@@ -125,7 +125,7 @@ pub mod io_ops {
             Some(path) => match std::env::set_current_dir(path.to_string()) {
                 Ok(()) => {
                     let ctx = nctx.ctx;
-                    nctx.return_(Str::new(&ctx, &path.to_string(), true))
+                    nctx.return_(Str::new(*ctx, &path.to_string(), true))
                 }
                 Err(err) => {
                     let error = err.to_string();
@@ -143,7 +143,7 @@ pub mod io_ops {
                 Ok(buf) => {
                     let s = buf.to_string_lossy();
                     let ctx = nctx.ctx;
-                    nctx.return_(Str::new(&ctx, &s, true))
+                    nctx.return_(Str::new(*ctx, &s, true))
                 }
                 Err(err) => {
                     let error = err.to_string();
@@ -413,7 +413,7 @@ pub mod io_ops {
         let buf = std::env::current_dir().unwrap_or_default();
         let s = buf.to_string_lossy();
         let ctx = nctx.ctx;
-        nctx.return_(Str::new(&ctx, &s, true))
+        nctx.return_(Str::new(*ctx, &s, true))
     }
 
     #[scheme(name = "file-exists?")]
@@ -612,7 +612,7 @@ pub mod io_ops {
             let ret = libc::mkstemp(arr.as_mut_ptr() as *mut _);
             let newname = std::ffi::CStr::from_ptr(arr.as_ptr() as _).to_string_lossy();
             let ctx = nctx.ctx;
-            let gname = Str::new(&ctx, &newname, true);
+            let gname = Str::new(*ctx, &newname, true);
             let res = crate::list!(ctx, ret, gname);
             nctx.return_(res)
         }
@@ -782,7 +782,7 @@ pub mod io_ops {
             }
 
             let tm = libc::localtime(&buf.st_mtime);
-            let wbuf = Gc::write(&nctx.ctx, vbuf);
+            let wbuf = Gc::write(*nctx.ctx, vbuf);
             wbuf[0]
                 .unlock()
                 .set((1900 + (*tm).tm_year).into_value(nctx.ctx));
@@ -829,8 +829,8 @@ pub mod io_ops {
         let ctx = nctx.ctx;
         let mut alist = Value::null();
         for (key, value) in std::env::vars() {
-            let key_str = Str::new(&ctx, &key, true);
-            let value_str = Str::new(&ctx, &value, true);
+            let key_str = Str::new(*ctx, &key, true);
+            let value_str = Str::new(*ctx, &value, true);
             let pair = Value::cons(ctx, key_str.into(), value_str.into());
             alist = Value::cons(ctx, pair, alist);
         }
@@ -867,7 +867,7 @@ pub mod io_ops {
         let errno = ::errno::errno();
         let message = errno.to_string();
         let ctx = nctx.ctx;
-        nctx.return_((errno.0, Str::new(&ctx, &message, true)))
+        nctx.return_((errno.0, Str::new(*ctx, &message, true)))
     }
 
     #[scheme(name = "acquire-lockfile")]

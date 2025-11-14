@@ -61,7 +61,7 @@ pub struct ThreadObject<'gc> {
 }
 
 impl<'gc> ThreadObject<'gc> {
-    pub(crate) fn new(mc: &Mutation<'gc>, entrypoint: Option<Value<'gc>>) -> Gc<'gc, Self> {
+    pub(crate) fn new(mc: Mutation<'gc>, entrypoint: Option<Value<'gc>>) -> Gc<'gc, Self> {
         let obj = ThreadObject {
             header: ScmHeader::with_type_bits(TypeCode8::THREAD.bits() as _),
 
@@ -81,11 +81,11 @@ unsafe impl<'gc> Tagged for ThreadObject<'gc> {
 pub mod threading_ops {
     #[scheme(name = "fork-thread")]
     pub fn fork_thread(thunk: Gc<'gc, Closure<'gc>>) -> Value<'gc> {
-        let thread_obj = ThreadObject::new(&nctx.ctx, Some(thunk.into()));
+        let thread_obj = ThreadObject::new(*nctx.ctx, Some(thunk.into()));
 
         let val: Value<'gc> = thread_obj.into();
         let bits = val.bits();
-        let dynamic_state = nctx.ctx.state.dynamic_state.save(nctx.ctx);
+        let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
         let dynamic_state_bits = dynamic_state.bits();
         let thread_started = std::sync::Arc::new(std::sync::Barrier::new(2));
         let thread_started_clone = thread_started.clone();
@@ -96,7 +96,7 @@ pub mod threading_ops {
 
             scm.call_value(
                 |ctx, _args| {
-                    let thunk = ctx.state.thread_object.entrypoint.unwrap();
+                    let thunk = ctx.state().thread_object.entrypoint.unwrap();
                     thunk
                 },
                 |ctx, result| {
@@ -119,7 +119,7 @@ pub mod threading_ops {
 
     #[scheme(name = "current-thread")]
     pub fn current_thread() -> Value<'gc> {
-        let thread_obj = nctx.ctx.state.thread_object;
+        let thread_obj = nctx.ctx.state().thread_object;
         nctx.return_(thread_obj.into())
     }
 

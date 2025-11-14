@@ -110,7 +110,7 @@ where
 
     /// Get a temporary access to a global root which is valid for the lifetime
     /// of current heap mutation.
-    pub fn fetch<'gc>(&self, mc: &Mutation<'gc>) -> &Root<'gc, R> {
+    pub fn fetch<'gc>(&self, mc: Mutation<'gc>) -> &Root<'gc, R> {
         unsafe {
             let _ = mc;
             let root = &*self.root.as_ptr();

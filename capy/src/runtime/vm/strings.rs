@@ -594,7 +594,7 @@ mod string_ops {
     #[scheme(name = "string-append")]
     pub fn string_append(strs: &'gc [Value<'gc>]) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         if strs.len() == 0 {
-            let s = Str::new(&nctx.ctx, "", false);
+            let s = Str::new(*nctx.ctx, "", false);
             return nctx.return_(Ok(s));
         }
 
@@ -629,7 +629,7 @@ mod string_ops {
 
             buffer.push_str(&str.downcast::<Str>().to_string());
         }
-        let s = Ok(Str::new(&nctx.ctx, &buffer, false));
+        let s = Ok(Str::new(*nctx.ctx, &buffer, false));
         nctx.return_(s)
     }
 
@@ -677,7 +677,7 @@ mod string_ops {
 
     #[scheme(name = "symbol->string")]
     pub fn symbol_to_string(sym: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let s = sym.to_str(&nctx.ctx);
+        let s = sym.to_str(*nctx.ctx);
 
         nctx.return_(s)
     }
@@ -690,7 +690,7 @@ mod string_ops {
 
     #[scheme(name = "string->uninterned-symbol")]
     pub fn string_to_uninterned_symbol(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
-        let sym = Symbol::from_string_uninterned(&nctx.ctx, str, None);
+        let sym = Symbol::from_string_uninterned(*nctx.ctx, str, None);
         nctx.return_(sym)
     }
 
@@ -734,7 +734,7 @@ mod string_ops {
         }
 
         for i in start..end {
-            Str::set(str, &nctx.ctx, i, ch);
+            Str::set(str, *nctx.ctx, i, ch);
         }
 
         nctx.return_(Value::undefined())
@@ -769,7 +769,7 @@ mod string_ops {
             );
         }
 
-        let s = Str::substring(str, &nctx.ctx, start, end);
+        let s = Str::substring(str, *nctx.ctx, start, end);
 
         nctx.return_(Ok(s))
     }
@@ -791,7 +791,7 @@ mod string_ops {
 
     #[scheme(name = "string-copy")]
     pub fn string_copy(s1: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
-        let s2 = Str::substring_copy(s1, &nctx.ctx, 0, s1.len());
+        let s2 = Str::substring_copy(s1, *nctx.ctx, 0, s1.len());
         nctx.return_(s2)
     }
 
@@ -1047,7 +1047,7 @@ mod string_ops {
             .split(ch)
             .rev()
             .fold(Value::null(), |acc, part| {
-                Value::cons(nctx.ctx, Str::new(&nctx.ctx, part, false).into(), acc)
+                Value::cons(nctx.ctx, Str::new(*nctx.ctx, part, false).into(), acc)
             });
         nctx.return_(parts)
     }
@@ -1071,14 +1071,14 @@ mod string_ops {
             buffer.push(ch);
         }
 
-        let s = Str::new(&nctx.ctx, &buffer, false);
+        let s = Str::new(*nctx.ctx, &buffer, false);
         nctx.return_(Ok(s))
     }
 
     #[scheme(name = "make-string")]
     pub fn make_string(length: usize, fill_char: Option<char>) -> Gc<'gc, Str<'gc>> {
         let ch = fill_char.unwrap_or(0x20u8 as char);
-        let s = Str::from_char(&nctx.ctx, ch, length);
+        let s = Str::from_char(*nctx.ctx, ch, length);
         nctx.return_(s)
     }
 
@@ -1115,7 +1115,7 @@ mod string_ops {
             );
         }
 
-        Str::set(str, &nctx.ctx, index, ch);
+        Str::set(str, *nctx.ctx, index, ch);
 
         nctx.return_(Ok(()))
     }
@@ -1124,7 +1124,7 @@ mod string_ops {
     pub fn utf8_to_string(bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
         match std::str::from_utf8(&bytes.as_slice()[..]) {
             Ok(s) => {
-                let str = Str::new(&nctx.ctx, s, false);
+                let str = Str::new(*nctx.ctx, s, false);
                 nctx.return_(Ok(str))
             }
             Err(_) => nctx.wrong_argument_violation(
@@ -1141,7 +1141,7 @@ mod string_ops {
     #[scheme(name = "string->utf8")]
     pub fn string_to_utf8(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
         let bytes = str.to_string().into_bytes();
-        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        let bytevec = ByteVector::from_slice(*nctx.ctx, &bytes, true);
         nctx.return_(bytevec)
     }
 
@@ -1149,7 +1149,7 @@ mod string_ops {
     pub fn string_to_utf8_nul(str: Gc<'gc, Str<'gc>>) -> Gc<'gc, ByteVector> {
         let mut bytes = str.to_string().into_bytes();
         bytes.push(0); // NUL terminator
-        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        let bytevec = ByteVector::from_slice(*nctx.ctx, &bytes, true);
         nctx.return_(bytevec)
     }
 
@@ -1182,7 +1182,7 @@ mod string_ops {
 
         let s = String::from_utf16_lossy(&utf16_data[..]);
 
-        let str = Str::new(&nctx.ctx, &s, false);
+        let str = Str::new(*nctx.ctx, &s, false);
         nctx.return_(Ok(str))
     }
 
@@ -1202,7 +1202,7 @@ mod string_ops {
             bytes.extend_from_slice(&ebytes);
         }
 
-        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        let bytevec = ByteVector::from_slice(*nctx.ctx, &bytes, true);
         nctx.return_(bytevec)
     }
 
@@ -1241,7 +1241,7 @@ mod string_ops {
             bytes.extend_from_slice(&code_point.to_le_bytes());
         }
 
-        let bytevec = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        let bytevec = ByteVector::from_slice(*nctx.ctx, &bytes, true);
         nctx.return_(bytevec)
     }
 
@@ -1301,7 +1301,7 @@ mod string_ops {
             }
             i += 4;
         }
-        let str = Str::new(&nctx.ctx, &s, false);
+        let str = Str::new(*nctx.ctx, &s, false);
 
         nctx.return_(Ok(str))
     }
@@ -1392,7 +1392,7 @@ mod string_ops {
             );
         }
 
-        let s = Str::new(&nctx.ctx, &buffer, false);
+        let s = Str::new(*nctx.ctx, &buffer, false);
         nctx.return_(Ok(s))
     }
 
@@ -1922,7 +1922,7 @@ mod string_ops {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let str = str.to_string();
         let lowercased = cm.lowercase_to_string(&str, &icu::locale::langid!("und"));
-        let s = Str::new(&nctx.ctx, &lowercased, false);
+        let s = Str::new(*nctx.ctx, &lowercased, false);
         nctx.return_(s)
     }
 
@@ -1931,7 +1931,7 @@ mod string_ops {
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let str = str.to_string();
         let folded = cm.fold_string(&str);
-        let s = Str::new(&nctx.ctx, &folded, false);
+        let s = Str::new(*nctx.ctx, &folded, false);
         nctx.return_(s)
     }
 
@@ -1940,7 +1940,7 @@ mod string_ops {
         let str = str.to_string();
         let cm = icu::casemap::CaseMapperBorrowed::new();
         let uppercased = cm.uppercase_to_string(&str, &icu::locale::langid!("und"));
-        let s = Str::new(&nctx.ctx, &uppercased, false);
+        let s = Str::new(*nctx.ctx, &uppercased, false);
         nctx.return_(s)
     }
 
@@ -1959,7 +1959,7 @@ mod string_ops {
                 ch.is_whitespace() || get_general_category(ch) == GeneralCategory::DashPunctuation;
         }
 
-        let s = Str::new(&nctx.ctx, &result, false);
+        let s = Str::new(*nctx.ctx, &result, false);
         nctx.return_(s)
     }
 
@@ -1996,7 +1996,7 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfc().collect();
-        let s = Str::new(&nctx.ctx, &normalized, false);
+        let s = Str::new(*nctx.ctx, &normalized, false);
         nctx.return_(s)
     }
 
@@ -2005,7 +2005,7 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfd().collect();
-        let s = Str::new(&nctx.ctx, &normalized, false);
+        let s = Str::new(*nctx.ctx, &normalized, false);
         nctx.return_(s)
     }
 
@@ -2014,7 +2014,7 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfkc().collect();
-        let s = Str::new(&nctx.ctx, &normalized, false);
+        let s = Str::new(*nctx.ctx, &normalized, false);
         nctx.return_(s)
     }
 
@@ -2023,7 +2023,7 @@ mod string_ops {
         use unicode_normalization::UnicodeNormalization;
 
         let normalized: String = str.to_string().nfkd().collect();
-        let s = Str::new(&nctx.ctx, &normalized, false);
+        let s = Str::new(*nctx.ctx, &normalized, false);
         nctx.return_(s)
     }
 }

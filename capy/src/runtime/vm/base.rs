@@ -32,7 +32,7 @@ pub mod base_ops {
     #[scheme(name = "implementation-version")]
     pub fn implementation_version() -> Value<'gc> {
         let version = env!("CARGO_PKG_VERSION");
-        let version = Str::new(&nctx.ctx, version, true);
+        let version = Str::new(*nctx.ctx, version, true);
         nctx.return_(version.into())
     }
 
@@ -49,19 +49,19 @@ pub mod base_ops {
 
     #[scheme(name = "host-arch")]
     pub fn host_target() -> Value<'gc> {
-        let target = Str::new(&nctx.ctx, std::env::consts::ARCH, true);
+        let target = Str::new(*nctx.ctx, std::env::consts::ARCH, true);
         nctx.return_(target.into())
     }
 
     #[scheme(name = "host-os")]
     pub fn host_os() -> Value<'gc> {
-        let os = Str::new(&nctx.ctx, std::env::consts::OS, true);
+        let os = Str::new(*nctx.ctx, std::env::consts::OS, true);
         nctx.return_(os.into())
     }
 
     #[scheme(name = "host-family")]
     pub fn host_family() -> Value<'gc> {
-        let family = Str::new(&nctx.ctx, std::env::consts::FAMILY, true);
+        let family = Str::new(*nctx.ctx, std::env::consts::FAMILY, true);
         nctx.return_(family.into())
     }
 
@@ -73,21 +73,21 @@ pub mod base_ops {
             std::env::consts::OS,
             std::env::consts::FAMILY
         );
-        let triple = Str::new(&nctx.ctx, &triple, true);
+        let triple = Str::new(*nctx.ctx, &triple, true);
         nctx.return_(triple.into())
     }
 
     #[scheme(name = "dll-suffix")]
     pub fn dll_suffix() -> Value<'gc> {
         let suffix = std::env::consts::DLL_SUFFIX;
-        let suffix = Str::new(&nctx.ctx, suffix, true);
+        let suffix = Str::new(*nctx.ctx, suffix, true);
         nctx.return_(suffix.into())
     }
 
     #[scheme(name = "dll-prefix")]
     pub fn dll_prefix() -> Value<'gc> {
         let prefix = std::env::consts::DLL_PREFIX;
-        let prefix = Str::new(&nctx.ctx, prefix, true);
+        let prefix = Str::new(*nctx.ctx, prefix, true);
         nctx.return_(prefix.into())
     }
 
@@ -245,7 +245,7 @@ pub mod base_ops {
 
     #[scheme(name = "set-procedure-properties!")]
     pub fn set_procedure_metadata(proc: Gc<'gc, Closure<'gc>>, meta: Value<'gc>) -> Value<'gc> {
-        let wproc = Gc::write(&nctx.ctx, proc);
+        let wproc = Gc::write(*nctx.ctx, proc);
         barrier::field!(wproc, Closure, meta).unlock().set(meta);
         nctx.return_(meta)
     }
@@ -254,7 +254,7 @@ pub mod base_ops {
     pub fn make_uuid() -> Value<'gc> {
         let uuid = uuid::Uuid::new_v4();
         let ctx = nctx.ctx;
-        nctx.return_(Str::new(&ctx, &uuid.to_string(), true).into())
+        nctx.return_(Str::new(*ctx, &uuid.to_string(), true).into())
     }
 
     #[scheme(name = "boolean=?")]
@@ -351,7 +351,7 @@ pub mod base_ops {
             );
         }
 
-        Gc::write(&nctx.ctx, t)[i].unlock().set(v);
+        Gc::write(*nctx.ctx, t)[i].unlock().set(v);
         nctx.return_(Value::undefined())
     }
 
@@ -405,13 +405,13 @@ pub mod base_ops {
 
     #[scheme(name = "weak-mapping-value")]
     pub fn weak_mapping_value(wm: Gc<'gc, WeakMapping<'gc>>) -> Value<'gc> {
-        let value = wm.value(&nctx.ctx);
+        let value = wm.value(*nctx.ctx);
         nctx.return_(value)
     }
 
     #[scheme(name = "weak-mapping-key")]
     pub fn weak_mapping_key(wm: Gc<'gc, WeakMapping<'gc>>) -> Value<'gc> {
-        let key = wm.key(&nctx.ctx);
+        let key = wm.key(*nctx.ctx);
         nctx.return_(key)
     }
 
@@ -482,7 +482,7 @@ pub fn init_base<'gc>(ctx: Context<'gc>) {
     base_ops::register(ctx);
 
     let args = std::env::args().rev().fold(Value::null(), |acc, arg| {
-        Value::cons(ctx, Str::new(&ctx, arg, true).into(), acc)
+        Value::cons(ctx, Str::new(*ctx, arg, true).into(), acc)
     });
 
     program_arguments_fluid(ctx).set(ctx, args);

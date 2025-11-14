@@ -192,7 +192,7 @@ impl PointerWithFinalizers {
 }
 
 global!(
-    PTRS<'gc>: Gc<'gc, WeakTable<'gc>> = (ctx) WeakTable::new(&ctx, 8, 0.75);
+    PTRS<'gc>: Gc<'gc, WeakTable<'gc>> = (ctx) WeakTable::new(*ctx, 8, 0.75);
 );
 
 unsafe impl Trace for Pointer {
@@ -233,7 +233,7 @@ pub mod ffi_ops {
     #[scheme(name = "make-pointer")]
     pub fn make_pointer(addr: usize) -> Value<'gc> {
         let ptr = Pointer::new(addr as *mut std::ffi::c_void);
-        let ptr = Gc::new(&nctx.ctx, ptr);
+        let ptr = Gc::new(*nctx.ctx, ptr);
         nctx.return_(ptr.into())
     }
 
@@ -251,7 +251,7 @@ pub mod ffi_ops {
     #[scheme(name = "scm->pointer")]
     pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
-        let p = Gc::new(&nctx.ctx, p);
+        let p = Gc::new(*nctx.ctx, p);
         nctx.return_(p)
     }
 
@@ -275,7 +275,7 @@ pub mod ffi_ops {
 
         let offset = offset.unwrap_or(0);
         let ptr = pointer.value + offset;
-        let bvec = ByteVector::new_mapping(&nctx.ctx, ptr, length);
+        let bvec = ByteVector::new_mapping(*nctx.ctx, ptr, length);
         nctx.return_(bvec)
     }
 
@@ -298,7 +298,7 @@ pub mod ffi_ops {
 
         let ptr = bv.contents() + offset;
         let p = Pointer::new(ptr.to_mut_ptr());
-        let p = Gc::new(&nctx.ctx, p);
+        let p = Gc::new(*nctx.ctx, p);
         // TODO(Adel): pin bytevector in memory OR move contents to non-moving space.
 
         // create ephemeron to keep the bytevector alive if `p` is alive.
@@ -336,7 +336,7 @@ pub mod ffi_ops {
                     );
                 }
             };
-            let str_obj = Str::from_str(&nctx.ctx, string);
+            let str_obj = Str::from_str(*nctx.ctx, string);
             nctx.return_(str_obj)
         } else {
             // fixed length string
@@ -364,7 +364,7 @@ pub mod ffi_ops {
                     );
                 }
             };
-            let str_obj = Str::from_str(&nctx.ctx, string);
+            let str_obj = Str::from_str(*nctx.ctx, string);
             nctx.return_(str_obj)
         }
     }
@@ -374,7 +374,7 @@ pub mod ffi_ops {
         if p.value().is_null() {
             return null_pointer_error(nctx, "set-pointer-finalizer!");
         }
-        let mc = &nctx.ctx;
+        let mc = *nctx.ctx;
         mc.finalizers()
             .register_finalizer(&POINTERS_WITH_FINALIZERS, p);
         POINTERS_WITH_FINALIZERS
@@ -394,7 +394,7 @@ pub mod ffi_ops {
         }
         let ptr = unsafe { *(p.value() as *const *mut std::ffi::c_void) };
         let new_ptr = Pointer::new(ptr);
-        let new_ptr = Gc::new(&nctx.ctx, new_ptr);
+        let new_ptr = Gc::new(*nctx.ctx, new_ptr);
         nctx.return_(new_ptr)
     }
 
@@ -429,7 +429,7 @@ pub mod ffi_ops {
             Err(e) => return nctx.conversion_error("pointer->procedure", e),
         };
 
-        let procs = PROCEDURES.fetch(&nctx.ctx);
+        let procs = PROCEDURES.fetch(*nctx.ctx);
         let clos = procs.make_closure(
             nctx.ctx,
             c_foreign_call,
@@ -819,11 +819,11 @@ fn make_cif<'gc>(
         return_type,
     };
 
-    Ok(Gc::new(&ctx, cif))
+    Ok(Gc::new(*ctx, cif))
 }
 
 unsafe extern "C-unwind" fn foreign_call<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     cif: Value<'gc>,
     pointer: Value<'gc>,
     num_rands: usize,
@@ -846,7 +846,7 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
         }
         if cif.variadic {
             for rand in rands[cif.nargs as usize..].iter() {
-                let ftype = match guess_ffi_type(*ctx, *rand) {
+                let ftype = match guess_ffi_type(ctx, *rand) {
                     Ok(t) => t,
                     Err(e) => {
                         return ThunkResult { code: 1, value: e };
@@ -882,7 +882,7 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
 
         if cif.variadic {
             for rand in rands[cif.nargs as usize..].iter() {
-                let ftype = match guess_ffi_type(*ctx, *rand) {
+                let ftype = match guess_ffi_type(ctx, *rand) {
                     Ok(t) => t,
                     Err(e) => {
                         return ThunkResult { code: 1, value: e };
@@ -947,15 +947,15 @@ fn guess_ffi_type<'gc>(ctx: Context<'gc>, val: Value<'gc>) -> Result<*mut ffi_ty
     }
 
     Err(make_assertion_violation(
-        &ctx,
+        ctx,
         Value::new(false),
-        Str::from_str(&ctx, "cannot guess foreign type for variadic argument").into(),
+        Str::from_str(*ctx, "cannot guess foreign type for variadic argument").into(),
         &[val],
     ))
 }
 
 unsafe fn unpack<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     typ: *const ffi_type,
     val: Value<'gc>,
     loc: *mut (),
@@ -974,12 +974,12 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI float").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI float").into(),
                     &[val],
                 ));
             };
 
-            let n = n.real_to_f64(*ctx) as f32;
+            let n = n.real_to_f64(ctx) as f32;
             loc.cast::<f32>().write(n);
         }
 
@@ -988,12 +988,12 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI double").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI double").into(),
                     &[val],
                 ));
             };
 
-            let n = n.real_to_f64(*ctx);
+            let n = n.real_to_f64(ctx);
             loc.cast::<f64>().write(n);
         }
         /* For integer return values smaller than `int', libffi expects the
@@ -1003,7 +1003,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI uint8").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI uint8").into(),
                     &[val],
                 ));
             }
@@ -1020,7 +1020,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI int8").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI int8").into(),
                     &[val],
                 ));
             }
@@ -1037,7 +1037,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI uint16").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI uint16").into(),
                     &[val],
                 ));
             }
@@ -1055,7 +1055,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI int16").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI int16").into(),
                     &[val],
                 ));
             }
@@ -1073,7 +1073,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI uint32").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI uint32").into(),
                     &[val],
                 ));
             };
@@ -1081,7 +1081,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI uint32").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI uint32").into(),
                     &[val],
                 ));
             }
@@ -1099,7 +1099,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI int32").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI int32").into(),
                     &[val],
                 ));
             };
@@ -1107,7 +1107,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI int32").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI int32").into(),
                     &[val],
                 ));
             }
@@ -1125,7 +1125,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI uint64").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI uint64").into(),
                     &[val],
                 ));
             };
@@ -1133,7 +1133,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI uint64").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI uint64").into(),
                     &[val],
                 ));
             }
@@ -1152,7 +1152,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI int64").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI int64").into(),
                     &[val],
                 ));
             };
@@ -1160,7 +1160,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI int64").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI int64").into(),
                     &[val],
                 ));
             }
@@ -1178,7 +1178,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI pointer").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI pointer").into(),
                     &[val],
                 ));
             }
@@ -1192,7 +1192,7 @@ unsafe fn unpack<'gc>(
                 return Err(make_assertion_violation(
                     ctx,
                     Value::new(false),
-                    Str::from_str(&ctx, "wrong type of argument for FFI struct").into(),
+                    Str::from_str(*ctx, "wrong type of argument for FFI struct").into(),
                     &[val],
                 ));
             }
@@ -1207,7 +1207,7 @@ unsafe fn unpack<'gc>(
 }
 
 unsafe fn pack<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     typ: *mut ffi_type,
     loc: *mut (),
     return_value: bool,
@@ -1268,11 +1268,11 @@ unsafe fn pack<'gc>(
         }
 
         if t == types::uint64.type_ {
-            return loc.cast::<u64>().read().into_value(*ctx);
+            return loc.cast::<u64>().read().into_value(ctx);
         }
 
         if t == types::sint64.type_ {
-            return loc.cast::<i64>().read().into_value(*ctx);
+            return loc.cast::<i64>().read().into_value(ctx);
         }
 
         if t == types::double.type_ {
@@ -1287,23 +1287,23 @@ unsafe fn pack<'gc>(
 
         if t == types::pointer.type_ {
             return Gc::new(
-                ctx,
+                *ctx,
                 Pointer::new(loc.cast::<*mut std::ffi::c_void>().read()),
             )
             .into();
         }
 
         if t == type_tag::STRUCT {
-            let arr = ByteVector::new::<false>(&ctx, (*typ).size, false);
+            let arr = ByteVector::new::<false>(*ctx, (*typ).size, false);
             std::ptr::copy_nonoverlapping(
                 loc.cast::<u8>(),
                 arr.contents().to_mut_ptr(),
                 (*typ).size,
             );
             let ptr = Pointer::new(arr.contents().to_mut_ptr() as *mut std::ffi::c_void);
-            let ptr = Gc::new(ctx, ptr);
+            let ptr = Gc::new(*ctx, ptr);
             // keep bytevector alive as long as pointer is alive.
-            ptrs(*ctx).put(*ctx, ptr, arr);
+            ptrs(ctx).put(ctx, ptr, arr);
             return ptr.into();
         }
 
@@ -1312,7 +1312,7 @@ unsafe fn pack<'gc>(
 }
 
 pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     rator: Value<'gc>,
     rands: *const Value<'gc>,
     num_rands: usize,
@@ -1337,7 +1337,7 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
                 ctx,
                 Value::new(false),
                 Str::from_str(
-                    &ctx,
+                    *ctx,
                     &format!(
                         "wrong number of arguments to foreign function, expected {}{}, got {}",
                         if cif.variadic { "at least " } else { "" },
@@ -1446,7 +1446,7 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
         define(ctx, "%ptrdiff_t", ForeignType::Int64);
     }
 
-    let nullp = Gc::new(&ctx, Pointer::new(std::ptr::null_mut()));
+    let nullp = Gc::new(*ctx, Pointer::new(std::ptr::null_mut()));
 
     define(ctx, "%null-pointer", nullp);
 

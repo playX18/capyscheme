@@ -40,16 +40,13 @@ impl std::ops::DerefMut for ScmRef {
 }
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct ContextRef<'gc>(pub *mut c_void, PhantomData<&'gc Context<'gc>>);
+pub struct ContextRef<'gc>(pub *const c_void, PhantomData<Context<'gc>>);
 
-impl<'gc> std::ops::Deref for ContextRef<'gc> {
-    type Target = crate::runtime::Context<'gc>;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { self.0.cast::<Context<'gc>>().as_ref().unwrap() }
+impl<'gc> ContextRef<'gc> {
+    pub fn ctx(self) -> Context<'gc> {
+        unsafe { Context::from_ptr(self.0 as *const ()) }
     }
 }
-
 /// Create a new Scheme thread instance.
 ///
 /// The thread instance will be attached to currently active VM or
@@ -76,12 +73,12 @@ pub extern "C" fn scm_from_image(image_data: *const u8, image_size: usize) -> Sc
 
 #[unsafe(no_mangle)]
 pub fn scm_accumulator(ctx: ContextRef) -> Value {
-    ctx.state().accumulator.get()
+    ctx.ctx().state().accumulator.get()
 }
 
 #[unsafe(no_mangle)]
 pub fn scm_set_accumulator<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>) {
-    ctx.state().accumulator.set(value);
+    ctx.ctx().state().accumulator.set(value);
 }
 
 /// Free the Scheme thread instance created by [`scm_new()`](scm_new)
@@ -106,8 +103,8 @@ pub unsafe extern "C" fn scm_fork<'gc>(
     init: ThreadFn,
     arg: *mut std::ffi::c_void,
 ) -> Value<'gc> {
-    let thread_object = ThreadObject::new(&parent, None);
-    let dynamic_state = parent.dynamic_state().bits();
+    let thread_object = ThreadObject::new(*parent.ctx(), None);
+    let dynamic_state = parent.ctx().dynamic_state().bits();
     let thread_object_bits = thread_object.as_ptr() as u64;
     let thread_spawned = Arc::new(std::sync::Barrier::new(2));
     let thread_spawned_clone = thread_spawned.clone();
@@ -138,7 +135,7 @@ pub unsafe extern "C" fn scm_enter<'gc>(
 ) -> libc::c_int {
     let scheme = &scm.scheme;
     let res = scheme.enter(|ctx| unsafe {
-        let ctxref = ContextRef(&ctx as *const _ as *mut _, PhantomData);
+        let ctxref = ContextRef(ctx.as_ptr() as _, PhantomData);
         enter(ctxref, arg)
     });
 
@@ -168,7 +165,7 @@ pub extern "C" fn scm_public_ref<'gc>(
     let module_name = unsafe { CStr::from_ptr(module_name).to_str().unwrap() };
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
 
-    ctx.public_ref(module_name, name).unwrap_or(default_value)
+    ctx.ctx().public_ref(module_name, name).unwrap_or(default_value)
 }
 
 /// Given a Scheme context, module name, and variable name,
@@ -191,42 +188,42 @@ pub extern "C" fn scm_private_ref<'gc>(
     let module_name = unsafe { CStr::from_ptr(module_name).to_str().unwrap() };
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
 
-    ctx.private_ref(module_name, name).unwrap_or(default_value)
+    ctx.ctx().private_ref(module_name, name).unwrap_or(default_value)
 }
 
 /// Intern a symbol with the given name in the Scheme context.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_intern_symbol<'gc>(ctx: ContextRef<'gc>, name: *const c_char) -> Value<'gc> {
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
-    ctx.intern(name)
+    ctx.ctx().intern(name)
 }
 
 /// Create a new Scheme string with the given data in the Scheme context.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_string<'gc>(ctx: ContextRef<'gc>, data: *const c_char) -> Value<'gc> {
     let data = unsafe { CStr::from_ptr(data).to_str().unwrap() };
-    ctx.str(data)
+    ctx.ctx().str(data)
 }
 
 /// Create Scheme number from a 32-bit unsigned integer.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_uint32<'gc>(ctx: ContextRef<'gc>, value: u32) -> Value<'gc> {
-    value.into_value(*ctx)
+    value.into_value(ctx.ctx())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_uint64<'gc>(ctx: ContextRef<'gc>, value: u64) -> Value<'gc> {
-    value.into_value(*ctx)
+    value.into_value(ctx.ctx())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_int64<'gc>(ctx: ContextRef<'gc>, value: i64) -> Value<'gc> {
-    value.into_value(*ctx)
+    value.into_value(ctx.ctx())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_u8<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u8) -> bool {
-    match u8::try_from_value(*ctx, value) {
+    match u8::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -237,7 +234,7 @@ pub extern "C" fn scm_to_u8<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_u16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u16) -> bool {
-    match u16::try_from_value(*ctx, value) {
+    match u16::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -248,7 +245,7 @@ pub extern "C" fn scm_to_u16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_u32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u32) -> bool {
-    match u32::try_from_value(*ctx, value) {
+    match u32::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -259,7 +256,7 @@ pub extern "C" fn scm_to_u32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_u64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u64) -> bool {
-    match u64::try_from_value(*ctx, value) {
+    match u64::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -270,7 +267,7 @@ pub extern "C" fn scm_to_u64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_i64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i64) -> bool {
-    match i64::try_from_value(*ctx, value) {
+    match i64::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -281,7 +278,7 @@ pub extern "C" fn scm_to_i64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_f64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut f64) -> bool {
-    match f64::try_from_value(*ctx, value) {
+    match f64::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -298,7 +295,7 @@ pub extern "C" fn scm_real_to_f64<'gc>(
 ) -> bool {
     match value.number() {
         Some(n) => {
-            *res = n.real_to_f64(*ctx);
+            *res = n.real_to_f64(ctx.ctx());
             true
         }
         None => false,
@@ -307,7 +304,7 @@ pub extern "C" fn scm_real_to_f64<'gc>(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_i32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i32) -> bool {
-    match i32::try_from_value(*ctx, value) {
+    match i32::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -318,7 +315,7 @@ pub extern "C" fn scm_to_i32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_f32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut f32) -> bool {
-    match f32::try_from_value(*ctx, value) {
+    match f32::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -329,7 +326,7 @@ pub extern "C" fn scm_to_f32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_i16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i16) -> bool {
-    match i16::try_from_value(*ctx, value) {
+    match i16::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -340,7 +337,7 @@ pub extern "C" fn scm_to_i16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_to_i8<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i8) -> bool {
-    match i8::try_from_value(*ctx, value) {
+    match i8::try_from_value(ctx.ctx(), value) {
         Ok(v) => {
             *res = v;
             true
@@ -355,17 +352,17 @@ pub extern "C" fn scm_cons<'gc>(
     car: Value<'gc>,
     cdr: Value<'gc>,
 ) -> Value<'gc> {
-    Value::cons(*ctx, car, cdr)
+    Value::cons(ctx.ctx(), car, cdr)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_set_car<'gc>(ctx: ContextRef<'gc>, pair: Value<'gc>, car: Value<'gc>) {
-    pair.set_car(*ctx, car);
+    pair.set_car(ctx.ctx(), car);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_set_cdr<'gc>(ctx: ContextRef<'gc>, pair: Value<'gc>, cdr: Value<'gc>) {
-    pair.set_cdr(*ctx, cdr);
+    pair.set_cdr(ctx.ctx(), cdr);
 }
 
 #[unsafe(no_mangle)]
@@ -376,7 +373,7 @@ pub extern "C" fn scm_vector_set<'gc>(
     value: Value<'gc>,
 ) {
     let vector = vector.downcast::<Vector>();
-    let wvector = Gc::write(&ctx, vector);
+    let wvector = Gc::write(*ctx.ctx(), vector);
     wvector[index].unlock().set(value);
 }
 
@@ -388,7 +385,7 @@ pub extern "C" fn scm_tuple_set<'gc>(
     value: Value<'gc>,
 ) {
     let t = tuple.downcast::<Tuple>();
-    let wt = Gc::write(&ctx, t);
+    let wt = Gc::write(*ctx.ctx(), t);
     wt[index].unlock().set(value);
 }
 
@@ -402,7 +399,7 @@ pub extern "C" fn scm_string_set<'gc>(
     const REPLACEMENT_CHAR: char = '\u{FFFD}';
     let ch = std::char::from_u32(ch).unwrap_or(REPLACEMENT_CHAR);
 
-    Str::set(string.downcast(), &ctx, index, ch);
+    Str::set(string.downcast(), *ctx.ctx(), index, ch);
 }
 
 #[unsafe(no_mangle)]
@@ -442,8 +439,8 @@ pub extern "C" fn scm_call(
             func_name,
             |ctx, args| {
                 let mut ls = Value::null();
-                let ptr: *const Context = ctx as *const Context;
-                let _ = prepare(ContextRef(ptr as *mut _, PhantomData), &mut ls, data1);
+
+                let _ = prepare(ContextRef(ctx.as_ptr() as _, PhantomData), &mut ls, data1);
                 while !ls.is_null() {
                     let next = ls.cdr();
                     args.push(ls.car());
@@ -456,12 +453,7 @@ pub extern "C" fn scm_call(
                     Err(e) => (false, e),
                 };
 
-                finish(
-                    ContextRef(ctx as *const _ as *mut _, PhantomData),
-                    succ,
-                    val,
-                    data2,
-                )
+                finish(ContextRef(ctx.as_ptr() as _, PhantomData), succ, val, data2)
             },
         )
     }
@@ -479,8 +471,12 @@ pub extern "C" fn scm_resume_accumulator<'gc>(
         |ctx, real_args| {
             let acc = ctx.state().accumulator.get();
             let mut args = Value::null();
-            let ptr: *const Context = ctx as *const Context;
-            let _ = prepare(ContextRef(ptr as *mut _, PhantomData), &mut args, data1);
+
+            let _ = prepare(
+                ContextRef(ctx.as_ptr() as _, PhantomData),
+                &mut args,
+                data1,
+            );
             while !args.is_null() {
                 let next = args.cdr();
                 real_args.push(args.car());
@@ -489,7 +485,7 @@ pub extern "C" fn scm_resume_accumulator<'gc>(
             acc
         },
         |ctx, res| {
-            let ctx = ContextRef(ctx as *const _ as *mut _, PhantomData);
+            let ctx = ContextRef(ctx.as_ptr() as _, PhantomData);
             finish(
                 ctx,
                 res.is_ok(),
@@ -510,7 +506,7 @@ pub extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int
     let name = unsafe { CStr::from_ptr(name as _).to_str().unwrap() };
 
     let x = scm.scheme.call_value(
-        |ctx, _| load_thunk_in_vicinity::<true>(*ctx, &name, None::<String>, true, None).unwrap(),
+        |ctx, _| load_thunk_in_vicinity::<true>(ctx, &name, None::<String>, true, None).unwrap(),
         |_, res| matches!(res, Ok(_)),
     );
 
@@ -519,7 +515,7 @@ pub extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_program_arguments<'gc>(ctx: ContextRef<'gc>) -> Value<'gc> {
-    crate::runtime::vm::base::get_program_arguments_fluid(*ctx)
+    crate::runtime::vm::base::get_program_arguments_fluid(ctx.ctx())
 }
 
 #[unsafe(no_mangle)]
@@ -532,15 +528,15 @@ pub extern "C" fn scm_program_arguments_init<'gc>(
         let mut ls = Value::null();
         for i in (0..argc).rev() {
             let arg = CStr::from_ptr(*argv.add(i)).to_str().unwrap();
-            let str_value = ctx.str(arg);
-            ls = Value::cons(*ctx, str_value, ls);
+            let str_value = ctx.ctx().str(arg);
+            ls = Value::cons(ctx.ctx(), str_value, ls);
         }
 
-        crate::runtime::vm::base::program_arguments_fluid(*ctx).set(*ctx, ls);
+        crate::runtime::vm::base::program_arguments_fluid(ctx.ctx()).set(ctx.ctx(), ls);
     }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_set_program_arguments<'gc>(ctx: ContextRef<'gc>, args: Value<'gc>) {
-    crate::runtime::vm::base::program_arguments_fluid(*ctx).set(*ctx, args);
+    crate::runtime::vm::base::program_arguments_fluid(ctx.ctx()).set(ctx.ctx(), args);
 }

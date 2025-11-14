@@ -34,110 +34,122 @@ use std::{
 
 /// cbindgen:ignore
 #[derive(Clone, Copy)]
-#[repr(C)]
+#[repr(transparent)]
 pub struct Context<'gc> {
-    pub(crate) mc: &'gc Mutation<'gc>,
-    pub(crate) state: &'gc State<'gc>,
+    pub(crate) mc: Mutation<'gc>,
 }
 
-impl<'gc> From<(&'gc Mutation<'gc>, &'gc State<'gc>)> for Context<'gc> {
-    fn from((mc, state): (&'gc Mutation<'gc>, &'gc State<'gc>)) -> Self {
-        Self { mc, state }
+impl<'gc> From<Mutation<'gc>> for Context<'gc> {
+    fn from(mc: Mutation<'gc>) -> Self {
+        Self { mc }
     }
 }
 
 impl<'gc> Context<'gc> {
-    pub fn new(mc: &'gc Mutation<'gc>, state: &'gc State<'gc>) -> Self {
-        Self { mc, state }
+    pub const OFFSET_OF_STATE: usize = Mutation::OFFSET_OF_STATE;
+
+    pub fn as_ptr(self) -> *const () {
+        self.mc.as_ptr()
     }
 
-    pub fn mutation(&self) -> &'gc Mutation<'gc> {
+    pub unsafe fn from_ptr(ptr: *const ()) -> Self {
+        Self {
+            mc: unsafe { Mutation::from_ptr(ptr) }, 
+        }
+    }
+
+    pub fn new(mc: Mutation<'gc>) -> Self {
+        Self { mc }
+    }
+
+    pub fn mutation(self) -> Mutation<'gc> {
         self.mc
     }
 
-    pub fn state(&self) -> &'gc State<'gc> {
-        self.state
+    #[inline(always)]
+    pub fn state(self) -> &'gc State<'gc> {
+        self.mc.state()
     }
 
-    pub fn dynamic_state(&self) -> Value<'gc> {
-        self.state.dynamic_state.save(*self)
+    pub fn dynamic_state(self) -> Value<'gc> {
+        self.state().dynamic_state.save(self)
     }
 
-    pub fn set_dynamic_state(&self, state: Value<'gc>) {
-        self.state.dynamic_state.restore(*self, state);
+    pub fn set_dynamic_state(self, state: Value<'gc>) {
+        self.state().dynamic_state.restore(self, state);
     }
 
-    pub fn current_continuation_marks(&self) -> Gc<'gc, ContinuationMarks<'gc>> {
+    pub fn current_continuation_marks(self) -> Gc<'gc, ContinuationMarks<'gc>> {
         Gc::new(
-            &self,
+            *self,
             ContinuationMarks {
                 header: ScmHeader::with_type_bits(TypeCode8::CMARKS.bits() as _),
-                cmarks: self.state.current_marks(),
+                cmarks: self.state().current_marks(),
             },
         )
     }
 
-    pub fn has_suspended_call(&self) -> bool {
-        self.state.saved_call.get().is_some()
+    pub fn has_suspended_call(self) -> bool {
+        self.state().saved_call.get().is_some()
     }
 
-    pub fn intern(&self, s: &str) -> Value<'gc> {
-        Symbol::from_str(*self, s).into()
+    pub fn intern(self, s: &str) -> Value<'gc> {
+        Symbol::from_str(self, s).into()
     }
 
-    pub fn str(&self, s: &str) -> Value<'gc> {
-        Str::from_str(&self, s).into()
+    pub fn str(self, s: &str) -> Value<'gc> {
+        Str::from_str(*self, s).into()
     }
 
     pub fn make_native_closure(
-        &self,
+        self,
         proc: NativeFn<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(&self)
-            .make_closure(*self, proc, free_vars, meta)
+            .fetch(*self)
+            .make_closure(self, proc, free_vars, meta)
     }
 
     pub fn make_native_continuation(
-        &self,
+        self,
         proc: NativeContinuation<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(&self)
-            .make_cont_closure(*self, proc, free_vars, meta)
+            .fetch(*self)
+            .make_cont_closure(self, proc, free_vars, meta)
     }
 
     pub fn make_static_closure(
-        &self,
+        self,
         proc: NativeFn<'gc>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(&self)
-            .register_static_closure(*self, proc, meta)
+            .fetch(*self)
+            .register_static_closure(self, proc, meta)
     }
 
     pub fn make_static_continuation(
-        &self,
+        self,
         proc: NativeContinuation<'gc>,
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         PROCEDURES
-            .fetch(&self)
-            .register_static_cont_closure(*self, proc, meta)
+            .fetch(*self)
+            .register_static_cont_closure(self, proc, meta)
     }
 
-    pub fn resume_suspended_call(&self) -> VMResult<'gc> {
+    pub fn resume_suspended_call(self) -> VMResult<'gc> {
         let call = self
-            .state
+            .state()
             .saved_call
             .replace(None)
             .expect("No suspended call");
-        self.state.runstack.set(self.state.runstack_start);
+        self.state().runstack.set(self.state().runstack_start);
 
         if call.from_procedure {
             let retk = call.rands[0];
@@ -156,12 +168,12 @@ impl<'gc> Context<'gc> {
     }
 
     pub fn return_call(
-        &self,
+        self,
         rator: Value<'gc>,
         rands: impl IntoIterator<Item = Value<'gc>>,
         conts: Option<[Value<'gc>; 2]>,
     ) -> NativeReturn<'gc> {
-        let rands_ptr = self.state.runstack.get().to_mut_ptr::<Value>();
+        let rands_ptr = self.state().runstack.get().to_mut_ptr::<Value>();
         let disp = if conts.is_some() { 2 } else { 0 };
         unsafe {
             if let Some(conts) = conts {
@@ -174,12 +186,12 @@ impl<'gc> Context<'gc> {
                 count += 1;
             }
 
-            self.state
+            self.state()
                 .runstack
                 .set(Address::from_ptr(rands_ptr.add(count)));
-            self.state.call_data.rands.set(rands_ptr);
-            self.state.call_data.num_rands.set(count + disp);
-            self.state.call_data.rator.set(rator);
+            self.state().call_data.rands.set(rands_ptr);
+            self.state().call_data.num_rands.set(count + disp);
+            self.state().call_data.rator.set(rator);
         }
 
         NativeReturn {
@@ -198,11 +210,11 @@ impl<'gc> Context<'gc> {
         resolve_module(self, name, true, false).expect("Failed to ensure module")
     }
 
-    pub fn globals(&self) -> &'gc Globals<'gc> {
+    pub fn globals(self) -> &'gc Globals<'gc> {
         VM_GLOBALS
             .get()
             .expect("VM globals not initialized")
-            .fetch(&self)
+            .fetch(*self)
     }
 
     pub fn public_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
@@ -214,7 +226,7 @@ impl<'gc> Context<'gc> {
     }
 
     pub fn accumulator(&self) -> Value<'gc> {
-        self.state.accumulator.get()
+        self.state().accumulator.get()
     }
 
     pub fn define(
@@ -229,16 +241,16 @@ impl<'gc> Context<'gc> {
         Some(module.define(self, name, value))
     }
 
-    pub fn define_module(&self, name: &str, size_hint: Option<usize>) -> ModuleRef<'gc> {
-        let name = crate::runtime::modules::convert_module_name(*self, name);
+    pub fn define_module(self, name: &str, size_hint: Option<usize>) -> ModuleRef<'gc> {
+        let name = crate::runtime::modules::convert_module_name(self, name);
 
-        let module = resolve_module(*self, name, false, true).unwrap();
-        let wmodule = Gc::write(&self, module);
+        let module = resolve_module(self, name, false, true).unwrap();
+        let wmodule = Gc::write(*self, module);
         if module.uses.get().is_null() {
             barrier::field!(wmodule, Module, uses)
                 .unlock()
                 .set(Value::cons(
-                    *self,
+                    self,
                     self.globals().scm_module().into(),
                     Value::null(),
                 ));
@@ -246,7 +258,7 @@ impl<'gc> Context<'gc> {
 
         if module.public_interface.get().is_none() {
             let public_interface = Module::new(
-                *self,
+                self,
                 size_hint.unwrap_or(8),
                 Value::null(),
                 Value::new(false),
@@ -259,11 +271,11 @@ impl<'gc> Context<'gc> {
     }
 
     pub(crate) fn winders(&self) -> Value<'gc> {
-        self.state.winders.get()
+        self.state().winders.get()
     }
 
     pub(crate) fn set_winders(&self, winders: Value<'gc>) {
-        self.state.winders.set(winders);
+        self.state().winders.set(winders);
     }
 }
 
@@ -271,7 +283,7 @@ impl<'gc> std::ops::Deref for Context<'gc> {
     type Target = Mutation<'gc>;
 
     fn deref(&self) -> &Self::Target {
-        self.mc
+        &self.mc
     }
 }
 
@@ -281,7 +293,7 @@ pub struct DeferYield<'gc> {
 
 impl<'gc> DeferYield<'gc> {
     pub fn new(ctx: Context<'gc>) -> Self {
-        ctx.state
+        ctx.state()
             .nest_level
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Self { ctx }
@@ -292,7 +304,7 @@ impl<'gc> Drop for DeferYield<'gc> {
     fn drop(&mut self) {
         let nest_level = self
             .ctx
-            .state
+            .state()
             .nest_level
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
         assert!(nest_level > 0, "Mismatched DeferYield drop");
@@ -387,7 +399,7 @@ unsafe impl Trace for State<'_> {
 }
 
 impl<'gc> State<'gc> {
-    pub fn new(mc: &'gc Mutation<'gc>, thread_object: Gc<'gc, ThreadObject<'gc>>) -> Self {
+    pub fn new(mc: Mutation<'gc>, thread_object: Gc<'gc, ThreadObject<'gc>>) -> Self {
         let (runstack_start, _runstack_end) = make_fresh_runstack();
 
         Self {
@@ -412,10 +424,6 @@ impl<'gc> State<'gc> {
         }
     }
 
-    pub fn context(&'gc self, mc: &'gc Mutation<'gc>) -> Context<'gc> {
-        Context { mc, state: self }
-    }
-
     pub fn current_marks(&self) -> Value<'gc> {
         self.current_marks.get()
     }
@@ -432,7 +440,7 @@ impl<'gc> State<'gc> {
 }
 
 pub struct Scheme {
-    pub mutator: Mutator<crate::Rootable!(State<'_>)>,
+    pub mutator: Mutator<crate::Rootable!(())>,
 }
 
 impl Scheme {
@@ -440,10 +448,10 @@ impl Scheme {
     where
         F: for<'gc> FnOnce(Context<'gc>) -> T,
     {
-        let (result, should_gc) = self.mutator.mutate(|mc, state| {
-            let ctx = state.context(mc);
+        let (result, should_gc) = self.mutator.mutate(|mc, _| {
+            let ctx = Context { mc };
             let result = f(ctx);
-            unsafe { (*ctx.state.shadow_stack.get()).clear() };
+            unsafe { (*ctx.state().shadow_stack.get()).clear() };
             (result, mc.take_yieldpoint() != 0)
         });
 
@@ -456,19 +464,19 @@ impl Scheme {
 
     pub fn call_value<PREP, F, R>(&self, prep: PREP, finish: F) -> R
     where
-        F: for<'gc> Fn(&Context<'gc>, Result<Value<'gc>, Value<'gc>>) -> R,
-        PREP: for<'gc> FnOnce(&Context<'gc>, &mut Vec<Value<'gc>>) -> Value<'gc>,
+        F: for<'gc> Fn(Context<'gc>, Result<Value<'gc>, Value<'gc>>) -> R,
+        PREP: for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>) -> Value<'gc>,
     {
         let mut result = self.enter(|ctx| {
             let mut args = Vec::with_capacity(4);
-            let rator = prep(&ctx, &mut args);
+            let rator = prep(ctx, &mut args);
 
             let run = call_scheme(ctx, rator, args);
 
             match run {
-                VMResult::Ok(ok) => Ok(finish(&ctx, Ok(ok))),
-                VMResult::Err(err) => Ok(finish(&ctx, Err(err))),
-                VMResult::Yield => match ctx.state.yield_reason.get() {
+                VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
+                VMResult::Err(err) => Ok(finish(ctx, Err(err))),
+                VMResult::Yield => match ctx.state().yield_reason.get() {
                     Some(YieldReason::Yieldpoint) => Err(Yield::None),
                     Some(YieldReason::LockMutex(mutex_obj)) => {
                         let mutex = mutex_obj.downcast::<Mutex>();
@@ -506,13 +514,13 @@ impl Scheme {
             match pending {
                 Yield::None => {
                     result = self.enter(|ctx| {
-                        ctx.state.yield_reason.set(None);
+                        ctx.state().yield_reason.set(None);
 
                         if ctx.has_suspended_call() {
                             match ctx.resume_suspended_call() {
-                                VMResult::Ok(ok) => Ok(finish(&ctx, Ok(ok))),
-                                VMResult::Err(err) => Ok(finish(&ctx, Err(err))),
-                                VMResult::Yield => match ctx.state.yield_reason.get() {
+                                VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
+                                VMResult::Err(err) => Ok(finish(ctx, Err(err))),
+                                VMResult::Yield => match ctx.state().yield_reason.get() {
                                     Some(YieldReason::Yieldpoint) => Err(Yield::None),
                                     Some(YieldReason::LockMutex(mutex_obj)) => {
                                         let mutex = mutex_obj.downcast::<Mutex>();
@@ -538,7 +546,7 @@ impl Scheme {
                                 },
                             }
                         } else {
-                            Ok(finish(&ctx, Err(Value::undefined())))
+                            Ok(finish(ctx, Err(Value::undefined())))
                         }
                     });
                 }
@@ -609,8 +617,8 @@ impl Scheme {
     /// Calls `entry_name` in module `mod_name`.
     pub fn call<ARGS, F, R>(&self, mod_name: &str, entry_name: &str, setup: ARGS, finish: F) -> R
     where
-        F: for<'gc> Fn(&Context<'_>, Result<Value<'gc>, Value<'gc>>) -> R,
-        ARGS: for<'gc> FnOnce(&Context<'gc>, &mut Vec<Value<'gc>>),
+        F: for<'gc> Fn(Context<'_>, Result<Value<'gc>, Value<'gc>>) -> R,
+        ARGS: for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>),
     {
         self.call_value(
             move |ctx, args| {
@@ -659,16 +667,18 @@ impl Scheme {
             mutator: {
                 let m = Mutator::new(|mc| {
                     if should_init {
-                        init_weak_sets(&mc);
-                        init_weak_tables(&mc);
-                        init_symbols(&mc);
+                        init_weak_sets(mc);
+                        init_weak_tables(mc);
+                        init_symbols(mc);
                     }
 
-                    State::new(mc, ThreadObject::new(&mc, None))
+                    let state = State::new(mc, ThreadObject::new(mc, None));
+                    mc.init_state(state);
+                    ()
                 });
-                m.mutate(|mc, state: &State<'_>| {
+                m.mutate(|mc, _| {
                     if should_init {
-                        super::init(state.context(mc));
+                        super::init(Context { mc });
                     }
                 });
                 m
@@ -696,9 +706,11 @@ impl Scheme {
         let scm = Self {
             mutator: {
                 let m = Mutator::new(|mc| {
-                    init_weak_sets(&mc);
-                    init_weak_tables(&mc);
-                    State::new(mc, ThreadObject::new(&mc, None))
+                    init_weak_sets(mc);
+                    init_weak_tables(mc);
+                    let state = State::new(mc, ThreadObject::new(mc, None));
+                    mc.init_state(state);
+                    ()
                 });
                 m
             },
@@ -718,7 +730,7 @@ impl Scheme {
                 _ => unreachable!(),
             };
 
-            ctx.state.accumulator.set(entrypoint);
+            ctx.state().accumulator.set(entrypoint);
         });
 
         scm
@@ -773,11 +785,13 @@ impl Scheme {
             mutator: {
                 let m = Mutator::new(|mc| {
                     let thread_object = unsafe { Gc::from_ptr(thread_object_bits as _) };
-                    State::new(mc, thread_object)
+                    let state = State::new(mc, thread_object);
+                    mc.init_state(state);
+                    ()
                 });
-                m.mutate(|mc, state: &State| {
-                    let ctx = state.context(mc);
-                    ctx.state
+                m.mutate(|mc, _| {
+                    let ctx = Context { mc };
+                    ctx.state()
                         .dynamic_state
                         .restore(ctx, Value::from_raw(dynamic_state_bits));
                 });

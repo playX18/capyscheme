@@ -328,7 +328,7 @@ impl FunctionDefinition {
                 self.transformed_function.span() =>
                 #[allow(unused_parens, unused_mut)]
                 #vis extern "C-unwind" fn #raw_name<'gc>(
-                    ctx: &Context<'gc>,
+                    ctx: Context<'gc>,
                     rator: Value<'gc>,
                     rands: *const Value<'gc>,
                     num_rands: usize,
@@ -347,7 +347,7 @@ impl FunctionDefinition {
                 self.transformed_function.span() =>
                 #[allow(unused_parens, unused_mut)]
                 #vis extern "C-unwind" fn #raw_name<'gc>(
-                    ctx: &Context<'gc>,
+                    ctx: Context<'gc>,
                     rator: Value<'gc>,
                     rands: *const Value<'gc>,
                     num_rands: usize,

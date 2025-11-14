@@ -26,17 +26,17 @@ pub fn reify<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ReifyInfo<'gc> {
     fv.fvars.insert(func, Default::default());
 
     for (&cont, vars) in fv.cvars.iter() {
-        let wcont = Gc::write(&ctx, cont);
+        let wcont = Gc::write(*ctx, cont);
         barrier::field!(wcont, Cont, free_vars)
             .unlock()
-            .set(Some(vars.iter().copied().collect_gc(&ctx)));
+            .set(Some(vars.iter().copied().collect_gc(*ctx)));
     }
 
     for (&func, vars) in fv.fvars.iter() {
-        let wfunc = Gc::write(&ctx, func);
+        let wfunc = Gc::write(*ctx, func);
         barrier::field!(wfunc, Func, free_vars)
             .unlock()
-            .set(Some(vars.iter().copied().collect_gc(&ctx)));
+            .set(Some(vars.iter().copied().collect_gc(*ctx)));
     }
 
     let mut stack = Vec::new();
@@ -79,8 +79,8 @@ pub fn reify<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ReifyInfo<'gc> {
 
     ReifyInfo {
         entrypoint: func,
-        functions: fv.funcs.values().copied().collect_gc(&ctx),
-        continuations: fv.conts.values().copied().collect_gc(&ctx),
+        functions: fv.funcs.values().copied().collect_gc(*ctx),
+        continuations: fv.conts.values().copied().collect_gc(*ctx),
         free_vars: fv,
     }
 }

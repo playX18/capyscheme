@@ -82,10 +82,10 @@ pub fn compile_file<'gc>(
     //println!(";; (Pre-boot) Compiling file: {}", file.display());
     let file_in = std::fs::File::open(file).map_err(|e| {
         make_io_error(
-            &ctx,
+            ctx,
             "compile-file",
             Str::new(
-                &ctx,
+                *ctx,
                 format!("Cannot open input file '{}': {}", file.display(), e),
                 true,
             )
@@ -96,10 +96,10 @@ pub fn compile_file<'gc>(
 
     let text = std::io::read_to_string(&file_in).map_err(|e| {
         make_io_error(
-            &ctx,
+            ctx,
             "compile-file",
             Str::new(
-                &ctx,
+                *ctx,
                 format!("Cannot read input file '{}': {}", file.display(), e),
                 true,
             )
@@ -107,11 +107,11 @@ pub fn compile_file<'gc>(
             &[],
         )
     })?;
-    let src = Str::new(&ctx, file.display().to_string(), true);
+    let src = Str::new(*ctx, file.display().to_string(), true);
     let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), false);
 
     let program = parser.read_program().map_err(|err| {
-        make_lexical_violation(&ctx, "compile-file", err.to_string(file.display()))
+        make_lexical_violation(ctx, "compile-file", err.to_string(file.display()))
     })?;
 
     let mut env =
@@ -126,7 +126,7 @@ pub fn compile_file<'gc>(
     ls = Value::cons(ctx, begin.into(), ls);
 
     let mut il = crate::expander::core::expand(&mut env, ls)
-        .map_err(|err| make_lexical_violation(&ctx, "compile-file", err.to_string()))?;
+        .map_err(|err| make_lexical_violation(ctx, "compile-file", err.to_string()))?;
 
     il = primitives::resolve_primitives(ctx, il, module);
     il = primitives::expand_primitives(ctx, il);
@@ -251,10 +251,10 @@ pub fn link_object_product<'gc>(
         .open(&obj_output)
         .map_err(|e| {
             make_io_error(
-                &ctx,
+                ctx,
                 "link-object",
                 Str::new(
-                    &ctx,
+                    *ctx,
                     format!("Cannot open output file '{}': {}", obj_output.display(), e),
                     true,
                 )
@@ -270,10 +270,10 @@ pub fn link_object_product<'gc>(
     }
     let bytes = product.emit().map_err(|e| {
         make_io_error(
-            &ctx,
+            ctx,
             "link-object",
             Str::new(
-                &ctx,
+                *ctx,
                 format!("Cannot emit object file '{}': {}", obj_output.display(), e),
                 true,
             )
@@ -284,10 +284,10 @@ pub fn link_object_product<'gc>(
 
     file.write_all(&bytes).map_err(|e| {
         make_io_error(
-            &ctx,
+            ctx,
             "link-object",
             Str::new(
-                &ctx,
+                *ctx,
                 format!("Cannot write object file '{}': {}", obj_output.display(), e),
                 true,
             )
@@ -300,10 +300,10 @@ pub fn link_object_product<'gc>(
 
     linker.link(&obj_output, &output).map_err(|e| {
         make_io_error(
-            &ctx,
+            ctx,
             "link-object",
             Str::new(
-                &ctx,
+                *ctx,
                 format!(
                     "Linking object file '{}' to output file '{}' failed: {}",
                     obj_output.display(),
@@ -319,10 +319,10 @@ pub fn link_object_product<'gc>(
 
     std::fs::remove_file(&obj_output).map_err(|e| {
         make_io_error(
-            &ctx,
+            ctx,
             "link-object",
             Str::new(
-                &ctx,
+                *ctx,
                 format!(
                     "Cannot remove temporary object file '{}': {}",
                     obj_output.display(),

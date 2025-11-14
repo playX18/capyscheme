@@ -107,7 +107,7 @@ impl<'gc, T> Weak<'gc, T> {
         }
     }
 
-    pub fn upgrade(self, mc: &Mutation<'gc>) -> Option<Gc<'gc, T>> {
+    pub fn upgrade(self, mc: Mutation<'gc>) -> Option<Gc<'gc, T>> {
         self.ptr.map(|ptr| unsafe {
             mc.thread().mutator_unchecked().barrier.load_weak_reference(
                 ObjectReference::from_raw_address_unchecked(Address::from_ptr(ptr.as_ptr())),

@@ -29,7 +29,7 @@ pub fn mangle_library_spec<'gc>(ctx: Context<'gc>, spec: Value<'gc>) -> Value<'g
         spec = next;
     }
 
-    Str::new(&ctx, result, true).into()
+    Str::new(*ctx, result, true).into()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Trace)]
@@ -94,10 +94,10 @@ impl<'gc> Module<'gc> {
         binder: impl IntoValue<'gc>,
     ) -> Gc<'gc, Self> {
         Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header: ScmHeader::with_type_bits(TypeCode8::MODULE.bits() as _),
-                obarray: Lock::new(HashTable::new(&ctx, HashTableType::Eq, size, 0.75)),
+                obarray: Lock::new(HashTable::new(*ctx, HashTableType::Eq, size, 0.75)),
                 uses: Lock::new(uses),
                 version: Lock::new(Value::null()),
                 binder: binder.into_value(ctx),
@@ -105,14 +105,14 @@ impl<'gc> Module<'gc> {
                 transformer: Value::new(false),
                 name: Lock::new(Value::new(false)),
                 kind: Cell::new(ModuleKind::Directory),
-                import_obarray: HashTable::new(&ctx, HashTableType::Eq, 0, 0.75),
-                submodules: HashTable::new(&ctx, HashTableType::Equal, 0, 0.75),
+                import_obarray: HashTable::new(*ctx, HashTableType::Eq, 0, 0.75),
+                submodules: HashTable::new(*ctx, HashTableType::Equal, 0, 0.75),
                 filename: Lock::new(Value::new(false)),
                 inlinable_exports: Lock::new(Value::new(false)),
                 next_unique_id: AtomicUsize::new(0),
                 public_interface: Lock::new(None),
                 replacements: Lock::new(Value::new(HashTable::new(
-                    &ctx,
+                    *ctx,
                     HashTableType::Eq,
                     0,
                     0.75,
@@ -218,7 +218,7 @@ impl<'gc> Module<'gc> {
 
     pub fn set(&self, ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> bool {
         if let Some(var) = self.variable(ctx, name) {
-            barrier::field!(Gc::write(&ctx, var), Variable, value)
+            barrier::field!(Gc::write(*ctx, var), Variable, value)
                 .unlock()
                 .set(value);
             true
@@ -234,7 +234,7 @@ impl<'gc> Module<'gc> {
         value: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
         let var = self.ensure_local_variable(ctx, name);
-        barrier::field!(Gc::write(&ctx, var), Variable, value)
+        barrier::field!(Gc::write(*ctx, var), Variable, value)
             .unlock()
             .set(value);
         var
@@ -266,7 +266,7 @@ impl<'gc> Module<'gc> {
             return;
         }
 
-        barrier::field!(Gc::write(&ctx, self), Self, uses)
+        barrier::field!(Gc::write(*ctx, self), Self, uses)
             .unlock()
             .set(
                 self.uses
@@ -368,14 +368,14 @@ impl<'gc> Module<'gc> {
 
         if interface.map_or(true, |iface| Gc::ptr_eq(iface, self)) {
             let interface = Self::new(ctx, 0, Value::null(), Value::new(false));
-            let wi = Gc::write(&ctx, interface);
+            let wi = Gc::write(*ctx, interface);
             barrier::field!(wi, Self, name)
                 .unlock()
                 .set(self.name.get());
             barrier::field!(wi, Self, version)
                 .unlock()
                 .set(self.version.get());
-            barrier::field!(Gc::write(&ctx, self), Self, public_interface)
+            barrier::field!(Gc::write(*ctx, self), Self, public_interface)
                 .unlock()
                 .set(Some(interface));
         }
@@ -547,7 +547,7 @@ impl<'gc> Module<'gc> {
             cur = cur.ref_submodule(ctx, head).unwrap_or_else(|| {
                 let m = Module::new(ctx, 0, Value::null(), Value::new(false));
                 m.kind.set(ModuleKind::Directory);
-                let wm = Gc::write(&ctx, m);
+                let wm = Gc::write(*ctx, m);
                 barrier::field!(wm, Module, name)
                     .unlock()
                     .set(cur.name.get().append(ctx, list!(ctx, head)));
@@ -642,7 +642,7 @@ pub fn make_modules_in<'gc>(
 ) -> Gc<'gc, Module<'gc>> {
     module.nested_ref_module(ctx, name).unwrap_or_else(|| {
         let m = Module::new(ctx, 0, Value::null(), Value::new(false));
-        let wm = Gc::write(&ctx, m);
+        let wm = Gc::write(*ctx, m);
         wm.kind.set(ModuleKind::Directory);
         barrier::field!(wm, Module, name)
             .unlock()
@@ -662,7 +662,7 @@ pub fn define_module<'gc>(
 ) -> Result<Gc<'gc, Module<'gc>>, Value<'gc>> {
     let Some(module) = resolve_module(ctx, name, false, true) else {
         return Err(Str::new(
-            &ctx,
+            *ctx,
             format!("Cannot create module with name {}", name),
             true,
         )
@@ -670,7 +670,7 @@ pub fn define_module<'gc>(
     };
 
     module.beautify_user_module(ctx);
-    let w = Gc::write(&ctx, module);
+    let w = Gc::write(*ctx, module);
     barrier::field!(w, Module, filename).unlock().set(filename);
     module.export(ctx, exports);
     let _ = imports;
@@ -699,7 +699,7 @@ const _: () = {
 impl<'gc> Variable<'gc> {
     pub fn new(ctx: Context<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header: ScmHeader::with_type_bits(TypeCode8::VARIABLE.bits() as _),
                 value: Lock::new(value),
@@ -712,7 +712,7 @@ impl<'gc> Variable<'gc> {
     }
 
     pub fn set(self: Gc<'gc, Self>, ctx: Context<'gc>, value: Value<'gc>) {
-        barrier::field!(Gc::write(&ctx, self), Variable, value)
+        barrier::field!(Gc::write(*ctx, self), Variable, value)
             .unlock()
             .set(value);
     }
@@ -780,7 +780,7 @@ pub mod module_ops {
 
     #[scheme(name = "variable-set!")]
     pub fn variable_set(var: Gc<'gc, Variable<'gc>>, value: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, var), Variable, value)
+        barrier::field!(Gc::write(*nctx.ctx, var), Variable, value)
             .unlock()
             .set(value);
         nctx.return_(Value::undefined())
@@ -915,7 +915,7 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         obarray: Gc<'gc, HashTable<'gc>>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, obarray)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, obarray)
             .unlock()
             .set(obarray);
         nctx.return_(Value::undefined())
@@ -923,7 +923,7 @@ pub mod module_ops {
 
     #[scheme(name = "set-module-uses!")]
     pub fn set_module_uses(module: Gc<'gc, Module<'gc>>, uses: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, uses)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, uses)
             .unlock()
             .set(uses);
         nctx.return_(Value::undefined())
@@ -937,7 +937,7 @@ pub mod module_ops {
 
     #[scheme(name = "set-module-name!")]
     pub fn set_module_name(module: Gc<'gc, Module<'gc>>, name: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, name)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, name)
             .unlock()
             .set(name);
         nctx.return_(Value::undefined())
@@ -945,7 +945,7 @@ pub mod module_ops {
 
     #[scheme(name = "set-module-version!")]
     pub fn set_module_version(module: Gc<'gc, Module<'gc>>, version: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, version)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, version)
             .unlock()
             .set(version);
         nctx.return_(Value::undefined())
@@ -974,7 +974,7 @@ pub mod module_ops {
 
     #[scheme(name = "set-module-filename!")]
     pub fn set_module_filename(module: Gc<'gc, Module<'gc>>, filename: Value<'gc>) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, filename)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, filename)
             .unlock()
             .set(filename);
         nctx.return_(Value::undefined())
@@ -985,7 +985,7 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         public_interface: Option<Gc<'gc, Module<'gc>>>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, public_interface)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, public_interface)
             .unlock()
             .set(public_interface);
         nctx.return_(Value::undefined())
@@ -1006,7 +1006,7 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         replacements: Value<'gc>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, replacements)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, replacements)
             .unlock()
             .set(replacements);
         nctx.return_(Value::undefined())
@@ -1017,7 +1017,7 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         inlinable_exports: Value<'gc>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, inlinable_exports)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, inlinable_exports)
             .unlock()
             .set(inlinable_exports);
         nctx.return_(Value::undefined())
@@ -1159,7 +1159,7 @@ pub mod module_ops {
             .next_unique_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let sym = format!("{}-{}-{}", id, m.name.get().hash_equal(), unique_id);
-        let str = Str::new(&nctx.ctx, sym, true);
+        let str = Str::new(*nctx.ctx, sym, true);
         let sym = Symbol::gensym(nctx.ctx, Some(str));
         nctx.return_(sym.into())
     }
@@ -1183,7 +1183,7 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         environment: Value<'gc>,
     ) -> Value<'gc> {
-        barrier::field!(Gc::write(&nctx.ctx, module), Module, environment)
+        barrier::field!(Gc::write(*nctx.ctx, module), Module, environment)
             .unlock()
             .set(environment);
         nctx.return_(Value::undefined())

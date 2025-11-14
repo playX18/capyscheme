@@ -234,8 +234,8 @@ impl<'gc> ModuleBuilder<'gc> {
             .map(|(key, id)| (key.0, *id))
             .collect::<Vec<_>>();
 
-        let vec = Vector::new::<true>(&self.ctx, constants.len(), Value::undefined());
-        let wvec = Gc::write(&self.ctx, vec);
+        let vec = Vector::new::<true>(*self.ctx, constants.len(), Value::undefined());
+        let wvec = Gc::write(*self.ctx, vec);
         for (i, (val, _)) in constants.iter().enumerate() {
             wvec[i].unlock().set(*val);
         }

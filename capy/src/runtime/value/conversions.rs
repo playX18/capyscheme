@@ -450,7 +450,7 @@ impl<'gc> IntoValue<'gc> for bool {
 
 impl<'gc> IntoValue<'gc> for &str {
     fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        let string = Str::new(&mc, self, false);
+        let string = Str::new(*mc, self, false);
 
         Value::from_gc(string)
     }

@@ -6,7 +6,7 @@ use std::{
     sync::{Once, OnceLock, atomic::AtomicU64},
 };
 
-use crate::rsgc::{Gc, Global, Mutation, };
+use crate::rsgc::{Gc, Global, Mutation};
 use easy_bitfield::{BitField, BitFieldTrait};
 
 use crate::runtime::{Context, value::*};
@@ -36,11 +36,11 @@ pub static SYMBOL_TABLE: OnceLock<Global<crate::Rootable!(Gc<'_, WeakSet<'_>>)>>
 
 static ONCE: Once = Once::new();
 
-pub(crate) fn symbol_table<'gc>(mc: &Mutation<'gc>) -> Gc<'gc, WeakSet<'gc>> {
+pub(crate) fn symbol_table<'gc>(mc: Mutation<'gc>) -> Gc<'gc, WeakSet<'gc>> {
     (*SYMBOL_TABLE.get().unwrap().fetch(mc)).clone()
 }
 
-pub fn init_symbols<'gc>(mc: &Mutation<'gc>) {
+pub fn init_symbols<'gc>(mc: Mutation<'gc>) {
     ONCE.call_once(|| {
         let symbol_table = WeakSet::new(mc, 31);
         let _ = SYMBOL_TABLE.set(Global::new(symbol_table));
@@ -48,7 +48,7 @@ pub fn init_symbols<'gc>(mc: &Mutation<'gc>) {
 }
 
 fn lookup_interned_symbol<'gc>(
-    mc: &Mutation<'gc>,
+    mc: Mutation<'gc>,
     name: Value<'gc>,
     raw_hash: u64,
 ) -> Option<Value<'gc>> {
@@ -77,7 +77,7 @@ fn lookup_interned_symbol<'gc>(
 }
 
 fn symbool_lookup_predicate<'gc>(
-    mc: &Mutation<'gc>,
+    mc: Mutation<'gc>,
     sym: Value<'gc>,
     other: Gc<'gc, Symbol<'gc>>,
 ) -> bool {
@@ -95,7 +95,7 @@ fn symbool_lookup_predicate<'gc>(
 }
 
 impl<'gc> Symbol<'gc> {
-    pub fn to_str(&self, mc: &Mutation<'gc>) -> Gc<'gc, Str<'gc>> {
+    pub fn to_str(&self, mc: Mutation<'gc>) -> Gc<'gc, Str<'gc>> {
         self.substring(mc, 0, self.len())
     }
 
@@ -104,16 +104,16 @@ impl<'gc> Symbol<'gc> {
         str.hash(&mut hasher);
         let hash = hasher.finish();
 
-        let symbol = lookup_interned_symbol(&mc, str.into_value(mc), hash);
+        let symbol = lookup_interned_symbol(*mc, str.into_value(mc), hash);
 
         if let Some(symbol) = symbol {
             return symbol.downcast();
         } else {
-            let symbol = Self::new::<true>(&mc, str, hash, None);
+            let symbol = Self::new::<true>(*mc, str, hash, None);
 
             WeakSet::add(
-                *SYMBOL_TABLE.get().unwrap().fetch(&mc),
-                &mc,
+                *SYMBOL_TABLE.get().unwrap().fetch(*mc),
+                *mc,
                 hash,
                 |mc, sym| symbool_lookup_predicate(mc, sym, symbol),
                 Value::new(symbol),
@@ -123,7 +123,7 @@ impl<'gc> Symbol<'gc> {
     }
 
     pub fn from_string_uninterned(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         str: Gc<'gc, Str<'gc>>,
         prefix_offset: Option<u16>,
     ) -> Gc<'gc, Symbol<'gc>> {
@@ -137,16 +137,16 @@ impl<'gc> Symbol<'gc> {
     }
 
     pub fn from_str(mc: Context<'gc>, str: &str) -> Gc<'gc, Symbol<'gc>> {
-        let str = Str::new(&mc, str, false);
+        let str = Str::new(*mc, str, false);
         Self::from_string(mc, str)
     }
 
     pub fn from_str_uninterned(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         str: &str,
         prefix_offset: Option<u16>,
     ) -> Gc<'gc, Symbol<'gc>> {
-        let str = Str::new(&mc, str, false);
+        let str = Str::new(mc, str, false);
         Self::from_string_uninterned(mc, str, prefix_offset)
     }
 
@@ -168,7 +168,7 @@ impl<'gc> Symbol<'gc> {
             }
         };
 
-        let str = Str::new(&mc, string, false);
+        let str = Str::new(*mc, string, false);
 
         Symbol::from_string(mc, str)
     }
@@ -184,18 +184,18 @@ impl<'gc> Symbol<'gc> {
     pub fn uninterned_suffix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
         let offset = SymbolPrefixOffsetBits::decode(self.header.word);
         if offset == 0 {
-            Str::new(&ctx, "", true)
+            Str::new(*ctx, "", true)
         } else {
-            self.substring(&ctx, offset as usize, self.len() - offset as usize)
+            self.substring(*ctx, offset as usize, self.len() - offset as usize)
         }
     }
 
     pub fn uninterned_prefix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
         let offset = SymbolPrefixOffsetBits::decode(self.header.word);
         if offset == 0 {
-            Str::new(&ctx, "", true)
+            Str::new(*ctx, "", true)
         } else {
-            self.substring(&ctx, 0, offset as usize)
+            self.substring(*ctx, 0, offset as usize)
         }
     }
 
@@ -229,13 +229,13 @@ impl<'gc> Str<'gc> {
         Symbol::from_string(mc, self)
     }
 
-    pub fn to_symbol_uninterned(self: Gc<'gc, Self>, mc: &Mutation<'gc>) -> Gc<'gc, Symbol<'gc>> {
+    pub fn to_symbol_uninterned(self: Gc<'gc, Self>, mc: Mutation<'gc>) -> Gc<'gc, Symbol<'gc>> {
         Symbol::from_string_uninterned(mc, self, None)
     }
 
     pub fn to_symbol_uninterned_with_prefix(
         self: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         prefix_offset: u16,
     ) -> Gc<'gc, Symbol<'gc>> {
         Symbol::from_string_uninterned(mc, self, Some(prefix_offset))
@@ -308,7 +308,7 @@ macro_rules! static_symbols {
                 pub fn [<$name: lower>] <'gc>(mc: $crate::runtime::Context<'gc>) ->
                     $crate::rsgc::Gc<'gc, $crate::runtime::value::Symbol<'gc>>
                 {
-                    *$name.get_or_init(|| $crate::rsgc::global::Global::new($crate::runtime::value::Symbol::from_str(mc, $value))).fetch(&mc)
+                    *$name.get_or_init(|| $crate::rsgc::global::Global::new($crate::runtime::value::Symbol::from_str(mc, $value))).fetch(*mc)
                 }
             }
         )*

@@ -123,7 +123,7 @@ impl<'gc> ImageBuilder<'gc> {
             self.write_value(winders)?;
             self.write_value(marks)?;
 
-            let current_module = current_module(&self.ctx);
+            let current_module = current_module(self.ctx);
             self.write_value(current_module)?;
             self.write_value(proc)?;
         }
@@ -216,7 +216,7 @@ impl<'gc> ImageBuilder<'gc> {
     }
 
     fn write_symbol_table(&mut self) -> Result<'gc> {
-        let sym_table = symbol_table(&self.ctx);
+        let sym_table = symbol_table(*self.ctx);
         self.write_reference(sym_table)?;
         Ok(())
     }
@@ -256,7 +256,7 @@ impl<'gc> ImageBuilder<'gc> {
     /// Walk all the loaded dynamic libraries and serialize them into the image. It performs ZSTD
     /// compression on each library ELF binary.
     fn serialize_libraries(&mut self) -> Result<'gc, ()> {
-        let libs = LIBRARY_COLLECTION.fetch(&self.ctx);
+        let libs = LIBRARY_COLLECTION.fetch(*self.ctx);
 
         let mut libraries = Vec::new();
 
@@ -631,8 +631,8 @@ impl<'gc> ImageBuilder<'gc> {
     }
 
     pub fn write_weakmapping(&mut self, wmap: Gc<'gc, WeakMapping<'gc>>) -> Result<'gc, ()> {
-        let key = wmap.key(&self.ctx);
-        let value = wmap.value(&self.ctx);
+        let key = wmap.key(*self.ctx);
+        let value = wmap.value(*self.ctx);
 
         self.write_value(key)?;
         self.write_value(value)?;
@@ -889,7 +889,7 @@ impl<'gc> ReferenceMapBuilder<'gc> {
 
         let mut globals_to_scan = Vec::with_capacity(128);
 
-        LIBRARY_COLLECTION.fetch(&self.ctx).for_each_library(|lib| {
+        LIBRARY_COLLECTION.fetch(*self.ctx).for_each_library(|lib| {
             let fbase = lib.fbase;
             self.fbase_to_lib.insert(fbase, index);
 
@@ -903,7 +903,7 @@ impl<'gc> ReferenceMapBuilder<'gc> {
             self.enqueue_value(global);
         }
 
-        let symbols = symbol_table(&self.ctx);
+        let symbols = symbol_table(*self.ctx);
         self.enqueue_value(symbols.into_value(self.ctx));
 
         let globals = self.ctx.globals();
@@ -917,7 +917,7 @@ impl<'gc> ReferenceMapBuilder<'gc> {
         self.enqueue_value(winders);
         let cur = self.ctx.state().current_marks();
         self.enqueue_value(cur);
-        let current_module = current_module(&self.ctx);
+        let current_module = current_module(self.ctx);
         self.enqueue_value(current_module);
         self.enqueue_value(proc);
     }
@@ -1176,7 +1176,7 @@ impl<'gc> ReferenceMapBuilder<'gc> {
 
     pub fn scan_weakset(&mut self, wset: Gc<'gc, WeakSet<'gc>>) {
         let mut elems = Vec::with_capacity(4);
-        wset.for_each(&self.ctx, |elem| {
+        wset.for_each(*self.ctx, |elem| {
             elems.push(elem);
         });
 
@@ -1186,8 +1186,8 @@ impl<'gc> ReferenceMapBuilder<'gc> {
     }
 
     pub fn scan_weakmapping(&mut self, wmap: Gc<'gc, WeakMapping<'gc>>) {
-        let key = wmap.key(&self.ctx);
-        let value = wmap.value(&self.ctx);
+        let key = wmap.key(*self.ctx);
+        let value = wmap.value(*self.ctx);
 
         self.enqueue_value(key);
         self.enqueue_value(value);

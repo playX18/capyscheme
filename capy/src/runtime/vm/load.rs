@@ -20,10 +20,10 @@ use std::time::SystemTime;
 use crate::{global, runtime::Context};
 global!(
     pub loc_load_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-path", Value::null());
-    pub loc_load_extensions<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-extensions", list!(ctx, Str::new(&ctx, "scm", true)));
+    pub loc_load_extensions<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-extensions", list!(ctx, Str::new(*ctx, "scm", true)));
     pub loc_load_compiled_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-compiled-path", Value::null());
     pub loc_load_compiled_extensions<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-compiled-extensions", Value::null());
-    pub loc_native_extension<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%native-extension", Str::new(&ctx, if cfg!(target_vendor="apple") {
+    pub loc_native_extension<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%native-extension", Str::new(*ctx, if cfg!(target_vendor="apple") {
         "dylib"
     } else {
         "so"
@@ -31,8 +31,8 @@ global!(
 
     pub loc_compile_fallback_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%compile-fallback-path", Value::null());
 
-    pub loc_sysroot<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%sysroot", Str::new(&ctx, env!("CARGO_MANIFEST_DIR"), true));
-    pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(&ctx, env!("CARGO_MANIFEST_DIR"), true));
+    pub loc_sysroot<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%sysroot", Str::new(*ctx, env!("CARGO_MANIFEST_DIR"), true));
+    pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(*ctx, env!("CARGO_MANIFEST_DIR"), true));
 
     pub loc_fresh_auto_compile<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%fresh-auto-compile", Value::new(false));
 );
@@ -59,7 +59,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         }
         ctx.globals()
             .loc_compile_fallback_path()
-            .set(ctx, Str::new(&ctx, &cache_dir, true).into());
+            .set(ctx, Str::new(*ctx, &cache_dir, true).into());
     }
 
     let mut path = Value::null();
@@ -81,20 +81,20 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         let stdlib_dir = exe_dir.join("lib");
         path = Value::cons(
             ctx,
-            Str::new(&ctx, &stdlib_dir.to_string_lossy(), true).into(),
+            Str::new(*ctx, &stdlib_dir.to_string_lossy(), true).into(),
             path,
         );
 
         let _cpath = exe_dir.join("compiled");
         cpath = Value::cons(
             ctx,
-            Str::new(&ctx, &_cpath.to_string_lossy(), true).into(),
+            Str::new(*ctx, &_cpath.to_string_lossy(), true).into(),
             cpath,
         );
     }
 
     if let Ok(load_path) = std::env::var("CAPY_LOAD_PATH") {
-        let paths = load_path.split(':').map(|s| Str::new(&ctx, s, true).into());
+        let paths = load_path.split(':').map(|s| Str::new(*ctx, s, true).into());
         let mut sig = Value::null();
         for p in paths.rev() {
             sig = Value::cons(ctx, p, sig);
@@ -105,7 +105,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     if let Ok(compiled_path) = std::env::var("CAPY_LOAD_COMPILED_PATH") {
         let paths = compiled_path
             .split(':')
-            .map(|s| Str::new(&ctx, s, true).into());
+            .map(|s| Str::new(*ctx, s, true).into());
         let mut sig = cpath;
         for p in paths.rev() {
             sig = Value::cons(ctx, p, sig);
@@ -123,7 +123,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
 
     ctx.globals().loc_capy_root().set(
         ctx,
-        Str::new(&ctx, workspace_dir.to_string_lossy(), true).into(),
+        Str::new(*ctx, workspace_dir.to_string_lossy(), true).into(),
     );
 }
 
@@ -236,10 +236,10 @@ pub fn find_path_to<'gc>(
     let source_path = match source_path {
         Some(p) => p.canonicalize().map_err(|err| {
             make_io_error(
-                &ctx,
+                ctx,
                 "find-path-to",
                 Str::new(
-                    &ctx,
+                    *ctx,
                     format!("Failed to canonicalize path {}: {err}", p.display()),
                     true,
                 )
@@ -301,10 +301,10 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
         Some(v) => v,
         None => {
             return Err(make_io_error(
-                &ctx,
+                ctx,
                 "load",
                 Str::new(
-                    &ctx,
+                    *ctx,
                     &format!("File not found: {}", filename.to_string_lossy()),
                     true,
                 )
@@ -320,7 +320,7 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
         .and_then(|m| m.modified().ok())
         .unwrap_or(SystemTime::UNIX_EPOCH);
 
-    let libs = LIBRARY_COLLECTION.fetch(&ctx);
+    let libs = LIBRARY_COLLECTION.fetch(*ctx);
     let mut compiled_thunk = Value::new(false);
 
     if compiled.exists() {
@@ -340,8 +340,8 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
         return Ok(compiled_thunk);
     }
     if !FORCE_COMPILE {
-        let source_str = Str::new(&ctx, source.display().to_string(), true);
-        let compiled_str = Str::new(&ctx, compiled.display().to_string(), true);
+        let source_str = Str::new(*ctx, source.display().to_string(), true);
+        let compiled_str = Str::new(*ctx, compiled.display().to_string(), true);
 
         return Ok(Value::cons(ctx, source_str.into(), compiled_str.into()));
     }
@@ -352,10 +352,10 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
 
     libs.load(compiled, ctx).map_err(|err| {
         make_io_error(
-            &ctx,
+            ctx,
             "load",
             Str::new(
-                &ctx,
+                *ctx,
                 format!("Failed to load compiled library: {err}"),
                 true,
             )
@@ -409,8 +409,8 @@ pub mod load_ops {
         match result {
             Some((source, compiled)) => nctx.return_(Ok(Value::cons(
                 ctx,
-                Str::new(&ctx, &source.to_string_lossy(), true).into(),
-                Str::new(&ctx, &compiled.to_string_lossy(), true).into(),
+                Str::new(*ctx, &source.to_string_lossy(), true).into(),
+                Str::new(*ctx, &compiled.to_string_lossy(), true).into(),
             ))),
             None => nctx.return_(Ok(Value::new(false))),
         }
@@ -482,13 +482,13 @@ pub mod load_ops {
             Err(err) => return nctx.return_(Err(err)),
         }
         let ctx = nctx.ctx;
-        let libs = LIBRARY_COLLECTION.fetch(&ctx);
+        let libs = LIBRARY_COLLECTION.fetch(*ctx);
         match libs.load(&compiled_path, ctx) {
             Err(err) => nctx.return_(Err(make_io_error(
-                &ctx,
+                ctx,
                 "load",
                 Str::new(
-                    &ctx,
+                    *ctx,
                     format!("Failed to load compiled library: {err}"),
                     true,
                 )
@@ -562,10 +562,10 @@ pub mod load_ops {
                 let file = thunk.car().downcast::<Str>().to_string();
                 let file_in = match std::fs::File::open(&file).map_err(|e| {
                     make_io_error(
-                        &ctx,
+                        ctx,
                         "compile-file",
                         Str::new(
-                            &ctx,
+                            *ctx,
                             format!("Cannot open input file '{}': {}", file, e),
                             true,
                         )
@@ -579,10 +579,10 @@ pub mod load_ops {
 
                 let text = match std::io::read_to_string(&file_in).map_err(|e| {
                     make_io_error(
-                        &ctx,
+                        ctx,
                         "compile-file",
                         Str::new(
-                            &ctx,
+                            *ctx,
                             format!("Cannot read input file '{}': {}", file, e),
                             true,
                         )
@@ -593,11 +593,11 @@ pub mod load_ops {
                     Ok(text) => text,
                     Err(err) => return nctx.return_(Err(err)),
                 };
-                let src = Str::new(&ctx, &file, true);
+                let src = Str::new(*ctx, &file, true);
                 let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
 
                 let program = match parser.read_program().map_err(|err| {
-                    make_lexical_violation(&ctx, "compile-file", err.to_string(&file))
+                    make_lexical_violation(ctx, "compile-file", err.to_string(&file))
                 }) {
                     Ok(program) => program,
                     Err(err) => return nctx.return_(Err(err)),
@@ -630,8 +630,8 @@ pub mod load_ops {
         match result {
             Ok(Some((source, compiled))) => nctx.return_(Value::cons(
                 ctx,
-                Str::new(&ctx, &source.to_string_lossy(), true).into(),
-                Str::new(&ctx, &compiled.to_string_lossy(), true).into(),
+                Str::new(*ctx, &source.to_string_lossy(), true).into(),
+                Str::new(*ctx, &compiled.to_string_lossy(), true).into(),
             )),
             Ok(None) => nctx.return_(Value::new(false)),
             Err(_err) => nctx.return_(Value::new(false)),
@@ -727,14 +727,14 @@ pub(crate) fn continue_loading_k(
     }
     let ctx = nctx.ctx;
 
-    let libs = LIBRARY_COLLECTION.fetch(&ctx);
+    let libs = LIBRARY_COLLECTION.fetch(*ctx);
     match libs.load(&compiled_path, ctx) {
         Err(err) => {
             return nctx.return_(Err(make_io_error(
-                &ctx,
+                ctx,
                 "load",
                 Str::new(
-                    &ctx,
+                    *ctx,
                     format!("Failed to load compiled library: {err}"),
                     true,
                 )

@@ -24,7 +24,7 @@ pub fn throw<'gc>(
 
     if throw == Value::new(false) {
         let str = Str::new(
-            &ctx,
+            *ctx,
             format!("Uncaught error, key: {key}, args: {args}"),
             false,
         );

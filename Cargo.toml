@@ -54,6 +54,7 @@ incremental = true
 rpath = true
 lto = "thin"
 
+
 [profile.dev]
 incremental = true
 opt-level = 0

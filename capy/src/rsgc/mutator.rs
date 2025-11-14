@@ -1,11 +1,14 @@
-use crate::rsgc::{
-    ObjectSlot,
-    finalizer::Finalizers,
-    mm::MemoryManager,
-    object::{GCObject, HeapObjectHeader, OBJECT_REF_OFFSET, VTable, VTableOf},
-    ptr::Gc,
-    sync::thread::{AllocFastPath, Thread, current_thread, is_current_thread_registed},
-    traits::Trace,
+use crate::{
+    rsgc::{
+        ObjectSlot,
+        finalizer::Finalizers,
+        mm::MemoryManager,
+        object::{GCObject, HeapObjectHeader, OBJECT_REF_OFFSET, VTable, VTableOf},
+        ptr::Gc,
+        sync::thread::{AllocFastPath, Thread, current_thread, is_current_thread_registed},
+        traits::Trace,
+    },
+    runtime::State,
 };
 use mmtk::{
     AllocationSemantics, BarrierSelector, MutatorContext,
@@ -20,6 +23,8 @@ use std::{
     alloc::Layout,
     marker::PhantomData,
     mem::MaybeUninit,
+    ops::Deref,
+    panic::AssertUnwindSafe,
     ptr::NonNull,
     sync::{Arc, atomic::Ordering},
 };
@@ -83,7 +88,7 @@ where
 {
     pub fn new<F>(f: F) -> Self
     where
-        F: for<'gc> FnOnce(&'gc Mutation<'gc>) -> Root<'gc, R>,
+        F: for<'gc> FnOnce(Mutation<'gc>) -> Root<'gc, R>,
     {
         let thread = Thread::new(true);
 
@@ -92,7 +97,7 @@ where
 
     pub fn try_new<F, E>(f: F) -> Result<Self, E>
     where
-        F: for<'gc> FnOnce(&'gc Mutation<'gc>) -> Result<Root<'gc, R>, E>,
+        F: for<'gc> FnOnce(Mutation<'gc>) -> Result<Root<'gc, R>, E>,
     {
         let thread = Thread::new(true);
 
@@ -110,7 +115,7 @@ where
     /// Panics if thread is already managed, or current thread is already registered.
     pub fn try_new_with_thread<F, E>(thread: Arc<Thread>, init: F) -> Result<Self, E>
     where
-        F: for<'gc> FnOnce(&'gc Mutation<'gc>) -> Result<Root<'gc, R>, E>,
+        F: for<'gc> FnOnce(Mutation<'gc>) -> Result<Root<'gc, R>, E>,
     {
         assert!(!thread.is_managed(), "thread is already managed by GC");
 
@@ -133,9 +138,19 @@ where
         });
 
         let mutation = unsafe { Mutation::new() };
-        let static_mutation: &'static Mutation<'_> =
-            unsafe { &*(&mutation as *const Mutation<'_>) };
-        let root: Root<'static, R> = match init(static_mutation) {
+        let static_mutation: Mutation<'_> = unsafe { std::mem::transmute(mutation) };
+
+        let res = std::panic::catch_unwind(AssertUnwindSafe(|| init(static_mutation)));
+        Thread::enter_native();
+
+        let init = match res {
+            Ok(v) => v,
+            Err(e) => {
+                Thread::unregister();
+                std::panic::resume_unwind(e);
+            }
+        };
+        let root: Root<'static, R> = match init {
             Ok(root) => root,
             Err(err) => {
                 Thread::unregister();
@@ -166,13 +181,18 @@ where
     #[inline]
     pub fn mutate<F, T>(&self, f: F) -> T
     where
-        F: for<'gc> FnOnce(&'gc Mutation<'gc>, &'gc Root<'gc, R>) -> T,
+        F: for<'gc> FnOnce(Mutation<'gc>, &'gc Root<'gc, R>) -> T,
     {
         unsafe {
             let mc = Mutation::new();
-            let mc: &'static Mutation<'static> = &*(&mc as *const Mutation<'_>);
+            let mc: Mutation<'static> = std::mem::transmute(mc);
             let state = self.state.as_ptr().as_mut().expect("state must be valid");
-            f(mc, &mut state.root)
+            let res = std::panic::catch_unwind(AssertUnwindSafe(|| f(mc, &mut state.root)));
+            Thread::enter_native();
+            match res {
+                Ok(v) => v,
+                Err(e) => std::panic::resume_unwind(e),
+            }
         }
     }
 
@@ -215,16 +235,66 @@ where
     }
 }
 
-#[derive()]
-#[repr(C)]
+/// cbindgen:ignore
+#[derive(Copy, Clone)]
+#[repr(transparent)]
 pub struct Mutation<'gc> {
     thread: &'gc Thread,
+}
+
+impl<'gc> Deref for Mutation<'gc> {
+    type Target = State<'gc>;
+
+    fn deref(&self) -> &Self::Target {
+        debug_assert!(
+            self.thread.is_thread_state_initialized(),
+            "thread state is not initialized"
+        );
+        unsafe {
+            let state_ptr = self.thread.state_ptr();
+            &*(state_ptr as *const State<'gc>)
+        }
+    }
 }
 
 use mmtk::util::alloc::AllocationOptions;
 
 impl<'gc> Mutation<'gc> {
     pub const OFFSET_OF_THREAD: usize = std::mem::offset_of!(Self, thread);
+
+    pub const OFFSET_OF_STATE: usize = Thread::RT_STATE_OFFSET;
+
+    #[inline(always)]
+    pub fn state(&self) -> &'gc State<'gc> {
+        debug_assert!(
+            self.thread.is_thread_state_initialized(),
+            "thread state is not initialized"
+        );
+        unsafe {
+            let state_ptr = self.thread.state_ptr();
+            &*(state_ptr as *const State<'gc>)
+        }
+    }
+
+    pub fn as_ptr(self) -> *const () {
+        self.thread as *const _ as *const ()
+    }
+
+    pub unsafe fn from_ptr(ptr: *const ()) -> Self {
+        let thread = unsafe { &*(ptr as *const Thread) };
+        Mutation { thread }
+    }
+
+    #[inline(always)]
+    pub fn init_state(&self, state: State<'gc>) {
+        assert!(
+            !self.thread.is_thread_state_initialized(),
+            "thread state is already initialized"
+        );
+        unsafe {
+            self.thread.initialize_state(state);
+        }
+    }
 
     #[inline(always)]
     pub fn thread(&self) -> &'gc Thread {
@@ -695,11 +765,5 @@ impl<'gc> Mutation<'gc> {
         Thread::leave_native();
 
         Self { thread }
-    }
-}
-
-impl<'gc> Drop for Mutation<'gc> {
-    fn drop(&mut self) {
-        Thread::enter_native();
     }
 }

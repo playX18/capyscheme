@@ -3,7 +3,6 @@
 use crate::rsgc::{
     Weak,
     barrier::{Unlock, Write},
-    compressed_heap_base, compressed_heap_shift,
     mutator::Mutation,
     object::GCObject,
     traits::Trace,
@@ -169,7 +168,7 @@ impl<'gc, T> Gc<'gc, T> {
     }
 
     /// Allocate `value` on the GC heap.
-    pub fn new(mc: &Mutation<'gc>, value: T) -> Gc<'gc, T>
+    pub fn new(mc: Mutation<'gc>, value: T) -> Gc<'gc, T>
     where
         T: Trace,
     {
@@ -210,7 +209,7 @@ impl<'gc, T> Gc<'gc, T> {
     /// plans in MMTk. Technically it is a *post* write barrier (meaning it should be called after the write)
     /// but in practice it does not matter. In future, when MMTk gets LXR or any other GC where
     /// write barrier order is strictly enforced this function will be behind a feature flag.
-    pub fn write(mc: &Mutation<'gc>, this: Self) -> &'gc Write<T> {
+    pub fn write(mc: Mutation<'gc>, this: Self) -> &'gc Write<T> {
         unsafe {
             mc.raw_object_reference_write(
                 this.as_gcobj(),
@@ -221,7 +220,7 @@ impl<'gc, T> Gc<'gc, T> {
         }
     }
 
-    pub fn compress(mc: &Mutation<'gc>, this: Self) -> NarrowGc<'gc, T> {
+    pub fn compress(mc: Mutation<'gc>, this: Self) -> NarrowGc<'gc, T> {
         let thread = mc.thread();
         let addr = (this.to_object_reference().to_raw_address() - thread.heap_base().as_usize())
             >> thread.heap_shift() as usize;
@@ -237,7 +236,7 @@ impl<'gc, T> Gc<'gc, T> {
 }
 
 impl<'gc, T: Unlock + 'gc> Gc<'gc, T> {
-    pub fn unlock(self, mc: &Mutation<'gc>) -> &'gc T::Unlocked {
+    pub fn unlock(self, mc: Mutation<'gc>) -> &'gc T::Unlocked {
         Gc::write(mc, self);
         unsafe { self.ptr.as_ref().unlock_unchecked() }
     }
@@ -288,7 +287,7 @@ impl<'gc, T> NarrowGc<'gc, T> {
     }
 
     #[inline(always)]
-    pub fn decompress(self, mc: &Mutation<'gc>) -> Gc<'gc, T> {
+    pub fn decompress(self, mc: Mutation<'gc>) -> Gc<'gc, T> {
         unsafe {
             let thread = mc.thread();
 
@@ -299,7 +298,7 @@ impl<'gc, T> NarrowGc<'gc, T> {
     }
 
     #[inline(always)]
-    pub fn write(mc: &Mutation<'gc>, this: Self) -> &'gc Write<T> {
+    pub fn write(mc: Mutation<'gc>, this: Self) -> &'gc Write<T> {
         let gc = this.decompress(mc);
         Gc::write(mc, gc)
     }
@@ -361,53 +360,6 @@ impl ObjectSlot {
 
     pub const fn untagged_address(&self) -> Address {
         unsafe { Address::from_usize(self.addr.as_usize() & !1usize) }
-    }
-
-    unsafe fn read_unaligned<T, const UNTAG: bool>(&self) -> T {
-        unsafe {
-            let slot = if UNTAG {
-                self.untagged_address()
-            } else {
-                self.addr
-            };
-
-            let ptr = slot.to_ptr::<T>();
-
-            ptr.read_unaligned()
-        }
-    }
-
-    unsafe fn write_unaligned<T: Copy, const UNTAG: bool>(&self, value: T) {
-        unsafe {
-            let slot = if UNTAG {
-                self.untagged_address()
-            } else {
-                self.addr
-            };
-
-            let ptr = slot.to_mut_ptr::<T>();
-
-            ptr.write_unaligned(value);
-        }
-    }
-
-    fn compress(o: ObjectReference) -> u32 {
-        ((o.to_raw_address() - compressed_heap_base().as_usize())
-            >> compressed_heap_shift() as usize) as u32
-    }
-
-    fn decompress(v: u32) -> Option<ObjectReference> {
-        if v == 0 {
-            None
-        } else {
-            let objref = unsafe {
-                ObjectReference::from_raw_address_unchecked(
-                    compressed_heap_base() + ((v as usize) << compressed_heap_shift()),
-                )
-            };
-
-            Some(objref)
-        }
     }
 
     pub fn store_null(&self) {
