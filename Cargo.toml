@@ -5,8 +5,6 @@ members = ["capy", "capy-derive"]
 default-members = ["capy"]
 
 [workspace.dependencies]
-#rsgc = { path = "../RSGC", default-features = false }
-rsgc = { git = "https://codeberg.org/playxe/rsgc", default-features = false }
 mmtk = { git = "https://github.com/mmtk/mmtk-core", features = [] }
 cranelift-jit = "0.125.4"
 cranelift = "0.125.4"
