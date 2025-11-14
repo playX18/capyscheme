@@ -1,13 +1,13 @@
+use crate::rsgc::{
+     Gc, Mutation, Trace,
+    barrier::{IndexWrite, Unlock},
+    cell::Lock,
+};
 use crate::runtime::{
     Context,
     value::{HashTable, ScmHeader, Tagged, TypeBits, TypeCode8, Value, WeakTable},
 };
 use easy_bitfield::{BitField, BitFieldTrait};
-use rsgc::{
-    Gc, Mutation, Trace,
-    barrier::{IndexWrite, Unlock},
-    cell::Lock,
-};
 use std::{cell::Cell, hash::Hash, ops::Index};
 
 /// A cache entry containing a key-value pair and usage tracking
@@ -454,7 +454,7 @@ macro_rules! fluid {
             $(#[$outer])*
             #[unsafe(export_name = concat!("CAPY_", stringify!($name)))]
             $v static [<$name: upper>]: ::std::sync::OnceLock<
-                $crate::rsgc::global::Global<$crate::rsgc::Rootable!($crate::runtime::fluids::FluidRef<'_>)>> = ::std::sync::OnceLock::new();
+                $crate::rsgc::global::Global<$crate::Rootable!($crate::runtime::fluids::FluidRef<'_>)>> = ::std::sync::OnceLock::new();
 
             $(#[$outer])*
             #[unsafe(export_name = concat!("capy_", stringify!($name)))]

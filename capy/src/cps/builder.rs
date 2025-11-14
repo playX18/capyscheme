@@ -1,6 +1,6 @@
 //! Compile to CPS
 
-use rsgc::Gc;
+use crate::rsgc::Gc;
 
 use crate::cps::term::*;
 use crate::expander::core::{LVarRef, fresh_lvar};

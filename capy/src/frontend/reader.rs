@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use rsgc::Trace;
+use crate::rsgc::Trace;
 use tree_sitter::Node;
 
 use crate::{

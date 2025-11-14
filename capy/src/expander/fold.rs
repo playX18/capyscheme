@@ -1,4 +1,4 @@
-use rsgc::{Gc, alloc::Array};
+use crate::rsgc::{Gc, alloc::Array};
 
 use crate::{
     expander::core::{Fix, Proc, Term, TermKind, TermRef},

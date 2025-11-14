@@ -1,6 +1,6 @@
 use std::{cell::Cell, collections::HashMap};
 
-use rsgc::{alloc::Array, barrier, cell::Lock};
+use crate::rsgc::{alloc::Array, barrier, cell::Lock};
 
 use crate::{
     expander::{

@@ -1,5 +1,5 @@
+use crate::rsgc::Gc;
 use crate::{prelude::*, static_symbols};
-use rsgc::Gc;
 pub fn init_vectors<'gc>(ctx: Context<'gc>) {
     vector_ops::register(ctx);
 }

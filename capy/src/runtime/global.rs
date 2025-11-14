@@ -1,6 +1,7 @@
 use std::{cell::Cell, marker::PhantomData, sync::OnceLock};
 
-use rsgc::{Gc, Root, Rootable, Trace, Visitor, barrier, sync::monitor::Monitor};
+use crate::Rootable;
+use crate::rsgc::{Gc, Root, Trace, Visitor, barrier, sync::monitor::Monitor};
 
 use crate::{
     expander::primitives::for_each_prim_name,
@@ -34,7 +35,7 @@ unsafe impl<'gc> Trace for GlobalTable<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
@@ -42,7 +43,7 @@ unsafe impl<'gc> Trace for GlobalTable<'gc> {
 unsafe impl Send for GlobalTable<'_> {}
 unsafe impl Sync for GlobalTable<'_> {}
 
-static GLOBALS: OnceLock<rsgc::Global<Rootable!(GlobalTable<'_>)>> = OnceLock::new();
+static GLOBALS: OnceLock<crate::rsgc::Global<crate::Rootable!(GlobalTable<'_>)>> = OnceLock::new();
 
 /// The main difference between [`rsgc::Global`] and this type
 /// is that this type does not store pointer, but just an index into
@@ -57,9 +58,9 @@ where
     marker: PhantomData<*const R>,
 }
 
-pub fn globals<'gc>() -> &'static rsgc::Global<Rootable!(GlobalTable<'_>)> {
+pub fn globals<'gc>() -> &'static crate::rsgc::Global<crate::Rootable!(GlobalTable<'_>)> {
     GLOBALS.get_or_init(|| {
-        rsgc::Global::new(GlobalTable {
+        crate::rsgc::Global::new(GlobalTable {
             globals: Monitor::new(Vec::with_capacity(128)),
         })
     })
@@ -73,7 +74,7 @@ pub fn globals<'gc>() -> &'static rsgc::Global<Rootable!(GlobalTable<'_>)> {
 /// behaviour if it sets existing globals to incorrect indices.
 pub unsafe fn globals_from_vec<'gc>(_ctx: impl AsRef<Context<'gc>>, vec: Vec<Value<'gc>>) {
     GLOBALS
-        .set(rsgc::Global::new(GlobalTable {
+        .set(crate::rsgc::Global::new(GlobalTable {
             globals: Monitor::new(vec),
         }))
         .unwrap_or_else(|_| panic!("globals have already been initialized"));
@@ -162,7 +163,7 @@ macro_rules! global {
             paste::paste!{
                 #[allow(unused)]
                 #[unsafe(export_name = concat!("CAPY_GLOBAL_", stringify!($name)))]
-                $v static [<$name: upper>]: std::sync::OnceLock<$crate::prelude::Global<$crate::rsgc::Rootable!($l => $t)>> = std::sync::OnceLock::new();
+                $v static [<$name: upper>]: std::sync::OnceLock<$crate::prelude::Global<$crate::Rootable!($l => $t)>> = std::sync::OnceLock::new();
 
                 #[allow(unused)]
                 #[unsafe(export_name = concat!("capy_global_", stringify!($name)))]
@@ -177,7 +178,7 @@ macro_rules! global {
 
                 #[allow(unused)]
                 #[doc(hidden)]
-                pub unsafe fn [<$name: lower _from_index>](index: usize) -> $crate::prelude::Global<$crate::rsgc::Rootable!($l => $t)> {
+                pub unsafe fn [<$name: lower _from_index>](index: usize) -> $crate::prelude::Global<$crate::Rootable!($l => $t)> {
                     unsafe {
                         $crate::prelude::Global::from_index(index)
                     }
@@ -666,4 +667,5 @@ impl<'gc> Globals<'gc> {
     }
 }
 
-pub(crate) static VM_GLOBALS: OnceLock<rsgc::Global<Rootable!(Globals<'_>)>> = OnceLock::new();
+pub(crate) static VM_GLOBALS: OnceLock<crate::rsgc::Global<crate::Rootable!(Globals<'_>)>> =
+    OnceLock::new();

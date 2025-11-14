@@ -3,7 +3,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use rsgc::{
+use crate::rsgc::{
     Gc, Mutation, Trace, alloc::array::Array, barrier, cell::Lock, collection::Visitor,
     sync::monitor::Monitor,
 };
@@ -97,7 +97,7 @@ unsafe impl<'gc> Trace for HashTable<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         unsafe {
             self.inner.get_mut().process_weak_refs(weak_processor);
         }
@@ -637,7 +637,7 @@ impl<'gc> HashTable<'gc> {
         }
     }
 
-    pub fn lock(&'gc self) -> rsgc::sync::monitor::MonitorGuard<'gc, InnerHashTable<'gc>> {
+    pub fn lock(&'gc self) -> crate::rsgc::sync::monitor::MonitorGuard<'gc, InnerHashTable<'gc>> {
         self.inner.lock()
     }
 

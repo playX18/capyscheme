@@ -3,6 +3,12 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+use crate::rsgc::{
+    Trace,
+    finalizer::FinalizerQueue,
+    mmtk::util::{Address, ObjectReference},
+    object::GCObject,
+};
 use crate::{
     global,
     prelude::*,
@@ -18,12 +24,6 @@ use libffi::{
     low::{type_tag, types},
     middle::Type,
     raw::{ffi_arg, ffi_type},
-};
-use rsgc::{
-    Trace,
-    finalizer::FinalizerQueue,
-    mmtk::util::{Address, ObjectReference},
-    object::GCObject,
 };
 use tinyvec::TinyVec;
 
@@ -196,11 +196,11 @@ global!(
 );
 
 unsafe impl Trace for Pointer {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         let _ = visitor;
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
@@ -707,12 +707,12 @@ unsafe impl<'gc> Tagged for CIF<'gc> {
 }
 
 unsafe impl<'gc> Trace for CIF<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         visitor.trace(&mut self.args);
         visitor.trace(&mut self.return_type);
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }

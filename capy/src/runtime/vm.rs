@@ -5,6 +5,7 @@ use std::{
     sync::atomic::Ordering,
 };
 
+use crate::rsgc::{Gc, Trace, alloc::Array};
 use crate::runtime::{
     Context, YieldReason,
     value::{
@@ -13,7 +14,6 @@ use crate::runtime::{
     },
     vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
 };
-use rsgc::{Gc, Trace, alloc::Array};
 
 pub mod arith;
 pub mod base;

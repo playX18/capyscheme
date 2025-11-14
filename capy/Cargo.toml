@@ -13,7 +13,7 @@ env_logger.workspace = true
 libm.workspace = true
 num-bigint.workspace = true
 rand.workspace = true
-rsgc.workspace = true
+mmtk.workspace = true
 simplehash.workspace = true
 num.workspace = true
 tree-sitter.workspace = true
@@ -68,6 +68,7 @@ crate-type = ["cdylib"]
 
 [features]
 portable = []
+aslr = []
 
 [build-dependencies]
 cbindgen = "*"

@@ -8,8 +8,8 @@
 //! - Complex numbers
 //! - Various radixes (binary, octal, decimal, hexadecimal)
 //! - Exactness prefixes (#e, #i)
+use crate::rsgc::Trace;
 use num::{BigInt, BigRational, Num, One, ToPrimitive, Zero};
-use rsgc::Trace;
 use std::{fmt, hash::Hash, rc::Rc};
 
 use crate::runtime::Context;
@@ -43,11 +43,11 @@ pub enum Number {
     },
 }
 unsafe impl Trace for Number {
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         let _ = visitor;
     }
 }

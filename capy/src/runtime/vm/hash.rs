@@ -1,10 +1,10 @@
 use crate::list;
 use crate::prelude::*;
+use crate::rsgc::Gc;
 use crate::{
     runtime::{prelude::*, vm::thunks::lookup_bound_public},
     static_symbols,
 };
-use rsgc::Gc;
 use simplehash::MurmurHasher64;
 use std::hash::Hash;
 

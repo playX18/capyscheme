@@ -9,6 +9,7 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use crate::rsgc::mmtk::util::Address;
 use cranelift::prelude::{
     AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, types,
 };
@@ -19,7 +20,6 @@ use cranelift_codegen::{
 };
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
-use rsgc::mmtk::util::Address;
 
 use crate::{
     call_signature,

@@ -1,6 +1,6 @@
 use std::{cell::Cell, hash::Hash};
 
-use rsgc::{
+use crate::rsgc::{
     Gc, Trace,
     alloc::{Array, array::ArrayRef},
     barrier,

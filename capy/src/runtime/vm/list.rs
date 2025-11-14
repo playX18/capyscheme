@@ -1,6 +1,6 @@
 use crate::prelude::*;
+use crate::rsgc::Gc;
 use crate::runtime::prelude::*;
-use rsgc::Gc;
 pub fn init_lists<'gc>(ctx: Context<'gc>) {
     list_ops::register(ctx);
 }

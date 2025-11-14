@@ -5,6 +5,15 @@
 //! in order to make them callable from compiled code.
 
 #![allow(dead_code, unused_variables)]
+use crate::rsgc::{
+    Gc, ObjectSlot,
+    alloc::Array,
+    mmtk::{
+        AllocationSemantics, MutatorContext,
+        util::{Address, ObjectReference},
+    },
+    object::{VTable, VTableOf},
+};
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
     runtime::{
@@ -29,15 +38,6 @@ use crate::{
     },
 };
 use cranelift_codegen::ir::InstBuilder;
-use rsgc::{
-    Gc, ObjectSlot,
-    alloc::Array,
-    mmtk::{
-        AllocationSemantics, MutatorContext,
-        util::{Address, ObjectReference},
-    },
-    object::{VTable, VTableOf},
-};
 use std::{alloc::Layout, cmp::Ordering};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,11 +139,11 @@ macro_rules! thunks {
 }
 
 pub mod compiler {
-    use cranelift_codegen::ir;
-    use rsgc::{
+    use crate::rsgc::{
         Gc, ObjectSlot,
         mmtk::util::{Address, ObjectReference},
     };
+    use cranelift_codegen::ir;
 
     use crate::runtime::{
         value::{TypeCode8, TypeCode16, Value},
@@ -557,7 +557,7 @@ thunks! {
             code: Address::from_ptr(func),
             direct: Address::ZERO,
             free,
-            meta: rsgc::cell::Lock::new(meta),
+            meta: crate::rsgc::cell::Lock::new(meta),
         };
 
         Gc::new(&ctx, clos).into()

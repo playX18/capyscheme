@@ -1,3 +1,8 @@
+use crate::rsgc::{
+    GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Trace,
+    barrier::{self},
+    mmtk::util::{Address, options::PlanSelector},
+};
 use crate::{
     prelude::{
         IntoValue, NativeContinuation, NativeFn, PROCEDURES, ScmHeader, TypeCode8, current_module,
@@ -20,11 +25,6 @@ use crate::{
             threading::{Condition, Mutex, MutexKind, ThreadObject},
         },
     },
-};
-use rsgc::{
-    GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Rootable, Trace,
-    barrier::{self},
-    mmtk::util::{Address, options::PlanSelector},
 };
 use std::{
     cell::{Cell, UnsafeCell},
@@ -333,7 +333,7 @@ pub struct CallData<'gc> {
 }
 
 unsafe impl<'gc> Trace for CallData<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.trace(&mut self.rator);
         unsafe {
             if !self.rands.get().is_null() {
@@ -343,15 +343,15 @@ unsafe impl<'gc> Trace for CallData<'gc> {
             }
         }
     }
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
 
 unsafe impl Trace for State<'_> {
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.trace(&mut self.dynamic_state);
 
         let runstack = unsafe {
@@ -432,7 +432,7 @@ impl<'gc> State<'gc> {
 }
 
 pub struct Scheme {
-    pub mutator: Mutator<Rootable!(State<'_>)>,
+    pub mutator: Mutator<crate::Rootable!(State<'_>)>,
 }
 
 impl Scheme {

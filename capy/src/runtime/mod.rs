@@ -12,7 +12,7 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     let _ = &*VM_THREAD;
 
     VM_GLOBALS
-        .set(rsgc::Global::new(global::Globals::new(mc)))
+        .set(crate::rsgc::Global::new(global::Globals::new(mc)))
         .unwrap_or_else(|_| {
             panic!("VM_GLOBALS already initialized");
         });
@@ -54,9 +54,9 @@ pub mod prelude {
     pub use super::thread::Context;
     pub use super::value::*;
     pub use super::vm::{self, NativeCallContext, NativeCallReturn, call_scheme};
-    pub use rsgc::Gc;
-    pub use rsgc::Rootable;
-    pub use rsgc::Trace;
+    pub use crate::rsgc::Gc;
+    pub use crate::rsgc::Rootable;
+    pub use crate::rsgc::Trace;
 
     pub type VariableRef<'gc> = Gc<'gc, Variable<'gc>>;
     pub type StringRef<'gc> = Gc<'gc, Str<'gc>>;

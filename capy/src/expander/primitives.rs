@@ -4,14 +4,14 @@ use crate::expander::core::{
     prim_call_term, seq_from_slice,
 };
 use crate::list;
+use crate::rsgc::Gc;
+use crate::rsgc::alloc::Array;
+use crate::rsgc::cell::Lock;
 use crate::runtime::Context;
 use crate::runtime::modules::{Module, Variable, resolve_module};
 use crate::runtime::prelude::*;
 use crate::runtime::value::Symbol;
 use crate::{runtime::value::Value, static_symbols};
-use rsgc::Gc;
-use rsgc::alloc::Array;
-use rsgc::cell::Lock;
 use std::collections::HashMap;
 
 macro_rules! interesting_prim_names {

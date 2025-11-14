@@ -1,6 +1,6 @@
 use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 
-use rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
+use crate::rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
 use crate::{
     fluid, global, list,
@@ -64,7 +64,7 @@ pub struct Module<'gc> {
 }
 
 unsafe impl<'gc> Trace for Module<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         unsafe {
             self.obarray.trace(visitor);
             self.uses.trace(visitor);
@@ -81,7 +81,7 @@ unsafe impl<'gc> Trace for Module<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }

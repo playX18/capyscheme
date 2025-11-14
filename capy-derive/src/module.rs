@@ -218,7 +218,7 @@ impl Module {
             #[doc(hidden)]
             #[allow(unused)]
             pub unsafe fn init_globals<'gc>(ctx: Context<'gc>, mut indexes: impl Iterator<Item = usize>) {
-                unsafe { 
+                unsafe {
                     #(
                         let index = indexes.next().expect("Not enough global variable indexes provided");
                         #metas.set(Global::from_index(index))
@@ -233,7 +233,7 @@ impl Module {
                 ctx: Context<'gc>,
                 mut f: impl FnMut(*const ())
             ) {
-                unsafe { 
+                unsafe {
                     #(
                        f(#fns as *const ());
                     )*
@@ -247,7 +247,7 @@ impl Module {
                 ctx: Context<'gc>,
                 mut f: impl FnMut(*const ())
             ) {
-                unsafe { 
+                unsafe {
                     #(
                         f(#conts as *const ());
                     )*

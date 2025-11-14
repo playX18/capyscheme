@@ -3,6 +3,13 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+/**
+ * Offset from allocation to the actual object
+ */
+#define OBJECT_REF_OFFSET 8
+
+#define OBJECT_HEADER_OFFSET -OBJECT_REF_OFFSET
+
 #define FASL_EOF 0
 
 #define FASL_TAG_LOOKUP 1
@@ -210,6 +217,10 @@ typedef int (*ScmEnterFn)(ContextRef ctx, void *arg);
 typedef void (*PrepareCallFn)(ContextRef ctx, struct Value *args, void *data);
 
 typedef int (*FinishCallFn)(ContextRef ctx, bool success, struct Value result, void *data);
+
+
+
+
 
 /**
  * Create a new Scheme thread instance.

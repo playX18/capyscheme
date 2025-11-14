@@ -1,4 +1,4 @@
-use rsgc::{Gc, alloc::ArrayRef, barrier, traits::IterGc};
+use crate::rsgc::{Gc, alloc::ArrayRef, barrier, traits::IterGc};
 
 use crate::{
     cps::{

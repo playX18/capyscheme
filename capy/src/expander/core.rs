@@ -1,12 +1,12 @@
 use std::{cell::Cell, collections::HashMap, hash::Hash, sync::OnceLock};
 
-use pretty::{DocAllocator, DocBuilder};
-use rsgc::{
-    Gc, Global, Mutation, Rootable, Trace,
+use crate::rsgc::{
+    Gc, Global, Mutation,  Trace,
     alloc::array::{Array, ArrayRef},
     barrier,
     cell::Lock,
 };
+use pretty::{DocAllocator, DocBuilder};
 
 use crate::{
     expander::{get_source_property, syntax_annotation},
@@ -54,7 +54,7 @@ pub struct Denotations<'gc> {
     pub denotation_of_wcm: Value<'gc>,
 }
 
-static DENOTATIONS: OnceLock<Global<Rootable!(Denotations<'_>)>> = OnceLock::new();
+static DENOTATIONS: OnceLock<Global<crate::Rootable!(Denotations<'_>)>> = OnceLock::new();
 
 static_symbols!(
     DENOTATION_OF_DEFINE = "define"

@@ -4,8 +4,8 @@ use std::{
     sync::{Arc, Once, OnceLock},
 };
 
-use rsgc::{
-    Gc, Rootable, Trace, Weak, WeakProcessor,
+use crate::rsgc::{
+    Gc, Trace, Weak, WeakProcessor,
     alloc::array::Array,
     barrier::{self, Unlock, Write},
     cell::Lock,
@@ -40,7 +40,7 @@ unsafe impl<'gc> Trace for WeakMapping<'gc> {
         _visitor.register_for_weak_processing();
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         if self._key.is_bwp() {
             self._value = Value::bwp();
         } else {
@@ -130,7 +130,7 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         unsafe {
             self._key.process_weak_refs(weak_processor);
         }
@@ -589,7 +589,7 @@ struct AllWeakTables<'gc> {
 unsafe impl<'gc> Send for AllWeakTables<'gc> {}
 unsafe impl<'gc> Sync for AllWeakTables<'gc> {}
 
-static ALL_WEAK_TABLES: OnceLock<Global<Rootable!(AllWeakTables<'_>)>> = OnceLock::new();
+static ALL_WEAK_TABLES: OnceLock<Global<crate::Rootable!(AllWeakTables<'_>)>> = OnceLock::new();
 
 unsafe impl<'gc> Trace for AllWeakTables<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
@@ -687,7 +687,7 @@ mod tests {
             }
         }
 
-        static ROOTSET: OnceLock<Global<Rootable!(Rootset<'_>)>> = OnceLock::new();
+        static ROOTSET: OnceLock<Global<crate::Rootable!(Rootset<'_>)>> = OnceLock::new();
 
         let scm = Scheme::new();
 
@@ -746,7 +746,7 @@ mod tests {
             }
         }
 
-        static ROOTSET: OnceLock<Global<Rootable!(Rootset<'_>)>> = OnceLock::new();
+        static ROOTSET: OnceLock<Global<crate::Rootable!(Rootset<'_>)>> = OnceLock::new();
 
         let scm = Scheme::new();
         scm.enter(|mc| init_weak_tables(&mc));

@@ -1,4 +1,4 @@
-use rsgc::{Gc, barrier};
+use crate::rsgc::{Gc, barrier};
 
 use crate::{
     fluid,

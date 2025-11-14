@@ -1,8 +1,8 @@
 use crate::global;
 use crate::prelude::*;
+use crate::rsgc::Gc;
 use crate::runtime::prelude::*;
 use crate::runtime::vm::vector::Endianness;
-use rsgc::Gc;
 use std::cmp::Ordering;
 use std::sync::LazyLock;
 use unicode_general_category::GeneralCategory;

@@ -1,4 +1,4 @@
-use rsgc::{
+use crate::rsgc::{
     Gc,
     mmtk::util::Address,
     object::{GCObject, HeapObjectHeader},

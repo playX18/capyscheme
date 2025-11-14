@@ -71,7 +71,7 @@ impl Variable {
             item.span() =>
 
             #vis static #loc_static: ::std::sync::OnceLock<Global<
-                Rootable!(
+                crate::Rootable!(
                     VariableRef<'_>
                 )
             >> = ::std::sync::OnceLock::new();

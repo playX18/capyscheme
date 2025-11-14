@@ -30,7 +30,7 @@
 
 use std::cell::Cell;
 
-use rsgc::{
+use crate::rsgc::{
     Gc,
     alloc::{Array, ArrayRef},
     barrier::{self},

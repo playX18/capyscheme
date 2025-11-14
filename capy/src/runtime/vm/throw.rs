@@ -1,4 +1,4 @@
-use rsgc::Gc;
+use crate::rsgc::Gc;
 
 use crate::{
     global,
