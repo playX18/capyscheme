@@ -14,7 +14,7 @@
 
 use std::sync::OnceLock;
 
-use rsgc::mmtk::util::{
+use crate::rsgc::mmtk::util::{
     Address,
     options::{Options, PlanSelector},
 };

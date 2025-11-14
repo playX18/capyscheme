@@ -1,5 +1,6 @@
 use std::{io::Write, mem::offset_of};
 
+use crate::rsgc::{Gc, Mutation, sync::thread::Thread};
 use crate::{
     compiler::ssa::{ContOrFunc, SSABuilder, VarDef, primitive::PrimValue},
     cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
@@ -13,7 +14,6 @@ use cranelift::prelude::{InstBuilder, IntCC, types};
 use cranelift_codegen::ir::{self, BlockArg};
 use cranelift_module::{DataId, Linkage, Module};
 use pretty::BoxAllocator;
-use rsgc::{Gc, Mutation, sync::thread::Thread};
 
 pub enum Callee {
     /// Callee is obtained by loading code pointer from a closure

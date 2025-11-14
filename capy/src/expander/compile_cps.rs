@@ -3,14 +3,14 @@ use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef};
 use crate::expander::core::{
     LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, seq_from_slice,
 };
+use crate::rsgc::alloc::array::Array;
+use crate::rsgc::cell::Lock;
+use crate::rsgc::{Gc, Global, Trace, barrier};
 use crate::runtime::Context;
 use crate::runtime::prelude::*;
 use crate::runtime::value::{Str, Vector};
 use crate::runtime::value::{TypeCode8, Value};
 use crate::{list, static_symbols, with_cps};
-use rsgc::alloc::array::Array;
-use rsgc::cell::Lock;
-use rsgc::{Gc, Global, Rootable, Trace, barrier};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::mem::offset_of;
@@ -95,7 +95,7 @@ pub struct PrimitiveTable<'gc> {
     pub table: HashMap<Value<'gc>, PrimitiveTransformer>,
 }
 unsafe impl<'gc> Trace for PrimitiveTable<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         for (key, _) in self.table.iter_mut() {
             unsafe {
                 let value = key as *const Value<'gc> as *mut Value<'gc>;
@@ -104,12 +104,12 @@ unsafe impl<'gc> Trace for PrimitiveTable<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
 
-static PRIMTABLE: OnceLock<Global<Rootable!(PrimitiveTable<'_>)>> = OnceLock::new();
+static PRIMTABLE: OnceLock<Global<crate::Rootable!(PrimitiveTable<'_>)>> = OnceLock::new();
 
 macro_rules! primitive_transformers {
     ($(

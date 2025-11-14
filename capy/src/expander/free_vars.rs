@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rsgc::alloc::ArrayRef;
+use crate::rsgc::alloc::ArrayRef;
 
 use super::*;
 use crate::{

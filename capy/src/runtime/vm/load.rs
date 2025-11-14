@@ -5,6 +5,7 @@ use crate::expander::free_vars::resolve_free_vars;
 use crate::expander::letrectify::letrectify;
 use crate::expander::{assignment_elimination, compile_cps, primitives};
 use crate::list;
+use crate::rsgc::Gc;
 use crate::runtime::image::ALLOWED_GC;
 use crate::runtime::modules::{Module, Variable, current_module, define};
 use crate::runtime::value::*;
@@ -13,7 +14,6 @@ use crate::runtime::vm::expand::ScmTermToRsTerm;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::{make_io_error, make_lexical_violation};
 use capy_derive::scheme;
-use rsgc::Gc;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 

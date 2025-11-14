@@ -5,15 +5,15 @@ use std::{
     sync::{LazyLock, atomic::AtomicUsize},
 };
 
-use easy_bitfield::BitFieldTrait;
-use parking_lot::Mutex;
-use rsgc::{
+use crate::rsgc::{
     alloc::Array,
     cell::Lock,
     mmtk::{AllocationSemantics, util::Address},
     object::{GCObject, VTableOf},
     sync::monitor::Monitor,
 };
+use easy_bitfield::BitFieldTrait;
+use parking_lot::Mutex;
 use tempfile::NamedTempFile;
 
 use crate::{
@@ -102,7 +102,7 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
 
         let symtab = unsafe { self.read_value()?.downcast_unchecked::<WeakSet>() };
         crate::runtime::value::symbols::SYMBOL_TABLE
-            .set(rsgc::Global::new(symtab))
+            .set(crate::rsgc::Global::new(symtab))
             .map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -1350,7 +1350,7 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
 
     pub fn read_globals(&mut self) -> std::io::Result<()> {
         VM_GLOBALS
-            .set(rsgc::Global::new(Globals::undefined()))
+            .set(crate::rsgc::Global::new(Globals::undefined()))
             .unwrap_or_else(|_| panic!("VM_GLOBALS already set"));
         self.ctx.globals().for_each_value(|global| {
             let val = self.read_value().unwrap();

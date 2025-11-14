@@ -1,3 +1,4 @@
+use crate::rsgc::{Gc, Global};
 use crate::{
     expander::core::denotation_of_begin,
     frontend::reader::{LexicalError, TreeSitter},
@@ -5,7 +6,6 @@ use crate::{
     runtime::{Context, modules::Module, value::*},
     static_symbols,
 };
-use rsgc::{Gc, Global, Rootable};
 use std::sync::OnceLock;
 
 pub mod assignment_elimination;
@@ -14,9 +14,9 @@ pub mod core;
 pub mod fix_letrec;
 pub mod fold;
 pub mod free_vars;
+pub mod inlining;
 pub mod letrectify;
 pub mod primitives;
-pub mod inlining;
 
 pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     let Some(props) = get_source_property(ctx, obj) else {
@@ -50,7 +50,8 @@ pub fn syntax_annotation<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> 
     datum_sourcev(ctx, obj)
 }
 
-static SOURCE_PROPERTIES: OnceLock<Global<Rootable!(Gc<'_, WeakTable<'_>>)>> = OnceLock::new();
+static SOURCE_PROPERTIES: OnceLock<Global<crate::Rootable!(Gc<'_, WeakTable<'_>>)>> =
+    OnceLock::new();
 
 pub fn source_properties<'gc>(ctx: Context<'gc>) -> Gc<'gc, WeakTable<'gc>> {
     *SOURCE_PROPERTIES

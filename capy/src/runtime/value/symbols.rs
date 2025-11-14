@@ -6,8 +6,8 @@ use std::{
     sync::{Once, OnceLock, atomic::AtomicU64},
 };
 
+use crate::rsgc::{Gc, Global, Mutation, };
 use easy_bitfield::{BitField, BitFieldTrait};
-use rsgc::{Gc, Global, Mutation, Rootable};
 
 use crate::runtime::{Context, value::*};
 
@@ -32,7 +32,7 @@ pub const SYMBOL_TC16_UNINTERNED: TypeCode16 =
     TypeCode16(TypeCode8::SYMBOL.bits() as u16 + 0 * 256);
 pub const SYMBOL_TC16_INTERNED: TypeCode16 = TypeCode16(TypeCode8::SYMBOL.bits() as u16 + 1 * 256);
 
-pub static SYMBOL_TABLE: OnceLock<Global<Rootable!(Gc<'_, WeakSet<'_>>)>> = OnceLock::new();
+pub static SYMBOL_TABLE: OnceLock<Global<crate::Rootable!(Gc<'_, WeakSet<'_>>)>> = OnceLock::new();
 
 static ONCE: Once = Once::new();
 
@@ -301,7 +301,7 @@ macro_rules! static_symbols {
         $(
             $(#[$outer])*
             pub static $name: ::std::sync::OnceLock<
-                $crate::rsgc::global::Global<$crate::rsgc::Rootable!(
+                $crate::rsgc::global::Global<$crate::Rootable!(
                     $crate::rsgc::Gc<'_, $crate::runtime::value::Symbol<'_>>
                 )>> = ::std::sync::OnceLock::new();
             paste::paste! {

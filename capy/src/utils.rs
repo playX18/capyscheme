@@ -1,5 +1,6 @@
+use crate::rsgc::{Gc, Trace, alloc::array::Array};
 use crate::runtime::value::Value;
-use rsgc::{Gc, Trace, alloc::array::Array, mmtk::util::Address};
+use mmtk::util::Address;
 use std::{mem::MaybeUninit, rc::Rc};
 
 pub struct FormattedSize {
@@ -157,6 +158,15 @@ pub fn dladdr(addr: Address) -> std::io::Result<DlInfo> {
     }
 }
 
+pub fn align_allocation_no_fill(region: Address, alignment: usize, offset: usize) -> Address {
+    let mask = (alignment - 1) as isize;
+    let neg_off: isize = -(offset as isize);
+    let delta = neg_off.wrapping_sub(region.as_usize() as isize) & mask;
+
+    region + delta
+}
+
+pub mod easy_bitfield;
 pub mod graph;
 #[cfg(test)]
 mod tests {

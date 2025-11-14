@@ -1,5 +1,5 @@
-use rsgc::cell::Lock;
-use rsgc::{Gc, Trace};
+use crate::rsgc::cell::Lock;
+use crate::rsgc::{Gc, Trace};
 
 use crate::prelude::{ClosureRef, Value};
 

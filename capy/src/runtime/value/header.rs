@@ -1,5 +1,5 @@
+use crate::rsgc::Trace;
 use easy_bitfield::{BitField, BitFieldTrait};
-use rsgc::Trace;
 
 pub type TypeBits = BitField<u64, u16, 0, 16, false>;
 

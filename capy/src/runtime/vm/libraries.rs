@@ -1,7 +1,7 @@
 //! Collection of loaded shared libraries
 
+use crate::rsgc::{Global, Trace, mmtk::util::Address, sync::monitor::Monitor};
 use crate::runtime::{Context, value::Value};
-use rsgc::{Global, Rootable, Trace, mmtk::util::Address, sync::monitor::Monitor};
 use std::{ffi::OsStr, mem::MaybeUninit, sync::LazyLock};
 
 pub struct SchemeLibrary<'gc> {
@@ -15,7 +15,7 @@ pub struct SchemeLibrary<'gc> {
 }
 
 unsafe impl<'gc> Trace for SchemeLibrary<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         unsafe {
             for global in self.globals.iter() {
                 visitor.trace(&mut **global);
@@ -23,7 +23,7 @@ unsafe impl<'gc> Trace for SchemeLibrary<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
@@ -150,13 +150,13 @@ pub struct LibraryCollection<'gc> {
 }
 
 unsafe impl<'gc> Trace for LibraryCollection<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         unsafe {
             self.libs.get_mut().trace(visitor);
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
@@ -199,5 +199,5 @@ impl<'gc> LibraryCollection<'gc> {
     }
 }
 
-pub static LIBRARY_COLLECTION: LazyLock<Global<Rootable!(LibraryCollection<'_>)>> =
+pub static LIBRARY_COLLECTION: LazyLock<Global<crate::Rootable!(LibraryCollection<'_>)>> =
     LazyLock::new(|| Global::new(LibraryCollection::new()));

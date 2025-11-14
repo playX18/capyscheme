@@ -15,11 +15,11 @@ use crate::{
     },
 };
 
+use crate::rsgc::Gc;
 use cranelift::prelude::Configurable;
 use cranelift_codegen::settings;
 use cranelift_module::default_libcall_names;
 use cranelift_object::{ObjectModule, ObjectProduct};
-use rsgc::Gc;
 
 #[macro_export]
 macro_rules! call_signature {

@@ -13,7 +13,7 @@ use crate::{
     utils::fixedpoint,
 };
 
-use rsgc::{Gc, alloc::array::Array, barrier, cell::Lock, traits::IterGc};
+use crate::rsgc::{Gc, alloc::array::Array, barrier, cell::Lock, traits::IterGc};
 use std::{cell::Cell, collections::HashMap};
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Hash)]

@@ -9,10 +9,10 @@ pub mod free_vars;
 pub mod optimizer;
 pub mod peval;
 pub mod pretty;
+pub mod reduce;
 pub mod reify;
 pub mod reify_primitives;
 pub mod term;
-pub mod reduce;
 
 use std::{
     collections::HashMap,

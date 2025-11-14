@@ -1,6 +1,6 @@
 use super::*;
+use crate::rsgc::Gc;
 use crate::runtime::Context;
-use rsgc::Gc;
 
 pub enum ConversionError<'gc> {
     TypeMismatch {

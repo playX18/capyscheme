@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use rsgc::{cell::Lock, traits::IterGc};
+use crate::rsgc::{cell::Lock, traits::IterGc};
 
 use super::*;
 use crate::{

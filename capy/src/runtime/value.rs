@@ -1,4 +1,4 @@
-use rsgc::{
+use crate::rsgc::{
     Gc, Mutation, ObjectSlot, Trace,
     barrier::Write,
     mmtk::{util::Address, vm::SlotVisitor},
@@ -82,7 +82,7 @@ impl<'gc> Value<'gc> {
 }
 
 unsafe impl<'gc> Trace for Value<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         unsafe {
             if self.is_cell() && !self.is_empty() {
                 visitor.visit_slot(ObjectSlot::from_address(Address::from_mut_ptr(
@@ -92,7 +92,7 @@ unsafe impl<'gc> Trace for Value<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
 // Design Assumption for Flonum Encoding:
@@ -346,11 +346,11 @@ impl<'gc> WeakValue<'gc> {
 }
 
 unsafe impl<'gc> Trace for WeakValue<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.register_for_weak_processing();
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         unsafe {
             let value = self.as_value();
 
@@ -714,14 +714,14 @@ unsafe impl bytemuck::Zeroable for GlobalValue {}
 unsafe impl bytemuck::Pod for GlobalValue {}
 
 unsafe impl Trace for GlobalValue {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::collection::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         let value = Value::from_raw_i64(self.0 as i64);
         if value.is_cell() {
             visitor.visit_slot(ObjectSlot::from_address(Address::from_mut_ptr(&mut self.0)));
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
 impl<'gc> std::fmt::Display for Value<'gc> {

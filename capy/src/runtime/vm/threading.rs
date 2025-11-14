@@ -1,8 +1,8 @@
 //! Multi-threading support for CapyScheme.
 
 use crate::prelude::*;
+use crate::rsgc::{Mutation, mmtk::AllocationSemantics};
 use crate::runtime::{Scheme, YieldReason};
-use rsgc::{Mutation, mmtk::AllocationSemantics};
 
 #[repr(C)]
 pub struct Condition {
@@ -11,11 +11,11 @@ pub struct Condition {
 }
 
 unsafe impl Trace for Condition {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         let _ = visitor;
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
@@ -32,11 +32,11 @@ pub enum MutexKind {
 }
 
 unsafe impl Trace for Mutex {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         let _ = visitor;
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }

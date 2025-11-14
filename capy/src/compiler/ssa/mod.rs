@@ -21,9 +21,9 @@ use cranelift_codegen::{
     isa::CallConv,
 };
 
+use crate::rsgc::Gc;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::ObjectModule;
-use rsgc::Gc;
 use std::collections::HashMap;
 
 use crate::runtime::vm::thunks::*;

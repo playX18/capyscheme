@@ -1,7 +1,6 @@
 #![allow(dead_code, unused_variables)]
 
-use easy_bitfield::{BitField, BitFieldTrait};
-use rsgc::{
+use crate::rsgc::{
     Gc, Mutation, WeakProcessor,
     barrier::{AsRefWrite, IndexWrite},
     cell::Lock,
@@ -9,6 +8,7 @@ use rsgc::{
     mmtk::AllocationSemantics,
     object::VTable,
 };
+use easy_bitfield::{BitField, BitFieldTrait};
 use std::ops::{Deref, Index};
 use std::{mem::offset_of, ops::IndexMut};
 

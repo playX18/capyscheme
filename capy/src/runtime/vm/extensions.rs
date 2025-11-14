@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use rsgc::{Visitor, WeakProcessor};
+use crate::rsgc::{Visitor, WeakProcessor};
 
 use crate::prelude::ScmHeader;
 

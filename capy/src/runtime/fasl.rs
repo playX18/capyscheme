@@ -8,8 +8,8 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
 };
 
+use crate::rsgc::{Gc, mmtk::util::Address};
 use im::HashSet;
-use rsgc::{Gc, mmtk::util::Address};
 
 use crate::runtime::{
     Context,

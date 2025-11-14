@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use rsgc::{GarbageCollector, Mutation, Mutator, Rootable, mmtk, sync::monitor::Monitor};
+use crate::rsgc::{GarbageCollector, Mutation, Mutator, mmtk, sync::monitor::Monitor};
 
 pub enum VMThreadTask {
     /// Vacuum weak sets. This task will walk all live weak sets and remove
@@ -43,7 +43,7 @@ impl VmThread {
         let thread_pair = Arc::clone(&pair);
 
         let thread_handle = std::thread::spawn(move || {
-            let mutator = Mutator::<Rootable!(())>::new(|_| ());
+            let mutator = Mutator::<crate::Rootable!(())>::new(|_| ());
             loop {
                 // Wait until there's work or a shutdown signal.
                 let mut guard = thread_pair.lock();
@@ -95,7 +95,7 @@ impl VmThread {
                                 mmtk::memory_manager::gc_poll(
                                     &GarbageCollector::get().mmtk,
                                     unsafe {
-                                        transmute::<_, rsgc::mmtk::util::VMMutatorThread>(
+                                        transmute::<_, crate::rsgc::mmtk::util::VMMutatorThread>(
                                             mc.thread(),
                                         )
                                     },

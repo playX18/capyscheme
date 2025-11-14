@@ -2,6 +2,12 @@
 #![allow(dead_code, unused_variables, unused_mut, unused_assignments)]
 
 use crate::expander::primitives::sym_tuple;
+use crate::rsgc::Gc;
+use crate::rsgc::Global;
+use crate::rsgc::Trace;
+use crate::rsgc::mmtk::util::Address;
+use crate::rsgc::object::GCObject;
+use crate::rsgc::ptr::ObjectSlot;
 use crate::runtime::Context;
 use crate::runtime::value::*;
 use crate::runtime::vm::syntax::Syntax;
@@ -9,13 +15,6 @@ use crate::{
     cps::term::Atom,
     runtime::value::{Number, Value},
 };
-use rsgc::Gc;
-use rsgc::Global;
-use rsgc::Rootable;
-use rsgc::Trace;
-use rsgc::mmtk::util::Address;
-use rsgc::object::GCObject;
-use rsgc::ptr::ObjectSlot;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -50,7 +49,7 @@ impl<'gc> FoldingTable<'gc> {
 }
 
 unsafe impl<'gc> Trace for FoldingTable<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut rsgc::Visitor) {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         unsafe {
             for (val, _) in self.table.iter_mut() {
                 let val = val as *const Value<'gc> as *mut Value<'gc>;
@@ -59,7 +58,7 @@ unsafe impl<'gc> Trace for FoldingTable<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
@@ -944,7 +943,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
     table
 }
 
-static FOLDING_TABLE: OnceLock<Global<Rootable!(FoldingTable<'_>)>> = OnceLock::new();
+static FOLDING_TABLE: OnceLock<Global<crate::Rootable!(FoldingTable<'_>)>> = OnceLock::new();
 
 pub fn folding_table<'gc>(ctx: Context<'gc>) -> &'gc FoldingTable<'gc> {
     FOLDING_TABLE

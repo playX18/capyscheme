@@ -1,8 +1,7 @@
 use crate::runtime::value::*;
 
-use easy_bitfield::BitFieldTrait;
-use rsgc::{
-    Mutation, Rootable, Trace, barrier,
+use crate::rsgc::{
+    Mutation, Trace, barrier,
     cell::Lock,
     collection::Visitor,
     global::Global,
@@ -12,6 +11,7 @@ use rsgc::{
     },
     object::VTable,
 };
+use easy_bitfield::BitFieldTrait;
 use std::{
     cell::{Cell, UnsafeCell},
     sync::OnceLock,
@@ -42,7 +42,7 @@ unsafe impl Trace for Stringbuf {
         // No pointers to trace
     }
 
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
 impl Stringbuf {
@@ -72,7 +72,7 @@ impl Stringbuf {
             notrace
         },
         weak_proc: {
-            extern "C" fn noweak(_: GCObject, _: &mut rsgc::WeakProcessor) {}
+            extern "C" fn noweak(_: GCObject, _: &mut crate::rsgc::WeakProcessor) {}
             noweak
         },
     };
@@ -197,7 +197,7 @@ impl Stringbuf {
     }
 }
 
-static NULL_STRINGBUF: OnceLock<Global<Rootable!(Gc<'_, Stringbuf>)>> = OnceLock::new();
+static NULL_STRINGBUF: OnceLock<Global<crate::Rootable!(Gc<'_, Stringbuf>)>> = OnceLock::new();
 
 fn null_stringbuf<'gc>(mc: &Mutation<'gc>) -> Gc<'gc, Stringbuf> {
     *NULL_STRINGBUF

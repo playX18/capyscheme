@@ -1,9 +1,10 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use easy_bitfield::{BitField, BitFieldTrait};
-use rsgc::{
-    Global, Rootable, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor,
+use crate::{
+   
+    rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
 };
+use easy_bitfield::{BitField, BitFieldTrait};
 
 use crate::runtime::{
     Context,
@@ -67,7 +68,7 @@ unsafe impl Tagged for NativeProc {
 unsafe impl Trace for NativeProc {
     unsafe fn trace(&mut self, _vis: &mut Visitor) {}
 
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
 #[repr(C)]
@@ -224,7 +225,7 @@ unsafe impl<'gc> Trace for Closure<'gc> {
         vis.trace(&mut self.meta);
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
@@ -412,13 +413,13 @@ unsafe impl<'gc> Trace for Procedures<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
 
 #[unsafe(export_name = "CAPY_PROCEDURES")]
-pub static PROCEDURES: LazyLock<Global<Rootable!(Procedures<'_>)>> = LazyLock::new(|| {
+pub static PROCEDURES: LazyLock<Global<crate::Rootable!(Procedures<'_>)>> = LazyLock::new(|| {
     Global::new(Procedures {
         registered: Monitor::new(HashMap::new()),
         static_closures: Monitor::new(HashMap::new()),

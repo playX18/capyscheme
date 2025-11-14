@@ -1,4 +1,4 @@
-use rsgc::{Trace, barrier, cell::Lock};
+use crate::rsgc::{Trace, barrier, cell::Lock};
 
 use crate::runtime::Context;
 
@@ -35,7 +35,7 @@ impl<'gc> Pair<'gc> {
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
             },
-            rsgc::mmtk::AllocationSemantics::NonMoving,
+            crate::rsgc::mmtk::AllocationSemantics::NonMoving,
         )
     }
 

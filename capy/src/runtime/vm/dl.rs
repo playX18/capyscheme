@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+use crate::rsgc::mmtk::util::Address;
 use parking_lot::Mutex;
-use rsgc::mmtk::util::Address;
 
 use super::ffi::*;
 use crate::prelude::*;

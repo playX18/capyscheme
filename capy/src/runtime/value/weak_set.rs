@@ -3,8 +3,8 @@ use std::{
     sync::{Arc, Once, OnceLock},
 };
 
-use rsgc::{
-    Gc, Rootable, Trace,
+use crate::rsgc::{
+    Gc, Trace,
     alloc::array::Array,
     barrier::{self, Write},
     cell::Lock,
@@ -61,7 +61,7 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor) {
         _visitor.register_for_weak_processing();
     }
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         if self.value.is_bwp() {
             assert!(!self.value.is::<Symbol>());
             return;
@@ -125,7 +125,7 @@ unsafe impl<'gc> Trace for WeakSet<'gc> {
         visitor.trace(&mut inner.entries);
     }
 
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
 const HASHSET_SIZES: &[usize] = &[
@@ -660,7 +660,7 @@ unsafe impl<'gc> Trace for AllWeakSets<'gc> {
         visitor.register_for_weak_processing();
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let all_weak_sets = self.0.get_mut();
         all_weak_sets.retain_mut(|weak_set| {
             weak_processor.process_weak(weak_set);
@@ -673,7 +673,7 @@ unsafe impl<'gc> Trace for AllWeakSets<'gc> {
     }
 }
 
-static ALL_WEAK_SETS: OnceLock<Global<Rootable!(AllWeakSets<'_>)>> = OnceLock::new();
+static ALL_WEAK_SETS: OnceLock<Global<crate::Rootable!(AllWeakSets<'_>)>> = OnceLock::new();
 struct WeakSetNotify;
 
 impl FinalizationNotify for WeakSetNotify {

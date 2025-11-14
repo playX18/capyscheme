@@ -24,15 +24,18 @@ use std::{
 use easy_bitfield::{BitField, BitFieldTrait};
 use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
 
-use rand::Rng;
-use rsgc::{
-    Gc, Rootable, Trace,
-    collection::Visitor,
-    global::Global,
-    mmtk::{AllocationSemantics, util::conversions::raw_align_up},
-    mutator::Mutation,
-    object::{GCObject, VTable},
+use crate::{
+  
+    rsgc::{
+        Gc, Trace,
+        collection::Visitor,
+        global::Global,
+        mmtk::{AllocationSemantics, util::conversions::raw_align_up},
+        mutator::Mutation,
+        object::{GCObject, VTable},
+    },
 };
+use rand::Rng;
 
 use crate::runtime::{
     Context,
@@ -359,7 +362,11 @@ impl<'gc> BigInt<'gc> {
             trace
         },
         weak_proc: {
-            extern "C" fn weak_proc(_object: GCObject, _weak_processor: &mut rsgc::WeakProcessor) {}
+            extern "C" fn weak_proc(
+                _object: GCObject,
+                _weak_processor: &mut crate::rsgc::WeakProcessor,
+            ) {
+            }
             weak_proc
         },
     };
@@ -367,7 +374,7 @@ impl<'gc> BigInt<'gc> {
 
 unsafe impl<'gc> Trace for BigInt<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {}
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
 unsafe impl<'gc> Tagged for BigInt<'gc> {
@@ -982,7 +989,8 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn zero(ctx: Context<'gc>) -> Gc<'gc, Self> {
-        static ZERO_BIGINT: OnceLock<Global<Rootable!(Gc<'_, BigInt<'_>>)>> = OnceLock::new();
+        static ZERO_BIGINT: OnceLock<Global<crate::Rootable!(Gc<'_, BigInt<'_>>)>> =
+            OnceLock::new();
 
         *ZERO_BIGINT
             .get_or_init(|| {
@@ -996,7 +1004,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn one(ctx: Context<'gc>) -> Gc<'gc, Self> {
-        static ONE_BIGINT: OnceLock<Global<Rootable!(Gc<'_, BigInt<'_>>)>> = OnceLock::new();
+        static ONE_BIGINT: OnceLock<Global<crate::Rootable!(Gc<'_, BigInt<'_>>)>> = OnceLock::new();
 
         *ONE_BIGINT
             .get_or_init(|| {
@@ -2205,7 +2213,7 @@ unsafe impl<'gc> Trace for Number<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut rsgc::WeakProcessor) {
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }

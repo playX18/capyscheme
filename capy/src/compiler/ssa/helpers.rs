@@ -1,8 +1,8 @@
-use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
-use cranelift_codegen::ir::{self, BlockArg};
-use rsgc::mmtk::{
+use crate::rsgc::mmtk::{
     BarrierSelector, util::metadata::side_metadata::GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS,
 };
+use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
+use cranelift_codegen::ir::{self, BlockArg};
 
 use crate::{
     compiler::ssa::SSABuilder,

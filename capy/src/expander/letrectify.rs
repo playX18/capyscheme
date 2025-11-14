@@ -1,3 +1,5 @@
+use crate::rsgc::alloc::ArrayRef;
+use crate::rsgc::{Gc, alloc::Array};
 use crate::runtime::value::ValueEqual;
 use crate::{
     expander::core::{
@@ -11,8 +13,6 @@ use crate::{
     },
     static_symbols,
 };
-use rsgc::alloc::ArrayRef;
-use rsgc::{Gc, alloc::Array};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},

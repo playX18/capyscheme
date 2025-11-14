@@ -1,4 +1,4 @@
-use rsgc::{Gc, Trace};
+use crate::rsgc::{Gc, Trace};
 
 use crate::{
     expander::{get_source_property, sym_column, sym_filename, sym_line},
