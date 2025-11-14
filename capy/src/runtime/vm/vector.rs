@@ -53,14 +53,14 @@ impl<'gc> IntoValue<'gc> for Endianness {
 pub mod vector_ops {
     #[scheme(name = "vector")]
     pub fn vector(values: &'gc [Value<'gc>]) -> Value<'gc> {
-        let v = Vector::from_slice(&nctx.ctx, values);
+        let v = Vector::from_slice(*nctx.ctx, values);
 
         nctx.return_(v.into())
     }
 
     #[scheme(name = "make-vector")]
     pub fn make_vector(nelems: usize, init: Option<Value<'gc>>) -> Value<'gc> {
-        let v = Vector::new::<false>(&nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
+        let v = Vector::new::<false>(*nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
 
         nctx.return_(v.into())
     }
@@ -112,7 +112,7 @@ pub mod vector_ops {
             );
         }
 
-        let wvec = Gc::write(&nctx.ctx, vec);
+        let wvec = Gc::write(*nctx.ctx, vec);
         wvec[k].unlock().set(value);
         nctx.return_(Ok(value))
     }
@@ -154,7 +154,7 @@ pub mod vector_ops {
             );
         }
 
-        let wvec = Gc::write(&nctx.ctx, vec);
+        let wvec = Gc::write(*nctx.ctx, vec);
         for i in start..end {
             wvec[i].unlock().set(value);
         }
@@ -183,27 +183,27 @@ pub mod vector_ops {
             );
         }
         let slice = &vec.as_slice()[start..end];
-        let new_vec = Vector::from_slice(&nctx.ctx, slice);
+        let new_vec = Vector::from_slice(*nctx.ctx, slice);
         nctx.return_(new_vec)
     }
 
     #[scheme(name = "tuple")]
     pub fn tuple(values: &'gc [Value<'gc>]) -> Value<'gc> {
-        let v = Tuple::from_slice(&nctx.ctx, values);
+        let v = Tuple::from_slice(*nctx.ctx, values);
 
         nctx.return_(v.into())
     }
 
     #[scheme(name = "make-tuple")]
     pub fn make_tuple(nelems: usize, init: Option<Value<'gc>>) -> Value<'gc> {
-        let v = Tuple::new(&nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
+        let v = Tuple::new(*nctx.ctx, nelems, init.unwrap_or(Value::new(false)));
 
         nctx.return_(v.into())
     }
 
     #[scheme(name = "make-bytevector")]
     pub fn make_bytevector(nelems: usize, init: Option<i16>) -> Value<'gc> {
-        let v = ByteVector::new::<false>(&nctx.ctx, nelems, true);
+        let v = ByteVector::new::<false>(*nctx.ctx, nelems, true);
         if let Some(init) = init {
             if init >= i8::MIN as i16 && init <= u8::MAX as i16 {
                 let byte = (init & 0xff) as u8;
@@ -225,7 +225,7 @@ pub mod vector_ops {
 
     #[scheme(name = "make-bytevector/nonmoving")]
     pub fn make_bytevector_nonmoving(nelems: usize, init: Option<u8>) -> Value<'gc> {
-        let v = ByteVector::new::<false>(&nctx.ctx, nelems, false);
+        let v = ByteVector::new::<false>(*nctx.ctx, nelems, false);
         if let Some(b) = init {
             v.fill(b);
         }
@@ -1496,7 +1496,7 @@ pub mod vector_ops {
             bytes.push(n);
             current = current.cdr();
         }
-        let bv = ByteVector::from_slice(&nctx.ctx, &bytes, true);
+        let bv = ByteVector::from_slice(*nctx.ctx, &bytes, true);
         nctx.return_(Ok(bv.into()))
     }
 
@@ -1533,7 +1533,7 @@ pub mod vector_ops {
             bytes.push(n);
             current = current.cdr();
         }
-        let bv = ByteVector::from_slice(&nctx.ctx, &bytes, false);
+        let bv = ByteVector::from_slice(*nctx.ctx, &bytes, false);
         nctx.return_(Ok(bv.into()))
     }
 

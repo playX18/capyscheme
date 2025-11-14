@@ -253,7 +253,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                         CompoundType::Bytevector => {
                             let len = Value::list_length(head);
 
-                            let bv = ByteVector::new::<false>(&self.ctx, len, true);
+                            let bv = ByteVector::new::<false>(*self.ctx, len, true);
 
                             let mut vec = Vec::with_capacity(len);
 
@@ -473,7 +473,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     }
                 }
 
-                let string = Str::new(&self.ctx, &result, false);
+                let string = Str::new(*self.ctx, &result, false);
                 Ok(self.wrap(node, string.into()))
             }
 
@@ -702,7 +702,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         let filename = self.source_file;
         let line = node.start_position().row as i32;
         let column = node.start_position().column as i32;
-        let v = Vector::from_slice(&self.ctx, &[filename, line.into(), column.into()]);
+        let v = Vector::from_slice(*self.ctx, &[filename, line.into(), column.into()]);
 
         let stx = Syntax::new(
             self.ctx,

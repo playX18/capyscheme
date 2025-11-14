@@ -8,7 +8,7 @@ pub struct SchemeLibrary<'gc> {
     pub library: *mut (),
     pub path: std::path::PathBuf,
     pub entrypoint: Value<'gc>,
-    pub init_fn: extern "C-unwind" fn(&Context<'gc>) -> Value<'gc>,
+    pub init_fn: extern "C-unwind" fn(Context<'gc>) -> Value<'gc>,
     pub fbase: Address,
 
     pub globals: &'static [*mut Value<'static>],
@@ -101,7 +101,7 @@ impl<'gc> SchemeLibrary<'gc> {
                     format!("Failed to find symbol capy_module_init: {}", err_str),
                 ));
             }
-            let module_init: extern "C-unwind" fn(&Context<'gc>) -> Value<'gc> =
+            let module_init: extern "C-unwind" fn(Context<'gc>) -> Value<'gc> =
                 std::mem::transmute(sym);
 
             let mut dladdr: MaybeUninit<libc::Dl_info> = MaybeUninit::uninit();
@@ -117,7 +117,7 @@ impl<'gc> SchemeLibrary<'gc> {
             let fbase = Address::from_ptr(dladdr.dli_fbase);
 
             let entrypoint = if initialize {
-                module_init(&ctx)
+                module_init(ctx)
             } else {
                 Value::new(false)
             };

@@ -429,22 +429,22 @@ fn fix_scc<'gc>(
             // SCC with just one binding
             if unreferenced(name) {
                 // (seq <init> ...) for side-effects
-                Term::seq(&ctx, *init, body, src)
+                Term::seq(*ctx, *init, body, src)
             } else if let TermKind::Proc(proc) = init.kind
                 && unassigned(name)
             {
-                Term::fix(&ctx, [*name], [proc], body, src)
+                Term::fix(*ctx, [*name], [proc], body, src)
             } else if recursive(name, *init) {
                 Term::let_(
-                    &ctx,
+                    *ctx,
                     LetStyle::Let,
                     [*name],
                     [constant(ctx, Value::undefined())],
-                    Term::seq(&ctx, Term::lset(&ctx, *name, *init, src), body, src),
+                    Term::seq(*ctx, Term::lset(*ctx, *name, *init, src), body, src),
                     src,
                 )
             } else {
-                Term::let_(&ctx, LetStyle::Let, [*name], [*init], body, src)
+                Term::let_(*ctx, LetStyle::Let, [*name], [*init], body, src)
             }
         }
 
@@ -457,7 +457,7 @@ fn fix_scc<'gc>(
             let bind_complex_vars = |body: TermRef<'gc>| match complex.as_slice() {
                 [] => body,
                 _ => Term::let_(
-                    &ctx,
+                    *ctx,
                     LetStyle::Let,
                     complex.iter().map(|(name, _)| *name),
                     std::iter::repeat_n(constant(ctx, Value::undefined()), complex.len()),
@@ -469,7 +469,7 @@ fn fix_scc<'gc>(
             let bind_lambdas = |body: TermRef<'gc>| match lambdas.as_slice() {
                 [] => body,
                 _ => Term::fix(
-                    &ctx,
+                    *ctx,
                     lambdas.iter().map(|(name, _)| *name),
                     lambdas.iter().map(|(_, init)| {
                         if let TermKind::Proc(proc) = init.kind {
@@ -485,7 +485,7 @@ fn fix_scc<'gc>(
 
             let initialize_complex = |body| {
                 complex.iter().rfold(body, |body, (name, init)| {
-                    Term::seq(&ctx, Term::lset(&ctx, *name, *init, src), body, src)
+                    Term::seq(*ctx, Term::lset(*ctx, *name, *init, src), body, src)
                 })
             };
             bind_complex_vars(bind_lambdas(initialize_complex(body)))
@@ -670,7 +670,7 @@ fn remove_letstar<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
         TermKind::Let(l) if l.style == LetStyle::LetStar => {
             let mut body = l.body;
             for (var, init) in l.lhs.iter().zip(l.rhs.iter()).rev() {
-                body = Term::let_(&ctx, LetStyle::Let, [*var], [*init], body, x.source());
+                body = Term::let_(*ctx, LetStyle::Let, [*var], [*init], body, x.source());
             }
             body
         }

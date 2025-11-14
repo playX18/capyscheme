@@ -60,38 +60,27 @@ fn replace_or_add_mark<'gc>(
 ///
 /// Returns C* continuation that restores the old marks.
 pub(crate) fn push_cframe<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     key: Value<'gc>,
     value: Value<'gc>,
     retk: ClosureRef<'gc>,
 ) -> Value<'gc> {
     let old_marks = ctx.state().current_marks();
-    let cont_closure = make_static_closure_c_star(*ctx);
+    let cont_closure = make_static_closure_c_star(ctx);
 
-    let pair = Value::cons(*ctx, key, value);
+    let pair = Value::cons(ctx, key, value);
 
     // retk == C*: we're in tail position of another wcm
     if Gc::ptr_eq(retk, cont_closure) {
         let first_marks = old_marks.car();
-        let new_marks = replace_or_add_mark(*ctx, first_marks.car(), key, pair);
-        /*let wmarks = Gc::write(&ctx, first_marks);
-        barrier::field!(wmarks, CFrame, mark_set)
-            .unlock()
-            .set(new_marks);
-        */
-        first_marks.set_car(*ctx, new_marks);
+        let new_marks = replace_or_add_mark(ctx, first_marks.car(), key, pair);
+
+        first_marks.set_car(ctx, new_marks);
         return cont_closure.into();
     } else {
-        let new_marks = list!(*ctx, pair);
-        /*let cframe = Gc::new(
-            ctx,
-            CFrame {
-                parent: old_marks,
-                retk,
-                mark_set: Lock::new(new_marks),
-            },
-        );*/
-        let cframe = Value::cons(*ctx, Value::cons(*ctx, new_marks, retk.into()), old_marks);
+        let new_marks = list!(ctx, pair);
+
+        let cframe = Value::cons(ctx, Value::cons(ctx, new_marks, retk.into()), old_marks);
         unsafe {
             ctx.state().set_current_marks(cframe);
         }

@@ -458,7 +458,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         Self {
             ctx,
             writer: BufWriter::new(writer),
-            lites: HashTable::new(&ctx, HashTableType::Eq, 32, 0.75),
+            lites: HashTable::new(*ctx, HashTableType::Eq, 32, 0.75),
             stack: Vec::new(),
             reference_map: BTreeMap::new(),
             initmap: HashSet::new(),
@@ -529,7 +529,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         )
                     })?;
 
-                    Value::new(Symbol::from_str_uninterned(&self.ctx, str, None))
+                    Value::new(Symbol::from_str_uninterned(*self.ctx, str, None))
                 }
                 FASL_TAG_STR => {
                     let len = self.read32()? as usize;
@@ -541,7 +541,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                             format!("Invalid UTF-8 (string): {}", String::from_utf8_lossy(&buf)),
                         )
                     })?;
-                    Value::new(Str::new(&self.ctx, str, false))
+                    Value::new(Str::new(*self.ctx, str, false))
                 }
                 _ => {
                     return Err(io::Error::new(
@@ -626,7 +626,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 for _ in 0..count {
                     vec.push(self.read_value()?);
                 }
-                Ok(Value::new(Vector::from_slice(&self.ctx, &vec)))
+                Ok(Value::new(Vector::from_slice(*self.ctx, &vec)))
             }
 
             _x @ FASL_TAG_TUPLE => {
@@ -636,14 +636,14 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 for _ in 0..count {
                     vec.push(self.read_value()?);
                 }
-                Ok(Value::new(Tuple::from_slice(&self.ctx, &vec)))
+                Ok(Value::new(Tuple::from_slice(*self.ctx, &vec)))
             }
 
             _x @ FASL_TAG_BVECTOR => {
                 let count = self.read64()? as usize;
                 let mut buf = vec![0u8; count];
                 self.reader.read_exact(&mut buf)?;
-                Ok(Value::new(ByteVector::from_slice(&self.ctx, &buf, true)))
+                Ok(Value::new(ByteVector::from_slice(*self.ctx, &buf, true)))
             }
 
             _x @ FASL_TAG_BIGINT => {
@@ -734,7 +734,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
         Self {
             ctx,
             reader: BufReader::new(reader),
-            lites: HashTable::new(&ctx, HashTableType::Eq, 32, 0.75),
+            lites: HashTable::new(*ctx, HashTableType::Eq, 32, 0.75),
             reference_map: HashMap::new(),
         }
     }

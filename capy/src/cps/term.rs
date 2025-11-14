@@ -102,7 +102,7 @@ pub struct Func<'gc> {
 
 impl<'gc> Func<'gc> {
     pub fn with_body(self: FuncRef<'gc>, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
-        let wfunc = Gc::write(&ctx, self);
+        let wfunc = Gc::write(*ctx, self);
         barrier::field!(wfunc, Self, body).unlock().set(body);
         self
     }
@@ -197,7 +197,7 @@ impl<'gc> Cont<'gc> {
         }
 
         let this = Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 meta: self.meta,
                 name: self.name,
@@ -515,7 +515,7 @@ where
                     post(ctx, x)
                 } else {
                     let nterm = Term::Let(*binding, exp.clone(), nbody);
-                    post(ctx, Gc::new(&ctx, nterm))
+                    post(ctx, Gc::new(*ctx, nterm))
                 }
             }
 
@@ -539,8 +539,8 @@ where
                 if !changed && Gc::ptr_eq(nbody, *body) {
                     post(ctx, x)
                 } else {
-                    let nterm = Term::Fix(Array::from_slice(&ctx, &rhs), nbody);
-                    post(ctx, Gc::new(&ctx, nterm))
+                    let nterm = Term::Fix(Array::from_slice(*ctx, &rhs), nbody);
+                    post(ctx, Gc::new(*ctx, nterm))
                 }
             }
 
@@ -563,8 +563,8 @@ where
                 if !changed && Gc::ptr_eq(nbody, *body) {
                     post(ctx, x)
                 } else {
-                    let nterm = Term::Letk(Array::from_slice(&ctx, &nconts), nbody);
-                    post(ctx, Gc::new(&ctx, nterm))
+                    let nterm = Term::Letk(Array::from_slice(*ctx, &nconts), nbody);
+                    post(ctx, Gc::new(*ctx, nterm))
                 }
             }
         }

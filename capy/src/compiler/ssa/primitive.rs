@@ -2633,15 +2633,14 @@ prim!(
 
     "$winders" => winders(ssa, args, _h) {
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let state = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), ctx, offset_of!(Context, state) as i32);
 
         if args.is_empty() {
-            let winders = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), state, offset_of!(State, winders) as i32);
+            let winders = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), ctx, (Context::OFFSET_OF_STATE + offset_of!(State, winders))as i32);
             return PrimValue::Value(winders);
         }
 
         let new_winders = ssa.atom(args[0]);
-        ssa.builder.ins().store(ir::MemFlags::trusted(), new_winders, state, offset_of!(State, winders) as i32);
+        ssa.builder.ins().store(ir::MemFlags::trusted(), new_winders, ctx, (Context::OFFSET_OF_STATE + offset_of!(State, winders)) as i32);
         PrimValue::Value(new_winders)
     },
 

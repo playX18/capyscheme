@@ -1,6 +1,6 @@
 use std::{io::Write, mem::offset_of};
 
-use crate::rsgc::{Gc, Mutation, sync::thread::Thread};
+use crate::rsgc::{Gc, sync::thread::Thread};
 use crate::{
     compiler::ssa::{ContOrFunc, SSABuilder, VarDef, primitive::PrimValue},
     cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
@@ -156,12 +156,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
-        let state = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            ctx,
-            offset_of!(Context, state) as i32,
-        );
+        let state = self
+            .builder
+            .ins()
+            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
         /* reset the runstack to the state it was before call */
         self.builder.ins().store(
             ir::MemFlags::trusted().with_can_move(),
@@ -522,12 +520,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     /// Push arguments to runstack. Returns the base of the arguments array.
     pub fn push_args(&mut self, args: &[ir::Value]) -> ir::Value {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let state = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            ctx,
-            offset_of!(Context, state) as i32,
-        );
+        let state = self
+            .builder
+            .ins()
+            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
         let runstack = self.builder.ins().load(
             types::I64,
             ir::MemFlags::trusted().with_can_move(),
@@ -1066,18 +1062,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     pub fn check_yield(&mut self, rator: ir::Value, rands: ir::Value, num_rands: ir::Value) {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
-        let mc = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            ctx,
-            offset_of!(Context, mc) as i32,
-        );
-        let thread = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            mc,
-            Mutation::OFFSET_OF_THREAD as i32,
-        );
+        let thread = ctx;
 
         let yieldpoint = self.builder.ins().load(
             types::I32,
@@ -1097,17 +1082,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(on_yieldpoint);
         {
             let ctx = self.builder.ins().get_pinned_reg(types::I64);
-            let state = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                ctx,
-                offset_of!(Context, state) as i32,
-            );
+
             let nest_level = self.builder.ins().load(
                 types::I64,
                 ir::MemFlags::trusted().with_can_move(),
-                state,
-                offset_of!(State, nest_level) as i32,
+                ctx,
+                (Context::OFFSET_OF_STATE + offset_of!(State, nest_level)) as i32,
             );
 
             let is_nested = self

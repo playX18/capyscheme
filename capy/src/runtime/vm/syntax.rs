@@ -32,7 +32,7 @@ impl<'gc> Syntax<'gc> {
         source: Value<'gc>,
     ) -> Gc<'gc, Self> {
         Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header: ScmHeader::with_type_bits(TypeCode8::SYNTAX.bits() as _),
                 expr,
@@ -227,7 +227,7 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
             .assq(sym_column(ctx).into())
             .map(|pair| pair.cdr())
             .unwrap_or(Value::new(false));
-        Vector::from_slice(&ctx, &[filename, line, column]).into()
+        Vector::from_slice(*ctx, &[filename, line, column]).into()
     } else {
         Value::new(false)
     }
@@ -251,7 +251,7 @@ pub fn props_to_sourcev<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc>
         .map(|pair| pair.cdr())
         .unwrap_or(Value::new(false));
 
-    Vector::from_slice(&ctx, &[filename, line, column]).into()
+    Vector::from_slice(*ctx, &[filename, line, column]).into()
 }
 pub fn sourcev_to_props<'gc>(ctx: Context<'gc>, sourcev: Value<'gc>) -> Value<'gc> {
     if sourcev.is::<Vector>() {
@@ -283,7 +283,7 @@ impl<'gc> SyntaxTransformer<'gc> {
         binding: Value<'gc>,
     ) -> Gc<'gc, Self> {
         Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header: ScmHeader::with_type_bits(TypeCode8::SYNCLO.bits() as _),
                 name,

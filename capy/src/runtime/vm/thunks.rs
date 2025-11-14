@@ -139,9 +139,12 @@ macro_rules! thunks {
 }
 
 pub mod compiler {
-    use crate::rsgc::{
-        Gc, ObjectSlot,
-        mmtk::util::{Address, ObjectReference},
+    use crate::{
+        rsgc::{
+            Gc, ObjectSlot,
+            mmtk::util::{Address, ObjectReference},
+        },
+        runtime::Context,
     };
     use cranelift_codegen::ir;
 
@@ -267,18 +270,24 @@ pub mod compiler {
             std::iter::once(ir::types::I64)
         }
     }
+
+    impl<'gc> PrimType for Context<'gc> {
+        fn clif_type() -> impl Iterator<Item = ir::Type> {
+            std::iter::once(ir::types::I64)
+        }
+    }
 }
 
 thunks! {
     'gc:
 
     pub fn wrong_number_of_args(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         subr: Value<'gc>,
         got: usize,
         expected: isize
     ) -> Value<'gc> {
-        //print_stacktraces_impl(*ctx);
+        //print_stacktraces_impl(ctx);
         let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
         let msg = if is_cont {
             let ret = unsafe { returnaddress(0) };
@@ -300,7 +309,7 @@ thunks! {
             } else {
                 Value::new(false)
             });
-            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
+            crate::runtime::vm::debug::print_stacktraces_impl(ctx);
             if expected < 0 {
                 format!("procedure expected at least {} arguments, got {}", -expected, got)
             } else {
@@ -316,13 +325,13 @@ thunks! {
         make_assertion_violation(
             ctx,
             Value::new(false),
-            Str::new(&ctx, &msg, true).into(),
+            Str::new(*ctx, &msg, true).into(),
             &[subr, meta]
         )
     }
 
     pub fn cons_rest(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         rands: *mut Value<'gc>,
         num_rands: usize,
         from: usize
@@ -333,18 +342,18 @@ thunks! {
         if from >= args.len() {
         }
         for &arg in args[from..].iter().rev() {
-            ls = Value::cons(*ctx, arg, ls);
+            ls = Value::cons(ctx, arg, ls);
         }
 
         ls
     }
 
     pub fn non_applicable(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
         println!("call {subr}");
-        crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
+        crate::runtime::vm::debug::print_stacktraces_impl(ctx);
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
             println!("NON-APPLICABLE {subr} called here:");
@@ -353,23 +362,23 @@ thunks! {
         make_assertion_violation(
             ctx,
             Value::new(false),
-            Str::new(&ctx, "attempt to call non-procedure", true).into(),
+            Str::new(*ctx, "attempt to call non-procedure", true).into(),
             &[subr]
         )
 
     }
 
     pub fn make_variable(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         value: Value<'gc>
     ) -> Value<'gc> {
 
 
-        Variable::new(*ctx, value).into()
+        Variable::new(ctx, value).into()
     }
 
     pub fn lookup_bound(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         module: Value<'gc>,
         name: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -377,7 +386,7 @@ thunks! {
         if !module.is::<Module>() {
             unreachable!("lookup-bound: not a module: {}", module);
         }
-        let variable = module.downcast::<Module>().variable(*ctx, name);
+        let variable = module.downcast::<Module>().variable(ctx, name);
 
         let Some(variable) = variable else {
             let ret = unsafe { returnaddress(0) };
@@ -407,12 +416,12 @@ thunks! {
     }
 
     pub fn lookup(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         module: Value<'gc>,
         name: Value<'gc>
     ) -> ThunkResult<'gc> {
 
-        let variable = module.downcast::<Module>().variable(*ctx, name);
+        let variable = module.downcast::<Module>().variable(ctx, name);
 
         let Some(var) = variable else {
             let ret = unsafe { returnaddress(0) };
@@ -433,11 +442,11 @@ thunks! {
     }
 
     pub fn lookup_bound_public(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         module: Value<'gc>,
         name: Value<'gc>
     ) -> ThunkResult<'gc> {
-        let module = resolve_module(*ctx, module, true);
+        let module = resolve_module(ctx, module, true);
         if module.code != 0 {
             return module;
         }
@@ -460,11 +469,11 @@ thunks! {
     }
 
     pub fn lookup_bound_private(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         module: Value<'gc>,
         name: Value<'gc>
     ) -> ThunkResult<'gc> {
-        let module = resolve_module(*ctx, module, false);
+        let module = resolve_module(ctx, module, false);
         if module.code != 0 {
             return module;
         }
@@ -486,28 +495,28 @@ thunks! {
     }
 
     pub fn define(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         name: Value<'gc>,
         value: Value<'gc>
     ) -> Value<'gc> {
-        let module = crate::runtime::modules::current_module(*ctx).get(*ctx).downcast::<Module>();
+        let module = crate::runtime::modules::current_module(ctx).get(ctx).downcast::<Module>();
 
-        module.define(*ctx, name, value);
+        module.define(ctx, name, value);
 
         Value::undefined()
     }
 
-    pub fn current_module(ctx: &Context<'gc>) -> Value<'gc> {
-        let module = crate::runtime::modules::current_module(*ctx).get(*ctx);
+    pub fn current_module(ctx: Context<'gc>) -> Value<'gc> {
+        let module = crate::runtime::modules::current_module(ctx).get(ctx);
         if !module.is::<Module>() {
 
-            print_stacktraces_impl(*ctx);
+            print_stacktraces_impl(ctx);
             panic!("current-module: not a module: {}", module);
         }
         module
     }
 
-    pub fn set_current_module(ctx: &Context<'gc>, module: Value<'gc>) -> Value<'gc> {
+    pub fn set_current_module(ctx: Context<'gc>, module: Value<'gc>) -> Value<'gc> {
         if !module.is::<Module>() {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
@@ -515,21 +524,21 @@ thunks! {
                 println!("{sym:?}");
             });
             println!("set-current-module: not a module: {}", module);
-            print_stacktraces_impl(*ctx);
+            print_stacktraces_impl(ctx);
             panic!("set-current-module: not a module: {}", module);
         }
-        crate::runtime::modules::set_current_module(*ctx, module);
+        crate::runtime::modules::set_current_module(ctx, module);
         Value::undefined()
     }
 
-    pub fn module_ensure_local_variable(ctx: &Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
+    pub fn module_ensure_local_variable(ctx: Context<'gc>, module: Value<'gc>, name: Value<'gc>) -> Value<'gc> {
         let module = module.downcast::<Module>();
-        let variable = module.ensure_local_variable(*ctx, name);
+        let variable = module.ensure_local_variable(ctx, name);
         variable.into()
     }
 
     pub fn make_closure(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         func: *const u8,
         nfree: usize,
         is_cont: bool,
@@ -539,7 +548,7 @@ thunks! {
         let free = if nfree == 0 {
             Value::new(false)
         } else {
-            Vector::new::<false>(&ctx, nfree, Value::undefined()).into()
+            Vector::new::<false>(*ctx, nfree, Value::undefined()).into()
         };
 
         let meta = if meta == Value::new(false) {
@@ -560,17 +569,17 @@ thunks! {
             meta: crate::rsgc::cell::Lock::new(meta),
         };
 
-        Gc::new(&ctx, clos).into()
+        Gc::new(*ctx, clos).into()
     }
 
     pub fn fasl_read_nofail(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         data: *const u8,
         size: usize
     ) -> Value<'gc> {
         let data = unsafe { std::slice::from_raw_parts(data, size) };
 
-        let fasl = FASLReader::new(*ctx, data);
+        let fasl = FASLReader::new(ctx, data);
 
         let res = fasl.read().expect("failed to read FASL");
 
@@ -578,20 +587,20 @@ thunks! {
     }
 
     pub fn yieldpoint(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         rator: Value<'gc>,
         rands: *const Value<'gc>,
         num_rands: usize
     ) -> Gc<'gc, SavedCall<'gc>> {
-        ctx.state.runstack.set(ctx.state.runstack_start);
+        ctx.state().runstack.set(ctx.state().runstack_start);
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-        let arr = Array::from_slice(&ctx, args);
+        let arr = Array::from_slice(*ctx, args);
 
-        Gc::new(&ctx, SavedCall { rands: arr, rator, from_procedure: true })
+        Gc::new(*ctx, SavedCall { rands: arr, rator, from_procedure: true })
     }
 
     pub fn alloc_tc8(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         vt: &'static VTable,
         tc8: TypeCode8,
         size: usize
@@ -609,7 +618,7 @@ thunks! {
     }
 
     pub fn alloc_tc16(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         vt: &'static VTable,
         tc16: TypeCode16,
         size: usize
@@ -626,8 +635,8 @@ thunks! {
         }
     }
 
-    pub fn reverse(ctx: &Context<'gc>, list: Value<'gc>) -> Value<'gc> {
-        list.list_reverse(*ctx)
+    pub fn reverse(ctx: Context<'gc>, list: Value<'gc>) -> Value<'gc> {
+        list.list_reverse(ctx)
     }
 
     pub fn eqv(a: Value<'gc>, b: Value<'gc>) -> bool {
@@ -713,13 +722,13 @@ thunks! {
         ThunkResult { code: 0, value: num.is_flonum().into() }
     }
 
-    pub fn is_zero(ctx: &Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_zero(ctx: Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(num) = value.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "zero?").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "zero?").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[value],
                 )
             }
@@ -727,13 +736,13 @@ thunks! {
         ThunkResult { code: 0, value: num.is_zero().into() }
     }
 
-    pub fn is_less_than(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_less_than(ctx: Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[value],
                 )
             }
@@ -743,23 +752,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[other],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) == Some(Ordering::Less)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, value, other) == Some(Ordering::Less)).into() }
     }
 
-    pub fn is_less_than_equal(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_less_than_equal(ctx: Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[value],
                 )
             }
@@ -769,23 +778,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[other],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) != Some(Ordering::Greater)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, value, other) != Some(Ordering::Greater)).into() }
     }
 
-    pub fn is_greater_than(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_greater_than(ctx: Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[value],
                 )
             }
@@ -795,23 +804,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[other],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) == Some(Ordering::Greater)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, value, other) == Some(Ordering::Greater)).into() }
     }
 
-    pub fn is_greater_than_equal(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_greater_than_equal(ctx: Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[value],
                 )
             }
@@ -821,23 +830,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[other],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) != Some(Ordering::Less)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, value, other) != Some(Ordering::Less)).into() }
     }
 
-    pub fn is_numerically_equal(ctx: &Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn is_numerically_equal(ctx: Context<'gc>, value: Value<'gc>, other: Value<'gc>) -> ThunkResult<'gc> {
         let Some(value) = value.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[value],
                 )
             }
@@ -847,48 +856,48 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[other],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, value, other) == Some(Ordering::Equal)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, value, other) == Some(Ordering::Equal)).into() }
     }
 
-    pub fn negate(ctx: &Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn negate(ctx: Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(num) = value.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "negate").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "negate").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[value],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: num.negate(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: num.negate(ctx).into_value(ctx) }
     }
 
-    pub fn debug_trace(ctx: &Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize, meta: Value<'gc>) -> () {
+    pub fn debug_trace(ctx: Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize, meta: Value<'gc>) -> () {
         let ip = unsafe { returnaddress(0) };
         let rands = unsafe { std::slice::from_raw_parts(rands, num_rands).to_vec() };
 
         unsafe {
             let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta };
-            (*ctx.state.shadow_stack.get()).push(frame);
+            (*ctx.state().shadow_stack.get()).push(frame);
         }
     }
 
-    pub fn memv(ctx: &Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn memv(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> ThunkResult<'gc> {
         if !list.is_list() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "memv").into(),
-                    Str::new(ctx, "not a proper list", true).into(),
+                    Symbol::from_str(ctx, "memv").into(),
+                    Str::new(*ctx, "not a proper list", true).into(),
                     &[list],
                 )
             }
@@ -906,13 +915,13 @@ thunks! {
         ThunkResult { code: 0, value: Value::new(false) }
     }
 
-    pub fn memq(ctx: &Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn memq(ctx: Context<'gc>, key: Value<'gc>, list: Value<'gc>) -> ThunkResult<'gc> {
         if !list.is_list() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "memq").into(),
-                    Str::new(ctx, "not a proper list", true).into(),
+                    Symbol::from_str(ctx, "memq").into(),
+                    Str::new(*ctx, "not a proper list", true).into(),
                     &[list],
                 )
             }
@@ -929,13 +938,13 @@ thunks! {
         ThunkResult { code: 0, value: Value::new(false) }
     }
 
-    pub fn number_eq(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_eq(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -945,23 +954,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, a, b) == Some(Ordering::Equal)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, a, b) == Some(Ordering::Equal)).into() }
     }
 
-    pub fn number_lt(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_lt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -971,23 +980,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, a, b) == Some(Ordering::Less)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, a, b) == Some(Ordering::Less)).into() }
     }
 
-    pub fn number_gt(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_gt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -997,23 +1006,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, a, b) == Some(Ordering::Greater)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, a, b) == Some(Ordering::Greater)).into() }
     }
 
-    pub fn number_le(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_le(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1023,23 +1032,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "<=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "<=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, a, b) != Some(Ordering::Greater)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, a, b) != Some(Ordering::Greater)).into() }
     }
 
-    pub fn number_ge(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_ge(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1049,54 +1058,54 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, ">=").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, ">=").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(*ctx, a, b) != Some(Ordering::Less)).into() }
+        ThunkResult { code: 0, value: (Number::compare(ctx, a, b) != Some(Ordering::Less)).into() }
     }
 
-    pub fn string2symbol(ctx: &Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string2symbol(ctx: Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
         let Some(s) = s.try_as::<Str>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string->symbol").into(),
-                    Str::new(ctx, "not a string", true).into(),
+                    Symbol::from_str(ctx, "string->symbol").into(),
+                    Str::new(*ctx, "not a string", true).into(),
                     &[s],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Symbol::from_string(*ctx, s).into() }
+        ThunkResult { code: 0, value: Symbol::from_string(ctx, s).into() }
     }
 
-    pub fn symbol2string(ctx: &Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn symbol2string(ctx: Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
         let Some(s) = s.try_as::<Symbol>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "symbol->string").into(),
-                    Str::new(ctx, "not a symbol", true).into(),
+                    Symbol::from_str(ctx, "symbol->string").into(),
+                    Str::new(*ctx, "not a symbol", true).into(),
                     &[s],
                 )
             }
         };
 
 
-        ThunkResult { code: 0, value: s.to_str(ctx).into() }
+        ThunkResult { code: 0, value: s.to_str(*ctx).into() }
     }
 
-    pub fn number_plus(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_plus(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "+").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "+").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1106,23 +1115,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "+").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "+").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::add(*ctx, a, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::add(ctx, a, b).into_value(ctx) }
     }
 
-    pub fn number_minus(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_minus(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "-").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "-").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1132,23 +1141,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "-").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "-").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::sub(*ctx, a, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::sub(ctx, a, b).into_value(ctx) }
     }
 
-    pub fn number_times(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_times(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "*").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "*").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1158,23 +1167,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "*").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "*").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::mul(*ctx, a, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::mul(ctx, a, b).into_value(ctx) }
     }
 
-    pub fn number_div(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number_div(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "/").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "/").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1184,45 +1193,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "/").into(),
-                    Str::new(ctx, "not a number", true).into(),
-                    &[b],
-                )
-            }
-        };
-
-        if b.is_zero() && b.is_exact() {
-            return ThunkResult {
-                code: 1,
-                value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "/").into(),
-                    Str::new(ctx, "division by zero", true).into(),
-                    &[a.into_value(*ctx), b.into_value(*ctx)],
-                )
-            }
-        }
-
-        ThunkResult { code: 0, value: Number::div(*ctx, a, b).into_value(*ctx) }
-    }
-
-    pub fn quotient(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
-        let Some(a) = a.number() else {
-            return ThunkResult {
-                code: 1,
-                value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "quotient").into(),
-                    Str::new(ctx, "not a number", true).into(),
-                    &[a],
-                )
-            }
-        };
-
-        let Some(b) = b.number() else {
-            return ThunkResult {
-                code: 1,
-                value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "quotient").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "/").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
@@ -1232,23 +1204,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "quotient").into(),
-                    Str::new(ctx, "division by zero", true).into(),
-                    &[a.into_value(*ctx), b.into_value(*ctx)],
+                    Symbol::from_str(ctx, "/").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
+                    &[a.into_value(ctx), b.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: Number::quotient(*ctx, a, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::div(ctx, a, b).into_value(ctx) }
     }
 
-    pub fn remainder(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn quotient(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "remainder").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "quotient").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1258,8 +1230,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "remainder").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "quotient").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
@@ -1269,23 +1241,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "remainder").into(),
-                    Str::new(ctx, "division by zero", true).into(),
-                    &[a.into_value(*ctx), b.into_value(*ctx)],
+                    Symbol::from_str(ctx, "quotient").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
+                    &[a.into_value(ctx), b.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: Number::remainder(*ctx, a, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::quotient(ctx, a, b).into_value(ctx) }
     }
 
-    pub fn modulo(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn remainder(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "modulo").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "remainder").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1295,8 +1267,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "modulo").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "remainder").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
@@ -1306,53 +1278,90 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "modulo").into(),
-                    Str::new(ctx, "division by zero", true).into(),
-                    &[a.into_value(*ctx), b.into_value(*ctx)],
+                    Symbol::from_str(ctx, "remainder").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
+                    &[a.into_value(ctx), b.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: Number::modulo(*ctx, a, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::remainder(ctx, a, b).into_value(ctx) }
     }
 
-    pub fn exact2inexact(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn modulo(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+        let Some(a) = a.number() else {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(ctx, "modulo").into(),
+                    Str::new(*ctx, "not a number", true).into(),
+                    &[a],
+                )
+            }
+        };
+
+        let Some(b) = b.number() else {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(ctx, "modulo").into(),
+                    Str::new(*ctx, "not a number", true).into(),
+                    &[b],
+                )
+            }
+        };
+
+        if b.is_zero() && b.is_exact() {
+            return ThunkResult {
+                code: 1,
+                value: make_assertion_violation(ctx,
+                    Symbol::from_str(ctx, "modulo").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
+                    &[a.into_value(ctx), b.into_value(ctx)],
+                )
+            }
+        }
+
+        ThunkResult { code: 0, value: Number::modulo(ctx, a, b).into_value(ctx) }
+    }
+
+    pub fn exact2inexact(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "exact->inexact").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "exact->inexact").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
 
-        ThunkResult { code: 0, value: n.to_inexact(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: n.to_inexact(ctx).into_value(ctx) }
     }
 
-    pub fn inexact_to_exact(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn inexact_to_exact(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "inexact->exact").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "inexact->exact").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
-        ThunkResult { code: 0, value: n.to_exact(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: n.to_exact(ctx).into_value(ctx) }
     }
 
-    pub fn expt(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn expt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "expt").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "expt").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1362,23 +1371,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "expt").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "expt").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::expt(*ctx, a, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::expt(ctx, a, b).into_value(ctx) }
     }
 
-    pub fn ash(ctx: &Context<'gc>, n: Value<'gc>, count: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn ash(ctx: Context<'gc>, n: Value<'gc>, count: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "ash").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "ash").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
@@ -1388,8 +1397,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "ash").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "ash").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[count],
                 )
             }
@@ -1399,9 +1408,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "ash").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[count.into_value(*ctx)],
+                    Symbol::from_str(ctx, "ash").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[count.into_value(ctx)],
                 )
             }
         }
@@ -1410,54 +1419,54 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "ash").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[n.into_value(*ctx)],
+                    Symbol::from_str(ctx, "ash").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[n.into_value(ctx)],
                 )
             }
         }
 
         if !count.is_negative() {
 
-            let Some(res) = n.lsh(*ctx, count) else {
+            let Some(res) = n.lsh(ctx, count) else {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "ash").into(),
-                        Str::new(ctx, "shift out of bounds", true).into(),
-                        &[n.into_value(*ctx), count.into_value(*ctx)],
+                        Symbol::from_str(ctx, "ash").into(),
+                        Str::new(*ctx, "shift out of bounds", true).into(),
+                        &[n.into_value(ctx), count.into_value(ctx)],
                     )
                 }
             };
 
-            ThunkResult { code: 0, value: res.into_value(*ctx) }
+            ThunkResult { code: 0, value: res.into_value(ctx) }
         } else {
-            let count = count.negate(*ctx);
-            let Some(res) = n.rsh(*ctx, count) else {
+            let count = count.negate(ctx);
+            let Some(res) = n.rsh(ctx, count) else {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "ash").into(),
-                        Str::new(ctx, "shift out of bounds", true).into(),
-                        &[n.into_value(*ctx), count.into_value(*ctx)],
+                        Symbol::from_str(ctx, "ash").into(),
+                        Str::new(*ctx, "shift out of bounds", true).into(),
+                        &[n.into_value(ctx), count.into_value(ctx)],
                     )
                 };
             };
 
-            ThunkResult { code: 0, value: res.into_value(*ctx) }
+            ThunkResult { code: 0, value: res.into_value(ctx) }
         }
     }
 
 
-    pub fn logand(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logand(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             println!("logand: {a} is not a number, b={b}");
-            print_stacktraces_impl(*ctx);
+            print_stacktraces_impl(ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logand").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logand").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1465,12 +1474,12 @@ thunks! {
 
         let Some(b) = b.number() else {
             println!("logand: {b} is not a number, a={a}");
-            print_stacktraces_impl(*ctx);
+            print_stacktraces_impl(ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logand").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logand").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
@@ -1480,9 +1489,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logand").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[a.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logand").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[a.into_value(ctx)],
                 )
             }
         }
@@ -1491,23 +1500,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logand").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[b.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logand").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[b.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: a.logand(*ctx, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: a.logand(ctx, b).into_value(ctx) }
     }
 
-    pub fn logior(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logior(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logior").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logior").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1517,8 +1526,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logior").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logior").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
@@ -1528,9 +1537,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logior").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[a.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logior").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[a.into_value(ctx)],
                 )
             }
         }
@@ -1539,23 +1548,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logior").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[b.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logior").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[b.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: a.logior(*ctx, b).into_value(*ctx) }
+        ThunkResult { code: 0, value: a.logior(ctx, b).into_value(ctx) }
     }
 
-    pub fn logxor(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logxor(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logxor").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1565,8 +1574,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logxor").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
@@ -1576,9 +1585,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[a.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logxor").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[a.into_value(ctx)],
                 )
             }
         }
@@ -1587,23 +1596,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logxor").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[b.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logxor").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[b.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: a.logxor(*ctx, b ).into_value(*ctx) }
+        ThunkResult { code: 0, value: a.logxor(ctx, b ).into_value(ctx) }
     }
 
-    pub fn lognot(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn lognot(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "lognot").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "lognot").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
@@ -1613,23 +1622,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "lognot").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[n.into_value(*ctx)],
+                    Symbol::from_str(ctx, "lognot").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[n.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: n.lognot(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: n.lognot(ctx).into_value(ctx) }
     }
 
-    pub fn logtest(ctx: &Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logtest(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logtest").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logtest").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[a],
                 )
             }
@@ -1639,8 +1648,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logtest").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logtest").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[b],
                 )
             }
@@ -1650,9 +1659,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logtest").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[a.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logtest").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[a.into_value(ctx)],
                 )
             }
         }
@@ -1661,23 +1670,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logtest").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[b.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logtest").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[b.into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: (!a.logand(*ctx, b).is_zero()).into() }
+        ThunkResult { code: 0, value: (!a.logand(ctx, b).is_zero()).into() }
     }
 
-    pub fn logbitp(ctx: &Context<'gc>, k: Value<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn logbitp(ctx: Context<'gc>, k: Value<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(k) = k.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logbitp").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logbitp").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[k],
                 )
             }
@@ -1687,8 +1696,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logbitp").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "logbitp").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
@@ -1698,9 +1707,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logbitp").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[k.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logbitp").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[k.into_value(ctx)],
                 )
             }
         }
@@ -1709,174 +1718,174 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "logbitp").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[n.into_value(*ctx)],
+                    Symbol::from_str(ctx, "logbitp").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[n.into_value(ctx)],
                 )
             }
         }
 
 
-        ThunkResult { code: 0, value: k.logbit(*ctx, n).into() }
+        ThunkResult { code: 0, value: k.logbit(ctx, n).into() }
     }
 
-    pub fn sqrt(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn sqrt(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "sqrt").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "sqrt").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::sqrt(*ctx, n).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::sqrt(ctx, n).into_value(ctx) }
     }
 
-    pub fn abs(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn abs(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "abs").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "abs").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: n.abs(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: n.abs(ctx).into_value(ctx) }
     }
 
-    pub fn floor(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn floor(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "floor").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "floor").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: n.floor(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: n.floor(ctx).into_value(ctx) }
     }
 
-    pub fn ceiling(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn ceiling(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "ceiling").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "ceiling").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: n.ceiling(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: n.ceiling(ctx).into_value(ctx) }
     }
 
-    pub fn truncate(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn truncate(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "truncate").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "truncate").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: n.truncate(*ctx).into_value(*ctx) }
+        ThunkResult { code: 0, value: n.truncate(ctx).into_value(ctx) }
     }
 
-    pub fn sin(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn sin(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "sin").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "sin").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::sin(*ctx, n).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::sin(ctx, n).into_value(ctx) }
     }
 
-    pub fn cos(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn cos(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "cos").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "cos").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::cos(*ctx, n).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::cos(ctx, n).into_value(ctx) }
     }
 
-    pub fn tan(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn tan(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tan").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "tan").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::tan(*ctx, n).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::tan(ctx, n).into_value(ctx) }
     }
 
-    pub fn asin(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn asin(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "asin").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "asin").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::asin(*ctx, n).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::asin(ctx, n).into_value(ctx) }
     }
 
-    pub fn acos(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn acos(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "acos").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "acos").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::acos(*ctx, n).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::acos(ctx, n).into_value(ctx) }
     }
 
-    pub fn atan(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn atan(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "atan").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "atan").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
@@ -1886,17 +1895,17 @@ thunks! {
 
         ThunkResult {
             code: 0,
-            value: Number::atan(*ctx, n).into_value(*ctx)
+            value: Number::atan(ctx, n).into_value(ctx)
         }
     }
 
-    pub fn atan2(ctx: &Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn atan2(ctx: Context<'gc>, y: Value<'gc>, x: Value<'gc>) -> ThunkResult<'gc> {
         let Some(y) = y.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "atan2").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "atan2").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[y],
                 )
             }
@@ -1906,8 +1915,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "atan2").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "atan2").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[x],
                 )
             }
@@ -1915,7 +1924,7 @@ thunks! {
 
         ThunkResult {
             code: 0,
-            value: Number::atan2(*ctx, y, x).into_value(*ctx)
+            value: Number::atan2(ctx, y, x).into_value(ctx)
         }
     }
 
@@ -1979,13 +1988,13 @@ thunks! {
         v.is_number() && !v.is::<Complex>()
     }
 
-    pub fn infp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn infp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "infinite?").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "infinite?").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[v],
                 )
             }
@@ -1994,13 +2003,13 @@ thunks! {
         ThunkResult { code: 0, value: (!n.is_finite()).into() }
     }
 
-    pub fn nanp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn nanp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "nan?").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "nan?").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[v],
                 )
             }
@@ -2009,17 +2018,17 @@ thunks! {
         ThunkResult { code: 0, value: n.is_nan().into() }
     }
 
-    pub fn integerp(ctx: &Context<'gc>, v: Value<'gc>) -> bool {
+    pub fn integerp(ctx: Context<'gc>, v: Value<'gc>) -> bool {
         v.number().map_or(false, |n| n.is_integer())
     }
 
-    pub fn exactp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn exactp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "exact?").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "exact?").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[v],
                 )
             }
@@ -2028,13 +2037,13 @@ thunks! {
         ThunkResult { code: 0, value: n.is_exact().into() }
     }
 
-    pub fn inexactp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn inexactp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "inexact?").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "inexact?").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[v],
                 )
             }
@@ -2043,13 +2052,13 @@ thunks! {
         ThunkResult { code: 0, value: (!n.is_exact()).into() }
     }
 
-    pub fn evenp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn evenp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "even?").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "even?").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[v],
                 )
             }
@@ -2060,13 +2069,13 @@ thunks! {
         ThunkResult { code: 0, value: n.is_even().into() }
     }
 
-    pub fn oddp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn oddp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "odd?").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "odd?").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[v],
                 )
             }
@@ -2075,7 +2084,7 @@ thunks! {
         ThunkResult { code: 0, value: (!n.is_even()).into() }
     }
 
-    pub fn exact_integerp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn exact_integerp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = v.number() else {
             return ThunkResult {
                 code: 0,
@@ -2086,7 +2095,7 @@ thunks! {
         ThunkResult { code: 0, value: (n.is_exact_integer()).into() }
     }
 
-    pub fn char_to_integer(ctx: &Context<'gc>, c: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn char_to_integer(ctx: Context<'gc>, c: Value<'gc>) -> ThunkResult<'gc> {
 
         if !c.is_char() {
             let ret = unsafe { returnaddress(0) };
@@ -2094,12 +2103,12 @@ thunks! {
                 println!("CHAR->INTEGER error {c}");
                 println!("{symbol:?}");
             });
-            crate::runtime::vm::debug::print_stacktraces_impl(*ctx);
+            crate::runtime::vm::debug::print_stacktraces_impl(ctx);
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "char->integer").into(),
-                    Str::new(ctx, "not a char", true).into(),
+                    Symbol::from_str(ctx, "char->integer").into(),
+                    Str::new(*ctx, "not a char", true).into(),
                     &[c],
                 )
             }
@@ -2107,16 +2116,16 @@ thunks! {
         let c = c.char();
 
 
-        ThunkResult { code: 0, value: Number::from_u32(*ctx, c as u32).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::from_u32(ctx, c as u32).into_value(ctx) }
     }
 
-    pub fn integer_to_char(ctx: &Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn integer_to_char(ctx: Context<'gc>, n: Value<'gc>) -> ThunkResult<'gc> {
         let Some(n) = n.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "integer->char").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "integer->char").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
@@ -2126,9 +2135,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "integer->char").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[n.into_value(*ctx)],
+                    Symbol::from_str(ctx, "integer->char").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[n.into_value(ctx)],
                 )
             }
         }
@@ -2137,9 +2146,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "integer->char").into(),
-                    Str::new(ctx, "not in char range", true).into(),
-                    &[n.into_value(*ctx)],
+                    Symbol::from_str(ctx, "integer->char").into(),
+                    Str::new(*ctx, "not in char range", true).into(),
+                    &[n.into_value(ctx)],
                 )
             }
         };
@@ -2148,9 +2157,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "integer->char").into(),
-                    Str::new(ctx, "not in char range", true).into(),
-                    &[n.into_value(*ctx)],
+                    Symbol::from_str(ctx, "integer->char").into(),
+                    Str::new(*ctx, "not in char range", true).into(),
+                    &[n.into_value(ctx)],
                 )
             }
         };
@@ -2158,7 +2167,7 @@ thunks! {
         ThunkResult { code: 0, value: Value::from_char(c) }
     }
 
-    pub fn number2string(ctx: &Context<'gc>, n: Value<'gc>, radix: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn number2string(ctx: Context<'gc>, n: Value<'gc>, radix: Value<'gc>) -> ThunkResult<'gc> {
 
         let radix = if radix == Value::undefined() {
             10
@@ -2167,8 +2176,8 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "number->string").into(),
-                        Str::new(ctx, "not a number", true).into(),
+                        Symbol::from_str(ctx, "number->string").into(),
+                        Str::new(*ctx, "not a number", true).into(),
                         &[radix],
                     )
                 }
@@ -2178,9 +2187,9 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "number->string").into(),
-                        Str::new(ctx, "not an exact integer", true).into(),
-                        &[radix.into_value(*ctx)],
+                        Symbol::from_str(ctx, "number->string").into(),
+                        Str::new(*ctx, "not an exact integer", true).into(),
+                        &[radix.into_value(ctx)],
                     )
                 }
             }
@@ -2189,9 +2198,9 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "number->string").into(),
-                        Str::new(ctx, "not in i32 range", true).into(),
-                        &[radix.into_value(*ctx)],
+                        Symbol::from_str(ctx, "number->string").into(),
+                        Str::new(*ctx, "not in i32 range", true).into(),
+                        &[radix.into_value(ctx)],
                     )
                 }
             };
@@ -2200,9 +2209,9 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "number->string").into(),
-                        Str::new(ctx, "radix out of range", true).into(),
-                        &[Number::Fixnum(radix).into_value(*ctx)],
+                        Symbol::from_str(ctx, "number->string").into(),
+                        Str::new(*ctx, "radix out of range", true).into(),
+                        &[Number::Fixnum(radix).into_value(ctx)],
                     )
                 }
             }
@@ -2214,25 +2223,25 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "number->string").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "number->string").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[n],
                 )
             }
         };
 
-        let s = Str::new(ctx, n.to_string_radix(radix as _), false);
+        let s = Str::new(*ctx, n.to_string_radix(radix as _), false);
 
         ThunkResult { code: 0, value: s.into() }
     }
 
-    pub fn string2number(ctx: &Context<'gc>, s: Value<'gc>, digits: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string2number(ctx: Context<'gc>, s: Value<'gc>, digits: Value<'gc>) -> ThunkResult<'gc> {
         let Some(s) = s.try_as::<Str>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string->number").into(),
-                    Str::new(ctx, "not a string", true).into(),
+                    Symbol::from_str(ctx, "string->number").into(),
+                    Str::new(*ctx, "not a string", true).into(),
                     &[s],
                 )
             }
@@ -2245,8 +2254,8 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "string->number").into(),
-                        Str::new(ctx, "not a number", true).into(),
+                        Symbol::from_str(ctx, "string->number").into(),
+                        Str::new(*ctx, "not a number", true).into(),
                         &[digits],
                     )
                 }
@@ -2256,9 +2265,9 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "string->number").into(),
-                        Str::new(ctx, "not an exact integer", true).into(),
-                        &[radix.into_value(*ctx)],
+                        Symbol::from_str(ctx, "string->number").into(),
+                        Str::new(*ctx, "not an exact integer", true).into(),
+                        &[radix.into_value(ctx)],
                     )
                 }
             }
@@ -2267,9 +2276,9 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "string->number").into(),
-                        Str::new(ctx, "not in i32 range", true).into(),
-                        &[radix.into_value(*ctx)],
+                        Symbol::from_str(ctx, "string->number").into(),
+                        Str::new(*ctx, "not in i32 range", true).into(),
+                        &[radix.into_value(ctx)],
                     )
                 }
             };
@@ -2278,9 +2287,9 @@ thunks! {
                 return ThunkResult {
                     code: 1,
                     value: make_assertion_violation(ctx,
-                        Symbol::from_str(*ctx, "string->number").into(),
-                        Str::new(ctx, "radix out of range", true).into(),
-                        &[Number::Fixnum(radix).into_value(*ctx)],
+                        Symbol::from_str(ctx, "string->number").into(),
+                        Str::new(*ctx, "radix out of range", true).into(),
+                        &[Number::Fixnum(radix).into_value(ctx)],
                     )
                 }
             }
@@ -2306,35 +2315,35 @@ thunks! {
         let n = crate::frontend::num::parse_number(&s);
 
         match n {
-            Ok(n) => ThunkResult { code: 0, value: n.to_vm_number(*ctx).into_value(*ctx) },
+            Ok(n) => ThunkResult { code: 0, value: n.to_vm_number(ctx).into_value(ctx) },
             Err(_) => return ThunkResult { code: 0, value: Value::new(false) }
 
         }
     }
 
-    pub fn append(ctx: &Context<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn append(ctx: Context<'gc>, m1: Value<'gc>, m2: Value<'gc>) -> ThunkResult<'gc> {
         if !m1.is_list() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "append").into(),
-                    Str::new(ctx, "not a list", true).into(),
+                    Symbol::from_str(ctx, "append").into(),
+                    Str::new(*ctx, "not a list", true).into(),
                     &[m1],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: m1.append(*ctx, m2) }
+        ThunkResult { code: 0, value: m1.append(ctx, m2) }
     }
 
-    pub fn car(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn car(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
 
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "car").into(),
-                    Str::new(ctx, "not a pair", true).into(),
+                    Symbol::from_str(ctx, "car").into(),
+                    Str::new(*ctx, "not a pair", true).into(),
                     &[v],
                 )
             }
@@ -2343,13 +2352,13 @@ thunks! {
         ThunkResult { code: 0, value: p.car() }
     }
 
-    pub fn cdr(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn cdr(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "cdr").into(),
-                    Str::new(ctx, "not a pair", true).into(),
+                    Symbol::from_str(ctx, "cdr").into(),
+                    Str::new(*ctx, "not a pair", true).into(),
                     &[v],
                 )
             }
@@ -2358,68 +2367,68 @@ thunks! {
         ThunkResult { code: 0, value: p.cdr() }
     }
 
-    pub fn set_car(ctx: &Context<'gc>, v: Value<'gc>, new_car: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn set_car(ctx: Context<'gc>, v: Value<'gc>, new_car: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "set-car!").into(),
-                    Str::new(ctx, "not a pair", true).into(),
+                    Symbol::from_str(ctx, "set-car!").into(),
+                    Str::new(*ctx, "not a pair", true).into(),
                     &[v],
                 )
             }
         };
 
-        p.set_car(*ctx, new_car);
+        p.set_car(ctx, new_car);
 
         ThunkResult { code: 0, value: Value::undefined() }
     }
 
-    pub fn set_cdr(ctx: &Context<'gc>, v: Value<'gc>, new_cdr: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn set_cdr(ctx: Context<'gc>, v: Value<'gc>, new_cdr: Value<'gc>) -> ThunkResult<'gc> {
         let Some(p) = v.try_as::<Pair>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "set-cdr!").into(),
-                    Str::new(ctx, "not a pair", true).into(),
+                    Symbol::from_str(ctx, "set-cdr!").into(),
+                    Str::new(*ctx, "not a pair", true).into(),
                     &[v],
                 )
             }
         };
 
-        p.set_cdr(*ctx, new_cdr);
+        p.set_cdr(ctx, new_cdr);
 
         ThunkResult { code: 0, value: Value::undefined() }
     }
 
     /* CXRs should be expanded already... */
 
-    pub fn length(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn length(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         if !v.is_list() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "length").into(),
-                    Str::new(ctx, "not a list", true).into(),
+                    Symbol::from_str(ctx, "length").into(),
+                    Str::new(*ctx, "not a list", true).into(),
                     &[v],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: Number::from_usize(*ctx, v.list_length()).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::from_usize(ctx, v.list_length()).into_value(ctx) }
     }
 
-    pub fn cons(ctx: &Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
-        Value::cons(*ctx, car, cdr)
+    pub fn cons(ctx: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
+        Value::cons(ctx, car, cdr)
     }
 
-    pub fn make_vector(ctx: &Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn make_vector(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> ThunkResult<'gc> {
         let Some(size) = size.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-vector").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "make-vector").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[size],
                 )
             }
@@ -2429,9 +2438,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-vector").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[size.into_value(*ctx)],
+                    Symbol::from_str(ctx, "make-vector").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[size.into_value(ctx)],
                 )
             }
         }
@@ -2440,9 +2449,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-vector").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[size.into_value(*ctx)],
+                    Symbol::from_str(ctx, "make-vector").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[size.into_value(ctx)],
                 )
             }
         };
@@ -2451,23 +2460,23 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-vector").into(),
-                    Str::new(ctx, "size too large", true).into(),
-                    &[Number::from_usize(*ctx, size).into_value(*ctx)],
+                    Symbol::from_str(ctx, "make-vector").into(),
+                    Str::new(*ctx, "size too large", true).into(),
+                    &[Number::from_usize(ctx, size).into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: Vector::new::<false>(ctx, size, fill).into() }
+        ThunkResult { code: 0, value: Vector::new::<false>(*ctx, size, fill).into() }
     }
 
-    pub fn vector_ref(ctx: &Context<'gc>, vec: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn vector_ref(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
         let Some(v) = vec.try_as::<Vector>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-ref").into(),
-                    Str::new(ctx, "not a vector", true).into(),
+                    Symbol::from_str(ctx, "vector-ref").into(),
+                    Str::new(*ctx, "not a vector", true).into(),
                     &[vec],
                 )
             }
@@ -2477,8 +2486,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-ref").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "vector-ref").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[index],
                 )
             }
@@ -2488,9 +2497,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-ref").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "vector-ref").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         }
@@ -2499,9 +2508,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-ref").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "vector-ref").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         };
@@ -2510,9 +2519,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-ref").into(),
-                    Str::new(ctx, "index out of range", true).into(),
-                    &[Number::from_usize(*ctx, index).into_value(*ctx), Number::from_usize(*ctx, v.len()).into_value(*ctx)],
+                    Symbol::from_str(ctx, "vector-ref").into(),
+                    Str::new(*ctx, "index out of range", true).into(),
+                    &[Number::from_usize(ctx, index).into_value(ctx), Number::from_usize(ctx, v.len()).into_value(ctx)],
                 )
             }
         }
@@ -2520,13 +2529,13 @@ thunks! {
         ThunkResult { code: 0, value: v[index].get() }
     }
 
-    pub fn vector_set(ctx: &Context<'gc>, vec: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn vector_set(ctx: Context<'gc>, vec: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(v) = vec.try_as::<Vector>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-set!").into(),
-                    Str::new(ctx, "not a vector", true).into(),
+                    Symbol::from_str(ctx, "vector-set!").into(),
+                    Str::new(*ctx, "not a vector", true).into(),
                     &[vec],
                 )
             }
@@ -2536,8 +2545,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-set!").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "vector-set!").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[index],
                 )
             }
@@ -2547,9 +2556,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-set!").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "vector-set!").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         }
@@ -2558,9 +2567,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-set!").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "vector-set!").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         };
@@ -2569,26 +2578,26 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "vector-set!").into(),
-                    Str::new(ctx, "index out of range", true).into(),
-                    &[Number::from_usize(*ctx, index).into_value(*ctx), Number::from_usize(*ctx, v.len()).into_value(*ctx)],
+                    Symbol::from_str(ctx, "vector-set!").into(),
+                    Str::new(*ctx, "index out of range", true).into(),
+                    &[Number::from_usize(ctx, index).into_value(ctx), Number::from_usize(ctx, v.len()).into_value(ctx)],
                 )
             }
         }
 
-        let wv = Gc::write(ctx, v);
+        let wv = Gc::write(*ctx, v);
         wv[index].unlock().set(new_value);
 
         ThunkResult { code: 0, value: Value::undefined() }
     }
 
-    pub fn make_tuple(ctx: &Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn make_tuple(ctx: Context<'gc>, size: Value<'gc>, fill: Value<'gc>) -> ThunkResult<'gc> {
         let Some(size) = size.number() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-tuple").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "make-tuple").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[size],
                 )
             }
@@ -2598,9 +2607,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-tuple").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[size.into_value(*ctx)],
+                    Symbol::from_str(ctx, "make-tuple").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[size.into_value(ctx)],
                 )
             }
         }
@@ -2609,9 +2618,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-tuple").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[size.into_value(*ctx)],
+                    Symbol::from_str(ctx, "make-tuple").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[size.into_value(ctx)],
                 )
             }
         };
@@ -2620,38 +2629,38 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "make-tuple").into(),
-                    Str::new(ctx, "size too large", true).into(),
-                    &[Number::from_usize(*ctx, size).into_value(*ctx)],
+                    Symbol::from_str(ctx, "make-tuple").into(),
+                    Str::new(*ctx, "size too large", true).into(),
+                    &[Number::from_usize(ctx, size).into_value(ctx)],
                 )
             }
         }
 
-        ThunkResult { code: 0, value: Tuple::new(ctx, size, fill).into() }
+        ThunkResult { code: 0, value: Tuple::new(*ctx, size, fill).into() }
     }
 
-    pub fn tuple_size(ctx: &Context<'gc>, tup: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn tuple_size(ctx: Context<'gc>, tup: Value<'gc>) -> ThunkResult<'gc> {
         let Some(t) = tup.try_as::<Tuple>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-size").into(),
-                    Str::new(ctx, "not a tuple", true).into(),
+                    Symbol::from_str(ctx, "tuple-size").into(),
+                    Str::new(*ctx, "not a tuple", true).into(),
                     &[tup],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::from_usize(*ctx, t.len()).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::from_usize(ctx, t.len()).into_value(ctx) }
     }
 
-    pub fn tuple_ref(ctx: &Context<'gc>, tup: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn tuple_ref(ctx: Context<'gc>, tup: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
         let Some(t) = tup.try_as::<Tuple>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-ref").into(),
-                    Str::new(ctx, "not a tuple", true).into(),
+                    Symbol::from_str(ctx, "tuple-ref").into(),
+                    Str::new(*ctx, "not a tuple", true).into(),
                     &[tup],
                 )
             }
@@ -2661,8 +2670,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-ref").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "tuple-ref").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[index],
                 )
             }
@@ -2672,9 +2681,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-ref").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "tuple-ref").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         }
@@ -2683,9 +2692,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-ref").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "tuple-ref").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         };
@@ -2694,9 +2703,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-ref").into(),
-                    Str::new(ctx, "index out of range", true).into(),
-                    &[Number::from_usize(*ctx, index).into_value(*ctx), Number::from_usize(*ctx, t.len()).into_value(*ctx)],
+                    Symbol::from_str(ctx, "tuple-ref").into(),
+                    Str::new(*ctx, "index out of range", true).into(),
+                    &[Number::from_usize(ctx, index).into_value(ctx), Number::from_usize(ctx, t.len()).into_value(ctx)],
                 )
             }
         }
@@ -2704,13 +2713,13 @@ thunks! {
         ThunkResult { code: 0, value: t[index].get() }
     }
 
-    pub fn tuple_set(ctx: &Context<'gc>, tup: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn tuple_set(ctx: Context<'gc>, tup: Value<'gc>, index: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(t) = tup.try_as::<Tuple>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-set!").into(),
-                    Str::new(ctx, "not a tuple", true).into(),
+                    Symbol::from_str(ctx, "tuple-set!").into(),
+                    Str::new(*ctx, "not a tuple", true).into(),
                     &[tup],
                 )
             }
@@ -2720,8 +2729,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-set!").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "tuple-set!").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[index],
                 )
             }
@@ -2731,9 +2740,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-set!").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "tuple-set!").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         }
@@ -2742,9 +2751,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-set!").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "tuple-set!").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         };
@@ -2753,30 +2762,30 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "tuple-set!").into(),
-                    Str::new(ctx, "index out of range", true).into(),
-                    &[Number::from_usize(*ctx, index).into_value(*ctx), Number::from_usize(*ctx, t.len()).into_value(*ctx)],
+                    Symbol::from_str(ctx, "tuple-set!").into(),
+                    Str::new(*ctx, "index out of range", true).into(),
+                    &[Number::from_usize(ctx, index).into_value(ctx), Number::from_usize(ctx, t.len()).into_value(ctx)],
                 )
             }
         }
 
-        let wt = Gc::write(ctx, t);
+        let wt = Gc::write(*ctx, t);
         wt[index].unlock().set(new_value);
 
         ThunkResult { code: 0, value: Value::undefined() }
     }
 
-    pub fn variablep(ctx: &Context<'gc>, v: Value<'gc>) -> bool {
+    pub fn variablep(ctx: Context<'gc>, v: Value<'gc>) -> bool {
         v.is::<Variable>()
     }
 
-    pub fn variable_ref(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn variable_ref(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(var) = v.try_as::<Variable>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "variable-ref").into(),
-                    Str::new(ctx, "not a variable", true).into(),
+                    Symbol::from_str(ctx, "variable-ref").into(),
+                    Str::new(*ctx, "not a variable", true).into(),
                     &[v],
                 )
             }
@@ -2788,29 +2797,29 @@ thunks! {
         }
     }
 
-    pub fn variable_set(ctx: &Context<'gc>, v: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn variable_set(ctx: Context<'gc>, v: Value<'gc>, new_value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(var) = v.try_as::<Variable>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "variable-set!").into(),
-                    Str::new(ctx, "not a variable", true).into(),
+                    Symbol::from_str(ctx, "variable-set!").into(),
+                    Str::new(*ctx, "not a variable", true).into(),
                     &[v, new_value],
                 )
             }
         };
 
-        var.set(*ctx, new_value);
+        var.set(ctx, new_value);
 
         ThunkResult { code: 0, value: Value::undefined() }
     }
 
-    pub fn variable_boundp(ctx: &Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn variable_boundp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
         let Some(var) = v.try_as::<Variable>() else {
             return ThunkResult { code: 1, value: make_assertion_violation(
                 ctx,
-                Symbol::from_str(*ctx, "variable-bound?").into(),
-                Str::new(ctx, "not a variable", true).into(),
+                Symbol::from_str(ctx, "variable-bound?").into(),
+                Str::new(*ctx, "not a variable", true).into(),
                 &[v],
             )}
         };
@@ -2818,56 +2827,56 @@ thunks! {
         ThunkResult { code: 0, value: var.is_bound().into() }
     }
 
-    pub fn define_(ctx: &Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn define_(ctx: Context<'gc>, name: Value<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
         let Some(sym) = name.try_as::<Symbol>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "define!").into(),
-                    Str::new(ctx, "not a symbol", true).into(),
+                    Symbol::from_str(ctx, "define!").into(),
+                    Str::new(*ctx, "not a symbol", true).into(),
                     &[name],
                 )
             }
         };
 
-        let module = crate::runtime::modules::current_module(*ctx).get(*ctx);
+        let module = crate::runtime::modules::current_module(ctx).get(ctx);
         let Some(module) = module.try_as::<Module>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "define!").into(),
-                    Str::new(ctx, "no current module", true).into(),
+                    Symbol::from_str(ctx, "define!").into(),
+                    Str::new(*ctx, "no current module", true).into(),
                     &[],
                 )
             }
         };
-        let var = module.define(*ctx, sym.into(), value);
+        let var = module.define(ctx, sym.into(), value);
 
         ThunkResult { code: 0, value: var.into() }
     }
 
-    pub fn string_length(ctx: &Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string_length(ctx: Context<'gc>, s: Value<'gc>) -> ThunkResult<'gc> {
         let Some(s) = s.try_as::<Str>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-length").into(),
-                    Str::new(ctx, "not a string", true).into(),
+                    Symbol::from_str(ctx, "string-length").into(),
+                    Str::new(*ctx, "not a string", true).into(),
                     &[s],
                 )
             }
         };
 
-        ThunkResult { code: 0, value: Number::from_usize(*ctx, s.len()).into_value(*ctx) }
+        ThunkResult { code: 0, value: Number::from_usize(ctx, s.len()).into_value(ctx) }
     }
 
-    pub fn string_ref(ctx: &Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string_ref(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>) -> ThunkResult<'gc> {
         let Some(s) = s.try_as::<Str>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-ref").into(),
-                    Str::new(ctx, "not a string", true).into(),
+                    Symbol::from_str(ctx, "string-ref").into(),
+                    Str::new(*ctx, "not a string", true).into(),
                     &[s],
                 )
             }
@@ -2877,8 +2886,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-ref").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "string-ref").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[index],
                 )
             }
@@ -2888,9 +2897,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-ref").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "string-ref").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         }
@@ -2899,9 +2908,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-ref").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "string-ref").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         };
@@ -2910,9 +2919,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-ref").into(),
-                    Str::new(ctx, "index out of range", true).into(),
-                    &[Number::from_usize(*ctx, index).into_value(*ctx), Number::from_usize(*ctx, s.len()).into_value(*ctx)],
+                    Symbol::from_str(ctx, "string-ref").into(),
+                    Str::new(*ctx, "index out of range", true).into(),
+                    &[Number::from_usize(ctx, index).into_value(ctx), Number::from_usize(ctx, s.len()).into_value(ctx)],
                 )
             }
         }
@@ -2920,13 +2929,13 @@ thunks! {
         ThunkResult { code: 0, value: Value::from_char(s.get(index).unwrap()) }
     }
 
-    pub fn string_set(ctx: &Context<'gc>, s: Value<'gc>, index: Value<'gc>, new_char: Value<'gc>) -> ThunkResult<'gc> {
+    pub fn string_set(ctx: Context<'gc>, s: Value<'gc>, index: Value<'gc>, new_char: Value<'gc>) -> ThunkResult<'gc> {
         let Some(s) = s.try_as::<Str>() else {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-set!").into(),
-                    Str::new(ctx, "not a string", true).into(),
+                    Symbol::from_str(ctx, "string-set!").into(),
+                    Str::new(*ctx, "not a string", true).into(),
                     &[s],
                 )
             }
@@ -2936,8 +2945,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-set!").into(),
-                    Str::new(ctx, "not a number", true).into(),
+                    Symbol::from_str(ctx, "string-set!").into(),
+                    Str::new(*ctx, "not a number", true).into(),
                     &[index],
                 )
             }
@@ -2947,9 +2956,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-set!").into(),
-                    Str::new(ctx, "not an exact integer", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "string-set!").into(),
+                    Str::new(*ctx, "not an exact integer", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         }
@@ -2958,9 +2967,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-set!").into(),
-                    Str::new(ctx, "not in usize range", true).into(),
-                    &[index.into_value(*ctx)],
+                    Symbol::from_str(ctx, "string-set!").into(),
+                    Str::new(*ctx, "not in usize range", true).into(),
+                    &[index.into_value(ctx)],
                 )
             }
         };
@@ -2969,9 +2978,9 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-set!").into(),
-                    Str::new(ctx, "index out of range", true).into(),
-                    &[Number::from_usize(*ctx, index).into_value(*ctx), Number::from_usize(*ctx, s.len()).into_value(*ctx)],
+                    Symbol::from_str(ctx, "string-set!").into(),
+                    Str::new(*ctx, "index out of range", true).into(),
+                    &[Number::from_usize(ctx, index).into_value(ctx), Number::from_usize(ctx, s.len()).into_value(ctx)],
                 )
             }
         }
@@ -2979,21 +2988,21 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "string-set!").into(),
-                    Str::new(ctx, "not a character", true).into(),
+                    Symbol::from_str(ctx, "string-set!").into(),
+                    Str::new(*ctx, "not a character", true).into(),
                     &[new_char],
                 )
             }
         }
         let c = new_char.char();
 
-        Str::set(s, &ctx, index, c);
+        Str::set(s, *ctx, index, c);
 
         ThunkResult { code: 0, value: Value::undefined() }
     }
 
     pub fn pre_write_barrier(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         src: ObjectReference,
         offset: i32,
         target: ObjectReference
@@ -3012,7 +3021,7 @@ thunks! {
     }
 
     pub fn pre_write_barrier_at_slot(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         src: ObjectReference,
         slot: ObjectSlot,
         target: ObjectReference
@@ -3031,7 +3040,7 @@ thunks! {
     }
 
     pub fn post_write_barrier_slow(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         src: ObjectReference,
         offset: i32,
         target: ObjectReference
@@ -3050,7 +3059,7 @@ thunks! {
     }
 
     pub fn post_write_barrier_at_slot(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         src: ObjectReference,
         slot: ObjectSlot,
         target: ObjectReference
@@ -3071,7 +3080,7 @@ thunks! {
     // fixnums, most of them just return error code
     // since we try to inline them.
     pub fn fxplus(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3079,8 +3088,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx+").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx+").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3089,15 +3098,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx+").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx+").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxeq(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3105,8 +3114,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx=").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx=").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3115,15 +3124,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx=?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx=?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxlt(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3131,8 +3140,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx<?").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx<?").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3141,15 +3150,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx<?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx<?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxgt(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3157,8 +3166,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx>?").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx>?").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3167,15 +3176,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx>?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx>?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxle(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3183,8 +3192,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx<=?").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx<=?").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3193,15 +3202,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx<=?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx<=?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxge(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3209,8 +3218,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx>=?").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx>=?").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3219,85 +3228,85 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx>=?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx>=?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxzero(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxzero?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxzero?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxpositive(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxpositive?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxpositive?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxnegative(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxnegative?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxnegative?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxodd(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxodd?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxodd?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxeven(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxeven?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxeven?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxmax(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3305,8 +3314,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxmax").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxmax").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3315,15 +3324,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxmax").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxmax").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxmin(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3331,8 +3340,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxmin").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxmin").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3341,15 +3350,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxmin").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxmin").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxtimes(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3357,8 +3366,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx*").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx*").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3367,15 +3376,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx*").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx*").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxminus(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3383,8 +3392,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx-").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx-").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3393,15 +3402,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx-").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx-").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxdiv(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3409,8 +3418,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx/").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fx/").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3420,8 +3429,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fx/").into(),
-                    Str::new(ctx, "division by zero", true).into(),
+                    Symbol::from_str(ctx, "fx/").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
                     &[y],
                 )
             }
@@ -3430,15 +3439,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fx/").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fx/").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxmod(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3446,8 +3455,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxmod").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxmod").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3457,8 +3466,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxmod").into(),
-                    Str::new(ctx, "division by zero", true).into(),
+                    Symbol::from_str(ctx, "fxmod").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
                     &[y],
                 )
             }
@@ -3467,15 +3476,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxmod").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxmod").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxdiv_and_mod(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3483,8 +3492,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxdiv-and-mod").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxdiv-and-mod").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3494,8 +3503,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxdiv-and-mod").into(),
-                    Str::new(ctx, "division by zero", true).into(),
+                    Symbol::from_str(ctx, "fxdiv-and-mod").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
                     &[y],
                 )
             }
@@ -3504,15 +3513,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxdiv-and-mod").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxdiv-and-mod").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxdiv0(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3520,8 +3529,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxdiv0").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxdiv0").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3531,8 +3540,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxdiv0").into(),
-                    Str::new(ctx, "division by zero", true).into(),
+                    Symbol::from_str(ctx, "fxdiv0").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
                     &[y],
                 )
             }
@@ -3541,15 +3550,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxdiv0").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxdiv0").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxmod0(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3557,8 +3566,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxmod0").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxmod0").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3568,8 +3577,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxmod0").into(),
-                    Str::new(ctx, "division by zero", true).into(),
+                    Symbol::from_str(ctx, "fxmod0").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
                     &[y],
                 )
             }
@@ -3578,15 +3587,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxmod0").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxmod0").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxdiv0_and_mod0(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3594,8 +3603,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxdiv0-and-mod0").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxdiv0-and-mod0").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3605,8 +3614,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxdiv0-and-mod0").into(),
-                    Str::new(ctx, "division by zero", true).into(),
+                    Symbol::from_str(ctx, "fxdiv0-and-mod0").into(),
+                    Str::new(*ctx, "division by zero", true).into(),
                     &[y],
                 )
             }
@@ -3615,29 +3624,29 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxdiv0-and-mod0").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxdiv0-and-mod0").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxnot(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxnot").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxnot").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxior(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3645,8 +3654,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxior").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxior").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3655,15 +3664,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxior").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxior").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxxor(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         y: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3671,8 +3680,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxxor").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxxor").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3681,15 +3690,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxxor").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxxor").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[y],
             )
         }
     }
 
     pub fn fxif(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         test: Value<'gc>,
         then: Value<'gc>,
         else_: Value<'gc>
@@ -3698,8 +3707,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxif").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxif").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[test],
                 )
             }
@@ -3708,15 +3717,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxif").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxif").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[then, else_],
             )
         }
     }
 
     pub fn fxbit_count(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
 
@@ -3724,45 +3733,45 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxbit-count").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxbit-count").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxlength(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
 
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxlength").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxlength").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxfirst_bit_set(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>
     ) -> ThunkResult<'gc> {
 
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxfirst-bit-set").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxfirst-bit-set").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[x],
             )
         }
     }
 
     pub fn fxbit_setp(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         index: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3771,8 +3780,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxbit-set?").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxbit-set?").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3781,15 +3790,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxbit-set?").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxbit-set?").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[index],
             )
         }
     }
 
     pub fn fxcopy_bit(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         index: Value<'gc>,
         value: Value<'gc>
@@ -3799,8 +3808,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxcopy-bit").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxcopy-bit").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3809,15 +3818,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxcopy-bit").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxcopy-bit").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[index, value],
             )
         }
     }
 
     pub fn fxcopy_bit_field(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         start: Value<'gc>,
         width: Value<'gc>,
@@ -3828,8 +3837,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxcopy-bit-field").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxcopy-bit-field").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3838,15 +3847,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxcopy-bit-field").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxcopy-bit-field").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[start, width, value],
             )
         }
     }
 
     pub fn fxarithmetic_shift(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         count: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3855,8 +3864,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxarithmetic-shift").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxarithmetic-shift").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3865,15 +3874,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxarithmetic-shift").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxarithmetic-shift").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[count],
             )
         }
     }
 
     pub fn fxarithmetic_shift_left(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         count: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3882,8 +3891,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxarithmetic-shift-left").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxarithmetic-shift-left").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3892,15 +3901,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxarithmetic-shift-left").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxarithmetic-shift-left").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[count],
             )
         }
     }
 
     pub fn fxarithmetic_shift_right(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         count: Value<'gc>
     ) -> ThunkResult<'gc> {
@@ -3909,8 +3918,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxarithmetic-shift-right").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxarithmetic-shift-right").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3919,15 +3928,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxarithmetic-shift-right").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxarithmetic-shift-right").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[count],
             )
         }
     }
 
     pub fn fxrotate_bit_field(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         start: Value<'gc>,
         width: Value<'gc>,
@@ -3938,8 +3947,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxrotate-bit-field").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxrotate-bit-field").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3948,15 +3957,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxrotate-bit-field").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxrotate-bit-field").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[start, width, count],
             )
         }
     }
 
     pub fn fxreverse_bit_field(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         x: Value<'gc>,
         start: Value<'gc>,
         end: Value<'gc>
@@ -3966,8 +3975,8 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "fxreverse-bit-field").into(),
-                    Str::new(ctx, "not a fixnum", true).into(),
+                    Symbol::from_str(ctx, "fxreverse-bit-field").into(),
+                    Str::new(*ctx, "not a fixnum", true).into(),
                     &[x],
                 )
             }
@@ -3976,15 +3985,15 @@ thunks! {
         return ThunkResult {
             code: 1, value:
             make_assertion_violation(ctx,
-                Symbol::from_str(*ctx, "fxreverse-bit-field").into(),
-                Str::new(ctx, "not a fixnum", true).into(),
+                Symbol::from_str(ctx, "fxreverse-bit-field").into(),
+                Str::new(*ctx, "not a fixnum", true).into(),
                 &[start, end],
             )
         }
     }
 
     pub fn push_cframe(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         key: Value<'gc>,
         mark: Value<'gc>,
         retk: ClosureRef<'gc>
@@ -3998,11 +4007,11 @@ thunks! {
     }
 
     pub fn current_continuation_marks(
-        ctx: &Context<'gc>
+        ctx: Context<'gc>
     ) -> Value<'gc> {
         let marks = ctx.state().current_marks();
 
-        let obj = Gc::new(&ctx, ContinuationMarks {
+        let obj = Gc::new(*ctx, ContinuationMarks {
             header: ScmHeader::with_type_bits(TypeCode8::CMARKS.bits() as _),
             cmarks: marks,
         });
@@ -4011,15 +4020,15 @@ thunks! {
     }
 
     pub fn set_attachments(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         marks: Value<'gc>
     ) -> ThunkResult<'gc> {
         if !marks.is::<ContinuationMarks>() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
-                    Symbol::from_str(*ctx, "set-attachments").into(),
-                    Str::new(ctx, "not continuation-marks", true).into(),
+                    Symbol::from_str(ctx, "set-attachments").into(),
+                    Str::new(*ctx, "not continuation-marks", true).into(),
                     &[marks],
                 )
             }
@@ -4037,13 +4046,13 @@ thunks! {
     }
 
     pub fn make_syntax(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         exp: Value<'gc>,
         wrap: Value<'gc>,
         module: Value<'gc>,
         source: Value<'gc>
     ) -> Value<'gc> {
-        Syntax::new(*ctx, exp, wrap, module, source).into()
+        Syntax::new(ctx, exp, wrap, module, source).into()
     }
 }
 
@@ -4069,7 +4078,7 @@ unsafe extern "C" {
 */
 
 pub fn make_assertion_violation<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     who: Value<'gc>,
     message: Value<'gc>,
     irritants: &[Value<'gc>],
@@ -4083,14 +4092,14 @@ pub fn make_assertion_violation<'gc>(
         .globals()
         .root_module()
         .get(
-            *ctx,
-            Symbol::from_str(*ctx, ".make-assertion-violation").into(),
+            ctx,
+            Symbol::from_str(ctx, ".make-assertion-violation").into(),
         )
         .unwrap_or_else(|| {
             panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
         });
 
-    match call_scheme(*ctx, assertion_violation, args) {
+    match call_scheme(ctx, assertion_violation, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
         VMResult::Yield => unreachable!(),
@@ -4098,25 +4107,25 @@ pub fn make_assertion_violation<'gc>(
 }
 
 pub fn make_undefined_violation<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     who: Value<'gc>,
     message: impl AsRef<str>,
     irritants: &[Value<'gc>],
 ) -> Value<'gc> {
-    let message: Value = Str::new(&ctx, message, true).into();
+    let message: Value = Str::new(*ctx, message, true).into();
     let mut args = vec![who, message];
     args.extend_from_slice(irritants);
     let undefined_violation = ctx
         .globals()
         .root_module()
         .get(
-            *ctx,
-            Symbol::from_str(*ctx, ".make-undefined-violation").into(),
+            ctx,
+            Symbol::from_str(ctx, ".make-undefined-violation").into(),
         )
         .unwrap_or_else(|| {
             panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
         });
-    match call_scheme(*ctx, undefined_violation, args) {
+    match call_scheme(ctx, undefined_violation, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
         VMResult::Yield => unreachable!(),
@@ -4124,7 +4133,7 @@ pub fn make_undefined_violation<'gc>(
 }
 
 pub fn make_error<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     who: Value<'gc>,
     message: Value<'gc>,
     irritants: &[Value<'gc>],
@@ -4137,10 +4146,10 @@ pub fn make_error<'gc>(
     let error = ctx
         .globals()
         .root_module()
-        .get(*ctx, Symbol::from_str(*ctx, ".make-error").into())
+        .get(ctx, Symbol::from_str(ctx, ".make-error").into())
         .expect("pre boot code");
 
-    match call_scheme(*ctx, error, args) {
+    match call_scheme(ctx, error, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
         VMResult::Yield => unreachable!(),
@@ -4148,12 +4157,12 @@ pub fn make_error<'gc>(
 }
 
 pub fn make_io_error<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     who: &str,
     message: Value<'gc>,
     irritants: &[Value<'gc>],
 ) -> Value<'gc> {
-    let who = Symbol::from_str(*ctx, who).into();
+    let who = Symbol::from_str(ctx, who).into();
     let args = std::iter::once(who)
         .chain(std::iter::once(message))
         .chain(irritants.iter().cloned())
@@ -4162,7 +4171,7 @@ pub fn make_io_error<'gc>(
     let io_error = ctx
         .globals()
         .root_module()
-        .get(*ctx, Symbol::from_str(*ctx, ".make-io-error").into())
+        .get(ctx, Symbol::from_str(ctx, ".make-io-error").into())
         .unwrap_or_else(|| {
             panic!(
                 "pre boot code, who={who}, message={message}, irritants={:?}",
@@ -4170,7 +4179,7 @@ pub fn make_io_error<'gc>(
             )
         });
 
-    match call_scheme(*ctx, io_error, args) {
+    match call_scheme(ctx, io_error, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
         VMResult::Yield => unreachable!(),
@@ -4178,24 +4187,21 @@ pub fn make_io_error<'gc>(
 }
 
 pub fn make_lexical_violation<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     who: &str,
     message: impl AsRef<str>,
 ) -> Value<'gc> {
-    let who = Symbol::from_str(*ctx, who).into();
-    let message: Value = Str::new(&ctx, message, true).into();
+    let who = Symbol::from_str(ctx, who).into();
+    let message: Value = Str::new(*ctx, message, true).into();
     let args = vec![who, message];
 
     let lexical_violation = ctx
         .globals()
         .root_module()
-        .get(
-            *ctx,
-            Symbol::from_str(*ctx, ".make-lexical-violation").into(),
-        )
+        .get(ctx, Symbol::from_str(ctx, ".make-lexical-violation").into())
         .unwrap_or_else(|| panic!("pre boot code, who={who}, message={message}",));
 
-    match call_scheme(*ctx, lexical_violation, args) {
+    match call_scheme(ctx, lexical_violation, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
         VMResult::Yield => unreachable!(),
@@ -4207,7 +4213,7 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
         return ThunkResult {
             code: 1,
             value: make_undefined_violation(
-                &ctx,
+                ctx,
                 Symbol::from_str(ctx, "resolve-module").into(),
                 &format!("module '{name}' not found"),
                 &[name],

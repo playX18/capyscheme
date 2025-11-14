@@ -115,7 +115,7 @@ pub mod debug_ops {
     #[scheme(name = "shadow-stack")]
     pub fn shadow_stack() -> Value<'gc> {
         let ctx = nctx.ctx;
-        let state = ctx.state;
+        let state = ctx.state();
         let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
 
         let mut frames = Vec::new();
@@ -127,7 +127,7 @@ pub mod debug_ops {
                 .rev()
                 .fold(Value::null(), |acc, rand| Value::cons(ctx, rand, acc));
             let frame_vec = Vector::from_slice(
-                &ctx,
+                *ctx,
                 &[frame.ip.into_value(ctx), frame.meta, frame.rator, rands],
             );
 
@@ -154,7 +154,7 @@ pub mod debug_ops {
     }
 }
 pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
-    let state = ctx.state;
+    let state = ctx.state();
     let shadow_stack = unsafe { &mut *state.shadow_stack.get() };
     backtrace::trace(|_| {
         shadow_stack.for_each_mut(|frame| {

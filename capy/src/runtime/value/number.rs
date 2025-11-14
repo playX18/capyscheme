@@ -24,16 +24,13 @@ use std::{
 use easy_bitfield::{BitField, BitFieldTrait};
 use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
 
-use crate::{
-  
-    rsgc::{
-        Gc, Trace,
-        collection::Visitor,
-        global::Global,
-        mmtk::{AllocationSemantics, util::conversions::raw_align_up},
-        mutator::Mutation,
-        object::{GCObject, VTable},
-    },
+use crate::rsgc::{
+    Gc, Trace,
+    collection::Visitor,
+    global::Global,
+    mmtk::{AllocationSemantics, util::conversions::raw_align_up},
+    mutator::Mutation,
+    object::{GCObject, VTable},
 };
 use rand::Rng;
 
@@ -211,7 +208,7 @@ impl<'gc> BigInt<'gc> {
 
     #[inline]
     pub fn zeroed<F, E>(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         mut count: usize,
         negative: bool,
         fill: F,
@@ -400,7 +397,7 @@ impl<'gc> Complex<'gc> {
             real,
             imag,
         };
-        Gc::new(&ctx, complex)
+        Gc::new(*ctx, complex)
     }
 }
 unsafe impl<'gc> Tagged for Complex<'gc> {
@@ -430,7 +427,7 @@ impl<'gc> Rational<'gc> {
             numerator,
             denominator,
         };
-        Gc::new(&ctx, rational)
+        Gc::new(*ctx, rational)
     }
 }
 
@@ -750,7 +747,7 @@ impl<'gc> BigInt<'gc> {
             (this, rhs)
         };
 
-        Self::zeroed::<_, ()>(&ctx, b1.count() + 1, this.negative(), |result| {
+        Self::zeroed::<_, ()>(*ctx, b1.count() + 1, this.negative(), |result| {
             let mut sum: Digit2X = 0;
             let mut off = 0;
             for i in 0..b2.count() {
@@ -806,7 +803,7 @@ impl<'gc> BigInt<'gc> {
             (this, rhs)
         };
 
-        BigInt::zeroed(&ctx, b1.count() + 1, sign, |res| {
+        BigInt::zeroed(*ctx, b1.count() + 1, sign, |res| {
             let mut carry: Digit2X = 0;
             let mut offset = 0;
             for i in 0..b2.count() {
@@ -881,7 +878,7 @@ impl<'gc> BigInt<'gc> {
             (a, b)
         };
 
-        Self::zeroed(&ctx, b1.count() + b2.count(), a.negative(), |res| {
+        Self::zeroed(*ctx, b1.count() + b2.count(), a.negative(), |res| {
             for i in 0..b2.count() {
                 let mut sum: Digit2X = 0;
 
@@ -1000,7 +997,7 @@ impl<'gc> BigInt<'gc> {
 
                 x
             })
-            .fetch(&ctx)
+            .fetch(*ctx)
     }
 
     pub fn one(ctx: Context<'gc>) -> Gc<'gc, Self> {
@@ -1012,7 +1009,7 @@ impl<'gc> BigInt<'gc> {
 
                 Global::new(one)
             })
-            .fetch(&ctx)
+            .fetch(*ctx)
     }
 
     pub fn parse(ctx: Context<'gc>, str: &str, base: &Base) -> Result<Gc<'gc, Self>, ()> {
@@ -1416,7 +1413,7 @@ impl<'gc> BigInt<'gc> {
 
     pub fn from_2sc(ctx: Context<'gc>, words: &[Digit]) -> Gc<'gc, Self> {
         if Self::is_most_significant_bit_set(words) {
-            Self::zeroed(&ctx, words.len(), true, |res| {
+            Self::zeroed(*ctx, words.len(), true, |res| {
                 let mut carry = true;
 
                 res.copy_from_slice(words);
@@ -1665,7 +1662,7 @@ impl<'gc> BigInt<'gc> {
 
         Self::new::<true>(ctx, &res, this.negative())*/
 
-        Self::zeroed(&ctx, this.len() + swords + 1, this.negative(), |res| {
+        Self::zeroed(*ctx, this.len() + swords + 1, this.negative(), |res| {
             for i in 0..swords {
                 res[i] = 0;
             }

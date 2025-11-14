@@ -118,7 +118,7 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
         self.ctx.set_winders(winders);
         let marks = self.read_value()?;
         unsafe {
-            self.ctx.state.set_current_marks(marks);
+            self.ctx.state().set_current_marks(marks);
         }
 
         let current_module = self.read_value().unwrap();
@@ -146,7 +146,7 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
             .collect::<Vec<_>>();
 
         let mut ix = 0;
-        LIBRARY_COLLECTION.fetch(&self.ctx).for_each_library(|lib| {
+        LIBRARY_COLLECTION.fetch(*self.ctx).for_each_library(|lib| {
             let cstart = *cstarts.get(ix).unwrap();
             self.input.set_position(cstart as u64);
             let _globals_count = self.read32().unwrap() as usize;
@@ -227,7 +227,7 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
             self.input.set_position(csection_end as u64);
             libs_syms.push((snames, csection));
         }
-        let libs = LIBRARY_COLLECTION.fetch(&self.ctx);
+        let libs = LIBRARY_COLLECTION.fetch(*self.ctx);
         for (i, file) in TEMPORARY_FILES.lock().iter().enumerate() {
             let path_str = file.path().to_string_lossy().to_string();
             let (fbase, handle, entrypoint) = libs
@@ -1155,7 +1155,7 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
             entries.push(WeakEntry { hash, value });
         }
 
-        let entries = Array::from_iter(&self.ctx, entries.into_iter().map(Lock::new));
+        let entries = Array::from_iter(*self.ctx, entries.into_iter().map(Lock::new));
 
         let size = self.read32()? as usize;
         let n_items = self.read32()? as usize;

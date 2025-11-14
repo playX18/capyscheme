@@ -1,8 +1,7 @@
 use std::{collections::HashMap, sync::LazyLock};
 
-use crate::{
-   
-    rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
+use crate::rsgc::{
+    Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor,
 };
 use easy_bitfield::{BitField, BitFieldTrait};
 
@@ -18,7 +17,7 @@ pub enum Return<'gc> {
 }
 
 pub type NativeFn<'gc> = extern "C-unwind" fn(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     rator: Value<'gc>,
     rands: *const Value<'gc>,
     num_rands: usize,
@@ -27,7 +26,7 @@ pub type NativeFn<'gc> = extern "C-unwind" fn(
 ) -> NativeReturn<'gc>;
 
 pub type NativeContinuation<'gc> = extern "C-unwind" fn(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     rator: Value<'gc>,
     rands: *const Value<'gc>,
     num_rands: usize,
@@ -50,7 +49,7 @@ impl NativeProc {
         };
 
         Gc::new(
-            &ctx,
+            *ctx,
             NativeProc {
                 header: ScmHeader::with_type_bits(tc.0),
                 proc,
@@ -94,7 +93,7 @@ impl<'gc> Closure<'gc> {
         let free = if free.is_empty() {
             Value::new(false)
         } else {
-            Vector::from_slice(&ctx, free).into()
+            Vector::from_slice(*ctx, free).into()
         };
 
         let meta = if meta == Value::new(false) {
@@ -104,7 +103,7 @@ impl<'gc> Closure<'gc> {
         };
 
         Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header: ScmHeader::with_type_bits(if is_cont {
                     TypeCode16::CLOSURE_K.0
@@ -130,7 +129,7 @@ impl<'gc> Closure<'gc> {
         let free = if free.is_empty() {
             Value::new(false)
         } else {
-            Vector::from_slice(&ctx, free).into()
+            Vector::from_slice(*ctx, free).into()
         };
 
         let mut header = ScmHeader::with_type_bits(if is_cont {
@@ -142,7 +141,7 @@ impl<'gc> Closure<'gc> {
         header.word |= ClosureNativeFlag::encode(true);
 
         Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header,
                 code,

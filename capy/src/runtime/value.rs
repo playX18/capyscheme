@@ -333,7 +333,7 @@ impl<'gc> WeakValue<'gc> {
         self.as_value().raw_i64() == Value::bwp().raw_i64()
     }
 
-    pub fn get(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+    pub fn get(&self, mc: Mutation<'gc>) -> Value<'gc> {
         if !self.as_value().is_cell() {
             return self.as_value();
         }
@@ -705,7 +705,7 @@ impl GlobalValue {
         Self(value.bits())
     }
 
-    pub fn get<'gc>(self, _ctx: &Mutation<'gc>) -> Value<'gc> {
+    pub fn get<'gc>(self, _ctx: Mutation<'gc>) -> Value<'gc> {
         Value::from_raw_i64(self.0 as i64)
     }
 }
@@ -923,7 +923,7 @@ pub struct Boxed<'gc> {
 impl<'gc> Boxed<'gc> {
     pub fn new(ctx: Context<'gc>, val: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header: ScmHeader::with_type_bits(TypeCode8::BOX.bits() as _),
                 val,

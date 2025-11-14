@@ -48,13 +48,20 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
     ) {
         let mtls = mutator.mutator_tls;
         let thread = Thread::from_mutator_thread(mtls);
+        let mut sv = RootSlotVisitor::new();
+        let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(&mut sv), None) };
+        unsafe {
+            if thread.is_thread_state_initialized() {
+                let state = thread.native_data().state.get().as_mut().unwrap();
+                state.assume_init_mut().trace(&mut visitor);
+            }
+        }
+
         let Some(mut state) = thread.native_data_mut().mutator_state else {
             return;
         };
 
         unsafe {
-            let mut sv = RootSlotVisitor::new();
-            let mut visitor = Visitor::new(VisitorKind::Slot(&mut sv), None);
             state.as_mut().root.trace(&mut visitor);
 
             if visitor.has_weak_refs() {

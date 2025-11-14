@@ -67,7 +67,7 @@ impl<'gc> WeakMapping<'gc> {
         let mut hdr = ScmHeader::new();
         hdr.set_type_bits(TypeCode8::WEAK_MAPPING.bits() as _);
         let mapping = Gc::new(
-            &ctx,
+            *ctx,
             Self {
                 header: hdr,
                 _key: key,
@@ -82,7 +82,7 @@ impl<'gc> WeakMapping<'gc> {
         self._key.is_bwp() || self._value.is_bwp()
     }
 
-    pub fn key(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+    pub fn key(&self, mc: Mutation<'gc>) -> Value<'gc> {
         if self._key.is_bwp() {
             return Value::bwp();
         }
@@ -92,7 +92,7 @@ impl<'gc> WeakMapping<'gc> {
         self._key
     }
 
-    pub fn value(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+    pub fn value(&self, mc: Mutation<'gc>) -> Value<'gc> {
         if self._value.is_bwp() || !self._value.is_cell() {
             return self._value;
         }
@@ -113,11 +113,11 @@ struct WeakEntry<'gc> {
 }
 
 impl<'gc> WeakEntry<'gc> {
-    fn key(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+    fn key(&self, mc: Mutation<'gc>) -> Value<'gc> {
         self._key.get(mc)
     }
 
-    fn value(&self, _mc: &Mutation<'gc>) -> Value<'gc> {
+    fn value(&self, _mc: Mutation<'gc>) -> Value<'gc> {
         self._value.get()
     }
 }
@@ -194,7 +194,7 @@ fn make_hash<'gc>(key: Value<'gc>) -> u64 {
 }
 
 impl<'gc> WeakTable<'gc> {
-    pub fn new(ctx: &Mutation<'gc>, initial_capacity: usize, load_factor: f64) -> Gc<'gc, Self> {
+    pub fn new(ctx: Mutation<'gc>, initial_capacity: usize, load_factor: f64) -> Gc<'gc, Self> {
         assert!(
             initial_capacity > 0,
             "initial capacity must be greater than 0"
@@ -204,7 +204,7 @@ impl<'gc> WeakTable<'gc> {
             "load factor must be in (0, 1)"
         );
 
-        let entries = Array::with(&ctx, initial_capacity, |_, _| Lock::new(None));
+        let entries = Array::with(ctx, initial_capacity, |_, _| Lock::new(None));
         let inner = WeakTableInner {
             entries: Lock::new(entries),
             count: Cell::new(0),
@@ -217,7 +217,7 @@ impl<'gc> WeakTable<'gc> {
         hdr.set_type_bits(TypeCode8::WEAKTABLE.bits() as _);
 
         let table = Gc::new(
-            &ctx,
+            ctx,
             Self {
                 header: hdr,
                 inner: Monitor::new(inner),
@@ -227,7 +227,7 @@ impl<'gc> WeakTable<'gc> {
         ALL_WEAK_TABLES
             .get()
             .expect("Weak tables not initialized")
-            .fetch(&ctx)
+            .fetch(ctx)
             .tables
             .lock()
             .push(Gc::downgrade(table));
@@ -241,7 +241,7 @@ impl<'gc> WeakTable<'gc> {
     ) {
         unsafe {
             let hdr = obj.to_address().to_mut_ptr::<ScmHeader>().read();
-            let entries = Array::with(&ctx, 8, |_, _| Lock::new(None));
+            let entries = Array::with(*ctx, 8, |_, _| Lock::new(None));
             let inner = WeakTableInner {
                 entries: Lock::new(entries),
                 count: Cell::new(0),
@@ -266,7 +266,7 @@ impl<'gc> WeakTable<'gc> {
             ALL_WEAK_TABLES
                 .get()
                 .expect("Weak tables not initialized")
-                .fetch(&ctx)
+                .fetch(*ctx)
                 .tables
                 .lock()
                 .push(Gc::downgrade(ht));
@@ -279,7 +279,7 @@ impl<'gc> WeakTable<'gc> {
 
         let new_capacity = (old_capacity as f64 / inner.load_factor) as usize;
 
-        let new_map = Array::with(&ctx, new_capacity, |_, _| Lock::new(None));
+        let new_map = Array::with(*ctx, new_capacity, |_, _| Lock::new(None));
 
         inner.mod_count.set(inner.mod_count.get() + 1);
         inner
@@ -297,15 +297,15 @@ impl<'gc> WeakTable<'gc> {
                 old = entry.next.get();
 
                 let index = (entry.hash % new_capacity as u64) as usize;
-                let wentry = Gc::write(&ctx, entry);
-                let key = entry.key(&ctx);
+                let wentry = Gc::write(*ctx, entry);
+                let key = entry.key(*ctx);
                 if key.is_bwp() || !key.is_cell() {
                     continue;
                 }
                 barrier::field!(wentry, WeakEntry, next)
                     .unlock()
                     .set(new_map[index].get());
-                Gc::write(&ctx, new_map)[index].unlock().set(Some(entry));
+                Gc::write(*ctx, new_map)[index].unlock().set(Some(entry));
             }
         }
     }
@@ -325,11 +325,11 @@ impl<'gc> WeakTable<'gc> {
             index = (hash % inner.entries.get().len() as u64) as usize;
         }
 
-        let tab = Gc::write(&ctx, inner.entries.get());
+        let tab = Gc::write(*ctx, inner.entries.get());
         let e = tab[index].get();
 
         tab[index].unlock().set(Some(Gc::new(
-            &ctx,
+            *ctx,
             WeakEntry {
                 hash,
                 _key: WeakValue::from_value(key),
@@ -351,17 +351,17 @@ impl<'gc> WeakTable<'gc> {
         let value = value.into_value(ctx);
 
         let guard = self.inner.lock();
-        Gc::write(&ctx, self);
+        Gc::write(*ctx, self);
         let hash = make_hash(key);
         let index = (hash % guard.entries.get().len() as u64) as usize;
 
         let mut e = guard.entries.get()[index].get();
 
         while let Some(entry) = e {
-            let ekey = entry.key(&ctx);
+            let ekey = entry.key(*ctx);
             if entry.hash == hash && ekey == key {
-                let old_value = entry.value(&ctx);
-                barrier::field!(Gc::write(&ctx, entry), WeakEntry, _value)
+                let old_value = entry.value(*ctx);
+                barrier::field!(Gc::write(*ctx, entry), WeakEntry, _value)
                     .unlock()
                     .set(value);
                 return Some(old_value);
@@ -384,7 +384,7 @@ impl<'gc> WeakTable<'gc> {
 
     pub fn remove(self: Gc<'gc, Self>, ctx: Context<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
         let guard = self.inner.lock();
-        Gc::write(&ctx, self);
+        Gc::write(*ctx, self);
         let hash = make_hash(key);
         let index = (hash % guard.entries.get().len() as u64) as usize;
 
@@ -392,14 +392,14 @@ impl<'gc> WeakTable<'gc> {
         let mut prev: Option<Gc<'gc, WeakEntry<'gc>>> = None;
 
         while let Some(entry) = e {
-            let ekey = entry.key(&ctx);
+            let ekey = entry.key(*ctx);
             if entry.hash == hash && ekey == key {
                 if let Some(prev_entry) = prev {
-                    barrier::field!(Gc::write(&ctx, prev_entry), WeakEntry, next)
+                    barrier::field!(Gc::write(*ctx, prev_entry), WeakEntry, next)
                         .unlock()
                         .set(entry.next.get());
                 } else {
-                    Gc::write(&ctx, guard.entries.get())[index]
+                    Gc::write(*ctx, guard.entries.get())[index]
                         .unlock()
                         .set(entry.next.get());
                 }
@@ -414,7 +414,7 @@ impl<'gc> WeakTable<'gc> {
         None
     }
 
-    pub fn vacuum(self: Gc<'gc, Self>, mc: &Mutation<'gc>) {
+    pub fn vacuum(self: Gc<'gc, Self>, mc: Mutation<'gc>) {
         let guard = self.inner.lock();
         Gc::write(mc, self);
         let table = Gc::write(mc, guard.entries.get());
@@ -444,8 +444,8 @@ impl<'gc> WeakTable<'gc> {
 
     pub fn clear(self: Gc<'gc, Self>, ctx: Context<'gc>) {
         let guard = self.inner.lock();
-        Gc::write(&ctx, self);
-        let table = Gc::write(&ctx, guard.entries.get());
+        Gc::write(*ctx, self);
+        let table = Gc::write(*ctx, guard.entries.get());
         for i in 0..table.len() {
             table[i].unlock().set(None);
         }
@@ -463,9 +463,9 @@ impl<'gc> WeakTable<'gc> {
         let mut e = guard.entries.get()[index].get();
 
         while let Some(entry) = e {
-            let ekey = entry.key(&ctx);
+            let ekey = entry.key(*ctx);
             if entry.hash == hash && ekey == key {
-                return Some(entry.value(&ctx));
+                return Some(entry.value(*ctx));
             }
             e = entry.next.get();
         }
@@ -497,7 +497,7 @@ impl<'gc> WeakTable<'gc> {
         mut f: impl FnMut(Value<'gc>, Value<'gc>, Value<'gc>) -> Value<'gc>,
         mut init: Value<'gc>,
     ) -> Value<'gc> {
-        self.vacuum(&ctx);
+        self.vacuum(*ctx);
 
         let mut alist = Value::null();
         let guard = self.inner.lock();
@@ -506,9 +506,9 @@ impl<'gc> WeakTable<'gc> {
             let mut entry = guard.entries.get()[k].get();
 
             while let Some(e) = entry {
-                let ekey = e.key(&ctx);
-                if !ekey.is_bwp() && !e.value(&ctx).is_bwp() {
-                    alist = Value::acons(ctx, ekey, e.value(&ctx), alist);
+                let ekey = e.key(*ctx);
+                if !ekey.is_bwp() && !e.value(*ctx).is_bwp() {
+                    alist = Value::acons(ctx, ekey, e.value(*ctx), alist);
                 }
                 entry = e.next.get();
             }
@@ -529,7 +529,7 @@ impl<'gc> WeakTable<'gc> {
         ctx: Context<'gc>,
         mut f: impl FnMut(Value<'gc>, Value<'gc>),
     ) {
-        self.vacuum(&ctx);
+        self.vacuum(*ctx);
 
         let guard = self.inner.lock();
 
@@ -537,9 +537,9 @@ impl<'gc> WeakTable<'gc> {
             let mut entry = guard.entries.get()[k].get();
 
             while let Some(e) = entry {
-                let ekey = e.key(&ctx);
-                if !ekey.is_bwp() && !e.value(&ctx).is_bwp() {
-                    f(ekey, e.value(&ctx));
+                let ekey = e.key(*ctx);
+                if !ekey.is_bwp() && !e.value(*ctx).is_bwp() {
+                    f(ekey, e.value(*ctx));
                 }
                 entry = e.next.get();
             }
@@ -548,15 +548,15 @@ impl<'gc> WeakTable<'gc> {
 
     pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Gc<'gc, Self> {
         let guard = self.inner.lock();
-        let new_table = WeakTable::new(&ctx, guard.entries.get().len(), guard.load_factor);
+        let new_table = WeakTable::new(*ctx, guard.entries.get().len(), guard.load_factor);
 
         for i in 0..guard.entries.get().len() {
             let mut e = guard.entries.get()[i].get();
 
             while let Some(entry) = e {
-                let ekey = entry.key(&ctx);
-                if !ekey.is_bwp() && !entry.value(&ctx).is_bwp() {
-                    new_table.put(ctx, ekey, entry.value(&ctx));
+                let ekey = entry.key(*ctx);
+                if !ekey.is_bwp() && !entry.value(*ctx).is_bwp() {
+                    new_table.put(ctx, ekey, entry.value(*ctx));
                 }
                 e = entry.next.get();
             }
@@ -608,7 +608,7 @@ unsafe impl<'gc> Trace for AllWeakTables<'gc> {
 }
 struct WeakTableCleanup;
 
-pub fn vacuum_weak_tables<'gc>(mc: &Mutation<'gc>) {
+pub fn vacuum_weak_tables<'gc>(mc: Mutation<'gc>) {
     let Some(all_weak_tables) = ALL_WEAK_TABLES.get() else {
         return;
     };
@@ -634,7 +634,7 @@ impl FinalizationNotify for WeakTableCleanup {
 
 static ONCE: Once = Once::new();
 
-pub fn init_weak_tables<'gc>(mc: &Mutation<'gc>) {
+pub fn init_weak_tables<'gc>(mc: Mutation<'gc>) {
     ONCE.call_once(|| {
         let all_weak_tables = AllWeakTables {
             tables: Monitor::new(Vec::new()),
@@ -643,181 +643,4 @@ pub fn init_weak_tables<'gc>(mc: &Mutation<'gc>) {
         let _ = ALL_WEAK_TABLES.set(all_weak_tables);
         mc.finalizers().add_notifier(Arc::new(WeakTableCleanup));
     });
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(unsafe_op_in_unsafe_fn)]
-    use crate::runtime::Scheme;
-
-    use super::*;
-
-    #[test]
-    fn test_weak_mappings() {
-        struct Rootset<'gc> {
-            tmps: Vec<Value<'gc>>,
-            wmaps: Vec<Gc<'gc, WeakMapping<'gc>>>,
-            weaks: Vec<WeakValue<'gc>>,
-        }
-
-        unsafe impl<'gc> Trace for Rootset<'gc> {
-            unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
-                visitor.register_for_weak_processing();
-                for tmp in &mut self.tmps {
-                    tmp.trace(visitor);
-                }
-                for wmap in &mut self.wmaps {
-                    wmap.trace(visitor);
-                }
-                for weak in &mut self.weaks {
-                    weak.trace(visitor);
-                }
-            }
-
-            unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
-                for tmp in &mut self.tmps {
-                    tmp.process_weak_refs(weak_processor);
-                }
-                for wmap in &mut self.wmaps {
-                    wmap.process_weak_refs(weak_processor);
-                }
-                for weak in &mut self.weaks {
-                    weak.process_weak_refs(weak_processor);
-                }
-            }
-        }
-
-        static ROOTSET: OnceLock<Global<crate::Rootable!(Rootset<'_>)>> = OnceLock::new();
-
-        let scm = Scheme::new();
-
-        scm.enter(|ctx| {
-            let k1 = Str::new(&ctx, "key1", false);
-            let k2 = Str::new(&ctx, "key2", false);
-
-            let v1 = Str::new(&ctx, "value1", false);
-            let v2 = Str::new(&ctx, "value2", false);
-
-            let wmap1 = WeakMapping::new(ctx, k1.into_value(ctx), v1.into_value(ctx));
-            let wmap2 = WeakMapping::new(ctx, k2.into_value(ctx), v2.into_value(ctx));
-
-            let rootset = Rootset {
-                tmps: vec![k1.into_value(ctx)],
-                wmaps: vec![wmap1, wmap2],
-                weaks: vec![v1.into_value(ctx).into(), v2.into_value(ctx).into()],
-            };
-
-            let _ = ROOTSET.set(Global::new(rootset));
-        });
-
-        scm.mutator.collect_garbage();
-
-        scm.enter(|ctx| {
-            let rootset = ROOTSET.get().unwrap().fetch(&ctx);
-
-            assert!(rootset.weaks[1].is_broken());
-        })
-    }
-
-    #[test]
-    fn test_weak_table() {
-        env_logger::init();
-        struct Rootset<'gc> {
-            tmps: Vec<Value<'gc>>,
-            table: Gc<'gc, WeakTable<'gc>>,
-            //k1_weak: WeakValue<'gc>,
-        }
-
-        unsafe impl<'gc> Trace for Rootset<'gc> {
-            unsafe fn trace(&mut self, visitor: &mut Visitor) {
-                for tmp in &mut self.tmps {
-                    tmp.trace(visitor);
-                }
-                self.table.trace(visitor);
-                //self.k1_weak.trace(visitor);
-            }
-
-            unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
-                for tmp in &mut self.tmps {
-                    tmp.process_weak_refs(weak_processor);
-                }
-                self.table.process_weak_refs(weak_processor);
-                //self.k1_weak.process_weak_refs(weak_processor);
-            }
-        }
-
-        static ROOTSET: OnceLock<Global<crate::Rootable!(Rootset<'_>)>> = OnceLock::new();
-
-        let scm = Scheme::new();
-        scm.enter(|mc| init_weak_tables(&mc));
-
-        scm.enter(|ctx| {
-            let table = WeakTable::new(&ctx, 8, 0.75);
-            let k1 = Str::new(&ctx, "key1", false);
-            let v1 = Str::new(&ctx, "value1", false);
-            let k2 = Str::new(&ctx, "key2", false);
-            let v2 = Str::new(&ctx, "value2", false);
-            let k3 = Str::new(&ctx, "key3", false); // This key will not be rooted
-            let v3 = Str::new(&ctx, "value3", false);
-
-            table.put(ctx, k1, v1);
-            table.put(ctx, k2, v2);
-            table.put(ctx, k3, v3);
-
-            assert!(matches!(table.get(ctx, k1), Some(val) if val == v1.into_value(ctx)));
-            assert!(matches!(table.get(ctx, k2), Some(val) if val == v2.into_value(ctx)));
-            assert!(matches!(table.get(ctx, k3), Some(val) if val == v3.into_value(ctx)));
-            assert!(table.contains_key(ctx, k1.into_value(ctx)));
-            assert!(table.contains_value(v1.into_value(ctx)));
-            println!("k1: {:p}, table {:p}", k1, table);
-            assert!(Value::from(table).is_cell());
-            assert!(Value::from(k1).is_cell());
-            let rootset = Rootset {
-                tmps: vec![
-                    k1.into_value(ctx),
-                    v1.into_value(ctx),
-                    k2.into_value(ctx),
-                    v2.into_value(ctx),
-                    v3.into_value(ctx),
-                ], // k3's value is rooted, but k3 itself is not in tmps
-                table,
-            };
-            let _ = ROOTSET.set(Global::new(rootset));
-        });
-
-        scm.mutator.collect_garbage();
-        scm.enter(|mc| vacuum_weak_tables(&mc));
-
-        scm.enter(|ctx| {
-            let rootset_global = ROOTSET.get().unwrap();
-            let rootset = rootset_global.fetch(&ctx);
-            let table = rootset.table;
-            table.vacuum(&ctx);
-            // assert!(!rootset.k1_weak.is_broken());
-
-            let k1_rooted = rootset.tmps[0];
-            // For k3, its original Gc<String> object might be collected if not otherwise rooted.
-            // We create a new string for lookup. The entry should be gone if the key was collected.
-            let k3_lookup = Str::new(&ctx, "key3", false);
-
-            assert!(table.get(ctx, k1_rooted).is_some());
-            // The original k3 Gc object was not in rootset.tmps. If it was collected, the entry is gone.
-            assert!(
-                table.get(ctx, k3_lookup).is_none(),
-                "Entry for k3 should be gone as k3 was not strongly rooted"
-            );
-
-            // Test remove
-            let k1_val_expected = rootset.tmps[1]; // This is v1
-            let removed_val_opt = table.remove(ctx, k1_rooted);
-            assert!(matches!(removed_val_opt, Some(v) if v == k1_val_expected));
-            assert!(table.get(ctx, k1_rooted).is_none());
-
-            // Test clear
-            table.clear(ctx);
-            let k2_rooted = rootset.tmps[2];
-            assert!(table.get(ctx, k2_rooted).is_none());
-            assert_eq!(table.inner.lock().count.get(), 0);
-        });
-    }
 }

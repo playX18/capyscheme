@@ -23,7 +23,7 @@ impl<'gc> CPSBuilder<'gc> {
         let ix = self.varcount;
         let var = fresh_lvar(
             self.ctx,
-            Symbol::from_str_uninterned(&self.ctx, &format!("{prefix}{ix}"), None).into(),
+            Symbol::from_str_uninterned(*self.ctx, &format!("{prefix}{ix}"), None).into(),
         );
 
         self.varcount += 1;
@@ -34,7 +34,7 @@ impl<'gc> CPSBuilder<'gc> {
     pub fn letk<'a>(&mut self, conts: Conts<'gc>) -> ((), FCont<'a, 'gc>) {
         let cont = Box::new(
             move |this: &mut CPSBuilder<'gc>, body: TermRef<'gc>| -> TermRef<'gc> {
-                Gc::new(&this.ctx, Term::Letk(conts, body))
+                Gc::new(*this.ctx, Term::Letk(conts, body))
             },
         );
 
@@ -104,10 +104,10 @@ macro_rules! with_cps {
                 )?
 
 
-                let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg),*]);
+                let args = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &[$($arg),*]);
                 let body = $e;
 
-                let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
+                let cont = $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Cont {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
                     args: args,
@@ -127,7 +127,7 @@ macro_rules! with_cps {
                 conts.push(cont);
             }
         )*
-        let conts = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &conts);
+        let conts = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &conts);
         with_cps!($builder;
             _letk <- $builder.letk(conts);
             $($rest)+
@@ -160,10 +160,10 @@ macro_rules! with_cps {
                 )?
 
 
-                let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg),*]);
+                let args = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &[$($arg),*]);
                 let body = $e;
 
-                let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
+                let cont = $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Cont {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
                     args: args,
@@ -183,7 +183,7 @@ macro_rules! with_cps {
                 conts.push(cont);
             }
         )*
-        let conts = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &conts);
+        let conts = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &conts);
         with_cps!($builder;
             _letk <- $builder.letk(conts);
             $($rest)+
@@ -214,10 +214,10 @@ macro_rules! with_cps {
                         meta = $meta;
                     )?
                 )?
-                let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg),*]);
+                let args = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &[$($arg),*]);
                 let body = $e;
 
-                let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
+                let cont = $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Cont {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
                     meta,
@@ -237,7 +237,7 @@ macro_rules! with_cps {
                 conts.push(cont);
             }
         )*
-        let conts = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &conts);
+        let conts = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &conts);
         with_cps!($builder;
             _letk <- $builder.letk(conts);
             $($rest)+
@@ -263,7 +263,7 @@ macro_rules! with_cps {
                 variadic = Some($variadic);
             )?
 
-        let cont = $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Cont {
+        let cont = $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Cont {
             name: $crate::runtime::value::Value::new(false),
             binding: $k,
             args,
@@ -278,7 +278,7 @@ macro_rules! with_cps {
             handler: $crate::rsgc::cell::Lock::new($h),
             cold: false
         });
-        let conts = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[cont]);
+        let conts = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &[cont]);
         with_cps!($builder;
             _letk <- $builder.letk(conts);
             $($rest)+
@@ -292,9 +292,9 @@ macro_rules! with_cps {
             $(
                 src = $src;
             )*
-          $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::Continue(
+          $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Term::Continue(
             $k,
-            $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg.into()),*]),
+            $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &[$($arg.into()),*]),
             src,
           ))
         }
@@ -317,8 +317,8 @@ macro_rules! with_cps {
             $(
                 src = $src;
             )*
-            let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, $args);
-            $crate::rsgc::Gc::new(&$builder.ctx,$crate::cps::term::Term::Continue(
+            let args = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, $args);
+            $crate::rsgc::Gc::new(*$builder.ctx,$crate::cps::term::Term::Continue(
                 $k,
                 args,
                 src,
@@ -351,8 +351,8 @@ macro_rules! with_cps {
 
     ($builder: ident; $callee: ident ($k: ident, $h: ident, $args: ident ...) @ $src: expr) => {
         {
-            let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, $args);
-            $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::App(
+            let args = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, $args);
+            $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Term::App(
                 $callee.into(),
                 $k,
                 $h,
@@ -364,7 +364,7 @@ macro_rules! with_cps {
 
     ($builder: ident; if $test: expr => $kcons: ident | $kalt: ident) => {
         {
-            $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::If {
+            $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Term::If {
                 test: $test.into(),
                 consequent: $kcons,
                 consequent_args: None,
@@ -380,9 +380,9 @@ macro_rules! with_cps {
             let cons_args = [$($cons_arg.into()),*];
             let alt_args = [$($alt_arg.into()),*];
 
-            let cons_args = if cons_args.is_empty() { None } else { Some($crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &cons_args)) };
-            let alt_args = if alt_args.is_empty() { None } else { Some($crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &alt_args)) };
-            $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::If {
+            let cons_args = if cons_args.is_empty() { None } else { Some($crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &cons_args)) };
+            let alt_args = if alt_args.is_empty() { None } else { Some($crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &alt_args)) };
+            $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Term::If {
                 test: $test.into(),
                 consequent: $kcons,
                 consequent_args: cons_args,
@@ -451,18 +451,18 @@ macro_rules! with_cps {
         let $binder = $cps.fresh_variable(stringify!($binder));
         let name = $crate::runtime::value::Symbol::from_str($cps.ctx, $prim);
         let rv = $binder.clone();
-        let e = $crate::cps::term::Expression::PrimCall(name.into(), $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, [$($arg.clone().into()),*]), $h, $span);
+        let e = $crate::cps::term::Expression::PrimCall(name.into(), $crate::rsgc::alloc::array::Array::from_slice(*$cps.ctx, [$($arg.clone().into()),*]), $h, $span);
         let inner = with_cps!($cps; $($rest)+);
-        $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
+        $crate::rsgc::Gc::new(*$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
     ($cps: ident; let $binder: ident = #% $prim: ident ($h: expr) $args: ident ... @ $span: expr; $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
-        let args = $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, $args);
+        let args = $crate::rsgc::alloc::array::Array::from_slice(*$cps.ctx, $args);
         let e = $crate::cps::term::Expression::PrimCall($prim, args, $h, $span);
         let rv = $binder.clone();
         let inner = with_cps!($cps; $($rest)+);
-        $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
+        $crate::rsgc::Gc::new(*$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
     ($cps: ident; let $binder: ident = #% $prim: ident ($h: expr) $args: ident ...; $($rest:tt)+) => {{

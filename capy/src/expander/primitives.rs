@@ -277,7 +277,7 @@ pub fn resolve_primitives<'gc>(
                 && !local_definitions.contains(&name)
             {
                 Gc::new(
-                    &ctx,
+                    *ctx,
                     Term {
                         source: Lock::new(x.source()),
                         kind: TermKind::PrimRef(*name),
@@ -300,7 +300,7 @@ pub fn resolve_primitives<'gc>(
                     && let Some(name) = ctx.globals().interesting_primitive_vars().get(ctx, v)
                 {
                     return Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: Lock::new(x.source()),
                             kind: TermKind::PrimRef(name),
@@ -411,7 +411,7 @@ primitive_expanders!(
 
 
         Some(Gc::new(
-            &ctx,
+            *ctx,
             Term {
                 source: src.into(),
                 kind: TermKind::Receive(
@@ -1492,8 +1492,8 @@ primitive_expanders!(
             return Some(let_term(
                 ctx,
                 LetStyle::Let,
-                Array::from_slice(&ctx, &[tmp]),
-                Array::from_slice(&ctx, &[init]),
+                Array::from_slice(*ctx, &[tmp]),
+                Array::from_slice(*ctx, &[init]),
                 seq_from_slice(ctx, body),
                 src,
             ));
@@ -1518,8 +1518,8 @@ primitive_expanders!(
             return Some(let_term(
                 ctx,
                 LetStyle::Let,
-                Array::from_slice(&ctx, &[tmp]),
-                Array::from_slice(&ctx, &[init]),
+                Array::from_slice(*ctx, &[tmp]),
+                Array::from_slice(*ctx, &[init]),
                 seq_from_slice(ctx, body),
                 src,
             ));
@@ -1639,7 +1639,7 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
                 } else {
                     // failed expansion: reify primitive into a function call to it instead
                     let module_ref = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: t.source().into(),
                             kind: TermKind::ModuleRef(capy_module, *name, true),
@@ -1651,7 +1651,7 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
             } else {
                 // failed expansion: reify primitive into a function call to it instead
                 let module_ref = Gc::new(
-                    &ctx,
+                    *ctx,
                     Term {
                         source: t.source().into(),
                         kind: TermKind::ModuleRef(capy_module, *name, true),
@@ -1684,7 +1684,7 @@ pub fn multi_compare<'gc>(
 
     if args.len() == 1 {
         return Some(Term::seq(
-            &ctx,
+            *ctx,
             args[0],
             constant(ctx, Value::new(true)),
             src,
@@ -1694,7 +1694,7 @@ pub fn multi_compare<'gc>(
     if args.len() == 2 {
         if not {
             return Some(Term::cond(
-                &ctx,
+                *ctx,
                 Term::prims(ctx, predicate, [args[0], args[1]], src),
                 constant(ctx, Value::new(false)),
                 constant(ctx, Value::new(true)),
@@ -1735,7 +1735,7 @@ pub fn multi_compare<'gc>(
         };
 
         result = Term::cond(
-            &ctx,
+            *ctx,
             Term::prims(ctx, predicate, params, src),
             cons,
             alt,
@@ -1751,8 +1751,8 @@ pub fn multi_compare<'gc>(
     result = let_term(
         ctx,
         LetStyle::Let,
-        Array::from_slice(&ctx, &vars),
-        Array::from_slice(&ctx, &inits),
+        Array::from_slice(*ctx, &vars),
+        Array::from_slice(*ctx, &inits),
         result,
         src,
     );

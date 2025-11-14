@@ -36,7 +36,7 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
             .assq(sym_column(ctx).into())
             .map(|pair| pair.cdr())
             .unwrap_or(Value::new(false));
-        Vector::from_slice(&ctx, &[filename, line, column]).into()
+        Vector::from_slice(*ctx, &[filename, line, column]).into()
     } else {
         Value::new(false)
     }
@@ -55,8 +55,8 @@ static SOURCE_PROPERTIES: OnceLock<Global<crate::Rootable!(Gc<'_, WeakTable<'_>>
 
 pub fn source_properties<'gc>(ctx: Context<'gc>) -> Gc<'gc, WeakTable<'gc>> {
     *SOURCE_PROPERTIES
-        .get_or_init(|| Global::new(WeakTable::new(&ctx, 128, 0.75)))
-        .fetch(&ctx)
+        .get_or_init(|| Global::new(WeakTable::new(*ctx, 128, 0.75)))
+        .fetch(*ctx)
 }
 
 pub fn has_source_properties<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> bool {
@@ -107,7 +107,7 @@ pub fn read_from_string<'gc>(
     source: impl AsRef<str>,
     filename: impl AsRef<str>,
 ) -> Result<Value<'gc>, LexicalError<'gc>> {
-    let filename = Str::new(&ctx, filename, true);
+    let filename = Str::new(*ctx, filename, true);
     let tree_sitter = TreeSitter::new(ctx, source.as_ref(), filename.into(), false);
     let program = tree_sitter.read_program()?;
 

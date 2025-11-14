@@ -103,7 +103,7 @@ fn rec<'gc>(
             let cons = rec(ctx, *cons, substitutions);
             let alt = rec(ctx, *alt, substitutions);
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::If(test, cons, alt),
@@ -123,7 +123,7 @@ fn rec<'gc>(
             let head = rec(ctx, *head, substitutions);
             let tail = rec(ctx, *tail, substitutions);
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::Seq(head, tail),
@@ -135,9 +135,9 @@ fn rec<'gc>(
             let values = values
                 .iter()
                 .map(|val| rec(ctx, *val, substitutions))
-                .collect_gc(&ctx);
+                .collect_gc(*ctx);
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::Values(values),
@@ -148,7 +148,7 @@ fn rec<'gc>(
         TermKind::ToplevelSet(module, name, val) => {
             let val = rec(ctx, *val, substitutions);
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::ToplevelSet(*module, *name, val),
@@ -168,10 +168,10 @@ fn rec<'gc>(
             );
 
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: term.source().into(),
-                    kind: TermKind::Proc(proc.with_body(&ctx, body)),
+                    kind: TermKind::Proc(proc.with_body(*ctx, body)),
                 },
             )
         }
@@ -186,7 +186,7 @@ fn rec<'gc>(
                 let mut body = let_.body;
                 for (var, val) in let_.lhs.iter().zip(let_.rhs.iter()).rev() {
                     body = Term::let_(
-                        &ctx,
+                        *ctx,
                         LetStyle::Let,
                         std::iter::once(*var),
                         std::iter::once(*val),
@@ -203,14 +203,14 @@ fn rec<'gc>(
                 .rhs
                 .iter()
                 .map(|val| rec(ctx, *val, substitutions))
-                .collect_gc(&ctx);
+                .collect_gc(*ctx);
 
             // `let` can be completed very simply by wrapping mutable LHS variables in boxes
             // and updating the body accordingly.
             let body = wrap_mutable(ctx, let_.lhs.iter().copied(), let_.body, substitutions);
 
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::Let(Let {
@@ -239,7 +239,7 @@ fn rec<'gc>(
                     );
 
                     Gc::new(
-                        &ctx,
+                        *ctx,
                         Proc {
                             name: proc.name,
                             body,
@@ -250,12 +250,12 @@ fn rec<'gc>(
                         },
                     )
                 })
-                .collect_gc(&ctx);
+                .collect_gc(*ctx);
 
             let body = rec(ctx, fix.body, substitutions);
 
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::Fix(Fix {
@@ -278,7 +278,7 @@ fn rec<'gc>(
             );
 
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::Receive(vars.clone(), *variadic, producer, consumer),
@@ -291,7 +291,7 @@ fn rec<'gc>(
             let value = rec(ctx, *value, substitutions);
             let result = rec(ctx, *result, substitutions);
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::WithContinuationMark(key, value, result),
@@ -302,7 +302,7 @@ fn rec<'gc>(
         TermKind::ModuleSet(module, name, public, val) => {
             let val = rec(ctx, *val, substitutions);
             Gc::new(
-                &ctx,
+                *ctx,
                 Term {
                     source: Lock::new(term.source()),
                     kind: TermKind::ModuleSet(*module, *name, *public, val),
@@ -336,7 +336,7 @@ fn wrap_mutable<'gc>(
     let body = rec(ctx, body, substitutions);
 
     let body = Term::let_(
-        &ctx,
+        *ctx,
         LetStyle::Let,
         mutated.iter().map(|var| substitutions[var].clone()),
         mutated.iter().map(|var| pbox(ctx, *var)),

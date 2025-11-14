@@ -179,7 +179,7 @@ impl<'gc> Letrectify<'gc> {
                 let boxed = if private.get(&(module, name)).is_none() {
                     Some(fresh_lvar(
                         ctx,
-                        Str::new(&ctx, format!("{}_boxed_{}", module.0, name).as_str(), true)
+                        Str::new(*ctx, format!("{}_boxed_{}", module.0, name).as_str(), true)
                             .into(),
                     ))
                 } else {
@@ -187,7 +187,7 @@ impl<'gc> Letrectify<'gc> {
                 };
                 let val = fresh_lvar(
                     ctx,
-                    Str::new(&ctx, format!("{}_{}", module.0, name).as_str(), true).into(),
+                    Str::new(*ctx, format!("{}_{}", module.0, name).as_str(), true).into(),
                 );
                 tab.insert((module.into(), name), (boxed, val));
             });
@@ -214,14 +214,14 @@ impl<'gc> Letrectify<'gc> {
 
                 vars.push(var);
                 vars.extend_from_slice(&l.lhs);
-                let lhs = Array::from_slice(&self.ctx, &vars);
+                let lhs = Array::from_slice(*self.ctx, &vars);
                 let mut inits = Vec::with_capacity(l.rhs.len() + 1);
                 inits.push(val);
                 inits.extend_from_slice(&l.rhs);
-                let rhs = Array::from_slice(&self.ctx, &inits);
+                let rhs = Array::from_slice(*self.ctx, &inits);
 
                 Gc::new(
-                    &self.ctx,
+                    *self.ctx,
                     Term {
                         source: tail.source.get().into(),
                         kind: TermKind::Let(Let {
@@ -236,13 +236,13 @@ impl<'gc> Letrectify<'gc> {
             }
 
             _ => Gc::new(
-                &self.ctx,
+                *self.ctx,
                 Term {
                     source: tail.source.get().into(),
                     kind: TermKind::Let(Let {
                         style: LetStyle::LetRecStar,
-                        rhs: Array::from_slice(&self.ctx, &[val]),
-                        lhs: Array::from_slice(&self.ctx, &[var]),
+                        rhs: Array::from_slice(*self.ctx, &[val]),
+                        lhs: Array::from_slice(*self.ctx, &[var]),
                         body: tail,
                     }),
                 },

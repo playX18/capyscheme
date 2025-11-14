@@ -1115,7 +1115,7 @@ mod arith_operations {
             );
         }
 
-        let s = Str::new(&ctx, n.to_string_radix(base), false);
+        let s = Str::new(*ctx, n.to_string_radix(base), false);
         nctx.return_(s)
     }
 

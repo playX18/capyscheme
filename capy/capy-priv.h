@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+
+
 /**
  * Offset from allocation to the actual object
  */
@@ -94,6 +96,8 @@
 #define TYPE_POINTER_NULL 30
 
 #define TYPE_POINTER_DYLIB 31
+
+
 
 #define PURE_NAN_BITS 9221120237041090560
 
@@ -208,7 +212,7 @@ typedef struct Value {
 #define Value_VALUE_EOF (Value_MISC_TAG | 48)
 #define Value_VALUE_BWP (Value_MISC_TAG | 64)
 
-typedef void *ContextRef;
+typedef const void *ContextRef;
 
 typedef void *(*ThreadFn)(ScmRef parent, void *arg);
 

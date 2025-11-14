@@ -94,7 +94,7 @@ impl Variable {
 
             #[allow(non_snake_case)]
             #vis fn #getter<'gc>(ctx: Context<'gc>) -> Value<'gc> {
-                let var = #loc_static.get().unwrap_or_else(|| panic!("Variable '{}' is not initialized", #name)).fetch(&ctx);
+                let var = #loc_static.get().unwrap_or_else(|| panic!("Variable '{}' is not initialized", #name)).fetch(*ctx);
                 var.get()
             }
 
@@ -103,7 +103,7 @@ impl Variable {
                 ctx: Context<'gc>,
                 value: Value<'gc>,
             ) {
-                let var = #loc_static.get().unwrap_or_else(|| panic!("Variable '{}' is not initialized", #name)).fetch(&ctx);
+                let var = #loc_static.get().unwrap_or_else(|| panic!("Variable '{}' is not initialized", #name)).fetch(*ctx);
                 var.set(ctx, value);
             }
         }

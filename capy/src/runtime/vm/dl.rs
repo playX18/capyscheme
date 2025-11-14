@@ -79,7 +79,7 @@ mod dl_ops {
                 flags,
             },
         );
-        let ptr = Gc::new(&nctx.ctx, Pointer::new(handle as _));
+        let ptr = Gc::new(*nctx.ctx, Pointer::new(handle as _));
         nctx.return_(ptr.into())
     }
     #[scheme(name = "dlclose")]
@@ -150,7 +150,7 @@ mod dl_ops {
             );
         }
 
-        let ptr = Gc::new(&nctx.ctx, Pointer::new(sym_ptr as _));
+        let ptr = Gc::new(*nctx.ctx, Pointer::new(sym_ptr as _));
         nctx.return_(ptr.into())
     }
 
@@ -178,7 +178,7 @@ mod dl_ops {
                 &[path.into()],
             );
         }
-        let init: extern "C-unwind" fn(&Context<'gc>) -> VMResult<'gc> = unsafe {
+        let init: extern "C-unwind" fn(Context<'gc>) -> VMResult<'gc> = unsafe {
             let symbol = libc::dlsym(handle, b"capy_register_extension\0".as_ptr() as _);
             if symbol.is_null() {
                 let dlerror = {
@@ -201,7 +201,7 @@ mod dl_ops {
             std::mem::transmute(symbol)
         };
 
-        let result = init(&nctx.ctx);
+        let result = init(nctx.ctx);
         match result {
             VMResult::Ok(v) => {
                 LOADED_EXTENSIONS.lock().push(Extension {

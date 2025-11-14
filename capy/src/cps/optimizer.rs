@@ -304,7 +304,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 let atoms = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                     prev_args
                 } else {
-                    Array::from_slice(&state.ctx, args)
+                    Array::from_slice(*state.ctx, args)
                 };
 
                 let body = shrink_tree(prev_body, state);
@@ -314,7 +314,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 }
 
                 Gc::new(
-                    &ctx,
+                    *ctx,
                     Term::Let(binding, Expression::PrimCall(prim, atoms, h, source), body),
                 )
             }
@@ -331,7 +331,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
 
                     let newh = state.var_subst(cont.handler.get());
 
-                    let wcont = Gc::write(&state.ctx, *cont);
+                    let wcont = Gc::write(*state.ctx, *cont);
                     barrier::field!(wcont, Cont, handler).unlock().set(newh);
 
                     Some(cont.with_body(state.ctx, body))
@@ -357,13 +357,13 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
             {
                 prev_conts
             } else {
-                Array::from_slice(&state.ctx, not_inlined)
+                Array::from_slice(*state.ctx, not_inlined)
             };
             let body = shrink_tree(prev_body, state);
             if Gc::ptr_eq(body, prev_body) && Gc::ptr_eq(conts, prev_conts) {
                 return term;
             }
-            Gc::new(&ctx, Term::Letk(conts, body))
+            Gc::new(*ctx, Term::Letk(conts, body))
         }
 
         Term::Fix(prev_funcs, prev_body) => {
@@ -391,13 +391,13 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
             {
                 prev_funcs
             } else {
-                Array::from_slice(&state.ctx, funcs)
+                Array::from_slice(*state.ctx, funcs)
             };
             let body = shrink_tree(prev_body, state);
             if Gc::ptr_eq(body, prev_body) && Gc::ptr_eq(funcs, prev_funcs) {
                 return term;
             }
-            Gc::new(&ctx, Term::Fix(funcs, body))
+            Gc::new(*ctx, Term::Fix(funcs, body))
         }
 
         Term::Continue(k_prev, args_prev, src) => {
@@ -409,7 +409,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
             let args = if args.iter().zip(args_prev.iter()).all(|(a, b)| a == b) {
                 args_prev
             } else {
-                Array::from_slice(&state.ctx, args)
+                Array::from_slice(*state.ctx, args)
             };
             if let Some(k) = state.cenv.get(&k).copied()
                 && !k.noinline
@@ -451,7 +451,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 if Gc::ptr_eq(k, k_prev) && Gc::ptr_eq(args, args_prev) {
                     return term;
                 }
-                Gc::new(&state.ctx, Term::Continue(k, args, src))
+                Gc::new(*state.ctx, Term::Continue(k, args, src))
             }
         }
 
@@ -465,7 +465,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
             let args = if args.iter().zip(args_prev.iter()).all(|(a, b)| a == b) {
                 args_prev
             } else {
-                Array::from_slice(&state.ctx, args)
+                Array::from_slice(*state.ctx, args)
             };
 
             let fun = state.atom_subst(fun_prev);
@@ -515,7 +515,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 return term;
             }
 
-            return Gc::new(&state.ctx, Term::App(fun, retc, rete, args, span));
+            return Gc::new(*state.ctx, Term::App(fun, retc, rete, args, span));
         }
 
         Term::If {
@@ -538,7 +538,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                     prev_args
                 } else {
-                    Array::from_slice(&state.ctx, args)
+                    Array::from_slice(*state.ctx, args)
                 }
             });
             let alternative_args = alternative_args_prev.map(|prev_args| {
@@ -549,7 +549,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                     prev_args
                 } else {
-                    Array::from_slice(&state.ctx, args)
+                    Array::from_slice(*state.ctx, args)
                 }
             });
 
@@ -561,10 +561,10 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 };
 
                 return Gc::new(
-                    &state.ctx,
+                    *state.ctx,
                     Term::Continue(
                         k,
-                        args.unwrap_or_else(|| Array::from_slice(&state.ctx, [])),
+                        args.unwrap_or_else(|| Array::from_slice(*state.ctx, [])),
                         Value::new(false),
                     ),
                 );
@@ -588,7 +588,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
             }
 
             Gc::new(
-                &state.ctx,
+                *state.ctx,
                 Term::If {
                     test,
                     consequent,
@@ -642,7 +642,7 @@ fn copy_t<'gc>(
             let expr = match expr {
                 Expression::PrimCall(prim, args, h, source) => {
                     let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
-                    let atoms = Array::from_slice(&ctx, args);
+                    let atoms = Array::from_slice(*ctx, args);
 
                     let h = subc.subst(h);
 
@@ -650,7 +650,7 @@ fn copy_t<'gc>(
                 }
             };
 
-            Gc::new(&ctx, Term::Let(binding1, expr, body1))
+            Gc::new(*ctx, Term::Let(binding1, expr, body1))
         }
 
         Term::Letk(conts, body) => {
@@ -670,11 +670,11 @@ fn copy_t<'gc>(
                 .map(|cont| copy_c(ctx, *cont, subv, &mut subc1))
                 .collect::<Vec<_>>();
 
-            let conts = Array::from_slice(&ctx, conts);
+            let conts = Array::from_slice(*ctx, conts);
 
             let body = copy_t(ctx, body, subv, &mut subc1);
 
-            Gc::new(&ctx, Term::Letk(conts, body))
+            Gc::new(*ctx, Term::Letk(conts, body))
         }
 
         Term::Fix(funcs, body) => {
@@ -694,20 +694,20 @@ fn copy_t<'gc>(
                 .iter()
                 .map(|func| copy_f(ctx, *func, &mut subv1, subc))
                 .collect::<Vec<_>>();
-            let funcs = Array::from_slice(&ctx, funcs);
+            let funcs = Array::from_slice(*ctx, funcs);
 
             let body = copy_t(ctx, body, &mut subv1, subc);
 
-            Gc::new(&ctx, Term::Fix(funcs, body))
+            Gc::new(*ctx, Term::Fix(funcs, body))
         }
 
         Term::Continue(cont, args, src) => {
             let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
-            let args = Array::from_slice(&ctx, args);
+            let args = Array::from_slice(*ctx, args);
 
             let cont = subc.subst(cont);
 
-            Gc::new(&ctx, Term::Continue(cont, args, src))
+            Gc::new(*ctx, Term::Continue(cont, args, src))
         }
 
         Term::App(fun, retc, rete, args, src) => {
@@ -717,9 +717,9 @@ fn copy_t<'gc>(
             let rete = subc.subst(rete);
 
             let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
-            let args = Array::from_slice(&ctx, args);
+            let args = Array::from_slice(*ctx, args);
 
-            Gc::new(&ctx, Term::App(fun, retc, rete, args, src))
+            Gc::new(*ctx, Term::App(fun, retc, rete, args, src))
         }
 
         Term::If {
@@ -734,12 +734,12 @@ fn copy_t<'gc>(
             let consequent = subc.subst(consequent);
             let alternative = subc.subst(alternative);
             let consequent_args =
-                consequent_args.map(|args| args.iter().map(|&a| subv.subst(a)).collect_gc(&ctx));
+                consequent_args.map(|args| args.iter().map(|&a| subv.subst(a)).collect_gc(*ctx));
             let alternative_args =
-                alternative_args.map(|args| args.iter().map(|&a| subv.subst(a)).collect_gc(&ctx));
+                alternative_args.map(|args| args.iter().map(|&a| subv.subst(a)).collect_gc(*ctx));
 
             Gc::new(
-                &ctx,
+                *ctx,
                 Term::If {
                     test,
                     consequent,
@@ -772,11 +772,11 @@ fn copy_c<'gc>(
     }
 
     let binding = subc.subst(cont.binding());
-    let args1 = Array::from_slice(&ctx, args1);
+    let args1 = Array::from_slice(*ctx, args1);
     let body = copy_t(ctx, cont.body(), subv1, subc);
     let handler = subc.subst(cont.handler.get());
     Gc::new(
-        &ctx,
+        *ctx,
         Cont {
             name: cont.name(),
             binding,
@@ -826,7 +826,7 @@ fn copy_f<'gc>(
     let body = copy_t(ctx, fun.body(), subv1, subc1);
 
     Gc::new(
-        &ctx,
+        *ctx,
         Func {
             meta: fun.meta,
             return_cont: retc1,
@@ -835,7 +835,7 @@ fn copy_f<'gc>(
             name: fun.name,
             binding,
 
-            args: Array::from_slice(&ctx, args1),
+            args: Array::from_slice(*ctx, args1),
             variadic: var1,
             body: Lock::new(body),
             source: fun.source,
@@ -859,7 +859,7 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                     let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
                         prev_args
                     } else {
-                        Array::from_slice(&state.ctx, args)
+                        Array::from_slice(*state.ctx, args)
                     };
 
                     let handler = state.var_subst(handler);
@@ -871,14 +871,14 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
             if exp == prev_exp && Gc::ptr_eq(body, prev_body) {
                 return term;
             }
-            Gc::new(&ctx, Term::Let(name, exp, body))
+            Gc::new(*ctx, Term::Let(name, exp, body))
         }
 
         Term::Letk(conts, body) => {
             let conts = conts.iter().copied().map(|cnt| {
                 let orig = cnt.body();
                 let h = state.var_subst(cnt.handler.get());
-                let wcont = Gc::write(&state.ctx, cnt);
+                let wcont = Gc::write(*state.ctx, cnt);
                 barrier::field!(wcont, Cont, handler).unlock().set(h);
 
                 let body = inline_t(state.clone(), cnt.body(), cnt_limit);
@@ -896,8 +896,8 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
             let s =
                 state.with_continuations(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
             let body = inline_t(s, body, cnt_limit);
-            let i_ks = Array::from_slice(&ctx, i_ks);
-            Gc::new(&ctx, Term::Letk(i_ks, body))
+            let i_ks = Array::from_slice(*ctx, i_ks);
+            Gc::new(*ctx, Term::Letk(i_ks, body))
         }
 
         Term::Fix(funcs, body) => {
@@ -920,8 +920,8 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
             let ctx = state.ctx;
             let s = state.with_functions(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
             let body = inline_t(s, body, cnt_limit);
-            let ifs = Array::from_slice(&ctx, i_fs);
-            Gc::new(&ctx, Term::Fix(ifs, body))
+            let ifs = Array::from_slice(*ctx, i_fs);
+            Gc::new(*ctx, Term::Fix(ifs, body))
         }
 
         Term::Continue(prev_cnt, prev_args, src) => {
@@ -931,7 +931,7 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
             let args = if prev_args.iter().zip(args.iter()).all(|(a, b)| a == b) {
                 prev_args
             } else {
-                Array::from_slice(&state.ctx, args)
+                Array::from_slice(*state.ctx, args)
             };
             let cnt = state.var_subst(prev_cnt);
 
@@ -950,7 +950,7 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                 }
             }
 
-            Gc::new(&state.ctx, Term::Continue(cnt, args, src))
+            Gc::new(*state.ctx, Term::Continue(cnt, args, src))
         }
 
         Term::App(fun, ret_cp, ret_ep, args, src) => {
@@ -960,7 +960,7 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
             let args = state
                 .substitute_atoms(args.iter().copied())
                 .collect::<Vec<_>>();
-            let args = Array::from_slice(&state.ctx, args);
+            let args = Array::from_slice(*state.ctx, args);
 
             if let Atom::Local(new_fun) = state.atom_subst(fun) {
                 if let Some(func) = state.fenv.get(&new_fun).copied() {
@@ -981,7 +981,7 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                 }
             }
 
-            Gc::new(&state.ctx, Term::App(fun, retc, rete, args, src))
+            Gc::new(*state.ctx, Term::App(fun, retc, rete, args, src))
         }
 
         Term::If {
@@ -998,15 +998,15 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
             let consequent_args = consequent_args.map(|args| {
                 args.iter()
                     .map(|&a| state.atom_subst(a))
-                    .collect_gc(&state.ctx)
+                    .collect_gc(*state.ctx)
             });
             let alternative_args = alternative_args.map(|args| {
                 args.iter()
                     .map(|&a| state.atom_subst(a))
-                    .collect_gc(&state.ctx)
+                    .collect_gc(*state.ctx)
             });
             Gc::new(
-                &state.ctx,
+                *state.ctx,
                 Term::If {
                     test,
                     consequent,
@@ -1068,12 +1068,12 @@ fn materialize_list<'gc, 'a>(
             let ctx = state.ctx;
             let f = fk(state, Atom::Local(var));
             Gc::new(
-                &ctx,
+                *ctx,
                 Term::Let(
                     var,
                     Expression::PrimCall(
                         sym_cons(ctx).into(),
-                        Array::from_slice(&ctx, [head, tail]),
+                        Array::from_slice(*ctx, [head, tail]),
                         h,
                         Value::new(false),
                     ),

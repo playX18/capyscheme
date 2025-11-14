@@ -30,27 +30,27 @@ pub mod hash_ops {
 
     #[scheme(name = "make-core-hash-eq")]
     pub fn make_hash_eq() -> Value<'gc> {
-        let ht = HashTable::new(&nctx.ctx, HashTableType::Eq, 8, 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::Eq, 8, 0.75);
 
         nctx.return_(ht.into())
     }
 
     #[scheme(name = "make-core-hash-eqv")]
     pub fn make_hash_eqv() -> Value<'gc> {
-        let ht = HashTable::new(&nctx.ctx, HashTableType::Eqv, 8, 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::Eqv, 8, 0.75);
 
         nctx.return_(ht.into())
     }
     #[scheme(name = "make-core-hash-equal")]
     pub fn make_hash_equal() -> Value<'gc> {
-        let ht = HashTable::new(&nctx.ctx, HashTableType::Equal, 8, 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::Equal, 8, 0.75);
 
         nctx.return_(ht.into())
     }
 
     #[scheme(name = "make-core-hash-string")]
     pub fn make_hash_string() -> Value<'gc> {
-        let ht = HashTable::new(&nctx.ctx, HashTableType::String, 8, 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::String, 8, 0.75);
 
         nctx.return_(ht.into())
     }
@@ -135,7 +135,7 @@ pub mod hash_ops {
             );
         }
 
-        let ht = HashTable::new(&nctx.ctx, HashTableType::Eq, lst.list_length(), 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::Eq, lst.list_length(), 0.75);
 
         let mut current = lst;
         while current.is_pair() {
@@ -175,7 +175,7 @@ pub mod hash_ops {
             );
         }
 
-        let ht = HashTable::new(&nctx.ctx, HashTableType::Eqv, lst.list_length(), 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::Eqv, lst.list_length(), 0.75);
 
         let mut current = lst;
         while current.is_pair() {
@@ -215,7 +215,7 @@ pub mod hash_ops {
             );
         }
 
-        let ht = HashTable::new(&nctx.ctx, HashTableType::Equal, lst.list_length(), 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::Equal, lst.list_length(), 0.75);
 
         let mut current = lst;
         while current.is_pair() {
@@ -255,7 +255,7 @@ pub mod hash_ops {
             );
         }
 
-        let ht = HashTable::new(&nctx.ctx, HashTableType::String, lst.list_length(), 0.75);
+        let ht = HashTable::new(*nctx.ctx, HashTableType::String, lst.list_length(), 0.75);
 
         let mut current = lst;
         while current.is_pair() {
@@ -342,7 +342,7 @@ pub mod hash_ops {
                 }
 
                 return nctx.return_(
-                    HashTable::new(&ctx, HashTableType::Generic(handlers), 0, 0.0).into(),
+                    HashTable::new(*ctx, HashTableType::Generic(handlers), 0, 0.0).into(),
                 );
             } else {
                 println!(
@@ -381,13 +381,13 @@ pub mod hash_ops {
             },
         };
 
-        let ht = HashTable::new(&nctx.ctx, typ, nsize, 0.75);
+        let ht = HashTable::new(*nctx.ctx, typ, nsize, 0.75);
         nctx.return_(ht.into())
     }
 
     #[scheme(name = "make-weak-core-hashtable")]
     pub fn make_weak_core_hashtable() -> Value<'gc> {
-        let ht = WeakTable::new(&nctx.ctx, 8, 0.75);
+        let ht = WeakTable::new(*nctx.ctx, 8, 0.75);
         nctx.return_(ht.into())
     }
 
@@ -416,22 +416,22 @@ pub mod hash_ops {
             Either::Left(ht) => match ht.typ() {
                 /* if these lookups fail something is seriously messed up */
                 HashTableType::Eq => {
-                    nctx.return_(lookup_bound_public(&ctx, module.into(), sym_eq(ctx).into()).value)
+                    nctx.return_(lookup_bound_public(ctx, module.into(), sym_eq(ctx).into()).value)
                 }
-                HashTableType::Eqv => nctx
-                    .return_(lookup_bound_public(&ctx, module.into(), sym_eqv(ctx).into()).value),
+                HashTableType::Eqv => {
+                    nctx.return_(lookup_bound_public(ctx, module.into(), sym_eqv(ctx).into()).value)
+                }
                 HashTableType::Equal => nctx
-                    .return_(lookup_bound_public(&ctx, module.into(), sym_equal(ctx).into()).value),
-                HashTableType::String => nctx.return_(
-                    lookup_bound_public(&ctx, module.into(), sym_string(ctx).into()).value,
-                ),
+                    .return_(lookup_bound_public(ctx, module.into(), sym_equal(ctx).into()).value),
+                HashTableType::String => nctx
+                    .return_(lookup_bound_public(ctx, module.into(), sym_string(ctx).into()).value),
                 HashTableType::Generic(v) => {
                     let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_EQUIV_FUNC].get();
                     nctx.return_call(handler, &[ht.into()])
                 }
             },
 
-            _ => nctx.return_(lookup_bound_public(&ctx, module.into(), sym_eq(ctx).into()).value),
+            _ => nctx.return_(lookup_bound_public(ctx, module.into(), sym_eq(ctx).into()).value),
         }
     }
 

@@ -77,7 +77,7 @@ impl VmThread {
 
                             VMThreadTask::MutatorTask(task) => {
                                 mutator.mutate(|mc, _| {
-                                    task(mc);
+                                    task(&mc);
                                 });
                             }
 

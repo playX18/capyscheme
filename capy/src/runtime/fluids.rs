@@ -1,5 +1,5 @@
 use crate::rsgc::{
-     Gc, Mutation, Trace,
+    Gc, Mutation, Trace,
     barrier::{IndexWrite, Unlock},
     cell::Lock,
 };
@@ -40,7 +40,7 @@ pub struct Cache<'gc> {
 }
 
 impl<'gc> Cache<'gc> {
-    pub fn new(mc: &Mutation<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: Mutation<'gc>) -> Gc<'gc, Self> {
         Gc::new(
             mc,
             Self {
@@ -66,7 +66,7 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Look up a value by key
-    pub fn get(self: Gc<'gc, Self>, mc: &Mutation<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn get(self: Gc<'gc, Self>, mc: Mutation<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
         let slot = self.hash_key(key);
 
         // Linear probing for collision resolution
@@ -94,7 +94,7 @@ impl<'gc> Cache<'gc> {
 
     pub fn update(
         self: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         key: Value<'gc>,
         value: Value<'gc>,
     ) -> bool {
@@ -123,7 +123,7 @@ impl<'gc> Cache<'gc> {
     /// Insert or update a key-value pair
     pub fn insert(
         self: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         key: Value<'gc>,
         value: Value<'gc>,
     ) -> Option<(Value<'gc>, Value<'gc>)> {
@@ -184,7 +184,7 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Remove a key-value pair from the cache
-    pub fn remove(self: Gc<'gc, Self>, mc: &Mutation<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
+    pub fn remove(self: Gc<'gc, Self>, mc: Mutation<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
         let slot = self.hash_key(key);
 
         for i in 0..16 {
@@ -207,7 +207,7 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Clear all entries from the cache
-    pub fn clear(self: Gc<'gc, Self>, mc: &Mutation<'gc>) {
+    pub fn clear(self: Gc<'gc, Self>, mc: Mutation<'gc>) {
         for i in 0..16 {
             Gc::write(mc, self)[i].unlock().set(CacheEntry::empty());
         }
@@ -215,7 +215,7 @@ impl<'gc> Cache<'gc> {
     }
 
     /// Check if the cache contains a key
-    pub fn contains_key(self: Gc<'gc, Self>, mc: &Mutation<'gc>, key: Value<'gc>) -> bool {
+    pub fn contains_key(self: Gc<'gc, Self>, mc: Mutation<'gc>, key: Value<'gc>) -> bool {
         self.get(mc, key).is_some()
     }
 
@@ -265,7 +265,7 @@ pub struct DynamicState<'gc> {
 }
 
 impl<'gc> DynamicState<'gc> {
-    pub fn new(mc: &Mutation<'gc>) -> Self {
+    pub fn new(mc: Mutation<'gc>) -> Self {
         Self {
             thread_local_values: HashTable::new(mc, super::value::HashTableType::Eq, 8, 0.75),
             values: Lock::new(WeakTable::new(mc, 9, 0.75)),
@@ -304,7 +304,7 @@ impl<'gc> DynamicState<'gc> {
 
     pub fn restore(&self, ctx: Context<'gc>, mut saved: Value<'gc>) {
         for slot in 0..16 {
-            let entry = &Gc::write(&ctx, self.cache)[slot];
+            let entry = &Gc::write(*ctx, self.cache)[slot];
             if saved.is_pair() {
                 let key = saved.caar();
                 let value = saved.cdar();
@@ -335,7 +335,7 @@ pub struct Fluid<'gc> {
 }
 
 impl<'gc> Fluid<'gc> {
-    pub fn new(mc: &Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
         Gc::new(
             mc,
             Self {
@@ -345,7 +345,7 @@ impl<'gc> Fluid<'gc> {
         )
     }
 
-    pub fn new_thread_local(mc: &Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new_thread_local(mc: Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
         let mut hdr = ScmHeader::with_type_bits(TypeCode8::FLUID.bits() as _);
         hdr.word |= FluidThreadLocal::encode(true);
         Gc::new(
@@ -358,9 +358,9 @@ impl<'gc> Fluid<'gc> {
     }
 
     pub fn get(self: Gc<'gc, Self>, ctx: Context<'gc>) -> Value<'gc> {
-        let dynamic_state = &ctx.state.dynamic_state;
+        let dynamic_state = &ctx.state().dynamic_state;
 
-        let entry = dynamic_state.cache.get(&ctx, Value::from(self));
+        let entry = dynamic_state.cache.get(*ctx, Value::from(self));
 
         if let Some(entry) = entry {
             return entry;
@@ -385,13 +385,13 @@ impl<'gc> Fluid<'gc> {
     }
 
     pub fn set(self: Gc<'gc, Self>, ctx: Context<'gc>, value: Value<'gc>) {
-        let dynamic_state = &ctx.state.dynamic_state;
+        let dynamic_state = &ctx.state().dynamic_state;
 
-        if dynamic_state.cache.update(&ctx, Value::from(self), value) {
+        if dynamic_state.cache.update(*ctx, Value::from(self), value) {
             return;
         }
 
-        if let Some((fluid, value)) = dynamic_state.cache.insert(&ctx, Value::from(self), value) {
+        if let Some((fluid, value)) = dynamic_state.cache.insert(*ctx, Value::from(self), value) {
             if fluid.downcast::<Fluid>().is_thread_local() {
                 dynamic_state.thread_local_values.put(ctx, fluid, value);
                 return;
@@ -431,7 +431,7 @@ fn copy_value_table<'gc>(
     ctx: Context<'gc>,
     tab: Gc<'gc, WeakTable<'gc>>,
 ) -> Gc<'gc, WeakTable<'gc>> {
-    let ret = WeakTable::new(&ctx, 9, 0.75);
+    let ret = WeakTable::new(*ctx, 9, 0.75);
 
     tab.fold(
         ctx,
@@ -461,8 +461,8 @@ macro_rules! fluid {
             $v extern "C" fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
                 *[<$name: upper>]
                     .get_or_init(|| {
-                        $crate::rsgc::global::Global::new($crate::runtime::fluids::Fluid::new(&ctx, $default_value))
-                    }).fetch(&ctx)
+                        $crate::rsgc::global::Global::new($crate::runtime::fluids::Fluid::new(*ctx, $default_value))
+                    }).fetch(*ctx)
             }
 
             #[allow(dead_code)]
@@ -494,8 +494,8 @@ macro_rules! fluid {
             $v fn [<$name: snake>]<'gc>(ctx: $crate::runtime::Context<'gc>) -> $crate::runtime::fluids::FluidRef<'gc> {
                 *[<$name: upper>]
                     .get_or_init(|| {
-                        $crate::rsgc::global::Global::new($crate::runtime::fluids::Fluid::new_thread_local(&ctx, $default_value))
-                    }).fetch(&ctx)
+                        $crate::rsgc::global::Global::new($crate::runtime::fluids::Fluid::new_thread_local(ctx, $default_value))
+                    }).fetch(*ctx)
             }
 
             #[unsafe(export_name = concat!("capy_get_tls_", stringify!($name)))]
@@ -524,7 +524,7 @@ pub mod fluid_ops {
     pub fn make_fluid(default_value: Option<Value<'gc>>) -> Value<'gc> {
         let default_value = default_value.unwrap_or(Value::new(false));
 
-        let fluid = Fluid::new(&nctx.ctx, default_value);
+        let fluid = Fluid::new(*nctx.ctx, default_value);
 
         nctx.return_(fluid.into())
     }
@@ -533,7 +533,7 @@ pub mod fluid_ops {
     pub fn make_thread_local_fluid(default_value: Option<Value<'gc>>) -> Value<'gc> {
         let default_value = default_value.unwrap_or(Value::new(false));
 
-        let fluid = Fluid::new_thread_local(&nctx.ctx, default_value);
+        let fluid = Fluid::new_thread_local(*nctx.ctx, default_value);
 
         nctx.return_(fluid.into())
     }
@@ -563,9 +563,9 @@ pub mod fluid_ops {
 
     #[scheme(name = "current-dynamic-state")]
     pub fn current_dynamic_state() -> Value<'gc> {
-        let dynamic_state = nctx.ctx.state.dynamic_state.save(nctx.ctx);
+        let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
         let val = Value::from(Gc::new(
-            &nctx.ctx,
+            *nctx.ctx,
             DynamicStateObject {
                 header: ScmHeader::with_type_bits(TypeCode8::DYNAMIC_STATE.bits() as _),
                 saved: dynamic_state,
@@ -581,16 +581,16 @@ pub mod fluid_ops {
 
     #[scheme(name = "set-current-dynamic-state!")]
     pub fn set_current_dynamic_state(state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
-        let prev = nctx.ctx.state.dynamic_state.save(nctx.ctx);
+        let prev = nctx.ctx.state().dynamic_state.save(nctx.ctx);
         let prev = Value::from(Gc::new(
-            &nctx.ctx,
+            *nctx.ctx,
             DynamicStateObject {
                 header: ScmHeader::with_type_bits(TypeCode8::DYNAMIC_STATE.bits() as _),
                 saved: prev,
             },
         ));
         nctx.ctx
-            .state
+            .state()
             .dynamic_state
             .restore(nctx.ctx, state_obj.saved);
         nctx.return_(prev)

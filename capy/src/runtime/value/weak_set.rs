@@ -32,7 +32,7 @@ pub(crate) struct WeakEntry<'gc> {
 }
 
 impl<'gc> WeakEntry<'gc> {
-    fn is_broken(&self, mc: &Mutation<'gc>) -> bool {
+    fn is_broken(&self, mc: Mutation<'gc>) -> bool {
         self.get(mc).is_bwp()
     }
 
@@ -43,7 +43,7 @@ impl<'gc> WeakEntry<'gc> {
         }
     }
 
-    fn get(&self, mc: &Mutation<'gc>) -> Value<'gc> {
+    fn get(&self, mc: Mutation<'gc>) -> Value<'gc> {
         if self.value.is_bwp() {
             return self.value;
         }
@@ -134,7 +134,7 @@ const HASHSET_SIZES: &[usize] = &[
 ];
 
 impl<'gc> WeakSetInner<'gc> {
-    fn rob_from_rich(&self, mc: &Mutation<'gc>, k: usize) {
+    fn rob_from_rich(&self, mc: Mutation<'gc>, k: usize) {
         let size = self.size.get();
 
         let mut empty = k;
@@ -166,7 +166,7 @@ impl<'gc> WeakSetInner<'gc> {
         });
     }
 
-    fn give_to_poor(&self, mc: &Mutation<'gc>, mut k: usize) {
+    fn give_to_poor(&self, mc: Mutation<'gc>, mut k: usize) {
         let size = self.size.get();
         let entries = self.entries.get();
         loop {
@@ -237,7 +237,7 @@ impl<'gc> WeakSetInner<'gc> {
         }
     }
 
-    fn resize(this: &Write<Self>, mc: &Mutation<'gc>) {
+    fn resize(this: &Write<Self>, mc: Mutation<'gc>) {
         let mut new_size_index;
         let mut new_size;
 
@@ -309,7 +309,7 @@ impl<'gc> WeakSetInner<'gc> {
         }
     }
 
-    pub fn vacuum(this: &Write<Self>, mc: &Mutation<'gc>) {
+    pub fn vacuum(this: &Write<Self>, mc: Mutation<'gc>) {
         let entries = this.entries.get();
         let size = this.size.get();
 
@@ -328,9 +328,9 @@ impl<'gc> WeakSetInner<'gc> {
 
     fn lookup(
         this: &Write<Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         hash: u64,
-        pred: impl Fn(&Mutation<'gc>, Value<'gc>) -> bool,
+        pred: impl Fn(Mutation<'gc>, Value<'gc>) -> bool,
     ) -> Option<Value<'gc>> {
         let size = this.size.get();
         let entries = this.entries.get();
@@ -378,9 +378,9 @@ impl<'gc> WeakSetInner<'gc> {
 
     fn add(
         this: &Write<Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         hash: u64,
-        pred: impl Fn(&Mutation<'gc>, Value<'gc>) -> bool,
+        pred: impl Fn(Mutation<'gc>, Value<'gc>) -> bool,
         value: Value<'gc>,
     ) -> Value<'gc> {
         let size = this.size.get();
@@ -443,9 +443,9 @@ impl<'gc> WeakSetInner<'gc> {
 
     fn remove(
         this: &Write<Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         hash: u64,
-        pred: impl Fn(&Mutation<'gc>, Value<'gc>) -> bool,
+        pred: impl Fn(Mutation<'gc>, Value<'gc>) -> bool,
     ) {
         let size = this.size.get();
         let entries = this.entries.get();
@@ -502,7 +502,7 @@ impl<'gc> WeakSetInner<'gc> {
 }
 
 impl<'gc> WeakSet<'gc> {
-    pub fn new(mc: &Mutation<'gc>, k: usize) -> Gc<'gc, Self> {
+    pub fn new(mc: Mutation<'gc>, k: usize) -> Gc<'gc, Self> {
         let mut i = 0;
         let mut n = if k != 0 { k } else { 31 };
 
@@ -553,7 +553,7 @@ impl<'gc> WeakSet<'gc> {
 
         n = HASHSET_SIZES[i];
 
-        let entries = Array::with(&ctx, n, |_, _| Lock::new(WeakEntry::broken()));
+        let entries = Array::with(ctx, n, |_, _| Lock::new(WeakEntry::broken()));
 
         unsafe {
             let hdr = obj.to_address().to_mut_ptr::<ScmHeader>().read();
@@ -580,9 +580,9 @@ impl<'gc> WeakSet<'gc> {
     #[inline(never)]
     pub fn add(
         this: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         hash: u64,
-        pred: impl Fn(&Mutation<'gc>, Value<'gc>) -> bool,
+        pred: impl Fn(Mutation<'gc>, Value<'gc>) -> bool,
         value: Value<'gc>,
     ) -> Value<'gc> {
         let inner = this.inner.lock();
@@ -592,9 +592,9 @@ impl<'gc> WeakSet<'gc> {
 
     pub fn lookup(
         this: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         hash: u64,
-        pred: impl Fn(&Mutation<'gc>, Value<'gc>) -> bool,
+        pred: impl Fn(Mutation<'gc>, Value<'gc>) -> bool,
     ) -> Option<Value<'gc>> {
         let inner = this.inner.lock();
         Gc::write(mc, this);
@@ -603,16 +603,16 @@ impl<'gc> WeakSet<'gc> {
 
     pub fn remove(
         this: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         hash: u64,
-        pred: impl Fn(&Mutation<'gc>, Value<'gc>) -> bool,
+        pred: impl Fn(Mutation<'gc>, Value<'gc>) -> bool,
     ) {
         let inner = this.inner.lock();
         Gc::write(mc, this);
         unsafe { WeakSetInner::remove(Write::assume(&*inner), mc, hash, pred) }
     }
 
-    pub fn clear(this: Gc<'gc, Self>, mc: &Mutation<'gc>) {
+    pub fn clear(this: Gc<'gc, Self>, mc: Mutation<'gc>) {
         let inner = this.inner.lock();
         Gc::write(mc, this);
         // SAFETY: It is safe to clear references without write barrier
@@ -630,7 +630,7 @@ impl<'gc> WeakSet<'gc> {
         drop(inner);
     }
 
-    pub fn for_each<F>(self: Gc<'gc, Self>, mc: &Mutation<'gc>, mut f: F)
+    pub fn for_each<F>(self: Gc<'gc, Self>, mc: Mutation<'gc>, mut f: F)
     where
         F: FnMut(Value<'gc>),
     {
@@ -684,7 +684,7 @@ impl FinalizationNotify for WeakSetNotify {
     }
 }
 
-pub(crate) fn vacuum_weak_sets<'gc>(mc: &Mutation<'gc>) {
+pub(crate) fn vacuum_weak_sets<'gc>(mc: Mutation<'gc>) {
     if let Some(all_weak_sets) = ALL_WEAK_SETS.get() {
         let all_weak_sets = all_weak_sets.fetch(mc);
         let mut guard = all_weak_sets.0.lock();
@@ -704,7 +704,7 @@ pub(crate) fn vacuum_weak_sets<'gc>(mc: &Mutation<'gc>) {
     }
 }
 static ONCE: Once = Once::new();
-pub fn init_weak_sets<'gc>(mc: &Mutation<'gc>) {
+pub fn init_weak_sets<'gc>(mc: Mutation<'gc>) {
     ONCE.call_once(|| {
         let all_weak_sets = AllWeakSets(Monitor::new(Vec::new()));
         let all_weak_sets = Global::new(all_weak_sets);

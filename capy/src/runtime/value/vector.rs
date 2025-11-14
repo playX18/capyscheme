@@ -60,7 +60,7 @@ impl<'gc> Vector<'gc> {
     }
 
     pub fn new<const IMMUTABLE: bool>(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         length: usize,
         fill: Value<'gc>,
     ) -> Gc<'gc, Self> {
@@ -93,7 +93,7 @@ impl<'gc> Vector<'gc> {
         }
     }
 
-    pub fn from_slice(mc: &Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
+    pub fn from_slice(mc: Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
         let vector = Self::new::<false>(mc, length, Value::undefined());
 
@@ -108,7 +108,7 @@ impl<'gc> Vector<'gc> {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
-    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: &Mutation<'gc>) {
+    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: Mutation<'gc>) {
         let vec = Gc::write(mc, this);
 
         for i in 0..vec.len() {
@@ -116,7 +116,7 @@ impl<'gc> Vector<'gc> {
         }
     }
 
-    pub fn copy_from(self: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: &Mutation<'gc>) {
+    pub fn copy_from(self: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: Mutation<'gc>) {
         let vec = Gc::write(mc, self);
         let other_slice = other.as_ref();
 
@@ -184,8 +184,8 @@ macro_rules! vector {
             value.into_value($mc)
         }),*];
         let length = slice.len();
-        let vector = $crate::runtime::value::Vector::new::<false>(&$mc, length, $crate::runtime::value::Value::unspecified());
-        vector.copy_from(slice, &$mc);
+        let vector = $crate::runtime::value::Vector::new::<false>(*$mc, length, $crate::runtime::value::Value::unspecified());
+        vector.copy_from(slice, *$mc);
         vector
     }};
 
@@ -259,7 +259,7 @@ impl ByteVector {
     }
 
     pub fn new<'gc, const IMMUTABLE: bool>(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         length: usize,
         movable: bool,
     ) -> Gc<'gc, Self> {
@@ -301,7 +301,7 @@ impl ByteVector {
 
     /// Allocate a new memory-mapped bytevector. This can be used to represent
     /// memory from FFI calls or memory-mapped files.
-    pub fn new_mapping<'gc>(mc: &Mutation<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
+    pub fn new_mapping<'gc>(mc: Mutation<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
         let mut hdr = ScmHeader::new();
         hdr.set_type_bits(TypeCode8::BYTEVECTOR.0 as _);
         hdr.word = BytevectorMappingField::update(true, hdr.word);
@@ -324,7 +324,7 @@ impl ByteVector {
     }
 
     #[inline(never)]
-    pub fn from_slice<'gc>(mc: &Mutation<'gc>, slice: &[u8], movable: bool) -> Gc<'gc, Self> {
+    pub fn from_slice<'gc>(mc: Mutation<'gc>, slice: &[u8], movable: bool) -> Gc<'gc, Self> {
         let length = slice.len();
         let byte_vector = Self::new::<false>(mc, length, movable);
         byte_vector.copy_from(slice);
@@ -497,7 +497,7 @@ impl<'gc> Tuple<'gc> {
         TupleLengthBits::decode(self.hdr.word) as usize
     }
 
-    pub fn new(mc: &Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
+    pub fn new(mc: Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
         let mut hdr = ScmHeader::new();
         hdr.set_type_bits(TypeCode8::TUPLE.0 as _);
         hdr.word = TupleLengthBits::update(length as u32, hdr.word);
@@ -521,7 +521,7 @@ impl<'gc> Tuple<'gc> {
         }
     }
 
-    pub fn from_slice(mc: &Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
+    pub fn from_slice(mc: Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
         let tuple = Self::new(mc, length, Value::new(false));
         Self::copy_from(tuple, slice, mc);
@@ -536,7 +536,7 @@ impl<'gc> Tuple<'gc> {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
-    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: &Mutation<'gc>) {
+    pub fn fill(this: Gc<'gc, Self>, fill: Value<'gc>, mc: Mutation<'gc>) {
         let tuple = Gc::write(mc, this);
 
         for i in 0..tuple.len() {
@@ -544,7 +544,7 @@ impl<'gc> Tuple<'gc> {
         }
     }
 
-    pub fn copy_from(this: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: &Mutation<'gc>) {
+    pub fn copy_from(this: Gc<'gc, Self>, other: impl AsRef<[Value<'gc>]>, mc: Mutation<'gc>) {
         let tuple = Gc::write(mc, this);
         let other_slice = other.as_ref();
 

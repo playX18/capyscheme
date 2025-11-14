@@ -35,7 +35,7 @@ where
                     post(ctx, x)
                 } else {
                     let lset = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::LSet(lvar, nexp),
@@ -51,7 +51,7 @@ where
                     post(ctx, x)
                 } else {
                     let mset = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::ModuleSet(module, name, public, nexp),
@@ -67,7 +67,7 @@ where
                     post(ctx, x)
                 } else {
                     let tset = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::ToplevelSet(module, name, nexp),
@@ -83,7 +83,7 @@ where
                     post(ctx, x)
                 } else {
                     let def = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::Define(module, name, nexp),
@@ -101,7 +101,7 @@ where
                     post(ctx, x)
                 } else {
                     let ifterm = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::If(ncond, ncons, nalt),
@@ -126,10 +126,10 @@ where
                     post(ctx, x)
                 } else {
                     let call = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
-                            kind: TermKind::Call(nproc, Array::from_slice(&ctx, &nargs)),
+                            kind: TermKind::Call(nproc, Array::from_slice(*ctx, &nargs)),
                         },
                     );
                     post(ctx, call)
@@ -150,10 +150,10 @@ where
                     post(ctx, x)
                 } else {
                     let call = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
-                            kind: TermKind::PrimCall(prim, Array::from_slice(&ctx, &nargs)),
+                            kind: TermKind::PrimCall(prim, Array::from_slice(*ctx, &nargs)),
                         },
                     );
                     post(ctx, call)
@@ -174,10 +174,10 @@ where
                     post(ctx, x)
                 } else {
                     let seqterm = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
-                            kind: TermKind::Seq(Array::from_slice(&ctx, &nseq)),
+                            kind: TermKind::Seq(Array::from_slice(*ctx, &nseq)),
                         },
                     );
                     post(ctx, seqterm)
@@ -190,7 +190,7 @@ where
                     post(ctx, x)
                 } else {
                     let seqterm = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::Seq(nhead, ntail),
@@ -206,7 +206,7 @@ where
                     post(ctx, x)
                 } else {
                     let proc = Gc::new(
-                        &ctx,
+                        *ctx,
                         Proc {
                             name: proc.name,
                             variadic: proc.variadic,
@@ -217,7 +217,7 @@ where
                         },
                     );
                     let term = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::Proc(proc),
@@ -236,7 +236,7 @@ where
                         changed = true;
                     }
                     let proc = Gc::new(
-                        &ctx,
+                        *ctx,
                         Proc {
                             name: r.name,
                             variadic: r.variadic,
@@ -254,12 +254,12 @@ where
                     post(ctx, x)
                 } else {
                     let fixt = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::Fix(Fix {
                                 lhs: fix.lhs,
-                                rhs: Array::from_slice(&ctx, &rhs),
+                                rhs: Array::from_slice(*ctx, &rhs),
                                 body: nbody,
                             }),
                         },
@@ -284,13 +284,13 @@ where
                     post(ctx, x)
                 } else {
                     let lett = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::Let(crate::expander::core::Let {
                                 style: l_.style,
                                 lhs: l_.lhs,
-                                rhs: Array::from_slice(&ctx, &rhs),
+                                rhs: Array::from_slice(*ctx, &rhs),
                                 body: nbody,
                             }),
                         },
@@ -313,10 +313,10 @@ where
                     post(ctx, x)
                 } else {
                     let valterm = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
-                            kind: TermKind::Values(Array::from_slice(&ctx, &nvals)),
+                            kind: TermKind::Values(Array::from_slice(*ctx, &nvals)),
                         },
                     );
                     post(ctx, valterm)
@@ -330,7 +330,7 @@ where
                     post(ctx, x)
                 } else {
                     let recterm = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::Receive(vars, variadic, nproducer, nreceiver),
@@ -348,7 +348,7 @@ where
                     post(ctx, x)
                 } else {
                     let wcmterm = Gc::new(
-                        &ctx,
+                        *ctx,
                         Term {
                             source: x.source.get().into(),
                             kind: TermKind::WithContinuationMark(nkey, nmark, nresult),

@@ -113,7 +113,7 @@ impl Stringbuf {
         unsafe { std::slice::from_raw_parts_mut(self.contents().to_mut_ptr(), self.len()) }
     }
 
-    pub(crate) fn new<'gc>(mc: &Mutation<'gc>, length: usize, is_wide: bool) -> Gc<'gc, Self> {
+    pub(crate) fn new<'gc>(mc: Mutation<'gc>, length: usize, is_wide: bool) -> Gc<'gc, Self> {
         let size =
             std::mem::size_of::<Self>() + length * if is_wide { size_of::<char>() } else { 1 };
         let bytesize_data = length * if is_wide { size_of::<char>() } else { 1 };
@@ -150,7 +150,7 @@ impl Stringbuf {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn wide<'gc>(&self, mc: &Mutation<'gc>) -> Gc<'gc, Self> {
+    pub(crate) fn wide<'gc>(&self, mc: Mutation<'gc>) -> Gc<'gc, Self> {
         if self.is_wide() {
             return unsafe { Gc::from_ptr(self) };
         }
@@ -167,7 +167,7 @@ impl Stringbuf {
         new_stringbuf
     }
 
-    fn narrow<'gc>(&self, mc: &Mutation<'gc>) -> Gc<'gc, Self> {
+    fn narrow<'gc>(&self, mc: Mutation<'gc>) -> Gc<'gc, Self> {
         if self.is_narrow() {
             return unsafe { Gc::from_ptr(self) };
         }
@@ -199,7 +199,7 @@ impl Stringbuf {
 
 static NULL_STRINGBUF: OnceLock<Global<crate::Rootable!(Gc<'_, Stringbuf>)>> = OnceLock::new();
 
-fn null_stringbuf<'gc>(mc: &Mutation<'gc>) -> Gc<'gc, Stringbuf> {
+fn null_stringbuf<'gc>(mc: Mutation<'gc>) -> Gc<'gc, Stringbuf> {
     *NULL_STRINGBUF
         .get_or_init(|| Global::new(Stringbuf::new(mc, 0, false)))
         .fetch(mc)
@@ -220,12 +220,12 @@ impl<'gc> Str<'gc> {
         self.stringbuf.get().to_object_reference().to_raw_address()
     }
 
-    pub fn from_str(mc: &Mutation<'gc>, s: impl AsRef<str>) -> Gc<'gc, Self> {
+    pub fn from_str(mc: Mutation<'gc>, s: impl AsRef<str>) -> Gc<'gc, Self> {
         Self::new(mc, s, false)
     }
 
     /// Create a new string with the given UTF-8 contents.
-    pub fn new(mc: &Mutation<'gc>, contents: impl AsRef<str>, read_only: bool) -> Gc<'gc, Self> {
+    pub fn new(mc: Mutation<'gc>, contents: impl AsRef<str>, read_only: bool) -> Gc<'gc, Self> {
         let str = contents.as_ref();
         let is_ascii = str.is_ascii();
 
@@ -269,7 +269,7 @@ impl<'gc> Str<'gc> {
         )
     }
 
-    pub fn from_char(mc: &Mutation<'gc>, c: char, count: usize) -> Gc<'gc, Self> {
+    pub fn from_char(mc: Mutation<'gc>, c: char, count: usize) -> Gc<'gc, Self> {
         if c as u32 <= 0xff {
             let buf = if count == 0 {
                 null_stringbuf(mc)
@@ -320,7 +320,7 @@ impl<'gc> Str<'gc> {
     }
 
     pub fn new_wide(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         contents: impl AsRef<str>,
         read_only: bool,
     ) -> Gc<'gc, Self> {
@@ -356,7 +356,7 @@ impl<'gc> Str<'gc> {
 
     fn substring_with_immutable_stringbuf(
         this: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         start: usize,
         end: usize,
         force_copy: bool,
@@ -430,7 +430,7 @@ impl<'gc> Str<'gc> {
 
     pub fn substring(
         this: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         start: usize,
         end: usize,
     ) -> Gc<'gc, Self> {
@@ -442,7 +442,7 @@ impl<'gc> Str<'gc> {
 
     pub fn substring_copy(
         this: Gc<'gc, Self>,
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         start: usize,
         end: usize,
     ) -> Gc<'gc, Self> {
@@ -452,7 +452,7 @@ impl<'gc> Str<'gc> {
         Self::substring_with_immutable_stringbuf(this, mc, start, end, true, false)
     }
 
-    pub fn try_narrow(this: Gc<'gc, Self>, mc: &Mutation<'gc>) -> bool {
+    pub fn try_narrow(this: Gc<'gc, Self>, mc: Mutation<'gc>) -> bool {
         if this.is_narrow() {
             return true;
         }
@@ -463,7 +463,7 @@ impl<'gc> Str<'gc> {
         this.stringbuf.get().is_narrow()
     }
 
-    pub fn try_as_str(this: Gc<'gc, Self>, mc: &Mutation<'gc>) -> Option<&'gc str> {
+    pub fn try_as_str(this: Gc<'gc, Self>, mc: Mutation<'gc>) -> Option<&'gc str> {
         if Self::try_narrow(this, mc) {
             let chars = this.chars().unwrap();
             let slice = unsafe { std::slice::from_raw_parts(chars.as_ptr(), this.len()) };
@@ -541,7 +541,7 @@ impl<'gc> Str<'gc> {
         }
     }
 
-    pub fn ensure_mutable(this: Gc<'gc, Self>, mc: &Mutation<'gc>) -> bool {
+    pub fn ensure_mutable(this: Gc<'gc, Self>, mc: Mutation<'gc>) -> bool {
         if !this.is_mutable() {
             return false;
         }
@@ -599,7 +599,7 @@ impl<'gc> Str<'gc> {
     ///
     /// - O(1) if the string is narrow and the character is a valid ASCII character.
     /// - O(n) if the string is ASCII but the character is UTF-8
-    pub fn set(this: Gc<'gc, Self>, mc: &Mutation<'gc>, index: usize, value: char) {
+    pub fn set(this: Gc<'gc, Self>, mc: Mutation<'gc>, index: usize, value: char) {
         if value as u32 > 0xff && this.is_narrow() {
             let new_buf = this.stringbuf.get().wide(mc);
             barrier::field!(Gc::write(mc, this), Self, stringbuf)
@@ -801,7 +801,7 @@ impl<'gc> Hash for Str<'gc> {
 
 impl<'gc> Symbol<'gc> {
     pub(super) fn new<const INTERNED: bool>(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         mut name: Gc<'gc, Str<'gc>>,
         hash: u64,
         prefix_offset: Option<u16>,
@@ -865,7 +865,7 @@ impl<'gc> Symbol<'gc> {
         }
     }
 
-    pub fn substring(&self, mc: &Mutation<'gc>, start: usize, end: usize) -> Gc<'gc, Str<'gc>> {
+    pub fn substring(&self, mc: Mutation<'gc>, start: usize, end: usize) -> Gc<'gc, Str<'gc>> {
         let buf = self.stringbuf;
 
         let mut hdr = ScmHeader::new();

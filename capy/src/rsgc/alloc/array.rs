@@ -86,13 +86,13 @@ impl<T: Trace> Array<T> {
     /// Allocates new array on heap with specified semantics, length `len` and a closure `f`
     /// which returns value for specified index.
     pub fn with_semantics<'gc, F>(
-        mc: &Mutation<'gc>,
+        mc: Mutation<'gc>,
         semantics: AllocationSemantics,
         len: usize,
         mut f: F,
     ) -> Gc<'gc, Self>
     where
-        F: FnMut(&Mutation<'gc>, usize) -> T,
+        F: FnMut(Mutation<'gc>, usize) -> T,
     {
         let size = Self::array_size(len);
         let align = align_of::<Self>();
@@ -117,14 +117,14 @@ impl<T: Trace> Array<T> {
         }
     }
 
-    pub fn with<'gc, F>(mc: &Mutation<'gc>, len: usize, f: F) -> Gc<'gc, Self>
+    pub fn with<'gc, F>(mc: Mutation<'gc>, len: usize, f: F) -> Gc<'gc, Self>
     where
-        F: FnMut(&Mutation<'gc>, usize) -> T,
+        F: FnMut(Mutation<'gc>, usize) -> T,
     {
         Self::with_semantics(mc, AllocationSemantics::Default, len, f)
     }
 
-    pub fn from_slice<'gc>(mc: &Mutation<'gc>, arr: impl AsRef<[T]>) -> Gc<'gc, Self>
+    pub fn from_slice<'gc>(mc: Mutation<'gc>, arr: impl AsRef<[T]>) -> Gc<'gc, Self>
     where
         T: Clone,
     {
@@ -133,7 +133,7 @@ impl<T: Trace> Array<T> {
         Self::with(mc, arr.len(), |_, index| arr[index].clone())
     }
 
-    pub fn from_iter<'gc>(mc: &Mutation<'gc>, iter: impl IntoIterator<Item = T>) -> Gc<'gc, Self>
+    pub fn from_iter<'gc>(mc: Mutation<'gc>, iter: impl IntoIterator<Item = T>) -> Gc<'gc, Self>
     where
         T: Clone,
     {

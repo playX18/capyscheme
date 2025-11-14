@@ -54,17 +54,17 @@ pub fn call_scheme<'gc>(
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> VMResult<'gc> {
-    let procs = PROCEDURES.fetch(&ctx);
+    let procs = PROCEDURES.fetch(*ctx);
 
     let retk = procs.register_static_cont_closure(ctx, default_retk, Value::null());
     let reth = procs.register_static_cont_closure(ctx, default_reth, Value::null());
 
-    call_scheme_with_k(&ctx, retk.into(), reth.into(), rator, args)
+    call_scheme_with_k(ctx, retk.into(), reth.into(), rator, args)
 }
 
 /// Call Scheme code with explicit return and error continuations.
 pub extern "C" fn call_scheme_with_k<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     retk: Value<'gc>,
     reth: Value<'gc>,
 
@@ -74,10 +74,10 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     if !rator.is::<Closure>() {
         return VMResult::Err(rator);
     }
-    let old_runstack = ctx.state.runstack.get();
-    let nest_level = ctx.state.nest_level.fetch_add(1, Ordering::Relaxed);
+    let old_runstack = ctx.state().runstack.get();
+    let nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
 
-    let rands = ctx.state.runstack.get();
+    let rands = ctx.state().runstack.get();
     let mut argc = 0;
 
     unsafe {
@@ -85,23 +85,23 @@ pub extern "C" fn call_scheme_with_k<'gc>(
         rands.add(size_of::<Value>()).store(reth);
 
         for (i, arg) in args.into_iter().enumerate() {
-            if rands.add((i + 2) * size_of::<Value>()) >= ctx.state.runstack_end {
+            if rands.add((i + 2) * size_of::<Value>()) >= ctx.state().runstack_end {
                 panic!(
                     "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
                     rands.add((i + 2) * size_of::<Value>()),
-                    ctx.state.runstack_end,
+                    ctx.state().runstack_end,
                     i + 2,
-                    (ctx.state.runstack_end - ctx.state.runstack_start) / size_of::<Value>()
+                    (ctx.state().runstack_end - ctx.state().runstack_start) / size_of::<Value>()
                 );
             }
-            if rands.add((i + 2) * size_of::<Value>()) < ctx.state.runstack_start {
+            if rands.add((i + 2) * size_of::<Value>()) < ctx.state().runstack_start {
                 panic!("runstack underflow");
             }
             rands.add((i + 2) * size_of::<Value>()).store(arg);
             argc += 1;
         }
 
-        ctx.state
+        ctx.state()
             .runstack
             .set(rands.add((argc + 2) * size_of::<Value>()));
     }
@@ -112,22 +112,22 @@ pub extern "C" fn call_scheme_with_k<'gc>(
 
     unsafe {
         let f: extern "C-unwind" fn(
-            &Context,
+            Context<'gc>,
             Value<'gc>,
             *const Value<'gc>,
             usize,
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
-        let val = trampoline(&ctx, rator, rands.to_ptr(), num_rands, f);
-        ctx.state.nest_level.store(nest_level, Ordering::Relaxed);
-        ctx.state.runstack.set(old_runstack);
+        let val = trampoline(ctx, rator, rands.to_ptr(), num_rands, f);
+        ctx.state().nest_level.store(nest_level, Ordering::Relaxed);
+        ctx.state().runstack.set(old_runstack);
 
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
             ReturnCode::ReturnErr => VMResult::Err(val.value),
             ReturnCode::ReturnOk => VMResult::Ok(val.value),
             ReturnCode::Yield => {
-                ctx.state
+                ctx.state()
                     .saved_call
                     .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
 
@@ -138,38 +138,40 @@ pub extern "C" fn call_scheme_with_k<'gc>(
 }
 
 pub unsafe extern "C" fn continue_to<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     cont: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> VMResult<'gc> {
     if !cont.is::<Closure>() {
         return VMResult::Err(cont);
     }
-    let old_runstack = ctx.state.runstack.get();
-    let nest_level = ctx.state.nest_level.fetch_add(1, Ordering::Relaxed);
+    let old_runstack = ctx.state().runstack.get();
+    let nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
 
-    let rands = ctx.state.runstack.get();
+    let rands = ctx.state().runstack.get();
     let mut argc = 0;
 
     unsafe {
         for (i, arg) in args.into_iter().enumerate() {
-            if rands.add(i * size_of::<Value>()) >= ctx.state.runstack_end {
+            if rands.add(i * size_of::<Value>()) >= ctx.state().runstack_end {
                 panic!(
                     "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
                     rands.add(i * size_of::<Value>()),
-                    ctx.state.runstack_end,
+                    ctx.state().runstack_end,
                     i,
-                    (ctx.state.runstack_end - ctx.state.runstack_start) / size_of::<Value>()
+                    (ctx.state().runstack_end - ctx.state().runstack_start) / size_of::<Value>()
                 );
             }
-            if rands.add(i * size_of::<Value>()) < ctx.state.runstack_start {
+            if rands.add(i * size_of::<Value>()) < ctx.state().runstack_start {
                 panic!("runstack underflow");
             }
             rands.add(i * size_of::<Value>()).store(arg);
             argc += 1;
         }
 
-        ctx.state.runstack.set(rands.add(argc * size_of::<Value>()));
+        ctx.state()
+            .runstack
+            .set(rands.add(argc * size_of::<Value>()));
     }
 
     let num_rands = argc;
@@ -178,21 +180,21 @@ pub unsafe extern "C" fn continue_to<'gc>(
 
     unsafe {
         let f: extern "C-unwind" fn(
-            &Context,
+            Context<'gc>,
             Value<'gc>,
             *const Value<'gc>,
             usize,
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
-        let val = trampoline(&ctx, cont, rands.to_ptr(), num_rands, f);
-        ctx.state.nest_level.store(nest_level, Ordering::Relaxed);
-        ctx.state.runstack.set(old_runstack);
+        let val = trampoline(ctx, cont, rands.to_ptr(), num_rands, f);
+        ctx.state().nest_level.store(nest_level, Ordering::Relaxed);
+        ctx.state().runstack.set(old_runstack);
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
             ReturnCode::ReturnErr => VMResult::Err(val.value),
             ReturnCode::ReturnOk => VMResult::Ok(val.value),
             ReturnCode::Yield => {
-                ctx.state
+                ctx.state()
                     .saved_call
                     .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
 
@@ -204,17 +206,17 @@ pub unsafe extern "C" fn continue_to<'gc>(
 
 #[inline(never)]
 extern "C" fn trampoline<'a>(
-    ctx: &Context<'a>,
+    ctx: Context<'a>,
     rator: Value<'a>,
     rands: *const Value<'a>,
     num_rands: usize,
-    f: extern "C-unwind" fn(&Context<'a>, Value<'a>, *const Value<'a>, usize) -> NativeReturn<'a>,
+    f: extern "C-unwind" fn(Context<'a>, Value<'a>, *const Value<'a>, usize) -> NativeReturn<'a>,
 ) -> NativeReturn<'a> {
     f(ctx, rator, rands, num_rands)
 }
 
 extern "C-unwind" fn default_retk<'gc>(
-    ctx: &Context<'gc>,
+    ctx: Context<'gc>,
     _rator: Value<'gc>,
     rands: *const Value<'gc>,
     num_rands: usize,
@@ -225,7 +227,7 @@ extern "C-unwind" fn default_retk<'gc>(
         unsafe { *rands }
     } else {
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-        Vector::from_slice(ctx, args).into()
+        Vector::from_slice(*ctx, args).into()
     };
 
     NativeReturn {
@@ -235,7 +237,7 @@ extern "C-unwind" fn default_retk<'gc>(
 }
 
 extern "C-unwind" fn default_reth<'gc>(
-    _ctx: &Context<'gc>,
+    _ctx: Context<'gc>,
     _rator: Value<'gc>,
     rands: *const Value<'gc>,
     num_rands: usize,
@@ -314,7 +316,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     ///
     /// Rands must be a valid pointer created by runtime, not arbitrary pointer.
     pub unsafe fn from_raw(
-        ctx: &Context<'gc>,
+        ctx: Context<'gc>,
         rator: Value<'gc>,
         rands: *const Value<'gc>,
         num_rands: usize,
@@ -322,7 +324,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         reth: Value<'gc>,
     ) -> Self {
         Self {
-            ctx: *ctx,
+            ctx,
             rator,
             rands: unsafe { std::slice::from_raw_parts(rands, num_rands) },
 
@@ -408,9 +410,9 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         reason: YieldReason<'gc>,
         args: &[Value<'gc>],
     ) -> NativeCallReturn<'gc> {
-        let args = Array::from_slice(&self.ctx, args);
+        let args = Array::from_slice(*self.ctx, args);
         let saved_call = Gc::new(
-            &self.ctx,
+            *self.ctx,
             SavedCall {
                 rator: self.retk,
                 rands: args,
@@ -418,7 +420,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             },
         );
 
-        self.ctx.state.yield_reason.set(Some(reason));
+        self.ctx.state().yield_reason.set(Some(reason));
 
         NativeCallReturn {
             ret: NativeReturn {
@@ -429,15 +431,15 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     }
 
     pub fn yield_(self, reason: YieldReason<'gc>) -> NativeCallReturn<'gc> {
-        let args = Array::from_slice(&self.ctx, self.rands());
-        self.ctx.state.yield_reason.set(Some(reason));
+        let args = Array::from_slice(*self.ctx, self.rands());
+        self.ctx.state().yield_reason.set(Some(reason));
 
         NativeCallReturn {
             ret: NativeReturn {
                 code: ReturnCode::Yield,
                 value: Value::from_raw(
                     Gc::new(
-                        &self.ctx,
+                        *self.ctx,
                         SavedCall {
                             rator: self.rator(),
                             rands: args,
@@ -580,7 +582,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             )
         };
         let who = Value::new(Symbol::from_str(self.ctx, who));
-        let message = Str::new(&self.ctx, message, true).into();
+        let message = Str::new(*self.ctx, message, true).into();
         if argc == 0 {
             self.raise_assertion_violation(who, message, Value::null())
         } else {
@@ -645,7 +647,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                 required_min, argc, plural
             )
         };
-        let message = Str::new(&self.ctx, message, true).into();
+        let message = Str::new(*self.ctx, message, true).into();
         if argc == 0 {
             self.raise_assertion_violation(Value::new(false), message, Value::null())
         } else {
@@ -689,7 +691,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .get_str(self.ctx, "undefined-violation")
             .expect("pre boot error");
         let who = Value::new(Symbol::from_str(self.ctx, who));
-        let message = Str::new(&self.ctx, message, true).into();
+        let message = Str::new(*self.ctx, message, true).into();
         let args = std::iter::once(who)
             .chain(std::iter::once(message))
             .chain(irritants.iter().copied())
@@ -710,7 +712,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .get_str(self.ctx, "implementation-restriction-violation")
             .expect("pre boot error");
         let who = Value::new(Symbol::from_str(self.ctx, who));
-        let message = Str::new(&self.ctx, message, true).into();
+        let message = Str::new(*self.ctx, message, true).into();
         let args = std::iter::once(who)
             .chain(std::iter::once(message))
             .chain(irritants.iter().copied())
@@ -731,7 +733,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             .get_str(self.ctx, "error")
             .expect("pre boot error");
         let who = Value::new(Symbol::from_str(self.ctx, who));
-        let message = Str::new(&self.ctx, message, true).into();
+        let message = Str::new(*self.ctx, message, true).into();
         let args = std::iter::once(who)
             .chain(std::iter::once(message))
             .chain(irritants.iter().copied())
@@ -748,9 +750,9 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         filename: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
         let message = if let Some(code) = err.raw_os_error() {
-            Str::from_str(&self.ctx, &format!("{message} ({code})"))
+            Str::from_str(*self.ctx, &format!("{message} ({code})"))
         } else {
-            Str::from_str(&self.ctx, message)
+            Str::from_str(*self.ctx, message)
         }
         .into();
         let who = if who.len() != 0 {
@@ -861,9 +863,9 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         new_filename: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
         let message = if let Some(code) = err.raw_os_error() {
-            Str::from_str(&self.ctx, &format!("{message} ({code})"))
+            Str::from_str(*self.ctx, &format!("{message} ({code})"))
         } else {
-            Str::from_str(&self.ctx, message)
+            Str::from_str(*self.ctx, message)
         }
         .into();
         let who = if who.len() != 0 {
@@ -924,7 +926,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             description.to_string()
         };
 
-        let message = Str::new(&self.ctx, &message, true).into();
+        let message = Str::new(*self.ctx, &message, true).into();
         let who = Value::new(Symbol::from_str(self.ctx, who));
         if let Some(_) = position
             && argc < 2

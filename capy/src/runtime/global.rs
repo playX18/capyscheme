@@ -85,7 +85,7 @@ where
     F: FnMut(usize, Value<'gc>),
 {
     let ctx = ctx.as_ref();
-    let globals = globals().fetch(ctx);
+    let globals = globals().fetch(**ctx);
     let guard = globals.globals.lock();
     for (i, value) in guard.iter().enumerate() {
         f(i, *value);
@@ -98,14 +98,14 @@ where
     for<'a> Root<'a, R>: Sized + Trace,
 {
     /// Create a new global variable initialized to `initial`.
-    pub fn new<'gc>(ctx: &Context<'gc>, initial: Root<'gc, R>) -> Self
+    pub fn new<'gc>(ctx: Context<'gc>, initial: Root<'gc, R>) -> Self
     where
         Root<'gc, R>: IntoValue<'gc>,
     {
-        let globals = globals().fetch(ctx);
+        let globals = globals().fetch(*ctx);
         let mut guard = globals.globals.lock();
         let index = guard.len();
-        guard.push(initial.into_value(*ctx));
+        guard.push(initial.into_value(ctx));
         Self {
             index,
             marker: PhantomData,
@@ -113,25 +113,24 @@ where
     }
 
     /// Get the value of the global variable.
-    pub fn fetch<'gc>(&self, ctx: &Context<'gc>) -> Root<'gc, R>
+    pub fn fetch<'gc>(&self, ctx: Context<'gc>) -> Root<'gc, R>
     where
         for<'a> Root<'a, R>: FromValue<'a>,
     {
-        let globals = globals().fetch(&ctx);
+        let globals = globals().fetch(*ctx);
         let guard = globals.globals.lock();
         let value = guard[self.index];
-        Root::<R>::try_from_value(*ctx, value).expect("global variable has wrong type")
+        Root::<R>::try_from_value(ctx, value).expect("global variable has wrong type")
     }
 
     /// Set the value of the global variable.
-    pub fn set<'gc>(&self, ctx: impl AsRef<Context<'gc>>, value: Root<'gc, R>)
+    pub fn set<'gc>(&self, ctx: Context<'gc>, value: Root<'gc, R>)
     where
         Root<'gc, R>: IntoValue<'gc>,
     {
-        let ctx = ctx.as_ref();
-        let globals = globals().fetch(ctx);
+        let globals = globals().fetch(*ctx);
         let mut guard = globals.globals.lock();
-        guard[self.index] = value.into_value(*ctx);
+        guard[self.index] = value.into_value(ctx);
     }
 
     pub unsafe fn from_index(index: usize) -> Self {
@@ -171,8 +170,8 @@ macro_rules! global {
                    [<$name: upper>]
                         .get_or_init(|| {
                             let init: $t = $init;
-                            $crate::prelude::Global::new(&$ctx, init)
-                        }).fetch(&$ctx)
+                            $crate::prelude::Global::new($ctx, init)
+                        }).fetch($ctx)
                 }
 
 
@@ -489,7 +488,7 @@ impl<'gc> Globals<'gc> {
         /* modules */
 
         let scm_module = Module::new(ctx, 0, Value::null(), Value::new(false));
-        let wm = Gc::write(&ctx, scm_module);
+        let wm = Gc::write(*ctx, scm_module);
         barrier::field!(wm, Module, name).unlock().set(Value::cons(
             ctx,
             ctx.intern("capy"),
@@ -502,7 +501,7 @@ impl<'gc> Globals<'gc> {
             .set(Some(scm_module));
 
         let root_module = Module::new(ctx, 0, Value::null(), Value::new(false));
-        let wm = Gc::write(&ctx, root_module);
+        let wm = Gc::write(*ctx, root_module);
         barrier::field!(wm, Module, name).unlock().set(Value::cons(
             ctx,
             ctx.intern("capy"),
@@ -516,7 +515,7 @@ impl<'gc> Globals<'gc> {
             .set(Some(scm_module));
 
         let resolve_module_root = Module::new(ctx, 0, Value::null(), Value::new(false));
-        barrier::field!(Gc::write(&ctx, resolve_module_root), Module, name)
+        barrier::field!(Gc::write(*ctx, resolve_module_root), Module, name)
             .unlock()
             .set(Value::null());
         resolve_module_root.define_submodule(ctx, ctx.intern("capy"), root_module);
@@ -563,7 +562,7 @@ impl<'gc> Globals<'gc> {
         let loc_capy_root = define(ctx, "%capy-root", ctx.str(env!("CARGO_MANIFEST_DIR")));
         let loc_fresh_auto_compile = define(ctx, "%fresh-auto-compile", Value::new(false));
 
-        let interesting_primitive_vars = HashTable::new(&ctx, HashTableType::Eq, 128, 0.75);
+        let interesting_primitive_vars = HashTable::new(*ctx, HashTableType::Eq, 128, 0.75);
 
         for_each_prim_name(ctx, |_name_str, name| {
             let var: Value = root_module.ensure_local_variable(ctx, name.into()).into();

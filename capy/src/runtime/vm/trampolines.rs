@@ -3,7 +3,7 @@
 //! We use cranelift-jit to generate them due to the fact that "tail" calling convention of Cranelift
 //! is not ABI stable and we can't write trampolines using `global_asm!` because of that.
 
-use crate::runtime::{CallData, Context as RtCtx, value::ReturnCode};
+use crate::runtime::{CallData, value::ReturnCode};
 use std::{
     mem::offset_of,
     sync::{LazyLock, Mutex},
@@ -127,12 +127,15 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
         offset_of!(NativeProc, proc) as i32,
     );
 
-    let state = builder.ins().load(
+    /*let state = builder.ins().load(
         types::I64,
         MemFlags::new(),
         ctx,
         offset_of!(RtCtx, state) as i32,
-    );
+    );*/
+    let state = builder
+        .ins()
+        .iadd_imm(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
     builder.ins().store(
         MemFlags::new(),
         ret_addr,
@@ -275,15 +278,10 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
         offset_of!(NativeProc, proc) as i32,
     );
 
-    //  builder.ins().debugtrap();
-    let state = builder.ins().load(
-        types::I64,
-        MemFlags::new(),
-        ctx,
-        offset_of!(RtCtx, state) as i32,
-    );
-    //let c = builder.ins().icmp_imm(IntCC::UnsignedLessThan, state, 100);
-    //builder.ins().trapnz(c, TrapCode::HEAP_OUT_OF_BOUNDS);
+    let state = builder
+        .ins()
+        .iadd_imm(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
+
     builder.ins().store(
         MemFlags::new(),
         rands,
