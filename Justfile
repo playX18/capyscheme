@@ -27,7 +27,7 @@ install_cross := if cargo-bin == "cross" {
 rpath := if os() == "macos" {
     "@loader_path/"
 } else {
-    "$ORIGIN"
+    "\\$ORIGIN/"
 }
 
 # Build the project with the specified profile and target
