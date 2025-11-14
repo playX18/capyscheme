@@ -4,6 +4,8 @@
 ;
 ; File I/O.
 
+(define (larceny:execution-mode) 'r6rs)
+(define (issue-deprecated-warnings?) #f)
 
 
 (define *files-open* #f)
@@ -174,7 +176,7 @@
                (raise-i/o-file-already-exists-error 'open-file-output-port 
                 "file already exists"
                 filename
-                opts)))))
+                )))))
                ;(raise-r6rs-exception
                ; (make-i/o-file-already-exists-error filename)
                ; 'open-file-output-port
@@ -228,7 +230,7 @@
                (raise-i/o-file-already-exists 
                 'open-file-input/output-port 
                 "file already exists"
-                filename opts)))))
+                filename)))))
           ((and (not exists?)
                 (not dont-create))
            (call-with-port (open-file-output-port filename) values))

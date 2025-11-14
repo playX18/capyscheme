@@ -1048,16 +1048,16 @@
                    (probe3 (assq 'cached-positions alist))
                    (ht (if probe3
                            (cdr probe3)
-                           (let* ((ht (make-hashtable abs =))
+                           (let* ((ht (make-core-hash-eqv))
                                   (entry (cons 'cached-positions ht)))
                              (io/port-alist-set! p (cons entry alist))
                              ht))))
 
               (cond ((and (eq? 'latin-1 (io/transcoder-codec t))
                           (eq? 'none (io/transcoder-eol-style t)))
-                     (hashtable-set! ht posn posn))
+                     (core-hash-set! ht posn posn))
                     (port-position-in-chars
-                     (hashtable-set! ht posn posn))
+                     (core-hash-set! ht posn posn))
                     (port-position-in-bytes
                      (let* ((byte-posn (port-position-in-bytes))
                             (byte-posn
@@ -1068,7 +1068,7 @@
                                     (- (tuple-ref p port.auxlim)
                                        (tuple-ref p port.auxptr)))
                                  byte-posn)))
-                       (hashtable-set! ht posn byte-posn)))
+                       (core-hash-set! ht posn byte-posn)))
                     (else
                      (assertion-violation
                       'port-position
@@ -1147,7 +1147,7 @@
                 (port-position-in-bytes (if probe2 (cdr probe2) #f))
                 (probe3 (assq 'cached-positions alist))
                 (ht (if probe3 (cdr probe3) #f))
-                (byte-posn (and ht (hashtable-ref ht posn #f))))
+                (byte-posn (and ht (core-hash-ref ht posn #f))))
 
            (define (reposition!)
              (io/reset-buffers! p)
