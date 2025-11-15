@@ -71,11 +71,18 @@
                                        "Loading file ~a" filename)
                             (thunk-or-path)))]
                     [else
-                        (*raw-log* log:info
-                                   '(capy)
-                                   'load
-                                   "Compiling file ~a" filename)
-                        ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))])))))
+                        (with-exception-handler 
+                            (lambda (exn)
+                                (format (current-error-port) ";; Error compiling file '~a'~%" filename)
+                                ((current-exception-printer) exn (current-error-port))
+                                (flush-output-port (current-error-port))
+                                (raise exn))
+                            (lambda ()
+                                (*raw-log* log:info
+                                        '(capy)
+                                        'load
+                                        "Compiling file ~a" filename)
+                                ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))))])))))
 
 (define primitive-load
     (lambda (filename)
