@@ -129,7 +129,11 @@ mod arith_operations {
     }
 
     #[scheme(name = "number->string")]
-    pub fn number2string(x: Number<'gc>, radix: Option<u8>) -> StringRef<'gc> {
+    pub fn number2string(
+        x: Number<'gc>,
+        radix: Option<u8>,
+        _precision: Option<u8>,
+    ) -> StringRef<'gc> {
         let radix = radix.unwrap_or(10);
         if radix != 2 && radix != 8 && radix != 10 && radix != 16 {
             let x_val = x.into_value(nctx.ctx);
