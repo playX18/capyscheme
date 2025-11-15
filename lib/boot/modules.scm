@@ -421,7 +421,7 @@
       (format p "Unhandled exception: ~a~!: ~a~%~!" (condition-who exn)))))
 
 (set! %load-extensions
-  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch" "sps")
+  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" "sch" "sps" "ss")
           %load-extensions))
 
 (let* (
