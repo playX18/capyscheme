@@ -675,7 +675,7 @@ impl<'gc> BigInt<'gc> {
             result = result * BASE as f64 + word as f64;
         }
 
-        result
+        if self.negative() { -result } else { result }
     }
 
     pub fn is_zero(&self) -> bool {
@@ -4208,7 +4208,7 @@ impl<'gc> Number<'gc> {
                 }
 
                 if n == 1 {
-                    return ans;
+                    return ans.normalize_integer();
                 }
             }
 
@@ -4702,13 +4702,13 @@ impl<'gc> Number<'gc> {
                 if bi.is_positive() {
                     return Number::Rational(Rational::new(
                         ctx,
-                        Number::BigInt(BigInt::from_i64(ctx, 1)),
+                        Number::Fixnum(1),
                         Number::BigInt(bi),
                     ));
                 } else {
                     return Number::Rational(Rational::new(
                         ctx,
-                        Number::BigInt(BigInt::from_i64(ctx, -1)),
+                        Number::Fixnum(-1),
                         Number::BigInt(BigInt::negate(bi, ctx)),
                     ));
                 }
@@ -5006,6 +5006,8 @@ impl<'gc> Number<'gc> {
                 }
                 _ => false,
             },
+
+            Number::Flonum(_) => unreachable!(),
 
             _ => false,
         }
