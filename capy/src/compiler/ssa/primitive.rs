@@ -2551,29 +2551,7 @@ prim!(
         PrimValue::Value(result)
     },
 
-    "number->string" => number_to_string(ssa, args, _h) {
-        let num = ssa.atom(args[0]);
-        let radix = if args.len() > 1 {
-            ssa.atom(args[1])
-        } else {
-            ssa.builder.ins().iconst(types::I64, Value::new(10i32).bits() as i64)
-        };
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.number2string, &[ctx, num, radix], _h);
-        PrimValue::Value(result)
-    },
 
-    "string->number" => string_to_number(ssa, args, _h) {
-        let str = ssa.atom(args[0]);
-        let radix = if args.len() > 1 {
-            ssa.atom(args[1])
-        } else {
-            ssa.builder.ins().iconst(types::I64, Value::new(10i32).bits() as i64)
-        };
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.string2number, &[ctx, str, radix], _h);
-        PrimValue::Value(result)
-    },
 
     "length" => length(ssa, args, _h) {
         let val = ssa.atom(args[0]);

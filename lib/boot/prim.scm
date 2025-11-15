@@ -468,9 +468,7 @@
 (define (cdaar x) (cdr (car (car x))))
 (define (caaar x) (car (car (car x))))
 
-(define (string->number x . radix)
-  (let ([radix (if (null? radix) 10 (car radix))])
-    (string->number x radix)))
+
 
 (define (string-any pred str)
   (let loop ((i 0) (n (string-length str)))
@@ -741,7 +739,7 @@
   (rec c))
 
 (define (inexact->exact num)
-  (inexact->exact))
+  (inexact->exact num))
 
 (define (exact->inexact num)
   (exact->inexact num))
