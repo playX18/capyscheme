@@ -937,17 +937,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 let rands = self.push_args(&rands);
 
-                /*
-                self.builder.ins().jump(
-                    self.exit_block,
-                    &[
-                        BlockArg::Value(code),
-                        BlockArg::Value(rator),
-                        BlockArg::Value(rands),
-                        BlockArg::Value(num_rands),
-                    ],
-                );*/
-
                 match callee {
                     Callee::Indirect { target, closure } => {
                         if self.module_builder.stacktraces {

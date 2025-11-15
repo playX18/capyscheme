@@ -139,15 +139,6 @@ pub mod control_ops {
         let default_value = default_value.unwrap_or(Value::new(false));
         let mut set = set.cmarks;
 
-        /*while let Some(cmarks) = set {
-            let mark_set = cmarks.mark_set.get();
-
-            if let Some(val) = mark_set.assq(key) {
-                return nctx.return_(val.cdr());
-            }
-            set = cmarks.parent;
-        }*/
-
         while !set.is_null() {
             let mark_set = set.caar();
             if let Some(val) = mark_set.assq(key) {

@@ -197,9 +197,22 @@ pub fn compile_file<'gc>(
     Ok(cps)
 }
 
+pub struct CompilationOptions {
+    pub backtraces: bool,
+}
+
+impl Default for CompilationOptions {
+    fn default() -> Self {
+        CompilationOptions {
+            backtraces: true,
+        }
+    }
+}
+
 pub fn compile_cps_to_object<'gc>(
     ctx: Context<'gc>,
     cps: FuncRef<'gc>,
+    opts: CompilationOptions,
 ) -> Result<ObjectProduct, Value<'gc>> {
     let reify_info = reify(ctx, cps);
 
@@ -228,7 +241,7 @@ pub fn compile_cps_to_object<'gc>(
     let objmodule = ObjectModule::new(objbuilder);
 
     let mut module_builder = ModuleBuilder::new(ctx, objmodule, reify_info);
-
+    module_builder.stacktraces = opts.backtraces;
     module_builder.compile();
     let mut product = module_builder.module.finish();
 

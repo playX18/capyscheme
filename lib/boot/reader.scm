@@ -10,7 +10,8 @@
         (mutable saved-line) (mutable saved-column)
         (mutable fold-case?)
         (mutable mode)
-        (mutable tolerant?)))]
+        (mutable tolerant?)
+        (mutable nobacktrace?)))]
            [rcd (make-record-constructor-descriptor rtd #f #f)])
         (make-record-type '<reader> rtd rcd)))
 
@@ -26,6 +27,7 @@
 (define reader-fold-case? (record-accessor (record-type-rtd <reader>) 6))
 (define reader-mode (record-accessor (record-type-rtd <reader>) 7))
 (define reader-tolerant? (record-accessor (record-type-rtd <reader>) 8))
+(define reader-nobacktrace? (record-accessor (record-type-rtd <reader>) 9))
 
 (define reader-line-set! (record-mutator (record-type-rtd <reader>) 2))
 (define reader-column-set! (record-mutator (record-type-rtd <reader>) 3))
@@ -34,6 +36,7 @@
 (define reader-fold-case-set! (record-mutator (record-type-rtd <reader>) 6))
 (define reader-mode-set! (record-mutator (record-type-rtd <reader>) 7))
 (define reader-tolerant-set! (record-mutator (record-type-rtd <reader>) 8))
+(define reader-nobacktrace-set! (record-mutator (record-type-rtd <reader>) 9))
 
 (define <annotation> 
     (let* ([rtd (make-record-type-descriptor '<annotation> #f #f #f #f '#(
@@ -60,7 +63,7 @@
     (datum->syntax #f datum source))
 
 (define (make-reader port file)
-    (%make-reader port file 1 0 1 0 #f 'rnrs #f))
+    (%make-reader port file 1 0 1 0 #f 'rnrs #f #f))
 
 (define (lexical-condition reader msg irritants)
     (condition 
@@ -448,6 +451,9 @@
                              (assert-mode p "#!false" '(rnrs r2rs)))
                             ((true)          ;r2rs
                              (assert-mode p "#!true" '(rnrs r2rs)))
+                            ((nobacktrace)
+                             (reader-nobacktrace-set! p #t))
+                            
                             (else
                              (reader-warning p "Invalid directive" type id)))
                           (cond ((assq id '((false . #f) (true . #t)))

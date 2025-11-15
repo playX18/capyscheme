@@ -1,5 +1,4 @@
-
-
+(define *compile-backtrace-key* (list 'backtrace))
 
 (define (compile-tree-il x e)
     (define (join exps)
@@ -36,8 +35,10 @@
     (call-with-input-file filename
         (lambda (in)
             (define exps (read-all in))
-            (receive (code mod new-mod) (compile-tree-il exps env)
-                (%compile code compiled-path mod)))))
+            (define reader (get-port-reader in #f))
+            (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
+                (receive (code mod new-mod) (compile-tree-il exps env)
+                    (%compile code compiled-path mod))))))
 
 (define load-in-vicinity
     (lambda (filename directory)
