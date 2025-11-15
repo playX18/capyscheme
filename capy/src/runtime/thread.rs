@@ -54,7 +54,7 @@ impl<'gc> Context<'gc> {
 
     pub unsafe fn from_ptr(ptr: *const ()) -> Self {
         Self {
-            mc: unsafe { Mutation::from_ptr(ptr) }, 
+            mc: unsafe { Mutation::from_ptr(ptr) },
         }
     }
 
@@ -276,6 +276,24 @@ impl<'gc> Context<'gc> {
 
     pub(crate) fn set_winders(&self, winders: Value<'gc>) {
         self.state().winders.set(winders);
+    }
+
+    /// Given a key, get the associated continuation mark from the current marks.
+    ///
+    /// Returns `None` if the mark is not found.
+    pub fn get_mark_first(self, key: Value<'gc>) -> Option<Value<'gc>> {
+        let mut set = self.state().current_marks();
+
+        while !set.is_null() {
+            let mark_set = set.caar();
+            if let Some(val) = mark_set.assq(key) {
+                return Some(val.cdr());
+            }
+
+            set = set.cdr();
+        }
+
+        None
     }
 }
 

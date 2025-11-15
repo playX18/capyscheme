@@ -1332,3 +1332,16 @@
           (lambda () (mutex-acquire mtx))
           (lambda () body body* ...)
           (lambda () (mutex-release mtx))))]))
+
+
+(define-syntax with-continuation-marks
+  (syntax-rules () 
+    [(_ () body body* ...)
+      (begin body body* ...)]
+    [(_ ((key value) rest ...) body body* ...)
+      (with-continuation-mark
+        key value 
+        (with-continuation-marks 
+          (rest ...)
+          body body* ...))])
+)

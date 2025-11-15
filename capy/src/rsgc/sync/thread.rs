@@ -536,7 +536,7 @@ impl Thread {
             index_in_thread_list: AtomicUsize::new(usize::MAX),
         });
 
-        this 
+        this
     }
 
     /// Returns true if thread is managed by thread subsystem.
@@ -848,4 +848,3 @@ impl ThreadManager {
         }
     }
 }
-

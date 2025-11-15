@@ -1,3 +1,5 @@
+#!nobacktrace
+
 (import (rnrs io ports))
 
 (define (bottom-up-tree depth)

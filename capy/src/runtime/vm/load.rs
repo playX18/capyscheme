@@ -347,7 +347,7 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     }
     let f =
         crate::compiler::compile_file(ctx, source, Some(current_module(ctx).get(ctx).downcast()))?;
-    let product = crate::compiler::compile_cps_to_object(ctx, f)?;
+    let product = crate::compiler::compile_cps_to_object(ctx, f, Default::default())?;
     crate::compiler::link_object_product(ctx, product, &compiled)?;
 
     libs.load(compiled, ctx).map_err(|err| {
@@ -384,6 +384,8 @@ pub fn compiled_is_fresh(
 }
 #[scheme(path=capy)]
 pub mod load_ops {
+    use crate::compiler::CompilationOptions;
+
     #[scheme(name = "%find-path-to")]
     pub fn scm_find_path_to(
         filename: Gc<'gc, Str<'gc>>,
@@ -422,6 +424,15 @@ pub mod load_ops {
         destination: Gc<'gc, Str<'gc>>,
         m: Option<Value<'gc>>,
     ) -> Result<Value<'gc>, Value<'gc>> {
+        let backtraces = if let Some(key) = ctx.private_ref("capy", "*compile-backtrace-key*") {
+            match ctx.get_mark_first(key) {
+                Some(mark) => mark != Value::new(false),
+                None => true,
+            }
+        } else {
+            true
+        };
+
         let mut reader = ScmTermToRsTerm::new(nctx.ctx);
         let mut ir = match reader.convert(expanded) {
             Ok(ir) => ir,
@@ -472,7 +483,7 @@ pub mod load_ops {
             doc.1.render(80, &mut file).unwrap();
         }
 
-        let object = match compile_cps_to_object(nctx.ctx, cps) {
+        let object = match compile_cps_to_object(nctx.ctx, cps, CompilationOptions { backtraces }) {
             Ok(product) => product,
             Err(err) => return nctx.return_(Err(err)),
         };
@@ -716,7 +727,7 @@ pub(crate) fn continue_loading_k(
         doc.1.render(80, &mut file).unwrap();
     }
 
-    let object = match compile_cps_to_object(nctx.ctx, cps) {
+    let object = match compile_cps_to_object(nctx.ctx, cps, Default::default()) {
         Ok(product) => product,
         Err(err) => return nctx.return_(Err(err)),
     };

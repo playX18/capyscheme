@@ -165,7 +165,9 @@ pub extern "C" fn scm_public_ref<'gc>(
     let module_name = unsafe { CStr::from_ptr(module_name).to_str().unwrap() };
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
 
-    ctx.ctx().public_ref(module_name, name).unwrap_or(default_value)
+    ctx.ctx()
+        .public_ref(module_name, name)
+        .unwrap_or(default_value)
 }
 
 /// Given a Scheme context, module name, and variable name,
@@ -188,7 +190,9 @@ pub extern "C" fn scm_private_ref<'gc>(
     let module_name = unsafe { CStr::from_ptr(module_name).to_str().unwrap() };
     let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
 
-    ctx.ctx().private_ref(module_name, name).unwrap_or(default_value)
+    ctx.ctx()
+        .private_ref(module_name, name)
+        .unwrap_or(default_value)
 }
 
 /// Intern a symbol with the given name in the Scheme context.
@@ -472,11 +476,7 @@ pub extern "C" fn scm_resume_accumulator<'gc>(
             let acc = ctx.state().accumulator.get();
             let mut args = Value::null();
 
-            let _ = prepare(
-                ContextRef(ctx.as_ptr() as _, PhantomData),
-                &mut args,
-                data1,
-            );
+            let _ = prepare(ContextRef(ctx.as_ptr() as _, PhantomData), &mut args, data1);
             while !args.is_null() {
                 let next = args.cdr();
                 real_args.push(args.car());
