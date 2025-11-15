@@ -204,7 +204,7 @@
                         (error 'call-in-continuation "mark set is not an extension of current marks" set c)))
                     ($set-attachments! markss)
                     (receive vals (proc)
-                        (apply c vals))) ]))
+                        (apply c vals)))]))
 
 (define $null-continuation 
   (let ([k (lambda () (exit 1))])

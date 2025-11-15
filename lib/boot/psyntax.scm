@@ -1802,6 +1802,26 @@
                                     (syntax-violation 'syntax-case "invalid literals list" e)))
                               tmp)
                        (syntax-violation #f "source expression failed to match any pattern" tmp-1))))))
+
+    (define expand-with-ellipsis 
+      (lambda (e r w s mod)
+               (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ any any . each-any))))
+                 (if (and tmp (apply (lambda (dots e1 e2) (id? dots)) tmp))
+                     (apply (lambda (dots e1 e2)
+                              (let ((id (if (symbol? dots)
+                                            '$sc-ellipsis
+                                            (make-syntax
+                                             '$sc-ellipsis
+                                             (syntax-wrap dots)
+                                             (syntax-module dots)
+                                             (syntax-sourcev dots)))))
+                                (let ((ids (list id))
+                                      (labels (list (gen-label)))
+                                      (bindings (list (cons 'ellipsis (source-wrap dots w s mod)))))
+                                  (let ((nw (make-binding-wrap ids labels w)) (nr (extend-env labels bindings r)))
+                                    (expand-body (cons e1 e2) (source-wrap e nw s mod) nr nw mod)))))
+                            tmp)
+                     (syntax-violation 'with-ellipsis "bad syntax" (source-wrap e w s mod))))))
     
     (set! syntax->datum (lambda (x) (strip x)))
     (set! $sc-dispatch (lambda (e p)
@@ -2049,6 +2069,8 @@
                                                (expand-simple-lambda e r w s mod req rest meta body)))))))))
                             tmp)
                      (syntax-violation 'lambda "bad lambda" e)))))
+
+    (global-extend 'core 'with-ellipsis expand-with-ellipsis)
 
     (global-extend 'core 'let 
       (let ()

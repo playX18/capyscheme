@@ -20,34 +20,31 @@
         continuation?)
     (import (core primitives)
             (core records))
+
   (define-syntax case-lambda
-    (lambda (x)
-      (define compile-clause
-        (lambda (clause)
-          (syntax-case clause ()
-            (((x ...) e1 e2 ...)
-             (let ((argc (length #'(x ...))))
-               (with-syntax ((n argc))
-                 (case argc
-                   ((0) #'((null? args) e1 e2 ...))
-                   ((1) #'((= len n) ((lambda (x ...) e1 e2 ...) (car args))))
-                   ((2) #'((= len n) ((lambda (x ...) e1 e2 ...) (car args) (cadr args))))
-                   ((3) #'((= len n) ((lambda (x ...) e1 e2 ...) (car args) (cadr args) (caddr args))))
-                   (else #'((= len n) (apply (lambda (x ...) e1 e2 ...) args)))))))
-            (((x1 x2 ... . r) e1 e2 ...)
-             (with-syntax ((n (length #'(x1 x2 ...))))
-               #'((>= len n) (apply (lambda (x1 x2 ... . r) e1 e2 ...) args))))
-            ((r e1 e2 ...)
-             #'(#t (apply (lambda r e1 e2 ...) args))))))
-      (syntax-case x ()
-        ((_ (e0 e1 e2 ...) ...)
-         (with-syntax (((clauses ...) (map compile-clause #'((e0 e1 e2 ...) ...))))
-           #'(lambda args
-               (let ((len (length args)))
-                 (cond
-                   clauses ...
-                   (else
-                    (assertion-violation #f "wrong number of arguments" args))))))))))
+    (syntax-rules ()
+      ((case-lambda (params body0 ...) ...)
+      (lambda args
+        (let ((len (length args)))
+          (letrec-syntax
+              ((cl (syntax-rules ::: ()
+                      ((cl)
+                      (error "no matching clause"))
+                      ((cl ((p :::) . body) . rest)
+                      (if (= len (length '(p :::)))
+                          (apply (lambda (p :::)
+                                    . body)
+                                  args)
+                          (cl . rest)))
+                      ((cl ((p ::: . tail) . body)
+                          . rest)
+                      (if (>= len (length '(p :::)))
+                          (apply
+                            (lambda (p ::: . tail)
+                              . body)
+                            args)
+                          (cl . rest))))))
+            (cl (params body0 ...) ...)))))))
 
   (define (print-condition exn p)
     (define (print-syntax form subform)

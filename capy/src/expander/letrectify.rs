@@ -422,7 +422,7 @@ pub fn is_define_module_term<'gc>(
             if let TermKind::ModuleRef(module, name, _) = rator.kind
                 && module.r5rs_equal(ctx.globals().capy_module_name())
                 && name == sym_define_module(ctx).into()
-                && args.len() == 1
+                && args.len() >= 1
                 && let TermKind::Const(mod_name) = args[0].kind
             {
                 // println!(";; module definition: {}", mod_name);

@@ -637,7 +637,8 @@ impl<'gc> Mutation<'gc> {
         mut semantics: AllocationSemantics,
     ) -> GCObject {
         unsafe {
-            if size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes() {
+            // hardcode threshold for LOS allocation. All mmtk plans support at least 8KB TLAB allocation
+            if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
                 semantics = AllocationSemantics::Los;
             }
 

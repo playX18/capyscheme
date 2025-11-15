@@ -26,6 +26,7 @@
         add-multi-option!
         add-flag!)
     (import 
+        (rnrs)
         (args argparser)
         (args option)
         (args parser)
