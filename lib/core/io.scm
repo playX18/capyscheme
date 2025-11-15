@@ -130,7 +130,8 @@
           system
           process
           open-process-ports
-          call-with-temporary-output)
+          call-with-temporary-output
+          format)
 
   (import 
           (core primitives)

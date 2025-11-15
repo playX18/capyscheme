@@ -88,4 +88,13 @@
           make-custom-textual-output-port
           make-custom-binary-input/output-port
           make-custom-textual-input/output-port)
-  (import (core io)))
+        (import (core io) (core primitives))
+  
+        (define lf 'lf)
+        (define cr 'cr)
+        (define crlf 'crlf)
+        (define nel 'nel)
+        (define crnel 'crnel)
+        (define ls 'ls)
+
+  )

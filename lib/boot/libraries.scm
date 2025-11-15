@@ -296,6 +296,7 @@
                         ; r6rs i/o simple
                         display
                         write
+                        format
                         write-simple
                         write-shared
                         newline
@@ -732,6 +733,8 @@
                         enum-set-difference
                         enum-set-complement
                         enum-set-projection
+
+                        @@ @ with-ellipsis
                         )
     (import (capy)))
 
