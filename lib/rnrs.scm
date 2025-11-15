@@ -176,7 +176,8 @@
    utf-8-codec
    utf-16-codec
    latin-1-codec
-   eol-style
+   eol-style eol-style
+          lf cr crlf nel crnel ls
    error-handling-mode
    make-transcoder
    transcoder-codec
@@ -430,7 +431,13 @@
    hashtable-equivalence-function
    hashtable-hash-function
    hashtable-mutable?
-   equal-hash string-hash string-ci-hash symbol-hash)
+   equal-hash string-hash string-ci-hash symbol-hash
+   
+   #; capy
+   format 
+   )
+
+
 
   (import (rnrs base (6))
           (rnrs unicode (6))

@@ -33,5 +33,6 @@
           write-char
           newline
           display
+          format
           write)
   (import (core io)))

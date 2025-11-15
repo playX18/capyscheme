@@ -5,6 +5,7 @@
         make-parser 
         parser-parse)
     (import 
+        (capy)
         (core optargs)
         (rnrs) 
         (rnrs records syntactic)

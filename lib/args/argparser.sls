@@ -16,6 +16,7 @@
         argparser-usage
         argparser-options-and-separators)
     (import 
+        (capy)
         (rnrs)
         (srfi 1)
         (srfi 13)
