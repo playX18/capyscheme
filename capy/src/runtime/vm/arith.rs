@@ -7,8 +7,159 @@ use crate::{
     runtime::{Context, prelude::*},
 };
 
+pub const fn decode_flonum(x: f64) -> (i64, i32, i32) {
+    let bits = x.to_bits();
+
+    let mant_bits = bits & 0x000F_FFFF_FFFF_FFFF;
+    let sign_bits = (bits >> 63) & 0x1;
+    let exp_bits = (bits >> 52) & 0x7FF;
+    let exp;
+    let sign;
+    let mantissa = if x == 0.0 {
+        exp = 0;
+        sign = if sign_bits != 0 { -1 } else { 0 };
+        0
+    } else if x.is_nan() {
+        exp = 972;
+        sign = 1;
+        0x18000000000000
+    } else if x.is_infinite() {
+        exp = 972;
+        sign = if sign_bits != 0 { -1 } else { 1 };
+        0x18000000000000
+    } else {
+        exp = if exp_bits != 0 {
+            exp_bits.wrapping_sub(1023) as i32
+        } else {
+            -1022
+        }
+        .wrapping_sub(52);
+        sign = if sign_bits != 0 { -1 } else { 1 };
+        mant_bits as i64
+    };
+    let mantissa = if exp_bits != 0 {
+        mantissa | 0x0010_0000_0000_0000
+    } else {
+        mantissa
+    };
+
+    (mantissa, exp, sign)
+}
+
+pub const fn make_flonum(s: i32, m: i64, e: i32) -> f64 {
+    let iexpt_2n52 = 4503599627370496i64;
+    const IEXPT_2N63: i64 = 9223372036854775808u64 as i64;
+
+    let t =
+        (if s == 0 { 0 } else { IEXPT_2N63 }) + ((e as i64 + 1023) * iexpt_2n52) + (m % iexpt_2n52);
+    let u = t as u64;
+    f64::from_bits(u)
+}
+
 #[scheme(path = capy)]
 mod arith_operations {
+    #[scheme(name = "compnum?")]
+    pub fn is_complex_number(x: Number<'gc>) -> bool {
+        nctx.return_(matches!(x, Number::Complex(_)))
+    }
+
+    #[scheme(name = "ratnum?")]
+    pub fn is_rat_number(x: Number<'gc>) -> bool {
+        nctx.return_(matches!(x, Number::Rational(_)))
+    }
+
+    #[scheme(name = "bignum?")]
+    pub fn is_bignum(x: Number<'gc>) -> bool {
+        nctx.return_(matches!(x, Number::BigInt(_)))
+    }
+
+    #[scheme(name = "bignum->string")]
+    pub fn bignum_to_str(x: Gc<'gc, BigInt<'gc>>, radix: u8) -> Value<'gc> {
+        let base = match radix {
+            2 => &Base::BIN,
+            8 => &Base::OCT,
+            10 => &Base::DEC,
+            16 => &Base::HEX,
+            _ => {
+                let x_val = x.into_value(nctx.ctx);
+                return nctx.wrong_argument_violation(
+                    "bignum->string",
+                    "radix must be one of 2, 8, 10, or 16",
+                    Some(x_val),
+                    Some(2),
+                    2,
+                    &[x_val],
+                );
+            }
+        };
+        let x = x.to_string_with_options(&NumberToStringOptions {
+            base,
+            group_sep: None,
+            group_size: 0,
+            force_sign: false,
+            plus_sign: "+".into(),
+            minus_sign: "-".into(),
+        });
+
+        nctx.return_(ctx.str(&x))
+    }
+
+    /// Return the sign of flonum as 0 (positive) or 1 (negative)
+    #[scheme(name = "float-sign")]
+    pub fn float_sign(x: f64) -> i32 {
+        let sign = if x.is_sign_negative() { 1 } else { 0 };
+        nctx.return_(sign)
+    }
+
+    /// Return the unbiased exponent of a flonum as a fixnum.
+    ///
+    /// The returned value is the "natural" exponent in the sense that if
+    /// F is a nonnegative flonum, then
+    ///        F = (float-significand F) * (expt 2 (float-exponent F))
+    #[scheme(name = "float-exponent")]
+    pub fn float_exponent(x: f64) -> i32 {
+        let (_mantissa, exp, _sign) = super::decode_flonum(x);
+        nctx.return_(exp)
+    }
+
+    #[scheme(name = "float-significand")]
+    pub fn float_significand(x: f64) -> i64 {
+        let (mantissa, _exp, _sign) = super::decode_flonum(x);
+        nctx.return_(mantissa)
+    }
+
+    #[scheme(name = "number->string")]
+    pub fn number2string(x: Number<'gc>, radix: Option<u8>) -> StringRef<'gc> {
+        let radix = radix.unwrap_or(10);
+        if radix != 2 && radix != 8 && radix != 10 && radix != 16 {
+            let x_val = x.into_value(nctx.ctx);
+            return nctx.wrong_argument_violation(
+                "number->string",
+                "radix must be one of 2, 8, 10, or 16",
+                Some(x_val),
+                Some(2),
+                2,
+                &[x_val],
+            );
+        }
+
+        let s = x.to_string_radix(nctx.ctx, radix);
+        let s = ctx.str(&s);
+        nctx.return_(s.downcast())
+    }
+
+    #[scheme(name = "bits->flonum")]
+    pub fn bits_to_flonum(s: u64) -> f64 {
+        let f = f64::from_bits(s);
+        nctx.return_(f)
+    }
+
+    #[scheme(name = "flonum->bits")]
+    pub fn flonum_to_bits(x: f64) -> u64 {
+        let bits = x.to_bits();
+        nctx.return_(bits)
+    }
+
     #[scheme(name = "abs")]
     pub fn abs(x: Number<'gc>) -> Number<'gc> {
         let res = x.abs(nctx.ctx);
@@ -493,19 +644,7 @@ mod arith_operations {
             );
         }
 
-        let inexact = !x.is_exact();
-        let obj = x.to_exact(nctx.ctx);
-        if let Number::Rational(rn) = obj {
-            let nume = if inexact {
-                rn.numerator.to_inexact(nctx.ctx)
-            } else {
-                rn.numerator
-            };
-
-            return nctx.return_(nume);
-        }
-        let ctx = nctx.ctx;
-        nctx.return_(if inexact { x.to_inexact(ctx) } else { x })
+        nctx.return_(x.numerator(ctx))
     }
 
     #[scheme(name = "expt")]
@@ -1098,25 +1237,6 @@ mod arith_operations {
     #[scheme(name = "number?")]
     pub fn is_number(w: Value<'gc>) -> bool {
         nctx.return_(w.is_number())
-    }
-
-    #[scheme(name = "number->string")]
-    pub fn number_to_string(n: Number<'gc>, base: Option<u8>) -> Gc<'gc, Str<'gc>> {
-        let base = base.unwrap_or(10);
-        let ctx = nctx.ctx;
-        if base < 2 || base > 36 {
-            return nctx.wrong_argument_violation(
-                "number->string",
-                "base must be in range 2 to 36",
-                Some(base.into_value(ctx)),
-                Some(1),
-                2,
-                &[n.into_value(ctx), base.into_value(ctx)],
-            );
-        }
-
-        let s = Str::new(*ctx, n.to_string_radix(base), false);
-        nctx.return_(s)
     }
 
     #[scheme(name = "fx=?")]

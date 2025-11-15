@@ -45,6 +45,8 @@
 ($primitive-load "boot/format.scm")
 ($primitive-load "boot/log.scm")
 (initialize-io-system)
+($primitive-load "boot/str2num.scm")
+($primitive-load "boot/num2str.scm")
 ($primitive-load "boot/reader.scm")
 ($primitive-load "boot/eval.scm")
 ; load file containing base macros

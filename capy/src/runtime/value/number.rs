@@ -6461,46 +6461,187 @@ fn i32_to_raidx(n: i32, radix: u8) -> String {
 }
 
 impl<'gc> Number<'gc> {
-    pub fn to_string_radix(self, base: u8) -> String {
-        match self {
-            Self::Fixnum(n) => i32_to_raidx(n, base),
-            Self::Flonum(n) => {
-                lexical::to_string_with_options::<f64, { lexical::format::STANDARD }>(
-                    n,
-                    &lexical::WriteFloatOptions::from_radix(base),
-                )
-            }
+    pub fn integer_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+        if !self.is_exact() {
+            return format!("#i{}", self.to_exact(ctx).integer_to_string(ctx, radix));
+        }
+        if let Number::BigInt(n) = self {
+            let opts = NumberToStringOptions {
+                base: match radix {
+                    2 => &Base::BIN,
+                    8 => &Base::OCT,
+                    10 => &Base::DEC,
+                    16 => &Base::HEX,
+                    _ => &Base::DEC,
+                },
+                force_sign: false,
+                group_sep: None,
+                group_size: 0,
+                minus_sign: "-".into(),
+                plus_sign: "+".into(),
+            };
 
-            Self::BigInt(n) => {
-                let opts = NumberToStringOptions {
-                    base: match base {
-                        2 => &Base::BIN,
-                        8 => &Base::OCT,
-                        10 => &Base::DEC,
-                        16 => &Base::HEX,
-                        _ => &Base::DEC,
-                    },
-                    force_sign: false,
-                    group_sep: None,
-                    group_size: 0,
-                    minus_sign: "-".into(),
-                    plus_sign: "+".into(),
+            return n.to_string_with_options(&opts);
+        };
+
+        let Number::Fixnum(n) = self else {
+            unreachable!()
+        };
+
+        if n < 0 {
+            format!("-{}", i32_to_raidx(-n, radix))
+        } else {
+            i32_to_raidx(n, radix)
+        }
+    }
+
+    pub fn flonum_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+        let n = self.real_to_f64(ctx);
+
+        if n != n {
+            return format!("+nan.0");
+        } else if n.is_infinite() {
+            if n.is_sign_negative() {
+                return format!("-inf.0");
+            } else {
+                return format!("+inf.0");
+            }
+        }
+
+        if radix == 10 {
+            if n == 0.0 {
+                if n.is_sign_negative() {
+                    return format!("-0.0");
+                } else {
+                    return format!("+0.0");
+                }
+            } else {
+                return format!("{n}");
+            }
+        }
+
+        if n == 0.0 {
+            return format!("#i0");
+        }
+
+        let p = self.numerator(ctx).to_exact(ctx).abs(ctx);
+        let q = self.denominator(ctx).to_exact(ctx);
+        let mut buf = format!("#i");
+        if self.is_negative() {
+            buf.push('-');
+        }
+
+        buf.push_str(&p.to_string_radix(ctx, radix));
+        if !matches!(q, Number::Fixnum(1)) {
+            buf.push('/');
+            buf.push_str(&q.to_string_radix(ctx, radix));
+        }
+
+        buf
+    }
+
+    pub fn compnum_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+        let c = match self {
+            Self::Complex(c) => c,
+            _ => unreachable!(),
+        };
+
+        if radix != 10 {
+            format!(
+                "#i{}",
+                Self::make_rectangular(ctx, c.real.to_exact(ctx), c.imag.to_exact(ctx))
+                    .to_string_radix(ctx, 10)
+            )
+        } else {
+            let rr = c.real.to_string_radix(ctx, radix);
+            let ii = c.imag.to_string_radix(ctx, radix);
+
+            if ii.starts_with('+') || ii.starts_with('-') {
+                format!("{rr}{ii}i")
+            } else {
+                format!("{rr}+{ii}i")
+            }
+        }
+    }
+
+    pub fn ratnum_to_string(self, ctx: Context<'gc>, radix: u8) -> String {
+        let r = match self {
+            Self::Rational(r) => r,
+            _ => unreachable!(),
+        };
+
+        let nume = r.numerator.to_string_radix(ctx, radix);
+        let deno = r.denominator.to_string_radix(ctx, radix);
+
+        format!("{}/{}", nume, deno)
+    }
+
+    pub fn make_rectangular(ctx: Context<'gc>, real: Self, imag: Self) -> Self {
+        let real = if let Self::Complex(c) = real {
+            c.real
+        } else {
+            real
+        };
+
+        let imag = if let Self::Complex(c) = imag {
+            c.imag
+        } else {
+            imag
+        };
+
+        Self::Complex(Complex::new(ctx, real, imag))
+    }
+
+    pub fn numerator(self, ctx: Context<'gc>) -> Self {
+        let inexact = !self.is_exact();
+        let obj = self.to_exact(ctx);
+        match obj {
+            Self::Rational(r) => {
+                let nume = if inexact {
+                    r.numerator.to_inexact(ctx)
+                } else {
+                    r.numerator
                 };
-
-                n.to_string_with_options(&opts)
+                nume
             }
-
-            Self::Rational(rn) => {
-                let nume = rn.numerator.to_string_radix(base);
-                let denom = rn.denominator.to_string_radix(base);
-                format!("{}/{}", nume, denom)
+            _ => {
+                if inexact {
+                    obj.to_inexact(ctx)
+                } else {
+                    obj
+                }
             }
+        }
+    }
 
-            Self::Complex(c) => {
-                let real = c.real.to_string_radix(base);
-                let imag = c.imag.to_string_radix(base);
-                format!("{} + {}i", real, imag)
+    pub fn denominator(self, ctx: Context<'gc>) -> Self {
+        let inexact = !self.is_exact();
+        let obj = self.to_exact(ctx);
+        match obj {
+            Self::Rational(r) => {
+                let deno = if inexact {
+                    r.denominator.to_inexact(ctx)
+                } else {
+                    r.denominator
+                };
+                deno
             }
+            _ => {
+                if inexact {
+                    Number::Flonum(1.0)
+                } else {
+                    Number::Fixnum(1)
+                }
+            }
+        }
+    }
+
+    pub fn to_string_radix(self, ctx: Context<'gc>, base: u8) -> String {
+        match self {
+            Self::Fixnum(_) | Self::BigInt(_) => self.integer_to_string(ctx, base),
+            Self::Flonum(_) => self.flonum_to_string(ctx, base),
+            Self::Rational(_) => self.ratnum_to_string(ctx, base),
+            Self::Complex(_) => self.compnum_to_string(ctx, base),
         }
     }
 }

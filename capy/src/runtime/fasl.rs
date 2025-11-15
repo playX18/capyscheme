@@ -85,7 +85,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
     }
 
     pub fn scan(&mut self, obj: Value<'gc>) -> io::Result<()> {
-        if obj.is_immediate() {
+        if obj.is_immediate() || obj.is_flonum() {
             return Ok(());
         }
 
@@ -142,6 +142,20 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
 
+        if obj.is::<Complex>() {
+            let cn = obj.downcast::<Complex>();
+            self.scan(cn.real.into_value(self.ctx))?;
+            self.scan(cn.imag.into_value(self.ctx))?;
+            return Ok(());
+        }
+
+        if obj.is::<Rational>() {
+            let rn = obj.downcast::<Rational>();
+            self.scan(rn.numerator.into_value(self.ctx))?;
+            self.scan(rn.denominator.into_value(self.ctx))?;
+            return Ok(());
+        }
+
         if obj.is_number() {
             return Ok(());
         }
@@ -152,8 +166,6 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         ));
     }
 
-    /*
-
     pub fn put(&mut self, obj: Value<'gc>) -> io::Result<()> {
         if obj.is_immediate() {
             if obj.is_int32() {
@@ -170,113 +182,9 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             } else if obj.is_char() {
                 self.put8(FASL_TAG_CHAR)?;
                 self.put32(obj.char() as u32)?;
-            } else {
-                self.put8(FASL_TAG_IMMEDIATE)?;
-                self.put64(obj.bits())?;
-            }
-
-            return Ok(());
-        }
-
-        if obj.is::<Symbol>() || obj.is::<Str>() {
-            let id = self.lites.get(self.ctx, obj).unwrap().as_int32();
-            self.put8(FASL_TAG_LOOKUP)?;
-            self.put32(id as u32)?;
-            return Ok(());
-        }
-
-        if obj.is_pair() {
-            self.put_list(obj)?;
-            return Ok(());
-        }
-
-        if obj.is::<Vector>() {
-            let vec = obj.downcast::<Vector>();
-            self.put8(FASL_TAG_VECTOR)?;
-            self.put32(vec.len() as u32)?;
-            for item in vec.iter() {
-                self.put(item.get())?;
-            }
-            return Ok(());
-        }
-
-        if obj.is::<Tuple>() {
-            let tuple = obj.downcast::<Tuple>();
-            self.put8(FASL_TAG_TUPLE)?;
-            self.put32(tuple.len() as u32)?;
-            for item in tuple.iter() {
-                self.put(item.get())?;
-            }
-            return Ok(());
-        }
-
-        if obj.is::<ByteVector>() {
-            let bvec = obj.downcast::<ByteVector>();
-            self.put8(FASL_TAG_BVECTOR)?;
-            self.put64(bvec.len() as u64)?;
-            self.put_many(bvec.as_slice())?;
-            return Ok(());
-        }
-
-        if obj.is::<BigInt>() {
-            let bigint = obj.downcast::<BigInt>();
-            self.put8(FASL_TAG_BIGINT)?;
-            self.put8(bigint.negative() as u8)?;
-            self.put32(bigint.len() as u32)?;
-            for digit in bigint.iter() {
-                self.put64(*digit)?;
-            }
-            return Ok(());
-        }
-
-        if obj.is::<Complex>() {
-            let complex = obj.downcast::<Complex>();
-            self.put8(FASL_TAG_COMPLEX)?;
-            self.put(complex.real.into_value(self.ctx))?;
-            self.put(complex.imag.into_value(self.ctx))?;
-            return Ok(());
-        }
-
-        if obj.is::<Rational>() {
-            let rational = obj.downcast::<Rational>();
-            self.put8(FASL_TAG_RATIONAL)?;
-            self.put(rational.numerator.into_value(self.ctx))?;
-            self.put(rational.denominator.into_value(self.ctx))?;
-            return Ok(());
-        }
-
-        if obj.is::<Syntax>() {
-            let syntax = obj.downcast::<Syntax>();
-            self.put8(FASL_TAG_SYNTAX)?;
-            self.put(syntax.expr())?;
-            self.put(syntax.module())?;
-            self.put(syntax.source())?;
-            self.put(syntax.wrap())?;
-            return Ok(());
-        }
-        println!("CAN'T SERIALIZE: {obj}");
-        return Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Unsupported type for FASL serialization",
-        ));
-    }*/
-
-    pub fn put(&mut self, obj: Value<'gc>) -> io::Result<()> {
-        if obj.is_immediate() {
-            if obj.is_int32() {
-                self.put8(FASL_TAG_FIXNUM)?;
-                self.put32(obj.as_int32() as u32)?;
-            } else if obj.is_bool() {
-                self.put8(if obj.as_bool() {
-                    FASL_TAG_T
-                } else {
-                    FASL_TAG_F
-                })?;
-            } else if obj.is_null() {
-                self.put8(FASL_TAG_NIL)?;
-            } else if obj.is_char() {
-                self.put8(FASL_TAG_CHAR)?;
-                self.put32(obj.char() as u32)?;
+            } else if obj.is_flonum() {
+                self.put8(FASL_TAG_FLONUM)?;
+                self.put64(obj.as_flonum().to_bits())?;
             } else {
                 self.put8(FASL_TAG_IMMEDIATE)?;
                 self.put64(obj.bits())?;
@@ -352,6 +260,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         if obj.is::<Complex>() {
             let complex = obj.downcast::<Complex>();
             self.put8(FASL_TAG_COMPLEX)?;
+
             self.put(complex.real.into_value(self.ctx))?;
             self.put(complex.imag.into_value(self.ctx))?;
             return Ok(());
@@ -564,6 +473,10 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 let value = self.read32()? as i32;
                 Ok(Value::new(value))
             }
+            _x @ FASL_TAG_FLONUM => {
+                let bits = self.read64()?;
+                Ok(Value::new(f64::from_bits(bits)))
+            }
             _x @ FASL_TAG_T => Ok(Value::new(true)),
             _x @ FASL_TAG_F => Ok(Value::new(false)),
             _x @ FASL_TAG_NIL => Ok(Value::null()),
@@ -676,10 +589,11 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             }
 
             _x @ FASL_TAG_COMPLEX => {
-                let real = self.read_value()?.number().ok_or_else(|| {
+                let value = self.read_value()?;
+                let real = value.number().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "Expected a number for real part",
+                        format!("Expected a number for real part, got: {value}"),
                     )
                 })?;
                 let imag = self.read_value()?.number().ok_or_else(|| {
@@ -688,6 +602,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         "Expected a number for imaginary part",
                     )
                 })?;
+
                 Ok(Value::new(Complex::new(self.ctx, real, imag)))
             }
 

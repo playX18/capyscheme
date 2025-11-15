@@ -125,8 +125,7 @@ interesting_prim_names!(
 
     integer2char = "integer->char"
     char2integer = "char->integer"
-    number2string = "number->string"
-    string2number = "string->number"
+
 
     acons = "acons"
     cons = "cons"
@@ -1130,21 +1129,6 @@ primitive_expanders!(
         Some(prim_call_term(ctx, sym_integer2char(ctx).into(), args, src))
     }
 
-    "number->string" ex_number_to_string<'gc>(ctx, args, src) {
-        if args.len() != 1 && args.len() != 2 {
-            return None;
-        }
-
-        Some(prim_call_term(ctx, sym_number2string(ctx).into(), args, src))
-    }
-
-    "string->number" ex_string_to_number<'gc>(ctx, args, src) {
-        if args.len() != 1 && args.len() != 2 {
-            return None;
-        }
-
-        Some(prim_call_term(ctx, sym_string2number(ctx).into(), args, src))
-    }
 
     "cons" ex_cons<'gc>(ctx, args, src) {
         if args.len() != 2 {
