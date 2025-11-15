@@ -747,6 +747,100 @@
       (%char-set-diff+intersection! diff int csets char-set-diff+intersection)
       (values (make-char-set diff) (make-char-set int))))
 
+;;;; System character sets
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; These definitions are for Latin-1.
+;;;
+;;; If your Scheme implementation allows you to mark the underlying strings
+;;; as immutable, you should do so -- it would be very, very bad if a client's
+;;; buggy code corrupted these constants.
+
+  (define char-set:empty (char-set))
+  (define char-set:full (char-set-complement char-set:empty))
+
+  (define char-set:lower-case
+    (let* ((a-z (ucs-range->char-set #x61 #x7B))
+           (latin1 (ucs-range->char-set! #xdf #xf7  #t a-z))
+           (latin2 (ucs-range->char-set! #xf8 #x100 #t latin1)))
+      (char-set-adjoin! latin2 (%latin1->char #xb5))))
+
+  (define char-set:upper-case
+    (let ((A-Z (ucs-range->char-set #x41 #x5B)))
+      ;; Add in the Latin-1 upper-case chars.
+      (ucs-range->char-set! #xd8 #xdf #t
+                            (ucs-range->char-set! #xc0 #xd7 #t A-Z))))
+
+  (define char-set:title-case char-set:empty)
+
+  (define char-set:letter
+    (let ((u/l (char-set-union char-set:upper-case char-set:lower-case)))
+      (char-set-adjoin! u/l
+                        (%latin1->char #xaa)  ; FEMININE ORDINAL INDICATOR
+                        (%latin1->char #xba))))   ; MASCULINE ORDINAL INDICATOR
+
+  (define char-set:digit     (string->char-set "0123456789"))
+  (define char-set:hex-digit (string->char-set "0123456789abcdefABCDEF"))
+
+  (define char-set:letter+digit
+    (char-set-union char-set:letter char-set:digit))
+
+  (define char-set:punctuation
+    (let ((ascii (string->char-set "!\"#%&'()*,-./:;?@[\\]_{}"))
+          (latin-1-chars (map %latin1->char '(#xA1 ; INVERTED EXCLAMATION MARK
+                                              #xAB ; LEFT-POINTING DOUBLE ANGLE QUOTATION MARK
+                                              #xAD ; SOFT HYPHEN
+                                              #xB7 ; MIDDLE DOT
+                                              #xBB ; RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK
+                                              #xBF)))) ; INVERTED QUESTION MARK
+      (list->char-set! latin-1-chars ascii)))
+
+  (define char-set:symbol
+    (let ((ascii (string->char-set "$+<=>^`|~"))
+          (latin-1-chars (map %latin1->char '(#x00A2 ; CENT SIGN
+                                              #x00A3 ; POUND SIGN
+                                              #x00A4 ; CURRENCY SIGN
+                                              #x00A5 ; YEN SIGN
+                                              #x00A6 ; BROKEN BAR
+                                              #x00A7 ; SECTION SIGN
+                                              #x00A8 ; DIAERESIS
+                                              #x00A9 ; COPYRIGHT SIGN
+                                              #x00AC ; NOT SIGN
+                                              #x00AE ; REGISTERED SIGN
+                                              #x00AF ; MACRON
+                                              #x00B0 ; DEGREE SIGN
+                                              #x00B1 ; PLUS-MINUS SIGN
+                                              #x00B4 ; ACUTE ACCENT
+                                              #x00B6 ; PILCROW SIGN
+                                              #x00B8 ; CEDILLA
+                                              #x00D7 ; MULTIPLICATION SIGN
+                                              #x00F7)))) ; DIVISION SIGN
+      (list->char-set! latin-1-chars ascii)))
+
+
+  (define char-set:graphic
+    (char-set-union char-set:letter+digit char-set:punctuation char-set:symbol))
+
+  (define char-set:whitespace
+    (list->char-set (map %latin1->char '(#x09 ; HORIZONTAL TABULATION
+                                         #x0A ; LINE FEED
+                                         #x0B ; VERTICAL TABULATION
+                                         #x0C ; FORM FEED
+                                         #x0D ; CARRIAGE RETURN
+                                         #x20 ; SPACE
+                                         #xA0))))
+
+  (define char-set:printing (char-set-union char-set:whitespace char-set:graphic)) ; NO-BREAK SPACE
+
+  (define char-set:blank
+    (list->char-set (map %latin1->char '(#x09 ; HORIZONTAL TABULATION
+                                         #x20 ; SPACE
+                                         #xA0)))) ; NO-BREAK SPACE
+
+
+  (define char-set:iso-control
+    (ucs-range->char-set! #x7F #xA0 #t (ucs-range->char-set 0 32)))
+
+  (define char-set:ascii (ucs-range->char-set 0 128))
 
 
 ;;; Porting & performance-tuning notes

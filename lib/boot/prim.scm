@@ -790,3 +790,14 @@
                      (else
                       (merge (list-head lst n)
                              (sort rest (- len n)))))))))))
+
+(define (foldl proc init lst)
+  (let loop ((acc init) (lst lst))
+    (if (null? lst)
+        acc
+        (loop (proc acc (car lst)) (cdr lst)))))
+
+(define (foldr proc init lst)
+  (if (null? lst)
+      init
+      (proc (car lst) (foldr proc init (cdr lst)))))

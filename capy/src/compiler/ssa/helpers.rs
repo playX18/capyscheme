@@ -531,32 +531,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     /// Given CPS function, construct metadata value for it.
     pub fn meta_for_func(&mut self, f: FuncRef<'gc>) -> ir::Value {
-        /*let name = if f.name == Value::new(false) {
-            Symbol::from_str(self.module_builder.ctx, "<anonymous>").into()
-        } else {
-            f.name
-        };
-
-        let source_location = f.source();
-        let ctx = self.module_builder.ctx;
-        let ls = list!(ctx, name, source_location, f.binding.name);
-
-        self.atom(Atom::Constant(ls))*/
         self.atom(Atom::Constant(f.meta))
     }
 
     pub fn meta_for_cont(&mut self, c: ContRef<'gc>) -> ir::Value {
-        /*let name = if c.name == Value::new(false) {
-            Symbol::from_str(self.module_builder.ctx, "<anonymous>").into()
-        } else {
-            c.name
-        };
-
-        let source_location = c.source();
-        let ctx = self.module_builder.ctx;
-        let ls = list!(ctx, Value::new(true), name, source_location, c.binding.name);
-
-        self.atom(Atom::Constant(ls))*/
         self.atom(Atom::Constant(c.meta))
     }
 

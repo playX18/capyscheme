@@ -78,6 +78,35 @@ impl<'gc> Value<'gc> {
             return true;
         }
 
+        if self.is::<HashTable>() && other.is::<HashTable>() {
+            let a = self.downcast::<HashTable>();
+            let b = other.downcast::<HashTable>();
+
+            if a.len() != b.len() {
+                return false;
+            }
+
+            let kvs1 = a.iter().collect::<Vec<_>>();
+            let kvs2 = b.iter().collect::<Vec<_>>();
+            for (k1, v1) in kvs1.iter() {
+                let mut found = false;
+                for (k2, v2) in kvs2.iter() {
+                    if k1.r5rs_equal(*k2) {
+                        if !v1.r5rs_equal(*v2) {
+                            return false;
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
         if self.is::<Str>() && other.is::<Str>() {
             return self.downcast::<Str>().eq(&other.downcast::<Str>());
         }

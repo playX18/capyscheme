@@ -142,6 +142,13 @@
           (core io assistants)
           (core enums))
           
+
+  (define lf 'lf)
+  (define cr 'cr)
+  (define crlf 'crlf)
+  (define nel 'nel)
+  (define crnel 'crnel)
+  (define ls 'ls)
   ;; 8.2.2  File options
 
   (define-syntax file-options->bits

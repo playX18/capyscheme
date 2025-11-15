@@ -18,7 +18,7 @@
 ;
 (define ($primitive-load filename)
   "Loads file by searching only load path or by its absolute path."
-  (let ([thunk (load-thunk-in-vicinity filename #f)])
+  (let ([thunk (load-thunk-in-vicinity filename #t)])
     (thunk)))
 
 ($primitive-load "boot/prim.scm")

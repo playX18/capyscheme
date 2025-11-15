@@ -333,13 +333,17 @@
           custom-i))))
 
 
-(define (define-module* name)
+(define (define-module* name . xpure?)
+  (define pure? (if (null? xpure?) #f (car xpure?)))
   (let ([module (resolve-module name #f #t)])
     (beautify-user-module! module)
+    (if pure?
+      (purify-module! module))
     module))
 
-(define (module-export! m names . replace?)
 
+
+(define (module-export! m names . replace?)
   (let ([replace? (if (null? replace?) #f (car replace?))]
         [public-i (module-public-interface m)])
     (for-each (lambda (name)
@@ -407,11 +411,14 @@
   (make-parameter
     (lambda (exn . port)
       (define p (if (null? port) (current-error-port) (car port)))
-
-
+      (when (syntax-violation? exn)
+        
+        (format #t "form=~a, subform=~a~%" (syntax-violation-form exn) (syntax-violation-subform exn)))
+      (when (message-condition? exn)
+        (format #t "message=~a~%" (condition-message exn)))
+      (when (irritants-condition? exn)
+        (format #t "irritants=~a~%" (condition-irritants exn)))
       (format p "Unhandled exception: ~a~!: ~a~%~!" (condition-who exn)))))
-
-
 
 (set! %load-extensions
   (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" ".sch" "sps")

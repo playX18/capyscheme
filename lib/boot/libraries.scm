@@ -367,7 +367,7 @@
                         trasncoder-codec
                         transcoder-eol-style
                         transcoder-error-handling-mode
-                        eol-style
+                        eol-style crnel nel cr lf ls crlf
                         latin-1-codec
                         utf-16-codec
                         utf-8-codec

@@ -406,6 +406,16 @@
                             (current-module m)))
                     (@@ @@ (name name* ...) body) ...
                     )])))
+(define-syntax define-pure-module 
+    (lambda (x)
+        (syntax-case x () 
+            [(_ (name name* ...) body ...)
+                #'(begin 
+                    (eval-when (expand load eval)
+                        (let ([m ((@@ (capy) define-module*) '(name name* ...) #t)])
+                            (current-module m)))
+                    (@@ @@ (name name* ...) body) ...
+                    )])))
 
 
 (define (resolve-r6rs-interface import-spec)
@@ -748,7 +758,7 @@
              ;; around a fluid that is rebound in save-module-excursion? Patches
              ;; welcome!
              #'(begin
-                 (define-module (name name* ...))
+                 (define-pure-module (name name* ...))
                  (import ispec)
                  ...
                  (export e ...)
