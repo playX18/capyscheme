@@ -257,6 +257,10 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             Some(Value::new(a.is_null()))
         }
 
+        "unspecified?" => is_unspecified(ctx, a) {
+            Some(Value::new(a.is_unspecified()))
+        }
+
         "list?" => is_list(ctx, a) {
             Some(Value::new(a.is_list()))
         }

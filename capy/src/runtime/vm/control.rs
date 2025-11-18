@@ -92,6 +92,18 @@ pub(crate) fn push_cframe<'gc>(
 #[scheme(path = capy)]
 pub mod control_ops {
 
+    #[scheme(name = "call-with-continuation-mark")]
+    pub fn call_with_continuation_mark(
+        key: Value<'gc>,
+        value: Value<'gc>,
+        thunk: Gc<'gc, Closure<'gc>>,
+    ) -> Value<'gc> {
+        let retk = nctx.retk;
+        let cont = push_cframe(ctx, key, value, retk.downcast());
+        nctx.retk = cont;
+        nctx.return_call(thunk.into(), &[])
+    }
+
     #[scheme(name = "continuation-marks?")]
     pub fn is_continuation_marks(val: Value<'gc>) -> bool {
         nctx.return_(val.is::<ContinuationMarks<'gc>>())

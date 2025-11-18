@@ -22,6 +22,7 @@ pub mod debug;
 pub mod dl;
 pub mod errors;
 pub mod eval;
+pub mod exceptions;
 pub mod expand;
 pub mod extensions;
 pub mod ffi;

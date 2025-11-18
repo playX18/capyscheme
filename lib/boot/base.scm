@@ -1331,7 +1331,7 @@
   (lambda (x)
     (syntax-case x ()
       [(_ style)
-        (syntax '#'style)]
+        #`'style]
       [(_) (syntax-violation 'eol-style "missing eol style" x)])))
 
 (define-syntax with-mutex 

@@ -1594,6 +1594,13 @@ prim!(
         PrimValue::Comparison(is_null)
     },
 
+    "unspecified?" => is_unspecified(ssa, args, _h) {
+        let val = ssa.atom(args[0]);
+        let unspecified = ssa.builder.ins().iconst(types::I64, Value::unspecified().bits() as i64);
+        let is_unspecified = ssa.builder.ins().icmp(IntCC::Equal, val, unspecified);
+        PrimValue::Comparison(is_unspecified)
+    },
+
     "pair?" => is_pair(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let is_pair = ssa.has_typ8(val, TypeCode8::PAIR.bits());

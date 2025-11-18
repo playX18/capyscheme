@@ -805,19 +805,25 @@ pub fn convert<'gc>(
             )
         }
 
-        TermKind::PrimRef(name) => toplevel_box(
-            cps,
-            src,
-            *name,
-            true,
-            |cps, var| {
-                with_cps!(cps;
-                    let val = #% "variable-ref" (h, var) @ src;
-                    continue k(Atom::Local(val))
-                )
-            },
-            h,
-        ),
+        TermKind::PrimRef(name) => {
+            let module = list!(cps.ctx, cps.ctx.intern("capy"));
+
+            module_box(
+                cps,
+                |cps, var| {
+                    with_cps!(cps;
+                        let val = #% "variable-ref" (h, var) @ src;
+                        continue k(Atom::Local(val))
+                    )
+                },
+                h,
+                module,
+                *name,
+                true,
+                true,
+                src,
+            )
+        }
 
         TermKind::ToplevelRef(_, name) => toplevel_box(
             cps,
@@ -1079,23 +1085,43 @@ pub fn convert<'gc>(
             )
         }
 
-        TermKind::WithContinuationMark(key, mark, result) => convert_arg(
-            cps,
-            *key,
-            Box::new(move |cps, key| {
-                convert_arg(
-                    cps,
-                    *mark,
-                    Box::new(move |cps, mark| {
-                        with_cps!(cps;
-                            let cs = #% "push-cframe" (h, key, mark, k) @ src;
-                            # convert(cps, *result, cs, h)
-                        )
-                    }),
-                    h,
-                )
-            }),
-            h,
-        ),
+        TermKind::WithContinuationMark(key, mark, result) => {
+            let thunk = Gc::new(
+                *cps.ctx,
+                Proc {
+                    args: Array::from_slice(*cps.ctx, &[]),
+                    name: Value::new(false),
+                    source: src,
+                    variadic: None,
+                    body: *result,
+                    meta: cps.current_meta,
+                },
+            );
+            let thunk = Gc::new(
+                *cps.ctx,
+                crate::expander::core::Term {
+                    kind: TermKind::Proc(thunk),
+                    source: src.into(),
+                },
+            );
+
+            let mref = Gc::new(
+                *cps.ctx,
+                crate::expander::core::Term {
+                    kind: TermKind::PrimRef(cps.ctx.intern("call-with-continuation-mark")),
+                    source: src.into(),
+                },
+            );
+
+            let call = Gc::new(
+                *cps.ctx,
+                crate::expander::core::Term {
+                    source: src.into(),
+                    kind: TermKind::Call(mref, Array::from_slice(*cps.ctx, &[*key, *mark, thunk])),
+                },
+            );
+
+            convert(cps, call, k, h)
+        }
     }
 }
