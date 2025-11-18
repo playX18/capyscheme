@@ -624,7 +624,9 @@
                        [bj (id-module-binding j mj)])
                     (and (eq? bi bj)
                       (or bi (eq? ni nj)))))]
-          [else (equal? ni nj)])))
+          [else
+            
+           (equal? ni nj)])))
 
     (define (bound-id=? i j)
       (if (and (syntax? i) (syntax? j))

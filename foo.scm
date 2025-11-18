@@ -1,3 +1,2 @@
-(define x (expt 10 100))
-
-(format #t "~a~%" (inexact (- (expt 10 100))))
+(with-exception-handler (lambda (x) 0)
+                                      (lambda () (error #f "bad")))

@@ -237,6 +237,9 @@ interesting_prim_names!(
 
     callcc = "call/cc"
     call_with_current_continuation = "call-with-current-continuation"
+
+    unspecified = "unspecified"
+    unspecifiedp = "unspecified?"
 );
 
 pub fn resolve_primitives<'gc>(
@@ -1606,6 +1609,20 @@ primitive_expanders!(
             return None;
         }
         Some(prim_call_term(ctx, sym_winders(ctx).into(), args, src))
+    }
+
+    "unspecified" ex_unspecified<'gc>(ctx, args, src) {
+        if !args.is_empty() {
+            return None;
+        }
+        Some(constant(ctx,Value::unspecified()))
+    }
+
+    "unspecified?" ex_unspecifiedp<'gc>(ctx, args, src) {
+        if args.len() != 1 {
+            return None;
+        }
+        Some(prim_call_term(ctx, sym_unspecifiedp(ctx).into(), args, src))
     }
 );
 
