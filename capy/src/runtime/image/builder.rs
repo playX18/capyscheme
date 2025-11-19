@@ -708,6 +708,13 @@ impl<'gc> ImageBuilder<'gc> {
             .iter()
             .position(|&addr| addr == proc.proc)
             .unwrap_or_else(|| {
+                let dlinfo = crate::utils::dladdr(proc.proc).expect(
+                    "Failed to get dladdr info for native procedure during serialization",
+                );
+                println!(
+                    "Native procedure at {} not found in native procedures list during serialization. Dl info: fname={:?}, sname={:?}",
+                    proc.proc, dlinfo.fname, dlinfo.sname
+                );
                 panic!(
                     "Native procedure at {} not found in native procedures list during serialization",
                     proc.proc

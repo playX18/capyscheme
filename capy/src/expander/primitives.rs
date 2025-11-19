@@ -1615,7 +1615,7 @@ primitive_expanders!(
         if !args.is_empty() {
             return None;
         }
-        Some(constant(ctx,Value::unspecified()))
+        Some(constant(ctx, Value::undefined()))
     }
 
     "unspecified?" ex_unspecifiedp<'gc>(ctx, args, src) {

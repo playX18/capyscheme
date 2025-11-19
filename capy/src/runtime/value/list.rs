@@ -384,6 +384,43 @@ impl<'gc> Value<'gc> {
         }
     }
 
+    pub fn is_alist(self) -> bool {
+        let mut slow = self;
+        let mut fast = self;
+
+        loop {
+            if fast.is_null() {
+                return true;
+            }
+            if !fast.is_pair() {
+                return false;
+            }
+            let pair = fast.car();
+            if !pair.is_pair() {
+                return false;
+            }
+            fast = fast.cdr();
+
+            if fast.is_null() {
+                return true;
+            }
+            if !fast.is_pair() {
+                return false;
+            }
+            let pair = fast.car();
+            if !pair.is_pair() {
+                return false;
+            }
+            fast = fast.cdr();
+            slow = slow.cdr();
+
+            if fast == slow {
+                // Cycle detected
+                return false;
+            }
+        }
+    }
+
     pub fn is_list(self) -> bool {
         let mut slow = self;
         let mut fast = self;

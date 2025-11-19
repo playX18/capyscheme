@@ -5,6 +5,7 @@ use crate::{
         Context,
         value::{Closure, IntoValue, Str, Symbol, Value, Vector},
     },
+    static_symbols,
 };
 
 pub struct ShadowStack<'gc> {
@@ -153,6 +154,11 @@ pub mod debug_ops {
         nctx.return_(result)
     }
 }
+
+pub const DEBUG_STACKTRACE_KEY: &str = "stacktrace-key b8bec3ca-8174-4219-a964-b1aa2aa53ed5";
+
+static_symbols!(SYM_STACKTRACE_KEY = DEBUG_STACKTRACE_KEY);
+
 pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
     let state = ctx.state();
     let shadow_stack = unsafe { &mut *state.shadow_stack.get() };

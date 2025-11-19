@@ -631,7 +631,7 @@
              (values 'abbrev 'unquote-splicing))
             (else (values 'abbrev 'unquote))))
          ((#\|)
-          (assert-mode p "Quoted identifiers" '(rnrs r7rs))
+          ;(assert-mode p "Quoted identifiers" '(rnrs r7rs))
           (get-identifier p #f 'pipe))
          (else
           (reader-warning p "Invalid leading character" c)

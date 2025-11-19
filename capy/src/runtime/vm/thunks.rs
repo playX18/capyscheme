@@ -557,6 +557,8 @@ thunks! {
             meta
         };
 
+        assert!(meta.is_alist());
+
         let clos = Closure {
             header: ScmHeader::with_type_bits(if is_cont {
                 TypeCode16::CLOSURE_K.bits()
@@ -3835,6 +3837,34 @@ thunks! {
                 Str::new(*ctx, "not a fixnum", true).into(),
                 &[start, end],
             )
+        }
+    }
+
+    pub fn push_dframe(
+        ctx: Context<'gc>,
+        src: Value<'gc>,
+        rator: Value<'gc>,
+        nrands: usize,
+        rands: *mut Value<'gc>
+    ) -> () {
+        unsafe {
+            let retk = rands.read();
+            let args = std::slice::from_raw_parts(rands.add(2), nrands - 2);
+            let args = args.iter()
+                .rfold(Value::null(), |acc, v| Value::cons(ctx, *v, acc));
+
+            let info = Vector::from_slice(
+                *ctx,
+                &[src, rator, args]
+            );
+            let key = crate::runtime::vm::debug::sym_stacktrace_key(ctx);
+            let ck = crate::runtime::vm::control::push_cframe(
+                ctx,
+                key.into(),
+                info.into(),
+                retk.downcast::<Closure>()
+            );
+            rands.write(ck.into());
         }
     }
 
