@@ -137,14 +137,14 @@
 (define condition-who (condition-accessor (record-type-rtd &who) &who-who))
 
 
-(define &stacktrace
-  (let ((rtd (make-record-type-descriptor '&stacktrace (record-type-rtd &condition) (make-condition-uid) #f #f '#((immutable stacktrace)))))
+(define &marks
+  (let ((rtd (make-record-type-descriptor '&marks (record-type-rtd &condition) (make-condition-uid) #f #f '#((immutable marks)))))
     (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)))
-      (make-record-type '&stacktrace rtd rcd))))
-(define &stacktrace-stacktrace (record-accessor (record-type-rtd &stacktrace) 0))
-(define make-stacktrace-condition (record-constructor (record-type-rcd &stacktrace)))
-(define stacktrace-condition? (condition-predicate (record-type-rtd &stacktrace)))
-(define condition-stacktrace (condition-accessor (record-type-rtd &stacktrace) &stacktrace-stacktrace))
+      (make-record-type '&marks rtd rcd))))
+(define &marks-marks (record-accessor (record-type-rtd &marks) 0))
+(define make-marks-condition (record-constructor (record-type-rcd &marks)))
+(define marks-condition? (condition-predicate (record-type-rtd &marks)))
+(define condition-marks (condition-accessor (record-type-rtd &marks) &marks-marks))
 
 
 
@@ -327,7 +327,7 @@
               (and who (make-who-condition who))
               (make-message-condition message)
               (make-irritants-condition irritants)
-              (make-stacktrace-condition stk)))))
+              (make-marks-condition (current-continuation-marks))))))
       (raise message))
     (raise who)))
 
@@ -371,7 +371,7 @@
         (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))
 
 (define (error who message . irritants)
-  (define stk (shadow-stack))
+  (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -384,11 +384,11 @@
               (and who (make-who-condition who))
               (make-message-condition message)
               (make-irritants-condition irritants)
-              (make-stacktrace-condition stk)))))
+              (make-marks-condition marks)))))
       #f)
     #f))
 (define (implementation-restriction-violation who message . irritants)
-  (define stk (shadow-stack))
+  (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (raise
@@ -401,13 +401,13 @@
               (and who (make-who-condition who))
               (make-message-condition message)
               (make-irritants-condition irritants)
-              (make-stacktrace-condition stk)))))
+              (make-marks-condition marks)))))
       #f)
     #f))
 
 (define undefined-violation
   (lambda (who . message)
-    (define stk (shadow-stack))
+    (define marks (current-continuation-marks))
 
     (raise
       (apply
@@ -416,14 +416,12 @@
           values
           (list
             (make-undefined-violation)
-            (make-stacktrace-condition stk)
+            (make-marks-condition marks)
             (and who (make-who-condition who))
             (and (pair? message) (make-message-condition (car message)))))))))
 
 (define (.make-undefined-violation who . message)
-
-  (define stk (shadow-stack))
-
+  (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (apply
       condition
@@ -431,7 +429,7 @@
         values
         (list
           (make-undefined-violation)
-          (make-stacktrace-condition stk)
+          (make-marks-condition marks)
           (and who (make-who-condition who))
           (and (pair? message) (make-message-condition (car message))))))
     #f))
@@ -440,7 +438,7 @@
 
 (define raise-i/o-filename-error
   (lambda (who message filename . irritants)
-    (define stk (shadow-stack))
+    (define marks (current-continuation-marks))
     (raise
       (apply
         condition
@@ -451,11 +449,11 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (and (pair? irritants) (make-irritants-condition irritants))
-            (make-stacktrace-condition stk)))))))
+            (make-marks-condition marks)))))))
 
 (define raise-i/o-error
   (lambda (who message . irritants)
-    (define stk (shadow-stack))
+    (define marks (current-continuation-marks))
     (raise
       (apply
         condition
@@ -466,11 +464,11 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (and (pair? irritants) (make-irritants-condition irritants))
-            (make-stacktrace-condition stk)))))))
+            (make-marks-condition marks)))))))
 
 (define raise-misc-i/o-error-with-port
   (lambda (constructor who message port . options)
-    (define stk (shadow-stack))
+    (define marks (current-continuation-marks))
     (raise
       (apply
         condition
@@ -482,11 +480,11 @@
             (make-message-condition message)
             (and port (make-i/o-port-error port))
             (make-irritants-condition (cons* port options))
-            (make-stacktrace-condition stk)))))))
+            (make-marks-condition marks)))))))
 
 (define raise-misc-i/o-error
   (lambda (constructor who message . options)
-    (define stk (shadow-stack))
+    (define marks (current-continuation-marks))
     (raise
       (apply
         condition
@@ -497,7 +495,7 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (and (pair? options) (make-irritants-condition options))
-            (make-stacktrace-condition stk)))))))
+            (make-marks-condition marks)))))))
 
 (define raise-i/o-read-error
   (lambda (who message port)
@@ -536,7 +534,7 @@
     (raise-misc-i/o-error make-i/o-encoding-error who message port char)))
 (define .make-io-error
   (lambda (who message . irritants)
-    (define stk (shadow-stack))
+    (define marks (current-continuation-marks))
     (if (or (not who) (string? who) (symbol? who))
       (if (string? message)
         (apply
@@ -548,13 +546,13 @@
               (and who (make-who-condition who))
               (make-message-condition message)
               (and (pair? irritants) (make-irritants-condition irritants))
-              (make-stacktrace-condition stk))))
+              (make-marks-condition marks))))
         #f)
       #f)))
 
 
 (define (.make-assertion-violation who message . irritants)
-  (define stk (shadow-stack))
+  (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (apply
@@ -566,13 +564,13 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (make-irritants-condition irritants)
-            (make-stacktrace-condition stk))))
+            (make-marks-condition marks))))
       #f)
     #f))
 
 
 (define (.make-error who message . irritants)
-  (define stk (shadow-stack))
+  (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (apply
@@ -584,12 +582,12 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (make-irritants-condition irritants)
-            (make-stacktrace-condition stk))))
+            (make-marks-condition marks))))
       #f)
     #f))
 
 (define (.make-implementation-restriction-violation who message . irritants)
-  (define stk (shadow-stack))
+  (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
       (apply
@@ -601,7 +599,7 @@
             (and who (make-who-condition who))
             (make-message-condition message)
             (make-irritants-condition irritants)
-            (make-stacktrace-condition stk))))
+            (make-marks-condition marks))))
       #f)
     #f))
 
@@ -690,8 +688,6 @@
                                         (cond 
                                             [(and (eq? rtd (record-type-rtd &syntax)))
                                                 (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
-                                            [(and (eq? rtd (record-type-rtd &stacktrace)))
-                                                (display "..." p)]
                                             [(and (eq? rtd (record-type-rtd &irritants))
                                                 (pair? x)
                                                 (list? x))

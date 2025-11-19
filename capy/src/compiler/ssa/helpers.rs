@@ -20,6 +20,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         cmp
     }
 
+    pub fn cons(&mut self, a: ir::Value, b: ir::Value) -> ir::Value {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let call = self.builder.ins().call(self.thunks.cons, &[ctx, a, b]);
+        self.builder.inst_results(call)[0]
+    }
+
     pub fn inline_cmp_op(
         &mut self,
         lhs: ir::Value,

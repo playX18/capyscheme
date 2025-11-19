@@ -1,6 +1,7 @@
 use std::{io::Write, mem::offset_of};
 
 use crate::rsgc::{Gc, sync::thread::Thread};
+
 use crate::{
     compiler::ssa::{ContOrFunc, SSABuilder, VarDef, primitive::PrimValue},
     cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
@@ -15,6 +16,7 @@ use cranelift_codegen::ir::{self, BlockArg};
 use cranelift_module::{DataId, Linkage, Module};
 use pretty::BoxAllocator;
 
+#[derive(Debug, Clone, Copy)]
 pub enum Callee {
     /// Callee is obtained by loading code pointer from a closure
     /// and doing an indirect tail-call.
@@ -37,6 +39,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         match self.target {
             ContOrFunc::Cont(c) => Gc::ptr_eq(c.binding, var),
             ContOrFunc::Func(f) => Gc::ptr_eq(f.binding, var),
+        }
+    }
+
+    pub fn closure_from_callee(&mut self, callee: Callee) -> ir::Value {
+        match callee {
+            Callee::Indirect { closure, .. } => closure,
+            Callee::Direct { closure, .. } => closure,
+            Callee::SelfRec(_) => self.rator,
         }
     }
 
@@ -932,21 +942,26 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 let rands = [retk, reth]
                     .into_iter()
-                    .chain(rands.iter().map(|a| self.atom(*a)))
+                    .chain(rands.iter().copied().map(|a| self.atom(a)))
                     .collect::<Vec<_>>();
 
                 let rands = self.push_args(&rands);
 
+                if self.module_builder.stacktraces {
+                    /* do `(with-continuation-mark <stacktrace-key> <info> app)` */
+                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
+
+                    let src_info = self.atom(Atom::Constant(src));
+                    let rator = self.closure_from_callee(callee);
+
+                    self.builder.ins().call(
+                        self.thunks.push_dframe,
+                        &[ctx, src_info, rator, num_rands, rands],
+                    );
+                }
+
                 match callee {
                     Callee::Indirect { target, closure } => {
-                        if self.module_builder.stacktraces {
-                            let ctx = self.builder.ins().get_pinned_reg(types::I64);
-                            let src = self.atom(Atom::Constant(src));
-                            self.builder.ins().call(
-                                self.thunks.debug_trace,
-                                &[ctx, closure, rands, num_rands, src],
-                            );
-                        }
                         self.builder.ins().jump(
                             self.exit_block,
                             &[
@@ -959,28 +974,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     }
 
                     Callee::Direct { target, closure } => {
-                        if self.module_builder.stacktraces {
-                            let ctx = self.builder.ins().get_pinned_reg(types::I64);
-                            let src = self.atom(Atom::Constant(src));
-                            self.builder.ins().call(
-                                self.thunks.debug_trace,
-                                &[ctx, closure, rands, num_rands, src],
-                            );
-                        }
                         self.builder
                             .ins()
                             .return_call(target, &[closure, rands, num_rands]);
                     }
 
                     Callee::SelfRec(block) => {
-                        if self.module_builder.stacktraces {
-                            let ctx = self.builder.ins().get_pinned_reg(types::I64);
-                            let src = self.atom(Atom::Constant(src));
-                            self.builder.ins().call(
-                                self.thunks.debug_trace,
-                                &[ctx, self.rator, rands, num_rands, src],
-                            );
-                        }
                         // just jump back to entrypoint
                         let block_args = [self.rator, rands, num_rands]
                             .into_iter()

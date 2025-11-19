@@ -52,7 +52,6 @@ capy-derive = { path = "capy-derive" }
 [profile.release]
 incremental = true
 rpath = true
-lto = "thin"
 
 
 [profile.dev]

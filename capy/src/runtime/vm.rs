@@ -216,7 +216,7 @@ extern "C" fn trampoline<'a>(
     f(ctx, rator, rands, num_rands)
 }
 
-extern "C-unwind" fn default_retk<'gc>(
+pub(crate) extern "C-unwind" fn default_retk<'gc>(
     ctx: Context<'gc>,
     _rator: Value<'gc>,
     rands: *const Value<'gc>,
@@ -237,7 +237,7 @@ extern "C-unwind" fn default_retk<'gc>(
     }
 }
 
-extern "C-unwind" fn default_reth<'gc>(
+pub(crate) extern "C-unwind" fn default_reth<'gc>(
     _ctx: Context<'gc>,
     _rator: Value<'gc>,
     rands: *const Value<'gc>,

@@ -17,5 +17,5 @@
           &lexical make-lexical-violation lexical-violation?
           &syntax make-syntax-violation syntax-violation? syntax-violation-form syntax-violation-subform
           &undefined make-undefined-violation undefined-violation?
-          &stacktrace make-stacktrace-condition stacktrace-condition? condition-stacktrace)
+          &marks make-marks-condition marks-condition? condition-marks)
   (import (core conditions)))

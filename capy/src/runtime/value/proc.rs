@@ -367,6 +367,10 @@ impl<'gc> Procedures<'gc> {
         for val in free_vars.into_iter() {
             fv.push(val);
         }
+
+        if !meta.is_alist() {
+            panic!("Continuation closures must have alist metadata");
+        }
         Closure::new(
             ctx,
             get_trampoline_from_scheme(),
@@ -389,6 +393,9 @@ impl<'gc> Procedures<'gc> {
         fv.push(proc.into());
         for val in free_vars.into_iter() {
             fv.push(val);
+        }
+        if !meta.is_alist() {
+            panic!("Continuation closures must have alist metadata");
         }
         Closure::new(
             ctx,

@@ -1,4 +1,5 @@
 #![allow(
+    incomplete_features,
     clippy::type_complexity,
     internal_features,
     clippy::new_without_default,
@@ -11,10 +12,12 @@
     link_llvm_intrinsics,
     min_specialization,
     portable_simd,
-    const_type_name
+    const_type_name,
+    explicit_tail_calls
 )]
 
 pub mod api;
+pub mod bytecode;
 pub mod compiler;
 pub mod cps;
 pub mod expander;

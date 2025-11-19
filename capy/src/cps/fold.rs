@@ -258,7 +258,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "unspecified?" => is_unspecified(ctx, a) {
-            Some(Value::new(a.is_unspecified()))
+            Some(Value::new(a == Value::undefined()))
         }
 
         "list?" => is_list(ctx, a) {

@@ -1,22 +1,20 @@
 (define procedure-printer 
     (make-parameter 
         (lambda (proc port slashify)
-            (define interpreted? (interpreted-procedure? proc))
-            (define meta #f)
-            (define name (if meta (let ([n (assq 'name meta)])
-                (if n (cdr n) #f)) #f))
+            
+            (define name (if (list? (procedure-properties proc)) (procedure-name proc) #f))
 
-            (define addr (number->string (hash proc) 16))
-
-            (print "#<procedure" port #f)
-            (when interpreted?
-                (print " (interpreted)" port #f))
-            (when name
-                (print " " port #f)
-                (print name port #f))
-            (print " " port #f)
-            (print addr port #f)
-            (print ">" port #f))))
+            (cond 
+                [name
+                    (print 
+                        (string-append "#<procedure " (if (symbol? name) (symbol->string name) name) ">")
+                        port
+                        #f)]
+                [else 
+                    (print 
+                        (string-append "#<procedure " (number->string (pointer-address (scm->pointer proc)) 16) ">")
+                        port
+                        #f)]))))
 
             ;(print 
             ;    (string-append "#<procedure" (let ([name (procedure-name proc)])
@@ -512,18 +510,7 @@
                 (display ">" port)]
             [(condition? obj)
                 (display "#<condition " port)
-                (if (who-condition? obj) 
-                    (display (condition-who obj) port))
-                (if (message-condition? obj)
-                    (begin 
-                        (display " \"" port)
-                        (display (condition-message obj) port)
-                        (display "\"" port)))
-                (if (and #f (stacktrace-condition? obj))
-                    (begin 
-                        (display " " port)
-                        (display (condition-stacktrace obj) port)))
-                
+                (print-condition obj port)
                 (display ">" port)]
             [else (display "#<unknown>" port)])))
 (define (newline . port) (display "\n" (if (null? port) (current-output-port) (car port))))
