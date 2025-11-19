@@ -1202,7 +1202,7 @@ thunks! {
             }
         };
 
-        if b.is_zero() && b.is_exact() {
+        if b.is_zero() && b.is_exact() && a.is_exact(){
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1239,7 +1239,7 @@ thunks! {
             }
         };
 
-        if b.is_zero() && b.is_exact() {
+        if b.is_zero() && b.is_exact() && a.is_exact() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,
@@ -1276,7 +1276,7 @@ thunks! {
             }
         };
 
-        if b.is_zero() && b.is_exact() {
+        if b.is_zero() && b.is_exact() && a.is_exact() {
             return ThunkResult {
                 code: 1,
                 value: make_assertion_violation(ctx,

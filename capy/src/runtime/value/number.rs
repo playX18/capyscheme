@@ -892,14 +892,7 @@ impl<'gc> BigInt<'gc> {
                 res[i + b1.count()] = loword(sum);
             }
 
-            res.header.word = BigIntNegative::update(
-                if a.negative() != b.negative() {
-                    !a.negative()
-                } else {
-                    a.negative()
-                },
-                res.header.word,
-            );
+            res.header.word = BigIntNegative::update(a.negative() != b.negative(), res.header.word);
 
             Result::<(), ()>::Ok(())
         })

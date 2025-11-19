@@ -217,7 +217,7 @@ mod arith_operations {
 
     #[scheme(name = "quotient")]
     pub fn quotient(x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
-        if y.is_zero() && y.is_exact() {
+        if y.is_zero() && y.is_exact() && x.is_exact() {
             let x = x.into_value(nctx.ctx);
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
@@ -237,7 +237,7 @@ mod arith_operations {
 
     #[scheme(name = "remainder")]
     pub fn remainder(x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
-        if y.is_zero() && y.is_exact() {
+        if y.is_zero() && y.is_exact() && x.is_exact() {
             let x = x.into_value(nctx.ctx);
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
@@ -257,7 +257,7 @@ mod arith_operations {
 
     #[scheme(name = "modulo")]
     pub fn modulo(x: Number<'gc>, y: Number<'gc>) -> Number<'gc> {
-        if y.is_zero() && y.is_exact() {
+        if y.is_zero() && y.is_exact() && x.is_exact() {
             let x = x.into_value(nctx.ctx);
             let y = y.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(

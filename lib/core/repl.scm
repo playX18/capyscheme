@@ -17,7 +17,6 @@
   (define out (if (null? maybe-out) (current-error-port) (car maybe-out)))
   (if (marks-condition? c)
     (stack-trace (condition-marks c) out))
-
   (print-condition c out))
 (current-exception-printer default-exception-printer)
 

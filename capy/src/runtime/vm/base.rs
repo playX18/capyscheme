@@ -258,7 +258,27 @@ pub mod base_ops {
     }
 
     #[scheme(name = "boolean=?")]
-    pub fn boolean_eq(a: bool, b: bool) -> bool {
+    pub fn boolean_eq(a: bool, b: bool, rest: &'gc [Value<'gc>]) -> bool {
+        for v in rest.iter() {
+            if !v.is_bool() {
+                return nctx.wrong_argument_violation(
+                    "boolean=?",
+                    "expected a boolean",
+                    Some(*v),
+                    None,
+                    rest.len() + 2,
+                    &[Value::new(a), Value::new(b)]
+                        .iter()
+                        .chain(rest)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .as_slice(),
+                );
+            }
+            if v.as_bool() != a {
+                return nctx.return_(false);
+            }
+        }
         nctx.return_(a == b)
     }
 

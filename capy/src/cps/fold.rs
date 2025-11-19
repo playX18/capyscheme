@@ -159,7 +159,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             let Some(a) = a.number() else { return None; };
             let Some(b) = b.number() else { return None; };
 
-            if b.is_zero() {
+            if b.is_zero() && (b.is_exact() && a.is_exact()) {
                 return None; // Division by zero
             }
 
@@ -618,7 +618,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "u8/" => u8_div(ctx, a, b) {
             if b.bits() as u8 == 0 {
-            return None; // Division by zero
+                return None; // Division by zero
             }
             Some(Value::from_raw((a.bits() as u8).wrapping_div(b.bits() as u8) as u64))
         }
