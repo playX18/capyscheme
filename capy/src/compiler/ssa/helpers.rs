@@ -33,7 +33,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         i32_fastpath: impl FnOnce(&mut Self, ir::Value, ir::Value, ir::Block) -> ir::Value,
         slowpath: impl FnOnce(&mut Self, ir::Value, ir::Value) -> ir::Value,
     ) -> ir::Value {
-        let mask_lhs_i32 = self.builder.ins().band_imm(lhs, Value::NUMBER_TAG as i64);
+        /*let mask_lhs_i32 = self.builder.ins().band_imm(lhs, Value::NUMBER_TAG as i64);
         let is_lhs_i32 =
             self.builder
                 .ins()
@@ -45,16 +45,20 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .icmp_imm(IntCC::Equal, mask_rhs_i32, Value::NUMBER_TAG as i64);
         let is_both_i32 = self.builder.ins().band(is_lhs_i32, is_rhs_i32);
 
-        let fastpath_bb = self.builder.create_block();
+        let fastpath_bb = self.builder.create_block();*/
 
         let slowpath_bb = self.builder.create_block();
+        let check_rhs = self.builder.create_block();
+        let fastpath_bb = self.builder.create_block();
         let join = self.builder.create_block();
 
         self.builder.append_block_param(join, types::I8);
         self.builder.func.layout.set_cold(slowpath_bb);
-        self.builder
-            .ins()
-            .brif(is_both_i32, fastpath_bb, &[], slowpath_bb, &[]);
+        self.branch_if_int32(lhs, check_rhs, &[], slowpath_bb, &[]);
+        self.builder.switch_to_block(check_rhs);
+        {
+            self.branch_if_int32(rhs, fastpath_bb, &[], slowpath_bb, &[]);
+        }
 
         self.builder.switch_to_block(fastpath_bb);
         {

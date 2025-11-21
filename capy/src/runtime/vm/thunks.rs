@@ -14,6 +14,7 @@ use crate::rsgc::{
     },
     object::{VTable, VTableOf},
 };
+use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
     runtime::{
@@ -389,15 +390,12 @@ thunks! {
         let variable = module.downcast::<Module>().variable(ctx, name);
 
         let Some(variable) = variable else {
-            let ret = unsafe { returnaddress(0) };
-            backtrace::resolve(ret as _, |sym| {
-                println!("LOOKUP_BOUND: {module}::{name}");
-                println!("{sym:?}");
-            });
+
+
             return ThunkResult {
                 code: 1,
                 value:
-                    make_undefined_violation(ctx, name, &format!("variable not found in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
+                    undefined_violation(ctx, Some(name), &format!("variable not found"), &[name, module]),
             };
         };
 
@@ -405,7 +403,7 @@ thunks! {
 
             return ThunkResult {
                 code: 1,
-                value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
+                value: undefined_violation(ctx, Some(name), &format!("variable not bound in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
             };
         }
 
@@ -425,13 +423,10 @@ thunks! {
 
         let Some(var) = variable else {
             let ret = unsafe { returnaddress(0) };
-            backtrace::resolve(ret as _, |sym| {
-                println!("LOOKUP: {module}::{name}");
-                println!("{sym:?}");
-            });
+
             return ThunkResult {
                 code: 1,
-                value: make_undefined_violation(ctx, name, &format!("variable not found in module '{}'", module.downcast::<Module>().name.get()), &[name, module]),
+                value: undefined_violation(ctx, Some(name), &format!("variable not found"), &[name, module]),
             };
         };
 
@@ -461,7 +456,7 @@ thunks! {
 
             return ThunkResult {
                 code: 1,
-                value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.value.downcast::<Module>().name.get()), &[name, module.value]),
+                value: undefined_violation(ctx, Some(name), &format!("variable not bound in module '{}'", module.value.downcast::<Module>().name.get()), &[name, module.value]),
             };
         }
 
@@ -487,7 +482,7 @@ thunks! {
         if !var.is_bound() {
             return ThunkResult {
                 code: 1,
-                value: make_undefined_violation(ctx, name, &format!("variable not bound in module '{}'", module.value.downcast::<Module>().name.get()), &[name, module.value]),
+                value: undefined_violation(ctx, Some(name), &format!("variable not bound in module '{}'", module.value.downcast::<Module>().name.get()), &[name, module.value]),
             };
         }
 
@@ -963,7 +958,7 @@ thunks! {
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(ctx, a, b) == Some(Ordering::Equal)).into() }
+        ThunkResult { code: 0, value: (Number::equal(ctx, a, b)).into() }
     }
 
     pub fn number_lt(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
@@ -2002,7 +1997,7 @@ thunks! {
             }
         };
 
-        ThunkResult { code: 0, value: (!n.is_finite()).into() }
+        ThunkResult { code: 0, value: (n.is_infinite()).into() }
     }
 
     pub fn nanp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
@@ -4088,9 +4083,9 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
     let Some(module) = crate::runtime::modules::resolve_module(ctx, name, false, false) else {
         return ThunkResult {
             code: 1,
-            value: make_undefined_violation(
+            value: undefined_violation(
                 ctx,
-                Symbol::from_str(ctx, "resolve-module").into(),
+                Some(Symbol::from_str(ctx, "resolve-module").into()),
                 &format!("module '{name}' not found"),
                 &[name],
             ),

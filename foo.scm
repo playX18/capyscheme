@@ -1,3 +1,29 @@
-(define x -1652555047284588078)
-
-(printf "x=~a\n" x)
+(let ([test-i+o
+           (lambda (buf)
+             (printf "=== Testing with buffer mode: ~a ===\n" buf)
+             (let ([p (open-file-input/output-port "io-tmp1"
+                                                   (file-options no-fail)
+                                                   buf)])
+               (if (and (port-has-port-position? p)
+                        (port-has-set-port-position!? p))
+                   (begin
+                     (port-position p)
+                     (printf "expected=~a, got=~a\n" 0 (port-position p))
+                     (put-bytevector p #vu8(7 9 11))
+                     (unless (eq? buf 'none)
+                       (flush-output-port p))
+                     (printf "expected=~a, got=~a\n" 3 (port-position p))
+                     (set-port-position! p 0)
+                     (printf "expected=~a, got=~a\n" #vu8(7 9) (get-bytevector-n p 2))
+                     (put-bytevector p #vu8(13 15 17))
+                     (unless (eq? buf 'none)
+                       (flush-output-port p))
+                     (set-port-position! p 3)
+                     (printf "expected=~a, got=~a\n" #vu8(15 17) (get-bytevector-n p 2)))
+                   (begin
+                     (put-bytevector p #vu8(7 9 11))
+                     (printf "expected=~a, got=~a\n" (eof-object) (get-u8 p))))
+               (close-port p)))])
+      (test-i+o 'line)
+      (test-i+o 'block)
+      (test-i+o 'none))

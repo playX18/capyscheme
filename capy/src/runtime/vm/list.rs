@@ -142,16 +142,6 @@ pub mod list_ops {
 
     #[scheme(name = "list-ref")]
     pub fn list_ref(ls: Value<'gc>, index: usize) -> Result<Value<'gc>, Value<'gc>> {
-        if !ls.is_list() {
-            return nctx.wrong_argument_violation(
-                "list-ref",
-                "expected a list",
-                Some(ls),
-                Some(1),
-                1,
-                &[ls],
-            );
-        }
         let mut current = ls;
         for _ in 0..index {
             if !current.is_pair() {
@@ -364,16 +354,6 @@ pub mod list_ops {
 
     #[scheme(name = "list-tail")]
     pub fn list_tail(lst: Value<'gc>, n: usize) -> Result<Value<'gc>, Value<'gc>> {
-        if !lst.is_list() {
-            return nctx.wrong_argument_violation(
-                "list-tail",
-                "expected a list",
-                Some(lst),
-                Some(1),
-                2,
-                &[lst, Value::new(n as i32)],
-            );
-        }
         let mut walk = lst;
         let mut count = 0;
 
