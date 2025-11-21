@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 
-members = ["capy", "capy-derive"]
+members = ["asmgen","capy", "capy-derive"]
 default-members = ["capy"]
 
 [workspace.dependencies]

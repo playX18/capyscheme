@@ -36,9 +36,9 @@ macro_rules! for_each_opcode {
             (lt,     "<?", {})
 
             (make_closure, "make-closure", { index: u32, nfree: u16 })
-            (shuffle_down, "shuffle-down", { n: u16 })
+
             (return_call, "return-call", { nargs: u16 })
-            (return_call_direct, "return-call/direct", { index: u32, nargs: u16 })
+
 
             (call_intrinsic0, "call-intrinsic0", { index: u8 })
             (call_intrinsic1, "call-intrinsic1", { index: u8 })

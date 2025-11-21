@@ -5002,7 +5002,13 @@ impl<'gc> Number<'gc> {
 
             Number::Flonum(_) => unreachable!(),
 
-            _ => false,
+            Number::Complex(lhs) => match rhs {
+                Number::Complex(rhs) => {
+                    Self::exact_equal(lhs.real, rhs.real) && Self::exact_equal(lhs.imag, rhs.imag)
+                }
+
+                _ => false,
+            },
         }
     }
 
@@ -5466,7 +5472,11 @@ impl<'gc> Number<'gc> {
     }
 
     pub fn is_infinite(&self) -> bool {
-        !self.is_finite()
+        match self {
+            Self::Flonum(n) => n.is_infinite(),
+            Self::Complex(c) => c.real.is_infinite() || c.imag.is_infinite(),
+            _ => false,
+        }
     }
 
     pub fn is_exact_integer(&self) -> bool {
@@ -5755,6 +5765,10 @@ impl<'gc> Number<'gc> {
         }
 
         self.negate(ctx)
+    }
+
+    pub fn rectangular(self, ctx: Context<'gc>, rhs: Self) -> Self {
+        Self::normalize_complex(ctx, self, rhs)
     }
 
     pub fn polar(self, ctx: Context<'gc>, rhs: Self) -> Self {

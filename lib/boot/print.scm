@@ -109,8 +109,141 @@
     (define (print-slashed-symbol x p)
         (let* ([s (symbol->string x)]
                [n (string-length s)])
-            ;; TODO: R7RS
-            (printstr s p)))
+            (cond
+                [(vanilla-symbol? x s)
+                    (printstr s p)]
+                [else (print-slashed-symbol-string s p #f)])))
+
+
+  ;; Prints the string as though it were enclosed within vertical bars.
+  ;; If r7rs? is true, rely on R7RS lexical syntax for strings and symbols.
+  ;; Otherwise use inline hex escapes for all odd characters.
+
+  (define (print-slashed-symbol-string s p r7rs?)
+
+    (let* ((n (string-length s)))
+
+      (define (loop i)
+        (if (< i n)
+            (let ((c (string-ref s i)))
+              (cond ((or (char<=? #\a c #\z)
+                         (char<=? #\A c #\Z)
+                         (case c
+                          ((#\! #\$ #\% #\& #\* #\/ #\: 
+                            #\< #\= #\> #\? #\^ #\_ #\~)
+                           ; special initial
+                           #t)
+                          ((#\0 #\1 #\2 #\3 #\4
+                            #\5 #\6 #\7 #\8 #\9
+                            #\+ #\- #\. #\@)
+                           ; special subsequent
+                           (or r7rs? (< 0 i)))
+                          (else
+                           (if (memq (transcoder-codec (port-transcoder p))
+                                     '(utf-8 utf-16))
+                               (let ((cat (char-general-category c)))
+                                 (or (and (< 127 (char->integer c))
+                                          (memq cat
+                                                '(Lu Ll Lt Lm Lo Mn Nl No
+                                                  Pd Pc Po Sc Sm Sk So Co)))
+                                     (and (or r7rs? (< 0 i))
+                                          (memq cat '(Nd Mc Me)))))
+                               #f))))
+                     (write-char c p)
+                     (loop (+ i 1)))
+                    (r7rs?
+                     (case c
+                      ((#\\ #\|)
+                       (write-char #\\ p)
+                       (write-char c p))
+                      ((#\alarm #\backspace #\tab #\newline #\return)
+                       (write-char #\\ p)
+                       (write-char (cdr (assq c mnemonic-escape-table)) p))
+                      (else
+                       (if (char<=? #\space c #\~)
+                           (write-char c p)
+                           (print-inline-hex-escape c))))
+                     (loop (+ i 1)))
+                    (else
+                     (print-inline-hex-escape c)
+                     (loop (+ i 1)))))))
+
+      (define (print-inline-hex-escape c)
+        (let ((hexstring (number->string (char->integer c) 16)))
+          (write-char #\\ p)
+          (write-char #\x p)
+          (print-slashed-string hexstring p)
+          (write-char #\; p)))
+
+      (define mnemonic-escape-table
+        '((#\alarm . #\a)
+          (#\backspace . #\b)
+          (#\tab . #\t)
+          (#\newline . #\n)
+          (#\return . #\r)))
+
+      (loop 0)))
+
+    (define (vanilla-symbol? x s)
+        "Check if symbol is safe to print by displaying its string"
+        (let ((n (string-length s)))
+
+        (define (loop i)
+            (if (= i n)
+                #t
+                (let ((c (string-ref s i)))
+                    (cond ((or (char<=? #\a c #\z)
+                                (char<=? #\A c #\Z)
+                                (case c
+                                ((#\! #\$ #\% #\& #\* #\/ #\: 
+                                    #\< #\= #\> #\? #\^ #\_ #\~)
+                                ; special initial
+                                #t)
+                                ((#\0 #\1 #\2 #\3 #\4
+                                    #\5 #\6 #\7 #\8 #\9)
+                                ; special subsequent
+                                (< 0 i))
+                                ((#\@)
+                                (or (< 0 i)
+                                    (io/port-allows-r7rs-weirdness? p)))
+                                ((#\.)
+                                ; check for peculiar identifiers
+                                (or (< 0 i)
+                                    (eq? x '...)
+                                    (and (io/port-allows-r7rs-weirdness? p)
+                                            (< (+ i 1) n)
+                                            (let ((c (string-ref s (+ i 1))))
+                                            (case c
+                                            ((#\. #\+ #\- #\@)
+                                                #t)
+                                            ((#\0 #\1 #\2 #\3 #\4
+                                                #\5 #\6 #\7 #\8 #\9)
+                                                #f)
+                                            (else #t))))))
+                                ((#\+ #\-)
+                                ; check for peculiar identifiers
+                                (or (< 0 i)
+                                    (eq? x '+)
+                                    (eq? x '-)
+                                    (and (io/port-allows-r6rs-weirdness? p)
+                                            (char=? c #\-)
+                                            (< (+ i 1) n)
+                                            (char=? (string-ref s (+ i 1)) #\>))))
+                                (else
+                                (if (memq (transcoder-codec (port-transcoder p))
+                                            '(utf-8 utf-16))
+                                    (let ((cat (char-general-category c)))
+                                        (or (and (< 127 (char->integer c))
+                                                (memq cat
+                                                        '(Lu Ll Lt Lm Lo Mn Nl No
+                                                        Pd Pc Po Sc Sm Sk So Co)))
+                                            (and (< 0 i)
+                                                (memq cat '(Nd Mc Me)))))
+                                    #f))))
+                            (loop (+ i 1)))
+                            (else #f)))))
+
+        (and (> n 0) (loop 0))))
 
     (define (print-slashed-string s p)
         (define (loop i n)

@@ -508,7 +508,7 @@ mod arith_operations {
             );
         }
 
-        if !x.is_finite() {
+        if x.is_infinite() {
             let x = x.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
                 "div",
@@ -561,7 +561,7 @@ mod arith_operations {
             );
         }
 
-        if !x.is_finite() {
+        if x.is_infinite() {
             let x = x.into_value(nctx.ctx);
             return nctx.wrong_argument_violation(
                 "div0",
@@ -1470,7 +1470,7 @@ mod arith_operations {
         } else {
             imag
         };
-        let c = Number::Complex(Complex::new(nctx.ctx, real, imag));
+        let c = Number::rectangular(real, ctx, imag);
         nctx.return_(c)
     }
 
@@ -1497,6 +1497,10 @@ mod arith_operations {
                 2,
                 &[theta],
             );
+        }
+
+        if theta.is_zero() {
+            return nctx.return_(Ok(r));
         }
         let c = r.polar(nctx.ctx, theta);
         nctx.return_(Ok(c))

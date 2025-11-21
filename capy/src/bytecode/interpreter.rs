@@ -51,8 +51,11 @@
 //! Native calls are handled by `native-call` opcode
 
 use crate::{
-    prelude::{ClosureRef, Value},
-    runtime::{Context, vm::VMResult},
+    prelude::{Closure, ClosureRef, Number, Value},
+    runtime::{
+        Context,
+        vm::{VMResult, exceptions::ConditionBuilder},
+    },
 };
 use mmtk::util::Address;
 use std::sync::atomic::Ordering;
@@ -150,6 +153,12 @@ pub union IValue<'gc> {
     pub u64: u64,
     pub i32: i32,
     pub addr: Address,
+}
+
+impl<'gc> IValue<'gc> {
+    pub fn value(&self) -> Value<'gc> {
+        unsafe { self.value }
+    }
 }
 
 impl<'gc> From<Value<'gc>> for IValue<'gc> {
@@ -658,6 +667,198 @@ pub fn equal<'gc>(
     )
 }
 
+pub fn neq<'gc>(
+    _ctx: Context<'gc>,
+    mut ip: InstructionPointer,
+    mut sp: *mut IValue<'gc>,
+    fp: *mut IValue<'gc>,
+    accumulator: IValue<'gc>,
+    _cf: CompareFlag,
+) -> InterpreterResult<'gc> {
+    {
+        let lhs = accumulator.value();
+        let rhs = pop!(sp).value();
+
+        let Some(lhs) = lhs.number() else {
+            become raise(
+                _ctx,
+                ip,
+                sp,
+                fp,
+                ConditionBuilder::new(_ctx)
+                    .assertion()
+                    .who("=")
+                    .message("expected number as first argument")
+                    .irritants(&[lhs])
+                    .build()
+                    .into(),
+                _cf,
+            )
+        };
+
+        let Some(rhs) = rhs.number() else {
+            become raise(
+                _ctx,
+                ip,
+                sp,
+                fp,
+                ConditionBuilder::new(_ctx)
+                    .assertion()
+                    .who("=")
+                    .message("expected number as second argument")
+                    .irritants(&[rhs])
+                    .build()
+                    .into(),
+                _cf,
+            )
+        };
+
+        next!(
+            _ctx,
+            ip,
+            sp,
+            fp,
+            accumulator,
+            if Number::equal(_ctx, lhs, rhs) {
+                CompareFlag::Equal
+            } else {
+                CompareFlag::None
+            }
+        )
+    }
+}
+
+pub fn lt<'gc>(
+    _ctx: Context<'gc>,
+    mut ip: InstructionPointer,
+    mut sp: *mut IValue<'gc>,
+    fp: *mut IValue<'gc>,
+    accumulator: IValue<'gc>,
+    _cf: CompareFlag,
+) -> InterpreterResult<'gc> {
+    let lhs = accumulator.value();
+    let rhs = pop!(sp).value();
+
+    let Some(lhs) = lhs.number() else {
+        become raise(
+            _ctx,
+            ip,
+            sp,
+            fp,
+            ConditionBuilder::new(_ctx)
+                .assertion()
+                .who("<")
+                .message("expected number as first argument")
+                .irritants(&[lhs])
+                .build()
+                .into(),
+            _cf,
+        )
+    };
+
+    let Some(rhs) = rhs.number() else {
+        become raise(
+            _ctx,
+            ip,
+            sp,
+            fp,
+            ConditionBuilder::new(_ctx)
+                .assertion()
+                .who("<")
+                .message("expected number as second argument")
+                .irritants(&[rhs])
+                .build()
+                .into(),
+            _cf,
+        )
+    };
+
+    next!(
+        _ctx,
+        ip,
+        sp,
+        fp,
+        accumulator,
+        match Number::compare(_ctx, lhs, rhs) {
+            Some(std::cmp::Ordering::Less) => CompareFlag::LessThan,
+            Some(_) => CompareFlag::None,
+            None => CompareFlag::Invalid,
+        }
+    )
+}
+
+pub fn make_closure<'gc>(
+    _ctx: Context<'gc>,
+    mut ip: InstructionPointer,
+    sp: *mut IValue<'gc>,
+    fp: *mut IValue<'gc>,
+    _accumulator: IValue<'gc>,
+    _cf: CompareFlag,
+) -> InterpreterResult<'gc> {
+    let _index = ip.read32();
+    // Placeholder: create closure from function at index
+    let closure = Value::null(); // Replace with actual closure creation
+    next!(_ctx, ip, sp, fp, closure.into(), _cf)
+}
+
+pub fn return_call<'gc>(
+    _ctx: Context<'gc>,
+    mut ip: InstructionPointer,
+    mut sp: *mut IValue<'gc>,
+    fp: *mut IValue<'gc>,
+    accumulator: IValue<'gc>,
+    _cf: CompareFlag,
+) -> InterpreterResult<'gc> {
+    let nargs = ip.read16() as usize;
+
+    if !accumulator.value().is::<Closure>() {
+        become raise(
+            _ctx,
+            ip,
+            sp,
+            fp,
+            ConditionBuilder::new(_ctx)
+                .assertion()
+                .message("attempt to invoke non-procedure")
+                .irritants(&[accumulator.value()])
+                .build()
+                .into(),
+            _cf,
+        );
+    }
+
+    unsafe {
+        let clos = accumulator.value().downcast::<Closure>();
+        let code = clos.code.to_ptr::<u8>();
+
+        // Shift arguments down to frame pointer
+        // fp[0] = closure (replaces old self)
+        // fp[1..] = arguments
+        // fp[1] might be retk if calling a normal function
+        fp.write(IValue { value: clos.into() });
+
+        // Move arguments from current stack position down to fp+1
+        let args_start = sp.sub(nargs);
+        std::ptr::copy(args_start, fp.add(1), nargs);
+
+        // Update stack pointer to point after the arguments
+        sp = fp.add(1 + nargs);
+
+        // Jump to the new closure's code
+        let mut new_ip = InstructionPointer(code);
+        become HANDLERS[new_ip.read8() as usize](
+            _ctx,
+            new_ip,
+            sp,
+            fp,
+            IValue {
+                value: Value::undefined(),
+            },
+            CompareFlag::None,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InstructionPointer(*const u8);
 
@@ -720,17 +921,39 @@ impl InstructionPointer {
 /// This function performs call into `raise` on Scheme side
 /// with current continuation set to continuation that returns
 /// to the VM (if `raise` returns).
+#[allow(unused)]
 fn raise<'gc>(
     ctx: Context<'gc>,
+    _ip: InstructionPointer,
     mut sp: *mut IValue<'gc>,
     fp: *mut IValue<'gc>,
     accumulator: IValue<'gc>,
+    _cf: CompareFlag,
 ) -> InterpreterResult<'gc> {
     let raise_proc = ctx.public_ref("capy", "raise").expect("pre-boot error"); // => no boot module, not yet loaded
 
-    push!(sp, accumulator);
+    unsafe {
+        if !raise_proc.is::<Closure>() {
+            panic!("pre-boot error: {}", accumulator.value);
+        }
+        sp = fp;
 
-    todo!()
+        push!(sp, raise_proc.into()); // procedure to call
+        push!(sp, Value::undefined().into()); // retk placeholder
+        push!(sp, accumulator); // exn
+
+        let clos = raise_proc.downcast::<Closure>();
+        become HANDLERS[clos.code.load::<u8>() as usize](
+            ctx,
+            InstructionPointer(clos.code.to_ptr::<u8>()),
+            sp,
+            fp,
+            IValue {
+                value: Value::undefined(),
+            },
+            CompareFlag::None,
+        )
+    }
 }
 
 /// Call into Scheme code.

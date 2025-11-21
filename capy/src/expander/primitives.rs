@@ -588,7 +588,7 @@ primitive_expanders!(
 
     "-" ex_minus<'gc>(ctx, args, src) {
         transitive(ctx, src, "-", args, None, true, Some(|ctx, src, arg| {
-            Term::prims(ctx, "-", [constant(ctx, 0i32.into()), arg], src)
+            Term::prims(ctx, "*", [constant(ctx, (-1i32).into()), arg], src)
         }))
     }
 

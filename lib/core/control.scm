@@ -76,6 +76,14 @@
                 (format p "  at <unknown file>:~%")])
 
             (cond 
+              [(interpreted-procedure? proc)
+                => (lambda (meta)
+                  (format p "(interpreted ~a)" meta))]
+              [(interpreted-expression? proc) 
+                => (lambda (meta)
+                  (format p "(interpreted expression ~a)" meta))])
+
+            (cond 
               [(procedure-name proc)
                 => (lambda (name)
                       (format p "\t~s~%" (cons name args)))]

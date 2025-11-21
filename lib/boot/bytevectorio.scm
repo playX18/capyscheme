@@ -128,6 +128,7 @@
          (limit (vector-ref data bytevector-io.limit))
          (n     (bytevector-length buffer))
          (count (max (min n (- limit i)))))
+
     (if (<= count 0)
         'eof
         (begin (r6rs:bytevector-copy! b i buffer 0 count)
