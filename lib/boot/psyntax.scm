@@ -34,8 +34,7 @@
 (define variable-transformer-procedure (record-accessor (record-type-rtd <variable-transformer>) 0))
 
 (define syntax-error #f)
-
-
+(define app-sym '#%app)
 
 (let ([syntax? (module-ref (current-module) 'syntax?)]
       [make-syntax (module-ref (current-module) 'make-syntax)]
@@ -1157,6 +1156,27 @@
             (lambda () (syntax-type e r w (source-annotation e) #f mod #f))
             (lambda (type value form e w s mod)
                 (expand-expr type value form e r w s mod))))
+
+    (define (make-explicit sym e r w s mod)
+      (define sym-s (make-syntax sym empty-wrap mod s))
+      (define new-s (make-syntax (cons sym-s e) empty-wrap mod s))
+      new-s)
+
+    (define (expand-implicit sym e r w s mod)
+      (define id (wrap sym w mod))
+      (format #t "resolving implicit syntax reference ~a for ~s in ~a~%" sym (syntax->datum e) mod)
+      (call-with-values 
+        (lambda () (resolve-identifier sym w r mod #t))
+        (lambda (type value mod*)
+          (format #t "expanding implicit syntax reference ~a of type ~s in ~a~%" sym type mod*)
+          (cond 
+            [(eq? type 'macro)
+              (expand (expand-macro value (make-explicit sym e r w s mod) r w s #f mod) r empty-wrap s #f mod)]
+            [(eq? type 'core)
+              (value (make-explicit sym e r w s mod) r w s mod)]
+            [else 
+              (syntax-violation #f "implicit syntax reference is not a macro or core form" sym e)]))))
+    
     (define (expand-expr type value form e r w s mod)
         (cond
             [(eq? type 'lexical)
@@ -1168,6 +1188,18 @@
                 (call-with-values (lambda () (value e r w mod))
                     (lambda (e r w s mod)
                         (expand e r w mod)))]
+            ;[(or (eq? type 'lexical-call) (eq? type 'global-call) (eq? type 'primitive-call) (eq? type 'call))
+            ;    (when (eq? type 'global-call)
+            ;      (format #t "global-call of ~s in ~a~%" (syntax->datum e) (or (and (syntax? value)
+            ;                                      (syntax-module value))
+            ;                                 mod)))
+            ;    (format #t "#%app on ~s~%" (syntax->datum e))
+                ;(expand 
+                ;  (cons 
+                ;    (make-syntax app-sym empty-wrap mod s) e)
+                ; r w mod)]
+            ;  (expand-implicit app-sym e r w s mod)
+            ;]
             [(eq? type 'lexical-call)
                 (expand-call
                     (let ([id (car e)])
@@ -2003,7 +2035,20 @@
     (global-extend 'begin 'begin '())
     (global-extend 'eval-when 'eval-when '())
 
-  
+    (global-extend 'core app-sym
+      (lambda (e r w s mod)
+        (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ . each-any))))
+          (if tmp
+              (apply (lambda (es)
+                      (cond 
+                        [(null? es)
+                          (build-data s '())]
+                        [else 
+                          (let ([rator (expand (car es) r w mod)]
+                                [rands (map (lambda (x) (expand x r w mod)) (cdr es))])
+                            (build-call s rator rands))]))
+                     tmp)
+              (syntax-violation #f "source expression failed to match any pattern" tmp)))))
     (global-extend 'core 'with-continuation-mark 
       (lambda (e r w s mod)
         (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any . each-any))))

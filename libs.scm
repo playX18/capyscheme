@@ -1,6 +1,6 @@
 
 
-(library (core intrinsics)
+(library (ccore intrinsics)
    (export               
                          library define-library define define-syntax
                          quote lambda if set!
@@ -60,7 +60,7 @@
                          values call-with-values dynamic-wind)
     (import (capy)))
 
-(library (core primitives)
+(library (ccore primitives)
     (export 
         cond-expand
         when unless
@@ -740,7 +740,7 @@
     (import (capy)))
 
 
-(library (core syntax-case)
+(library (ccore syntax-case)
     (export 
         syntax-case
           syntax

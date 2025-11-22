@@ -292,7 +292,7 @@ impl<'gc> Module<'gc> {
         let guard = IMPORT_OBARRAY_MUTEX.lock();
         let var = self.import_obarray.get(ctx, sym);
         drop(guard);
-
+        let is_app = sym.to_string() == "#%app";
         if let Some(var) = var {
             return Some(var.downcast());
         }
@@ -310,8 +310,17 @@ impl<'gc> Module<'gc> {
                             self.name.get()
                         );
                     }
+
                     self.import_obarray.put(ctx, sym, var);
                     return Some(var);
+                } else {
+                    if is_app {
+                        println!(
+                            "did not find #%app in imports of {} (checking {})",
+                            self.name.get(),
+                            iface.name.get()
+                        );
+                    }
                 }
 
                 uses = uses.cdr();

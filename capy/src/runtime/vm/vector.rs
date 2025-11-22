@@ -283,6 +283,7 @@ pub mod vector_ops {
     ) -> Result<u8, Value<'gc>> {
         if k >= bv.len() {
             let ctx = nctx.ctx;
+            println!("OOB in BV: {bv:p}, len: {}, k: {}", bv.len(), k);
             return nctx.wrong_argument_violation(
                 "bytevector-u8-ref",
                 "index out of bounds",

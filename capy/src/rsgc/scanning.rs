@@ -58,6 +58,8 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         }
 
         let Some(mut state) = thread.native_data_mut().mutator_state else {
+            factory.create_process_roots_work(sv.set.into_iter().collect());
+
             return;
         };
 

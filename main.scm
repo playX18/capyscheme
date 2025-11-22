@@ -1,7 +1,15 @@
-(import (rnrs))
 
-(define (main args)
-  ((@@ (boot cli) enter) args))
+(library (main)
+  (export #%app)
+  (import (rnrs) (prefix (only (capy) #%app printf) orig-))
 
-(collect-garbage)
-(dump-heap "capy.heap" main)
+
+(define-syntax #%app 
+  (syntax-rules () 
+    [(_ expr ...)
+      (begin
+        (|orig-#%app| orig-printf "at ~s~%" '(expr ...))
+        (|orig-#%app| expr ...))]))
+
+
+(orig-printf "Hello, World!~%"))

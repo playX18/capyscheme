@@ -682,13 +682,23 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 return Ok(Value::null());
             }
 
-            _ => todo!(
-                "Unhandled node kind: {}: {} at {} in {}",
-                node.kind(),
-                self.text_of(node),
-                node.start_position().row,
-                self.source_file
-            ),
+            _ => {
+                if self.text_of(node) == "#%app" {
+                    return Ok(self.ctx.intern("#%app"));
+                }
+                if self.text_of(node) == "'#%app" {
+                    let quote: Value<'gc> = Symbol::from_str(self.ctx, "quote").into();
+                    let app: Value<'gc> = self.ctx.intern("#%app");
+                    return Ok(self.wrap(node, list!(self.ctx, quote, app).into()));
+                }
+                todo!(
+                    "Unhandled node kind: {}: {} at {} in {}",
+                    node.kind(),
+                    self.text_of(node),
+                    node.start_position().row,
+                    self.source_file
+                )
+            }
         }
     }
 
