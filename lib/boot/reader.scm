@@ -383,6 +383,17 @@
       ((char=? c #\#)                 ;the mighty octothorpe
        (let ((c (get-char p)))
          (case c
+           ((#\%)
+            (receive (typ id) (get-identifier p #\% #f)
+              (case id 
+                ((%app)
+                  (values 'identifier (string->symbol "#%app")))
+                ((%datum)
+                  (values 'identifier (string->symbol "#%datum")))
+                ((%top)
+                  (values 'identifier (string->symbol "#%top")))
+                (else 
+                  (reader-warning p "Invalid #% syntax: expected #%app, #%datum, or #%top" id)))))
            ((#\() (values 'vector #f))
            ((#\') (values 'abbrev 'syntax))
            ((#\`) (values 'abbrev 'quasisyntax))

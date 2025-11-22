@@ -9,7 +9,7 @@ use crate::rsgc::{
     object::VTable,
 };
 use easy_bitfield::{BitField, BitFieldTrait};
-use std::ops::{Deref, Index};
+use std::ops::{Deref, DerefMut, Index};
 use std::{mem::offset_of, ops::IndexMut};
 
 use crate::runtime::{Context, value::*};
@@ -214,8 +214,18 @@ pub struct ByteVector {
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
 extern "C" fn trace_byte_vector(vec: GCObject, vis: &mut Visitor) {
-    let _ = vec;
-    let _ = vis;
+    unsafe {
+        let bv = vec.to_address().as_mut_ref::<ByteVector>();
+
+        if bv.is_mapping() {
+            let orig = bv.contents.sub(size_of::<ByteVector>());
+            let mut orig_bv = Gc::from_ptr(orig.to_ptr::<ByteVector>());
+            orig_bv.trace(vis);
+            bv.contents = Address::from_ptr(orig_bv.as_ptr().add(1));
+        } else {
+            bv.contents = vec.to_address().add(size_of::<ByteVector>());
+        }
+    }
 }
 
 extern "C" fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
@@ -461,12 +471,11 @@ pub struct Tuple<'gc> {
 
 extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
     unsafe {
-        let tuple = tuple
-            .to_address()
-            .as_mut_ref::<Tuple<'static>>()
-            .as_slice_mut_unchecked();
+        let tuple = tuple.to_address().as_mut_ref::<Tuple<'static>>();
 
-        tuple.trace(vis);
+        for i in 0..tuple.len() {
+            tuple[i].trace(vis);
+        }
     }
 }
 
@@ -570,6 +579,19 @@ impl<'gc> Deref for Tuple<'gc> {
 
     fn deref(&self) -> &Self::Target {
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
+    }
+}
+
+impl<'gc> DerefMut for Tuple<'gc> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), self.len()) }
+    }
+}
+
+impl<'gc> IndexMut<usize> for Tuple<'gc> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        assert!(index < self.len(), "Index out of bounds");
+        unsafe { &mut *self.data.as_mut_ptr().add(index) }
     }
 }
 

@@ -73,7 +73,6 @@
       (core-hash-clear! (module-import-obarray module)))))
 
 (define (module-use-interfaces! module interfaces)
-
   (let* ([cur (module-uses module)]
          [new (let loop ([in interfaces] [out '()])
                 (if (null? in)

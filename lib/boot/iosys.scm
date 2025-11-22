@@ -1491,10 +1491,13 @@
 
 (define (io/get-u8 p lookahead?)
   (assert (port? p))
+
+
   (let ((type (tuple-ref p port.type))
         (buf  (tuple-ref p port.mainbuf))
         (ptr  (tuple-ref p port.mainptr))
         (lim  (tuple-ref p port.mainlim)))
+    
     (cond ((not (eq? type type:binary-input))
            (if (eq? type type:binary-input/output)
                (io/get-u8-input/output p lookahead?)
@@ -1521,6 +1524,7 @@
         (buf  (tuple-ref p port.mainbuf))
         (ptr  (tuple-ref p port.mainptr))
         (lim  (tuple-ref p port.mainlim)))
+    
     (cond ((not (eq? type type:textual-input))
            (if (eq? type type:textual-input/output)
                (io/get-char-input/output p lookahead?)
