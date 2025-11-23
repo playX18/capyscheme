@@ -50,6 +50,9 @@
 ($primitive-load "boot/num2str.scm")
 ($primitive-load "boot/reader.scm")
 ($primitive-load "boot/eval.scm")
+
+
+
 ; load file containing base macros
 (define primitive-load
     (lambda (filename)
@@ -62,10 +65,20 @@
                     (lambda () (thunk))))))))
 
 (primitive-load "boot/base.scm")
-
 (primitive-load "boot/libraries.scm")
 (primitive-load "boot/match.scm")
 (primitive-load "boot/cli.scm")
+
+;($primitive-load "expander/syntax.scm")
+;($primitive-load "expander/set.scm")
+;($primitive-load "expander/scope.scm")
+;($primitive-load "expander/match.scm")
+;($primitive-load "expander/namespace.scm")
+;($primitive-load "expander/binding.scm")
+;($primitive-load "expander/core.scm")
+;($primitive-load "expander/require+provide.scm")
+;($primitive-load "expander/expand-context.scm")
+;($primitive-load "expander/expand.scm")
 
 (let ([user-module (define-module* '(capy user))])
   (current-module user-module))

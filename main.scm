@@ -1,10 +1,6 @@
-
 (library (main)
-  (export #%app)
-  (import (rnrs) (prefix (only (capy) #%app printf) orig-))
-
-
-
+(export #%app)
+(import (rnrs) (prefix (only (capy) #%app printf) orig-))
 
 (define-syntax #%app
   (syntax-rules () 
@@ -12,5 +8,4 @@
       (begin
         (|orig-#%app| orig-printf "at ~s~%" '(expr ...))
         (|orig-#%app| expr ...))]))
-(orig-printf "loaded main.scm~%")
 )
