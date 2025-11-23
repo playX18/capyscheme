@@ -152,6 +152,7 @@
                 (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
                 
                 (define out '())
+                
                 (when (arg-results-ref res "script")
                     (set! interactive? #f)
                     (set! out (cons `((@@ (capy) load) ,(arg-results-ref res "script")) out)))
@@ -172,6 +173,11 @@
         (abbreviation "c")
         (help "Evaluate a command string")
         (value-help "STRING"))
+    (add-option! parser 
+        "load"
+        (abbreviation "l")
+        (help "Load specified file before entering REPL or running script")
+        (value-help "FILE"))
     (add-multi-option! parser 
         "load-path"
         (abbreviation "L")

@@ -305,10 +305,13 @@ thunks! {
                 format!("expected {} value(s), got {}", expected, got)
             }
         } else {
-            println!("WRONG ARGUMENTS TO {subr} (meta: {meta})", meta = if subr.is::<Closure>() {
-                subr.downcast::<Closure>().meta.get()
-            } else {
-                Value::new(false)
+            let ret = unsafe { returnaddress(0) };
+            backtrace::resolve(ret as _, |sym| {
+                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}", meta = if subr.is::<Closure>() {
+                    subr.downcast::<Closure>().meta.get()
+                } else {
+                    Value::new(false)
+                });
             });
             crate::runtime::vm::debug::print_stacktraces_impl(ctx);
             if expected < 0 {

@@ -4,12 +4,13 @@
   (import (rnrs) (prefix (only (capy) #%app printf) orig-))
 
 
-(define-syntax #%app 
+
+
+(define-syntax #%app
   (syntax-rules () 
     [(_ expr ...)
       (begin
         (|orig-#%app| orig-printf "at ~s~%" '(expr ...))
         (|orig-#%app| expr ...))]))
-
-
-(orig-printf "Hello, World!~%"))
+(orig-printf "loaded main.scm~%")
+)

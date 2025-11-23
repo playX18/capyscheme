@@ -331,6 +331,8 @@
                 (display (syntax-expression x))
                 (display " at " p)
                 (display (syntax-sourcev x) p)
+                (display " in " p)
+                (display (syntax-module x) p)
                 (display ">" p)]
             [(module? x)
                 (display "#<module " p)

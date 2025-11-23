@@ -1050,7 +1050,6 @@
                   (lambda (type value mod*)
                       (cond
                           [(eq? type 'macro)
-                              
                               (if for-car?
                                   (values type value e e w s mod)
                                   (syntax-type (expand-macro value e r w s rib mod) r empty-wrap s rib mod #f))]
@@ -1158,20 +1157,23 @@
                 (expand-expr type value form e r w s mod))))
 
     (define (make-explicit sym e r w s mod)
-      (define sym-s (make-syntax sym empty-wrap mod s))
+      (define sym-s sym)
       (define new-s (make-syntax (cons sym-s e) empty-wrap mod s))
       new-s)
 
-    (define (expand-implicit sym e r w s mod)
-      (define id (wrap sym w mod))
-      (format #t "resolving implicit syntax reference ~a for ~s in ~a~%" sym (syntax->datum e) mod)
+    (define (expand-implicit sym ctx e r w s mod)
+      (define stx (if (syntax? ctx) ctx (make-syntax ctx w mod s)))
+      (define id (datum->syntax stx sym))
+      
+      
+      ;(format #t "resolving implicit syntax reference ~a for ~s in ~a~%" id e mod)
       (call-with-values 
-        (lambda () (resolve-identifier sym w r mod #t))
+        (lambda () (resolve-identifier id w r mod #t))
         (lambda (type value mod*)
-          (format #t "expanding implicit syntax reference ~a of type ~s in ~a~%" sym type mod*)
+          ;(format #t "expanding implicit syntax reference ~a of type ~s in ~a~%" id type mod*)
           (cond 
             [(eq? type 'macro)
-              (expand (expand-macro value (make-explicit sym e r w s mod) r w s #f mod) r empty-wrap s #f mod)]
+              (expand (expand-macro value (make-explicit id e r w s mod) r w s #f mod) r w mod)]
             [(eq? type 'core)
               (value (make-explicit sym e r w s mod) r w s mod)]
             [else 
@@ -1188,18 +1190,14 @@
                 (call-with-values (lambda () (value e r w mod))
                     (lambda (e r w s mod)
                         (expand e r w mod)))]
-            ;[(or (eq? type 'lexical-call) (eq? type 'global-call) (eq? type 'primitive-call) (eq? type 'call))
-            ;    (when (eq? type 'global-call)
-            ;      (format #t "global-call of ~s in ~a~%" (syntax->datum e) (or (and (syntax? value)
-            ;                                      (syntax-module value))
-            ;                                 mod)))
-            ;    (format #t "#%app on ~s~%" (syntax->datum e))
-                ;(expand 
-                ;  (cons 
-                ;    (make-syntax app-sym empty-wrap mod s) e)
-                ; r w mod)]
-            ;  (expand-implicit app-sym e r w s mod)
-            ;]
+            [(or (eq? type 'lexical-call) (eq? type 'global-call) (eq? type 'primitive-call) (eq? type 'call))
+                ;(when (eq? type 'global-call)
+                ;  (format #t "global-call of ~s in ~a~%" (syntax->datum e) (or (and (syntax? value)
+                ;                                  (syntax-module value))
+                ;                             mod)))
+              
+              (expand-implicit app-sym value e r w s mod)
+            ]
             [(eq? type 'lexical-call)
                 (expand-call
                     (let ([id (car e)])

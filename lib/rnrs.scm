@@ -432,13 +432,9 @@
    hashtable-hash-function
    hashtable-mutable?
    equal-hash string-hash string-ci-hash symbol-hash
-   
-   #; capy
-   format 
+
+   #%app
    )
-
-
-
   (import (rnrs base (6))
           (rnrs unicode (6))
           (rnrs bytevectors (6))
@@ -459,4 +455,5 @@
           (rnrs arithmetic bitwise (6))
           (rnrs syntax-case (6))
           (rnrs hashtables (6))
-          (rnrs enums (6))))
+          (rnrs enums (6))
+          (only (core) #%app)))
