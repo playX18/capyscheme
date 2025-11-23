@@ -513,6 +513,38 @@ pub mod hash_ops {
         }
     }
 
+    #[scheme(name = "core-hash-set")]
+    pub fn core_hashtable_set_immut(
+        ht: HashTableRef<'gc>,
+        key: Value<'gc>,
+        value: Value<'gc>,
+    ) -> Value<'gc> {
+        let typ = ht.typ();
+
+        match typ {
+            HashTableType::Generic(_) => {
+                todo!()
+            }
+            HashTableType::String => {
+                if !key.is::<Str>() {
+                    return nctx.wrong_argument_violation(
+                        "core-hash-set",
+                        "expected a string key",
+                        Some(key),
+                        Some(1),
+                        3,
+                        &[ht.into(), key, value],
+                    );
+                }
+            }
+            _ => (),
+        }
+
+        let new_ht = ht.copy(nctx.ctx, true);
+        new_ht.put(nctx.ctx, key, value);
+        nctx.return_(new_ht.into())
+    }
+
     #[scheme(name = "core-hash-ref")]
     pub fn core_hashtable_ref(
         ht: Either<HashTableRef<'gc>, WeakTableRef<'gc>>,

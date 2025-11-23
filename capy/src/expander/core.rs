@@ -52,6 +52,7 @@ pub struct Denotations<'gc> {
     pub denotation_of_when: Value<'gc>,
     pub denotation_of_unless: Value<'gc>,
     pub denotation_of_wcm: Value<'gc>,
+    pub denotation_of_define_struct: Value<'gc>,
 }
 
 static DENOTATIONS: OnceLock<Global<crate::Rootable!(Denotations<'_>)>> = OnceLock::new();
@@ -78,6 +79,7 @@ static_symbols!(
     DENOTATION_OF_WHEN = "when"
     DENOTATION_OF_UNLESS = "unless"
     DENOTATION_OF_WCM = "with-continuation-mark"
+    DENOTATION_OF_DEFINE_STRUCT = "define-struct"
 );
 
 pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
@@ -105,6 +107,7 @@ pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
                 denotation_of_when: denotation_of_when(ctx).into(),
                 denotation_of_unless: denotation_of_unless(ctx).into(),
                 denotation_of_wcm: denotation_of_wcm(ctx).into(),
+                denotation_of_define_struct: denotation_of_define_struct(ctx).into(),
             })
         })
         .fetch(*ctx)
