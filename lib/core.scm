@@ -1,5 +1,6 @@
 (library (core)
   (export
+    #%app
     cond-expand
     %native-extension
     %load-path

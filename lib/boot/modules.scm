@@ -69,7 +69,7 @@
   (if (not (or (eq? module interface)
                (memq interface (module-uses module))))
     (begin
-      (set-module-uses! module (append (module-uses module) (list interface)))
+      (set-module-uses! module (cons interface (module-uses module)))
       (core-hash-clear! (module-import-obarray module)))))
 
 (define (module-use-interfaces! module interfaces)
@@ -83,7 +83,7 @@
                         out
                         (cons iface out))))))])
 
-    (set-module-uses! module (append cur new))
+    (set-module-uses! module (append new cur))
     (core-hash-clear! (module-import-obarray module))))
 
 (define (module-define! module name value)
@@ -398,7 +398,8 @@
                 [(not var)
                   (assertion-violation 'unbound-variable "undefined variable" internal-name)]
                 [(eq? var (module-local-variable m internal-name))
-                  (assertion-violation 'export "re-exporting local variable" internal-name)]
+                  ;(assertion-violation 'export "re-exporting local variable" internal-name)]
+                  (module-export! m (list name) replace?)]
                 [else
                   (if replace?
                     (core-hash-put! (module-replacements public-i) external-name #t))

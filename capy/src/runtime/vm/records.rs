@@ -48,7 +48,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn rtd_parent(&self, ctx: Context<'gc>) -> Value<'gc> {
-        assert!(self.is_recod_type_descriptor(ctx));
+        assert!(self.is_recod_type_descriptor(ctx), "not a record: {self}");
         self.downcast::<Tuple>()[RTD_PARENT].get()
     }
 

@@ -759,8 +759,10 @@
              ;; welcome!
              #'(begin
                  (define-pure-module (name name* ...))
+                 
                  (import ispec)
                  ...
+                 (import (capy prelims))
                  (export e ...)
                  (re-export r ...)
                  (export! x ...)
