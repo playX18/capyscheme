@@ -12,7 +12,7 @@ R6RS/R7RS compiler and runtime written in Rust.
 
 # R6RS/R7RS support
 
-Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment 97.15% of tests are passing.
+Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment 99.3% of tests are passing.
 
 To run tests yourself:
 ```sh 
