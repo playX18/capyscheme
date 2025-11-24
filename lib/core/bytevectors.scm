@@ -30,6 +30,7 @@
     (syntax-rules ()
       ((_ x) (bitwise-and x 255))))
 
+
   (define-syntax endianness
     (syntax-rules (big little native)
       ((_ big) 'big)

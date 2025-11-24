@@ -2344,8 +2344,7 @@ fn expand_clause<'gc>(
         if body.cdr().is_null() {
             return expand(cenv, body.car());
         } else {
-            let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
-            return expand(cenv, begin_form);
+            return expand_body(cenv, body, syntax_annotation(cenv.ctx, form));
         }
     } else {
         let test_form = expand(cenv, test)?;
@@ -2377,8 +2376,8 @@ fn expand_clause<'gc>(
         } else if body.is_null() {
             lref(cenv.ctx, binding.clone())
         } else {
-            let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
-            expand(cenv, begin_form)?
+            //let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+            expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?
         };
 
         let if_ = if_term(
@@ -2503,8 +2502,8 @@ fn expand_case_clauses<'gc>(
         if body.cdr().is_null() {
             return expand(cenv, body.car());
         } else {
-            let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
-            return expand(cenv, begin_form);
+            //let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+            return expand_body(cenv, body, syntax_annotation(cenv.ctx, form));
         }
     } else {
         // Build the test condition: (memv key '(datum1 datum2 ...))
@@ -2605,8 +2604,8 @@ fn expand_case_clauses<'gc>(
         } else if body.cdr().is_null() {
             expand(cenv, body.car())?
         } else {
-            let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
-            expand(cenv, begin_form)?
+            //let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
+            expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?
         };
 
         Ok(if_term(cenv.ctx, memv_test, then_branch, else_branch))

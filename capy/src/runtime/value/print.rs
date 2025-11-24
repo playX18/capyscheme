@@ -118,7 +118,7 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
             write!(self.fmt, "#<hashtable>",)
         } else if x.is::<Closure<'gc>>() {
             let closure = x.downcast::<Closure<'gc>>();
-            write!(self.fmt, "#<procedure {}>", closure.code)
+            write!(self.fmt, "#<procedure {:p}>", closure)
         } else if x.is::<Tuple>() {
             let tuple = x.downcast::<Tuple>();
             write!(self.fmt, "#tuple(")?;

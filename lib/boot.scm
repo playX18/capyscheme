@@ -29,6 +29,7 @@
 ($primitive-load "boot/exceptions.scm")
 ($primitive-load "boot/expand.scm")
 ($primitive-load "boot/interpreter.scm")
+($primitive-load "boot/match-syntax.scm")
 ($primitive-load "boot/psyntax.scm")
 ($primitive-load "boot/enums.scm")
 ($primitive-load "boot/sys.scm")

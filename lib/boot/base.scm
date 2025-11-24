@@ -92,10 +92,10 @@
            (syntax-case c2* ()
              (()
               (syntax-case c1 (else =>)
-                ((else e1 e2 ...) (syntax (begin e1 e2 ...)))
+                ((else e1 e2 ...) (syntax (let () e1 e2 ...)))
                 ((e0)             (syntax (let ((t e0)) (if t t))))
                 ((e0 => e1)       (syntax (let ((t e0)) (if t (e1 t)))))
-                ((e0 e1 e2 ...)   (syntax (if e0 (begin e1 e2 ...))))
+                ((e0 e1 e2 ...)   (syntax (if e0 (let () e1 e2 ...))))
                 (_                (syntax-violation
                                    'cond "Invalid expression" x))))
              ((c2 c3 ...)
@@ -104,7 +104,7 @@
                 (syntax-case c1 (else =>)
                   ((e0)           (syntax (let ((t e0)) (if t t rest))))
                   ((e0 => e1)     (syntax (let ((t e0)) (if t (e1 t) rest))))
-                  ((e0 e1 e2 ...) (syntax (if e0 (begin e1 e2 ...) rest)))
+                  ((e0 e1 e2 ...) (syntax (if e0 (let () e1 e2 ...) rest)))
                   (_              (syntax-violation
                                    'cond "Invalid expression" x)))))))))))
 
@@ -170,13 +170,13 @@
      ((case key
        ((atoms ...) result1 result2 ...))
       (if (memv key '(atoms ...))
-          (begin result1 result2 ...)))
+          (let () result1 result2 ...)))
 
      ((case key
        ((atoms ...) result1 result2 ...)
        clause clauses ...)
       (if (memv key '(atoms ...))
-          (begin result1 result2 ...)
+          (let () result1 result2 ...)
           (case key clause clauses ...)))))
   
   (define-syntax =>

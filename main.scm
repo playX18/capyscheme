@@ -1,11 +1,6 @@
-(library (main)
-(export #%app)
-(import (rnrs) (prefix (only (capy) #%app printf) orig-))
 
-(define-syntax #%app
-  (syntax-rules () 
-    [(_ expr ...)
-      (begin
-        (|orig-#%app| orig-printf "at ~s~%" '(expr ...))
-        (|orig-#%app| expr ...))]))
-)
+
+(define m 42)
+
+(dump-heap "foo.heap" (lambda (args)
+  (printf "matches: ~a~%" m)))

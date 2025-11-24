@@ -150,7 +150,8 @@ impl<'gc> ModuleBuilder<'gc> {
 
         for (i, &cont) in conts.iter().filter(|c| c.reified.get()).enumerate() {
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
-            let name = format!("fn{}:{}:{}", i, cont.name, cont.binding.name);
+
+            let name = format!("cont_{}_{}_{}", i, cont.name, cont.binding.name);
             let func_debug_cx = self.debug_context.define_cont(cont, &name);
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);

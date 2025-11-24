@@ -40,12 +40,13 @@ build portable:
 
     {{cargo-bin}} build --profile {{profile}} --target {{target}} -p capy {{if portable == "true" { "--features portable" } else { "" } }}
 
-    @echo "Build boot binary & produce image"
-    {{cc}} bin/boot.c -o bin/boot -lcapy -L{{target-path}}
-    DYLD_FALLBACK_LIBRARY_PATH={{target-path}} LD_LIBRARY_PATH={{target-path}} LIBRARY_PATH={{target-path}} CAPY_LOAD_PATH=./lib ./bin/boot
-    rm bin/boot
+    #@echo "Build boot binary & produce image"
+    #{{cc}} bin/boot.c -o bin/boot -lcapy -L{{target-path}}
+    #DYLD_FALLBACK_LIBRARY_PATH={{target-path}} LD_LIBRARY_PATH={{target-path}} LIBRARY_PATH={{target-path}} CAPY_LOAD_PATH=./lib ./bin/boot
+    #rm bin/boot
     @echo "Build main capy binary"
     {{cc}} bin/capy.c -L{{target-path}} -o bin/capy -lcapy -Wl,-rpath,{{rpath}}
+    
 
 
 
@@ -60,8 +61,8 @@ install-portable: (build "true")
     cp 'bin/capy' {{install-prefix}}/share/capy/{{version}}/
     ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
-    cp capy.heap {{install-prefix}}/share/capy/{{version}}/
-    rm capy.heap
+    #cp capy.heap {{install-prefix}}/share/capy/{{version}}/
+    #rm capy.heap
     rm bin/capy
 
 

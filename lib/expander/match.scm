@@ -78,3 +78,6 @@
         [(pair? s) (cons (car s) (to-syntax-list (cdr s)))]
         [(syntax? s) (to-syntax-list (syntax-e s))]
         [else s]))
+
+(define m (match-syntax e '(begin e ::: +)))
+(format "matched: ~a" (m 'e))

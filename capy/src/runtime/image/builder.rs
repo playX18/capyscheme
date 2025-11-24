@@ -748,9 +748,21 @@ impl<'gc> ImageBuilder<'gc> {
 
         // write dynamic library closure
 
-        let (lib_index, symbol_index) = self
-            .find_library_for_code(code)
-            .expect("Failed to find library for closure code during serialization");
+        let (lib_index, symbol_index) = self.find_library_for_code(code).ok_or_else(|| {
+            println!(
+                ";; no code for closure {:p}, meta={}, free={}",
+                closure,
+                closure.meta.get(),
+                closure.free
+            );
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "Failed to find dynamic library for closure code at {} during serialization",
+                    code
+                ),
+            )
+        })?;
         self.write8(TYPE_CLOSURE_SCM)?;
         self.write16(lib_index)?;
         self.write32(symbol_index)?;
@@ -841,13 +853,47 @@ impl<'gc> ImageBuilder<'gc> {
                 return None;
             }
             let dl_info = dl_info.assume_init();
+            /*if dl_info.dli_saddr.is_null() || dl_info.dli_sname.is_null() {
+                println!(";; fbase {:?}", dl_info.dli_fbase);
+                println!(";; fname {:?}", dl_info.dli_fname);
+                println!(";; fname str {:?}", CStr::from_ptr(dl_info.dli_fname));
+                println!(";; NO DL INFO FOR CODE AT {code}");
+                backtrace::resolve(code.to_mut_ptr(), |sym| {
+                    if let Some(name) = sym.name() {
+                        println!(";; SYMBOL NAME: {}", name);
+                    }
+
+                    println!(";; SYMBOL ADDR: {:?}", sym.addr());
+                });
+                return None;
+            }*/
+            let mut sname = None;
+            backtrace::resolve(code.to_mut_ptr(), |sym| {
+                if let Some(name) = sym.name() {
+                    sname = Some(name.to_string());
+                }
+            });
+
+            if sname.is_none() {
+                if dl_info.dli_sname.is_null() {
+                    println!(";; NO DL INFO FOR CODE AT {code}");
+                    return None;
+                }
+
+                sname = Some(
+                    CStr::from_ptr(dl_info.dli_sname)
+                        .to_string_lossy()
+                        .to_string(),
+                );
+            }
+
             let fbase = Address::from_ptr(dl_info.dli_fbase as *mut _);
             let lib_index = self.fbase_to_lib[&fbase];
-            let sname = CStr::from_ptr(dl_info.dli_sname);
+
             let symbols = self.fbase_names.entry(lib_index).or_insert(Vec::new());
             let symbol_index = match symbols
                 .iter()
-                .position(|s| s.as_str() == sname.to_str().unwrap())
+                .position(|s| s.as_str() == sname.as_ref().unwrap())
             {
                 Some(ix) => ix as u32,
                 None => return None,
@@ -1241,6 +1287,14 @@ impl<'gc> ReferenceMapBuilder<'gc> {
                 return None;
             }
             let dl_info = dl_info.assume_init();
+            if dl_info.dli_sname.is_null() {
+                return None;
+            }
+
+            if dl_info.dli_saddr.is_null() {
+                return None;
+            }
+
             let fbase = Address::from_ptr(dl_info.dli_fbase as *mut _);
             let lib_index = self.fbase_to_lib[&fbase];
             let sname = CStr::from_ptr(dl_info.dli_sname);

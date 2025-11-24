@@ -25,7 +25,7 @@
         option-single?
         option-flag?
         option-value-or-default)
-    (import (rnrs) (core optargs))
+    (import (rnrs) (core optargs) (capy))
 
     (define option-multiple 'multiple)
     (define option-single 'single)
