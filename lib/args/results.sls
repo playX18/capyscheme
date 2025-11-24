@@ -12,6 +12,7 @@
         arg-results-ref)
     (import
         (rnrs)
+        (capy)
         (args option)
         (args argparser))
 

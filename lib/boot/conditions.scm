@@ -348,7 +348,6 @@
 (define (syntax-violation who message form . subform)
   (define (get-who-from-form form)
     (define obj (if (syntax? form) (unwrap-syntax form) form))
-
     (cond
       [(identifier? obj) (make-who-condition (syntax-expression obj))]
       [(and (pair? obj) (identifier? (car obj))) (make-who-condition (syntax-expression (car obj)))]
@@ -362,7 +361,7 @@
                 (filter
                   values
                   (list
-                    (make-syntax-violation form (and (pair? subform) (car subform)))
+                    (make-syntax-violation form (if (pair? subform) (car subform) #f))
                     (if who
                         (make-who-condition who)
                         (get-who-from-form form))

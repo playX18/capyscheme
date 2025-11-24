@@ -230,5 +230,5 @@
                                 (list (datum->syntax #f (car vb) s)
                                       (expand (cadr vb) finish-ctx)))
                                (reverse val-binds))
-                            (finish-bodys))))]))        )
+                            (finish-bodys))))])))
     

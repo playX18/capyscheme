@@ -705,12 +705,13 @@ pub fn convert_arg<'gc, 'a>(
     k: Box<dyn FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc> + 'a>,
     h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
+    let src = exp.source();
     match exp.kind {
         TermKind::LRef(var) => k(cps, Atom::Local(var)),
 
         x if is_single_valued(exp) => {
             with_cps!(cps;
-                letk (h) karg (arg) = k(cps, Atom::Local(arg));
+                letk (h) karg (arg) @ src = k(cps, Atom::Local(arg));
                 # {
                     convert(cps, exp, karg, h, )
                 }
@@ -719,7 +720,7 @@ pub fn convert_arg<'gc, 'a>(
 
         _ => {
             with_cps!(cps;
-                letk (h) karg (arg & rest) = k(cps, Atom::Local(arg));
+                letk (h) karg (arg & rest) @ src = k(cps, Atom::Local(arg));
                 # convert(cps, exp, karg, h, )
             )
         }

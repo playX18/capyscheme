@@ -413,7 +413,7 @@
       (define p (if (null? port) (current-error-port) (car port)))
       (when (syntax-violation? exn)
         
-        (format #t "form=~a, subform=~a~%" (syntax-violation-form exn) (syntax-violation-subform exn)))
+        (format #t "form=~a, subform=~a~%" (syntax->datum (syntax-violation-form exn)) (syntax-violation-subform exn)))
       (when (message-condition? exn)
         (format #t "message=~a~%" (condition-message exn)))
       (when (irritants-condition? exn)

@@ -316,25 +316,16 @@
         (cons a b))
       (if (null? x) '()
         (assertion-violation 'map "expected a proper list" x))))
-  (define (map2 f x y)
-    (if (and (pair? x) (pair? y))
-      (let* ([a (f (car x) (car y))]
-             [b (map2 f (cdr x) (cdr y))])
-        (cons a b))
-      (if (or (null? x) (null? y)) '()
-        (assertion-violation 'map "expected proper lists" (list x y)))))
-  (define (map3 f x y z)
-    (if (and (pair? x) (pair? y) (pair? z))
-      (let* ([a (f (car x) (car y) (car z))]
-             [b (map3 f (cdr x) (cdr y) (cdr z))])
-        (cons a b))
-      (if (or (null? x) (null? y) (null? z)) '()
-        (assertion-violation 'map "expected proper lists" (list x y z)))))
+  (define (map-n proc lst)
+    (cond 
+      [(null? lst) '()]
+      [else (cons (apply proc (car lst))
+                  (map-n proc (cdr lst)))]))
+
   (let ([l (length rest)])
     (cond
       [(zero? l) (map1 f x)]
-      [(= l 1) (map2 f x (car rest))]
-      [(= l 2) (map3 f x (car rest) (car (cdr rest)))]
+      [else (map-n f (apply list-transpose* x rest))]
     )))
 
 (define for-each
