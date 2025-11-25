@@ -40,8 +40,10 @@
         struct-size
         struct-alignment
         errno
-        ioctl/pointer)
-    (import (core control) (core primitives) (core match))
+        ioctl/pointer
+        dll-suffix)
+    (import (core control) (core primitives) (core match)
+      (capy))
   (eval-when (expand load eval)
     (define void %void)
     (define float %float)

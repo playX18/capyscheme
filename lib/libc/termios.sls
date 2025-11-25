@@ -4,7 +4,8 @@
     (import 
         (core foreign)
         (core foreign-library)
-        (scheme base))
+        (scheme base)
+        (capy))
         
     (cond-expand 
         [macos (include "termios-macos.scm")]

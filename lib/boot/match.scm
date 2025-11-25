@@ -243,7 +243,7 @@
 ;; force compile-time syntax errors with useful messages
 
 (library (core match)
-  (export match
+  (export   match
             match-lambda
             match-lambda*
             match-let

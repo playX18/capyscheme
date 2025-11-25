@@ -11,7 +11,8 @@
             (core records)
             (core optargs)
             (core files)
-            (core match))
+            (core match)
+            (capy))
 
     (define-record-type 
         (<foreign-library> make-foreign-library foreign-library?)
@@ -64,10 +65,12 @@
     (define path-separator #\:)
 
     (define (parse-path var)
-        (match (getenv var)
-            (#f #f)
-            ("" '())
-            (val (string-split val path-separator))))
+        (define e (getenv var))
+
+        (cond 
+            [(not e) #f]
+            [(= (string-length e) 0) '()]
+            [else  (string-split e path-separator)]))
 
     (define system-dynlib-path (make-parameter (or (parse-path "DYLD_LIBRARY_PATH")
                                                     (parse-path "LD_LIBRARY_PATH")
