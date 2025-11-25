@@ -645,6 +645,7 @@ pub fn make_modules_in<'gc>(
         let m = Module::new(ctx, 0, Value::null(), Value::new(false));
         let wm = Gc::write(*ctx, m);
         wm.kind.set(ModuleKind::Directory);
+
         barrier::field!(wm, Module, name)
             .unlock()
             .set(m.name.get().append(ctx, name));
