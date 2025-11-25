@@ -2,6 +2,7 @@ pub mod fasl;
 pub mod fluids;
 pub mod global;
 pub mod image;
+pub mod libs;
 pub mod modules;
 pub mod thread;
 pub mod value;
@@ -39,6 +40,9 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::dl::init_dl(mc);
     vm::threading::init_threading(mc);
     vm::control::init_control(mc);
+    if false {
+        libs::expeditor::init_expeditor(mc);
+    }
     //let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
 }
 

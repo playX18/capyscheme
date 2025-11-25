@@ -919,32 +919,15 @@
                                          mod)))))
                             tmp)
                      (syntax-violation #f "bad local syntax definition" (source-wrap e w s mod)))))
+   
     (define (parse-when-list e when-list)
       (let ((result (strip when-list)))
-                 (let lp ((l result))
-                   (let* ((v l)
-                          (fk (lambda ()
-                                (let ((fk (lambda () (error "value failed to match" v))))
-                                  (if (pair? v)
-                                      (let ((vx (car v)) (vy (cdr v)))
-                                        (let* ((x vx)
-                                               (l vy)
-                                               (v x)
-                                               (fk (lambda ()
-                                                     (let ((fk (lambda () (error "value failed to match" v))))
-                                                       (syntax-violation 'eval-when "invalid situation" e x))))
-                                               (tk (lambda () (lp l))))
-                                          (if (eq? v 'compile)
-                                              (tk)
-                                              (let ((tk (lambda () (tk))))
-                                                (if (eq? v 'load)
-                                                    (tk)
-                                                    (let ((tk (lambda () (tk))))
-                                                      (if (eq? v 'eval)
-                                                          (tk)
-                                                          (let ((tk (lambda () (tk)))) (if (eq? v 'expand) (tk) (fk))))))))))
-                                      (fk))))))
-                     (if (null? v) result (fk))))))
+        (let loop ((l result))
+          (cond ((null? l) result)
+                ((memq (car l) '(compile load eval expand))
+                  (loop (cdr l)))
+                (else
+                  (syntax-violation 'eval-when "invalid situation" e))))))
       
 
     (define (lambda-var-list vars)
@@ -1006,7 +989,8 @@
                                 (syntax-violation #f "invalid syntax name in 'define-syntax-parameter'" e))
                               (values 'define-syntax-parameter-form name e val w s mod)]
                             [(eq? ftype 'define)
-                                (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any))))
+                            
+                              (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any))))
                               (if (and tmp-1 (apply (lambda (name val) (id? name)) tmp-1))
                                   (apply (lambda (name val) (values 'define-form name e val w s mod)) tmp-1)
                                   (let ((tmp-1 ($sc-dispatch tmp '(_ (any . any) any . each-any))))
@@ -1860,6 +1844,7 @@
                 [(and (alist? source)) (props->sourcev source)]
                 [(and (vector? source) (= (vector-length source) 3)) source]
                 [else (syntax-sourcev source)]))))
+
     (set! free-identifier=? (lambda (x y)
         (if (not (nonsymbol-id? x))
             (assertion-violation 'free-identifier=? "Expected syntax identifier" x))

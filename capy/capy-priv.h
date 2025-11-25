@@ -2,6 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "wchar.h"
 
 
 
@@ -378,3 +379,7 @@ struct Value scm_program_arguments(ContextRef ctx);
 void scm_program_arguments_init(ContextRef ctx, uintptr_t argc, const char *const *argv);
 
 void scm_set_program_arguments(ContextRef ctx, struct Value args);
+
+extern uintptr_t mbrtowc(wchar_t *pwc, const char *s, uintptr_t n, mbstate_t *ps);
+
+extern uintptr_t wcrtomb(char *s, wchar_t wc, mbstate_t *ps);

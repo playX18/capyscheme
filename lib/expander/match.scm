@@ -1,9 +1,9 @@
 
 
 (define (match-syntax orig-s pattern . error?)
-" A lightweight pattern matcher along the lines of `syntax-rules`.
- The result of matching is a function that takes a symbol and
- returns its match."
+    " A lightweight pattern matcher along the lines of `syntax-rules`.
+    The result of matching is a function that takes a symbol and
+    returns its match."
     (define error (if (null? error?) (lambda (msg irritants) (syntax-violation #f msg irritants)) (car error?)))
 
     (define (match s pattern)
@@ -19,7 +19,7 @@
                 (let* ([flat-s (to-syntax-list s)])
                     (cond 
                         [(null? flat-s)
-                            (when (eq? '...+ (cadr pattern))
+                            (when (eq? ':::+ (cadr pattern))
                                 (error "bad syntax:" orig-s))
                             (make-empty-vars pattern)]
                         [(list? flat-s)
@@ -79,5 +79,3 @@
         [(syntax? s) (to-syntax-list (syntax-e s))]
         [else s]))
 
-(define m (match-syntax e '(begin e ::: +)))
-(format "matched: ~a" (m 'e))

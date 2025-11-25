@@ -13,6 +13,7 @@ fn main() {
         .exclude_item("PAIR_VTABLE")
         .exclude_item("TUPLE_VTABLE")
         .exclude_item("VECTOR_VTABLE")
+        .with_include("wchar.h")
         .with_define("GCObject", "void*", "<GCObject>")
         .generate()
         .expect("Unable to generate bindings")

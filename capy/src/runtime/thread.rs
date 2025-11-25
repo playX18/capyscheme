@@ -217,6 +217,12 @@ impl<'gc> Context<'gc> {
             .fetch(*self)
     }
 
+    pub fn nest_level(&self) -> usize {
+        self.state()
+            .nest_level
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn public_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
         crate::runtime::modules::public_ref(self, mname, name)
     }

@@ -1,6 +1,8 @@
+(import (capy expeditor) (capy))
 
-
-(define m 42)
-
-(dump-heap "foo.heap" (lambda (args)
-  (printf "matches: ~a~%" m)))
+(dynamic-wind 
+    (lambda () (raw-mode))
+    (lambda () 
+        (receive (cols rows) (get-screen-size)
+            (format #t "Screen size: ~a columns, ~a rows~%" cols rows)))
+    (lambda () (no-raw-mode)))
