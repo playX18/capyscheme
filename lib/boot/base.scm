@@ -153,7 +153,7 @@
 
      ((case key
        (else result1 result2 ...))
-      (begin result1 result2 ...))
+      (let () result1 result2 ...))
 
      ((case key
        ((atoms ...) => result))
@@ -915,11 +915,11 @@
            (syntax-case (syntax (e1 ...)) ()
              (()          (syntax (let do ((var init) ...)
                                     (if (not e0)
-                                        (begin c ... (do step ...))))))
+                                        (let () c ... (do step ...))))))
              ((e1 e2 ...) (syntax (let do ((var init) ...)
                                     (if e0
-                                        (begin e1 e2 ...)
-                                        (begin c ... (do step ...))))))))))))
+                                        (let () e1 e2 ...)
+                                        (let () c ... (do step ...))))))))))))
   
 ;; Implements `receive` syntax by translating to `call-with-values`.
 ;; Compiler will later on eliminate `call-with-values` to `receive`.
@@ -1357,3 +1357,8 @@
           (rest ...)
           body body* ...))])
 )
+
+(define (expand expr)
+  "Given an expression, expand all macros in it and return expanded TreeIL. 
+   TreeIL can be converted back to Scheme using `tree-il->scheme`."
+  (macroexpand expr 'c '(compile expand load)))
