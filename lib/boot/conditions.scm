@@ -90,6 +90,24 @@
 (define make-warning (record-constructor (record-type-rcd &warning)))
 (define warning? (condition-predicate (record-type-rtd &warning)))
 
+(define (warning who message . irritants)
+  (define marks (current-continuation-marks))
+  (if (or (not who) (string? who) (symbol? who))
+    (if (string? message)
+      (raise
+        (apply
+          condition
+          (filter
+            values
+            (list
+              (make-warning)
+              (and who (make-who-condition who))
+              (make-message-condition message)
+              (make-irritants-condition irritants)
+              (make-marks-condition marks)))))
+      #f)
+    #f))
+
 (define &serious
   (let ((rtd (make-record-type-descriptor '&serious (record-type-rtd &condition) (make-condition-uid) #f #f '#())))
     (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)))
