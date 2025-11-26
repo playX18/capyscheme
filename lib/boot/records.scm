@@ -159,7 +159,7 @@
     (lambda field-values
       (cond 
         [(= (length field-values) argc) (apply tuple rtd field-values)]
-        [else (assertion-violation 'record-constructor "wrong-number of arguments" field-values)]
+        [else (assertion-violation (rtd-name rtd) "wrong-number of arguments" field-values)]
       ))))
 
 (define (make-nested-conser desc rtd argc)
