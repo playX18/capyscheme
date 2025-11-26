@@ -3,6 +3,7 @@
 (define top-sym (string->symbol "#%top"))
 
 (define (expand s ctx)
+
     (cond 
         [(identifier? s)
             (expand-identifier s ctx)]
@@ -17,6 +18,7 @@
 
 (define (expand-identifier s ctx)
     (define binding (resolve s (expand-context-phase ctx)))
+     
     (cond 
         [(not binding)
             (expand-implicit top-sym s ctx)]
@@ -41,7 +43,7 @@
     (define id (datum->syntax s sym))
     (define b (resolve id (expand-context-phase ctx)))
     (define t (and b (lookup b ctx id)))
-
+    (printf "b: ~a~%" b)
     (cond 
         [(core-form? t)
             (if (expand-context-only-immediate? ctx)
@@ -50,7 +52,7 @@
         [(transformer? t)
             (dispatch t (datum->syntax s (cons sym s) s) ctx)]
         [else 
-            (syntax-violation #f (format "no transformer binding for ~a" sym) s)]))
+            (syntax-violation #f (format "no transformer binding for implicit ~a to expand ~a" sym (syntax->datum s)) s)]))
 
 (define (dispatch t s ctx)
     (cond 
@@ -60,7 +62,9 @@
                 ((core-form-expander t) s ctx))]
         [(transformer? t)
             (expand (apply-transformer t s ctx) ctx)]
-        [else (syntax-violation #f "illegal use of syntax" s)]))
+        [(var? t)
+            s]
+        [else (syntax-violation #f "illegal use of syntax" (syntax->datum s))]))
 
 (define (apply-transformer t s ctx)
     (define intro-scope (new-scope))
@@ -125,7 +129,7 @@
     ;; this partial-expansion phase uncovers macro- and variable
     ;; definitions in the definition context
     (define body-ctx (%make-expand-context 
-        (list* outside-sc  ; scopes
+        (cons* outside-sc  ; scopes
                inside-sc 
                (expand-context-scopes ctx))
         (cons '() #f) ; use-site scopes
@@ -136,8 +140,8 @@
         (expand-context-env ctx)
         #t ; only-immediate?
         inside-sc ; post-expansion-scope
+        (expand-context-module-begin-k ctx)
     ))
-
     (let loop ([body-ctx body-ctx]
                [bodys init-bodys]
                [done-bodys '()]
@@ -151,7 +155,7 @@
                     (case (core-form-sym exp-body phase)
                         [(begin)
                             ;; splice a begin form
-                            (let ([m (match-syntax exp-body '(begin e ...))])
+                            (let ([m (match-syntax exp-body '(begin e :::))])
                                 (loop body-ctx 
                                       (append (m 'e) (cdr bodys))
                                       done-bodys
@@ -173,7 +177,8 @@
                                         (expand-context-namespace body-ctx)
                                         extended-env
                                         (expand-context-only-immediate? body-ctx)
-                                        (expand-context-post-expansion-scope body-ctx))
+                                        (expand-context-post-expansion-scope body-ctx)
+                                        (expand-context-module-begin-k body-ctx))
                                       (cdr bodys)
                                       '()
                                       (cons (list id (m 'rhs))
@@ -181,7 +186,8 @@
                                             (map 
                                                 (lambda (done-body)
                                                     (no-binds done-body s phase))
-                                                val-binds)))))]
+                                                done-bodys)
+                                                val-binds))))]
                         [else 
                             (loop body-ctx 
                                   (cdr bodys)
@@ -191,25 +197,27 @@
 (define (finish-expanding-body body-ctx done-bodys val-binds s)
     (when (null? done-bodys)
         (syntax-violation #f "body has no expressions" s))
-        
+
     (let () 
         (define s-core-ctx (syntax-shift-phase-level core-stx (expand-context-phase body-ctx)))
         (define finish-ctx (%make-expand-context 
             (append (car (expand-context-use-site-scopes body-ctx))
                    (expand-context-scopes body-ctx))
             #f ; use-site scopes
-            (expand-context-use-site-scopes body-ctx)
             (expand-context-module-scopes body-ctx)
             (expand-context-context body-ctx)
             (expand-context-phase body-ctx)
             (expand-context-namespace body-ctx)
             (expand-context-env body-ctx)
             #f ; only-immediate?
-            #f))
+            #f ; post-expansion-scope
+            (expand-context-module-begin-k body-ctx)
+            
+            ))
         (define (finish-bodys)
             (cond 
-                [(null? (cdr done-bodys)
-                    (expand (car done-bodys) finish-ctx))]
+                [(null? (cdr done-bodys))
+                    (expand (car done-bodys) finish-ctx)]
                 [else 
                     (datum->syntax 
                         #f 
@@ -232,3 +240,20 @@
                                (reverse val-binds))
                             (finish-bodys))))])))
     
+(define (rebuild orig-s new)
+    (datum->syntax orig-s new orig-s orig-s))
+
+(define (remove-use-site-scopes s ctx)
+  (define use-sites (expand-context-use-site-scopes ctx))
+  (if use-sites
+      (remove-scopes s (car use-sites))
+      s))
+
+(define (no-binds expr s phase)
+  (define s-core-stx (syntax-shift-phase-level core-stx phase))
+  (list '() (datum->syntax #f
+                            `(,(datum->syntax s-core-stx 'begin)
+                              ,expr
+                              (,(datum->syntax s-core-stx app-sym)
+                               ,(datum->syntax s-core-stx 'values)))
+                            s)))

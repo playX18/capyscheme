@@ -25,8 +25,13 @@
          #t))
 
 (define (set-subset? s1 s2)
-    (and (andmap (lambda (x) (member x s2)) s1)
-         #t))
+    (let loop ([s1 s1])
+        (cond 
+            [(null? s1) #t]
+            [else 
+                (if (member (car s1) s2)
+                    (loop (cdr s1))
+                    #f)])))
 
 (define (set-proper-subset? s1 s2)
     (unless (list? s2)
@@ -81,5 +86,5 @@
                         (> (f x) (f best)))
                     x
                     best))
-            #f
+            (car s)
             s))

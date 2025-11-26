@@ -33,7 +33,7 @@
         '() ; scope
         #f  ; use-site scopes
         (list (namespace-scope ns)) ; module scopes
-        'top-level
+        'top-level ; context
         0
         ns
         empty-env
@@ -42,3 +42,17 @@
         #f))
 
 (define current-expand-context (make-parameter #f))
+
+
+(define (expand-context-with-new-scope ctx sc env)
+    (%make-expand-context 
+        (cons sc (expand-context-scopes ctx))
+        (expand-context-use-site-scopes ctx)
+        (expand-context-module-scopes ctx)
+        (expand-context-context ctx)
+        (expand-context-phase ctx)
+        (expand-context-namespace ctx)
+        env
+        (expand-context-only-immediate? ctx)
+        (expand-context-post-expansion-scope ctx)
+        (expand-context-module-begin-k ctx)))

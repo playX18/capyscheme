@@ -12,8 +12,9 @@
 (define namespace? (record-predicate (record-type-rtd :namespace)))
 (define namespace-scope (record-accessor (record-type-rtd :namespace) 0))
 (define namespace-phases (record-accessor (record-type-rtd :namespace) 1))
-(define namespace-submodule-declarations (record-accessor (record-type-rtd :namespace) 2))
-(define namespace-module-instances (record-accessor (record-type-rtd :namespace) 3))
+(define namespace-module-declarations (record-accessor (record-type-rtd :namespace) 2))
+(define namespace-submodule-declarations (record-accessor (record-type-rtd :namespace) 3))
+(define namespace-module-instances (record-accessor (record-type-rtd :namespace) 4))
 (define make-namespace (record-constructor (record-type-rcd :namespace)))
 
 (define :definitions 
@@ -101,7 +102,7 @@
     (define m-ns (namespace->module-namespace ns name phase-shift #t))
     (define m (namespace->module ns name))
     (define phase-end (+ 1 (mod-max-phase-level m)))
-
+  
     (for-each 
         (lambda (entry)
             (define req-phase (car entry))
@@ -110,7 +111,7 @@
                 (lambda (mod)
                     (namespace-module-instantiate! ns mod (phase+ phase-shift req-phase) min-phase))
                 mods))
-        (mod-requires m))
+        (core-hash->list (mod-requires m)))
 
 
     (let loop ([phase-level (mod-min-phase-level m)])
@@ -128,7 +129,7 @@
 
 (define (namespace->module-namespace ns name phase . create?)
     (define create (if (null? create?) #f (car create?)))
-    
+  
     (or (core-hash-ref (namespace-module-instances ns) (cons name phase) #f)
         (and create 
             (let ([m (namespace->module ns name)])
@@ -143,7 +144,10 @@
                     m-ns)))))
 
 (define (namespace->definitions ns phase-level)
-    (define d (core-hash-ref (namespace-phases ns) phase-level #f))
+    (define d (begin 
+       
+        (core-hash-ref (namespace-phases ns) phase-level #f)))
+    
     (or d 
         (let ([d (make-definitions (make-core-hash-eq) (make-core-hash-eq) #f)])
             (core-hash-set! (namespace-phases ns) phase-level d)
@@ -167,6 +171,7 @@
 (define (namespace-get-transformer ns phase-level name fail-k)
     (define d (namespace->definitions ns phase-level))
     (define val (core-hash-ref (definitions-transformers d) name #f))
+   
     (if val 
         val
         (fail-k)))
