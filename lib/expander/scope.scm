@@ -158,7 +158,7 @@
 (define (syntax-scope-set s phase)
     "Assemble the complete set of scopes at a given phase by extracting
     a phase specific representative from each multi-scope"
-
+  
     (foldl 
         (lambda (scopes sms)
             (set-add scopes 
@@ -183,7 +183,7 @@
                                  new-set)))
 
     
-
+   
     (core-hash-set! sym-bindings scopes binding))
 
 (define (add-binding! id binding phase)
@@ -200,9 +200,14 @@
     
     (let* ([scopes (syntax-scope-set s phase)]
            [candidates (find-all-matching-bindings s scopes)])
+        (printf "candidates for ~a at phase ~a: ~a~%" (syntax-e s) phase candidates)
+        (printf "syntax-scopes: ~a~%" (syntax-scopes s))
         (cond 
             [(pair? candidates)
-                (let ([max-candidate (argmax (lambda (c) (length (car c))) candidates)])
+                
+                (let ([max-candidate (argmax (lambda (c)
+
+                 (length (car c))) candidates)])
                     (and (or (not exactly?)
                              (equal? (length scopes)
                                      (length (car max-candidate))))
@@ -211,19 +216,21 @@
 
 (define (find-all-matching-bindings s scopes)
     (define sym (syntax-e s))
-    (let loop ([scopes scopes] [acc '()])
+   
+    (let loop ([scs scopes] [acc '()])
         (cond 
-            [(null? scopes)
+            [(null? scs)
                 (reverse acc)]
             [else 
-                (let* ([sc (car scopes)]
+                (let* ([sc (car scs)]
                        [bindings (core-hash-ref (scope-bindings sc) sym #f)])
+                 
                     (loop 
-                        (cdr scopes)
-
+                        (cdr scs)
                         (cond 
                             [(not bindings) acc]
                             [else 
+                                
                                 (let inner ([entries (core-hash->list bindings)]
                                             [acc acc])
                                     (cond 
@@ -232,8 +239,9 @@
                                             (let* ([entry (car entries)]
                                                    [b-scopes (car entry)]
                                                    [binding (cdr entry)])
+                                           
                                                 (inner (cdr entries)
-                                                    (if (set-sbuset? b-scopes scopes)
+                                                    (if (set-subset? b-scopes scopes)
                                                         (cons (cons b-scopes binding) acc)
                                                         acc)))]))])))])))
 

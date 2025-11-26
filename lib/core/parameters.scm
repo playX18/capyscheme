@@ -1,10 +1,12 @@
 
 (library (core parameters)
 
-  (export make-parameter parameterize)
+  (export make-parameter parameterize current-input-port
+          current-output-port current-error-port)
 
   (import (core intrinsics)
-          (only (core primitives) make-parameter procedure?))
+          (only (core primitives) make-parameter procedure? current-input-port
+                current-output-port current-error-port))
 
 ;;; With the SRFI-39 and R7RS semantics, we have to bypass a call to the
 ;;; conversion procedure, which is done by passing the no-conversion symbol
@@ -35,7 +37,7 @@
                                    ((swap! var param flag)
                                     (let ((tmp var))
                                       (set! var (param))
-                                      (if (parameter? param)
+                                      (if #f
                                           (param tmp flag)
                                           (param tmp)))))))
                      (dynamic-wind

@@ -42,12 +42,30 @@
                     (lambda (entry)
                         (namespace-set-transformer!
                             ns
-                            1
+                            0
                             (car entry)
                             (make-core-form (cdr entry))))
                     (core-hash->list core-forms))]))
+    (define provides-0 
+        (let ([res (make-core-hash-eq)])
+            (for-each 
+                (lambda (entry)
+                    (define sym (car entry))
+                    (core-hash-set! res sym
+                        (make-module-binding 'core 0 sym 'core 0 sym 0)))
+                (core-hash->list core-primitives))
+            (for-each 
+                (lambda (entry)
+                    (define sym (car entry))
+                    (core-hash-set! res sym
+                        (make-module-binding 'core 0 sym 'core 0 sym 0)))
+                (core-hash->list core-forms))
+            res))
+    (core-hash-set! provides 0 provides-0)
+
     (declare-module! 
         ns 
+        'core
         (make-mod 
             self-name
             requires
@@ -61,6 +79,6 @@
     (and m 
         (let ([b (resolve (m 'id) phase)])
             (and (module-binding? b)
-                 (eq? 'core (module-binding-module b)
-                 (module-binding-sym b))))))
+                 (eq? 'core (module-binding-module b))
+                 (module-binding-sym b)))))
 

@@ -59,7 +59,7 @@
 
 (define (add-local-binding! id phase)
     (define key (gensym (symbol->string (syntax-e id))))
-    (add-binding! id (local-binding key) phase)
+    (add-binding! id (make-local-binding key) phase)
     key)
 
 (define empty-env (make-core-hash-eq))
@@ -94,11 +94,13 @@
 (define (binding-lookup b env ns phase id)
     (cond 
         [(module-binding? b)
+          
             (let ([m (namespace->module-namespace ns 
                                                   (module-binding-module b)
                                                   (- phase (module-binding-phase b)))])
                 (namespace-get-transformer m (module-binding-phase b) (module-binding-sym b) (lambda () variable)))]
         [(local-binding? b)
+         
             (let ([t (core-hash-ref env (local-binding-key b) missing)])
                 (when (eq? t missing)
                     (syntax-violation #f "identifier used out of context" id))
