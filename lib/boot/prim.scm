@@ -373,8 +373,6 @@
         (if (null? args)
             (fluid-ref f)
             (let ([old (fluid-ref f)])
-              (if (not (conv (car args)))
-                (assertion-violation 'parameter "bad value for parameter" (car args)))
               (fluid-set! f (car args))
               old)))))
 
