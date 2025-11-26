@@ -687,29 +687,23 @@
                                         (wrap var top-wrap mod)))))
         (define (macro-introduced-identifier? id)
             (not (equal? (wrap-marks (syntax-wrap id)) top-mark)))
-        (define (ensure-fresh-name var)
-           
-            (letrec* ((ribcage-has-var?
-                                         (lambda (var)
-                                           (let lp ((labels (ribcage-labels ribcage)))
-                                             (let* ((v labels)
-                                                    (fk (lambda ()
-                                                          (let ((fk (lambda () (error "value failed to match" v))))
-                                                            (if (pair? v)
-                                                                (let ((vx (car v)) (vy-1 (cdr v)))
-                                                                  (if (pair? vx)
-                                                                      (let ((vx (car vx)) (vy (cdr vx)))
-                                                                        (let* ((wrapped vy) (labels vy-1))
-                                                                          (or (eq? (syntax-expression wrapped) var)
-                                                                              (lp labels))))
-                                                                      (fk)))
-                                                                (fk))))))
-                                               (if (null? v) #f (fk)))))))
-                                (let lp ((unique var) (n 1))
-                                  (if (ribcage-has-var? unique)
-                                      (let ((tail (string->symbol (number->string n))))
-                                        (lp (symbol-append var '- tail) (+ 1 n)))
-                                      unique))))
+        (define (ensure-fresh-name var) 
+          (define (ribcage-has-var? var)
+            ;; check if ribcage contains var.
+            ;; Each label is (_ . wrapped) where wrapped is syntax-object
+            ;; with expression being the variable.
+            (let lp ([labels (ribcage-labels ribcage)])
+              (and (pair? labels)
+                    (let ([entry (car labels)])
+                      (or (and (pair? entry)
+                                (eq? (syntax-expression (cdr entry)) var))
+                          (lp (cdr labels)))))))
+
+          (let lp ((unique var) (n 1))
+            (if (ribcage-has-var? unique)
+                (let ((tail (string->symbol (number->string n))))
+                  (lp (symbol-append var '- tail) (+ 1 n)))
+                unique)))
         (define (fresh-derived-name id orig-form)
             (ensure-fresh-name
                 (symbol-append
@@ -721,7 +715,6 @@
 
         (define (parse body r w s m esew mod)
             (let loop ([body body])
-
                 (cond
                   [(null? body) '()]
                   [else
