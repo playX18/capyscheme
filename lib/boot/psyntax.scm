@@ -36,6 +36,15 @@
 (define syntax-error #f)
 (define app-sym '#%app)
 
+(define <compile-time-value> 
+  (let* ([rtd (make-record-type-descriptor '<compile-time-value> #f #f #f #f '#((immutable value)))]
+         [rcd (make-record-constructor-descriptor rtd #f #f)])
+        (make-record-type '<compile-time-value> rtd rcd)))
+  
+(define $compile-time-value? (record-predicate (record-type-rtd <compile-time-value>)))
+(define compile-time-value (record-constructor (record-type-rcd <compile-time-value>)))
+(define compile-time-value-value (record-accessor (record-type-rtd <compile-time-value>) 0))
+
 (let ([syntax? (module-ref (current-module) 'syntax?)]
       [make-syntax (module-ref (current-module) 'make-syntax)]
       [syntax-expression (module-ref (current-module) 'syntax-expression)]
@@ -1128,6 +1137,8 @@
                           (or (syntax-module e) mod) for-car?)]
          [(self-evaluating? e) (values 'constant #f e e w s mod)]
          [else (values 'other #f e e w s mod)]))
+
+
 
     (define (expand-install-global mod name type e id)
         (build-global-definition
@@ -2308,8 +2319,22 @@
                            (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
             (make-syntax #f '((top)) '(hygiene capy))))))
 
+
+
 (define syntax-error
   (let ((make-syntax make-syntax))
+    (define (string-join args)
+      (define result (open-output-string))
+      (define len (length args))
+      (let loop ([i 0] [args args])
+        (if (null? args)
+          (get-output-string result)
+          (begin 
+            (when (> i 0)
+              (write-string " " result))
+            (write-string (car args) result)
+            (loop (+ i 1) (cdr args))))))
+
     (make-syntax-transformer
      'syntax-error
      'macro
@@ -2321,7 +2346,7 @@
                         (syntax-violation
                          (syntax->datum keyword)
                          (string-join
-                          (cons (syntax->datum message) (map (lambda (x) (object->string (syntax->datum x))) arg)))
+                          (cons (syntax->datum message) (map (lambda (x) (format "~a" (syntax->datum x))) arg)))
                          (if (syntax->datum keyword) (cons keyword operands) #f)))
                       tmp)
                (let ((tmp ($sc-dispatch tmp-1 '(_ any . each-any))))

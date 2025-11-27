@@ -81,6 +81,14 @@
 (define (record-type-field-names rtd)
   (list->vector (map cdr (rtd-fields rtd))))
 
+(define (record-type-field-offsets rtd)
+  (let loop ((rtd rtd) (offsets '()) (count 0))
+    (if rtd
+      (loop (rtd-parent rtd)
+            (append (map (lambda (f) (+ count 1)) (rtd-fields rtd)) offsets)
+            (+ count (length (rtd-fields rtd))))
+      (reverse offsets))))
+
 (define (record-field-mutable? rtd k)
   (car (list-ref (rtd-fields rtd) k)))
 
