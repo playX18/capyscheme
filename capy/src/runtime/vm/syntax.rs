@@ -64,6 +64,8 @@ unsafe impl<'gc> Tagged for Syntax<'gc> {
     const TC8: TypeCode8 = TypeCode8::SYNTAX;
     const TYPE_NAME: &'static str = "#<syntax>";
 }
+
+
 #[scheme(path=capy)]
 pub mod syntax_ops {
     #[scheme(name = "syntax?")]

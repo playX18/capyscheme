@@ -1362,3 +1362,15 @@
   "Given an expression, expand all macros in it and return expanded TreeIL. 
    TreeIL can be converted back to Scheme using `tree-il->scheme`."
   (macroexpand expr 'c '(compile expand load)))
+
+(define-syntax define-for-syntax 
+  (syntax-rules () 
+    "Defines a variable available at macro expansion time. Unlike Racket's 
+    `define-for-syntax`, this does not restrict variable usage to macro expansion time only.
+    Implemented as expanding into `(eval-when (expand load eval) (define ...))`."
+    [(_ (name . formals) body1 body ...)
+      (eval-when (expand load eval) (define (name . formals)
+        body1 body ...))]
+    [(_ name value)
+      (eval-when (expand load eval)
+        (define name value))]))

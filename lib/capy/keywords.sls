@@ -1,0 +1,5 @@
+(library (capy keywords)
+    (export (rename (new-lambda lambda))
+            (rename (new-app |#%app|)))
+    (import (capy keywords impl)
+            (core control)))

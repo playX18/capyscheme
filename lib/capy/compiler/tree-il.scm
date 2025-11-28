@@ -94,7 +94,7 @@
              ,(tree-il->scheme (if-else t)))]
       [(let? t)
         (define style (let-style t))
-        (define ids (let-ids t))
+        (define ids (let-lhs t))
         (define rhs (map tree-il->scheme (let-rhs t)))
         (define body (tree-il->scheme (let-body t)))
         `(,style
