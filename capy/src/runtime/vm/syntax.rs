@@ -21,6 +21,7 @@ pub struct Syntax<'gc> {
     pub(crate) wrap: Value<'gc>,
     pub(crate) module: Value<'gc>,
     pub(crate) source: Value<'gc>,
+    pub(crate) properties: Value<'gc>,
 }
 
 impl<'gc> Syntax<'gc> {
@@ -30,6 +31,7 @@ impl<'gc> Syntax<'gc> {
         wrap: Value<'gc>,
         module: Value<'gc>,
         source: Value<'gc>,
+        properties: Value<'gc>,
     ) -> Gc<'gc, Self> {
         Gc::new(
             *ctx,
@@ -39,6 +41,7 @@ impl<'gc> Syntax<'gc> {
                 wrap,
                 module,
                 source,
+                properties,
             },
         )
     }
@@ -58,13 +61,16 @@ impl<'gc> Syntax<'gc> {
     pub fn source(&self) -> Value<'gc> {
         self.source
     }
+
+    pub fn properties(&self) -> Value<'gc> {
+        self.properties
+    }
 }
 
 unsafe impl<'gc> Tagged for Syntax<'gc> {
     const TC8: TypeCode8 = TypeCode8::SYNTAX;
     const TYPE_NAME: &'static str = "#<syntax>";
 }
-
 
 #[scheme(path=capy)]
 pub mod syntax_ops {
@@ -79,10 +85,12 @@ pub mod syntax_ops {
         wrap: Value<'gc>,
         module: Value<'gc>,
         source: Option<Value<'gc>>,
+        properties: Option<Value<'gc>>,
     ) -> Value<'gc> {
         let source = source.unwrap_or_else(|| datum_sourcev(nctx.ctx, exp));
+        let properties = properties.unwrap_or(Value::null());
 
-        let syntax = Syntax::new(nctx.ctx, exp, wrap, module, source);
+        let syntax = Syntax::new(nctx.ctx, exp, wrap, module, source, properties);
 
         nctx.return_(syntax.into())
     }
@@ -95,6 +103,66 @@ pub mod syntax_ops {
     #[scheme(name = "syntax-wrap")]
     pub fn syntax_wrap(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
         nctx.return_(syntax.wrap)
+    }
+
+    /// Return the properties of the syntax object.
+    #[scheme(name = "syntax-properties")]
+    pub fn syntax_properties(syntax: Gc<'gc, Syntax<'gc>>) -> Value<'gc> {
+        nctx.return_(syntax.properties)
+    }
+
+    /// Add a property with given key and value to syntax object.
+    #[scheme(name = "syntax-add-property")]
+    pub fn syntax_add_property(
+        syntax: Gc<'gc, Syntax<'gc>>,
+        key: Value<'gc>,
+        value: Value<'gc>,
+    ) -> Value<'gc> {
+        let new_prop = Value::cons(nctx.ctx, key, value);
+        let combined_props = Value::cons(nctx.ctx, new_prop, syntax.properties);
+
+        let new_syntax = Syntax::new(
+            nctx.ctx,
+            syntax.expr,
+            syntax.wrap,
+            syntax.module,
+            syntax.source,
+            combined_props,
+        );
+
+        nctx.return_(new_syntax.into())
+    }
+
+    /// Remove property with given key from syntax object.
+    ///
+    /// Returns a new syntax object without the property.
+    ///
+    /// NOTE: Order of properties is undefined after removal.
+    #[scheme(name = "syntax-remove-property")]
+    pub fn syntax_remove_property(syntax: Gc<'gc, Syntax<'gc>>, key: Value<'gc>) -> Value<'gc> {
+        let mut props = syntax.properties;
+        let mut new_props = Value::null();
+
+        while props.is_pair() {
+            let prop = props.car();
+            let rest = props.cdr();
+            let prop_key = prop.car();
+            if prop_key != key {
+                new_props = Value::cons(nctx.ctx, prop, new_props);
+            }
+            props = rest;
+        }
+
+        let new_syntax = Syntax::new(
+            nctx.ctx,
+            syntax.expr,
+            syntax.wrap,
+            syntax.module,
+            syntax.source,
+            props,
+        );
+
+        nctx.return_(new_syntax.into())
     }
 
     #[scheme(name = "syntax-module")]

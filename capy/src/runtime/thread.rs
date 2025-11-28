@@ -353,7 +353,7 @@ pub struct State<'gc> {
     pub(crate) shadow_stack: UnsafeCell<debug::ShadowStack<'gc>>,
     pub(crate) last_ret_addr: Cell<Address>,
     pub(crate) thread_object: Gc<'gc, ThreadObject<'gc>>,
-    pub(crate) yield_reason: Cell<Option<YieldReason<'gc>>>,
+    pub(crate) yield_reason: UnsafeCell<Option<YieldReason<'gc>>>,
     /// Accumulator field which is used to pass yield interest
     /// to Rust code.
     pub(crate) accumulator: Cell<Value<'gc>>,
@@ -416,7 +416,12 @@ unsafe impl Trace for State<'_> {
 
         visitor.trace(&mut self.thread_object);
         visitor.trace(&mut self.accumulator);
-        visitor.trace(&mut self.yield_reason);
+        unsafe {
+            match &mut *self.yield_reason.get() {
+                Some(reason) => visitor.trace(reason),
+                None => {}
+            }
+        }
         visitor.trace(&mut self.current_marks);
         visitor.trace(&mut self.winders);
     }
@@ -441,7 +446,7 @@ impl<'gc> State<'gc> {
             last_ret_addr: Cell::new(Address::ZERO),
             saved_call: Cell::new(None),
             thread_object,
-            yield_reason: Cell::new(None),
+            yield_reason: UnsafeCell::new(None),
             accumulator: Cell::new(Value::new(false)),
             current_marks: Cell::new(Value::null()),
             winders: Cell::new(Value::null()),
@@ -460,6 +465,16 @@ impl<'gc> State<'gc> {
     /// which may violate invariants expected by the runtime in places like exception handlers.
     pub unsafe fn set_current_marks(&self, marks: Value<'gc>) {
         self.current_marks.set(marks);
+    }
+
+    pub(crate) fn take_yield_reason(&self) -> Option<YieldReason<'gc>> {
+        unsafe { (*self.yield_reason.get()).take() }
+    }
+
+    pub(crate) fn set_yield_reason(&self, reason: YieldReason<'gc>) {
+        unsafe {
+            (*self.yield_reason.get()) = Some(reason);
+        }
     }
 }
 
@@ -500,8 +515,12 @@ impl Scheme {
             match run {
                 VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
                 VMResult::Err(err) => Ok(finish(ctx, Err(err))),
-                VMResult::Yield => match ctx.state().yield_reason.get() {
+                VMResult::Yield => match ctx.state().take_yield_reason() {
                     Some(YieldReason::Yieldpoint) => Err(Yield::None),
+                    Some(YieldReason::Operation(operation)) => {
+                        let callback = operation.prepare(ctx);
+                        Err(Yield::Operation(callback))
+                    }
                     Some(YieldReason::LockMutex(mutex_obj)) => {
                         let mutex = mutex_obj.downcast::<Mutex>();
                         // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
@@ -538,13 +557,11 @@ impl Scheme {
             match pending {
                 Yield::None => {
                     result = self.enter(|ctx| {
-                        ctx.state().yield_reason.set(None);
-
                         if ctx.has_suspended_call() {
                             match ctx.resume_suspended_call() {
                                 VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
                                 VMResult::Err(err) => Ok(finish(ctx, Err(err))),
-                                VMResult::Yield => match ctx.state().yield_reason.get() {
+                                VMResult::Yield => match ctx.state().take_yield_reason() {
                                     Some(YieldReason::Yieldpoint) => Err(Yield::None),
                                     Some(YieldReason::LockMutex(mutex_obj)) => {
                                         let mutex = mutex_obj.downcast::<Mutex>();
@@ -565,6 +582,10 @@ impl Scheme {
                                     }
 
                                     Some(YieldReason::CollectGarbage) => Err(Yield::GC),
+                                    Some(YieldReason::Operation(operation)) => {
+                                        let callback = operation.prepare(ctx);
+                                        Err(Yield::Operation(callback))
+                                    }
                                     None => Err(Yield::None),
                                     _ => todo!(),
                                 },
@@ -573,6 +594,13 @@ impl Scheme {
                             Ok(finish(ctx, Err(Value::undefined())))
                         }
                     });
+                }
+
+                Yield::Operation(op) => {
+                    op();
+
+                    result = Err(Yield::None);
+                    continue; // retry
                 }
 
                 Yield::Lock(lock) => {
@@ -855,7 +883,6 @@ fn make_fresh_runstack() -> (Address, Address) {
     }
 }
 
-#[derive(Clone, Copy, Trace)]
 pub enum YieldReason<'gc> {
     /// Yield occured from a yieldpoint (function entry).
     ///
@@ -872,7 +899,31 @@ pub enum YieldReason<'gc> {
     PollRead(i32),
     PollWrite(i32),
 
+    Operation(Box<dyn BlockingOperation<'gc> + 'gc>),
+
     CollectGarbage,
+}
+
+unsafe impl<'gc> Trace for YieldReason<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
+        match self {
+            YieldReason::LockMutex(mutex) => {
+                visitor.trace(mutex);
+            }
+            YieldReason::WaitCondition { condition, mutex } => {
+                visitor.trace(condition);
+                visitor.trace(mutex);
+            }
+            YieldReason::Operation(op) => {
+                visitor.trace(op.as_mut());
+            }
+            _ => {}
+        }
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        let _ = weak_processor;
+    }
 }
 
 pub struct PendingLock {
@@ -920,6 +971,7 @@ impl PendingWait {
 
 pub enum Yield {
     None,
+    Operation(BlockingOperationCallback),
     Lock(PendingLock),
     Wait(PendingWait),
     GC,
@@ -929,3 +981,75 @@ pub enum Yield {
 }
 
 pub(crate) static SCM_INITIALIZED: Once = Once::new();
+
+/// A blocking operation that should run while the thread is blocked.
+///
+/// All operations that might block thread for indefinite time should be run
+/// through this trait to ensure proper GC and mutator state management.
+///
+/// # Notes
+///
+/// Interrupts coming to the thread will be executed after the blocking operations, while
+/// GC can happen during the blocking operation.
+pub trait BlockingOperation<'gc>: Trace {
+    /// Prepare the input for the blocking operation.
+    ///
+    /// Returns callback that is invoked by runtime in the blocking context.
+    fn prepare(&self, ctx: Context<'gc>) -> Box<dyn FnOnce()>;
+}
+
+pub type BlockingOperationCallback = Box<dyn FnOnce()>;
+pub type AfterBlockingOperationCallback<'gc> = Box<dyn FnOnce(Context<'gc>)>;
+
+/// The simplest polling operation: `select` on a single file descriptor.
+///
+/// Does not support timeout, multiple fds, or error handling. Only used to
+/// implement primitive os/read and os/write.
+#[derive(Clone, Copy, Trace, Debug)]
+pub enum PollOperation {
+    Read(i32),
+    Write(i32),
+}
+
+impl<'gc> BlockingOperation<'gc> for PollOperation {
+    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
+        println!("Preparing poll operation: {:?}", self);
+        match self {
+            PollOperation::Read(fd) => {
+                let fd = *fd;
+                Box::new(move || unsafe {
+                    let readfs = [rustix::event::FdSetElement::default(); 1];
+                    rustix::event::fd_set_insert(&mut readfs.clone(), fd);
+
+                    let res = rustix::event::select(
+                        readfs.len() as _,
+                        Some(&mut readfs.clone()),
+                        None,
+                        None,
+                        None,
+                    );
+
+                    let _ = res;
+                })
+            }
+
+            PollOperation::Write(fd) => {
+                let fd = *fd;
+                Box::new(move || unsafe {
+                    let writefs = [rustix::event::FdSetElement::default(); 1];
+                    rustix::event::fd_set_insert(&mut writefs.clone(), fd);
+
+                    let res = rustix::event::select(
+                        writefs.len() as _,
+                        None,
+                        Some(&mut writefs.clone()),
+                        None,
+                        None,
+                    );
+
+                    let _ = res;
+                })
+            }
+        }
+    }
+}

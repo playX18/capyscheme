@@ -22,7 +22,7 @@ pub enum IoOperation {
 }
 #[scheme(path=capy)]
 pub mod io_ops {
-    use crate::runtime::YieldReason;
+    use crate::runtime::PollOperation;
 
     #[scheme(name = "usleep")]
     pub fn usleep(microseconds: u64) -> bool {
@@ -659,11 +659,7 @@ pub mod io_ops {
     pub fn syscall_close(fd: i32) -> i32 {
         unsafe {
             let ret = libc::close(fd);
-            if ret == -1
-                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
-            {
-                return nctx.yield_(YieldReason::PollWrite(fd));
-            }
+
             nctx.return_(ret)
         }
     }
@@ -688,7 +684,7 @@ pub mod io_ops {
             if ret == -1
                 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
             {
-                return nctx.yield_(YieldReason::PollRead(fd));
+                return nctx.perform(PollOperation::Read(fd));
             }
             nctx.return_(ret)
         }
@@ -714,7 +710,7 @@ pub mod io_ops {
             if ret == -1
                 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
             {
-                return nctx.yield_(YieldReason::PollWrite(fd));
+                return nctx.perform(PollOperation::Write(fd));
             }
             nctx.return_(ret)
         }
@@ -727,7 +723,7 @@ pub mod io_ops {
             if ret == -1
                 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
             {
-                return nctx.yield_(YieldReason::PollWrite(fd));
+                return nctx.perform(PollOperation::Write(fd));
             }
             nctx.return_(ret)
         }

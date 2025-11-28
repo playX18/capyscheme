@@ -290,6 +290,21 @@ pub mod hash_ops {
         nctx.return_(hash)
     }
 
+    /// Computes the `eq?` hash of the value. If `bound` is provided, the result is taken modulo `bound`.
+    /// 
+    /// The main difference between `hash` and `hash-eq` is that `hash` never hashes by object identity,
+    /// while this function does.
+    #[scheme(name = "hash-eq")]
+    pub fn hash_eq(value: Value<'gc>, bound: Option<u64>) -> Value<'gc> {
+        let mut hasher = simplehash::CityHasher64::new();
+        value.hash(&mut hasher);
+        let hash = hasher.finish_raw() % bound.unwrap_or(u64::MAX);
+      
+        let hash = hash.into_value(nctx.ctx);
+
+        nctx.return_(hash)
+    }
+
     #[scheme(name = "make-core-hashtable")]
     pub fn make_core_hashtable(
         kind: Option<SymbolRef<'gc>>,

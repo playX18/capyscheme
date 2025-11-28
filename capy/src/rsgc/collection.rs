@@ -161,7 +161,7 @@ impl<'a> Visitor<'a> {
             .add_object_with_weak_ref(object.to_object_reference());
     }
 
-    pub fn trace<T: Trace>(&mut self, value: &mut T) {
+    pub fn trace<T: Trace + ?Sized>(&mut self, value: &mut T) {
         unsafe {
             value.trace(self);
         }

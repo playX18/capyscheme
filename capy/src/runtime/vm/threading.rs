@@ -1,8 +1,10 @@
 //! Multi-threading support for CapyScheme.
 
+use std::ptr::NonNull;
+
 use crate::prelude::*;
 use crate::rsgc::{Mutation, mmtk::AllocationSemantics};
-use crate::runtime::{Scheme, YieldReason};
+use crate::runtime::{BlockingOperation, Scheme, YieldReason};
 
 #[repr(C)]
 pub struct Condition {
@@ -142,6 +144,7 @@ pub mod threading_ops {
     pub fn mutex_acquire(mutex_obj: Gc<'gc, Mutex>, block: Option<bool>) -> bool {
         let block = block.unwrap_or(true);
         // fast path: try to acquire the lock without yielding to native
+
         match &mutex_obj.mutex {
             MutexKind::Reentrant(mutex) => {
                 if let Some(_guard) = mutex.try_lock() {
@@ -156,9 +159,10 @@ pub mod threading_ops {
                 }
             }
         }
+
         if block {
             return nctx.yield_and_return(
-                YieldReason::LockMutex(mutex_obj.into()),
+                YieldReason::Operation(Box::new(MutexAcquireOperation { mutex: mutex_obj })),
                 &[Value::new(true)],
             );
         } else {
@@ -251,10 +255,10 @@ pub mod threading_ops {
             );
         }
         nctx.yield_and_return(
-            YieldReason::WaitCondition {
-                condition: condition_obj.into(),
-                mutex: mutex_obj.into(),
-            },
+            YieldReason::Operation(Box::new(ConditionWaitOperation {
+                condition: condition_obj,
+                mutex: mutex_obj,
+            })),
             &[Value::undefined()],
         )
     }
@@ -262,4 +266,48 @@ pub mod threading_ops {
 
 pub(crate) fn init_threading<'gc>(ctx: Context<'gc>) {
     threading_ops::register(ctx);
+}
+
+#[derive(Trace)]
+pub struct MutexAcquireOperation<'gc> {
+    pub mutex: Gc<'gc, Mutex>,
+}
+
+impl<'gc> BlockingOperation<'gc> for MutexAcquireOperation<'gc> {
+    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
+        let mutex = NonNull::from(&self.mutex.mutex);
+
+        Box::new(move || match unsafe { mutex.as_ref() } {
+            MutexKind::Reentrant(mutex) => {
+                let _guard = mutex.lock();
+                std::mem::forget(_guard);
+            }
+            MutexKind::Regular(mutex) => {
+                let _guard = mutex.lock();
+                std::mem::forget(_guard);
+            }
+        })
+    }
+}
+
+#[derive(Trace)]
+pub struct ConditionWaitOperation<'gc> {
+    pub condition: Gc<'gc, Condition>,
+    pub mutex: Gc<'gc, Mutex>,
+}
+
+impl<'gc> BlockingOperation<'gc> for ConditionWaitOperation<'gc> {
+    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
+        let condition = NonNull::from(&self.condition.cond);
+        let mutex = NonNull::from(&self.mutex.mutex);
+
+        Box::new(move || match unsafe { mutex.as_ref() } {
+            MutexKind::Regular(mutex) => unsafe {
+                let mut guard = mutex.make_guard_unchecked();
+                condition.as_ref().wait(&mut guard);
+                std::mem::forget(guard);
+            },
+            _ => panic!("Only regular mutex can be used with condition waiting"),
+        })
+    }
 }
