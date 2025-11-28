@@ -1,3 +1,10 @@
+;; Keyword arguments implementation based on https://www2.ccs.neu.edu/racket/pubs/scheme2009-fb.pdf and 
+;; Racket's `kw.rkt` code. Our implementation differs in not using structures (or records) to represent
+;; keyword procedures. Instead we attach keyword information directly to procedure properties 
+;; thus it makes calls slightly faster (no structure accesses needed). 
+
+#!r6rs 
+
 (library (capy keywords impl)
     (export 
         new-lambda
