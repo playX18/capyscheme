@@ -184,7 +184,22 @@ pub mod base_ops {
     }
 
     #[scheme(name = "gensym")]
-    pub fn gensym(prefix: Option<Gc<'gc, Str<'gc>>>) -> Value<'gc> {
+    pub fn gensym(prefix: Option<Value<'gc>>) -> Value<'gc> {
+        let prefix = if let Some(p) = prefix {
+            if !p.is::<Str>() && !p.is::<Symbol>() {
+                return nctx.wrong_argument_violation(
+                    "gensym",
+                    "expected a symbol or string as prefix",
+                    Some(p),
+                    Some(1),
+                    1,
+                    &[p],
+                );
+            }
+            Some(ctx.str(&p.to_string()).downcast::<Str>())
+        } else {
+            None 
+        };
         let sym = Symbol::gensym(nctx.ctx, prefix);
         nctx.return_(sym.into())
     }

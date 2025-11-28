@@ -20,33 +20,77 @@
         continuation?
         $stacktrace-key)
     (import (core primitives)
-            (only (capy) print-condition)
+            (capy)
             (core records))
+
+  (define (reverse! ls)
+    (let loop ([l ls] [a '()])
+      (cond 
+        [(pair? l)  
+          (let ([x (cdr l)])
+            (set-cdr! l a)
+            (loop x l))]
+        [(null? l) a]
+        [else 
+          (let loop ([l a] [a l])
+            (let ([x (cdr l)])
+              (set-cdr! l a)
+              (loop x l)))])))
+
+  (define-syntax cte-length 
+    (lambda (stx)
+      (syntax-case stx () 
+        [(_ (expr ...))
+         (datum->syntax stx (length (syntax->datum '(expr ...))))]
+      )
+    ))
+    (define-syntax case-lambda-aux
+    (lambda (x)
+      (define (construct args formals clause*)
+	(define _car #'car)
+	(define _cdr #'cdr)
+	(define (parse-formals formal args inits)
+	  (syntax-case formal ()
+	    (() (reverse! inits))
+	    ((a . d)
+	     (with-syntax ((arg `(,_car ,args))
+			   (args `(,_cdr ,args)))
+	       (parse-formals #'d #'args
+			      (cons (list #'a #'arg) inits))))
+	    (v
+	     (reverse! (cons (list #'v args) inits)))))
+	(with-syntax ((((var init) ...) (parse-formals formals args '()))
+		      ((clause ...) clause*))
+	  ;; Using `lambda` enables type check, immediate apply
+	  ;; will be converted to let by the compiler.
+	  #'((lambda (var ...) clause ...) init ...)))
+      (syntax-case x ()
+	((_ args n)
+	 #'(assertion-violation #f "unexpected number of arguments" args))
+	((_ args n ((x ...) b ...) more ...)
+	 (with-syntax ((let-clause (construct #'args #'(x ...) #'(b ...)))
+		       (expect-length (length #'(x ...))))
+	   #'(if (= n expect-length)
+		 let-clause
+		 (case-lambda-aux args n more ...))))
+	((_ args n ((x1 x2 ... . r) b ...) more ...)
+	 (with-syntax ((let-clause (construct #'args #'(x1 x2 ... . r) 
+					      #'(b ...)))
+		       (expect-length (length #'(x1 x2 ...))))
+	   #'(if (>= n expect-length)
+		 let-clause
+		 (case-lambda-aux args n more ...))))
+	((_ args n (r b ...) more ...)
+	 #'(let ((r args)) b ...)))))
 
   (define-syntax case-lambda
     (syntax-rules ()
-      ((case-lambda (params body0 ...) ...)
-      (lambda args
-        (let ((len (length args)))
-          (letrec-syntax
-              ((cl (syntax-rules ::: ()
-                      ((cl)
-                      (error "no matching clause"))
-                      ((cl ((p :::) . body) . rest)
-                      (if (= len (length '(p :::)))
-                          (apply (lambda (p :::)
-                                    . body)
-                                  args)
-                          (cl . rest)))
-                      ((cl ((p ::: . tail) . body)
-                          . rest)
-                      (if (>= len (length '(p :::)))
-                          (apply
-                            (lambda (p ::: . tail)
-                              . body)
-                            args)
-                          (cl . rest))))))
-            (cl (params body0 ...) ...)))))))
+      ((_ (fmls b1 b2 ...))
+       (lambda fmls b1 b2 ...))
+      ((_ (fmls b1 b2 ...) ...)
+       (lambda args
+	 (let ((n (length args)))
+	   (case-lambda-aux args n (fmls b1 b2 ...) ...))))))
 
 
   (define %stacktrace-key '|stacktrace-key b8bec3ca-8174-4219-a964-b1aa2aa53ed5|)
@@ -86,8 +130,8 @@
             (cond 
               [(procedure-name proc)
                 => (lambda (name)
-                      (format p "\t~s~%" (cons name args)))]
+                      (format p "\t~s~%" (cons name (syntax->datum args))))]
               [else 
-                (format p "\t~s~%" (cons '<anonymous> args))])
+                (format p "\t~s~%" (cons '<anonymous> (syntax->datum args)))])
             
             (lp (+ frame 1) (+ idx 1) (cdr stk)))]))))

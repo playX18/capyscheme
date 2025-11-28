@@ -1160,9 +1160,10 @@
             (lambda (type value form e w s mod)
                 (expand-expr type value form e r w s mod))))
 
+
     (define (make-explicit sym e r w s mod)
-      (define sym-s sym)
-      (define new-s (make-syntax (cons sym-s e) empty-wrap mod s))
+      (define sym-s (source-wrap sym w s mod))
+      (define new-s (make-syntax (cons sym e) w mod s))
       new-s)
 
     (define (expand-implicit sym ctx e r w s mod)
@@ -1177,9 +1178,10 @@
           ;(format #t "expanding implicit syntax reference ~a of type ~s in ~a~%" id type mod*)
           (cond 
             [(eq? type 'macro)
-              (expand (expand-macro value (make-explicit id e r w s mod) r w s #f mod) r w mod)]
+              (define new-app (expand-macro value (make-explicit id e r empty-wrap s mod) r empty-wrap s #f mod))
+              (expand new-app r w mod)]
             [(eq? type 'core)
-              (value (make-explicit sym e r w s mod) r w s mod)]
+              (value (cons id e) r w s mod)]
             [else 
               (syntax-violation #f "implicit syntax reference is not a macro or core form" sym e)]))))
     
@@ -1188,20 +1190,19 @@
             [(eq? type 'lexical)
                 (build-lexical-reference s e value)]
             [(or (eq? type 'core) (eq? type 'core-form))
-                (value e r w s mod)
-                ]
+                (value e r w s mod)]
             [(eq? type 'module-ref)
                 (call-with-values (lambda () (value e r w mod))
                     (lambda (e r w s mod)
                         (expand e r w mod)))]
             [(or (eq? type 'lexical-call) (eq? type 'global-call) (eq? type 'primitive-call) (eq? type 'call))
+              
                 ;(when (eq? type 'global-call)
                 ;  (format #t "global-call of ~s in ~a~%" (syntax->datum e) (or (and (syntax? value)
                 ;                                  (syntax-module value))
                 ;                             mod)))
-              
-              (expand-implicit app-sym value e r w s mod)
-            ]
+             
+              (expand-implicit app-sym value e r w s mod)]
             [(eq? type 'lexical-call)
                 (expand-call
                     (let ([id (car e)])
@@ -2039,6 +2040,7 @@
 
     (global-extend 'core app-sym
       (lambda (e r w s mod)
+        
         (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ . each-any))))
           (if tmp
               (apply (lambda (es)
@@ -2046,9 +2048,40 @@
                         [(null? es)
                           (build-data s '())]
                         [else 
-                          (let ([rator (expand (car es) r w mod)]
-                                [rands (map (lambda (x) (expand x r w mod)) (cdr es))])
-                            (build-call s rator rands))]))
+                          (receive (type value from e w s mod)
+                            (syntax-type es r w (source-annotation e) #f mod #f)
+                            (begin 
+                            
+                            (cond 
+                              [(eq? type 'lexical-call)
+                                (expand-call 
+                                  (let ([id (car e)])
+                                    (build-lexical-reference (source-annotation id)
+                                                 (if (syntax? id) (syntax->datum id) id)
+                                                 value))
+                                  e r w s mod)]
+                              [(eq? type 'global-call)
+                                (expand-call
+                                  (build-global-reference 
+                                                        (or (source-annotation (car e)) s)
+                                                        (if (syntax? value)
+                                                            (syntax-expression value)
+                                                            value)
+                                                        (or (and (syntax? value)
+                                                                  (syntax-module value))
+                                                            mod))
+                                e r w s mod)]
+                            [(eq? type 'primitive-call)
+                                (build-primcall s
+                                                value
+                                                (map (lambda (e) (expand e r w mod)) (cdr e)))]
+                            [(eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod)]
+                            [else (syntax-violation #f "invalid application" e)]    
+                                            )))
+                        ]))
+                          ;(let ([rator (expand (car es) r w mod)]
+                          ;      [rands (map (lambda (x) (expand x r w mod)) (cdr es))])
+                          ;  (build-call s rator rands))]))
                      tmp)
               (syntax-violation #f "source expression failed to match any pattern" tmp)))))
     (global-extend 'core 'with-continuation-mark 

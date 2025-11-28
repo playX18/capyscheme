@@ -198,7 +198,8 @@
                            (else "#u8")))
                     (col (out bvec-start col)))
                (wr-lst (bytevector->list obj) col lvl)))
-            (else                                                 ; FIXME
+            (else       
+                                                ; FIXME
              (out "#<WEIRD>" col))))
 
     ;; Pretty-prints using as many lines as needed.
