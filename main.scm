@@ -2,6 +2,7 @@
 (import (capy compiler tree-il) (capy pretty-print))
 (import (capy keywords))
 
-(define f (lambda (x :woops w :y y) (+ x w y)))
+(define f (lambda (x :y y :z [z 10]) (+ x y z)))
 
-(printf "f(2, 3) = ~a~%" (f 2 :woops 3 :y 4))
+(printf "f(1 :y 2) = ~a~%" (f 1 :y 2)) ; -> 13
+(printf "f(1 :y 2 :z 3) = ~a~%" (f 1 :y 2 :z 3)) ; -> 6
