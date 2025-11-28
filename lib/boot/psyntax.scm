@@ -923,7 +923,7 @@
           ((symbol? x)
             (syntax-violation
             #f
-            "encountered raw symbol in macro output"
+            (format "encountered raw symbol '~a' in macro output" x)
             e
             x))
           (else (decorate-source x))))
@@ -1975,7 +1975,8 @@
                         (assq-ref alist 'line)
                         (assq-ref alist 'column))))
      
-        (make-syntax
+        (define (wrap e)
+          (make-syntax
             datum
             (if id (syntax-wrap id) empty-wrap)
             (if id (syntax-module id) #f)
@@ -1984,7 +1985,16 @@
                 [(not source) (props->sourcev (source-properties datum))]
                 [(and (alist? source)) (props->sourcev source)]
                 [(and (vector? source) (= (vector-length source) 3)) source]
-                [else (syntax-sourcev source)]))))
+                [else (syntax-sourcev source)])))
+        (cond 
+          [(syntax? datum) datum]
+          [(list? datum)
+            (wrap (map (lambda (x) (datum->syntax id x source)) datum))]
+          [(pair? datum)
+            (wrap (cons (datum->syntax id (car datum) source)
+                        (datum->syntax id (cdr datum) source)))]
+          [else (wrap datum)])))
+
     (set! free-identifier=? (lambda (x y)
         (if (not (nonsymbol-id? x))
             (assertion-violation 'free-identifier=? "Expected syntax identifier" x))
@@ -2012,7 +2022,7 @@
                 (let ([props (source-properties x)])
                     (if (pair? props)
                         (datum->syntax #f result props)
-                        result)))
+                        (datum->syntax #f result))))
 
             (cond
              [(pair? x) (annotate (cons (unstrip (car x)) (unstrip (cdr x))))]
