@@ -334,13 +334,14 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             Some(Value::cons(ctx, a, b))
         }
 
-        "make-syntax" => make_syntax(ctx, exp, wrap, module, source) {
+        "make-syntax" => make_syntax(ctx, exp, wrap, module, source, properties) {
             Some(Syntax::new(
                 ctx,
                 exp,
                 wrap,
                 module,
                 source,
+                properties,
             ).into())
         }
 

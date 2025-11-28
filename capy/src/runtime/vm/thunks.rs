@@ -3925,9 +3925,10 @@ thunks! {
         exp: Value<'gc>,
         wrap: Value<'gc>,
         module: Value<'gc>,
-        source: Value<'gc>
+        source: Value<'gc>,
+        properties: Value<'gc>
     ) -> Value<'gc> {
-        Syntax::new(ctx, exp, wrap, module, source).into()
+        Syntax::new(ctx, exp, wrap, module, source, properties).into()
     }
 }
 

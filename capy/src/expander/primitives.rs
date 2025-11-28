@@ -1597,9 +1597,21 @@ primitive_expanders!(
 
     "make-syntax" ex_mkstx<'gc>(ctx, args, src) {
 
-        if args.len() != 4 {
+        if args.len() != 4 && args.len() != 5 {
             return None;
         }
+
+        let args = if args.len() == 5 {
+            args
+        } else {
+            &[
+                args[0],
+                args[1],
+                args[2],
+                args[3],
+                constant(ctx, Value::null()) // properties
+            ]
+        };
 
         Some(prim_call_term(ctx, sym_make_syntax(ctx).into(), args, src))
     }
@@ -1629,6 +1641,13 @@ primitive_expanders!(
 pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     let capy_module = list!(ctx, Symbol::from_str(ctx, "capy"));
     t.pre_order(ctx, |ctx, t| match &t.kind {
+        TermKind::If(cond, cons, alt) => {
+            if let TermKind::Const(v) = cond.kind {
+                if v == Value::new(false) { *alt } else { *cons }
+            } else {
+                t
+            }
+        }
         TermKind::PrimCall(name, args) => {
             let expanders = &*PRIMITIVE_EXPANDERS;
 

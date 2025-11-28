@@ -25,7 +25,7 @@
         option-single?
         option-flag?
         option-value-or-default)
-    (import (rnrs) (core optargs) (capy))
+    (import (rnrs) (core optargs) (capy) (capy keywords))
 
     (define option-multiple 'multiple)
     (define option-single 'single)
@@ -50,6 +50,8 @@
             aliases
             type))
     
+    
+
     (define (make-option name type . rest)
         (let-optionals rest 
             ([abbreviation #f]

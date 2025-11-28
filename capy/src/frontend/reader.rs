@@ -720,6 +720,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             empty_wrap(self.ctx),
             Value::new(false),
             v.into(),
+            Value::null(),
         );
         stx.into()
     }

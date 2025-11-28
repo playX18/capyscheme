@@ -2634,8 +2634,9 @@ prim!(
         let wrap = ssa.atom(args[1]);
         let module = ssa.atom(args[2]);
         let source = ssa.atom(args[3]);
+        let properties = ssa.atom(args[4]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.builder.ins().call(ssa.thunks.make_syntax, &[ctx, exp, wrap, module, source]);
+        let result = ssa.builder.ins().call(ssa.thunks.make_syntax, &[ctx, exp, wrap, module, source, properties]);
         PrimValue::Value(ssa.builder.inst_results(result)[0])
     }
 );

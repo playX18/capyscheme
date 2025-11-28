@@ -281,6 +281,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             self.put(syntax.module())?;
             self.put(syntax.source())?;
             self.put(syntax.wrap())?;
+            self.put(syntax.properties())?;
             return Ok(());
         }
 
@@ -624,8 +625,9 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 let module = self.read_value()?;
                 let source = self.read_value()?;
                 let wrap = self.read_value()?;
+                let properties = self.read_value()?;
                 Ok(Value::new(Syntax::new(
-                    self.ctx, expr, wrap, module, source,
+                    self.ctx, expr, wrap, module, source, properties,
                 )))
             }
 

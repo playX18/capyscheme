@@ -5,7 +5,6 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use crate::rsgc::{Gc, Trace, alloc::Array};
 use crate::runtime::{
     Context, YieldReason,
     value::{
@@ -13,6 +12,10 @@ use crate::runtime::{
         TryIntoValues, TypeCode16, Value, Vector,
     },
     vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
+};
+use crate::{
+    rsgc::{Gc, Trace, alloc::Array},
+    runtime::BlockingOperation,
 };
 
 pub mod arith;
@@ -421,7 +424,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             },
         );
 
-        self.ctx.state().yield_reason.set(Some(reason));
+        self.ctx.state().set_yield_reason(reason);
 
         NativeCallReturn {
             ret: NativeReturn {
@@ -431,9 +434,15 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
+    /// Perform blocking operation `op` and call back into the same procedure
+    /// once operation is completed.
+    pub fn perform(self, op: impl BlockingOperation<'gc> + 'static) -> NativeCallReturn<'gc> {
+        self.yield_(YieldReason::Operation(Box::new(op)))
+    }
+
     pub fn yield_(self, reason: YieldReason<'gc>) -> NativeCallReturn<'gc> {
         let args = Array::from_slice(*self.ctx, self.rands());
-        self.ctx.state().yield_reason.set(Some(reason));
+        self.ctx.state().set_yield_reason(reason);
 
         NativeCallReturn {
             ret: NativeReturn {
