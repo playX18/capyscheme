@@ -2050,50 +2050,42 @@
 
     (global-extend 'core app-sym
       (lambda (e r w s mod)
+        (define stx (match-syntax e '(_ es :::)))
+        (define es (stx 'es))
         
-        (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ . each-any))))
-          (if tmp
-              (apply (lambda (es)
-                      (cond 
-                        [(null? es)
-                          (build-data s '())]
-                        [else 
-                          (receive (type value from e w s mod)
-                            (syntax-type es r w (source-annotation e) #f mod #f)
-                            (begin 
-                            
-                            (cond 
-                              [(eq? type 'lexical-call)
-                                (expand-call 
-                                  (let ([id (car e)])
-                                    (build-lexical-reference (source-annotation id)
-                                                 (if (syntax? id) (syntax->datum id) id)
-                                                 value))
-                                  e r w s mod)]
-                              [(eq? type 'global-call)
-                                (expand-call
-                                  (build-global-reference 
-                                                        (or (source-annotation (car e)) s)
-                                                        (if (syntax? value)
-                                                            (syntax-expression value)
-                                                            value)
-                                                        (or (and (syntax? value)
-                                                                  (syntax-module value))
-                                                            mod))
-                                e r w s mod)]
-                            [(eq? type 'primitive-call)
-                                (build-primcall s
-                                                value
-                                                (map (lambda (e) (expand e r w mod)) (cdr e)))]
-                            [(eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod)]
-                            [else (syntax-violation #f "invalid application" e)]    
-                                            )))
-                        ]))
-                          ;(let ([rator (expand (car es) r w mod)]
-                          ;      [rands (map (lambda (x) (expand x r w mod)) (cdr es))])
-                          ;  (build-call s rator rands))]))
-                     tmp)
-              (syntax-violation #f "source expression failed to match any pattern" tmp)))))
+        (cond 
+          [(null? es)
+            (build-data s '())]
+          [else 
+            (receive (type value from e w s mod)
+              (syntax-type es r w (source-annotation e) #f mod #f)
+              (cond 
+                [(eq? type 'lexical-call)
+                  (expand-call 
+                    (let ([id (car e)])
+                      (build-lexical-reference (source-annotation id)
+                                    (if (syntax? id) (syntax->datum id) id)
+                                    value))
+                    e r w s mod)]
+                [(eq? type 'global-call)
+                  (expand-call
+                    (build-global-reference 
+                                          (or (source-annotation (car e)) s)
+                                          (if (syntax? value)
+                                              (syntax-expression value)
+                                              value)
+                                          (or (and (syntax? value)
+                                                    (syntax-module value))
+                                              mod))
+                  e r w s mod)]
+              [(eq? type 'primitive-call)
+                  (build-primcall s
+                                  value
+                                  (map (lambda (e) (expand e r w mod)) (cdr e)))]
+              [(eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod)]
+              
+              [else (syntax-violation #f (format "invalid application of type ~a" type) e)]))
+          ])))
     (global-extend 'core 'with-continuation-mark 
       (lambda (e r w s mod)
         (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any . each-any))))
