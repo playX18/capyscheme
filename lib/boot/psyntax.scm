@@ -45,6 +45,22 @@
 (define compile-time-value (record-constructor (record-type-rcd <compile-time-value>)))
 (define compile-time-value-value (record-accessor (record-type-rtd <compile-time-value>) 0))
 
+(define (syntax-property s key . val?)
+  (cond 
+    [(null? val?)
+      (define prop (assq key (syntax-properties s)))
+      (if prop (cdr prop) #f)]
+    [else 
+      (define val (car val?))
+      (define props (syntax-properties s))
+      (make-syntax 
+        (syntax-expression s)
+        (syntax-wrap s)
+        (syntax-module s)
+        (syntax-sourcev s)
+        (cons (cons key val)
+          (filter (lambda (p) (not (eq? (car p) key))) props)))]))
+
 (let ([syntax? (module-ref (current-module) 'syntax?)]
       [make-syntax (module-ref (current-module) 'make-syntax)]
       [syntax-expression (module-ref (current-module) 'syntax-expression)]
@@ -1967,33 +1983,51 @@
 
 
     (set! identifier? (lambda (x) (nonsymbol-id? x)))
-    (set! datum->syntax (lambda (id datum . opt-source)  
-        (define source (if (null? opt-source) #f (car opt-source)))      
+    (set! datum->syntax (lambda (stx-c s . rest)  
         (define (props->sourcev alist)
             (and (pair? alist)
                 (vector (assq-ref alist 'filename)
                         (assq-ref alist 'line)
                         (assq-ref alist 'column))))
+
+        (define stx-l 
+          (cond 
+            [(null? rest) #f]
+            [else (car rest)]))
+          
+        (define stx-p 
+          (cond 
+            [(null? rest) #f]
+            [(null? (cdr rest)) #f]
+            [else (cadr rest)]))
+        
+        ;; stx-l can be a syntax, alist or vector representing source info
+        (define source 
+          (cond 
+            [(not stx-l) #f]
+            [(syntax? stx-l) (syntax-sourcev stx-l)]
+            [(and (list? stx-l) (= 3 (length stx-l))) (props->sourcev stx-l)]
+            [(and (vector? stx-l) (= (vector-length stx-l) 3)) stx-l]
+            [(and stx-c (syntax-sourcev stx-c)) (syntax-sourcev stx-c)]
+            [else #f]))
+        
      
         (define (wrap e)
           (make-syntax
-            datum
-            (if id (syntax-wrap id) empty-wrap)
-            (if id (syntax-module id) #f)
-            (cond
-                [(and (not source) id (syntax-sourcev id)) (syntax-sourcev id)]
-                [(not source) (props->sourcev (source-properties datum))]
-                [(and (alist? source)) (props->sourcev source)]
-                [(and (vector? source) (= (vector-length source) 3)) source]
-                [else (syntax-sourcev source)])))
+            e
+            (if stx-c (syntax-wrap stx-c) empty-wrap)
+            (if stx-c (syntax-module stx-c) #f)
+            source
+            (if stx-p (syntax-properties stx-p) '())))
+        
         (cond 
-          [(syntax? datum) datum]
-          [(list? datum)
-            (wrap (map (lambda (x) (datum->syntax id x source)) datum))]
-          [(pair? datum)
-            (wrap (cons (datum->syntax id (car datum) source)
-                        (datum->syntax id (cdr datum) source)))]
-          [else (wrap datum)])))
+          [(syntax? s) s]
+          ;[(list? s)
+          ;  (wrap (map (lambda (x) (datum->syntax stx-c x stx-l)) s))]
+          [(pair? s)
+            (wrap (cons (datum->syntax stx-c (car s) stx-l stx-p)
+                        (datum->syntax stx-c (cdr s) stx-l stx-p)))]
+          [else (wrap s)])))
 
     (set! free-identifier=? (lambda (x y)
         (if (not (nonsymbol-id? x))
