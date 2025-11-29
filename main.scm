@@ -1,6 +1,5 @@
 (import (capy keywords))
 
-(define (foo x :y [y 0])
-  (+ x y))
+(define (point :x [x 0] :y [y 0] :z [z 0]) (vector x y z))
 
-(foo 5)
+(printf "point1: ~a~%" (point :y 10 :z 5))

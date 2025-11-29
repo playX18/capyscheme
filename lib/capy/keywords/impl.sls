@@ -580,6 +580,8 @@
 (define-syntax new-app
     (lambda (stx)
         (define (dd x)
+            
+            ;(pretty-print (syntax->datum x))
             x)
         (dd (datum->syntax stx (parse-app stx 
             (lambda args #t)
@@ -592,10 +594,10 @@
     (make-variable-transformer
         (lambda (stx)
             (define (dd x)
-                ;(printf "~a~%" x)
+                ;(pretty-print (syntax->datum x))
                 x)
             (define (dd1 x)
-                ;(printf "APP ~a~%" x)
+                ;(pretty-print (syntax->datum x))
                 x)
             (define-values (impl-id wrap-id) (get-ids))
             
@@ -640,7 +642,7 @@
                                                 [(null? kw-args)
                                                     (or (null? req-kws)
                                                         ;; todo: print warning
-                                                        (printf "missing required keyword: ~a~%" (car req-kws))
+                                                        (printf ";; warning: missing required keyword: ~a~%" (car req-kws))
                                                         #f)]
                                                 [else (let* ([kw (syntax-e (caar kw-args))]
                                                              [all-kws (let loop ([all-kws all-kws])
@@ -652,14 +654,14 @@
                                                         (cond 
                                                             [(or (null? all-kws)
                                                                 (not (eq? kw (caar all-kws))))
-                                                                (printf "keyword not recognized: ~a~%" kw)
+                                                                (printf ";; warning: keyword not recognized: ~a~%" kw)
                                                                 #f]
                                                             [(and (pair? req-kws)
                                                                   (eq? kw (car req-kws)))
                                                                 (loop (cdr kw-args) (cdr req-kws) (cdr all-kws))]
                                                             [(and (pair? req-kws)
                                                                 (keyword<? (car req-kws) (caar all-kws)))
-                                                                (printf "missing required keyword: ~a~%" (car req-kws))
+                                                                (printf ";; warning: missing required keyword: ~a~%" (car req-kws))
                                                                 #f]
                                                             [else
                                                                 (loop (cdr kw-args) req-kws (cdr all-kws))]))]))
@@ -854,8 +856,8 @@
                 (let ([arg (if arg? (car kw-args) not-supplied-val)])
                     . body))]
             [(_ kws kw-args ([kw arg arg? #f not-supplied-val] . rest) . body)
-            (with-syntax ([next-kws (gensym 'kws)]
-                          [next-kw-args (gensym 'kw-args)])
+            (with-syntax ([next-kws (datum->syntax #f (gensym 'kws))]
+                          [next-kw-args (datum->syntax #f (gensym 'kw-args))])
                 #'(let ([arg? (and (pair? kws)
                                     (eq? 'kw (car kws)))])
                     (let ([arg (if arg? (car kw-args) not-supplied-val)]
