@@ -1,5 +1,6 @@
-(import (capy keywords) (capy pretty-print) (capy compiler tree-il))
+(import (capy keywords))
 
-(pretty-print (tree-il->scheme (expand '(define (foo [x 0]) x))))
+(define (f :x [x 0]) x)
 
-(foo 0)
+(printf "f: ~a\n" (f))
+(printf "f: ~a\n" (f :x 42))

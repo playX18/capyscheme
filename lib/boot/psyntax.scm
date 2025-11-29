@@ -95,36 +95,18 @@
     (define (build-primref src name) (make-primref src name))
     (define (build-void s) (make-void s))
     (define (analyze-variable mod var modref-cont bare-cont)
-      (let* ((v mod)
-                      (fk (lambda ()
-                            (let ((fk (lambda ()
-                                        (let ((fk (lambda ()
-                                                    (let ((fk (lambda () (error "value failed to match" v))))
-                                                      (if (pair? v)
-                                                          (let ((vx (car v)) (vy (cdr v)))
-                                                            (if (eq? vx 'primitive)
-                                                                (syntax-violation
-                                                                 #f
-                                                                 "primitive not in operator position"
-                                                                 var)
-                                                                (fk)))
-                                                          (fk))))))
-                                          (if (pair? v)
-                                              (let ((vx (car v)) (vy (cdr v)))
-                                                (let ((tk (lambda ()
-                                                            (let ((mod vy))
-                                                              (if (equal? mod (module-name (current-module)))
-                                                                  (bare-cont mod var)
-                                                                  (modref-cont mod var #f))))))
-                                                  (if (eq? vx 'private)
-                                                      (tk)
-                                                      (let ((tk (lambda () (tk)))) (if (eq? vx 'hygiene) (tk) (fk))))))
-                                              (fk))))))
-                              (if (pair? v)
-                                  (let ((vx (car v)) (vy (cdr v)))
-                                    (if (eq? vx 'public) (let ((mod vy)) (modref-cont mod var #t)) (fk)))
-                                  (fk))))))
-                 (if (eq? v #f) (bare-cont #f var) (fk))))
+      (cond 
+        [(not mod) (bare-cont #f var)]
+        [(and (pair? mod)
+          (eq? (car mod) 'public)) 
+          (modref-cont (cdr mod) var #t)]
+        [(and (pair? mod)
+          (memq (car mod) '(private hygiene)))
+          (let ([mod (cdr mod)])
+            (if (equal? mod (module-name (current-module)))
+              (bare-cont mod var)
+              (modref-cont mod var #f)))]
+        [else (syntax-violation #f "invalid variable" var mod)]))
 
     (define (build-global-definition src mod var exp)
       (make-toplevel-define src (and mod (cdr mod)) var (maybe-name-value var exp)))
@@ -165,21 +147,9 @@
                    mod)))
     )
     (define (build-sequence src exps)
-        (let* ((v exps)
-              (fk (lambda ()
-                    (let ((fk (lambda () (error "value failed to match" v))))
-                      (if (pair? v)
-                          (let ((vx (car v)) (vy (cdr v)))
-                            (let* ((head vx) (tail vy)) (make-sequence src head (build-sequence #f tail))))
-                          (fk))))))
-          
-          (if (pair? v) 
-          (let ((vx (car v)) (vy (cdr v))) 
-            (let ((tail vx)) 
-              (if (null? vy) 
-                tail 
-                (fk)))) 
-          (fk))))
+        (if (null? (cdr exps))
+          (car exps)
+          (make-sequence src (car exps) (build-sequence src (cdr exps)))))
     (define (build-let src ids vars val-exps body-exp)
       (let* ([v (map maybe-name-value ids val-exps)])
         (cond
@@ -216,27 +186,21 @@
       (make-constant src val))
 
 
-    (define build-named-let
-             (lambda (src ids vars val-exps body-exp)
-               (let* ((v vars) (fk (lambda () (error "value failed to match" v))))
-                 (if (pair? v)
-                     (let ((vx (car v)) (vy (cdr v)))
-                       (let* ((f vx) (vars vy) (v ids) (fk (lambda () (error "value failed to match" v))))
-                         (if (pair? v)
-                             (let ((vx (car v)) (vy (cdr v)))
-                               (let* ((f-name vx) (ids vy) (proc (build-simple-lambda src ids vars '() body-exp)))
-                                 (make-let
-                                  src
-                                  'letrec
-                                  (list f-name)
-                                  (list f)
-                                  (list (maybe-name-value f-name proc))
-                                  (build-call
-                                   src
-                                   (build-lexical-reference src f-name f)
-                                   (map maybe-name-value ids val-exps)))))
-                             (fk))))
-                     (fk)))))
+    (define (build-named-let src ids vars val-exps body-exp)
+      (let ([f (car vars)] [vars (cdr vars)]
+            [f-name (car ids)] [ids (cdr ids)])
+          (define proc (build-simple-lambda src ids vars '() body-exp))
+          (make-let 
+            src 
+            'letrec
+            (list f-name)
+            (list f)
+            (list (maybe-name-value f-name proc))
+            (build-call 
+              src 
+              (build-lexical-reference src f-name f)
+              (map maybe-name-value ids val-exps)))))
+    
     (define (gen-lexical id) (module-gensym (symbol->string id)))
     (define (source-annotation x) (if (syntax? x) (syntax-sourcev x) (datum-sourcev x)))
     (define (binding-type x) (car x))
@@ -256,36 +220,13 @@
           (let ([label (car labels)] [labels (cdr labels)])
             (let ([var (car vars)] [vars (cdr vars)])
               (extend-var-env labels vars (acons label (cons 'lexical var) r))))]))
-    (define macros-only-env
-             (lambda (r)
-               (let* ((v r)
-                      (fk (lambda ()
-                            (let ((fk (lambda () (error "value failed to match" v))))
-                              (if (pair? v)
-                                  (let ((vx (car v)) (vy (cdr v)))
-                                    (let* ((a vx)
-                                           (r vy)
-                                           (v a)
-                                           (fk (lambda ()
-                                                 (let ((fk (lambda () (error "value failed to match" v))))
-                                                   (macros-only-env r)))))
-                                      (if (pair? v)
-                                          (let ((vx (car v)) (vy (cdr v)))
-                                            (let ((k vx))
-                                              (if (pair? vy)
-                                                  (let ((vx (car vy)) (vy (cdr vy)))
-                                                    (let ((tk (lambda () (cons a (macros-only-env r)))))
-                                                      (if (eq? vx 'macro)
-                                                          (tk)
-                                                          (let ((tk (lambda () (tk))))
-                                                            (if (eq? vx 'syntax-parameter)
-                                                                (tk)
-                                                                (let ((tk (lambda () (tk))))
-                                                                  (if (eq? vx 'ellipsis) (tk) (fk))))))))
-                                                  (fk))))
-                                          (fk))))
-                                  (fk))))))
-                 (if (null? v) '() (fk)))))
+    (define (macros-only-env r)
+      (let loop ([r r])
+        (cond 
+          [(null? r) null-env]
+          [(memq (cadr (car r)) '(macro syntax-parameter ellipsis))
+            (cons (car r) (loop (cdr r)))]
+          [else (loop (cdr r))])))
     (define (nonsymbol-id? x) (and (syntax? x) (symbol? (syntax-expression x))))
     (define (id? x) 
       (cond 
@@ -389,158 +330,72 @@
                (not (null? y))
                (eq? (car x) (car y))
                (same-marks? (cdr x) (cdr y)))))
-    (define id-var-name 
-     (lambda (id w mod)
-               (letrec* ((search
-                          (lambda (sym subst marks)
-                            (let* ((v subst)
-                                   (fk (lambda ()
-                                         (let ((fk (lambda ()
-                                                     (let ((fk (lambda () (error "value failed to match" v))))
-                                                       (if (pair? v)
-                                                           (let ((vx (car v)) (vy (cdr v)))
-                                                             (if (and (vector? vx)
-                                                                      (eq? (vector-length vx)
-                                                                           (length '('ribcage rsymnames rmarks rlabels))))
-                                                                 (if (eq? (vector-ref vx 0) 'ribcage)
-                                                                     (let* ((rsymnames (vector-ref vx (+ 1 0)))
-                                                                            (rmarks (vector-ref vx (+ 1 (+ 1 0))))
-                                                                            (rlabels
-                                                                             (vector-ref
-                                                                              vx
-                                                                              (+ 1 (+ 1 (+ 1 0)))))
-                                                                            (subst vy))
-                                                                       (letrec* ((search-list-rib
-                                                                                  (lambda ()
-                                                                                    (let lp ((rsymnames rsymnames)
-                                                                                             (rmarks rmarks)
-                                                                                             (rlabels rlabels))
-                                                                                      (let* ((v rsymnames)
-                                                                                             (fk (lambda ()
-                                                                                                   (let ((fk (lambda ()
-                                                                                                               (error "value failed to match"
-                                                                                                                      v))))
-                                                                                                     (if (pair? v)
-                                                                                                         (let ((vx (car v))
-                                                                                                               (vy (cdr v)))
-                                                                                                           (let* ((rsym vx)
-                                                                                                                  (rsymnames
-                                                                                                                   vy)
-                                                                                                                  (v rmarks)
-                                                                                                                  (fk (lambda ()
-                                                                                                                        (error "value failed to match"
-                                                                                                                               v))))
-                                                                                                             (if (pair? v)
-                                                                                                                 (let ((vx (car v))
-                                                                                                                       (vy (cdr v)))
-                                                                                                                   (let* ((rmarks1
-                                                                                                                           vx)
-                                                                                                                          (rmarks
-                                                                                                                           vy)
-                                                                                                                          (v rlabels)
-                                                                                                                          (fk (lambda ()
-                                                                                                                                (error "value failed to match"
-                                                                                                                                       v))))
-                                                                                                                     (if (pair? v)
-                                                                                                                         (let ((vx (car v))
-                                                                                                                               (vy (cdr v)))
-                                                                                                                           (let* ((label vx)
-                                                                                                                                  (rlabels
-                                                                                                                                   vy))
-                                                                                                                             (if (and (eq? sym
-                                                                                                                                           rsym)
-                                                                                                                                      (same-marks?
-                                                                                                                                       marks
-                                                                                                                                       rmarks1))
-                                                                                                                                 (let* ((v label)
-                                                                                                                                        (fk (lambda ()
-                                                                                                                                              (let ((fk (lambda ()
-                                                                                                                                                          (error "value failed to match"
-                                                                                                                                                                 v))))
-                                                                                                                                                label))))
-                                                                                                                                   (if (pair? v)
-                                                                                                                                       (let ((vx (car v))
-                                                                                                                                             (vy (cdr v)))
-                                                                                                                                         (let* ((mod* vx)
-                                                                                                                                                (label vy))
-                                                                                                                                           (if (equal?
-                                                                                                                                                mod*
-                                                                                                                                                mod)
-                                                                                                                                               label
-                                                                                                                                               (lp rsymnames
-                                                                                                                                                   rmarks
-                                                                                                                                                   rlabels))))
-                                                                                                                                       (fk)))
-                                                                                                                                 (lp rsymnames
-                                                                                                                                     rmarks
-                                                                                                                                     rlabels))))
-                                                                                                                         (fk))))
-                                                                                                                 (fk))))
-                                                                                                         (fk))))))
-                                                                                        (if (null? v)
-                                                                                            (search sym subst marks)
-                                                                                            (fk))))))
-                                                                                 (search-vector-rib
-                                                                                  (lambda ()
-                                                                                    (let ((n (vector-length rsymnames)))
-                                                                                      (let lp ((i 0))
-                                                                                        (cond
-                                                                                          ((= i n)
-                                                                                           (search sym subst marks))
-                                                                                          ((and (eq? (vector-ref
-                                                                                                      rsymnames
-                                                                                                      i)
-                                                                                                     sym)
-                                                                                                (same-marks?
-                                                                                                 marks
-                                                                                                 (vector-ref rmarks i)))
-                                                                                           (let* ((v (vector-ref
-                                                                                                      rlabels
-                                                                                                      i))
-                                                                                                  (fk (lambda ()
-                                                                                                        (let* ((fk (lambda ()
-                                                                                                                     (error "value failed to match"
-                                                                                                                            v)))
-                                                                                                               (label v))
-                                                                                                          label))))
-                                                                                             (if (pair? v)
-                                                                                                 (let ((vx (car v))
-                                                                                                       (vy (cdr v)))
-                                                                                                   (let* ((mod* vx)
-                                                                                                          (label vy))
-                                                                                                     (if (equal?
-                                                                                                          mod*
-                                                                                                          mod)
-                                                                                                         label
-                                                                                                         (lp (+ 1 i)))))
-                                                                                                 (fk))))
-                                                                                          (else (lp (+ 1 i)))))))))
-                                                                         (if (vector? rsymnames)
-                                                                             (search-vector-rib)
-                                                                             (search-list-rib))))
-                                                                     (fk))
-                                                                 (fk)))
-                                                           (fk))))))
-                                           (if (pair? v)
-                                               (let ((vx (car v)) (vy (cdr v)))
-                                                 (if (eq? vx 'shift)
-                                                     (let* ((subst vy)
-                                                            (v marks)
-                                                            (fk (lambda () (error "value failed to match" v))))
-                                                       (if (pair? v)
-                                                           (let ((vx (car v)) (vy (cdr v)))
-                                                             (let ((marks vy)) (search sym subst marks)))
-                                                           (fk)))
-                                                     (fk)))
-                                               (fk))))))
-                              (if (null? v) #f (fk))))))
-                 (cond
-                   ((symbol? id) (or (search id (wrap-subst w) (wrap-marks w)) id))
-                   ((syntax? id)
-                    (let ((id (syntax-expression id)) (w1 (syntax-wrap id)) (mod (or (syntax-module id) mod)))
-                      (let ((marks (join-marks (wrap-marks w) (wrap-marks w1))))
-                        (or (search id (wrap-subst w) marks) (search id (wrap-subst w1) marks) id))))
-                   (else (syntax-violation 'id-var-name "invalid id" id))))))
+    (define (id-var-name id wrap module)
+      (define (search-symbol sym subst marks)
+        (let loop ((subst subst) (marks marks))
+          (cond
+            ((null? subst) #f)
+            
+            (else
+              (let ((first (car subst))
+                    (rest (cdr subst)))
+                (cond
+                  ((vector? first)
+                  (let ((rsymnames (vector-ref first 1))
+                        (rmarks (vector-ref first 2))
+                        (rlabels (vector-ref first 3)))
+                    (or (search-rib sym rsymnames rmarks rlabels marks module)
+                        (loop rest marks))))
+                  ((eq? first 'shift)
+                    (loop rest (cdr marks)))))))))
+    
+      (define (check-label label)
+        (cond 
+          [(pair? label)
+            (and (equal? (car label) module) (cdr label))]
+          [else label]))
+      (define (search-rib sym rsymnames rmarks rlabels marks module)
+        (cond
+          ((vector? rsymnames)
+            (vector-search sym rsymnames rmarks rlabels marks))
+          (else
+            (list-search sym rsymnames rmarks rlabels marks))))
+    
+      (define (vector-search sym rsymnames rmarks rlabels marks)
+        (let lp ((i 0))
+          (if (= i (vector-length rsymnames))
+              #f
+              (if (and (eq? (vector-ref rsymnames i) sym)
+                        (same-marks? marks (vector-ref rmarks i)))
+                  (or (check-label (vector-ref rlabels i))
+                      (lp (+ i 1)))
+                  (lp (+ i 1))))))
+    
+      (define (list-search sym rsymnames rmarks rlabels marks)
+        (cond
+          ((null? rsymnames) #f)
+          (else
+            (let ((rsym (car rsymnames))
+                  (rmarks1 (car rmarks))
+                  (label (car rlabels)))
+              (if (and (eq? sym rsym)
+                      (same-marks? marks rmarks1))
+                  (or (check-label label)
+                      (list-search sym (cdr rsymnames) (cdr rmarks) (cdr rlabels) marks))
+                  (list-search sym (cdr rsymnames) (cdr rmarks) (cdr rlabels) marks))))))
+    
+      (cond
+        ((symbol? id) (or (search-symbol id (wrap-subst wrap) (wrap-marks wrap)) id))
+        ((syntax? id)
+          (let ((id-expr (syntax-expression id))
+                (w1 (syntax-wrap id))
+                (module (or (syntax-module id) module)))
+            (let ((marks (join-marks (wrap-marks wrap) (wrap-marks w1))))
+              (or (search-symbol id-expr (wrap-subst wrap) marks)
+                  (search-symbol id-expr (wrap-subst w1) marks)
+                  id-expr))))
+        (else (syntax-violation 'id-var-name "invalid id" id))))
+
 
     (define (locally-bound-identifiers w mod)
       (define (scan subst results)
@@ -780,13 +635,9 @@
                                         (lambda ()
                                           (build-global-definition s mod var (expand e r w mod))))))))]
                       [(eq? type 'begin-form)
-                          (let ([tmp ($sc-dispatch e '(_ . each-any))])
-                              (if tmp
-                                  (apply (lambda (e1) (parse e1 r w s m essew mod)) tmp)
-                                  (syntax-violation
-                                      #f
-                                      "source expansion failed to match any pattern"
-                                      e)))]
+                          (define stx (match-syntax e '(_ e1 :::)))
+                          (define e1 (stx 'e1))
+                          (parse e1 r w s m essew mod)]
                       [(eq? type 'eval-when-form)
                         (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
                                           (if tmp
@@ -1244,23 +1095,17 @@
             [(eq? type 'constant) (make-constant s (strip e))]
             [(eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod)]
             [(eq? type 'eval-when-form)
-              (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
-                      (if tmp
-                          (apply (lambda (x e1 e2)
-                                   (let ((when-list (parse-when-list e x)))
-                                     (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
-                                 tmp)
-                          (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
+              (define stx (match-syntax e '(_ (when-list :::) body :::+)))
+              (define when-list (parse-when-list e (stx 'when-list)))
+              (define body (stx 'body))
+              (if (memq 'eval when-list) 
+                (expand-sequence (cons e1 e2) r w s mod) 
+                (expand-void))]
+              
             [(eq? type 'begin-form)
-                (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any . each-any))))
-                  (if tmp-1
-                      (apply (lambda (e1 e2) (expand-sequence (cons e1 e2) r w s mod)) tmp-1)
-                      (let ((tmp-1 ($sc-dispatch tmp '(_))))
-                        (if tmp-1
-                            (apply (lambda ()
-                                     (syntax-violation #f "sequence of zero expressions" (source-wrap e w s mod)))
-                                   tmp-1)
-                            (syntax-violation #f "source expression failed to match any pattern" tmp)))))]
+              (define stx (match-syntax e '(_ e1 :::+)))
+              (define e1 (stx 'e1))
+              (expand-sequence e1 r w s mod)]
             [(or (eq? type 'define-form) (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
                 (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
             [(eq? type 'local-syntax-form)
@@ -1339,23 +1184,21 @@
                                                 (cons (cons 'lexical var) bindings)
                                                 #f)))]
                                     [(eq? type 'begin-form)
-                                        (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ . each-any))))
-                                          (if tmp
-                                              (apply (lambda (e1)
-                                                       (parse (let f ((forms e1))
-                                                                (if (null? forms)
-                                                                    body
-                                                                    (cons (cons er (wrap (car forms) w mod))
-                                                                          (f (cdr forms)))))
-                                                              ids
-                                                              labels
-                                                              var-ids
-                                                              vars
-                                                              vals
-                                                              bindings
-                                                              #f))
-                                                     tmp)
-                                              (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
+                                        (define stx (match-syntax e '(_ e1 :::)))
+                                        (define e1 (stx 'e1))
+                                        (parse 
+                                          (let f ([forms e1])
+                                            (if (null? forms)
+                                                body 
+                                                (cons (cons er (wrap (car forms) w mod))
+                                                  (f (cdr forms)))))
+                                          ids 
+                                          labels
+                                          var-ids 
+                                          vars
+                                          vals
+                                          bindings
+                                          #f)]
                                     [(eq? type 'define-syntax-form)
                                       (let ((id (wrap value w mod)) (label (gen-label)) (trans-r (macros-only-env er)))
                                        (extend-ribcage! ribcage id label)
