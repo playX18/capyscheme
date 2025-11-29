@@ -612,7 +612,7 @@
                             #'(unspecified)
                             (datum->syntax #'here e)))
                     
-                    
+                     
                     (if (free-identifier=? #'new-app (datum->syntax stx '|#%app|))
                         (dd1 (parse-app 
                             (datum->syntax #f (cons #'new-app stx))
@@ -775,38 +775,41 @@
 ;; indicates whether it was supplied, and an argument 
 ;; for the value (if supplied).
 
-(define-syntax opt-cases
-    (syntax-rules () 
-        [(_ (core ...) () (base ...)
-          () () 
+  (define-syntax opt-cases 
+    (lambda (stx)
+    (syntax-case stx ()
+      [(_ (core ...) () (base ...)
+          () ()
           (rest-empty rest-id . rest) ())
-          (case-lambda
-                [(base ... . rest-id)
-                    (core ... base ... . rest)])]
-        [(_ (core ...) ([opt-id opt-arg not-supplied-val]) (base ...)
+       ;; This case only happens when there are no optional arguments
+       (syntax
+         (case-lambda
+           [(base ... . rest-id)
+            (core ... base ... . rest)]))]
+      [(_ (core ...) ([opt-id opt-arg not-supplied-val]) (base ...)
           (done-id ...) (done-not-supplied ...)
           (rest-empty rest-id . rest) clauses)
-            ;; Handle the last optional argument and the rest args (if any)
-            ;; at the same time.
-            
-            (case-lambda
-                [(base ...) (core ... base ... done-not-supplied ... not-supplied-val . rest-empty)]
-                [(base ... done-id ... opt-arg . rest-id)
-                    (core ... base ... done-id ... opt-arg . rest)]
-                . clauses)]
-        [(_ (core ...) ([opt-id opt-arg not-supplied-val] [more-id more-arg more-not-supplied] ...) (base ...)
-            (done-id ...) (done-not-supplied ...)
-            (rest-empty rest-id . rest) clauses)
-            ;; Handle just one optional argument, add it to the "done" sequence,
-            ;; and continue generating clauses for the remaining optional arguments.
-            
-                (opt-cases (core ...) ([more-id more-arg more-not-supplied] ...) (base ...)
-                            (done-id ... opt-id) (done-not-supplied ... not-supplied-val)
-                            (rest-empty rest-id . rest)
-                            ([(base ... done-id ... opt-arg)
-                            (core ... base ...
-                                    done-id ... opt-arg more-not-supplied ... . rest-empty)]
-                            . clauses))]))
+       ;; Handle the last optional argument and the rest args (if any)
+       ;; at the same time.
+       (syntax
+         (case-lambda
+           [(base ...) (core ... base ... done-not-supplied ... not-supplied-val . rest-empty)]
+           [(base ... done-id ... opt-arg . rest-id)
+            (core ... base ... done-id ... opt-arg . rest)]
+           . clauses))]
+      [(_ (core ...) ([opt-id opt-arg not-supplied-val] [more-id more-arg more-not-supplied] ...) (base ...)
+          (done-id ...) (done-not-supplied ...)
+          (rest-empty rest-id . rest) clauses)
+       ;; Handle just one optional argument, add it to the "done" sequence,
+       ;; and continue generating clauses for the remaining optional arguments.
+       (syntax
+         (opt-cases (core ...) ([more-id more-arg more-not-supplied] ...) (base ...)
+                    (done-id ... opt-id) (done-not-supplied ... not-supplied-val)
+                    (rest-empty rest-id . rest)
+                    ([(base ... done-id ... opt-arg)
+                      (core ... base ...
+                            done-id ... opt-arg more-not-supplied ... . rest-empty)]
+                     . clauses)))])))
 
 ;; Helper macro:
 ;; Walks through all arguments in order, shifting supplied

@@ -1,5 +1,5 @@
-(import (capy keywords))
+(import (capy keywords) (capy pretty-print) (capy compiler tree-il))
 
-(define (point :x [x 0] :y [y 0] :z [z 0]) (vector x y z))
+(pretty-print (tree-il->scheme (expand '(define (foo [x 0]) x))))
 
-(printf "point1: ~a~%" (point :y 10 :z 5))
+(foo 0)
