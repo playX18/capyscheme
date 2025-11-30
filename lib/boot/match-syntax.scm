@@ -50,7 +50,7 @@
     (define (make-empty-vars pattern)
       (cond
       [(symbol? pattern)
-        (list (list pattern null))]
+        (list (list pattern '()))]
       [(and (list? pattern)
             (= (length pattern) 2)
             (or (eq? '::: (cadr pattern))

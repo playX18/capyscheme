@@ -1,3 +1,13 @@
+//! Tree rewriting optimization for CPS terms.
+//!
+//! Main entrypoints: `shrink` and `rewrite`.
+//!
+//! Included optimizations:
+//! - Constant folding
+//! - Beta reduction
+//! - Rest argument optimization: if rest arguments do not escape a function they belong to,
+//! we can make access to it more efficient by avoiding to allocate a list for them.
+
 #![allow(dead_code, unused_variables)]
 use crate::{
     cps::{

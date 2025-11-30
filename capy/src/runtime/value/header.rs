@@ -11,6 +11,7 @@ pub struct ScmHeader {
 }
 
 impl ScmHeader {
+    #[inline(always)]
     pub const fn new() -> Self {
         ScmHeader { word: 0 }
     }
@@ -21,6 +22,7 @@ impl ScmHeader {
         }
     }
 
+    #[inline(always)]
     pub fn set_type_bits(&mut self, bits: u16) {
         self.word = TypeBits::update(bits, self.word);
     }

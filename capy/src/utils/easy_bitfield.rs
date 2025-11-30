@@ -20,7 +20,7 @@
 //!
 //! assert_eq!(-42, storage.read::<Z>());
 //! assert_eq!(42, storage.read::<Y>());
-//! assert!(storage.read::<X>());
+//! debug_assert!(storage.read::<X>());
 //! ```
 
 use atomic::Atomic;
@@ -80,7 +80,7 @@ where
     }
 
     fn encode(value: T) -> S {
-        assert!(Self::is_valid(value));
+        debug_assert!(Self::is_valid(value));
         Self::encode_unchecked(value)
     }
 
@@ -424,7 +424,7 @@ mod tests {
             std::thread::spawn(move || {
                 while !container.try_acquire::<LockBit>() {}
                 container.update::<DataBits>(42);
-                assert!(container.try_release::<LockBit>());
+                debug_assert!(container.try_release::<LockBit>());
             })
         };
 
@@ -432,11 +432,11 @@ mod tests {
             while !container.try_acquire::<LockBit>() {}
             if container.read::<DataBits>() != 0 {
                 assert_eq!(container.read::<DataBits>(), 42);
-                assert!(container.try_release::<LockBit>());
+                debug_assert!(container.try_release::<LockBit>());
                 break;
             }
 
-            assert!(container.try_release::<LockBit>());
+            debug_assert!(container.try_release::<LockBit>());
         }
 
         thread.join().unwrap();
@@ -451,16 +451,16 @@ mod tests {
         let mut storage;
 
         storage = A::encode(true);
-        assert!(A::decode(storage));
+        debug_assert!(A::decode(storage));
         storage = B::update(-1, storage);
         assert_eq!(B::decode(storage), -1);
         storage = B::update(2, storage);
         assert_eq!(B::decode(storage), 2);
-        assert!(A::decode(storage));
+        debug_assert!(A::decode(storage));
         assert_eq!(C::decode(storage), 0);
-        assert!(B::is_valid(7));
-        assert!(!B::is_valid(8));
-        assert!(B::is_valid(-8));
-        assert!(!B::is_valid(-9));
+        debug_assert!(B::is_valid(7));
+        debug_assert!(!B::is_valid(8));
+        debug_assert!(B::is_valid(-8));
+        debug_assert!(!B::is_valid(-9));
     }
 }
