@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 pub mod assignment_elimination;
 pub mod compile_cps;
+pub mod eta_expand;
 pub mod core;
 pub mod fix_letrec;
 pub mod fold;

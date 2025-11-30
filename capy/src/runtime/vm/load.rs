@@ -1,5 +1,6 @@
 use crate::compiler::{compile_cps_to_object, link_object_product};
 use crate::cps::contify::contify;
+use crate::expander::eta_expand::eta_expand;
 use crate::expander::fix_letrec::fix_letrec;
 use crate::expander::free_vars::resolve_free_vars;
 use crate::expander::letrectify::letrectify;
@@ -393,7 +394,7 @@ pub fn compiled_is_fresh(
 }
 #[scheme(path=capy)]
 pub mod load_ops {
-    use crate::compiler::CompilationOptions;
+    use crate::{compiler::CompilationOptions, expander::eta_expand::eta_expand};
 
     #[scheme(name = "%find-path-to")]
     pub fn scm_find_path_to(
@@ -464,6 +465,7 @@ pub mod load_ops {
         ir = resolve_free_vars(nctx.ctx, ir);
         ir = letrectify(nctx.ctx, ir);
         ir = fix_letrec(nctx.ctx, ir);
+        ir = eta_expand(nctx.ctx, ir);
         ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
 
         let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);
@@ -693,6 +695,7 @@ pub(crate) fn continue_loading_k(
     ir = resolve_free_vars(nctx.ctx, ir);
     ir = letrectify(nctx.ctx, ir);
     ir = fix_letrec(nctx.ctx, ir);
+    ir = eta_expand(nctx.ctx, ir);
     ir = assignment_elimination::eliminate_assignments(nctx.ctx, ir);
 
     let mut cps = compile_cps::cps_toplevel(nctx.ctx, &[ir]);

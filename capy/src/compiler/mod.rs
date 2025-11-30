@@ -4,8 +4,8 @@ use crate::{
     compiler::{linkutils::Linker, ssa::ModuleBuilder},
     cps::{contify::contify, reify, term::FuncRef},
     expander::{
-        assignment_elimination, compile_cps, core::denotations, fix_letrec::fix_letrec,
-        free_vars::resolve_free_vars, letrectify::letrectify, primitives,
+        assignment_elimination, compile_cps, core::denotations, eta_expand::eta_expand,
+        fix_letrec::fix_letrec, free_vars::resolve_free_vars, letrectify::letrectify, primitives,
     },
     runtime::{
         Context,
@@ -134,6 +134,7 @@ pub fn compile_file<'gc>(
     il = letrectify(ctx, il);
     let letrectified = il;
     il = fix_letrec(ctx, il);
+    il = eta_expand(ctx, il);
     il = assignment_elimination::eliminate_assignments(ctx, il);
 
     let mut cps = compile_cps::cps_toplevel(ctx, &[il]);

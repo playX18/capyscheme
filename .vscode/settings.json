@@ -14,5 +14,11 @@
     "types.h": "c",
     "features.h": "c"
   },
-  "editor.tabSize": 2
+  "editor.tabSize": 4,
+  "[scheme]": {
+    "editor.tabSize": 2,
+  },
+  "[commonlisp]": {
+    "editor.tabSize": 2
+  }
 }
