@@ -1,7 +1,7 @@
-(define (fib n)
-  (let loop ((a 0) (b 1) (count n))
-    (if (= count 0)
-        a
-        (loop b (+ a b) (- count 1)))))
+(define (main)
+  (define (double x) (* x 2))
+  (define f1 double)
 
-(printf "~a~%" (fib 10000))
+  (printf ("~a~%" (f1 10)))
+  (printf ("~a~%" (double 5)))
+  )
