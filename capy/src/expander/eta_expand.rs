@@ -85,7 +85,7 @@ fn analyze_procs<'gc>(_ctx: Context<'gc>, t: TermRef<'gc>) -> HashMap<LVarRef<'g
 
     let mut to_expand = HashMap::<LVarRef<'gc>, ProcRef<'gc>>::new();
     for (var, info) in proc_infos.into_inner().into_iter() {
-        if info.op_refcount != 0 && (info.refcount.wrapping_sub(info.refcount)) == 1 {
+        if info.op_refcount != 0 && info.refcount - info.op_refcount == 1 {
             to_expand.insert(var, info.proc);
         }
     }
