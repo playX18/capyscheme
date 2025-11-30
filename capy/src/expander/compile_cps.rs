@@ -709,12 +709,12 @@ pub fn convert_arg<'gc, 'a>(
     match exp.kind {
         TermKind::LRef(var) => k(cps, Atom::Local(var)),
 
-        x if is_single_valued(exp) => {
+        _ if is_single_valued(exp) => {
             with_cps!(cps;
                 letk (h) karg (arg) @ src = k(cps, Atom::Local(arg));
                 # {
                     convert(cps, exp, karg, h, )
-                }
+            }
             )
         }
 
