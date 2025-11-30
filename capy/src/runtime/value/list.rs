@@ -13,7 +13,7 @@ pub struct Pair<'gc> {
 }
 
 impl<'gc> Pair<'gc> {
-    #[inline]
+    #[inline(always)]
     pub fn new(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
         let mut hdr = ScmHeader::new();
         hdr.set_type_bits(TypeCode8::PAIR.bits() as _);
@@ -602,7 +602,7 @@ impl<'gc> Value<'gc> {
         false
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn cons(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
         let pair = Pair::new(mc, car, cdr);
         Value::from(pair)

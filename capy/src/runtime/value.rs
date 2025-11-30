@@ -242,7 +242,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn char(self) -> char {
-        assert!(self.is_char());
+        debug_assert!(self.is_char());
         unsafe { char::from_u32_unchecked((self.raw_i64() >> 16) as i32 as u32) }
     }
 
@@ -259,7 +259,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_int32(self) -> i32 {
-        assert!(self.is_int32(), "not an int32: {}", self);
+        debug_assert!(self.is_int32(), "not an int32: {}", self);
         self.raw_i64() as i32
     }
 
@@ -272,7 +272,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_flonum(self) -> f64 {
-        assert!(self.is_flonum());
+        debug_assert!(self.is_flonum());
         let bits = (self.raw_i64() as u64).wrapping_sub(Self::DOUBLE_ENCODE_OFFSET);
         f64::from_bits(bits)
     }
@@ -294,7 +294,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_cell_raw(self) -> GCObject {
-        assert!(self.is_cell());
+        debug_assert!(self.is_cell());
         unsafe { self.desc.ptr() }
     }
 }
@@ -569,7 +569,7 @@ impl<'gc> Value<'gc> {
 
     pub fn header(&self) -> &'gc ScmHeader {
         unsafe {
-            assert!(self.is_cell(), "Value must be a cell to have a header");
+            debug_assert!(self.is_cell(), "Value must be a cell to have a header");
             let obj = self.as_cell_raw();
             obj.to_address().as_ref::<ScmHeader>()
         }
@@ -621,7 +621,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn downcast<T: Tagged>(self) -> Gc<'gc, T> {
-        assert!(
+        debug_assert!(
             self.is::<T>(),
             "Value is not of type {}: {}",
             std::any::type_name::<T>(),

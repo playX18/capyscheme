@@ -689,15 +689,22 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
            We can directly load values without later modifying `free` vector
            as all variables are immutable, mutable variables should've been boxed by optimizing compiler.
         */
-
+        let free = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            self.rator,
+            offset_of!(Closure, free) as i32,
+        );
         for (i, var) in fvs.iter().copied().enumerate() {
-            /*let offset = Vector::OFFSET_OF_DATA as i32 + (i as i32 * 8);
-            let fv = self
-                .builder
-                .ins()
-                .load(types::I64, ir::MemFlags::trusted().with_can_move(), free, offset);
-            self.variables.insert(var, fv);*/
-            self.variables.insert(var, VarDef::Free(i));
+            let offset = Vector::OFFSET_OF_DATA as i32 + (i as i32 * 8);
+            let fv = self.builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                free,
+                offset,
+            );
+            self.variables.insert(var, VarDef::Value(fv));
+            //self.variables.insert(var, VarDef::Free(i));
         }
     }
 

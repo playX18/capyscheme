@@ -555,7 +555,6 @@ thunks! {
             meta
         };
 
-        assert!(meta.is_alist());
 
         let clos = Closure {
             header: ScmHeader::with_type_bits(if is_cont {

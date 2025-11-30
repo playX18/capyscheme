@@ -329,9 +329,10 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    #[inline(always)]
     pub fn allocate<T: 'gc + Trace>(&self, value: T, semantics: AllocationSemantics) -> Gc<'gc, T> {
         unsafe {
-            let size = size_of_val(&value);
+            let size = size_of::<T>();
             let align = size_of::<usize>().max(align_of::<T>());
             let obj = self.raw_allocate(size, align, VTableOf::<'gc, T>::VT, semantics);
             obj.to_address().store(value);
@@ -628,7 +629,7 @@ impl<'gc> Mutation<'gc> {
     /// in vtable are soundly implemented. VTable's derived from [`VTableOf`] should be the safest ones.
     ///
     /// - [VTableOf](super::object::VTableOf)
-    #[inline]
+    #[inline(always)]
     pub unsafe fn raw_allocate(
         &self,
         size: usize,

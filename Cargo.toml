@@ -53,6 +53,10 @@ capy-derive = { path = "capy-derive" }
 incremental = true
 rpath = true
 debug = true
+debug-assertions = false
+lto = "fat"
+panic = "abort"
+opt-level = 3
 
 [profile.dev]
 incremental = true

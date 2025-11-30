@@ -14,6 +14,7 @@ use crate::runtime::vm::expand::ScmTermToRsTerm;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::{make_io_error, make_lexical_violation};
 use capy_derive::scheme;
+use mmtk::util::options::PlanSelector;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -52,14 +53,22 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         FALLBACK_DIR.to_string()
     };
 
+    let plan = match *crate::GarbageCollector::get().mmtk.get_options().plan {
+        PlanSelector::Immix | PlanSelector::MarkSweep | PlanSelector::SemiSpace => "regular",
+        PlanSelector::ConcurrentImmix => "conc",
+        PlanSelector::GenImmix | PlanSelector::GenCopy | PlanSelector::StickyImmix => "gen",
+        _ => todo!(),
+    };
+
     if cache_dir != FALLBACK_DIR {
-        let path = Path::new(&cache_dir);
+        let path = Path::new(&cache_dir).join(plan);
+
         if !path.exists() {
-            std::fs::create_dir_all(path).expect("Failed to create cache directory");
+            std::fs::create_dir_all(&path).expect("Failed to create cache directory");
         }
         ctx.globals()
             .loc_compile_fallback_path()
-            .set(ctx, Str::new(*ctx, &cache_dir, true).into());
+            .set(ctx, Str::new(*ctx, path.to_string_lossy(), true).into());
     }
 
     let mut path = Value::null();
