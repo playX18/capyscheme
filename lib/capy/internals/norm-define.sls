@@ -29,7 +29,6 @@
         [else #f]))
 
 (define-for-syntax (normalize-definition/mk-rhs stx lambda-stx check-context? allow-key+opt? err-no-body?)
-    
     (syntax-case stx ()
         [(_ id expr)
             (and  (identifier? #'id))
