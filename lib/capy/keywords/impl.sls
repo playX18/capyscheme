@@ -119,9 +119,7 @@
 
 (define-for-syntax null '())
 (define-for-syntax (syntax-e stx) 
-    (if (syntax? stx)
-        (syntax-expression stx)
-        stx))
+    (syntax-expression stx))
 
 
 (define-syntax begin0 
@@ -222,12 +220,13 @@
             #f "bad argument sequence" stx args)]))))  
 
 (define-for-syntax (syntax->list s)
-  (define l
-    (let loop ([s s])
-      (cond
-       [(pair? s) (cons (car s) (loop (cdr s)))]
-       [(syntax? s) (loop (syntax-e s))]
-       [else s])))
+    (define l
+        (let loop ([s s])
+            (cond
+                [(pair? s) (cons (car s) (loop (cdr s)))]
+                [(syntax? s) (loop (syntax-e s))]
+                [else s])))
+
   (and (list? l)
        l))
 
@@ -474,7 +473,127 @@
            (or (apply f (map car lists))
                (apply ormap f (map cdr lists)))))))
 
+
 (define-for-syntax (parse-app stx check-arity generate-direct)
+    (define (check-keywords args)
+        (define kw-ht (make-core-hash-eq))
+        (let lp ([args args])
+            (syntax-case args () 
+                [() '()]
+                [(kw . rest)
+                    (keyword? (syntax-e #'kw))
+                    (begin 
+                        (when (core-hash-ref kw-ht (syntax-e #'kw) #f)
+                            (syntax-violation 
+                                'application
+                                "duplicate keyword in application"
+                                stx 
+                                #'kw))
+                        (core-hash-set! kw-ht (syntax-e #'kw) #t)
+                        (syntax-case #'rest () 
+                            [() 
+                                (syntax-violation 
+                                    'application
+                                    "missing argument expression after keyword"
+                                    stx 
+                                    #'kw)]
+                            [(arg . rest)
+                                (keyword? (syntax-e #'arg))
+                                (syntax-violation 
+                                    'application 
+                                    "keyword in expression position (immediately after another keyword)"
+                                    stx 
+                                    #'arg)]
+                            [(arg . rest)
+                                (cons #'arg (lp #'rest))]))]
+                [(arg . rest)
+                    (cons #'arg (lp #'rest))])))
+
+    (define (syntax-length args)
+        (let loop ([i 0] [args args])
+            (cond 
+                [(null? args) i]
+                [(syntax? args) (loop i (syntax-e args))]
+                [(pair? args) (loop (+ i 1) (cdr args))])))
+
+    (define (syntax-cdr x)
+        (cond 
+            [(syntax? x) (cdr (syntax-e x))]
+            [else (cdr x)]))
+    
+    (define (syntax-car x)
+        (cond 
+            [(syntax? x) (car (syntax-e x))]
+            [else (car x)]))
+
+    (define (collect-args ids args)
+        
+        (let loop ([l args]
+                   [ids ids]
+                   [bind-accum '()]
+                   [arg-accum '()]
+                   [kw-pairs '()])
+        
+            (syntax-case l ()
+                [()
+                    (let* ([args (reverse arg-accum)]
+                           [sorted-kws (sort kw-pairs 
+                                            (lambda (a b) (keyword<? (syntax-e (car a))
+                                                                     (syntax-e (car b)))))]
+                           [cnt (+ 1 (syntax-length args))])
+                        #`(let #,(reverse bind-accum)
+                            #,(generate-direct 
+                                (syntax-cdr args) sorted-kws #t 
+                                #`((checked-procedure-check-and-extract #,(car args) keyword-procedure-extract '#,(map car sorted-kws) #,cnt)
+                                            '#,(map car sorted-kws)
+                                            (list #,@(map syntax-cdr sorted-kws))
+                                            . #,(syntax-cdr args)))))]
+                [(kw arg . rest)
+                    (keyword? (syntax-e #'kw))
+                    (begin
+                        (printf "kw arg: ~a: ~a~%" #'kw #'arg)
+                    (loop (syntax-cdr #'rest)
+                          (cdr ids)
+                          (cons (list (car ids) #'arg)
+                                bind-accum)
+                          arg-accum
+                          (cons (cons #'kw (car ids))
+                                kw-pairs)))]
+                [(arg . rest)
+                    (loop #'rest
+                          (cdr ids)
+                          (cons (list (car ids) #'arg)
+                                bind-accum)
+                          (cons (car ids) arg-accum)
+                          kw-pairs)])))
+
+    (define (keyword-application args)
+        (define exprs (check-keywords args))
+        (define name #f)
+        (define ids (cons 
+            (datum->syntax #f 'procedure)
+            (generate-temporaries exprs)))
+        
+
+        (printf ";; keyword application ids: ~a~%" ids)
+        (collect-args ids exprs))
+
+
+    (syntax-case stx ()
+        ;; simple or erroneus application:
+        [(self proc arg ...)
+            (not (ormap (lambda (x) (keyword? (syntax-e x))) #'(proc arg ...)))
+            (generate-direct 
+                #'(arg ...)
+                '()
+                #f 
+                (datum->syntax #f (cons '(@@ (capy) |#%app|) #'(proc arg ...))))]
+        ;; keyword application
+        [(self arg ...)
+            (keyword-application #'(arg ...))]
+        [_ (syntax-violation 'application "invalid application" stx)]))
+
+(define-for-syntax (parse-app- stx check-arity generate-direct)
     (define l (syntax->list stx))
     (printf "parse-app: ~a~%" stx)
     (if (not (and l
@@ -488,16 +607,18 @@
                      (null? (cdr l)))
                 (syntax-violation #f "missing procedure expression;\n probably originally (), which is an illegal empty application" stx)
                 (begin 
+                    (printf ";; simple app: ~a~%" (syntax->datum stx))
                     (when l
                         (check-arity (- (length l) 2)))
                     (let ([args (cdr (syntax-e stx))])
+                        (define new-stx (datum->syntax #f (cons '(@@ (capy) |#%app|) (datum->syntax stx args))))
                         (generate-direct 
                             (if l 
                                 (cdr (if (pair? args) args (syntax-e args)))
                                 '())
                             '()
                             #f
-                            #`((@@ (capy) #%app) . #,args))))))    
+                            new-stx)))))    
         ;; keyword application
         (let ([exprs 
                 (let ([kw-ht (make-core-hash-eq)])
@@ -533,9 +654,10 @@
                                 (cons (car l)
                                     (loop (cdr l)))])))])
             (let* ([name #f]
-                   [ids (cons (if (and name (or (identifier? name) (symbol? name)))
-                    (if (syntax? name) name (datum->syntax #f name))
-                    (datum->syntax #f 'procedure))
+                   [ids (cons 
+                    (if (and name (or (identifier? name) (symbol? name)))
+                        (if (syntax? name) name (datum->syntax #f name))
+                        (datum->syntax #f 'procedure))
                     (generate-temporaries exprs))])
                 (printf ";; keyword application ids: ~a, l=~a~%" (map syntax-e ids) l)
                 (let loop ([l (cdr l)]
@@ -551,7 +673,7 @@
                                                                             (syntax-e (car b)))))]
                                    [cnt (+ 1 (length args))])
                                 (check-arity (- cnt 2))
-                         
+                                (printf "Bind-accum: ~a~%" bind-accum)
                                 #`(let #,(reverse bind-accum)
                                     #,(generate-direct 
                                         (cdr args) sorted-kws #t
@@ -583,11 +705,11 @@
             
             ;(pretty-print (syntax->datum x))
             x)
-        (dd (parse-app stx 
+        (dd (datum->syntax stx (parse-app stx 
             (lambda args #t)
             (lambda (args kw-args lifted? orig) 
                 
-                orig)))))
+                orig))))))
 
 (define-for-syntax (make-keyword-syntax get-ids n-req opt-not-supplieds rest? req-kws all-kws)
     "Build a `define-syntax` form that defines a keyword procedure and optimistically expands it to a direct procedure call"
@@ -614,7 +736,7 @@
                     
                      
                     (if (free-identifier=? #'new-app (datum->syntax stx '|#%app|))
-                        (dd1 (parse-app 
+                        (dd1 (datum->syntax stx (parse-app 
                             (datum->syntax #f (cons #'new-app stx))
                             (lambda (n)
                                 (when (or (< n n-req)
@@ -708,7 +830,7 @@
                                                     #,(if lifted? 
                                                         orig
                                                         #`((@@ (capy) |#%app|) #,wrap-id . #,args))))))
-                                    orig)))))
+                                    orig))))))
                         (datum->syntax stx (cons wrap-id #'(arg ...)))))]
                 [self 
                     (begin 
