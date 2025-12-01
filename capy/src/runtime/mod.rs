@@ -40,9 +40,7 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::dl::init_dl(mc);
     vm::threading::init_threading(mc);
     vm::control::init_control(mc);
-    if false {
-        // libs::expeditor::init_expeditor(mc);
-    }
+    vm::gc::gc::register(mc);
     //let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
 }
 

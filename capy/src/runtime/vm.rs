@@ -29,6 +29,7 @@ pub mod exceptions;
 pub mod expand;
 pub mod extensions;
 pub mod ffi;
+pub mod gc;
 pub mod hash;
 pub mod interrupts;
 pub mod io;
