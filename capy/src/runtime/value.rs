@@ -18,8 +18,8 @@ use std::{fmt, hash::Hash, marker::PhantomData};
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Value<'gc> {
-    desc: EncodedValueDescriptor,
-    pd: PhantomData<&'gc ()>,
+    pub(crate) desc: EncodedValueDescriptor,
+    pub(crate) pd: PhantomData<&'gc ()>,
 }
 
 #[derive(Clone, Copy)]
@@ -457,6 +457,8 @@ impl TypeCode8 {
     /// and is provided by foreign code.
     pub const NATIVE_OBJECT: Self = Self(47);
     pub const CMARKS: Self = Self(48);
+
+    pub const EPHEMERON: Self = Self(49);
 
     pub const UNKNOWN: Self = Self(0xFF);
 }

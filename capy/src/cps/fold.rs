@@ -331,7 +331,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "cons" => cons(ctx, a, b) {
-            return None;
+            //return None;
             Some(Value::cons(ctx, a, b))
         }
 
