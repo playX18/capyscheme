@@ -11,8 +11,14 @@ use crate::{
     static_symbols,
 };
 
+// Disabled by default. CPS optimizer is smart-enough to do similar optimization.
+const ENABE_ETA_EXPANSION: bool = false;
+
 /// Make lexically bound procedures well-known.
 pub fn eta_expand<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
+    if !ENABE_ETA_EXPANSION {
+        return term;
+    }
     let to_expand = analyze_procs(ctx, term);
 
     term.post_order(ctx, |ctx, expr| match expr.kind {

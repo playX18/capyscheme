@@ -476,6 +476,7 @@
 
 (define-for-syntax (parse-app stx check-arity generate-direct)
     (define l (syntax->list stx))
+    (printf "parse-app: ~a~%" stx)
     (if (not (and l
                   (pair? (cdr l))
                   (not (keyword? (syntax-e (cadr l))))
@@ -496,7 +497,7 @@
                                 '())
                             '()
                             #f
-                            #`(#%app . #,args))))))    
+                            #`((@@ (capy) #%app) . #,args))))))    
         ;; keyword application
         (let ([exprs 
                 (let ([kw-ht (make-core-hash-eq)])
@@ -536,13 +537,12 @@
                     (if (syntax? name) name (datum->syntax #f name))
                     (datum->syntax #f 'procedure))
                     (generate-temporaries exprs))])
-             
+                (printf ";; keyword application ids: ~a, l=~a~%" (map syntax-e ids) l)
                 (let loop ([l (cdr l)]
                            [ids ids]
                            [bind-accum '()]
                            [arg-accum '()]
                            [kw-pairs '()])
-                    
                     (cond 
                         [(null? l)
                             (let* ([args (reverse arg-accum)]
@@ -583,11 +583,11 @@
             
             ;(pretty-print (syntax->datum x))
             x)
-        (dd (datum->syntax stx (parse-app stx 
+        (dd (parse-app stx 
             (lambda args #t)
             (lambda (args kw-args lifted? orig) 
                 
-                orig))))))
+                orig)))))
 
 (define-for-syntax (make-keyword-syntax get-ids n-req opt-not-supplieds rest? req-kws all-kws)
     "Build a `define-syntax` form that defines a keyword procedure and optimistically expands it to a direct procedure call"
@@ -597,7 +597,7 @@
                 ;(pretty-print (syntax->datum x))
                 x)
             (define (dd1 x)
-                ;(pretty-print (syntax->datum x))
+                (pretty-print (syntax->datum x))
                 x)
             (define-values (impl-id wrap-id) (get-ids))
             
@@ -669,7 +669,7 @@
                                             (lambda (args)
                                               
                                                 #`(if #t
-                                                    (|#%app| 
+                                                    ((@@ (capy) |#%app|) 
                                                         #,impl-id
                                                         ;; keyword arguments
                                                         #,@(let loop ([kw-args kw-args]
@@ -707,32 +707,35 @@
 
                                                     #,(if lifted? 
                                                         orig
-                                                        #`(|#%app| #,wrap-id . #,args))))))
+                                                        #`((@@ (capy) |#%app|) #,wrap-id . #,args))))))
                                     orig)))))
                         (datum->syntax stx (cons wrap-id #'(arg ...)))))]
-                [self wrap-id])))))
+                [self 
+                    (begin 
+                        (printf "self-call : ~a = ~a~%" #'self wrap-id)
+                        #t 
+                    )
+                    wrap-id])))))
 
 
 (define-syntax new-define 
     (lambda (stx)
         (define (dd x)
-            ;(pretty-print (syntax->datum x))
+
             x)
         (define-values (id rhs) (normalize-definition stx #'new-lambda #t #t))
         (define (plain rhs)
+           
             #`(define #,id #,rhs))
         (define (can-opt? lam-id)
-
             (and (identifier? lam-id)
                  (free-identifier=? lam-id #'new-lambda)
                  #t))
         (define (opt lam-id rhs core-wrap plain)
-
             (parse-lambda
                 rhs 
                 id
                 (lambda (new-rhs)
-                    
                     (plain new-rhs))
                 (lambda (impl kwimpl wrap core-id unpack-id n-req opt-not-supplieds rest? req-kws all-kws)
                     (with-syntax ([proc (car (generate-temporaries (list id)))])
