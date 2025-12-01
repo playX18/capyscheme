@@ -188,6 +188,7 @@
       (syntax-violation 'else "Invalid expression" x)))
 
 
+  ;; From Andre van Tonder's expander
   (define-syntax quasisyntax
     (lambda (e)
       
@@ -216,15 +217,13 @@
           (((unsyntax e ...) . r)
            (= level 0)
            (with-syntax (((r* (rep ...)) (expand (syntax r) 0))
-                         ((t ...)        (generate-temporaries
-                                          (syntax (e ...)))))
+                         ((t ...)     (generate-temporaries (syntax (e ...)))))
              (syntax ((t ... . r*)
                       ((t e) ... rep ...)))))
           (((unsyntax-splicing e ...) . r)
            (= level 0)
            (with-syntax (((r* (rep ...)) (expand (syntax r) 0))
-                         ((t ...)        (generate-temporaries
-                                          (syntax (e ...)))))
+                         ((t ...)     (generate-temporaries (syntax (e ...)))))
              (with-syntax ((((t ...) ...) (syntax ((t (... ...)) ...))))
                (syntax ((t ... ... . r*)
                         (((t ...) e) ... rep ...))))))
