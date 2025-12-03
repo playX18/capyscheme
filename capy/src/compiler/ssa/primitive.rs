@@ -1854,8 +1854,8 @@ prim!(
 
     "boolean?" => is_boolean(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let mask = ssa.builder.ins().band_imm(val, Value::BOOL_TAG as i64);
-        PrimValue::Comparison(ssa.builder.ins().icmp_imm(IntCC::Equal, mask, Value::BOOL_TAG as i64))
+        let mask = ssa.builder.ins().band_imm(val, (!1u64) as i64);
+        PrimValue::Comparison(ssa.builder.ins().icmp_imm(IntCC::Equal, mask, Value::VALUE_FALSE as i64))
     },
 
     "symbol?" => is_symbol(ssa, args, _h) {

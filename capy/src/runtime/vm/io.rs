@@ -719,6 +719,12 @@ pub mod io_ops {
     #[scheme(name = "syscall:lseek")]
     pub fn syscall_lseek(fd: i32, offset: i64, whence: i32) -> i64 {
         unsafe {
+            let whence = match whence {
+                0 => libc::SEEK_SET,
+                1 => libc::SEEK_CUR,
+                2 => libc::SEEK_END,
+                _ => return nctx.return_(-1),
+            };
             let ret = libc::lseek(fd, offset, whence);
             if ret == -1
                 && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
@@ -816,6 +822,58 @@ pub mod io_ops {
         let cpath = CString::new(filename.to_string()).unwrap();
         unsafe {
             let ret = libc::access(cpath.as_ptr(), rmode);
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "syscall:recv")]
+    pub fn syscall_recv(fd: i32, buf: Gc<'gc, ByteVector>, nbytes: usize, flags: i32) -> isize {
+        if nbytes > buf.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "syscall:recv",
+                "buffer too small for recv",
+                None,
+                None,
+                3,
+                &[fd.into(), buf.into(), nbytes.into_value(ctx)],
+            );
+        }
+
+        unsafe {
+            let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
+            let ret = libc::recv(fd, ptr, nbytes, flags);
+            if ret == -1
+                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+            {
+                return nctx.perform(PollOperation::Read(fd));
+            }
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "syscall:send")]
+    pub fn syscall_send(fd: i32, buf: Gc<'gc, ByteVector>, nbytes: usize, flags: i32) -> isize {
+        if nbytes > buf.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "syscall:send",
+                "buffer too small for send",
+                None,
+                None,
+                3,
+                &[fd.into(), buf.into(), nbytes.into_value(ctx)],
+            );
+        }
+
+        unsafe {
+            let ptr = buf.as_slice().as_ptr() as *const libc::c_void;
+            let ret = libc::send(fd, ptr, nbytes, flags);
+            if ret == -1
+                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+            {
+                return nctx.perform(PollOperation::Write(fd));
+            }
             nctx.return_(ret)
         }
     }

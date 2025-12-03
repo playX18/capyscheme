@@ -290,7 +290,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn is_bool(self) -> bool {
-        self.raw_i64() & -1 == Value::VALUE_FALSE
+        self.raw_i64() & !1 == Value::VALUE_FALSE
     }
 
     pub fn as_cell_raw(self) -> GCObject {
