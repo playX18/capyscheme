@@ -9,6 +9,7 @@
 //! we can make access to it more efficient by avoiding to allocate a list for them.
 
 #![allow(dead_code, unused_variables)]
+
 use crate::{
     cps::{
         Map, Substitute,
@@ -19,12 +20,13 @@ use crate::{
         core::{LVarRef, fresh_lvar},
         primitives::sym_cons,
     },
+    prelude::Symbol,
     runtime::{Context, value::Value},
     utils::fixedpoint,
 };
 
 use crate::rsgc::{Gc, alloc::array::Array, barrier, cell::Lock, traits::IterGc};
-use std::{cell::Cell, collections::HashMap};
+use std::{cell::Cell, collections::HashMap, sync::LazyLock};
 
 #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Hash)]
 struct Count {
@@ -61,7 +63,9 @@ impl<'gc> State<'gc> {
     }
 
     fn is_dead(&self, var: LVarRef<'gc>) -> bool {
-        !self.census.contains_key(&var)
+        self.census
+            .get(&var)
+            .map_or(true, |var| var.applied == 0 && var.as_value == 0)
     }
 
     fn applied_once(&self, var: LVarRef<'gc>) -> bool {
@@ -295,9 +299,15 @@ fn census<'gc>(term: TermRef<'gc>) -> im::HashMap<LVarRef<'gc>, Count> {
 }
 
 fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
-    match *term {
+    stacker::maybe_grow(4 * 1024 * 1024, 1 * 1024 * 1024, || match *term {
         Term::Let(binding, expr, prev_body) => match expr {
             Expression::PrimCall(prim, prev_args, prev_h, source) => {
+                if state.is_dead(binding)
+                    && SIDE_EFFECT_FREE_OPS.contains(&*prim.downcast::<Symbol>().as_str())
+                {
+                    return shrink_tree(prev_body, state);
+                }
+
                 let args = state
                     .substitute_atoms(prev_args.iter().copied())
                     .collect::<Vec<_>>();
@@ -609,7 +619,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 },
             )
         }
-    }
+    })
 }
 
 pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
@@ -1093,3 +1103,8 @@ fn materialize_list<'gc, 'a>(
         }),
     )
 }
+
+static SIDE_EFFECT_FREE_OPS: LazyLock<std::collections::HashSet<&'static str>> =
+    LazyLock::new(|| {
+        std::collections::HashSet::from(["variable-ref", "cons", "list", "make-variable", "vector"])
+    });

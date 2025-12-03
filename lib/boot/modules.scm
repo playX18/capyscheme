@@ -396,7 +396,8 @@
                  [var (module-variable m internal-name)])
               (cond
                 [(not var)
-                  (assertion-violation 'unbound-variable "undefined variable" internal-name)]
+                  (module-export! m (list name) replace?)]
+                  ;(assertion-violation 'unbound-variable "undefined variable" internal-name m)]
                 [(eq? var (module-local-variable m internal-name))
                   ;(assertion-violation 'export "re-exporting local variable" internal-name)]
                   (module-export! m (list name) replace?)]

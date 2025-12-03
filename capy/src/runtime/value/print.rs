@@ -135,6 +135,9 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x.is::<Module>() {
             let x = x.downcast::<Module>();
             write!(self.fmt, "#<module {}>", x.name())
+        } else if x.is::<Keyword>() {
+            let kw = x.downcast::<Keyword>();
+            write!(self.fmt, "{}", kw.symbol)
         } else {
             write!(self.fmt, "#<unknown {:x}>", x.bits())
         }

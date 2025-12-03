@@ -8,7 +8,10 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
 };
 
-use crate::rsgc::{Gc, mmtk::util::Address};
+use crate::{
+    prelude::Keyword,
+    rsgc::{Gc, mmtk::util::Address},
+};
 use im::HashSet;
 
 use crate::runtime::{
@@ -41,6 +44,7 @@ pub const FASL_TAG_UNINTERNED_SYMBOL: u8 = 17;
 pub const FASL_TAG_IMMEDIATE: u8 = 18;
 pub const FASL_TAG_SYNTAX: u8 = 19;
 pub const FASL_TAG_TUPLE: u8 = 20;
+pub const FASL_TAG_KEYWORD: u8 = 21;
 
 /// Reference to an object.
 pub const FASL_TAG_REF: u8 = 0xFF;
@@ -157,6 +161,12 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         }
 
         if obj.is_number() {
+            return Ok(());
+        }
+
+        if obj.is::<Keyword>() {
+            let keyword = obj.downcast::<Keyword>();
+            self.scan(keyword.symbol.into())?;
             return Ok(());
         }
 
@@ -282,6 +292,14 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             self.put(syntax.source())?;
             self.put(syntax.wrap())?;
             self.put(syntax.properties())?;
+            return Ok(());
+        }
+
+        if obj.is::<Keyword>() {
+            let keyword = obj.downcast::<Keyword>();
+            let sym = keyword.to_symbol();
+            self.put8(FASL_TAG_KEYWORD)?;
+            self.put(sym.into_value(self.ctx))?;
             return Ok(());
         }
 
@@ -629,6 +647,26 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 Ok(Value::new(Syntax::new(
                     self.ctx, expr, wrap, module, source, properties,
                 )))
+            }
+
+            _x @ FASL_TAG_KEYWORD => {
+                let sym_value = self.read_value()?;
+                let sym = sym_value.try_as::<Symbol>().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "Expected a symbol for keyword")
+                })?;
+                let map = self.ctx.globals().keyword_map.get().downcast::<HashTable>();
+                if let Some(kw) = map.get(self.ctx, sym_value) {
+                    return Ok(kw);
+                }
+
+                let kw = Keyword::from_symbol(*self.ctx, sym);
+                self.ctx
+                    .globals()
+                    .keyword_map
+                    .get()
+                    .downcast::<HashTable>()
+                    .put(self.ctx, sym_value, kw);
+                Ok(kw.into())
             }
 
             _ => {

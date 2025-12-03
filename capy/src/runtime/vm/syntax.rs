@@ -263,6 +263,7 @@ pub mod syntax_ops {
                 || obj.is::<Fluid>()
                 || obj.is::<Module>()
                 || obj.is::<Pointer>()
+                || obj.is::<Keyword>()
                 || obj.is_number(),
         )
     }

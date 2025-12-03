@@ -150,7 +150,8 @@
                 (set! %load-path (append (reverse (arg-results-ref res "load-path")) %load-path))
                 (set! %load-compiled-path (append (reverse (arg-results-ref res "compiled-load-path")) %load-compiled-path))
                 (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
-                
+                (if (arg-results-ref res "fresh-auto-compile")
+                    (set! %fresh-auto-compile #t))
                 (define out '())
                 
                 (when (arg-results-ref res "script")

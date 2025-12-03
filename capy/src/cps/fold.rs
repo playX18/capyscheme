@@ -335,6 +335,25 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             Some(Value::cons(ctx, a, b))
         }
 
+        "typecode8" => tc8(ctx, a, b) {
+            /*if a.is_cell() {
+                Some(Value::from_raw(a.typ8().bits() as u64))
+            } else {
+                None
+            }*/
+            let _ = a;
+            let _ = b;
+            return None;
+        }
+
+        "immediate?" => is_immediate(ctx, a) {
+            let _ = a;
+            return None;
+            //   Some(Value::new(a.is_immediate()))
+        }
+
+
+
         "make-syntax" => make_syntax(ctx, exp, wrap, module, source, properties) {
             Some(Syntax::new(
                 ctx,

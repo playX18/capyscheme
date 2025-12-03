@@ -47,23 +47,24 @@
     (define-syntax case-lambda-aux
     (lambda (x)
       (define (construct args formals clause*)
-	(define _car #'car)
-	(define _cdr #'cdr)
-	(define (parse-formals formal args inits)
-	  (syntax-case formal ()
-	    (() (reverse! inits))
-	    ((a . d)
-	     (with-syntax ((arg `(,_car ,args))
-			   (args `(,_cdr ,args)))
-	       (parse-formals #'d #'args
-			      (cons (list #'a #'arg) inits))))
-	    (v
-	     (reverse! (cons (list #'v args) inits)))))
-	(with-syntax ((((var init) ...) (parse-formals formals args '()))
-		      ((clause ...) clause*))
-	  ;; Using `lambda` enables type check, immediate apply
-	  ;; will be converted to let by the compiler.
-	  #'((lambda (var ...) clause ...) init ...)))
+        (define _car #'car)
+        (define _cdr #'cdr)
+        (define (parse-formals formal args inits)
+          (syntax-case formal ()
+            (() (reverse! inits))
+            ((a . d)
+              (with-syntax ((arg `(,_car ,args))
+                (args `(,_cdr ,args)))
+                (parse-formals #'d #'args
+                    (cons (list #'a #'arg) inits))))
+            (v
+              (reverse! (cons (list #'v args) inits)))))
+        (with-syntax 
+               ((((var init) ...) (parse-formals formals args '()))
+                ((clause ...) clause*))
+          ;; Using `lambda` enables type check, immediate apply
+          ;; will be converted to let by the compiler.
+          #'((lambda (var ...) clause ...) init ...)))
       (syntax-case x ()
 	((_ args n)
 	 #'(assertion-violation #f "unexpected number of arguments" args))

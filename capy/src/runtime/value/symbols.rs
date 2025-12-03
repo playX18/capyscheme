@@ -314,3 +314,33 @@ macro_rules! static_symbols {
         )*
     };
 }
+
+/// keyword type: just a special kind of symbol
+/// that is self-evaluating.
+#[derive(Trace)]
+#[repr(C)]
+pub struct Keyword<'gc> {
+    pub hdr: ScmHeader,
+    pub symbol: Gc<'gc, Symbol<'gc>>,
+}
+
+unsafe impl<'gc> Tagged for Keyword<'gc> {
+    const TC8: TypeCode8 = TypeCode8::KEYWORD;
+    const TYPE_NAME: &'static str = "keyword";
+}
+
+impl<'gc> Keyword<'gc> {
+    pub fn from_symbol(mc: Mutation<'gc>, symbol: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Keyword<'gc>> {
+        Gc::new(
+            mc,
+            Keyword {
+                hdr: ScmHeader::with_type_bits(TypeCode8::KEYWORD.bits() as _),
+                symbol,
+            },
+        )
+    }
+
+    pub fn to_symbol(&self) -> Gc<'gc, Symbol<'gc>> {
+        self.symbol.clone()
+    }
+}

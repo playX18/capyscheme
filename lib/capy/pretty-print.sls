@@ -198,6 +198,10 @@
                            (else "#u8")))
                     (col (out bvec-start col)))
                (wr-lst (bytevector->list obj) col lvl)))
+            ((keyword? obj)
+              (let ((sym (keyword->symbol obj)))
+                (out "#:" col)
+                (wr-atom sym col)))
             (else       
                                                 ; FIXME
              (out "#<WEIRD>" col))))

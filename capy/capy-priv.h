@@ -55,6 +55,8 @@
 
 #define FASL_TAG_TUPLE 20
 
+#define FASL_TAG_KEYWORD 21
+
 /**
  * Reference to an object.
  */

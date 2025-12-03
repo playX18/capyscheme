@@ -297,6 +297,11 @@
                 (if slashify
                     (print-slashed-symbol x p)
                     (printsym (symbol->string x) p))]
+            [(keyword? x)
+                (printstr "#:" p)
+                (if slashify
+                    (print-slashed-symbol (keyword->symbol x) p)
+                    (printsym (symbol->string (keyword->symbol x)) p))]
             [(number? x) (printnumber x p slashify)]
             [(char? x)
                 (if slashify

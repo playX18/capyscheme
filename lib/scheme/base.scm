@@ -31,8 +31,6 @@
           assq
           assv
           begin
-          with-continuation-mark
-          current-continuation-marks
           binary-port?
           boolean=?
           boolean?
