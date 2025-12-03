@@ -2026,6 +2026,36 @@ mod string_ops {
         let s = Str::new(*nctx.ctx, &normalized, false);
         nctx.return_(s)
     }
+
+    #[scheme(name = "keyword?")]
+    pub fn keywordp(val: Value<'gc>) -> bool {
+        nctx.return_(val.is::<Keyword>())
+    }
+
+    #[scheme(name = "symbol->keyword")]
+    pub fn symbol_to_keyword(sym: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Keyword<'gc>> {
+        let globals = ctx.globals().keyword_map.get().downcast::<HashTable>();
+
+        if let Some(kw) = globals.get(ctx, sym) {
+            return nctx.return_(kw.downcast::<Keyword>());
+        }
+
+        let kw = Keyword::from_symbol(*nctx.ctx, sym);
+        globals.put(ctx, sym, kw);
+        nctx.return_(kw)
+    }
+
+    #[scheme(name = "keyword->symbol")]
+    pub fn keyword_to_symbol(kw: Gc<'gc, Keyword<'gc>>) -> Gc<'gc, Symbol<'gc>> {
+        nctx.return_(kw.symbol)
+    }
+
+    #[scheme(name = "keyword->string")]
+    pub fn keyword_to_string(kw: Gc<'gc, Keyword<'gc>>) -> Gc<'gc, Str<'gc>> {
+        let sym = kw.symbol;
+        let s = sym.to_str(*ctx);
+        nctx.return_(s)
+    }
 }
 
 pub fn init_strings<'gc>(ctx: Context<'gc>) {

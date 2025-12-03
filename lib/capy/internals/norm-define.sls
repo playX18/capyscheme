@@ -15,10 +15,11 @@
 (define-for-syntax (syntax->list s)
   (define l
     (let loop ([s s])
-      (cond
-       [(pair? s) (cons (car s) (loop (cdr s)))]
-       [(syntax? s) (loop (syntax-e s))]
-       [else s])))
+        (syntax-case s () 
+            [() '()]
+            [(head . tail)
+                (cons #'head (loop #'tail))]
+            [item #'item])))
   (and (list? l)
        l))
 
@@ -56,8 +57,8 @@
             (let-values ([(id mk-rhs)
                 (letrec ([simple-proto 
                     ;; check the args and set up a proc-maker; we return
-                    ;;  a proc maker instead of a final proc to enable
-                    ;;  left-to-right checking of the function protos
+                    ;; a proc maker instead of a final proc to enable
+                    ;; left-to-right checking of the function protos
                     (lambda (proto)
                         (let-values ([(args rets mk-rhs)
                             (syntax-case proto ()
@@ -78,14 +79,12 @@
                             mk-rhs))]
                     [general-proto
                         (lambda (proto)
-                           
                             (syntax-case proto ()
                                 [(id . rest)
                                     (and (identifier? #'id))                     
                                     (values #'id
                                         (simple-proto proto))]
                                 [((something . more) . rest)
-                                    
                                     (let-values ([(id mk-rhs) (general-proto #'(something . more))])
                                         (let ([mk-inner (simple-proto proto)])
                                             (values 
@@ -101,6 +100,7 @@
 
                 (general-proto #'proto))])
             (values id mk-rhs #'body))]))
+
 (define-for-syntax normalize-definition 
     (case-lambda 
      [(stx lambda-stx check-context? allow-key+opt?)

@@ -147,7 +147,7 @@ fn compute_private_toplevels<'gc>(
 
 pub fn letrectify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     let declarative = compute_declarative_toplvels(ctx, t);
-    let private = if false {
+    let private = if true {
         compute_private_toplevels(ctx, &declarative)
     } else {
         HashSet::new()

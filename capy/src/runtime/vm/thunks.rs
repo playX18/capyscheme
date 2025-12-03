@@ -360,7 +360,7 @@ thunks! {
         crate::runtime::vm::debug::print_stacktraces_impl(ctx);
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
-            println!("NON-APPLICABLE {subr} called here:");
+            println!("NON-APPLICABLE {subr}, tc: {} called here:", subr.typ8().bits());
             println!("{sym:?}");
         });
         make_assertion_violation(

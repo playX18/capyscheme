@@ -6,6 +6,7 @@ pub mod contify;
 pub mod dot;
 pub mod fold;
 pub mod free_vars;
+pub mod graph;
 pub mod optimizer;
 pub mod peval;
 pub mod pretty;

@@ -63,7 +63,7 @@
     (datum->syntax #f datum source))
 
 (define (make-reader port file)
-    (%make-reader port file 1 0 1 0 #f 'rnrs #f #f))
+    (%make-reader port file 1 0 1 0 #f 'capy #f #f))
 
 (define (lexical-condition reader msg irritants)
     (condition 
@@ -288,10 +288,10 @@
                              ((#\b) #\backspace)
                              ((#\t) #\tab)
                              ((#\n) #\linefeed)
-                             ((#\v) (assert-mode p "\\v" '(rnrs r6rs)) #\vtab)
-                             ((#\f) (assert-mode p "\\f" '(rnrs r6rs)) #\page)
+                             ((#\v) (assert-mode p "\\v" '(rnrs r6rs capy)) #\vtab)
+                             ((#\f) (assert-mode p "\\f" '(rnrs r6rs capy)) #\page)
                              ((#\r) #\return)
-                             ((#\|) (assert-mode p "\\|" '(rnrs r7rs)) #\|)
+                             ((#\|) (assert-mode p "\\|" '(rnrs r7rs capy)) #\|)
                              ((#\x) (get-inline-hex-escape p))
                              (else
                               (reader-warning p "Invalid escape in string" c)
@@ -394,6 +394,9 @@
                   (values 'identifier (string->symbol "#%top")))
                 (else 
                   (reader-warning p "Invalid #% syntax: expected #%app, #%datum, or #%top" id)))))
+           ((#\:)                      ; keyword
+            (receive (type id) (get-identifier p (get-char p) #f)
+              (values 'value (symbol->keyword id))))
            ((#\() (values 'vector #f))
            ((#\') (values 'abbrev 'syntax))
            ((#\`) (values 'abbrev 'quasisyntax))
@@ -408,7 +411,7 @@
                    (c2 (and (eqv? c1 #\u) (eqv? (lookahead-char p) #\8) (get-char p)))
                    (c3 (and (eqv? c2 #\8) (eqv? (lookahead-char p) #\() (get-char p))))
               (cond ((and (eqv? c1 #\u) (eqv? c2 #\8) (eqv? c3 #\())
-                     (assert-mode p "#vu8(" '(rnrs r6rs))
+                     (assert-mode p "#vu8(" '(rnrs r6rs capy))
                      (values 'bytevector #f))
                     (else
                      (reader-warning p "Expected #vu8(")
@@ -417,7 +420,7 @@
             (let* ((c1 (and (eqv? (lookahead-char p) #\8) (get-char p)))
                    (c2 (and (eqv? c1 #\8) (eqv? (lookahead-char p) #\() (get-char p))))
               (cond ((and (eqv? c1 #\8) (eqv? c2 #\())
-                     (assert-mode p "#u8(" '(rnrs r7rs))
+                     (assert-mode p "#u8(" '(rnrs r7rs capy))
                      (values 'bytevector #f))
                     (else
                      (reader-warning p "Expected #u8(")
@@ -446,22 +449,25 @@
                        (cond
                          ((eq? type 'identifier)
                           (case id
+                            ((capyscheme)
+                              (assert-mode p '#!capyscheme '(rnrs r6rs capy))
+                              (reader-mode-set! p 'capy))
                             ((r6rs)          ;r6rs.pdf
-                             (assert-mode p "#!r6rs" '(rnrs r6rs))
+                             (assert-mode p "#!r6rs" '(rnrs r6rs capy))
                              (reader-mode-set! p 'r6rs))
                             ((fold-case)     ;r6rs-app.pdf
-                             (assert-mode p "#!fold-case" '(rnrs r6rs r7rs))
+                             (assert-mode p "#!fold-case" '(rnrs r6rs r7rs capy))
                              (reader-fold-case?-set! p #t))
                             ((no-fold-case)  ;r6rs-app.pdf
-                             (assert-mode p "#!no-fold-case" '(rnrs r6rs r7rs))
+                             (assert-mode p "#!no-fold-case" '(rnrs r6rs r7rs capy))
                              (reader-fold-case?-set! p #f))
                             ((r7rs)          ;oddly missing in r7rs
-                             (assert-mode p "#!r7rs" '(rnrs))
+                             (assert-mode p "#!r7rs" '(rnrs capy))
                              (reader-mode-set! p 'r7rs))
                             ((false)         ;r2rs
-                             (assert-mode p "#!false" '(rnrs r2rs)))
+                             (assert-mode p "#!false" '(rnrs r2rs capy)))
                             ((true)          ;r2rs
-                             (assert-mode p "#!true" '(rnrs r2rs)))
+                             (assert-mode p "#!true" '(rnrs r2rs capy)))
                             ((nobacktrace)
                              (reader-nobacktrace-set! p #t))
                             
@@ -474,7 +480,7 @@
                          (else
                           (reader-warning p "Expected an identifier after #!")
                           (get-token p)))))
-                    ((eq? (reader-mode p) 'rnrs)
+                    ((memq? (reader-mode p) '(rnrs capy))
                      ;; Guile compat.
                      (get-token p)
                      (values 'comment (get-!-comment p)))

@@ -788,3 +788,9 @@
   (if (null? lst)
       init
       (proc (car lst) (foldr proc init (cdr lst)))))
+
+(define (keyword<? kw1 kw2)
+  (define s1 (keyword->symbol kw1))
+  (define s2 (keyword->symbol kw2))
+
+  (string<? (symbol->string s1) (symbol->string s2)))

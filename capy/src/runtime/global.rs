@@ -201,6 +201,8 @@ pub struct Globals<'gc> {
     // ModuleRef
     pub resolve_module_root: Cell<Value<'gc>>,
 
+    pub keyword_map: Cell<Value<'gc>>,
+
     // ModuleRef
     pub root_module: Cell<Value<'gc>>,
     pub scm_module: Cell<Value<'gc>>,
@@ -395,6 +397,7 @@ impl<'gc> Globals<'gc> {
 
     pub fn for_each_value(&self, mut f: impl FnMut(&Cell<Value<'gc>>)) {
         let Globals {
+            keyword_map,
             capy_module_name,
             interesting_primitive_vars,
             interesting_primitive_vars_loc,
@@ -442,6 +445,7 @@ impl<'gc> Globals<'gc> {
         f(interesting_primitive_vars_loc);
         f(empty_wrap);
         f(resolve_module_root);
+        f(keyword_map);
         f(root_module);
         f(scm_module);
         f(loc_resolve_module_root);
@@ -519,8 +523,9 @@ impl<'gc> Globals<'gc> {
             .unlock()
             .set(Value::null());
         resolve_module_root.define_submodule(ctx, ctx.intern("capy"), root_module);
-
         super::modules::current_module(ctx).set(ctx, root_module.into());
+
+        let keyword_map = HashTable::new(*ctx, HashTableType::Eq, 64, 0.75);
 
         let loc_resolve_module_root = define(ctx, "*resolve-module-root*", resolve_module_root);
         let loc_the_root_module = define(ctx, "the-root-module", root_module);
@@ -577,6 +582,7 @@ impl<'gc> Globals<'gc> {
         );
 
         Self {
+            keyword_map: Cell::new(keyword_map.into_value(ctx)),
             capy_module_name: Cell::new(capy_module_name),
             interesting_primitive_vars: Cell::new(interesting_primitive_vars.into()),
             interesting_primitive_vars_loc: Cell::new(interesting_primitive_vars_loc.into()),
@@ -622,6 +628,7 @@ impl<'gc> Globals<'gc> {
 
     pub fn undefined() -> Self {
         Self {
+            keyword_map: Cell::new(Value::undefined()),
             capy_module_name: Cell::new(Value::undefined()),
             interesting_primitive_vars: Cell::new(Value::undefined()),
             interesting_primitive_vars_loc: Cell::new(Value::undefined()),
