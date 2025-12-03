@@ -2,7 +2,6 @@ use crate::rsgc::{Gc, Global};
 use crate::{
     expander::core::denotation_of_begin,
     frontend::reader::{LexicalError, TreeSitter},
-    list,
     runtime::{Context, modules::Module, value::*},
     static_symbols,
 };
@@ -10,8 +9,8 @@ use std::sync::OnceLock;
 
 pub mod assignment_elimination;
 pub mod compile_cps;
-pub mod eta_expand;
 pub mod core;
+pub mod eta_expand;
 pub mod fix_letrec;
 pub mod fold;
 pub mod free_vars;
@@ -76,13 +75,8 @@ pub fn add_source<'gc>(
     line: i32,
     column: i32,
 ) {
-    let alist = list![
-        ctx,
-        Value::cons(ctx, sym_filename(ctx).into(), filename),
-        Value::cons(ctx, sym_line(ctx).into(), Value::new(line)),
-        Value::cons(ctx, sym_column(ctx).into(), Value::new(column))
-    ];
-    set_source_property(ctx, obj, alist);
+    let alist = crate::vector![ctx, filename, Value::new(line), Value::new(column)];
+    set_source_property(ctx, obj, alist.into());
 }
 
 pub fn get_source_property<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Option<Value<'gc>> {

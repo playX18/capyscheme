@@ -304,6 +304,8 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
             .map(|pair| pair.cdr())
             .unwrap_or(Value::new(false));
         Vector::from_slice(*ctx, &[filename, line, column]).into()
+    } else if props.is::<Vector>() {
+        props
     } else {
         Value::new(false)
     }
@@ -311,6 +313,9 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
 
 pub fn props_to_sourcev<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
     if props.is_null() || !props.is_pair() {
+        if props.is::<Vector>() {
+            return props;
+        }
         return Value::new(false);
     }
 

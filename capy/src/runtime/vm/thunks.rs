@@ -866,7 +866,7 @@ thunks! {
             }
         };
 
-        ThunkResult { code: 0, value: (Number::compare(ctx, value, other) == Some(Ordering::Equal)).into() }
+        ThunkResult { code: 0, value: Number::equal(ctx, value, other).into() }
     }
 
     pub fn negate(ctx: Context<'gc>, value: Value<'gc>) -> ThunkResult<'gc> {
