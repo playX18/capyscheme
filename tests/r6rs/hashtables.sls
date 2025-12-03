@@ -17,24 +17,21 @@
          (test (hashtable-ref h key/r 'nope) 'nope)
          (test/unspec (hashtable-delete! h key)) ...
          (test (hashtable-size h) 0)
-        (format #t "bee bumble start.~%")
+       
          (test (hashtable-ref h key/r 'nope) 'nope)
          (test (hashtable-contains? h key/r) #f)
          (test/unspec (hashtable-set! h key/r orig-val))
          (test (hashtable-ref h key/r 'nope) orig-val)
          (test (hashtable-contains? h key/r) #t)
          (test (hashtable-size h) 1)
-         (format #t "bee bumble middle.~%")
 
          (test/unspec (hashtable-set! h key val)) ...
          (test (hashtable-size h) (length '(key ...)))
          (test (hashtable-ref h key/r 'nope) orig-val)
          (test (hashtable-ref h key 'nope) val) ...
-          (format #t "bee bumble middle2.~%")
          (let* ([h1 (hashtable-copy h #t)]
-               [_ (format #t "bee bumble middle2.5.~%")]
+               
                [h1i (hashtable-copy h)])
-            (format #t "bee bumble middle3.~%")
            (test (hashtable-mutable? h) #t)
            (test (hashtable-mutable? h1) #t)
            (test (hashtable-mutable? h1i) #f)
@@ -95,7 +92,7 @@
            (test/exn (hashtable-clear! h1i) &violation)))]))
   
   ;; ----------------------------------------
-  (format #t "Running R6RS hashtables tests...~%")
+
   (define (run-hashtables-tests)
     
     (let-values ([(kv vv)
@@ -104,7 +101,7 @@
                     (hashtable-set! h 2 'two)
                     (hashtable-set! h 3 'three)
                     (hashtable-entries h))])
-      (format #t " Hashtables tests...~%")
+      
       (test/alts (cons kv vv)
                  '(#(1 2 3)  . #(one two three))
                  '(#(1 3 2)  . #(one three two))
@@ -112,7 +109,7 @@
                  '(#(2 3 1)  . #(two three one))
                  '(#(3 1 2)  . #(three one two))
                  '(#(3 2 1)  . #(three two one))))
-    (format #t "  ...done.~%")
+   
     
     (test-ht (make-eq-hashtable) eq?
              (['a 7] ['b "bee"]
@@ -121,7 +118,7 @@
              'b "bee" "bumble"
              'd 12
              'c)
-    (format #t "bee bumble done.~%")
+   
     
     (test-ht (make-eqv-hashtable) eqv?
              (['a 7] [#\b "bee"]
