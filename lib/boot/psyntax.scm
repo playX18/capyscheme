@@ -2,6 +2,7 @@
 (define syntax->datum #f)
 (define datum->syntax #f)
 (define identifier? #f)
+(define generate-identifier #f)
 (define generate-temporaries #f)
 (define free-identifier=? #f)
 (define bound-identifier=? #f)
@@ -1079,6 +1080,8 @@
                             [(eq? ftype 'local-syntax) (values 'local-syntax-form fval e e w s mod)]
                             [(eq? ftype 'begin) (values 'begin-form #f e e w s mod)]
                             [(eq? ftype 'eval-when) (values 'eval-when-form #f e e w s mod)]
+                            [(eq? ftype 'define-property)
+                              (values 'define-property-form #f e e w s mod)]
                             [(eq? ftype 'define-syntax)
                               (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
                                 (if (and tmp (apply (lambda (name val) (id? name)) tmp))
@@ -1246,8 +1249,8 @@
                                      (syntax-violation #f "sequence of zero expressions" (source-wrap e w s mod)))
                                    tmp-1)
                             (syntax-violation #f "source expression failed to match any pattern" tmp)))))]
-            [(or (eq? type 'define-form) (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
-                (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
+            [(memq type '(define-form define-syntax-form define-syntax-parameter-form define-property-form))
+              (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
             [(eq? type 'local-syntax-form)
               (expand-local-syntax value e r w s mod expand-sequence)]
             [(eq? type 'syntax)
@@ -1260,6 +1263,16 @@
           (if tmp
               (apply (lambda (e0 e1) (build-call s x (map (lambda (e) (expand e r w mod)) e1))) tmp)
               (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
+
+    (define (parse-define-property e w s mod)
+      (define tmp ($sc-dispatch e '(_ any any any)))
+      (if tmp 
+        (apply (lambda (name prop val)
+                  (unless (and (id? name) (id? prop))
+                    (syntax-violation #f "bad syntax" (source-wrap e w s mod)))
+                  (values name prop expr w)
+               tmp)
+        (syntax-violation #f "bad syntax" (source-wrap e w s mod)))))
 
     (define (expand-body body outer-form r w mod)
 
@@ -1309,6 +1322,7 @@
                                 (lambda () (syntax-type e er empty-wrap (source-annotation e) ribcage mod #f))
                                 (lambda (type value form e w s mod)
                                     (cond
+                                   
                                     [(eq? type 'define-form)
                                          (let ((id (wrap value w mod)) (label (gen-label)))
                                        (let ((var (gen-var id)))
@@ -1986,9 +2000,11 @@
                 [(not source) (props->sourcev (source-properties datum))]
                 [(and (alist? source)) (props->sourcev source)]
                 [(and (vector? source) (= (vector-length source) 3)) source]
-                [else (syntax-sourcev source)])))
+                [else (if (not (vector? (syntax-sourcev source)))
+                  (assertion-violation 'datum->syntax "invalid source vector" for datum)
+                ) (syntax-sourcev source)])))
         (cond 
-          [(syntax? datum) (wrap datum)]
+          [(syntax? datum) datum]
           [else (wrap datum)])))
 
     (set! free-identifier=? (lambda (x y)
@@ -2003,6 +2019,13 @@
         (if (not (nonsymbol-id? y))
             (assertion-violation 'bound-identifier=? "Expected syntax identifier" y))
         (bound-id=? x y)))
+
+    (set! generate-identifier 
+      (lambda args 
+        (define sym (if (null? args) 'tmp (car args)))
+        (unless (symbol? sym)
+          (error 'generate-identifier "Expected symbol" sym))
+        (wrap (gen-var sym) top-wrap (cons 'hygiene (module-name (current-module))))))
 
     (set! generate-temporaries
           (lambda (ls)
@@ -2252,6 +2275,7 @@
     (global-extend 'core 'syntax expand-syntax)
     (global-extend 'define-syntax 'define-syntax '())
     (global-extend 'define-syntax-parameter 'define-syntax-parameter '())
+    (global-extend 'define-property 'define-property '())
     (global-extend 'module-ref '@ expand-public-ref)
     (global-extend 'module-ref '@@ expand-private-ref)
     
@@ -2291,7 +2315,6 @@
                 (make-syntax #f top-wrap '(hygiene capy))))))
     
     )
-
 
 (define with-syntax
   (let ((make-syntax make-syntax))
