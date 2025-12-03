@@ -88,6 +88,11 @@ pub mod syntax_ops {
         properties: Option<Value<'gc>>,
     ) -> Value<'gc> {
         let source = source.unwrap_or_else(|| datum_sourcev(nctx.ctx, exp));
+        let source = if source.is_pair() {
+            props_to_sourcev(nctx.ctx, source)
+        } else {
+            source
+        };
         let properties = properties.unwrap_or(Value::null());
 
         let syntax = Syntax::new(nctx.ctx, exp, wrap, module, source, properties);

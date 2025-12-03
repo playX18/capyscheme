@@ -5,15 +5,6 @@
 //! in order to make them callable from compiled code.
 
 #![allow(dead_code, unused_variables)]
-use crate::rsgc::{
-    Gc, ObjectSlot,
-    alloc::Array,
-    mmtk::{
-        AllocationSemantics, MutatorContext,
-        util::{Address, ObjectReference},
-    },
-    object::{VTable, VTableOf},
-};
 use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
@@ -37,6 +28,18 @@ use crate::{
             debug::{self, print_stacktraces_impl},
         },
     },
+};
+use crate::{
+    rsgc::{
+        Gc, ObjectSlot,
+        alloc::Array,
+        mmtk::{
+            AllocationSemantics, MutatorContext,
+            util::{Address, ObjectReference},
+        },
+        object::{VTable, VTableOf},
+    },
+    runtime::vm::syntax::props_to_sourcev,
 };
 use cranelift_codegen::ir::InstBuilder;
 use std::{alloc::Layout, cmp::Ordering};
@@ -3927,6 +3930,11 @@ thunks! {
         source: Value<'gc>,
         properties: Value<'gc>
     ) -> Value<'gc> {
+        let source = if source.is_pair() {
+            props_to_sourcev(ctx, source)
+        } else {
+            source
+        };
         Syntax::new(ctx, exp, wrap, module, source, properties).into()
     }
 }
