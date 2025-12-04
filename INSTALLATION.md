@@ -12,7 +12,7 @@ $ just install-portable
 
 Or if you want different installation prefix:
 ```sh
-$ just prefix=/usr/local/share install-portable 
+$ just install-prefix=/usr/local/share install-portable 
 
 ```
 
