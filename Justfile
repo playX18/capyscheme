@@ -8,7 +8,7 @@ target-path := if profile == "release" {
     target-dir/'debug'
 }
 cc := 'clang'
-install-prefix := '~/.local'
+install-prefix := '~/.local/share'
 version := `cargo info capy | awk '/^version:/ {print $2}' | head -n 1`
 cross := "false"
 
@@ -52,27 +52,27 @@ build portable:
 
 # Perform portable installation of CapyScheme which installs the binary
 # and all necessary resources to the specified install prefix
-# by default, it installs to ~/.local/share/capy
+# by default, it installs to ~/.local/capy
 install-portable: (build "true")
-    @echo 'Installing CapyScheme to {{install-prefix}}/share/capy/{{version}}'
-    @-mkdir -p {{install-prefix}}/share/capy/{{version}}
-    @-mkdir -p {{install-prefix}}/share/capy/{{version}}/extensions
-    rsync --checksum -r lib {{install-prefix}}/share/capy/{{version}}
-    cp 'bin/capy' {{install-prefix}}/share/capy/{{version}}/
-    ln -sf {{install-prefix}}/share/capy/{{version}}/capy {{install-prefix}}/share/capy/{{version}}/capy-{{version}}
-    cp {{target-path}}/libcapy.* {{install-prefix}}/share/capy/{{version}}/
-    #cp capy.heap {{install-prefix}}/share/capy/{{version}}/
+    @echo 'Installing CapyScheme to {{install-prefix}}/capy/{{version}}'
+    @-mkdir -p {{install-prefix}}/capy/{{version}}
+    @-mkdir -p {{install-prefix}}/capy/{{version}}/extensions
+    rsync --checksum -r lib {{install-prefix}}/capy/{{version}}
+    cp 'bin/capy' {{install-prefix}}/capy/{{version}}/
+    ln -sf {{install-prefix}}/capy/{{version}}/capy {{install-prefix}}/capy/{{version}}/capy-{{version}}
+    cp {{target-path}}/libcapy.* {{install-prefix}}/capy/{{version}}/
+    #cp capy.heap {{install-prefix}}/capy/{{version}}/
     #rm capy.heap
     rm bin/capy
 
 
 
-    @echo "CapyScheme installed to {{install-prefix}}/share/capy/{{version}}"
-    @echo "Add {{install-prefix}}/share/capy/{{version}} to your PATH to use CapyScheme"
+    @echo "CapyScheme installed to {{install-prefix}}/capy/{{version}}"
+    @echo "Add {{install-prefix}}/capy/{{version}} to your PATH to use CapyScheme"
 
 install-scm:
-    @-mkdir -p {{install-prefix}}/share/capy/{{version}}
-    rsync --checksum -r lib {{install-prefix}}/share/capy/{{version}}
+    @-mkdir -p {{install-prefix}}/capy/{{version}}
+    rsync --checksum -r lib {{install-prefix}}/capy/{{version}}
 
 
 tar: (build "true")
