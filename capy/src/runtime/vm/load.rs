@@ -216,7 +216,7 @@ pub fn find_path_to<'gc>(
         }
         let paths = ctx.globals().loc_load_path().get();
 
-        for name in candidates {
+        'outer: for name in candidates {
             if let Some(dir) = dir.as_ref() {
                 let candidate = dir.join(&name);
 
@@ -236,7 +236,7 @@ pub fn find_path_to<'gc>(
                 if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
                 {
                     source_path = Some(candidate);
-                    break;
+                    break 'outer;
                 }
                 paths = paths.cdr();
             }
