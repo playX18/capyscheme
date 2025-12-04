@@ -2004,7 +2004,7 @@
                   (assertion-violation 'datum->syntax "invalid source vector" for datum)
                 ) (syntax-sourcev source)])))
         (cond 
-          [(syntax? datum) datum]
+          [(syntax? datum) (wrap datum)]
           [else (wrap datum)])))
 
     (set! free-identifier=? (lambda (x y)
