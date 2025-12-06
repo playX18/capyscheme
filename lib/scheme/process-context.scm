@@ -8,6 +8,8 @@
           get-environment-variables
           emergency-exit)
   (begin
+    (define (command-line)
+      ((@@ (capy) program-arguments)))
     (define get-environment-variable getenv)
     (define get-environment-variables process-environment->alist)
     (define emergency-exit core:exit)

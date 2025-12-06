@@ -761,6 +761,8 @@
                  
                  (import ispec)
                  ...
+                 ;; (capy prelims) exports "plain" #%app form which must be imported
+                 ;; by any library in order to correctly run code. 
                  (import (capy prelims))
                  (export e ...)
                  (re-export r ...)
@@ -921,7 +923,7 @@
                                         (let () c ... (do step ...))))))))))))
   
 ;; Implements `receive` syntax by translating to `call-with-values`.
-;; Compiler will later on eliminate `call-with-values` to `receive`.
+;; Compiler will later on eliminate `call-with-values` to `receive` IR form.
 (define-syntax receive
   (syntax-rules ()
     ((receive formals expression body ...)
@@ -938,6 +940,10 @@
      (if test #f (begin body ...)))))
 
 (eval-when (expand load eval)
+
+;; TODO: Make this a proper implementation: right now basically expects `stx` object
+;; to have valid source property which is not always the case. Maybe add `include` directly
+;; to psyntax?
 (define call-with-include-port 
   (let ([syntax-dirname
     (lambda (stx)
@@ -1337,6 +1343,7 @@
 
 (define-syntax with-mutex 
   (syntax-rules ()
+    "Run code inside this macro while acquiring the given mutex."
     [(_ mutex body body* ...)
       (let ([mtx mutex])
         (dynamic-wind 

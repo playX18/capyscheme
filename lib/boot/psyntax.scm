@@ -1231,24 +1231,17 @@
             [(eq? type 'global) (build-global-reference s value mod)]
             [(eq? type 'constant) (make-constant s (strip e))]
             [(eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod)]
-            [(eq? type 'eval-when-form)
-              (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
-                      (if tmp
-                          (apply (lambda (x e1 e2)
-                                   (let ((when-list (parse-when-list e x)))
-                                     (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
-                                 tmp)
-                          (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
+            [(eq? type 'eval-when-form) 
+              (define stx (match-syntax e '(_ (x :::+) es :::+)))
+              (define when-list (parse-when-list (stx 'x)))
+              (define es (stx 'es))
+              (if (memq 'eval when-list)
+                (expand-sequence es r w s mod)
+                (expand-void))]
             [(eq? type 'begin-form)
-                (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any . each-any))))
-                  (if tmp-1
-                      (apply (lambda (e1 e2) (expand-sequence (cons e1 e2) r w s mod)) tmp-1)
-                      (let ((tmp-1 ($sc-dispatch tmp '(_))))
-                        (if tmp-1
-                            (apply (lambda ()
-                                     (syntax-violation #f "sequence of zero expressions" (source-wrap e w s mod)))
-                                   tmp-1)
-                            (syntax-violation #f "source expression failed to match any pattern" tmp)))))]
+                (define stx (match-syntax e '(_ es :::+)))
+                (define es (stx 'es))
+                (expand-sequence es r w s mod)]
             [(memq type '(define-form define-syntax-form define-syntax-parameter-form define-property-form))
               (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
             [(eq? type 'local-syntax-form)
@@ -1322,60 +1315,63 @@
                                 (lambda () (syntax-type e er empty-wrap (source-annotation e) ribcage mod #f))
                                 (lambda (type value form e w s mod)
                                     (cond
-                                   
                                     [(eq? type 'define-form)
-                                         (let ((id (wrap value w mod)) (label (gen-label)))
-                                       (let ((var (gen-var id)))
-                                         (extend-ribcage! ribcage id label)
-                                         (parse body
-                                                (cons id ids)
-                                                (cons label labels)
-                                                (cons id var-ids)
-                                                (cons var vars)
-                                                (cons (let ((wrapped (source-wrap e w s mod)))
-                                                        (lambda () (expand wrapped er empty-wrap mod)))
-                                                      vals)
-                                                (cons (cons 'lexical var) bindings)
-                                                #f)))]
+                                      (define id (wrap value w mod))
+                                      (define label (gen-label))
+                                      (define var (gen-var id))
+                                        
+                                      (extend-ribcage! ribcage id label)
+                                      (parse body
+                                            (cons id ids)
+                                            (cons label labels)
+                                            (cons id var-ids)
+                                            (cons var vars)
+                                            (cons (let ((wrapped (source-wrap e w s mod)))
+                                                    (lambda () (expand wrapped er empty-wrap mod)))
+                                                  vals)
+                                            (cons (cons 'lexical var) bindings)
+                                            #f)]
                                     [(eq? type 'begin-form)
-                                        (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ . each-any))))
-                                          (if tmp
-                                              (apply (lambda (e1)
-                                                       (parse (let f ((forms e1))
-                                                                (if (null? forms)
-                                                                    body
-                                                                    (cons (cons er (wrap (car forms) w mod))
-                                                                          (f (cdr forms)))))
-                                                              ids
-                                                              labels
-                                                              var-ids
-                                                              vars
-                                                              vals
-                                                              bindings
-                                                              #f))
-                                                     tmp)
-                                              (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
+                                      (define stx (match-syntax e '(_ . es)))
+                                      (define e1 (stx 'es))
+                                      (parse (let f ((forms e1))
+                                              (if (null? forms)
+                                                  body
+                                                  (cons (cons er (wrap (car forms) w mod))
+                                                        (f (cdr forms)))))
+                                            ids
+                                            labels
+                                            var-ids
+                                            vars
+                                            vals
+                                            bindings
+                                            #f)]
                                     [(eq? type 'define-syntax-form)
-                                      (let ((id (wrap value w mod)) (label (gen-label)) (trans-r (macros-only-env er)))
-                                       (extend-ribcage! ribcage id label)
-                                       (set-cdr!
+                                      (define id (wrap value w mod))
+                                      (define label (gen-label))
+                                      (define trans-r (macros-only-env er))
+                                      (extend-ribcage! ribcage id label)
+                                      (set-cdr!
                                         r
                                         (extend-env
-                                         (list label)
-                                         (list (cons 'macro (cons (eval-local-transformer (expand e trans-r w mod) mod) id)))
-                                         (cdr r)))
-                                       (parse body (cons id ids) labels var-ids vars vals bindings #f))]
-                                    [(eq? type 'define-syntax-parameter-form) 
-                                      (let ((id (wrap value w mod)) (label (gen-label)) (trans-r (macros-only-env er)))
-                                        (extend-ribcage! ribcage id label)
-                                        (set-cdr!
-                                          r
-                                          (extend-env
                                           (list label)
-                                          (list (cons 'syntax-parameter
-                                                      (eval-local-transformer (expand e trans-r w mod) mod)))
+                                          (list (cons 'macro (cons (eval-local-transformer (expand e trans-r w mod) mod) id)))
                                           (cdr r)))
-                                        (parse body (cons id ids) labels var-ids vars vals bindings #f))]
+                                      (parse body (cons id ids) labels var-ids vars vals bindings #f)]
+                                    [(eq? type 'define-syntax-parameter-form) 
+                                      (define id (wrap value w mod))
+                                      (define label (gen-label))
+                                      (define trans-r (macros-only-env er))
+                                     
+                                      (extend-ribcage! ribcage id label)
+                                      (set-cdr!
+                                        r
+                                        (extend-env
+                                        (list label)
+                                        (list (cons 'syntax-parameter
+                                                    (eval-local-transformer (expand e trans-r w mod) mod)))
+                                        (cdr r)))
+                                      (parse body (cons id ids) labels var-ids vars vals bindings #f)]
                                     [(eq? type 'local-syntax-form)
                                       (expand-local-syntax
                                         value
@@ -1397,11 +1393,10 @@
                                                 bindings
                                                 #f)))]
                                     [else
-                                        (let ([wrapped (source-wrap e w s mod)])
-                                            (parse body ids labels var-ids vars vals bindings
-                                                (lambda ()
-
-                                                    (expand wrapped er empty-wrap mod))))])))]))))
+                                      (let ([wrapped (source-wrap e w s mod)])
+                                          (parse body ids labels var-ids vars vals bindings
+                                              (lambda ()
+                                                  (expand wrapped er empty-wrap mod))))])))]))))
     (define (gen-var id)
         (let ([id (if (syntax? id) (syntax-expression id) id)])
             (gen-lexical id)))

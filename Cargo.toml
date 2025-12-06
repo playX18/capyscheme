@@ -54,7 +54,7 @@ incremental = true
 rpath = true
 debug = true
 debug-assertions = false
-lto = "fat"
+lto = false
 panic = "abort"
 opt-level = 3
 

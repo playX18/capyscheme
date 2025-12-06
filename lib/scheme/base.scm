@@ -75,7 +75,6 @@
           define
           define-record-type
           define-syntax
-          define-values
           denominator
           do
           dynamic-wind
@@ -384,7 +383,6 @@
 
     (define error
       (lambda (message . irritants)
-        (format #t "RAISE ERROR: message=~a, irritants=~a~%" message irritants)
         (apply r6rs:error #f message irritants)))
 
     (define error-object?
@@ -428,25 +426,7 @@
                 (else
                  (set-car! lst obj))))))
 
-    (define open-input-bytevector
-      (lambda (bv)
-        (open-bytevector-input-port bv)))
 
-    (define open-input-string
-      (lambda (str)
-        (open-string-input-port str)))
-
-    (define open-output-bytevector
-      (lambda ()
-        (call-with-values
-         open-bytevector-output-port
-         (lambda (port proc) port))))
-
-    (define open-output-string
-      (lambda ()
-        (call-with-values
-         open-string-output-port
-         (lambda (port proc) port))))
 
     (define output-port-open?
       (lambda (port)
