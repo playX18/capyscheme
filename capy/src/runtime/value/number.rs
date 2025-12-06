@@ -851,7 +851,7 @@ impl<'gc> BigInt<'gc> {
 
         // Use Karatsuba for larger numbers, simple multiplication for smaller ones
         const KARATSUBA_THRESHOLD: usize = 32;
-        if this.count().min(rhs.count()) >= KARATSUBA_THRESHOLD {
+        if false && this.count().min(rhs.count()) >= KARATSUBA_THRESHOLD {
             Self::mul_karatsuba(lhs, rhs, ctx)
         } else {
             Self::mul_simple(lhs, rhs, ctx)
