@@ -227,6 +227,6 @@
           imag-part
           inexact?
           integer->char
-          interaction-environment
+          ;interaction-environment
           lcm
           let))

@@ -66,7 +66,7 @@
         when unless
         logior logand logxor lognot
         current-jiffy jiffies-per-second current-second
-        library define-library define define-syntax #%app
+        library define-library define define-values define-syntax #%app
                          quote lambda if set!
                          cond case and or
                          let let* letrec letrec* let-values let*-values
@@ -425,6 +425,15 @@
                         transcoded-port
                         error-handling-mode
                         io/mkstemp
+                        open-output-string
+                        open-input-string
+                        get-output-string
+                        reset-output-string
+                        open-input-bytevector
+                        open-output-bytevector
+                        open-input/output-bytevector
+                        get-output-bytevector
+                        reset-output-bytevector
                         open-binary-fd-output-port
                         open-binary-fd-input-port
                         open-file-input/output-port
@@ -735,8 +744,7 @@
                         enum-set-complement
                         enum-set-projection
 
-                        @@ @ with-ellipsis
-                        )
+                        @@ @ with-ellipsis)
     (import (capy)))
 
 

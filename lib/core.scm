@@ -258,6 +258,9 @@
     decode-flonum
     decode-microsecond
     define
+    define-values
+    let-values
+    let*-values
     define-condition-type
     define-enumeration
     define-library
@@ -651,6 +654,15 @@
     numerator
     odd?
     opaque
+    open-output-string
+    open-input-string
+    get-output-string
+    reset-output-string
+    open-input-bytevector
+    open-output-bytevector
+    open-input/output-bytevector
+    get-output-bytevector
+    reset-output-bytevector
     open-bytevector-input-port
     open-bytevector-output-port
     open-file-input-port

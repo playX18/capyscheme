@@ -80,6 +80,7 @@
 (define (string-output-port? port)
   (and (output-port? port)
        (let ((d (tuple-ref port port.iodata)))
+        
          (and (vector? d)
               (> (vector-length d) 0)
               (eq? (vector-ref d 0) 'string-output-port)))))
