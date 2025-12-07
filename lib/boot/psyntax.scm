@@ -1232,16 +1232,52 @@
             [(eq? type 'constant) (make-constant s (strip e))]
             [(eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod)]
             [(eq? type 'eval-when-form) 
-              (define stx (match-syntax e '(_ (x :::+) es :::+)))
-              (define when-list (parse-when-list (stx 'x)))
-              (define es (stx 'es))
-              (if (memq 'eval when-list)
-                (expand-sequence es r w s mod)
-                (expand-void))]
+            (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
+
+
+                      (if tmp
+
+
+                          (apply (lambda (x e1 e2)
+
+
+                                   (let ((when-list (parse-when-list e x)))
+
+
+                                     (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
+
+
+                                 tmp)
+
+
+                          (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
             [(eq? type 'begin-form)
-                (define stx (match-syntax e '(_ es :::+)))
-                (define es (stx 'es))
-                (expand-sequence es r w s mod)]
+                (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any . each-any))))
+
+
+
+                  (if tmp-1
+
+
+                      (apply (lambda (e1 e2) (expand-sequence (cons e1 e2) r w s mod)) tmp-1)
+
+
+                      (let ((tmp-1 ($sc-dispatch tmp '(_))))
+
+
+                        (if tmp-1
+
+
+                            (apply (lambda ()
+
+
+                                     (syntax-violation #f "sequence of zero expressions" (source-wrap e w s mod)))
+
+
+                                   tmp-1)
+
+
+                            (syntax-violation #f "source expression failed to match any pattern" tmp)))))]
             [(memq type '(define-form define-syntax-form define-syntax-parameter-form define-property-form))
               (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod))]
             [(eq? type 'local-syntax-form)
@@ -1332,20 +1368,23 @@
                                             (cons (cons 'lexical var) bindings)
                                             #f)]
                                     [(eq? type 'begin-form)
-                                      (define stx (match-syntax e '(_ . es)))
-                                      (define e1 (stx 'es))
-                                      (parse (let f ((forms e1))
-                                              (if (null? forms)
-                                                  body
-                                                  (cons (cons er (wrap (car forms) w mod))
-                                                        (f (cdr forms)))))
-                                            ids
-                                            labels
-                                            var-ids
-                                            vars
-                                            vals
-                                            bindings
-                                            #f)]
+                                      (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ . each-any))))
+                                          (if tmp
+                                              (apply (lambda (e1)
+                                                       (parse (let f ((forms e1))
+                                                                (if (null? forms)
+                                                                    body
+                                                                    (cons (cons er (wrap (car forms) w mod))
+                                                                          (f (cdr forms)))))
+                                                              ids
+                                                              labels
+                                                              var-ids
+                                                              vars
+                                                              vals
+                                                              bindings
+                                                              #f))
+                                                     tmp)
+                                              (syntax-violation #f "source expression failed to match any pattern" tmp-1)))]
                                     [(eq? type 'define-syntax-form)
                                       (define id (wrap value w mod))
                                       (define label (gen-label))
@@ -1996,8 +2035,8 @@
                 [(and (alist? source)) (props->sourcev source)]
                 [(and (vector? source) (= (vector-length source) 3)) source]
                 [else (if (not (vector? (syntax-sourcev source)))
-                  (assertion-violation 'datum->syntax "invalid source vector" for datum)
-                ) (syntax-sourcev source)])))
+                  (assertion-violation 'datum->syntax "invalid source vector" for datum))
+                  (syntax-sourcev source)])))
         (cond 
           [(syntax? datum) (wrap datum)]
           [else (wrap datum)])))
