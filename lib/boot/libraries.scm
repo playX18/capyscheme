@@ -2,7 +2,7 @@
 
 (library (core intrinsics)
    (export               
-                         library define-library define define-syntax
+                         library define-library define define-syntax define-syntax-rule
                          quote lambda if set!
                          cond case and or
                          let let* letrec letrec* let-values let*-values
@@ -66,7 +66,8 @@
         when unless
         logior logand logxor lognot
         current-jiffy jiffies-per-second current-second
-        library define-library define define-values define-syntax #%app
+        library define-library define define-values define-syntax
+                         define-syntax-rule #%app
                          quote lambda if set!
                          cond case and or
                          let let* letrec letrec* let-values let*-values

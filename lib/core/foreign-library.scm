@@ -6,13 +6,14 @@
         foreign-library-function
         foreign-library-handle
         ->foreign-library)
-    (import (core primitives)
+    (import (capy)
+            (core primitives)
             (core foreign)
             (core records)
             (core optargs)
             (core files)
             (core match)
-            (capy))
+            )
 
     (define-record-type 
         (<foreign-library> make-foreign-library foreign-library?)

@@ -42,8 +42,7 @@
         errno
         ioctl/pointer
         dll-suffix)
-    (import (core control) (core primitives) (core match)
-      (capy))
+    (import (core control) (core primitives) (core match) (capy))
   (eval-when (expand load eval)
     (define void %void)
     (define float %float)
