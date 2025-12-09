@@ -1,14 +1,9 @@
 use std::{
     collections::{BTreeMap, VecDeque},
+    marker::PhantomData,
     sync::{Arc, LazyLock, Mutex},
 };
 
-use crate::rsgc::{
-    Trace,
-    finalizer::FinalizerQueue,
-    mmtk::util::{Address, ObjectReference},
-    object::GCObject,
-};
 use crate::{
     global,
     prelude::*,
@@ -19,6 +14,15 @@ use crate::{
         vmthread::{VM_THREAD, VMThreadTask},
     },
     static_symbols,
+};
+use crate::{
+    rsgc::{
+        Trace,
+        finalizer::FinalizerQueue,
+        mmtk::util::{Address, ObjectReference},
+        object::GCObject,
+    },
+    runtime::BlockingOperation,
 };
 use libffi::{
     low::{type_tag, types},
@@ -422,9 +426,11 @@ pub mod ffi_ops {
         func_ptr: Gc<'gc, Pointer>,
         arg_types: Value<'gc>,
         variadic: Option<bool>,
+        blocking: Option<bool>,
     ) -> Value<'gc> {
         let variadic = variadic.unwrap_or(false);
-        let cif = match make_cif(nctx.ctx, return_type, arg_types, variadic) {
+        let blocking = blocking.unwrap_or(true); // default to true: we can't risk CIF blocking mutator thread
+        let cif = match make_cif(nctx.ctx, return_type, arg_types, variadic, blocking) {
             Ok(cif) => cif,
             Err(e) => return nctx.conversion_error("pointer->procedure", e),
         };
@@ -450,8 +456,8 @@ pub mod ffi_ops {
 
     #[scheme(name = "errno")]
     pub fn errno() -> i32 {
-        //let err = unsafe { *libc::__error() };
-        nctx.return_(0)
+        let err = ::errno::errno();
+        nctx.return_(err.0)
     }
 }
 
@@ -697,6 +703,12 @@ pub struct CIF<'gc> {
     pub(crate) cif: libffi::middle::Cif,
     pub(crate) nargs: u32,
     pub(crate) variadic: bool,
+    /// Is this CIF blocking? If so we use slightly slower
+    /// calling convention where we first yield to native and then perform a call.
+    ///
+    /// Anything that can block the mutator thread should be marked as blocking. Example:
+    /// - `epoll`, `poll`, `read` etc can block
+    pub(crate) blocking: bool,
     pub(crate) args: Value<'gc>,
     pub(crate) return_type: Value<'gc>,
 }
@@ -723,6 +735,7 @@ pub(crate) fn make_cif_at<'gc>(
     arg_types: Value<'gc>,
     return_type: Value<'gc>,
     variadic: bool,
+    blocking: bool,
 ) -> Result<(), ConversionError<'gc>> {
     if !arg_types.is_list() {
         return Err(ConversionError::type_mismatch(1, "list", arg_types));
@@ -761,6 +774,7 @@ pub(crate) fn make_cif_at<'gc>(
         cif,
         nargs: arg_types.list_length() as u32,
         variadic,
+        blocking,
         args: arg_types,
         return_type,
     };
@@ -777,6 +791,7 @@ fn make_cif<'gc>(
     return_type: Value<'gc>,
     arg_types: Value<'gc>,
     variadic: bool,
+    blocking: bool,
 ) -> Result<Gc<'gc, CIF<'gc>>, ConversionError<'gc>> {
     if !arg_types.is_list() {
         return Err(ConversionError::type_mismatch(1, "list", arg_types));
@@ -813,6 +828,7 @@ fn make_cif<'gc>(
     let cif = CIF {
         header: ScmHeader::with_type_bits(TypeCode8::CIF.bits() as _),
         cif,
+        blocking,
         nargs: arg_types.list_length() as u32,
         variadic,
         args: arg_types,
@@ -833,7 +849,7 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
     let cif = cif.downcast::<CIF>();
     let pointer = pointer.downcast::<Pointer>().value();
 
-    let mut args: TinyVec<[usize; 16]> = TinyVec::with_capacity(cif.nargs as usize);
+    let mut args: Vec<usize> = Vec::with_capacity(cif.nargs as usize);
     let mut arg_size = 0;
 
     unsafe {
@@ -859,7 +875,7 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
         arg_size +=
             (*(*raw).rtype).size + size_of::<usize>().max((*(*raw).rtype).alignment as usize);
 
-        let mut data = TinyVec::<[u8; 128]>::with_capacity(arg_size);
+        let mut data = Vec::<u8>::with_capacity(arg_size);
         let data_ptr = data.as_mut_ptr();
         let mut off = 0;
         for i in 0..cif.nargs as usize {
@@ -904,6 +920,10 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
                 }
                 off = args.last().copied().unwrap() - data_ptr as usize + (*ftype).size;
             }
+        }
+
+        if cif.blocking {
+            // Blocking call: yield to native and perform call there
         }
 
         let rvalue = round_up(

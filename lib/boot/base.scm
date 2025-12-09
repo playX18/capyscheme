@@ -420,7 +420,6 @@
 (define (resolve-r6rs-interface import-spec)
   (define (sym? stx)
     (symbol? (syntax->datum stx)))
-
   (define (n? stx)
     (let ((n (syntax->datum stx)))
       (and (exact-integer? n)
@@ -1152,20 +1151,33 @@
     r7rs
     exact-closed ieee-float full-unicode ratios ;; R7RS features.
     srfi-0   ;; cond-expand itself
-    srfi-4   ;; homogeneous numeric vectors
     srfi-6   ;; string ports
+    srfi-8   ;; `receive` syntax
+    srfi-9   ;; define-record-type
+    srfi-11  ;; Syntax for receiving multiple values
     srfi-13  ;; string library
     srfi-14  ;; character sets
     srfi-16  ;; case-lambda
     srfi-23  ;; `error` procedure
+    srfi-24  ;; define-syntax in local lexical scope
+    srfi-28  ;; basic format strings
     srfi-30  ;; nested multi-line comments
+    srfi-34  ;; exception handling for programs
+    srfi-36  ;; I/O conditions
     srfi-39  ;; parameterize
     srfi-46  ;; basic syntax-rules extensions
+    srfi-48  ;; Intermediate format strings 
     srfi-55  ;; require-extension
     srfi-61  ;; general cond clause
     srfi-62  ;; s-expression comments
+    srfi-64  ;; A Scheme API for test suites
     srfi-87  ;; => in case clauses
     srfi-105 ;; curly infix expressions
+    srfi-124 ;; ephemerons
+    srfi-157 ;; Continuation marks
+    srfi-180 ;; JSON
+    ; srfi-226 ;; Control features (TODO: BROKEN!)
+    srfi-259 ;; Tagged procedures with type safety
     ))
 
 (set! %cond-expand-features 
@@ -1229,6 +1241,22 @@
          (lambda ()
            (syntax-violation 'cond-expand "unfulfilled cond-expand" x)))))))
 
+(define-syntax require-extension
+  (lambda (x)
+    (syntax-case x (srfi)
+      ((_ (srfi n ...))
+       (and-map integer? (syntax->datum #'(n ...)))
+       (with-syntax
+           (((srfi-n ...)
+             (map (lambda (n)
+                    (datum->syntax x (symbol-append 'srfi- n)))
+                  (map string->symbol
+                       (map number->string (syntax->datum #'(n ...)))))))
+         #'(import (srfi srfi-n) ...)))
+      ((_ (type arg ...))
+       (identifier? #'type)
+       (syntax-violation 'require-extension "Not a recognized extension type"
+                         x)))))
 
 (define-syntax define-library 
   (lambda (stx)

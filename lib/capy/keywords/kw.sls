@@ -356,7 +356,7 @@
                                                 (map (lambda (opt-expr)
                                                         (if (immediate-default? opt-expr)
                                                             opt-expr
-                                                            #'(@@ (capy) (unspecified))))
+                                                            #'((@@ (capy) unspecified))))
                                                     opt-exprs))]
                             [opt-not-supplieds (get-not-supplieds (syntax->list #'(pos-opt-expr ...)))]
                             [kw-not-supplieds (get-not-supplieds (syntax->list #'(kw-opt-expr ...)))]
@@ -563,7 +563,7 @@
                 [convert-default-expr 
                   (lambda (e)
                     (if (eq? e '(unspecified))
-                      '(@@ (capy) (unspecified))
+                      '((@@ (capy) unspecified))
                       (datum->syntax #'here e)))])
             (if (free-identifier=? #'new-app (datum->syntax stx '|#%app|))
               (parse-app 
