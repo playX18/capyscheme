@@ -19,7 +19,8 @@
                 &i/o-port make-i/o-port-error i/o-port-error? i/o-error-port)
         (import (core primitives)
                 (core lists)
-                (core optargs))
+                (core optargs)
+                (only (capy) string-prefix?))
 
 
 (define (file-name-separator? c)
