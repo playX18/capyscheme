@@ -21,13 +21,14 @@
       (let ((sum (+ a b)))
         (bitwise-and sum #xffffffffffffffff)))
 
+    ;; splitmix64 prng: used to seed xoshiro256
     (define (%split-mix-next state)
       (let ([state (fx64/wrapping+ state #x9e3779b97f4a7c15)])
         (let* ([z (bitwise-xor state (bitwise-arithmetic-shift-right state 30))]
-              [z (* z #xbf58476d1ce4e5b9)]
-              [z (bitwise-xor z (bitwise-arithmetic-shift-right z 27))]
-              [z (* z #x94d049bb133111eb)]
-              [result (bitwise-xor z (bitwise-arithmetic-shift-right z 31))])
+               [z (* z #xbf58476d1ce4e5b9)]
+               [z (bitwise-xor z (bitwise-arithmetic-shift-right z 27))]
+               [z (* z #x94d049bb133111eb)]
+               [result (bitwise-xor z (bitwise-arithmetic-shift-right z 31))])
           (values result state))))
 
     (define-record-type <split-mix> 
@@ -43,6 +44,8 @@
           result)))
 
 
+    ;; xoshiro256** prng. 
+    ;; Seeded by split-mix64 
     (define (make-xoshiro256 smix)
       (define s0 (split-mix-next smix))
       (define s1 (split-mix-next smix))
@@ -56,6 +59,7 @@
                                 (bitwise-arithmetic-shift-right x (- 64 k)))
                     #xffffffffffffffff))
 
+    ;; Output next random 64-bit integer and update state
     (define (xoshiro256-next state)
       (let* ((s0 (tuple-ref state 1))
             (s1 (tuple-ref state 2))
@@ -75,14 +79,18 @@
           (tuple-set! state 4 s3)
           result)))
 
-    (define (make-random-source)
-      (make-xoshiro256 (make-split-mix (microsecond))))
+    (define (make-random-source . seed?)
+      "Initialize a new xoshiro256 random source seeded from (microsecond) or optionally user provided seed"
+      (define seed (if (null? seed?) (microsecond) (car seed?)))
+      (make-xoshiro256 (make-split-mix seed)))
     
     (define (random-source? x)
       (and (tuple? x)
            (eq? (tuple-ref x 0) 'type:xoshiro256)))
       
     (define (random-source-state-ref rs)
+      "Return the internal state of the random source as a single integer.
+      The state is represented as a 256-bit integer formed by concatenating the four 64-bit state words."
       (unless (random-source? rs)
         (error "random-source-state-ref: not a random source" rs))
       (bitwise-ior (tuple-ref rs 1) (bitwise-arithmetic-shift-left (tuple-ref rs 2) 64)
@@ -154,6 +162,7 @@
         rnd-real)))
   (define (random-source-make-integers s) (make-integer-rng s))
   (define (random-source-make-reals s . unit) (make-real-rng s))
-  (define default-random-source (make-random-source))
+  (define default-random-source (make-random-source 42))
   (define random-integer (random-source-make-integers default-random-source))
-  (define random-real (random-source-make-reals default-random-source))))
+  (define random-real (random-source-make-reals default-random-source))
+))
