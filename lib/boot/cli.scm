@@ -148,6 +148,7 @@
                     (exit 0))
                 (set! entrypoint (arg-results-ref res "entrypoint"))
                 (set! %load-path (append (reverse (arg-results-ref res "load-path")) %load-path))
+                (set! %load-path (append %load-path (reverse (arg-results-ref res "append-load-path"))))
                 (set! %load-compiled-path (append (reverse (arg-results-ref res "compiled-load-path")) %load-compiled-path))
                 (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
                 (if (arg-results-ref res "fresh-auto-compile")
@@ -186,6 +187,13 @@
         (value-help "DIR")
         split-commas
         (help "Add a directory to the load path"))
+    (add-multi-option! parser 
+        "append-load-path"
+        (abbreviation "A")
+        (defaults-to '())
+        (value-help "DIR")
+        split-commas 
+        (help "Append a directory to the load path"))
     (add-multi-option! parser 
         "compiled-load-path"
         (abbreviation "C")
