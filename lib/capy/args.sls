@@ -1,6 +1,6 @@
 #!r6rs 
 
-(library (args)
+(library (capy args)
     (export
         arg-results-parser 
         arg-results-parsed
@@ -27,10 +27,10 @@
         add-flag!)
     (import 
         (rnrs)
-        (args argparser)
-        (args option)
-        (args parser)
-        (args results))
+        (capy args argparser)
+        (capy args option)
+        (capy args parser)
+        (capy args results))
 
 
     (define (parse-args parser args)

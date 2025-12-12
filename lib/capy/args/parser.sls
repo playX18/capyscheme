@@ -1,6 +1,6 @@
 #!r6rs 
 
-(library (args parser)
+(library (capy args parser)
     (export
         make-parser 
         parser-parse)
@@ -10,9 +10,9 @@
         (rnrs) 
         (rnrs records syntactic)
         (core hashtables)
-        (args argparser)
-        (args option)
-        (args results)
+        (capy args argparser)
+        (capy args option)
+        (capy args results)
         (srfi 13))
 
     (define-record-type 
