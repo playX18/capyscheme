@@ -216,7 +216,9 @@ pub fn find_path_to<'gc>(
         }
         let paths = ctx.globals().loc_load_path().get();
 
-        'outer: for name in candidates {
+        let mut ps = paths;
+
+        for name in candidates.iter() {
             if let Some(dir) = dir.as_ref() {
                 let candidate = dir.join(&name);
 
@@ -226,19 +228,24 @@ pub fn find_path_to<'gc>(
                     break;
                 }
             }
+        }
+        if source_path.is_none() {
+            'outer: while ps.is_pair() {
+                let next = ps.cdr();
+                let path = PathBuf::from(ps.car().downcast::<Str>().to_string());
 
-            let mut paths = paths;
+                for name in candidates.iter() {
+                    let candidate = path.join(name);
 
-            while paths.is_pair() {
-                let dir = PathBuf::from(paths.car().downcast::<Str>().to_string());
-                let candidate = dir.join(&name);
-
-                if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
-                {
-                    source_path = Some(candidate);
-                    break 'outer;
+                    if candidate.exists()
+                        && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
+                    {
+                        source_path = Some(candidate);
+                        break 'outer;
+                    }
                 }
-                paths = paths.cdr();
+
+                ps = next;
             }
         }
     }
@@ -306,6 +313,7 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     arch: Option<&str>,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let filename = filename.as_ref();
+
     let (source, compiled) = match find_path_to(ctx, filename, in_vicinity, resolve_relative, arch)?
     {
         Some(v) => v,
