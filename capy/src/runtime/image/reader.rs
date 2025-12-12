@@ -1331,12 +1331,14 @@ impl<'gc, R: AsRef<[u8]>> ImageReader<'gc, R> {
         let args = self.read_value().unwrap();
         let ret = self.read_value().unwrap();
 
-        crate::runtime::vm::ffi::make_cif_at(self.ctx, obj, args, ret, variadic).map_err(|err| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to create CIF: {}", err),
-            )
-        })
+        crate::runtime::vm::ffi::make_cif_at(self.ctx, obj, args, ret, variadic, true).map_err(
+            |err| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to create CIF: {}", err),
+                )
+            },
+        )
     }
 
     pub fn read_cmarks(&mut self, obj: GCObject) -> std::io::Result<()> {

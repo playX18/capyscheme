@@ -460,6 +460,9 @@ impl TypeCode8 {
 
     pub const EPHEMERON: Self = Self(49);
 
+    pub const POLLER: Self = Self(72);
+    pub const POLL_EVENT: Self = Self(73);
+
     pub const UNKNOWN: Self = Self(0xFF);
 }
 

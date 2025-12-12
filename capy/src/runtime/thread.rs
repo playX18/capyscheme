@@ -143,6 +143,27 @@ impl<'gc> Context<'gc> {
             .register_static_cont_closure(self, proc, meta)
     }
 
+    pub fn resume_suspended_call_wargs(
+        self,
+        args: impl IntoIterator<Item = Value<'gc>>,
+    ) -> VMResult<'gc> {
+        let call = self
+            .state()
+            .saved_call
+            .replace(None)
+            .expect("No suspended call");
+        self.state().runstack.set(self.state().runstack_start);
+
+        if call.from_procedure {
+            let retk = call.rands[0];
+            let reth = call.rands[1];
+
+            call_scheme_with_k(self, retk, reth, call.rator, args.into_iter())
+        } else {
+            unsafe { continue_to(self, call.rator, args.into_iter()) }
+        }
+    }
+
     pub fn resume_suspended_call(self) -> VMResult<'gc> {
         let call = self
             .state()
@@ -521,6 +542,12 @@ impl Scheme {
                         let callback = operation.prepare(ctx);
                         Err(Yield::Operation(callback))
                     }
+
+                    Some(YieldReason::OperationWithReturn(operation)) => {
+                        let callback = operation.prepare(ctx);
+                        Err(Yield::OperationWithReturn(callback))
+                    }
+
                     Some(YieldReason::LockMutex(mutex_obj)) => {
                         let mutex = mutex_obj.downcast::<Mutex>();
                         // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
@@ -546,7 +573,7 @@ impl Scheme {
                 },
             }
         });
-
+        let mut next: Option<Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>> = None;
         loop {
             if let Ok(res) = result {
                 return res;
@@ -558,7 +585,16 @@ impl Scheme {
                 Yield::None => {
                     result = self.enter(|ctx| {
                         if ctx.has_suspended_call() {
-                            match ctx.resume_suspended_call() {
+                            let result = if let Some(next) = next.take() {
+                                let mut args = Vec::new();
+                                next(ctx, &mut args);
+
+                                ctx.resume_suspended_call_wargs(args)
+                            } else {
+                                ctx.resume_suspended_call()
+                            };
+
+                            match result {
                                 VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
                                 VMResult::Err(err) => Ok(finish(ctx, Err(err))),
                                 VMResult::Yield => match ctx.state().take_yield_reason() {
@@ -586,6 +622,10 @@ impl Scheme {
                                         let callback = operation.prepare(ctx);
                                         Err(Yield::Operation(callback))
                                     }
+                                    Some(YieldReason::OperationWithReturn(operation)) => {
+                                        let callback = operation.prepare(ctx);
+                                        Err(Yield::OperationWithReturn(callback))
+                                    }
                                     None => Err(Yield::None),
                                     _ => todo!(),
                                 },
@@ -599,6 +639,12 @@ impl Scheme {
                 Yield::Operation(op) => {
                     op();
 
+                    result = Err(Yield::None);
+                    continue; // retry
+                }
+
+                Yield::OperationWithReturn(op) => {
+                    next = Some(op());
                     result = Err(Yield::None);
                     continue; // retry
                 }
@@ -900,6 +946,7 @@ pub enum YieldReason<'gc> {
     PollWrite(i32),
 
     Operation(Box<dyn BlockingOperation<'gc> + 'gc>),
+    OperationWithReturn(Box<dyn BlockingOperationWithReturn<'gc> + 'gc>),
 
     CollectGarbage,
 }
@@ -972,6 +1019,9 @@ impl PendingWait {
 pub enum Yield {
     None,
     Operation(BlockingOperationCallback),
+    OperationWithReturn(
+        Box<dyn FnOnce() -> Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>>,
+    ),
     Lock(PendingLock),
     Wait(PendingWait),
     GC,
@@ -998,8 +1048,13 @@ pub trait BlockingOperation<'gc>: Trace {
     fn prepare(&self, ctx: Context<'gc>) -> Box<dyn FnOnce()>;
 }
 
+pub trait BlockingOperationWithReturn<'gc>: Trace {
+    fn prepare(&self, ctx: Context<'gc>) -> Box<dyn FnOnce() -> AfterBlockingOperationCallback>;
+}
+
 pub type BlockingOperationCallback = Box<dyn FnOnce()>;
-pub type AfterBlockingOperationCallback<'gc> = Box<dyn FnOnce(Context<'gc>)>;
+pub type AfterBlockingOperationCallback =
+    Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>;
 
 /// The simplest polling operation: `select` on a single file descriptor.
 ///

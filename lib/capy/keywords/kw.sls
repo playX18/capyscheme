@@ -482,7 +482,6 @@
                                                       [with-kws (mk-with-kws)])
                                             #`(make-okp 
                                                 (lambda (given-kws given-argc)
-
                                                     (and 
                                                         (in-range?/static given-argc with-kw-min-args with-kw-max-arg)
                                                         (subset?/static given-kws 'kws)))
@@ -944,6 +943,7 @@
 (define (make-optional-keyword-procedure check with-kws required allowed no-kws)
     "Same as keyword-procedure/arity-error except return procedure is `no-kws`
     and on application with keywords `with-kws` is used"
+   
     (set-procedure-property! no-kws 'kwd (tuple check with-kws required allowed no-kws))
     no-kws)
 
