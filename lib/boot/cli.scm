@@ -2,8 +2,8 @@
     (export enter eval-string)
     (import (capy)
             (core repl)
-            (args)
-            (args argparser))
+            (capy args)
+            (capy args argparser))
     
 
 (define (eval-string str)

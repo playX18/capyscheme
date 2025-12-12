@@ -1,6 +1,6 @@
 #!r6rs 
 
-(library (args option)
+(library (capy args option)
     (export
         option
         %make-option 

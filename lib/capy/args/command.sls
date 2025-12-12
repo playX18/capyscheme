@@ -1,6 +1,6 @@
-(library (args command)
+(library (capy args command)
   (export)
-  (import (rnrs) (args argparser) (args results))
+  (import (rnrs) (capy args argparser) (capy args results))
   
 
   (define-record-type 

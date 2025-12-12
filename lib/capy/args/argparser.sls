@@ -1,6 +1,6 @@
 #!r6rs 
 
-(library (args argparser)
+(library (capy args argparser)
     (export 
         argparser
         argparser-add-command!
@@ -20,7 +20,7 @@
         (rnrs)
         (srfi 1)
         (srfi 13)
-        (args option)
+        (capy args option)
         (core optargs))
 
     (define-record-type 

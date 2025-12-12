@@ -1,5 +1,5 @@
 #!r6rs 
-(library (args results)
+(library (capy args results)
     (export
         make-arg-results 
         arg-results?
@@ -13,8 +13,8 @@
     (import
         (rnrs)
         (capy)
-        (args option)
-        (args argparser))
+        (capy args option)
+        (capy args argparser))
 
     (define-record-type 
         (arg-results make-arg-results arg-results?)
