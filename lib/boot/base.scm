@@ -1160,6 +1160,7 @@
     srfi-16  ;; case-lambda
     srfi-23  ;; `error` procedure
     srfi-24  ;; define-syntax in local lexical scope
+    srfi-27  ;; random sources
     srfi-28  ;; basic format strings
     srfi-30  ;; nested multi-line comments
     srfi-34  ;; exception handling for programs
@@ -1174,6 +1175,7 @@
     srfi-87  ;; => in case clauses
     srfi-105 ;; curly infix expressions
     srfi-124 ;; ephemerons
+    srfi-132 ;; sorting
     srfi-157 ;; Continuation marks
     srfi-180 ;; JSON
     ; srfi-226 ;; Control features (TODO: BROKEN!)
