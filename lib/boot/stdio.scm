@@ -478,6 +478,7 @@
 
 (define port-position io/port-position)
 (define port-fd io/port-fd)
+(define port-fileno port-fd)
 (define port-closed? io/port-closed?)
 
 (define lf 'lf)

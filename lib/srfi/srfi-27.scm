@@ -162,7 +162,7 @@
         rnd-real)))
   (define (random-source-make-integers s) (make-integer-rng s))
   (define (random-source-make-reals s . unit) (make-real-rng s))
-  (define default-random-source (make-random-source 42))
+  (define default-random-source (make-random-source))
   (define random-integer (random-source-make-integers default-random-source))
   (define random-real (random-source-make-reals default-random-source))
 ))
