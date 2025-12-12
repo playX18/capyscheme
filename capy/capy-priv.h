@@ -154,6 +154,24 @@
 
 #define WCM_BODY (TERM_SOURCEV + 3)
 
+#define EREADABLE 1
+
+#define EWRITABLE 2
+
+#define EHUP 4
+
+#define EPRIORITY 8
+
+#define EERROR 16
+
+#define EONESHOT 1
+
+#define ELEVEL 2
+
+#define EEDGE 4
+
+#define EEDGEONESHOT 8
+
 #define RTD_TYPE 0
 
 #define RTD_NAME 1

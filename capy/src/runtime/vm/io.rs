@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use crate::runtime::{AfterBlockingOperationCallback, BlockingOperationWithReturn};
 use crate::static_symbols;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
@@ -1026,8 +1027,392 @@ pub mod io_ops {
             crate::list!(ctx, ifd, ofd, pid)
         })
     }
+
+    /* polling primitives */
+    #[scheme(name = "make-poller")]
+    /// Create a new poller object instance. This can be used
+    /// to perform non-blocking I/O operations.
+    pub fn make_poller() -> Gc<'gc, Poller> {
+        let inner = match polling::Poller::new() {
+            Ok(poller) => poller,
+            Err(err) => {
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "make-poller",
+                    "failed to create poller",
+                    Value::new(false),
+                );
+            }
+        };
+        let poller = Gc::new(
+            *ctx,
+            Poller {
+                header: ScmHeader::with_type_bits(TypeCode8::POLLER.bits() as _),
+                inner,
+            },
+        );
+
+        nctx.return_(poller)
+    }
+
+    /// Add a file descriptor to the poller with the specified flags.
+    ///
+    /// Arguments:
+    /// - `key`: A unique identifier for the file descriptor.
+    /// - `fd`: The file descriptor to monitor.
+    /// - `flags`: The events to monitor (e.g., readable, writable).
+    #[scheme(name = "poller-add!")]
+    pub fn poller_add(poller: Gc<'gc, Poller>, key: usize, fd: i32, flags: i32) -> bool {
+        let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        let readable = (flags & EREADABLE) != 0;
+        let writable = (flags & EWRITABLE) != 0;
+        let mut event = polling::Event::new(key, readable, writable);
+        if (flags & EPRIORITY) != 0 {
+            event.set_priority(true);
+        }
+        if (flags & EHUP) != 0 {
+            event.set_interrupt(true);
+        }
+
+        unsafe {
+            match poller.inner.add(&fd, event) {
+                Ok(()) => nctx.return_(true),
+                Err(err) => {
+                    let error = err.to_string();
+                    nctx.raise_io_error(
+                        err,
+                        IoOperation::Write,
+                        "poller-add!",
+                        &error,
+                        Value::new(false),
+                    )
+                }
+            }
+        }
+    }
+
+    #[scheme(name = "poller-add/mode!")]
+    pub fn poller_add_with_mode(
+        poller: Gc<'gc, Poller>,
+        key: usize,
+        fd: i32,
+        flags: i32,
+        mode: i32,
+    ) -> bool {
+        let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        let mode = match mode {
+            EONESHOT => polling::PollMode::Oneshot,
+            ELEVEL => polling::PollMode::Level,
+            EEDGE => polling::PollMode::Edge,
+            EEDGEONESHOT => polling::PollMode::EdgeOneshot,
+            _ => {
+                return nctx.wrong_argument_violation(
+                    "poller-add/mode!",
+                    "invalid mode",
+                    Some(mode.into()),
+                    None,
+                    5,
+                    &[
+                        poller.into(),
+                        key.into_value(ctx),
+                        0i32.into(),
+                        flags.into(),
+                        mode.into(),
+                    ],
+                );
+            }
+        };
+
+        let readable = (flags & EREADABLE) != 0;
+        let writable = (flags & EWRITABLE) != 0;
+        let mut event = polling::Event::new(key, readable, writable);
+
+        if (flags & EPRIORITY) != 0 {
+            event.set_priority(true);
+        }
+
+        if (flags & EHUP) != 0 {
+            event.set_interrupt(true);
+        }
+
+        unsafe {
+            match poller.inner.add_with_mode(&fd, event, mode) {
+                Ok(()) => nctx.return_(true),
+                Err(err) => {
+                    let error = err.to_string();
+                    nctx.raise_io_error(
+                        err,
+                        IoOperation::Write,
+                        "poller-add/mode!",
+                        &error,
+                        Value::new(false),
+                    )
+                }
+            }
+        }
+    }
+
+    #[scheme(name = "poller-delete!")]
+    pub fn poller_delete(poller: Gc<'gc, Poller>, fd: i32) -> bool {
+        let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        {
+            match poller.inner.delete(fd) {
+                Ok(()) => nctx.return_(true),
+                Err(err) => {
+                    let error = err.to_string();
+                    nctx.raise_io_error(
+                        err,
+                        IoOperation::Write,
+                        "poller-delete!",
+                        &error,
+                        Value::new(false),
+                    )
+                }
+            }
+        }
+    }
+
+    #[scheme(name = "poller-modify!")]
+    pub fn poller_modify(poller: Gc<'gc, Poller>, fd: i32, flags: i32) -> bool {
+        let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        let readable = (flags & EREADABLE) != 0;
+        let writable = (flags & EWRITABLE) != 0;
+        let mut event = polling::Event::new(0, readable, writable);
+
+        if (flags & EPRIORITY) != 0 {
+            event.set_priority(true);
+        }
+
+        if (flags & EHUP) != 0 {
+            event.set_interrupt(true);
+        }
+
+        {
+            match poller.inner.modify(fd, event) {
+                Ok(()) => nctx.return_(true),
+                Err(err) => {
+                    let error = err.to_string();
+                    nctx.raise_io_error(
+                        err,
+                        IoOperation::Write,
+                        "poller-modify!",
+                        &error,
+                        Value::new(false),
+                    )
+                }
+            }
+        }
+    }
+
+    #[scheme(name = "poller-modify/mode!")]
+    pub fn poller_modify_with_mode(
+        poller: Gc<'gc, Poller>,
+        key: usize,
+        fd: i32,
+        flags: i32,
+        mode: i32,
+    ) -> bool {
+        let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        let mode = match mode {
+            EONESHOT => polling::PollMode::Oneshot,
+            ELEVEL => polling::PollMode::Level,
+            EEDGE => polling::PollMode::Edge,
+            EEDGEONESHOT => polling::PollMode::EdgeOneshot,
+            _ => {
+                return nctx.wrong_argument_violation(
+                    "poller-modify/mode!",
+                    "invalid mode",
+                    Some(mode.into()),
+                    None,
+                    5,
+                    &[poller.into(), 0i32.into(), flags.into(), mode.into()],
+                );
+            }
+        };
+
+        let readable = (flags & EREADABLE) != 0;
+        let writable = (flags & EWRITABLE) != 0;
+
+        let mut event = polling::Event::new(key, readable, writable);
+
+        if (flags & EPRIORITY) != 0 {
+            event.set_priority(true);
+        }
+
+        if (flags & EHUP) != 0 {
+            event.set_interrupt(true);
+        }
+
+        {
+            match poller.inner.modify_with_mode(fd, event, mode) {
+                Ok(()) => nctx.return_(true),
+                Err(err) => {
+                    let error = err.to_string();
+                    nctx.raise_io_error(
+                        err,
+                        IoOperation::Write,
+                        "poller-modify/mode!",
+                        &error,
+                        Value::new(false),
+                    )
+                }
+            }
+        }
+    }
+
+    #[scheme(name = "poller-wait")]
+    /// Waits for at least one I/O event and returns a list of events.
+    pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<i32>) -> () {
+        let k = make_closure_poller_wait_k(ctx, [nctx.retk, nctx.reth]);
+        let operation = PollerOperation { poller, timeout };
+        nctx.perform_returning_to(k.into(), operation)
+    }
+
+    #[scheme(name = "poller-notify")]
+    /// Wakes up current or future `poller-wait` invocation.
+    pub fn poller_notify(poller: Gc<'gc, Poller>) -> bool {
+        match poller.inner.notify() {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Write,
+                    "poller-notify",
+                    &error,
+                    Value::new(false),
+                )
+            }
+        }
+    }
+
+    #[scheme(continuation, name = "${ poller-wait/k }")]
+    #[allow(non_snake_case)]
+    fn poller_wait_k(succ: bool, arg: Value<'gc>) -> Value<'gc> {
+        // [0] = <native-proc>
+        // [1] = retk
+        // [2] = reth
+        let retk = nctx.rator().downcast::<Closure>().free.downcast::<Vector>()[1].get();
+        let reth = nctx.rator().downcast::<Closure>().free.downcast::<Vector>()[2].get();
+
+        nctx.retk = retk;
+        nctx.reth = reth;
+
+        if succ {
+            nctx.return_(arg)
+        } else {
+            nctx.raise_error("poller-wait", "failed to wait for events", &[arg])
+        }
+    }
 }
 
 pub fn init_io<'gc>(ctx: Context<'gc>) {
     io_ops::register(ctx);
+}
+
+#[repr(C)]
+pub struct Poller {
+    header: ScmHeader,
+    inner: polling::Poller,
+}
+
+unsafe impl Tagged for Poller {
+    const TC8: TypeCode8 = TypeCode8::POLLER;
+    const TYPE_NAME: &'static str = "poller";
+}
+
+unsafe impl Trace for Poller {
+    unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        let _ = visitor;
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let _ = weak_processor;
+    }
+}
+
+pub const EREADABLE: i32 = 0x01;
+pub const EWRITABLE: i32 = 0x02;
+pub const EHUP: i32 = 0x04;
+pub const EPRIORITY: i32 = 0x08;
+pub const EERROR: i32 = 0x10;
+
+pub const EONESHOT: i32 = 0x01;
+pub const ELEVEL: i32 = 0x02;
+pub const EEDGE: i32 = 0x04;
+pub const EEDGEONESHOT: i32 = 0x08;
+
+pub struct PollerOperation<'gc> {
+    poller: Gc<'gc, Poller>,
+    timeout: Option<i32>,
+}
+
+unsafe impl<'gc> Trace for PollerOperation<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        visitor.trace(&mut self.poller);
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let _ = weak_processor;
+    }
+}
+
+impl<'gc> BlockingOperationWithReturn<'gc> for PollerOperation<'gc> {
+    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce() -> AfterBlockingOperationCallback> {
+        let timeout = self
+            .timeout
+            .map(|t| std::time::Duration::from_millis(t as u64));
+        let ptr = Gc::as_ptr(self.poller);
+
+        Box::new(move || unsafe {
+            let poller = &*ptr;
+            let mut events = polling::Events::new();
+            let res = poller.inner.wait(&mut events, timeout);
+
+            Box::new(move |ctx, args: &mut Vec<Value<'_>>| {
+                // now return to Scheme code by building correct args to our `retk`.
+
+                args.push(Value::new(res.is_ok()));
+                match res {
+                    Ok(_) => {
+                        let mut ls = Value::null();
+                        for event in events.iter() {
+                            let key = event.key;
+                            let flags = event_to_flags(event);
+                            ls = Value::cons(
+                                ctx,
+                                Value::cons(ctx, key.into_value(ctx), flags.into_value(ctx)),
+                                ls,
+                            );
+                        }
+                        args.push(ls);
+                    }
+
+                    Err(err) => args.push(err.raw_os_error().unwrap_or(i32::MAX).into()),
+                }
+            })
+        })
+    }
+}
+
+fn event_to_flags(ev: polling::Event) -> i32 {
+    let mut flags = 0;
+    if ev.readable {
+        flags |= EREADABLE;
+    }
+    if ev.writable {
+        flags |= EWRITABLE;
+    }
+    if ev.is_interrupt() {
+        flags |= EHUP;
+    }
+    if ev.is_priority() {
+        flags |= EPRIORITY;
+    }
+
+    if let Some(true) = ev.is_err() {
+        flags |= EERROR;
+    }
+    flags
 }

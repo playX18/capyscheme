@@ -1,9 +1,14 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    marker::PhantomData,
     sync::{Arc, LazyLock, Mutex},
 };
 
+use crate::rsgc::{
+    Trace,
+    finalizer::FinalizerQueue,
+    mmtk::util::{Address, ObjectReference},
+    object::GCObject,
+};
 use crate::{
     global,
     prelude::*,
@@ -15,21 +20,11 @@ use crate::{
     },
     static_symbols,
 };
-use crate::{
-    rsgc::{
-        Trace,
-        finalizer::FinalizerQueue,
-        mmtk::util::{Address, ObjectReference},
-        object::GCObject,
-    },
-    runtime::BlockingOperation,
-};
 use libffi::{
     low::{type_tag, types},
     middle::Type,
     raw::{ffi_arg, ffi_type},
 };
-use tinyvec::TinyVec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]

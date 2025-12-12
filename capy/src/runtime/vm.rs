@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::runtime::{
-    Context, YieldReason,
+    BlockingOperationWithReturn, Context, YieldReason,
     value::{
         Closure, ConversionError, NativeReturn, PROCEDURES, ReturnCode, SavedCall, Str, Symbol,
         TryIntoValues, TypeCode16, Value, Vector,
@@ -439,6 +439,33 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     /// once operation is completed.
     pub fn perform(self, op: impl BlockingOperation<'gc> + 'static) -> NativeCallReturn<'gc> {
         self.yield_(YieldReason::Operation(Box::new(op)))
+    }
+
+    pub fn perform_returning_to(
+        self,
+        retk: Value<'gc>,
+        op: impl BlockingOperationWithReturn<'gc> + 'gc,
+    ) -> NativeCallReturn<'gc> {
+        self.ctx
+            .state()
+            .set_yield_reason(YieldReason::OperationWithReturn(Box::new(op)));
+
+        NativeCallReturn {
+            ret: NativeReturn {
+                code: ReturnCode::Yield,
+                value: Value::from_raw(
+                    Gc::new(
+                        *self.ctx,
+                        SavedCall {
+                            rator: retk,
+                            from_procedure: false,
+                            rands: Array::from_slice(*self.ctx, []),
+                        },
+                    )
+                    .as_ptr() as _,
+                ),
+            },
+        }
     }
 
     pub fn yield_(self, reason: YieldReason<'gc>) -> NativeCallReturn<'gc> {
