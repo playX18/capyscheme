@@ -1175,6 +1175,7 @@
     srfi-87  ;; => in case clauses
     srfi-105 ;; curly infix expressions
     srfi-124 ;; ephemerons
+    srfi-130 ;; Cursor-based string library
     srfi-132 ;; sorting
     srfi-157 ;; Continuation marks
     srfi-180 ;; JSON
