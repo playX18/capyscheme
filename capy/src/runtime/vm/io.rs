@@ -306,6 +306,27 @@ pub mod io_ops {
         }
     }
 
+    #[scheme(name = "canonicalize-path-string")]
+    pub fn canonicalize_path(path: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        match std::fs::canonicalize(path.to_string()) {
+            Ok(buf) => {
+                let s = buf.to_string_lossy();
+                let ctx = nctx.ctx;
+                nctx.return_(Str::new(*ctx, &s, true))
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "canonicalize-path",
+                    &error,
+                    path.into(),
+                )
+            }
+        }
+    }
+
     #[scheme(name = "create-symbolic-link")]
     pub fn create_symbolic_link(original: Gc<'gc, Str<'gc>>, link: Gc<'gc, Str<'gc>>) -> bool {
         match std::os::unix::fs::symlink(original.to_string(), link.to_string()) {
@@ -1047,6 +1068,33 @@ pub mod io_ops {
         } else {
             crate::list!(ctx, ifd, ofd, pid)
         })
+    }
+
+    #[scheme(name = "%process-wait")]
+    pub fn process_wait(pid: i32) -> i32 {
+        unsafe {
+            let mut status: i32 = 0;
+            let ret = libc::waitpid(pid, &mut status as *mut i32, 0);
+            if ret == -1 {
+                let err = std::io::Error::last_os_error();
+                let error = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Read,
+                    "%process-wait",
+                    &error,
+                    pid.into(),
+                );
+            }
+
+            if libc::WIFEXITED(status) {
+                nctx.return_(libc::WEXITSTATUS(status))
+            } else if libc::WIFSIGNALED(status) {
+                nctx.return_(-libc::WTERMSIG(status))
+            } else {
+                nctx.return_(-1)
+            }
+        }
     }
 
     /* polling primitives */

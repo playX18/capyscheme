@@ -163,20 +163,21 @@
                    (else 'block)))
          (exists? (file-io/file-exists? filename)))
     (cond ((and exists? (not dont-create) (not dont-fail))
-           (let* ((exec-mode (larceny:execution-mode)))
-             (case exec-mode
-              ((r5rs) #t)
-              ((err5rs)
-               (if (issue-deprecated-warnings?)
-                   (let ((out (current-error-port)))
-                     (display "WARNING: output file already exists: " out)
-                     (display filename out)
-                     (newline out))))
-              (else
-               (raise-i/o-file-already-exists-error 'open-file-output-port 
-                "file already exists"
-                filename
-                )))))
+            #t)
+           ;(let* ((exec-mode (larceny:execution-mode)))
+           ;  (case exec-mode
+           ;   ((r5rs) #t)
+           ;   ((err5rs)
+           ;    (if (issue-deprecated-warnings?)
+           ;        (let ((out (current-error-port)))
+           ;          (display "WARNING: output file already exists: " out)
+           ;          (display filename out)
+           ;          (newline out))))
+           ;   (else
+           ;    (raise-i/o-file-already-exists-error 'open-file-output-port 
+           ;     "file already exists"
+           ;     filename
+           ;     )))))
                ;(raise-r6rs-exception
                ; (make-i/o-file-already-exists-error filename)
                ; 'open-file-output-port
