@@ -417,6 +417,27 @@ pub mod io_ops {
         nctx.return_(Str::new(*ctx, &s, true))
     }
 
+    #[scheme(name = "file-canonicalize")]
+    pub fn file_canonicalize(path: Gc<'gc, Str<'gc>>) -> Gc<'gc, Str<'gc>> {
+        match std::fs::canonicalize(path.to_string()) {
+            Ok(buf) => {
+                let s = buf.to_string_lossy();
+                let ctx = nctx.ctx;
+                nctx.return_(Str::new(*ctx, &s, true))
+            }
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "file-canonicalize",
+                    &error,
+                    path.into(),
+                )
+            }
+        }
+    }
+
     #[scheme(name = "file-exists?")]
     pub fn file_exists(path: Gc<'gc, Str<'gc>>) -> bool {
         let metadata = std::path::Path::new(&path.to_string()).exists();
