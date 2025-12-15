@@ -4,8 +4,10 @@
     (export
         process
         open-process-ports
-        system)
+        system
+        process-wait)
     (import 
+        (only (capy) %process-wait)
         (core primitives) 
         (core control)
         (core foreign)
@@ -47,6 +49,9 @@
                     (subprocess-port 'process 'stdin ifd pid 'block (native-transcoder))
                     pid))
             (%process-spawn s #f)))
+      
+    (define (process-wait pid)
+      (%process-wait pid))
 
     (define open-process-ports 
         (case-lambda 
