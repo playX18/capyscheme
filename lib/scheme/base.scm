@@ -1,6 +1,6 @@
 
 (define-library (scheme base)
-  (import (rename (core)
+  (import (rename (except (core) string-copy)
                   (define-record-type r6rs:define-record-type)
                   (expt r6rs:expt)
                   (error r6rs:error)
