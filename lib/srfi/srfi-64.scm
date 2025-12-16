@@ -67,6 +67,9 @@
  test-on-final-simple)
 (import
  (scheme base)
+ (scheme file)
+ (scheme char)
+ (scheme write)
  (rnrs lists (6))
  (rnrs records syntactic (6)))
 
