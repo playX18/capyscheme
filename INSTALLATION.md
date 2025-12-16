@@ -36,26 +36,6 @@ This installs:
 
 The FHS sysroot prefix is compiled into the `capy` binary during `just install-fhs`.
 
-## Sharing compiled artifacts across machines
-
-CapyScheme caches compiled Scheme modules as native dynamic libraries. These are only safely
-reusable across systems when the ABI-relevant inputs match (OS/arch, CapyScheme version, GC plan,
-and toolchain/loader compatibility).
-
-Recommended approach:
-
-1. Use a shared directory (e.g. NFS) for compiled artifacts.
-2. Add it to the compiled search path via `CAPY_LOAD_COMPILED_PATH`.
-
-Example:
-
-```sh
-export CAPY_LOAD_COMPILED_PATH=/srv/capy/compiled
-capy
-```
-
-CapyScheme will still use a per-user cache under `$XDG_CACHE_HOME` (or `~/.cache`) as a fallback.
-
 ## GC limitations
 
 Once the `capy` binary and heap image are built the GC algorithm is locked in. For example
