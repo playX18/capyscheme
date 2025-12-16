@@ -202,9 +202,21 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     hasher.update(format!("{:?}", plan_selector).as_bytes());
     hasher.update(b"\0");
 
+    // Include the source file name (but not the full path) to avoid collisions between
+    // different modules that happen to have identical bytes.
+    let name = path
+        .file_name()
+        .unwrap_or_else(|| path.as_os_str())
+        .to_string_lossy();
+    hasher.update(name.as_bytes());
+    hasher.update(b"\0");
+
     match std::fs::read(path) {
         Ok(bytes) => hasher.update(&bytes),
-        Err(_) => hasher.update(path.to_string_lossy().as_bytes()),
+        Err(_) => {
+            // If the source isn't readable, we still have a stable key component via `name`.
+            // Intentionally do not hash the full path (machine-specific).
+        }
     }
 
     let bytes = hasher.finalize();
