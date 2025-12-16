@@ -20,6 +20,42 @@ After everything is installed you should add installed directory into PATH.
 If you wish to use native extensions also add `extensions/` directory under prefix
 into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
 
+## FHS-style install (system layout)
+
+For a traditional Unix filesystem layout (FHS), you can install:
+
+```sh
+just fhs-prefix=/usr/local install-fhs
+```
+
+This installs:
+
+- `capy` to `/usr/local/bin/capy`
+- `libcapy.*` to `/usr/local/lib/`
+- Scheme stdlib to `/usr/local/share/capy/`
+
+The FHS sysroot prefix is compiled into the `capy` binary during `just install-fhs`.
+
+## Sharing compiled artifacts across machines
+
+CapyScheme caches compiled Scheme modules as native dynamic libraries. These are only safely
+reusable across systems when the ABI-relevant inputs match (OS/arch, CapyScheme version, GC plan,
+and toolchain/loader compatibility).
+
+Recommended approach:
+
+1. Use a shared directory (e.g. NFS) for compiled artifacts.
+2. Add it to the compiled search path via `CAPY_LOAD_COMPILED_PATH`.
+
+Example:
+
+```sh
+export CAPY_LOAD_COMPILED_PATH=/srv/capy/compiled
+capy
+```
+
+CapyScheme will still use a per-user cache under `$XDG_CACHE_HOME` (or `~/.cache`) as a fallback.
+
 ## GC limitations
 
 Once the `capy` binary and heap image are built the GC algorithm is locked in. For example

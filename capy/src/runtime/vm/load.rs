@@ -32,9 +32,7 @@ global!(
     }, true));
 
     pub loc_compile_fallback_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%compile-fallback-path", Value::null());
-
-    pub loc_sysroot<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%sysroot", Str::new(*ctx, env!("CARGO_MANIFEST_DIR"), true));
-    pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(*ctx, env!("CARGO_MANIFEST_DIR"), true));
+    pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(*ctx, "", true));
 
     pub loc_fresh_auto_compile<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%fresh-auto-compile", Value::new(false));
 );
@@ -75,32 +73,64 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     let mut path = Value::null();
     let mut cpath = Value::null();
 
-    if cfg!(feature = "portable") {
-        let exe_dir = match std::env::var("CAPY_SYSROOT") {
-            Ok(dir) => PathBuf::from(dir),
-            Err(_) => {
-                let exe_path =
-                    std::env::current_exe().expect("Failed to get current executable path");
-                exe_path
-                    .parent()
-                    .expect("Failed to get executable directory")
-                    .to_owned()
+    // Sysroot discovery:
+    // - portable builds: use the executable directory
+    // - non-portable (FHS) builds: use a compile-time prefix (CAPY_SYSROOT)
+    //
+    // Layouts:
+    // - portable: <sysroot>/lib and <sysroot>/compiled
+    // - FHS:      <sysroot>/share/capy and <sysroot>/lib/capy/compiled
+    let sysroot_dir: Option<PathBuf> = if cfg!(feature = "portable") {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_owned()))
+    } else {
+        Some(PathBuf::from(env!("CAPY_SYSROOT")))
+    };
+
+    if let Some(sysroot_dir) = sysroot_dir.as_ref() {
+        let candidates = [
+            sysroot_dir.join("share").join("capy"),
+            sysroot_dir.join("lib"),
+        ];
+        for stdlib_dir in candidates {
+            if stdlib_dir.is_dir() {
+                path = Value::cons(
+                    ctx,
+                    Str::new(*ctx, &stdlib_dir.to_string_lossy(), true).into(),
+                    path,
+                );
             }
-        };
+        }
 
-        let stdlib_dir = exe_dir.join("lib");
-        path = Value::cons(
-            ctx,
-            Str::new(*ctx, &stdlib_dir.to_string_lossy(), true).into(),
-            path,
-        );
+        // Prefer the sysroot cache (populated by FHS installs) for compiled artifacts,
+        // then fall back to the historical compiled locations.
+        let compiled_candidates = [
+            sysroot_dir
+                .join("lib")
+                .join("capy")
+                .join("cache")
+                .join(env!("CARGO_PKG_VERSION"))
+                .join(plan),
+            sysroot_dir.join("lib").join("capy").join("compiled"),
+            sysroot_dir.join("compiled"),
+        ];
 
-        let _cpath = exe_dir.join("compiled");
-        cpath = Value::cons(
-            ctx,
-            Str::new(*ctx, &_cpath.to_string_lossy(), true).into(),
-            cpath,
-        );
+        let mut compiled_dirs = Vec::<PathBuf>::new();
+        for compiled_dir in compiled_candidates {
+            if compiled_dir.is_dir() {
+                compiled_dirs.push(compiled_dir);
+            }
+        }
+
+        // Preserve candidate order: the loader prefers the first existing directory.
+        for compiled_dir in compiled_dirs.into_iter().rev() {
+            cpath = Value::cons(
+                ctx,
+                Str::new(*ctx, &compiled_dir.to_string_lossy(), true).into(),
+                cpath,
+            );
+        }
     }
 
     if let Ok(load_path) = std::env::var("CAPY_LOAD_PATH") {
@@ -126,15 +156,12 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     ctx.globals().loc_load_path().set(ctx, path);
     ctx.globals().loc_load_compiled_path().set(ctx, cpath);
 
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let workspace_dir = Path::new(manifest_dir)
-        .parent()
-        .unwrap_or(Path::new(manifest_dir));
-
-    ctx.globals().loc_capy_root().set(
-        ctx,
-        Str::new(*ctx, workspace_dir.to_string_lossy(), true).into(),
-    );
+    let fallback_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let root = sysroot_dir.as_deref().unwrap_or(&fallback_root);
+    let root_str = root.to_string_lossy();
+    ctx.globals()
+        .loc_capy_root()
+        .set(ctx, Str::new(*ctx, root_str, true).into());
 }
 
 static DYNLIB_EXTENSION: &str = if cfg!(target_os = "linux") {
@@ -151,10 +178,35 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     let mut hasher = Sha3_256::new();
     let path = path.as_ref();
 
+    // Content-addressed cache key so compiled artifacts can be shared across machines
+    // as long as ABI-relevant inputs match.
+    //
+    // We include:
+    // - CapyScheme version (prevents cross-version ABI mismatches)
+    // - OS/ARCH (prevents cross-platform collisions)
+    // - GC type + MMTk plan selector (compiled thunks can be GC-plan sensitive)
+    // - Source file bytes (content addressability, independent of absolute paths)
+    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
+    hasher.update(b"\0");
+    hasher.update(std::env::consts::OS.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(std::env::consts::ARCH.as_bytes());
+    hasher.update(b"\0");
+
     let gc_typ = ALLOWED_GC.get().unwrap();
     let gc_typ = (*gc_typ) as u8;
-    hasher.update(path.to_string_lossy().as_bytes());
     hasher.update(&[gc_typ]);
+    hasher.update(b"\0");
+
+    let plan_selector = *crate::GarbageCollector::get().mmtk.get_options().plan;
+    hasher.update(format!("{:?}", plan_selector).as_bytes());
+    hasher.update(b"\0");
+
+    match std::fs::read(path) {
+        Ok(bytes) => hasher.update(&bytes),
+        Err(_) => hasher.update(path.to_string_lossy().as_bytes()),
+    }
+
     let bytes = hasher.finalize();
 
     let hex_string = hex::encode(bytes);
@@ -275,7 +327,10 @@ pub fn find_path_to<'gc>(
     while cpath.is_pair() {
         let dir = PathBuf::from(cpath.car().downcast::<Str>().to_string());
         if dir.is_dir() {
-            let candidate = dir.join(arch).join(&hashed);
+            let candidate = dir
+                .join(arch)
+                .join(&hashed)
+                .with_extension(DYNLIB_EXTENSION);
             if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some() {
                 compiled_file = Some(candidate);
             }
@@ -295,9 +350,12 @@ pub fn find_path_to<'gc>(
         if !fallback.exists() {
             std::fs::create_dir_all(fallback).expect("Failed to create fallback directory");
         }
-        let candidate = Path::new(&fallback)
-            .join(&hashed)
-            .with_extension(DYNLIB_EXTENSION);
+        // Keep caches separated by arch so a shared cache directory can be used.
+        let fallback_arch = fallback.join(arch);
+        if !fallback_arch.exists() {
+            std::fs::create_dir_all(&fallback_arch).expect("Failed to create fallback directory");
+        }
+        let candidate = fallback_arch.join(&hashed).with_extension(DYNLIB_EXTENSION);
 
         compiled_file = Some(candidate);
     }
@@ -332,26 +390,13 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
         }
     };
 
-    let source_time = source
-        .metadata()
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-
     let libs = LIBRARY_COLLECTION.fetch(*ctx);
     let mut compiled_thunk = Value::new(false);
 
-    if compiled.exists() {
-        let compiled_time = compiled
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        if !fresh_auto_compile(ctx)
-            && compiled_is_fresh(&source, &compiled, source_time, compiled_time)
-        {
-            compiled_thunk = libs.load(&compiled, ctx).unwrap_or(Value::new(false));
-        }
+    // Compiled artifacts are content-addressed, so existence is enough to treat them as fresh.
+    // If loading fails we fall back to recompilation below.
+    if compiled.exists() && !fresh_auto_compile(ctx) {
+        compiled_thunk = libs.load(&compiled, ctx).unwrap_or(Value::new(false));
     }
 
     if compiled_thunk.is::<Closure>() {
