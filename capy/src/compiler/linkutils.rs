@@ -12,7 +12,7 @@ impl Linker {
         let path = if cfg!(target_os = "macos") {
             "ld64.lld".to_string()
         } else if cfg!(unix) {
-            "ld.lld".to_string()
+            "ld".to_string()
         } else {
             // Fallback for other platforms
             "ld".to_string()
