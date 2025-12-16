@@ -68,8 +68,8 @@ build portable:
 # by default, it installs to ~/.local/capy
 install-portable: (build "true")
     @echo 'Installing CapyScheme to {{install-prefix}}/capy/{{version}}'
-    @-mkdir -p {{install-prefix}}/capy/{{version}}
-    @-mkdir -p {{install-prefix}}/capy/{{version}}/extensions
+    mkdir -p {{install-prefix}}/capy/{{version}}
+    mkdir -p {{install-prefix}}/capy/{{version}}/extensions
     rsync --checksum -r lib {{install-prefix}}/capy/{{version}}
     cp 'bin/capy' {{install-prefix}}/capy/{{version}}/
     ln -sf {{install-prefix}}/capy/{{version}}/capy {{install-prefix}}/capy/{{version}}/capy-{{version}}
@@ -84,7 +84,7 @@ install-portable: (build "true")
     @echo "Add {{install-prefix}}/capy/{{version}} to your PATH to use CapyScheme"
 
 install-scm:
-    @-mkdir -p {{install-prefix}}/capy/{{version}}
+    mkdir -p {{install-prefix}}/capy/{{version}}
     rsync --checksum -r lib {{install-prefix}}/capy/{{version}}
 
 
@@ -120,9 +120,9 @@ install-fhs: (build "false")
 
 tar: (build "true")
     @echo 'Creating tarball for CapyScheme version {{version}}'
-    @-mkdir -p dist
-    @-rm -f dist/capy-{{version}}-{{target}}.tar.gz
-    @-mkdir -p temp-dist/capy-{{version}}
+    mkdir -p dist
+    rm -f dist/capy-{{version}}-{{target}}.tar.gz
+    mkdir -p temp-dist/capy-{{version}}
     rsync --checksum -r boot temp-dist/capy-{{version}}/
     rsync --checksum -r core temp-dist/capy-{{version}}/
     rsync --checksum -r core.scm temp-dist/capy-{{version}}/
@@ -131,5 +131,5 @@ tar: (build "true")
     cp '{{target-path}}/capy' temp-dist/capy-{{version}}/
     cp {{target-path}}/libcapy.* temp-dist/capy-{{version}}/
     tar -czf dist/capy-{{version}}-{{target}}.tar.gz -C temp-dist capy-{{version}}
-    @-rm -rf temp-dist
+    rm -rf temp-dist
     @echo 'Tarball created at dist/capy-{{version}}-{{target}}.tar.gz'
