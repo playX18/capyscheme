@@ -105,7 +105,7 @@ install-fhs: (build "false")
     sudo mkdir -p {{fhs-prefix}}/lib/capy/cache
     sudo mkdir -p {{fhs-prefix}}/share
     sudo mkdir -p {{fhs-prefix}}/share/capy
-    sudo rsync --checksum -r lib/ {{fhs-prefix}}/share/capy/
+    sudo cp -r lib/ {{fhs-prefix}}/share/capy/
     sudo cp 'bin/capy' {{fhs-prefix}}/bin/capy
     sudo cp {{target-path}}/libcapy.* {{fhs-prefix}}/lib/
     @echo 'Precompiling boot libraries (populates compiled cache)'
@@ -113,7 +113,7 @@ install-fhs: (build "false")
         tmp_cache=$(mktemp -d); \
         XDG_CACHE_HOME="$$tmp_cache" LIBRARY_PATH="{{fhs-prefix}}/lib" LD_LIBRARY_PATH="{{fhs-prefix}}/lib" {{fhs-prefix}}/bin/capy --fresh-auto-compile -c 42; \
         echo 'Copying full cache into {{fhs-prefix}}/lib/capy/cache'; \
-        sudo rsync --checksum -r "$$tmp_cache"/capy/cache/ "{{fhs-prefix}}/lib/capy/cache/"; \
+        sudo cp -r "$$tmp_cache"/capy/cache/ "{{fhs-prefix}}/lib/capy/cache/"; \
         rm -rf "$$tmp_cache"
     @echo 'Done.'
 
