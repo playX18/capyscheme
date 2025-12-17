@@ -8,8 +8,8 @@ target-path := if profile == "release" {
     target-dir/'debug'
 }
 cc := 'clang'
-install-prefix := '~/.local/share'
-fhs-prefix := '/usr/local'
+
+prefix := '~/.local/share'
 version := `cargo info capy | awk '/^version:/ {print $2}' | head -n 1`
 cross := "false"
 dynlib-ext := if os() == "macos" {
@@ -59,7 +59,7 @@ build portable:
     if [ "{{portable}}" = "true" ]; then \
         {{cargo-bin}} build --profile {{profile}} --target {{target}} -p capy --features portable; \
     else \
-        CAPY_SYSROOT={{fhs-prefix}} {{cargo-bin}} build --no-default-features --profile {{profile}} --target {{target}} -p capy; \
+        CAPY_SYSROOT={{prefix}} {{cargo-bin}} build --no-default-features --profile {{profile}} --target {{target}} -p capy; \
     fi
 
     #@echo "Build boot binary & produce image"
@@ -72,36 +72,36 @@ build portable:
 
 
 install-scm:
-    mkdir -p {{install-prefix}}/capy/{{version}}
-    rsync --checksum -r lib {{install-prefix}}/capy/{{version}}
+    mkdir -p {{prefix}}/capy/{{version}}
+    rsync --checksum -r lib {{prefix}}/capy/{{version}}
 
 
 # FHS-style installation.
 #
-# Layout under {{fhs-prefix}}:
+# Layout under {{prefix}}:
 # - bin/capy
 # - lib/libcapy.*
 # - share/capy (Scheme stdlib)
 #
-# The runtime will pick this up when CAPY_SYSROOT={{fhs-prefix}} is set
+# The runtime will pick this up when CAPY_SYSROOT={{prefix}} is set
 # (or via CAPY_LOAD_PATH/CAPY_LOAD_COMPILED_PATH).
 install-fhs: (build "false") 
-    @echo 'Installing CapyScheme (FHS) to {{fhs-prefix}}'
-    sudo mkdir -p {{fhs-prefix}}/bin
-    sudo mkdir -p {{fhs-prefix}}/lib
-    sudo mkdir -p {{fhs-prefix}}/lib/capy/compiled/{{arch}}
-    sudo mkdir -p {{fhs-prefix}}/lib/capy/cache
-    sudo mkdir -p {{fhs-prefix}}/share
-    sudo mkdir -p {{fhs-prefix}}/share/capy
-    sudo cp -r lib/ {{fhs-prefix}}/share/capy/
-    sudo cp 'bin/capy' {{fhs-prefix}}/bin/capy
-    sudo cp {{target-path}}/libcapy.* {{fhs-prefix}}/lib/
+    @echo 'Installing CapyScheme (FHS) to {{prefix}}'
+    sudo mkdir -p {{prefix}}/bin
+    sudo mkdir -p {{prefix}}/lib
+    sudo mkdir -p {{prefix}}/lib/capy/compiled/{{arch}}
+    sudo mkdir -p {{prefix}}/lib/capy/cache
+    sudo mkdir -p {{prefix}}/share
+    sudo mkdir -p {{prefix}}/share/capy
+    sudo cp -r lib/ {{prefix}}/share/capy/
+    sudo cp 'bin/capy' {{prefix}}/bin/capy
+    sudo cp {{target-path}}/libcapy.* {{prefix}}/lib/
     @echo 'Precompiling boot libraries (populates compiled cache)'
     set -e; \
         tmp_cache=$(mktemp -d); \
-        CAPY_LOAD_PATH="{{fhs-prefix}}/share/capy" XDG_CACHE_HOME="$$tmp_cache" LIBRARY_PATH="{{fhs-prefix}}/lib" LD_LIBRARY_PATH="{{fhs-prefix}}/lib" {{fhs-prefix}}/bin/capy --fresh-auto-compile -c 42; \
-        echo 'Copying full cache into {{fhs-prefix}}/lib/capy/cache'; \
-        sudo cp -r "$$tmp_cache"/capy/cache/ "{{fhs-prefix}}/lib/capy/cache/"; \
+        CAPY_LOAD_PATH="{{prefix}}/share/capy" XDG_CACHE_HOME="$$tmp_cache" LIBRARY_PATH="{{prefix}}/lib" LD_LIBRARY_PATH="{{prefix}}/lib" {{prefix}}/bin/capy --fresh-auto-compile -c 42; \
+        echo 'Copying full cache into {{prefix}}/lib/capy/cache'; \
+        sudo cp -r "$$tmp_cache"/capy/cache/ "{{prefix}}/lib/capy/cache/"; \
         rm -rf "$$tmp_cache"
     @echo 'Done.'
 
@@ -360,38 +360,38 @@ compile-r7rs compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
 # Default installation method: portable binary.
 # 
 # Builds stage-0, stage-1, stage-2 and installs stage-2 to
-# {{install-prefix}}/capy/{{version}}.
+# {{prefix}}/capy/{{version}}.
 install-portable: (stage-2)
-    @echo 'Installing CapyScheme to {{install-prefix}}/capy/{{version}}'
-    mkdir -p {{install-prefix}}/capy/{{version}}
-    mkdir -p {{install-prefix}}/capy/{{version}}/extensions
-    rsync --checksum -r lib {{install-prefix}}/capy/{{version}}
-    cp 'stage-2/capy' {{install-prefix}}/capy/{{version}}/
-    cp 'stage-2/capyc' {{install-prefix}}/capy/{{version}}/
-    ln -sf {{install-prefix}}/capy/{{version}}/capy {{install-prefix}}/capy/{{version}}/capy-{{version}}
-    cp {{target-path}}/libcapy.* {{install-prefix}}/capy/{{version}}/
-    cp -r stage-2/compiled {{install-prefix}}/capy/{{version}}/
+    @echo 'Installing CapyScheme to {{prefix}}/capy/{{version}}'
+    mkdir -p {{prefix}}/capy/{{version}}
+    mkdir -p {{prefix}}/capy/{{version}}/extensions
+    rsync --checksum -r lib {{prefix}}/capy/{{version}}
+    cp 'stage-2/capy' {{prefix}}/capy/{{version}}/
+    cp 'stage-2/capyc' {{prefix}}/capy/{{version}}/
+    ln -sf {{prefix}}/capy/{{version}}/capy {{prefix}}/capy/{{version}}/capy-{{version}}
+    cp {{target-path}}/libcapy.* {{prefix}}/capy/{{version}}/
+    cp -r stage-2/compiled {{prefix}}/capy/{{version}}/
 
-    @echo "CapyScheme installed to {{install-prefix}}/capy/{{version}}"
-    @echo "Add {{install-prefix}}/capy/{{version}} to your PATH to use CapyScheme"
+    @echo "CapyScheme installed to {{prefix}}/capy/{{version}}"
+    @echo "Add {{prefix}}/capy/{{version}} to your PATH to use CapyScheme"
 
 
 SUDO :=`(id -u | grep -q '^0$$' && echo '' || echo 'sudo ')`
 
 # Install using FHS layout
 install: (stage-2) (build "false") 
-    @echo 'Installing CapyScheme (FHS) to {{fhs-prefix}}'
+    @echo 'Installing CapyScheme (FHS) to {{prefix}}'
     #!/usr/bin/env bash
     set -e
     
-    {{SUDO}} mkdir -p {{fhs-prefix}}/bin
-    {{SUDO}} mkdir -p {{fhs-prefix}}/lib
-    {{SUDO}} mkdir -p {{fhs-prefix}}/lib/capy/compiled
-    {{SUDO}} mkdir -p {{fhs-prefix}}/share/capy 
-    {{SUDO}} cp -r lib/ {{fhs-prefix}}/share/capy/
-    {{SUDO}} cp 'stage-2/capy' {{fhs-prefix}}/bin/capy
-    {{SUDO}} cp 'stage-2/capyc' {{fhs-prefix}}/bin/capyc
-    {{SUDO}} cp {{target-path}}/libcapy.* {{fhs-prefix}}/lib/
-    {{SUDO}} cp -r stage-2/compiled {{fhs-prefix}}/lib/capy/
+    {{SUDO}} mkdir -p {{prefix}}/bin
+    {{SUDO}} mkdir -p {{prefix}}/lib
+    {{SUDO}} mkdir -p {{prefix}}/lib/capy/compiled
+    {{SUDO}} mkdir -p {{prefix}}/share/capy 
+    {{SUDO}} cp -r lib/ {{prefix}}/share/capy/
+    {{SUDO}} cp 'stage-2/capy' {{prefix}}/bin/capy
+    {{SUDO}} cp 'stage-2/capyc' {{prefix}}/bin/capyc
+    {{SUDO}} cp {{target-path}}/libcapy.* {{prefix}}/lib/
+    {{SUDO}} cp -r stage-2/compiled {{prefix}}/lib/capy/
 
     @echo "Installation complete."
