@@ -214,7 +214,7 @@ compile-boot compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
 compile-core compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path: 
     @echo "Compiling core libraries using {{compiler}}"
 
-    mkdir -p {{out}}/core/
+    mkdir -p {{out}}/core/io/
     #!/usr/bin/env -S parallel --shebang --ungroup --jobs {{ num_cpus() }}
     {{compiler}} -o {{out}}/core/parameters.{{dynlib-ext}} -m "capy user" lib/core/parameters.scm 
     {{compiler}} -o {{out}}/core/io.{{dynlib-ext}} -m "capy user" lib/core/io.scm
@@ -232,6 +232,11 @@ compile-core compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
     {{compiler}} -o {{out}}/core/conditions.{{dynlib-ext}} -m "capy user" lib/core/conditions.scm
     {{compiler}} -o {{out}}/core/bytevector-transcoders.{{dynlib-ext}} -m "capy user" lib/core/bytevector-transcoders.scm
     {{compiler}} -o {{out}}/core/hashtables.{{dynlib-ext}} -m "capy user" lib/core/hashtables.scm
+    {{compiler}} -o {{out}}/core/enums.{{dynlib-ext}} -m "capy user" lib/core/enums.scm
+    {{compiler}} -o {{out}}/core/struct.{{dynlib-ext}} -m "capy user" lib/core/struct.scm
+    {{compiler}} -o {{out}}/core/unicode.{{dynlib-ext}} -m "capy user" lib/core/unicode.scm
+    {{compiler}} -o {{out}}/core/repl.{{dynlib-ext}} -m "capy user" lib/core/repl.scm
+    {{compiler}} -o {{out}}/core/io/assistants.{{dynlib-ext}} -m "capy user" lib/core/io/assistants.scm
     {{compiler}} -o {{out}}/core.{{dynlib-ext}} -m "capy user" lib/core.scm
 
 compile-rnrs compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
