@@ -144,7 +144,8 @@ stage-1:\
     (compile-rnrs "stage-0/capyc" "stage-1/compiled") \
     (compile-srfi "stage-0/capyc" "stage-1/compiled") \
     (compile-r7rs "stage-0/capyc" "stage-1/compiled") \
-    (compile-cli  "stage-0/capyc" "stage-1/compiled") 
+    (compile-cli  "stage-0/capyc" "stage-1/compiled") \
+    (compile-capy "stage-0/capyc" "stage-1/compiled")
     @echo "Creating stage-1 CapyScheme"
     cp stage-0/capy stage-1/capy
     cp stage-0/capyc stage-1/capyc 
@@ -157,7 +158,8 @@ stage-2: \
     (compile-rnrs "stage-1/capyc" "stage-2/compiled") \
     (compile-srfi "stage-1/capyc" "stage-2/compiled") \
     (compile-r7rs "stage-1/capyc" "stage-2/compiled") \
-    (compile-cli  "stage-1/capyc" "stage-2/compiled")
+    (compile-cli  "stage-1/capyc" "stage-2/compiled") \
+    (compile-capy "stage-1/capyc" "stage-2/compiled") 
     @echo "Creating stage-2 CapyScheme"
     cp stage-1/capy stage-2/capy
     cp stage-1/capyc stage-2/capyc
@@ -273,7 +275,8 @@ compile-rnrs compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
 compile-capy compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
     @echo "Compiling capy libraries using {{compiler}}"
 
-    mkdir -p {{out}}/capy/
+    mkdir -p {{out}}/capy/compiler/
+    mkdir -p {{out}}/capy/args/
     #!/usr/bin/env -S parallel --shebang --ungroup --jobs {{ num_cpus() }}
     {{compiler}} -o {{out}}/capy/pretty-print.{{dynlib-ext}} -m "capy user" lib/capy/pretty-print.sls 
     {{compiler}} -o {{out}}/capy/compiler/tree-il.{{dynlib-ext}} -m "capy user" lib/capy/compiler/tree-il.scm
