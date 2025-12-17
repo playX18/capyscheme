@@ -1,0 +1,4 @@
+[toolchain]
+channel = "nightly"
+# Keep this minimal: CI will always use nightly, and developers automatically
+# get the right toolchain when using rustup.
