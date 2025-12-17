@@ -1,6 +1,7 @@
 (library (boot cli)
     (export enter eval-string enter-compiler)
     (import (capy)
+            (core control)
             (core repl)
             (capy args)
             (capy args argparser))
@@ -177,6 +178,10 @@
     (format #t "CapyScheme Compiler ~a~%" (implementation-version))
     (format #t "Usage:~%~a~%" (argparser-usage parser))
     (exit 0))
+
+  (define (parse-module str)
+    (define parts (string-split str #\space))
+    (map string->symbol parts))
   
   (define (run)
     (define res (with-exception-handler 
@@ -206,6 +211,8 @@
     (when (arg-results-ref res "help")
       (print-help))
   
+    (define module-name (or (parse-module (arg-results-ref res "module"))
+                            '(capy user)))
 
     (when (and out-file 
             (or (null? source-files)
@@ -224,13 +231,15 @@
               (lambda (exn)
                 (print-condition exn (current-output-port))
                 (format #t ";; Compilation of file ~a failed.~%" file)
+                (when (marks-condition? exn)
+                  (stack-trace (condition-marks exn) (current-output-port)))
                 (exit 1))
               (lambda () 
                 (format #t ";; Compiling file ~a~%" file)
                 (define out (compile-file 
                   file 
                   out-file 
-                  #f
+                  (or (and module-name (resolve-module module-name #t #t)) #f)
                   #f))
                 (format #t ";; Compiled ~a -> ~a~%" file out))))
           source-files))))
@@ -273,6 +282,12 @@
     (value-help "DIR")
     split-commas)
   
+  (add-option! parser 
+    "module"
+    (abbreviation "m")
+    (help "Specify the module to compile source file in")
+    (value-help "MODULE-NAME"))
+
   (add-flag! parser 
     "help"
     (help "Show this help message and exit"))

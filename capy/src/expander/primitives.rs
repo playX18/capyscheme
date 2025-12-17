@@ -1641,13 +1641,6 @@ primitive_expanders!(
 pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     let capy_module = list!(ctx, Symbol::from_str(ctx, "capy"));
     t.pre_order(ctx, |ctx, t| match &t.kind {
-        TermKind::If(cond, cons, alt) => {
-            if let TermKind::Const(v) = cond.kind {
-                if v == Value::new(false) { *alt } else { *cons }
-            } else {
-                t
-            }
-        }
         TermKind::PrimCall(name, args) => {
             let expanders = &*PRIMITIVE_EXPANDERS;
 

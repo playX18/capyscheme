@@ -383,17 +383,6 @@
       ((char=? c #\#)                 ;the mighty octothorpe
        (let ((c (get-char p)))
          (case c
-           ((#\%)
-            (receive (typ id) (get-identifier p #\% #f)
-              (case id 
-                ((%app)
-                  (values 'identifier (string->symbol "#%app")))
-                ((%datum)
-                  (values 'identifier (string->symbol "#%datum")))
-                ((%top)
-                  (values 'identifier (string->symbol "#%top")))
-                (else 
-                  (reader-warning p "Invalid #% syntax: expected #%app, #%datum, or #%top" id)))))
            ((#\:)                      ; keyword
             (receive (type id) (get-identifier p (get-char p) #f)
               (values 'value (symbol->keyword id))))
@@ -449,9 +438,9 @@
                        (cond
                          ((eq? type 'identifier)
                           (case id
-                            ((capyscheme)
-                              (assert-mode p '#!capyscheme '(rnrs r6rs capy))
-                              (reader-mode-set! p 'capy))
+                            ;((capyscheme)
+                            ;  (assert-mode p '#!capyscheme '(rnrs r6rs capy))
+                            ;  (reader-mode-set! p 'capy))
                             ((r6rs)          ;r6rs.pdf
                              (assert-mode p "#!r6rs" '(rnrs r6rs capy))
                              (reader-mode-set! p 'r6rs))
@@ -537,20 +526,20 @@
                                        (values 'value #\xFFFD))))
                                (else
                                 (let ((char-name (list->string char*))
-                                      (char-names '(("nul" #\nul r6rs)
-                                                    ("null" #\nul r7rs)
-                                                    ("alarm" #\alarm r6rs r7rs)
-                                                    ("backspace" #\backspace r6rs r7rs)
-                                                    ("tab" #\tab r6rs r7rs)
-                                                    ("linefeed" #\linefeed r6rs)
-                                                    ("newline" #\linefeed r5rs r6rs r7rs)
-                                                    ("vtab" #\vtab r6rs)
-                                                    ("page" #\page r6rs)
-                                                    ("return" #\return r6rs r7rs)
-                                                    ("esc" #\esc r6rs)
-                                                    ("escape" #\esc r7rs)
-                                                    ("space" #\space r5rs r6rs r7rs)
-                                                    ("delete" #\delete r6rs r7rs))))
+                                      (char-names '(("nul" #\nul r6rs capy)
+                                                    ("null" #\nul r7rs capy)
+                                                    ("alarm" #\alarm r6rs r7rs capy)
+                                                    ("backspace" #\backspace r6rs r7rs capy)
+                                                    ("tab" #\tab r6rs r7rs capy)
+                                                    ("linefeed" #\linefeed r6rs capy)
+                                                    ("newline" #\linefeed r5rs r6rs r7rs capy)
+                                                    ("vtab" #\vtab r6rs capy)
+                                                    ("page" #\page r6rs capy)
+                                                    ("return" #\return r6rs r7rs capy)
+                                                    ("esc" #\esc r6rs capy)
+                                                    ("escape" #\esc r7rs capy)
+                                                    ("space" #\space r5rs r6rs r7rs capy)
+                                                    ("delete" #\delete r6rs r7rs capy))))
                                   (cond
                                     ((or (assoc char-name char-names)
                                          (and (reader-fold-case? p)
@@ -568,7 +557,7 @@
                       (else
                        (lp (cons (get-char p) char*)))))))
            ((#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7 #\8 #\9)
-            (assert-mode p "#<n>=<datum> and #<n>#" '(rnrs r7rs))
+            (assert-mode p "#<n>=<datum> and #<n>#" '(rnrs r7rs capy))
             (let lp ((char* (list c)))
               (let ((next (lookahead-char p)))
                 (cond
@@ -585,6 +574,7 @@
                    (values 'reference (string->number (list->string (reverse char*)) 10)))
                   (else
                    (reader-warning p "Expected #<n>=<datum> or #<n>#" next)
+
                    (get-token p))))))
            (else
             (reader-warning p "Invalid #-syntax" c)
@@ -666,7 +656,7 @@
                         (unless (eq? lextype terminator)
                             (if (eof-object? x)
                                 (eof-warning p)
-                                (reader-error p "Mismatched parenthesis/brackes" lextype x terminator)))
+                                (reader-error p "Mismatched parenthesis/brackes" src lextype x terminator)))
                         (case type 
                             [(vector)
                                 (let ([s (list->vector head)]

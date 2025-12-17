@@ -131,7 +131,7 @@ pub mod base_ops {
         std::process::exit(code);
     }
 
-    #[scheme(name = ".return-error")]
+    #[scheme(name = "%return-error")]
     pub fn return_error(err: Value<'gc>) -> () {
         nctx.return_error(err)
     }
@@ -141,7 +141,7 @@ pub mod base_ops {
         nctx.return_(args)
     }
 
-    #[scheme(name = ".call/cc-unsafe")]
+    #[scheme(name = "%call/cc-unsafe")]
     pub fn call_cc_unsafe(proc: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         let k = nctx.retk;
         let k = make_closure_call_cc_cont(nctx.ctx, [k]);
@@ -164,7 +164,7 @@ pub mod base_ops {
     ///
     /// This function will make handler to return to `retk` and `reth` of the caller of
     /// `.with-handler`.
-    #[scheme(name = ".with-handler")]
+    #[scheme(name = "%with-handler")]
     pub fn with_exception_handler(
         handler: Value<'gc>,
         thunk: Value<'gc>,
@@ -175,7 +175,7 @@ pub mod base_ops {
         unsafe { nctx.return_call_unsafe(retk, handler_closure.into(), thunk, &[]) }
     }
 
-    #[scheme(name = ".raise")]
+    #[scheme(name = "%raise")]
     pub fn raise(e: Value<'gc>) -> () {
         unsafe {
             let reth = nctx.reth;
@@ -198,7 +198,7 @@ pub mod base_ops {
             }
             Some(ctx.str(&p.to_string()).downcast::<Str>())
         } else {
-            None 
+            None
         };
         let sym = Symbol::gensym(nctx.ctx, prefix);
         nctx.return_(sym.into())

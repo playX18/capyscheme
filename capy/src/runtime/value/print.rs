@@ -38,7 +38,11 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
     }
 
     fn is_interesting(&self, x: Value<'gc>) -> bool {
-        x.is_pair() || x.is::<Vector>() || x.is::<ByteVector>() || x.is::<Syntax<'gc>>()
+        x.is_pair()
+            || x.is::<Vector>()
+            || x.is::<ByteVector>()
+            || x.is::<Syntax<'gc>>()
+            || x.is::<Tuple>()
     }
 
     pub fn print(&mut self, x: Value<'gc>, slashify: bool, level: usize) -> std::fmt::Result {

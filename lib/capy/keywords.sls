@@ -1,6 +1,0 @@
-(library (capy keywords)
-    (export (rename (new-lambda lambda))
-            (rename (new-app |#%app|))
-            (rename (new-define define)))
-    (import (capy keywords kw)
-            (core control)))

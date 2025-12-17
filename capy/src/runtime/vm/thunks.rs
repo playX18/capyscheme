@@ -289,14 +289,16 @@ thunks! {
         ctx: Context<'gc>,
         subr: Value<'gc>,
         got: usize,
-        expected: isize
+        expected: isize,
+        rands: *const Value<'gc>
     ) -> Value<'gc> {
         //print_stacktraces_impl(ctx);
+        let rands = unsafe { std::slice::from_raw_parts(rands, got) };
         let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
         let msg = if is_cont {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
-                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}", meta = if subr.is::<Closure>() {
+                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}", meta = if subr.is::<Closure>() {
                     subr.downcast::<Closure>().meta.get()
                 } else {
                     Value::new(false)
@@ -310,7 +312,7 @@ thunks! {
         } else {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
-                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}", meta = if subr.is::<Closure>() {
+                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}", meta = if subr.is::<Closure>() {
                     subr.downcast::<Closure>().meta.get()
                 } else {
                     Value::new(false)
@@ -3976,7 +3978,7 @@ pub fn make_assertion_violation<'gc>(
         .root_module()
         .get(
             ctx,
-            Symbol::from_str(ctx, ".make-assertion-violation").into(),
+            Symbol::from_str(ctx, "%make-assertion-violation").into(),
         )
         .unwrap_or_else(|| {
             panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
@@ -4003,7 +4005,7 @@ pub fn make_undefined_violation<'gc>(
         .root_module()
         .get(
             ctx,
-            Symbol::from_str(ctx, ".make-undefined-violation").into(),
+            Symbol::from_str(ctx, "%make-undefined-violation").into(),
         )
         .unwrap_or_else(|| {
             panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
@@ -4029,7 +4031,7 @@ pub fn make_error<'gc>(
     let error = ctx
         .globals()
         .root_module()
-        .get(ctx, Symbol::from_str(ctx, ".make-error").into())
+        .get(ctx, Symbol::from_str(ctx, "%make-error").into())
         .expect("pre boot code");
 
     match call_scheme(ctx, error, args) {
@@ -4054,7 +4056,7 @@ pub fn make_io_error<'gc>(
     let io_error = ctx
         .globals()
         .root_module()
-        .get(ctx, Symbol::from_str(ctx, ".make-io-error").into())
+        .get(ctx, Symbol::from_str(ctx, "%make-io-error").into())
         .unwrap_or_else(|| {
             panic!(
                 "pre boot code, who={who}, message={message}, irritants={:?}",
@@ -4081,7 +4083,7 @@ pub fn make_lexical_violation<'gc>(
     let lexical_violation = ctx
         .globals()
         .root_module()
-        .get(ctx, Symbol::from_str(ctx, ".make-lexical-violation").into())
+        .get(ctx, Symbol::from_str(ctx, "%make-lexical-violation").into())
         .unwrap_or_else(|| panic!("pre boot code, who={who}, message={message}",));
 
     match call_scheme(ctx, lexical_violation, args) {

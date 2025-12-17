@@ -25,7 +25,7 @@ into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
 For a traditional Unix filesystem layout (FHS), you can install:
 
 ```sh
-just fhs-prefix=/usr/local install-fhs
+just fhs-prefix=/usr/local install
 ```
 
 This installs:
