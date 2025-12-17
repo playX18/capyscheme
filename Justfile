@@ -342,9 +342,10 @@ install-portable: (stage-2)
 dist-portable outdir='dist' outname='' stagedir='stage-dist':
     #!/usr/bin/env bash
     set -euxo pipefail
+    mkdir -p {{outdir}}
     archive_name="{{ if outname == "" { "capyscheme-" + version + "-" + target + "-" + arch + "-" + profile + ".tar.gz" } else { outname } }}"
     stage_root={{stagedir}}
-    stage_prefix=$stage_root/{{prefix}}
+    stage_prefix=$stage_root
     stage_install_dir=$stage_prefix/capy/{{version}}
     echo "Staging portable install into $stage_install_dir"
     rm -rf $stage_root

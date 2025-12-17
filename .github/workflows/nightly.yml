@@ -73,7 +73,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
       - name: Install fresh Justfile 
@@ -93,14 +92,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Keep the build invocation aligned with project docs.
-          just stage-2
+          just version=nightly-$(date -u +%Y-%m-%d) stage-2
 
       - name: Create portable tarball
         shell: bash
         run: |
           set -euo pipefail
-          just dist-portable
+          just version=nightly-$(date -u +%Y-%m-%d) dist-portable
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
