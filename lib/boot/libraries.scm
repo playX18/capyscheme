@@ -12,7 +12,7 @@
                          with-continuation-mark
                          current-continuation-marks
                          identifier-syntax
-                         #%app
+                        
                          assert
                          else => ... _
                          eq?
@@ -67,7 +67,7 @@
         logior logand logxor lognot
         current-jiffy jiffies-per-second current-second
         library define-library define define-values define-syntax
-                         define-syntax-rule #%app
+                         define-syntax-rule 
                          quote lambda if set!
                          cond case and or
                          let let* letrec letrec* let-values let*-values

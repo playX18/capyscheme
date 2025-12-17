@@ -678,6 +678,16 @@
       (let lp ((specs specs) (e '()) (r '()) (x '()))
         (syntax-case specs (rename)
           (() (values e r x))
+          (((rename from to) . rest)
+            (and (identifier? #'from)
+                 (identifier? #'to))
+            (cond 
+              ((re-export? (syntax->datum #'from))
+                (lp #'rest e (cons #'(from . to) r) x))
+              ((replace? (syntax->datum #'from))
+                (lp #'rest e r (cons #'(from . to) x)))
+              (else 
+                (lp #'rest (cons #'(from . to) e) r x))))
           (((rename (from to) ...) . rest)
            (and (and-map identifier? #'(from ...))
                 (and-map identifier? #'(to ...)))
@@ -762,7 +772,7 @@
                  ...
                  ;; (capy prelims) exports "plain" #%app form which must be imported
                  ;; by any library in order to correctly run code. 
-                 (import (capy prelims))
+                 
                  (export e ...)
                  (re-export r ...)
                  (export! x ...)
@@ -1173,8 +1183,12 @@
     srfi-62  ;; s-expression comments
     srfi-64  ;; A Scheme API for test suites
     srfi-87  ;; => in case clauses
+    srfi-98  ;; environment variables
     srfi-105 ;; curly infix expressions
     srfi-124 ;; ephemerons
+    srfi-126 ;; R6RS hashtables
+    srfi-125 ;; intermediate hashtables
+    srfi-128 ;; comparators (reduced)
     srfi-130 ;; Cursor-based string library
     srfi-132 ;; sorting
     srfi-157 ;; Continuation marks

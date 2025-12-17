@@ -190,11 +190,20 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
     pub fn read_program(&self) -> Result<Vec<Value<'gc>>, LexicalError<'gc>> {
         let root_node = self.tree.root_node();
+        let start = root_node.start_position();
+        let end = root_node.end_position();
+
+        let start_str = format!("{}:{}", start.row + 1, start.column + 1);
+        let end_str = format!("{}:{}", end.row + 1, end.column + 1);
+
         assert_eq!(
             root_node.kind(),
             "program",
-            "Root node is not a program, file: {}",
-            self.source_file
+            "Root node is not a program, but {}, file: {}, location: {}, end: {}",
+            self.text_of(&root_node),
+            self.source_file,
+            start_str,
+            end_str
         );
         let mut cursor = self.tree.walk();
 

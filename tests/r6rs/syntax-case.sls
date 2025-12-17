@@ -3,7 +3,6 @@
 (library (tests r6rs syntax-case)
   (export run-syntax-case-tests)
   (import (for (rnrs) run expand)
-          (capy keywords)
           (rename (only (rnrs base) cons) (cons kons)) ; for free-identifier=?
           (tests r6rs test))
 

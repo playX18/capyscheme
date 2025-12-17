@@ -18,6 +18,7 @@
 ;     which is modelled after the Posix semantics of lseek.
 ; The value of limit is the current size of the output.
 
+
 (define bytevector-io.type 0)  ; symbol
 (define bytevector-io.bv 1)    ; bytevector
 (define bytevector-io.i 2)     ; fixnum (current position)

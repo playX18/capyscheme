@@ -237,7 +237,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let expected = self.builder.ins().iconst(types::I64, expected as i64);
                     let err = self.builder.ins().call(
                         self.thunks.wrong_number_of_args,
-                        &[ctx, self.rator, got, expected],
+                        &[ctx, self.rator, got, expected, rands],
                     );
                     let err = self.builder.inst_results(err)[0];
                     let error_handler = self.default_error_handler();
@@ -323,7 +323,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let expected = self.builder.ins().iconst(types::I64, expected as i64);
                     let err = self.builder.ins().call(
                         self.thunks.wrong_number_of_args,
-                        &[ctx, self.rator, got, expected],
+                        &[ctx, self.rator, got, expected, rands],
                     );
                     let err = self.builder.inst_results(err)[0];
                     let error_handler = self.default_error_handler();
@@ -403,7 +403,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let handler = self.default_error_handler();
                     let err = self.builder.ins().call(
                         self.thunks.wrong_number_of_args,
-                        &[ctx, num_rands, got, expected],
+                        &[ctx, num_rands, got, expected, rands],
                     );
                     let err = self.builder.inst_results(err)[0];
                     self.continue_to(handler, &[err]);

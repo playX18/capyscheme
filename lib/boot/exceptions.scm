@@ -2,11 +2,13 @@
 
 (define exception-handler-key '|exception-handler-key aeee9cb5-b850-45ad-b460-c9868b7f2736|)
 
+
 (define (call-with-exception-handler proc thunk)
   "Call THUNK with exception handler PROC installed."
+
   (let ([res (with-continuation-mark
               exception-handler-key proc
-              (.with-handler proc thunk))])
+              (%with-handler proc thunk))])
     (unspecified)
     res))
 
@@ -114,12 +116,12 @@
 (define (default-uncaught-exception-handler exn)
   (call-with-exception-handler
     (lambda (e)
-      (.return-error e))
+      (%return-error e))
     (lambda ()
       (define out (current-output-port))
       ((current-exception-printer) exn out)
       (format out "~%~!")
-      (.return-error exn))))
+      (%return-error exn))))
 
 (define uncaught-exception-handler
   (let ([p (make-thread-local-fluid default-uncaught-exception-handler)])

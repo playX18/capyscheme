@@ -65,7 +65,7 @@
 
   (define saved-record ($winders))
   (define marks (current-continuation-marks))
-  (.call/cc-unsafe 
+  (%call/cc-unsafe 
     (lambda (k)
       (f (attach-cont-props 
         saved-record

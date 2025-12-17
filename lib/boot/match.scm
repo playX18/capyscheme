@@ -84,11 +84,11 @@
 ;;> @scheme{___} is provided as an alias for @scheme{...} when it is
 ;;> inconvenient to use the ellipsis (as in a syntax-rules template).
 
-;;> The @scheme{..1} syntax is exactly like the @scheme{...} except
+;;> The @scheme{__1} syntax is exactly like the @scheme{...} except
 ;;> that it matches one or more repetitions (like a regexp "+").
 
-;;> @example{(match (list 1 2) ((a b c ..1) c))}
-;;> @example{(match (list 1 2 3) ((a b c ..1) c))}
+;;> @example{(match (list 1 2) ((a b c __1) c))}
+;;> @example{(match (list 1 2 3) ((a b c __1) c))}
 
 ;;> The boolean operators @scheme{and}, @scheme{or} and @scheme{not}
 ;;> can be used to group and negate patterns analogously to their
@@ -212,7 +212,7 @@
 ;;
 ;; 2021/06/21 - fix for `(a ...)' patterns where `a' is already bound
 ;;              (thanks to Andy Wingo)
-;; 2020/09/04 - [OMITTED IN GUILE] perf fix for `not`; rename `..=', `..=', `..1' per SRFI 204
+;; 2020/09/04 - [OMITTED IN GUILE] perf fix for `not`; rename `..=', `..=', `__1' per SRFI 204
 ;; 2020/08/21 - [OMITTED IN GUILE] fixing match-letrec with unhygienic insertion
 ;; 2020/07/06 - [OMITTED IN GUILE] adding `..=' and `..=' patterns; fixing ,@ patterns
 ;; 2016/10/05 - [OMITTED IN GUILE] treat keywords as literals, not identifiers, in Chicken
@@ -225,7 +225,7 @@
 ;; 2011/09/25 - fixing bug when directly matching an identifier repeated in
 ;;              the pattern (thanks to Stefan Israelsson Tampe)
 ;; 2011/01/27 - fixing bug when matching tail patterns against improper lists
-;; 2010/09/26 - adding `..1' patterns (thanks to Ludovic Courtès)
+;; 2010/09/26 - adding `__1' patterns (thanks to Ludovic Courtès)
 ;; 2010/09/07 - fixing identifier extraction in some `...' and `***' patterns
 ;; 2009/11/25 - adding `***' tree search patterns
 ;; 2008/03/20 - fixing bug where (a ...) matched non-lists
@@ -370,7 +370,7 @@
 ;; pattern so far.
 
 (define-syntax match-two
-  (syntax-rules (_ ___ - ..1 *** quote quasiquote ? $ = and or not set! get!)
+  (syntax-rules (_ ___ - __1 *** quote quasiquote ? $ = and or not set! get!)
     ((match-two v () g+s (sk ...) fk i)
      (if (null? v) (sk ... i) fk))
     ((match-two v (quote p) g+s (sk ...) fk i)
@@ -406,7 +406,7 @@
      (match-extract-vars p (match-gen-search v p q g+s sk fk i) i ()))
     ((match-two v (p *** . q) g+s sk fk i)
      (match-syntax-error "invalid use of ***" (p *** . q)))
-    ((match-two v (p ..1) g+s sk fk i)
+    ((match-two v (p __1) g+s sk fk i)
      (if (pair? v)
          (match-one v (p ___) g+s sk fk i)
          fk))
@@ -755,7 +755,7 @@
 ;; (match-extract-vars pattern continuation (ids ...) (new-vars ...))
 
 (define-syntax match-extract-vars
-  (syntax-rules (_ ___ ..1 *** ? $ = quote quasiquote and or not get! set!)
+  (syntax-rules (_ ___ __1 *** ? $ = quote quasiquote and or not get! set!)
     ((match-extract-vars (? pred . p) . x)
      (match-extract-vars p . x))
     ((match-extract-vars ($ rec . p) . x)
@@ -787,7 +787,7 @@
     ((match-extract-vars - (k ...) i v)    (k ... v))
     ((match-extract-vars ___ (k ...) i v)  (k ... v))
     ((match-extract-vars *** (k ...) i v)  (k ... v))
-    ((match-extract-vars ..1 (k ...) i v)  (k ... v))
+    ((match-extract-vars __1 (k ...) i v)  (k ... v))
     ;; This is the main part, the only place where we might add a new
     ;; var if it's an unbound symbol.
     ((match-extract-vars p (k ...) (i ...) v)

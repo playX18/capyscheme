@@ -422,22 +422,20 @@
       #f)
     #f))
 
-(define undefined-violation
-  (lambda (who . message)
-    (define marks (current-continuation-marks))
+(define (undefined-violation who . message)  
+  (define marks (current-continuation-marks))
+  (raise
+    (apply
+      condition
+      (filter
+        values
+        (list
+          (make-undefined-violation)
+          (make-marks-condition marks)
+          (and who (make-who-condition who))
+          (and (pair? message) (make-message-condition (car message))))))))
 
-    (raise
-      (apply
-        condition
-        (filter
-          values
-          (list
-            (make-undefined-violation)
-            (make-marks-condition marks)
-            (and who (make-who-condition who))
-            (and (pair? message) (make-message-condition (car message)))))))))
-
-(define (.make-undefined-violation who . message)
+(define (%make-undefined-violation who . message)
   (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (apply
@@ -549,7 +547,7 @@
 (define raise-i/o-encoding-error
   (lambda (who message port char)
     (raise-misc-i/o-error make-i/o-encoding-error who message port char)))
-(define .make-io-error
+(define %make-io-error
   (lambda (who message . irritants)
     (define marks (current-continuation-marks))
     (if (or (not who) (string? who) (symbol? who))
@@ -568,7 +566,7 @@
       #f)))
 
 
-(define (.make-assertion-violation who message . irritants)
+(define (%make-assertion-violation who message . irritants)
   (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
@@ -586,7 +584,7 @@
     #f))
 
 
-(define (.make-error who message . irritants)
+(define (%make-error who message . irritants)
   (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
@@ -603,7 +601,7 @@
       #f)
     #f))
 
-(define (.make-implementation-restriction-violation who message . irritants)
+(define (%make-implementation-restriction-violation who message . irritants)
   (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
     (if (string? message)
@@ -631,7 +629,7 @@
           (and who (make-who-condition who))
           (and (pair? message) (make-message-condition (car message))))))))
 
-(define .make-lexical-violation
+(define %make-lexical-violation
   (lambda (who . message)
     (if (or (not who) (string? who) (symbol? who))
       (apply

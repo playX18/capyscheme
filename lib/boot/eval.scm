@@ -34,7 +34,7 @@
                   %compile-fallback-path
                   (canonical->suffix (canonicalize-path-string file))
                   (compiled-extension))))
-        (and (false-if-exception (create-directory* (dirname f)))
+        (and (create-directory* (dirname f))
              f))))
 
 ;; Compile `filename` and put output into `compiled-path`.

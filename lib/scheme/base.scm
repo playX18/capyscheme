@@ -10,7 +10,7 @@
                   (let-syntax r6rs:let-syntax)
                   (letrec-syntax r6rs:letrec-syntax)))
 
-  (export #%app
+  (export 
           *
           +
           -

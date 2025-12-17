@@ -90,7 +90,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
 
     if let Some(sysroot_dir) = sysroot_dir.as_ref() {
         let candidates = [
-            sysroot_dir.join("share").join("capy"),
+            sysroot_dir.join("share").join("capy").join("lib"),
             sysroot_dir.join("lib"),
         ];
         for stdlib_dir in candidates {
@@ -106,12 +106,6 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         // Prefer the sysroot cache (populated by FHS installs) for compiled artifacts,
         // then fall back to the historical compiled locations.
         let compiled_candidates = [
-            sysroot_dir
-                .join("lib")
-                .join("capy")
-                .join("cache")
-                .join(env!("CARGO_PKG_VERSION"))
-                .join(plan),
             sysroot_dir.join("lib").join("capy").join("compiled"),
             sysroot_dir.join("compiled"),
         ];
@@ -241,9 +235,9 @@ pub fn find_path_to<'gc>(
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
-    arch: Option<&str>,
+    _arch: Option<&str>,
 ) -> Result<Option<(PathBuf, PathBuf, Option<PathBuf>)>, Value<'gc>> {
-    let arch = arch.unwrap_or(std::env::consts::ARCH);
+    //let arch = arch.unwrap_or(std::env::consts::ARCH);
     let filename = filename.as_ref();
     let dir = in_vicinity.map(|p| p.as_ref().to_owned());
 
@@ -294,6 +288,7 @@ pub fn find_path_to<'gc>(
                 }
             }
         }
+
         if source_path.is_none() {
             'outer: while ps.is_pair() {
                 let next = ps.cdr();
@@ -346,8 +341,9 @@ pub fn find_path_to<'gc>(
         if dir.is_dir() {
             let candidate = dir
                 //  .join(arch)
-                .join(&source_path)
+                .join(&filename)
                 .with_extension(DYNLIB_EXTENSION);
+
             if candidate.exists()
                 && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
                 && let Some(source_time) = full_source_path
@@ -359,8 +355,8 @@ pub fn find_path_to<'gc>(
                 && compiled_is_fresh(&full_source_path, &candidate, source_time, compiled_time)
             {
                 compiled_file = Some(candidate);
+                break;
             }
-            break;
         }
         cpath = cpath.cdr();
     }
@@ -377,20 +373,22 @@ fn fallback_file_name<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> PathBuf
         .downcast::<Str>()
         .to_string();
     let fallback = Path::new(&fallback);
-    if !fallback.exists() {
-        std::fs::create_dir_all(fallback).expect("Failed to create fallback directory");
-    }
+
     // Keep caches separated by arch so a shared cache directory can be used.
     let fallback_arch = fallback.join(std::env::consts::ARCH);
-    if !fallback_arch.exists() {
-        std::fs::create_dir_all(&fallback_arch).expect("Failed to create fallback directory");
-    }
+
     // Strip the root prefix if present so we can append absolute paths to the cache directory
     let relative_source = path.strip_prefix("/").unwrap_or(path);
 
-    fallback_arch
+    let full_path = fallback_arch
         .join(relative_source)
-        .with_extension(DYNLIB_EXTENSION)
+        .with_extension(DYNLIB_EXTENSION);
+    if let Some(parent) = full_path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).expect("Failed to create fallback directory");
+        }
+    }
+    full_path
 }
 
 pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
@@ -435,6 +433,8 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
         {
             compiled_thunk = libs.load(&fallback, ctx).unwrap_or(Value::new(false));
         }
+    } else if let Some(compiled) = compiled.as_ref() {
+        compiled_thunk = libs.load(compiled, ctx).unwrap_or(Value::new(false));
     }
 
     if compiled_thunk.is::<Closure>() {
@@ -569,6 +569,7 @@ pub mod load_ops {
             current_module(nctx.ctx).get(nctx.ctx).downcast()
         };
 
+        let before_opts = ir;
         ir = primitives::resolve_primitives(nctx.ctx, ir, m);
         ir = primitives::expand_primitives(nctx.ctx, ir);
 
@@ -591,6 +592,20 @@ pub mod load_ops {
                 .open(format!("{}.ir.scm", destination))
                 .unwrap();
             println!(";; TRACE  (capy)@load: IR -> {}.ir.scm", destination);
+
+            let doc_noopt = before_opts.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+            let mut file_noopt = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(format!("{}.ir.noopt.scm", destination))
+                .unwrap();
+            println!(
+                ";; TRACE  (capy)@load: IR noopt -> {}.ir.noopt.scm",
+                destination
+            );
+
+            doc_noopt.1.render(80, &mut file_noopt).unwrap();
             doc.1.render(80, &mut file).unwrap();
 
             let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
