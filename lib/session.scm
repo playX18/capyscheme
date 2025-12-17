@@ -22,7 +22,7 @@
                                  (string-append elt "/"))
                                dir-hint-mname)))
         (cond 
-            [(%search-load-path (in-vicinity dir-hint leaf)) => car]
+            [(%search-load-path (in-vicinity dir-hint leaf)) => (lambda (ls) (list-ref ls 1))]
             [else #f]))
 
     (define (fold-bindings proc init pat folder)

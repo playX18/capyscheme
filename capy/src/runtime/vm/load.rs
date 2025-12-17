@@ -172,6 +172,7 @@ static DYNLIB_EXTENSION: &str = if cfg!(target_os = "linux") {
     "dylib"
 };
 
+#[allow(dead_code)]
 fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     use sha3::{Digest, Sha3_256};
 
@@ -241,7 +242,7 @@ pub fn find_path_to<'gc>(
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
     arch: Option<&str>,
-) -> Result<Option<(PathBuf, PathBuf)>, Value<'gc>> {
+) -> Result<Option<(PathBuf, PathBuf, Option<PathBuf>)>, Value<'gc>> {
     let arch = arch.unwrap_or(std::env::consts::ARCH);
     let filename = filename.as_ref();
     let dir = in_vicinity.map(|p| p.as_ref().to_owned());
@@ -315,23 +316,27 @@ pub fn find_path_to<'gc>(
     }
 
     let source_path = match source_path {
-        Some(p) => p.canonicalize().map_err(|err| {
-            make_io_error(
-                ctx,
-                "find-path-to",
-                Str::new(
-                    *ctx,
-                    format!("Failed to canonicalize path {}: {err}", p.display()),
-                    true,
-                )
-                .into(),
-                &[],
-            )
-        })?,
+        Some(p) => p,
         None => return Ok(None),
     };
+    let full_source_path = source_path.canonicalize().map_err(|err| {
+        make_io_error(
+            ctx,
+            "find-path-to",
+            Str::new(
+                *ctx,
+                format!(
+                    "Failed to canonicalize path {}: {err}",
+                    source_path.display()
+                ),
+                true,
+            )
+            .into(),
+            &[],
+        )
+    })?;
 
-    let hashed = hash_filename(&source_path);
+    //let hashed = hash_filename(&source_path);
     let mut compiled_file = None;
 
     let mut cpath = ctx.globals().loc_load_compiled_path().get();
@@ -340,10 +345,19 @@ pub fn find_path_to<'gc>(
         let dir = PathBuf::from(cpath.car().downcast::<Str>().to_string());
         if dir.is_dir() {
             let candidate = dir
-                .join(arch)
-                .join(&hashed)
+                //  .join(arch)
+                .join(&source_path)
                 .with_extension(DYNLIB_EXTENSION);
-            if candidate.exists() && candidate.metadata().ok().filter(|m| m.is_file()).is_some() {
+            if candidate.exists()
+                && candidate.metadata().ok().filter(|m| m.is_file()).is_some()
+                && let Some(source_time) = full_source_path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                && let Some(compiled_time) =
+                    candidate.metadata().ok().and_then(|m| m.modified().ok())
+                && compiled_is_fresh(&full_source_path, &candidate, source_time, compiled_time)
+            {
                 compiled_file = Some(candidate);
             }
             break;
@@ -351,27 +365,32 @@ pub fn find_path_to<'gc>(
         cpath = cpath.cdr();
     }
 
-    if compiled_file.is_none() {
-        let fallback = ctx
-            .globals()
-            .loc_compile_fallback_path()
-            .get()
-            .downcast::<Str>()
-            .to_string();
-        let fallback = Path::new(&fallback);
-        if !fallback.exists() {
-            std::fs::create_dir_all(fallback).expect("Failed to create fallback directory");
-        }
-        // Keep caches separated by arch so a shared cache directory can be used.
-        let fallback_arch = fallback.join(arch);
-        if !fallback_arch.exists() {
-            std::fs::create_dir_all(&fallback_arch).expect("Failed to create fallback directory");
-        }
-        let candidate = fallback_arch.join(&hashed).with_extension(DYNLIB_EXTENSION);
+    Ok(Some((source_path, full_source_path, compiled_file)))
+}
 
-        compiled_file = Some(candidate);
+fn fallback_file_name<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    let fallback = ctx
+        .globals()
+        .loc_compile_fallback_path()
+        .get()
+        .downcast::<Str>()
+        .to_string();
+    let fallback = Path::new(&fallback);
+    if !fallback.exists() {
+        std::fs::create_dir_all(fallback).expect("Failed to create fallback directory");
     }
-    Ok(Some((source_path, compiled_file.unwrap())))
+    // Keep caches separated by arch so a shared cache directory can be used.
+    let fallback_arch = fallback.join(std::env::consts::ARCH);
+    if !fallback_arch.exists() {
+        std::fs::create_dir_all(&fallback_arch).expect("Failed to create fallback directory");
+    }
+    // Strip the root prefix if present so we can append absolute paths to the cache directory
+    let relative_source = path.strip_prefix("/").unwrap_or(path);
+
+    fallback_arch
+        .join(relative_source)
+        .with_extension(DYNLIB_EXTENSION)
 }
 
 pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
@@ -384,31 +403,38 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
 ) -> Result<Value<'gc>, Value<'gc>> {
     let filename = filename.as_ref();
 
-    let (source, compiled) = match find_path_to(ctx, filename, in_vicinity, resolve_relative, arch)?
-    {
-        Some(v) => v,
-        None => {
-            return Err(make_io_error(
-                ctx,
-                "load",
-                Str::new(
-                    *ctx,
-                    &format!("File not found: {}", filename.to_string_lossy()),
-                    true,
-                )
-                .into(),
-                &[],
-            ));
-        }
-    };
+    let (source, full_source_path, compiled) =
+        match find_path_to(ctx, filename, in_vicinity, resolve_relative, arch)? {
+            Some(v) => v,
+            None => {
+                return Err(make_io_error(
+                    ctx,
+                    "load",
+                    Str::new(
+                        *ctx,
+                        &format!("File not found: {}", filename.to_string_lossy()),
+                        true,
+                    )
+                    .into(),
+                    &[],
+                ));
+            }
+        };
 
     let libs = LIBRARY_COLLECTION.fetch(*ctx);
     let mut compiled_thunk = Value::new(false);
+    let fallback = fallback_file_name(ctx, &full_source_path);
 
-    // Compiled artifacts are content-addressed, so existence is enough to treat them as fresh.
-    // If loading fails we fall back to recompilation below.
-    if compiled.exists() && !fresh_auto_compile(ctx) {
-        compiled_thunk = libs.load(&compiled, ctx).unwrap_or(Value::new(false));
+    if compiled.is_none() && !fresh_auto_compile(ctx) {
+        if let Some(source_time) = full_source_path
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            && let Some(compiled_time) = fallback.metadata().ok().and_then(|m| m.modified().ok())
+            && compiled_is_fresh(&full_source_path, &fallback, source_time, compiled_time)
+        {
+            compiled_thunk = libs.load(&fallback, ctx).unwrap_or(Value::new(false));
+        }
     }
 
     if compiled_thunk.is::<Closure>() {
@@ -416,16 +442,20 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
     }
     if !FORCE_COMPILE {
         let source_str = Str::new(*ctx, source.display().to_string(), true);
-        let compiled_str = Str::new(*ctx, compiled.display().to_string(), true);
-
-        return Ok(Value::cons(ctx, source_str.into(), compiled_str.into()));
+        let compiled_str = if let Some(compiled) = compiled {
+            Str::new(*ctx, compiled.display().to_string(), true)
+        } else {
+            Str::new(*ctx, fallback.display().to_string(), true)
+        };
+        let full_source_path_str = Str::new(*ctx, full_source_path.display().to_string(), true);
+        return Ok(list!(ctx, source_str, full_source_path_str, compiled_str));
     }
     let f =
         crate::compiler::compile_file(ctx, source, Some(current_module(ctx).get(ctx).downcast()))?;
     let product = crate::compiler::compile_cps_to_object(ctx, f, Default::default())?;
-    crate::compiler::link_object_product(ctx, product, &compiled)?;
+    crate::compiler::link_object_product(ctx, product, &fallback)?;
 
-    libs.load(compiled, ctx).map_err(|err| {
+    libs.load(&fallback, ctx).map_err(|err| {
         make_io_error(
             ctx,
             "load",
@@ -452,6 +482,7 @@ pub fn compiled_is_fresh(
             full_filename.display(),
             compiled_filename.display()
         );
+
         return false;
     }
 
@@ -484,11 +515,23 @@ pub mod load_ops {
         };
 
         match result {
-            Some((source, compiled)) => nctx.return_(Ok(Value::cons(
-                ctx,
-                Str::new(*ctx, &source.to_string_lossy(), true).into(),
-                Str::new(*ctx, &compiled.to_string_lossy(), true).into(),
-            ))),
+            Some((source, full_source, compiled)) => {
+                let compiled = if let Some(compiled) = compiled {
+                    Str::new(*ctx, &compiled.to_string_lossy(), true)
+                } else {
+                    Str::new(
+                        *ctx,
+                        fallback_file_name(ctx, &full_source).to_string_lossy(),
+                        true,
+                    )
+                };
+                nctx.return_(Ok(list!(
+                    ctx,
+                    Str::new(*ctx, &source.to_string_lossy(), true),
+                    Str::new(*ctx, &full_source.to_string_lossy(), true),
+                    compiled
+                )))
+            }
             None => nctx.return_(Ok(Value::new(false))),
         }
     }
@@ -498,7 +541,9 @@ pub mod load_ops {
         expanded: Value<'gc>,
         destination: Gc<'gc, Str<'gc>>,
         m: Option<Value<'gc>>,
+        load_thunk: Option<bool>,
     ) -> Result<Value<'gc>, Value<'gc>> {
+        let load_thunk = load_thunk.unwrap_or(true);
         let backtraces = if let Some(key) = ctx.private_ref("capy", "*compile-backtrace-key*") {
             match ctx.get_mark_first(key) {
                 Some(mark) => mark != Value::new(false),
@@ -569,6 +614,9 @@ pub mod load_ops {
             Err(err) => return nctx.return_(Err(err)),
         }
         let ctx = nctx.ctx;
+        if !load_thunk {
+            return nctx.return_(Ok(Str::new(*ctx, &compiled_path, true).into()));
+        }
         let libs = LIBRARY_COLLECTION.fetch(*ctx);
         match libs.load(&compiled_path, ctx) {
             Err(err) => nctx.return_(Err(make_io_error(
@@ -715,11 +763,23 @@ pub mod load_ops {
         );
 
         match result {
-            Ok(Some((source, compiled))) => nctx.return_(Value::cons(
-                ctx,
-                Str::new(*ctx, &source.to_string_lossy(), true).into(),
-                Str::new(*ctx, &compiled.to_string_lossy(), true).into(),
-            )),
+            Ok(Some((source, full_source, compiled))) => {
+                let compiled = if let Some(compiled) = compiled {
+                    Str::new(*ctx, &compiled.to_string_lossy(), true)
+                } else {
+                    Str::new(
+                        *ctx,
+                        fallback_file_name(ctx, &full_source).to_string_lossy(),
+                        true,
+                    )
+                };
+                nctx.return_(list!(
+                    ctx,
+                    Str::new(*ctx, &source.to_string_lossy(), true),
+                    Str::new(*ctx, &full_source.to_string_lossy(), true),
+                    compiled
+                ))
+            }
             Ok(None) => nctx.return_(Value::new(false)),
             Err(_err) => nctx.return_(Value::new(false)),
         }
@@ -808,7 +868,11 @@ pub(crate) fn continue_loading_k(
         Ok(product) => product,
         Err(err) => return nctx.return_(Err(err)),
     };
-    let compiled_path = source_and_compiled_path.cdr().downcast::<Str>().to_string();
+    let compiled_path = source_and_compiled_path
+        .list_ref(2)
+        .expect("Expected compiled path")
+        .downcast::<Str>()
+        .to_string();
     match link_object_product(nctx.ctx, object, &compiled_path) {
         Ok(_) => (),
         Err(err) => return nctx.return_(Err(err)),

@@ -59,7 +59,7 @@ build portable:
     #rm bin/boot
     @echo "Build main capy binary"
     {{cc}} bin/capy.c -L{{target-path}} -o bin/capy -lcapy -Wl,-rpath,{{if portable == "true" { rpath } else { rpath-fhs }}}
-    
+    {{cc}} bin/capyc.c -L{{target-path}} -o bin/capyc -lcapy -Wl,-rpath,{{if portable == "true" { rpath } else { rpath-fhs }}}
 
 
 
@@ -72,11 +72,13 @@ install-portable: (build "true")
     mkdir -p {{install-prefix}}/capy/{{version}}/extensions
     rsync --checksum -r lib {{install-prefix}}/capy/{{version}}
     cp 'bin/capy' {{install-prefix}}/capy/{{version}}/
+    cp 'bin/capyc' {{install-prefix}}/capy/{{version}}/
     ln -sf {{install-prefix}}/capy/{{version}}/capy {{install-prefix}}/capy/{{version}}/capy-{{version}}
     cp {{target-path}}/libcapy.* {{install-prefix}}/capy/{{version}}/
     #cp capy.heap {{install-prefix}}/capy/{{version}}/
     #rm capy.heap
     rm bin/capy
+    rm bin/capyc
 
 
 

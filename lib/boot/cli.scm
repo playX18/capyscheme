@@ -1,5 +1,5 @@
 (library (boot cli)
-    (export enter eval-string)
+    (export enter eval-string enter-compiler)
     (import (capy)
             (core repl)
             (capy args)
@@ -18,6 +18,9 @@
                             (eval exp (current-module))
                             (lp))))))))
 
+(define (canonicalize-paths paths)
+  (map canonicalize-path-string paths))
+
 (define (enter args)
     "Main entrypoint of CapyScheme CLI."
     (define arg0 "capy")
@@ -32,81 +35,6 @@
     (define (error fmt . args)
         (apply format #t fmt args)
         (exit 1))
-    
-    (define (parse args out)
-        (cond 
-            [(null? args) (finish args out)]
-            [else 
-                (let ([arg (car args)] [args (cdr args)])
-                    (cond 
-                        [(not (string-prefix? "-" arg))
-                            (set! arg0 arg)
-                            (set! interactive? #f)
-                            (finish args 
-                                (cons `((@@ (capy) load) ,arg0) out))]
-                        [(string=? arg "-s")
-                            (if (null? args)
-                                (error "missing argument for -s"))
-                            (set! arg0 (car args))
-                            (set! interactive? #f)
-                            (finish (cdr args)
-                                (cons `((@@ (capy) load) ,arg0) out))]
-                        [(string=? arg "-c")
-                            (if (null? args)
-                                (error "missing argument for -c"))
-                            (set! arg0 (car args))
-                            (set! interactive? #f)
-                            (finish (cdr args)
-                                (cons `((@@ (boot cli) eval-string) ,arg0) out))]
-                        [(string=? arg "--")
-                            (finish args out)]
-                        [(string=? arg "-l")
-                            (if (null? args)
-                                (error "-l: missing a file to load"))
-                            (parse (cdr args)
-                                (cons `((@ (capy) load), (car args)) out))]
-                        [(string=? arg "-L")
-                            (if (null? args)
-                                (error "-L: missing a directory to add to load path"))
-                            (set! load-path (cons (car args) load-path))
-                            (parse (cdr args) out)]
-                        [(string=? arg "-C")
-                            (if (null? args)
-                                (error "-C: missing a directory to add to compiled load path"))
-                            (set! load-compiled-path (cons (car args) load-compiled-path))
-                            (parse (cdr args) out)]
-                        [(string=? arg "-x")
-                            (if (null? args)
-                                (error "-x: missing an extension to load"))
-                            (set! extensions (cons (car args) extensions))
-                            (parse (cdr args) out)]
-                        [(string=? arg "-e")
-                            (if (null? args)
-                                (error "-e: missing entrypoint name"))
-                            (let* ([port (open-input-string (car args))]
-                                   [arg (read port)])
-                                (set! entrypoint arg))
-                            (parse (cdr args) out)]
-                        [(string=? arg "-fresh-auto-compile")
-                            (set! %fresh-auto-compile! #t)
-                            (parse args out)]
-                        [(string=? arg "-log:trace")
-                            (log:set-max-level! log:trace)
-                            (parse args out)]
-                        [(string=? arg "-log:info")
-                            (log:set-max-level! log:info)
-                            (parse args out)]
-                        [(string=? arg "-log:debug")
-                            (log:set-max-level! log:debug)
-                            (parse args out)]
-                        [(string=? arg "-log:warn")
-                            (log:set-max-level! log:warn)
-                            (parse args out)]
-                        [(string=? arg "-log:error")
-                            (log:set-max-level! log:error)
-                            (parse args out)]
-                        [else (error "unknown argument: ~a" arg)]))]))
-
     (define (finish args out)
         (set-program-arguments! (cons arg0 args))
         (if (not (zero? (log:max-level)))
@@ -125,7 +53,7 @@
     (define (run)
         (with-exception-handler 
             (lambda (c)
-                (format #t "Failed to parse command line arguments: ~a~%" (condition-message c))
+                (format #t "Failed to parse command line arguments: ~a ~a ~a ~%" (condition-message c) (condition-irritants c) (condition-who c))
                 (exit 1))
             (lambda ()
                 (define res (parse-args parser (cdr args)))
@@ -147,9 +75,9 @@
                     (format #t "Usage:~%~a~%" (argparser-usage parser))
                     (exit 0))
                 (set! entrypoint (arg-results-ref res "entrypoint"))
-                (set! %load-path (append (reverse (arg-results-ref res "load-path")) %load-path))
-                (set! %load-path (append %load-path (reverse (arg-results-ref res "append-load-path"))))
-                (set! %load-compiled-path (append (reverse (arg-results-ref res "compiled-load-path")) %load-compiled-path))
+                (set! %load-path (append (canonicalize-paths (reverse (arg-results-ref res "load-path"))) %load-path))
+                (set! %load-path (append %load-path (canonicalize-paths (reverse (arg-results-ref res "append-load-path")))))
+                (set! %load-compiled-path (append (canonicalize-paths (reverse (arg-results-ref res "compiled-load-path"))) %load-compiled-path))
                 (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
                 (if (arg-results-ref res "fresh-auto-compile")
                     (set! %fresh-auto-compile #t))
@@ -235,3 +163,119 @@
         (help "Enable error logging"))
 
     (run)))
+
+(define (enter-compiler args)
+  "Entrypoint for `capyc` compiler CLI."
+  (define arg0 "capyc")
+  (define parser (argparser))
+
+  (define (error fmt . args)
+      (apply format #t fmt args)
+      (exit 1))
+
+  (define (print-help)
+    (format #t "CapyScheme Compiler ~a~%" (implementation-version))
+    (format #t "Usage:~%~a~%" (argparser-usage parser))
+    (exit 0))
+  
+  (define (run)
+    (define res (with-exception-handler 
+                    (lambda (c)
+                      (format #t "Failed to parse command line arguments: ~a~%" (condition-message c))
+                      (exit 1))
+                    (lambda ()
+                      (parse-args parser (cdr args)))))
+    
+    (define load-path (arg-results-ref res "load-path"))
+    (define append-load-path (arg-results-ref res "append-load-path"))
+    (define compiled-load-path (arg-results-ref res "compiled-load-path"))
+    (define extensions (arg-results-ref res "extensions"))
+    (set! %load-path (append (canonicalize-paths load-path) %load-path))
+    (set! %load-path (append %load-path (canonicalize-paths append-load-path)))
+    (set! %load-compiled-path (append (canonicalize-paths (reverse compiled-load-path)) %load-compiled-path))
+    (set! %load-extensions (append (reverse extensions) %load-extensions))
+    (define out-file (arg-results-ref res "output"))
+    (define r7rs-mode (arg-results-ref res "r7rs"))
+    (define r6rs-mode (arg-results-ref res "r6rs"))
+    (if (and r7rs-mode r6rs-mode)
+        (error "Cannot specify both --r7rs and --r6rs modes"))
+    (define source-files (arg-results-rest res))
+    (if (null? source-files)
+        (print-help))
+    
+    (when (arg-results-ref res "help")
+      (print-help))
+  
+
+    (when (and out-file 
+            (or (null? source-files)
+                (not (null? (cdr source-files)))))
+      (error #f "--output can only be used when compiling a single file"))
+    
+    (with-exception-handler 
+      (lambda (exn)
+        (print-condition exn (current-output-port))
+        (format #t "Compilation failed.~%")
+        (exit 1))
+      (lambda ()
+        (for-each 
+          (lambda (file)
+            (with-exception-handler 
+              (lambda (exn)
+                (print-condition exn (current-output-port))
+                (format #t ";; Compilation of file ~a failed.~%" file)
+                (exit 1))
+              (lambda () 
+                (format #t ";; Compiling file ~a~%" file)
+                (define out (compile-file 
+                  file 
+                  out-file 
+                  #f
+                  #f))
+                (format #t ";; Compiled ~a -> ~a~%" file out))))
+          source-files))))
+
+  (add-option! parser 
+    "output"
+    (abbreviation "o")
+    (help "Specify output file"))
+  
+  (add-flag! parser 
+    "r7rs"
+    (help "Compile in R7RS mode"))
+  (add-flag! parser 
+    "r6rs"
+    (help "Compile in R6RS mode"))
+  
+  (add-multi-option! parser 
+    "load-path"
+    (abbreviation "L")
+    (help "Add a directory to the load path")
+    (value-help "DIR")
+    split-commas)
+  (add-multi-option! parser 
+    "compiled-load-path"
+    (abbreviation "C")
+    (help "Add a directory to the compiled load path")
+    (value-help "DIR")
+    split-commas)
+  
+  (add-multi-option! parser 
+    "extensions"
+    (abbreviation "x")
+    (help "Add specified extension to list of extensions")
+    (value-help "EXTENSION")
+    split-commas)
+  (add-multi-option! parser 
+    "append-load-path"
+    (abbreviation "A")
+    (help "Append a directory to the load path")
+    (value-help "DIR")
+    split-commas)
+  
+  (add-flag! parser 
+    "help"
+    (help "Show this help message and exit"))
+
+
+  (run))
