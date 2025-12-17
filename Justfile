@@ -76,34 +76,6 @@ install-scm:
     rsync --checksum -r lib {{prefix}}/capy/{{version}}
 
 
-# FHS-style installation.
-#
-# Layout under {{prefix}}:
-# - bin/capy
-# - lib/libcapy.*
-# - share/capy (Scheme stdlib)
-#
-# The runtime will pick this up when CAPY_SYSROOT={{prefix}} is set
-# (or via CAPY_LOAD_PATH/CAPY_LOAD_COMPILED_PATH).
-install-fhs: (build "false") 
-    @echo 'Installing CapyScheme (FHS) to {{prefix}}'
-    sudo mkdir -p {{prefix}}/bin
-    sudo mkdir -p {{prefix}}/lib
-    sudo mkdir -p {{prefix}}/lib/capy/compiled/{{arch}}
-    sudo mkdir -p {{prefix}}/lib/capy/cache
-    sudo mkdir -p {{prefix}}/share
-    sudo mkdir -p {{prefix}}/share/capy
-    sudo cp -r lib/ {{prefix}}/share/capy/
-    sudo cp 'bin/capy' {{prefix}}/bin/capy
-    sudo cp {{target-path}}/libcapy.* {{prefix}}/lib/
-    @echo 'Precompiling boot libraries (populates compiled cache)'
-    set -e; \
-        tmp_cache=$(mktemp -d); \
-        CAPY_LOAD_PATH="{{prefix}}/share/capy" XDG_CACHE_HOME="$$tmp_cache" LIBRARY_PATH="{{prefix}}/lib" LD_LIBRARY_PATH="{{prefix}}/lib" {{prefix}}/bin/capy --fresh-auto-compile -c 42; \
-        echo 'Copying full cache into {{prefix}}/lib/capy/cache'; \
-        sudo cp -r "$$tmp_cache"/capy/cache/ "{{prefix}}/lib/capy/cache/"; \
-        rm -rf "$$tmp_cache"
-    @echo 'Done.'
 
 
 tar: (build "true")
