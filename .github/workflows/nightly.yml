@@ -83,7 +83,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           
-          sudo apt-get install -y just clang lld rsync
+          sudo apt-get install -y clang lld rsync
+          snap install --edge --classic just
 
       - name: Build (release)
         shell: bash
