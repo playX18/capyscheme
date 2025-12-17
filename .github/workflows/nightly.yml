@@ -1,0 +1,124 @@
+name: Nightly
+
+on:
+  schedule:
+    # daily at 03:15 UTC
+    - cron: '15 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force build even if no commits in last 24h'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      short_sha: ${{ steps.detect.outputs.short_sha }}
+      date: ${{ steps.detect.outputs.date }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect commits in last 24h
+        id: detect
+        shell: bash
+        env:
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+          date_utc=$(date -u +%Y-%m-%d)
+          short_sha=$(git rev-parse --short=12 HEAD)
+
+         
+          count=$(git log --since='24 hours ago' --pretty=oneline | wc -l | tr -d ' ')
+
+          if [ "${FORCE}" = "true" ]; then
+            changed=true
+          elif [ "$count" -gt 0 ]; then
+            changed=true
+          else
+            changed=false
+          fi
+
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "date=$date_utc" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build nightly (${{ matrix.arch }})
+    needs: changes
+    if: needs.changes.outputs.changed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runs_on: ubuntu-latest
+          - arch: aarch64
+            runs_on: ubuntu-24.04-arm64
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install system deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          
+          sudo apt-get install -y just clang lld rsync
+
+      - name: Build (release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep the build invocation aligned with project docs.
+          just stage-2
+
+      - name: Create portable tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          just dist-portable
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: capyscheme-nightly-${{ needs.changes.outputs.date }}-${{ needs.changes.outputs.short_sha }}-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            dist/*.tar.gz
+
+      - name: Publish/Update GitHub Release "nightly"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Automated nightly build.
+
+            - Date (UTC): ${{ needs.changes.outputs.date }}
+            - Commit: ${{ github.sha }}
+
+            This release is updated in-place when there are new commits within the last 24 hours.
+          files: |
+            dist/*.tar.gz

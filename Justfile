@@ -75,25 +75,6 @@ install-scm:
     mkdir -p {{prefix}}/capy/{{version}}
     rsync --checksum -r lib {{prefix}}/capy/{{version}}
 
-
-
-
-tar: (build "true")
-    @echo 'Creating tarball for CapyScheme version {{version}}'
-    mkdir -p dist
-    rm -f dist/capy-{{version}}-{{target}}.tar.gz
-    mkdir -p temp-dist/capy-{{version}}
-    rsync --checksum -r boot temp-dist/capy-{{version}}/
-    rsync --checksum -r core temp-dist/capy-{{version}}/
-    rsync --checksum -r core.scm temp-dist/capy-{{version}}/
-    rsync --checksum -r scheme temp-dist/capy-{{version}}/
-    rsync --checksum -r batteries temp-dist/capy-{{version}}/
-    cp '{{target-path}}/capy' temp-dist/capy-{{version}}/
-    cp {{target-path}}/libcapy.* temp-dist/capy-{{version}}/
-    tar -czf dist/capy-{{version}}-{{target}}.tar.gz -C temp-dist capy-{{version}}
-    rm -rf temp-dist
-    @echo 'Tarball created at dist/capy-{{version}}-{{target}}.tar.gz'
-
 # Stage 0 of bootstrapping CapyScheme: 
 # Create a portable CapyScheme binary and build `capyc` + `capy` binaries. Use them to 
 # compile the rest of the system in stage 1.
@@ -346,6 +327,37 @@ install-portable: (stage-2)
 
     @echo "CapyScheme installed to {{prefix}}/capy/{{version}}"
     @echo "Add {{prefix}}/capy/{{version}} to your PATH to use CapyScheme"
+
+
+
+
+# Produce a portable tar.gz archive without installing anything to {{prefix}}.
+#
+# This mirrors the logic of `install-portable`, but stages into a local directory
+# and then creates a tarball containing:
+#   capy/<version>/...
+#
+# Extract into your chosen prefix (default: ~/.local/share):
+#   tar -xzf dist/capyscheme-<ver>-<target>-<arch>-<profile>.tar.gz -C ~/.local/share
+dist-portable outdir='dist' outname='' stagedir='stage-dist':
+    #!/usr/bin/env bash
+    set -euxo pipefail
+    archive_name="{{ if outname == "" { "capyscheme-" + version + "-" + target + "-" + arch + "-" + profile + ".tar.gz" } else { outname } }}"
+    stage_root={{stagedir}}
+    stage_prefix=$stage_root/{{prefix}}
+    stage_install_dir=$stage_prefix/capy/{{version}}
+    echo "Staging portable install into $stage_install_dir"
+    rm -rf $stage_root
+    mkdir -p "$stage_install_dir/extensions"
+    rsync --checksum -r lib "$stage_install_dir"
+    cp 'stage-2/capy' "$stage_install_dir/"
+    cp 'stage-2/capyc' "$stage_install_dir/"
+    ln -sf "$stage_install_dir/capy" "$stage_install_dir/capy-{{version}}"
+    cp {{target-path}}/libcapy.* "$stage_install_dir/"
+    cp -r stage-2/compiled "$stage_install_dir/"
+    echo "Creating {{outdir}}/$archive_name"
+    tar -C "$stage_prefix" -czf "{{outdir}}/$archive_name" "capy/{{version}}"
+    echo "Wrote {{outdir}}/$archive_name"
 
 
 SUDO :=`(id -u | grep -q '^0$$' && echo '' || echo 'sudo ')`
