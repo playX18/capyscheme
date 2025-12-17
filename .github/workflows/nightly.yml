@@ -76,7 +76,10 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
-
+      - name: Install fresh Justfile 
+        shell: bash 
+        run: |
+          cargo install just --force
       - name: Install system deps
         shell: bash
         run: |
@@ -84,7 +87,7 @@ jobs:
           sudo apt-get update
           
           sudo apt-get install -y clang lld rsync
-          snap install --edge --classic just
+          
 
       - name: Build (release)
         shell: bash
