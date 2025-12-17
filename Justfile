@@ -50,7 +50,7 @@ arch := `rustc -vV | awk '/^host:/ {print $2}' | cut -d- -f1`
 
 # Build the project with the specified profile and target
 # by default, it builds in release mode for the host target
-build portable:
+build portable = "true":
     @echo "Version: {{version}}"
     @echo "Target path: {{target-path}}"
     @echo 'Building CapyScheme with profile '{{profile}}' for target '{{target}}''
