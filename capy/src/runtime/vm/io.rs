@@ -177,6 +177,23 @@ pub mod io_ops {
         }
     }
 
+    #[scheme(name = "create-directory*")]
+    pub fn create_directory_all(path: Gc<'gc, Str<'gc>>) -> bool {
+        match std::fs::create_dir_all(path.to_string()) {
+            Ok(()) => nctx.return_(true),
+            Err(err) => {
+                let error = err.to_string();
+                nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "create-directory*",
+                    &error,
+                    path.into(),
+                )
+            }
+        }
+    }
+
     #[scheme(name = "delete-file")]
     pub fn delete_file(path: Gc<'gc, Str<'gc>>) -> bool {
         match std::fs::remove_file(path.to_string()) {

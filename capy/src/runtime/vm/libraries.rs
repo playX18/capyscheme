@@ -169,6 +169,8 @@ impl<'gc> LibraryCollection<'gc> {
     }
 
     pub fn load(&self, path: impl AsRef<OsStr>, ctx: Context<'gc>) -> std::io::Result<Value<'gc>> {
+        let path = path.as_ref();
+
         let lib = SchemeLibrary::load(ctx, path, true)?;
         let entrypoint = lib.entrypoint;
         self.libs.lock().push(lib);

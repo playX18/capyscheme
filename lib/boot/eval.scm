@@ -19,26 +19,48 @@
                         (let ([exp (macroexpand (car exps) 'c '(compile load eval))])
                             (lp (cdr exps) (cons exp out)))])))))
 
+(define (compiled-file-name file)
+  (define (canonical->suffix canon)
+    (cond 
+      ((string-prefix? "/" file) canon)
+      ((and (> (string-length canon) 2)
+            (eqv? (string-ref canon 1) #\:))
+        (string-append "/" (substring canon 0 1) (substring canon 2)))
+      (else canon)))
+  
+  (define (compiled-extension) (string-append "." %native-extension))
+  (and %compile-fallback-path 
+      (let ((f (string-append 
+                  %compile-fallback-path
+                  (canonical->suffix (canonicalize-path-string file))
+                  (compiled-extension))))
+        (and (false-if-exception (create-directory* (dirname f)))
+             f))))
 
-
-(define (compile-file filename compiled-path env)
+;; Compile `filename` and put output into `compiled-path`.
+;; Env is a module where the file is being compiled.
+;; load-thunk? indicates whether to return a thunk to initialize compiled
+;; file (dlopen it) or just compile and return. If its #f use load-thunk-in-vicinity
+(define (compile-file filename compiled-path env load-thunk?)
     (define (read-all in)
         (let lp ([exps '()])
             (let ([exp (read-syntax in)])
                 (cond
                     [(eof-object? exp) (reverse exps)]
                     [else (lp (cons exp exps))]))))
+    (define output-file (or compiled-path (compiled-file-name filename)))
+    (define module (or env (resolve-r6rs-interface '(capy user))))
     (*raw-log* log:debug
                '(capy)
                'compile-file
-               "Compiling file ~a to ~a" filename compiled-path)
+               "Compiling file ~a to ~a" filename output-file)
     (call-with-input-file filename
         (lambda (in)
             (define exps (read-all in))
             (define reader (get-port-reader in #f))
             (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
-                (receive (code mod new-mod) (compile-tree-il exps env)
-                    (%compile code compiled-path mod))))))
+                (receive (code mod new-mod) (compile-tree-il exps module)
+                    (%compile code output-file mod load-thunk?))))))
 
 (define load-in-vicinity
     (lambda (filename directory)
@@ -48,7 +70,10 @@
                 (cond
                     [(procedure? thunk-or-path) (thunk-or-path)]
                     [else
-                        ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))])))))
+                        (let ([filename (list-ref thunk-or-path 0)]
+                              [full-filename (list-ref thunk-or-path 1)]
+                              [compiled-path (list-ref thunk-or-path 2)])
+                          ((compile-file full-filename compiled-path (current-module) #t)))])))))
 
 
 (define load
@@ -78,11 +103,14 @@
                                 (flush-output-port (current-error-port))
                                 (raise exn))
                             (lambda ()
+                                (define filename (list-ref thunk-or-path 0))
+                                (define full-filename (list-ref thunk-or-path 1))
+                                (define compiled-path (list-ref thunk-or-path 2))
                                 (*raw-log* log:info
                                         '(capy)
                                         'load
                                         "Compiling file ~a" filename)
-                                ((compile-file (car thunk-or-path) (cdr thunk-or-path) (current-module)))))])))))
+                                ((compile-file full-filename compiled-path (current-module) #t))))])))))
 
 (define primitive-load
     (lambda (filename)

@@ -13,9 +13,9 @@
 char *find_heap(int *argc, char ***argv)
 {
   char *heap_path = NULL;
-  char exe_path[PATH_MAX];
+  char exe_path[256];
   char *exe_dir;
-  char cwd[PATH_MAX];
+  char cwd[256];
 
   // Check current working directory
   if (getcwd(cwd, sizeof(cwd)))
@@ -32,7 +32,7 @@ char *find_heap(int *argc, char ***argv)
 
 // Check /proc/self/exe on Linux
 #ifdef __linux__
-  char proc_path[PATH_MAX];
+  char proc_path[256];
   ssize_t len = readlink("/proc/self/exe", proc_path, sizeof(proc_path) - 1);
   if (len != -1)
   {
