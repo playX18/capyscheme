@@ -8,4 +8,5 @@ tmp-catch-out
 main.scm
 capy.heap
 bin/capy
+bin/capyc
 stage-*
