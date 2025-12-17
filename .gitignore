@@ -10,3 +10,4 @@ capy.heap
 bin/capy
 bin/capyc
 stage-*
+dist
