@@ -81,9 +81,9 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     // - portable: <sysroot>/lib and <sysroot>/compiled
     // - FHS:      <sysroot>/share/capy and <sysroot>/lib/capy/compiled
     let sysroot_dir: Option<PathBuf> = if cfg!(feature = "portable") {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.to_owned()))
+        let exe = std::env::current_exe().expect("Failed to get current exe path");
+        let exe = std::fs::read_link(&exe).unwrap_or(exe);
+        exe.parent().map(|p| p.to_owned())
     } else {
         Some(PathBuf::from(env!("CAPY_SYSROOT")))
     };

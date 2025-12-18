@@ -81,9 +81,9 @@ fn rlpaths(command: &mut Command) {
             command.arg("--rpath").arg("$ORIGIN/");
         }
         let exe = std::env::current_exe().expect("Failed to get current exe path");
-        let dir = exe
-            .parent()
-            .expect("Failed to get parent directory of current exe");
+        let exe = std::fs::read_link(&exe).unwrap_or(exe);
+        let dir = exe.parent().expect("Failed to get exe parent directory");
+
         command.arg("-L").arg(dir);
     }
 
