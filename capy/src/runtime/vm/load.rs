@@ -90,9 +90,15 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
 
     if let Some(sysroot_dir) = sysroot_dir.as_ref() {
         let candidates = [
-            sysroot_dir.join("share").join("capy").join("lib"),
             sysroot_dir.join("lib"),
+            sysroot_dir.join("share").join("capy").join("lib"),
         ];
+
+        let candidates = if cfg!(feature = "portable") {
+            &candidates[1..]
+        } else {
+            &candidates[..]
+        };
         for stdlib_dir in candidates {
             if stdlib_dir.is_dir() {
                 path = Value::cons(
