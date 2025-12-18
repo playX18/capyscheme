@@ -1,7 +1,7 @@
 use crate::rsgc::{
     GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Trace,
     barrier::{self},
-    mmtk::util::{Address, options::PlanSelector},
+    mmtk::util::Address,
 };
 use crate::{
     prelude::{
@@ -10,7 +10,7 @@ use crate::{
     runtime::{
         fluids::DynamicState,
         global::{Globals, VM_GLOBALS},
-        image::{ALLOWED_GC, AllowedGC, reader::ImageReader},
+        //image::{ALLOWED_GC, AllowedGC, reader::ImageReader},
         modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
@@ -745,7 +745,7 @@ impl Scheme {
             should_init = true;
 
             let mmtk_builder = MMTKBuilder::new();
-            match *mmtk_builder.options.plan {
+            /*match *mmtk_builder.options.plan {
                 PlanSelector::GenImmix | PlanSelector::StickyImmix | PlanSelector::GenCopy => {
                     let _ = ALLOWED_GC.set(AllowedGC::Generational).unwrap();
                 }
@@ -757,7 +757,7 @@ impl Scheme {
                 _ => {
                     let _ = ALLOWED_GC.set(AllowedGC::Regular).unwrap();
                 }
-            }
+            }*/
             GarbageCollector::init(mmtk_builder);
         });
 
@@ -786,7 +786,7 @@ impl Scheme {
         if should_init { scm.boot() } else { scm }
     }
 
-    pub fn from_image(image: &[u8]) -> Self {
+    /*pub fn from_image(image: &[u8]) -> Self {
         let allowed_gc = match image[0] {
             0 => AllowedGC::Generational,
             1 => AllowedGC::Concurrent,
@@ -832,7 +832,7 @@ impl Scheme {
         });
 
         scm
-    }
+    }*/
 
     fn boot(self) -> Self {
         let scm = self;

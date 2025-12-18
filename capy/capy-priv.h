@@ -64,42 +64,6 @@
 
 #define FASL_TAG_REF_INIT 254
 
-#define TYPE_IMMEDIATE 0
-
-#define TYPE_REF 1
-
-#define TYPE_TRUE 2
-
-#define TYPE_FALSE 3
-
-#define TYPE_I32 4
-
-#define TYPE_CHAR 5
-
-#define TYPE_EOF 6
-
-#define TYPE_NULL 7
-
-#define TYPE_UNDEFINED 8
-
-#define TYPE_BWP 9
-
-/**
- * Closure from dynamic library: dlsym from library[ix] and sname.
- */
-#define TYPE_CLOSURE_SCM 20
-
-/**
- * Native closure: read from vec of native function pointers
- */
-#define TYPE_CLOSURE_NATIVE_PROC 21
-
-#define TYPE_CLOSURE_NATIVE_CONT 22
-
-#define TYPE_POINTER_NULL 30
-
-#define TYPE_POINTER_DYLIB 31
-
 
 
 #define PURE_NAN_BITS 9221120237041090560
@@ -262,7 +226,7 @@ ScmRef scm_new(void);
  *
  * This function can only be invoked once per process.
  */
-ScmRef scm_from_image(const uint8_t *image_data, uintptr_t image_size);
+ScmRef scm_from_image(const uint8_t *_image_data, uintptr_t _image_size);
 
 /**
  * Free the Scheme thread instance created by [`scm_new()`](scm_new)

@@ -7,7 +7,7 @@ use crate::expander::letrectify::letrectify;
 use crate::expander::{assignment_elimination, compile_cps, primitives};
 use crate::list;
 use crate::rsgc::Gc;
-use crate::runtime::image::ALLOWED_GC;
+// /use crate::runtime::image::ALLOWED_GC;
 use crate::runtime::modules::{Module, Variable, current_module, define};
 use crate::runtime::value::*;
 use crate::runtime::vm::base::scm_log_level;
@@ -194,10 +194,10 @@ fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
     hasher.update(std::env::consts::ARCH.as_bytes());
     hasher.update(b"\0");
 
-    let gc_typ = ALLOWED_GC.get().unwrap();
-    let gc_typ = (*gc_typ) as u8;
-    hasher.update(&[gc_typ]);
-    hasher.update(b"\0");
+    //  let gc_typ = ALLOWED_GC.get().unwrap();
+    //  let gc_typ = (*gc_typ) as u8;
+    //  hasher.update(&[gc_typ]);
+    //  hasher.update(b"\0");
 
     let plan_selector = *crate::GarbageCollector::get().mmtk.get_options().plan;
     hasher.update(format!("{:?}", plan_selector).as_bytes());
