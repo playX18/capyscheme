@@ -450,7 +450,7 @@ pub mod base_ops {
         nctx.return_(key)
     }
 
-    #[scheme(name = "dump-heap")]
+    /*#[scheme(name = "dump-heap")]
     pub fn dump_heap(filename: Gc<'gc, Str<'gc>>, proc: Value<'gc>) -> Value<'gc> {
         let mut image_builder = ImageBuilder::new(nctx.ctx);
 
@@ -495,7 +495,7 @@ pub mod base_ops {
         dest.write_all(&buffer).unwrap();
 
         nctx.return_(Value::undefined())
-    }
+    }*/
 
     #[scheme(name = "collect-garbage")]
     pub fn collect_garbage() -> Value<'gc> {

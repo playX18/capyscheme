@@ -297,11 +297,11 @@ impl<'gc> Context<'gc> {
         module
     }
 
-    pub(crate) fn winders(&self) -> Value<'gc> {
+    pub fn winders(&self) -> Value<'gc> {
         self.state().winders.get()
     }
 
-    pub(crate) fn set_winders(&self, winders: Value<'gc>) {
+    pub fn set_winders(&self, winders: Value<'gc>) {
         self.state().winders.set(winders);
     }
 

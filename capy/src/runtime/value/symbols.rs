@@ -36,6 +36,7 @@ pub static SYMBOL_TABLE: OnceLock<Global<crate::Rootable!(Gc<'_, WeakSet<'_>>)>>
 
 static ONCE: Once = Once::new();
 
+#[allow(dead_code)]
 pub(crate) fn symbol_table<'gc>(mc: Mutation<'gc>) -> Gc<'gc, WeakSet<'gc>> {
     (*SYMBOL_TABLE.get().unwrap().fetch(mc)).clone()
 }

@@ -183,6 +183,7 @@ pub struct InnerHashTable<'gc> {
 }
 
 impl<'gc> HashTable<'gc> {
+    #[allow(dead_code)]
     pub(crate) unsafe fn at_object(
         ctx: Context<'gc>,
 

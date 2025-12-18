@@ -64,7 +64,8 @@ pub extern "C" fn scm_new() -> ScmRef {
 ///
 /// This function can only be invoked once per process.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_from_image(image_data: *const u8, image_size: usize) -> ScmRef {
+#[allow(dead_code)]
+pub extern "C" fn scm_from_image(_image_data: *const u8, _image_size: usize) -> ScmRef {
     /*let image_slice = unsafe { std::slice::from_raw_parts(image_data, image_size) };
     let scm = Scheme::from_image(image_slice);
     let capy = Scm { scheme: scm };
