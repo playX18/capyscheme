@@ -234,6 +234,7 @@ impl<'gc> WeakTable<'gc> {
         table
     }
 
+    #[allow(dead_code)]
     pub(crate) unsafe fn at_object(
         ctx: Context<'gc>,
         obj: GCObject,

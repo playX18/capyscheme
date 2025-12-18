@@ -9,6 +9,7 @@ use crate::prelude::*;
 use crate::runtime::prelude::*;
 use crate::runtime::vm::VMResult;
 
+#[allow(dead_code)]
 pub(crate) struct DynLib {
     pub path: Option<std::path::PathBuf>,
     #[allow(dead_code)]

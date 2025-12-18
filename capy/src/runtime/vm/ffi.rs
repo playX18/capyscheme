@@ -724,6 +724,7 @@ unsafe impl<'gc> Trace for CIF<'gc> {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn make_cif_at<'gc>(
     ctx: Context<'gc>,
     obj: GCObject,
