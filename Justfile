@@ -118,14 +118,19 @@ stage-2: \
     cp stage-1/capyc stage-2/capyc
 
 
-compile-cli compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
+compile-cli compiler out\
+             $MMTK_PLAN="GenImmix" \
+             $XDG_CACHE_HOME="stage-0/cache"\
+             $CAPY_LOAD_PATH="./lib"\
+             $LD_LIBRARY_PATH=target-path\
+             $DYLD_FALLBACK_LIBRARY_PATH=target-path:
     @echo "Compiling CLI tools using {{compiler}}"
     
 
     {{compiler}} -o {{out}}/boot/cli.{{dynlib-ext}} -m "capy" -L lib lib/boot/cli.scm
     {{compiler}} -o {{out}}/boot.{{dynlib-ext}} -m "capy" -L lib lib/boot.scm
 
-compile-boot compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path: 
+compile-boot compiler out $MMTK_PLAN="GenImmix" $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path: 
     @echo "Compiling boot libraries using {{compiler}}"
 
     mkdir -p {{out}}/boot/
@@ -166,7 +171,12 @@ compile-boot compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
 
 
 
-compile-core compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path: 
+compile-core compiler out\
+                $MMTK_PLAN="GenImmix" \
+                $XDG_CACHE_HOME="stage-0/cache"\
+                $CAPY_LOAD_PATH="./lib"\
+                $LD_LIBRARY_PATH=target-path\
+                $DYLD_FALLBACK_LIBRARY_PATH=target-path: 
     @echo "Compiling core libraries using {{compiler}}"
 
     mkdir -p {{out}}/core/io/
@@ -194,7 +204,7 @@ compile-core compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
     {{compiler}} -o {{out}}/core/io/assistants.{{dynlib-ext}} -m "capy user" lib/core/io/assistants.scm
     {{compiler}} -o {{out}}/core.{{dynlib-ext}} -m "capy user" lib/core.scm
 
-compile-rnrs compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
+compile-rnrs compiler out $MMTK_PLAN="GenImmix" $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
     @echo "Compiling rnrs libraries using {{compiler}}"
 
     mkdir -p {{out}}/rnrs/
@@ -225,7 +235,7 @@ compile-rnrs compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
     {{compiler}} -o {{out}}/rnrs/enums.{{dynlib-ext}} -m "capy user" lib/rnrs/enums.scm
     {{compiler}} -o {{out}}/rnrs.{{dynlib-ext}} -m "capy user" lib/rnrs.scm
 
-compile-capy compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
+compile-capy compiler out $MMTK_PLAN="GenImmix" $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
     @echo "Compiling capy libraries using {{compiler}}"
 
     mkdir -p {{out}}/capy/compiler/
@@ -241,7 +251,7 @@ compile-capy compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
 
 
 # Compiles SRFI libraries using specified compiler.
-compile-srfi compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
+compile-srfi compiler out $MMTK_PLAN="GenImmix" $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
     @echo "Compiling SRFI libraries using {{compiler}}"
     mkdir -p {{out}}/srfi/
     mkdir -p {{out}}/srfi/srfi-132
@@ -283,12 +293,10 @@ compile-srfi compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
     {{compiler}} -o {{out}}/srfi/srfi-180.{{dynlib-ext}} -m "capy user" lib/srfi/srfi-180.scm
     {{compiler}} -o {{out}}/srfi/srfi-259.{{dynlib-ext}} -m "capy user" lib/srfi/srfi-259.scm
 
-compile-r7rs compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
-    @echo "Compiling R7RS libraries using {{compiler}}"
+compile-r7rs compiler out $MMTK_PLAN="GenImmix" $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib" $LD_LIBRARY_PATH=target-path $DYLD_FALLBACK_LIBRARY_PATH=target-path:
+    #!/usr/bin/env -S parallel --shebang --ungroup --jobs {{ num_cpus() }}
 
     mkdir -p {{out}}/scheme 
-
-    #!/usr/bin/env -S parallel --shebang --ungroup --jobs {{ num_cpus() }}
     {{compiler}} -o {{out}}/scheme/base.{{dynlib-ext}} -m "capy user" lib/scheme/base.scm
     {{compiler}} -o {{out}}/scheme/case-lambda.{{dynlib-ext}} -m "capy user" lib/scheme/case-lambda.scm
     {{compiler}} -o {{out}}/scheme/char.{{dynlib-ext}} -m "capy user" lib/scheme/char.scm
@@ -309,6 +317,8 @@ compile-r7rs compiler out $XDG_CACHE_HOME="stage-0/cache" $CAPY_LOAD_PATH="./lib
     {{compiler}} -o {{out}}/scheme/sort.{{dynlib-ext}} -m "capy user" lib/scheme/sort.scm
     {{compiler}} -o {{out}}/scheme/time.{{dynlib-ext}} -m "capy user" lib/scheme/time.scm
     {{compiler}} -o {{out}}/scheme/write.{{dynlib-ext}} -m "capy user" lib/scheme/write.scm
+
+
 
 # Default installation method: portable binary.
 # 
