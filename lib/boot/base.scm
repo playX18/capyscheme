@@ -1226,7 +1226,9 @@
               (module-uses mod)))
 
     (define (condition-matches? condition)
-      (syntax-case condition (and or not)
+      (syntax-case condition (and or not library)
+        ((library libname)
+          (false-if-exception (resolve-r6rs-interface (syntax->datum #'libname))))
         ((and c ...)
          (and-map condition-matches? #'(c ...)))
         ((or c ...)
