@@ -229,7 +229,7 @@ R7RS_SRCS := \
 	lib/scheme/write.scm
 
 # Map sources to outputs (given OUT).
-# Note: patterns below are the real build rules; these vars are mainly used for convenience deps.
+
 BOOT_OUTS  = $(patsubst lib/boot/%.scm,$(OUT)/boot/%.$(DYNLIB_EXT),$(BOOT_SRCS))
 CORE_OUTS  = $(patsubst lib/core/%.scm,$(OUT)/core/%.$(DYNLIB_EXT),$(CORE_SRCS)) $(OUT)/core.$(DYNLIB_EXT)
 RNRS_OUTS  = $(patsubst lib/rnrs/%.scm,$(OUT)/rnrs/%.$(DYNLIB_EXT),$(RNRS_SRCS)) $(OUT)/rnrs.$(DYNLIB_EXT)
