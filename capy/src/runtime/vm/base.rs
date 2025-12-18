@@ -27,7 +27,7 @@ pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
 
 #[scheme(path=capy)]
 pub mod base_ops {
-    use crate::runtime::{YieldReason, image::builder::ImageBuilder};
+    use crate::runtime::YieldReason;
 
     #[scheme(name = "implementation-version")]
     pub fn implementation_version() -> Value<'gc> {
