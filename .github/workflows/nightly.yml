@@ -75,30 +75,31 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
-      - name: Install fresh Justfile 
-        shell: bash 
-        run: |
-          cargo install just --force
       - name: Install system deps
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           
-          sudo apt-get install -y clang lld rsync
+          sudo apt-get install -y clang lld rsync make
           
 
-      - name: Build (release)
+      - name: Build runtime
+        shell: bash 
+        run: |
+          make build-runtime
+
+      - name: Bootstrap Scheme stdlib 
         shell: bash
         run: |
           set -euo pipefail
-          just version=nightly-$(date -u +%Y-%m-%d) stage-2
+          make VERSION="nightly-$(date -u +%Y-%m-%d)" build 
 
       - name: Create portable tarball
         shell: bash
         run: |
           set -euo pipefail
-          just version=nightly-$(date -u +%Y-%m-%d) dist-portable
+          make VERSION="nightly-$(date -u +%Y-%m-%d)" dist-portable
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
