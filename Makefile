@@ -437,7 +437,7 @@ compile-r7rs:
 # Install / dist
 # -------------------------
 
-install-portable: stage-2
+install-portable: build
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
@@ -451,7 +451,7 @@ install-portable: stage-2
 
 # Produces a portable tar.gz archive without installing.
 # Mirrors install-portable.
-dist-portable: stage-2
+dist-portable: build
 	set -euxo pipefail; \
 	outdir=$${OUTDIR:-dist}; \
 	stagedir=$${STAGEDIR:-stage-dist}; \
@@ -474,7 +474,7 @@ dist-portable: stage-2
 	tar -C "$$stage_prefix" -czf "$$outdir/$$archive_name" "capy/$(VERSION)"; \
 	echo "Wrote $$outdir/$$archive_name"
 
-install: stage-2 build-runtime-fhs 
+install: build build-runtime-fhs 
 	@echo "Installing CapyScheme (FHS) to $(PREFIX)"
 	SUDO=$$( (id -u | grep -q '^0$$' && echo '') || echo 'sudo ' ); \
 	set -e; \
