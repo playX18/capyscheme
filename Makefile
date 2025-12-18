@@ -46,11 +46,11 @@ RPATH_PORTABLE := @loader_path/
 RPATH_FHS := ${PREFIX}/lib/
 else ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
 DYNLIB_EXT := dll
-RPATH_PORTABLE := $$ORIGIN/
+RPATH_PORTABLE := "\$$ORIGIN/"
 RPATH_FHS := ${PREFIX}/lib/
 else
 DYNLIB_EXT := so
-RPATH_PORTABLE := $$ORIGIN/
+RPATH_PORTABLE := "\$$ORIGIN/"
 RPATH_FHS := ${PREFIX}/lib/
 endif
 
@@ -267,13 +267,10 @@ build-runtime:
 		CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy; \
 	fi
 	@echo "Build main capy binaries"
-	@if [ "$(PORTABLE)" = "1" ]; then \
-		$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE); \
-		$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE); \
-	else \
-		$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full  -lcapy;\
-		$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy;\
-	fi
+	
+	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
+	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
+
 
 # Aggregate build: runtime + full bootstrap chain.
 build: build-runtime stage-0 stage-1 stage-2
