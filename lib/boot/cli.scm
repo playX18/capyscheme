@@ -202,6 +202,7 @@
     (define out-file (arg-results-ref res "output"))
     (define r7rs-mode (arg-results-ref res "r7rs"))
     (define r6rs-mode (arg-results-ref res "r6rs"))
+    (define verbose (arg-results-ref res "verbose"))
     (if (and r7rs-mode r6rs-mode)
         (error "Cannot specify both --r7rs and --r6rs modes"))
     (define source-files (arg-results-rest res))
@@ -235,13 +236,15 @@
                   (stack-trace (condition-marks exn) (current-output-port)))
                 (exit 1))
               (lambda () 
-                (format #t ";; Compiling file ~a~%" file)
+                (when verbose 
+                  (format #t ";; Compiling file ~a~%" file))
                 (define out (compile-file 
                   file 
                   out-file 
                   (or (and module-name (resolve-module module-name #t #t)) #f)
                   #f))
-                (format #t ";; Compiled ~a -> ~a~%" file out))))
+                (when verbose 
+                  (format #t ";; Compiled ~a -> ~a~%" file out)))))
           source-files))))
 
   (add-option! parser 
@@ -256,6 +259,11 @@
     "r6rs"
     (help "Compile in R6RS mode"))
   
+  (add-flag! parser 
+    "verbose"
+    (abbreviation "v")
+    (help "Enable verbose output"))
+
   (add-multi-option! parser 
     "load-path"
     (abbreviation "L")
