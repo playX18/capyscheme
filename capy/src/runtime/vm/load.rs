@@ -95,7 +95,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         ];
 
         let candidates = if cfg!(feature = "portable") {
-            &candidates[1..]
+            &candidates[..1]
         } else {
             &candidates[..]
         };
