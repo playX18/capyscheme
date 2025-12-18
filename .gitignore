@@ -9,5 +9,7 @@ main.scm
 capy.heap
 bin/capy
 bin/capyc
+bin/capy-*
+bin/capyc-*
 stage-*
 dist

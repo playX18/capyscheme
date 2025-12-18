@@ -43,15 +43,15 @@ UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 DYNLIB_EXT := dylib
 RPATH_PORTABLE := @loader_path/
-RPATH_FHS := @loader_path/../lib/
+RPATH_FHS := ${PREFIX}/lib/
 else ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
 DYNLIB_EXT := dll
 RPATH_PORTABLE := $$ORIGIN/
-RPATH_FHS := $$ORIGIN/../lib/
+RPATH_FHS := ${PREFIX}/lib/
 else
 DYNLIB_EXT := so
 RPATH_PORTABLE := $$ORIGIN/
-RPATH_FHS := $$ORIGIN/../lib/
+RPATH_FHS := ${PREFIX}/lib/
 endif
 
 ARCH := $(shell rustc -vV | awk '/^host:/ {print $$2}' | cut -d- -f1)
@@ -271,8 +271,8 @@ build-runtime:
 		$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE); \
 		$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE); \
 	else \
-		$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy  -lcapy -Wl,-rpath,$(RPATH_FHS); \
-		$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc -lcapy -Wl,-rpath,$(RPATH_FHS); \
+		$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full  -lcapy;\
+		$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy;\
 	fi
 
 # Aggregate build: runtime + full bootstrap chain.
@@ -281,8 +281,10 @@ build: build-runtime stage-0 stage-1 stage-2
 
 # Non-portable runtime build for FHS installs.
 build-runtime-fhs: PORTABLE=0
-build-runtime-fhs: build-runtime
-	@echo "Built non-portable runtime for install"
+build-runtime-fhs: 
+	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
+	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full  -lcapy -Wl,-rpath,$(RPATH_FHS)
+	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_FHS)
 
 install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
@@ -483,8 +485,8 @@ install: build build-runtime-fhs
 	$${SUDO}mkdir -p "$(PREFIX)/lib/capy/compiled"; \
 	$${SUDO}mkdir -p "$(PREFIX)/share/capy"; \
 	$${SUDO}cp -r lib/ "$(PREFIX)/share/capy/"; \
-	$${SUDO}cp stage-2/capy "$(PREFIX)/bin/capy"; \
-	$${SUDO}cp stage-2/capyc "$(PREFIX)/bin/capyc"; \
+	$${SUDO}cp bin/capy-full "$(PREFIX)/bin/capy"; \
+	$${SUDO}cp bin/capyc-full "$(PREFIX)/bin/capyc"; \
 	$${SUDO}cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
 	$${SUDO}cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
 	echo "Installation complete."
