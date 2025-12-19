@@ -1,7 +1,11 @@
+#[cfg(feature = "bootstrap")]
+use crate::expander::core::denotation_of_begin;
+#[cfg(feature = "bootstrap")]
+use crate::frontend::error::LexicalError;
+#[cfg(feature = "bootstrap")]
+use crate::frontend::reader::TreeSitter;
 use crate::rsgc::{Gc, Global};
 use crate::{
-    expander::core::denotation_of_begin,
-    frontend::reader::{LexicalError, TreeSitter},
     runtime::{Context, modules::Module, value::*},
     static_symbols,
 };
@@ -97,6 +101,7 @@ pub fn source_property<'gc>(
     get_source_property(ctx, obj).and_then(|alist| alist.assq(key).map(|pair| pair.cdr()))
 }
 
+#[cfg(feature = "bootstrap")]
 pub fn read_from_string<'gc>(
     ctx: Context<'gc>,
     source: impl AsRef<str>,

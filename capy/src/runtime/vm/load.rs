@@ -13,7 +13,9 @@ use crate::runtime::value::*;
 use crate::runtime::vm::base::scm_log_level;
 use crate::runtime::vm::expand::ScmTermToRsTerm;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
-use crate::runtime::vm::thunks::{make_io_error, make_lexical_violation};
+use crate::runtime::vm::thunks::make_io_error;
+#[cfg(feature = "bootstrap")]
+use crate::runtime::vm::thunks::make_lexical_violation;
 use capy_derive::scheme;
 use mmtk::util::options::PlanSelector;
 use std::path::{Path, PathBuf};
@@ -88,17 +90,20 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         Some(PathBuf::from(env!("CAPY_SYSROOT")))
     };
 
-    if let Some(sysroot_dir) = sysroot_dir.as_ref() {
+    /*if let Some(sysroot_dir) = sysroot_dir.as_ref() {
         let candidates = [
             sysroot_dir.join("lib"),
             sysroot_dir.join("share").join("capy").join("lib"),
         ];
+
+        println!(";; candidates for sysroot load path: {:?}", candidates);
 
         let candidates = if cfg!(feature = "portable") {
             &candidates[..1]
         } else {
             &candidates[..]
         };
+
         for stdlib_dir in candidates {
             if stdlib_dir.is_dir() {
                 path = Value::cons(
@@ -109,6 +114,7 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
             }
         }
 
+        println!(";; Using sysroot load path: {:?}", path);
         // Prefer the sysroot cache (populated by FHS installs) for compiled artifacts,
         // then fall back to the historical compiled locations.
         let compiled_candidates = [
@@ -117,14 +123,51 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         ];
 
         let mut compiled_dirs = Vec::<PathBuf>::new();
-        for compiled_dir in compiled_candidates {
+        for compiled_dir in compiled_candidates.iter() {
             if compiled_dir.is_dir() {
-                compiled_dirs.push(compiled_dir);
+                compiled_dirs.push(compiled_dir.clone());
             }
         }
 
         // Preserve candidate order: the loader prefers the first existing directory.
         for compiled_dir in compiled_dirs.into_iter().rev() {
+            cpath = Value::cons(
+                ctx,
+                Str::new(*ctx, &compiled_dir.to_string_lossy(), true).into(),
+                cpath,
+            );
+        }
+
+        println!(
+            ";; Using sysroot compiled load path: {:?}, candidates: {:?}",
+            cpath, compiled_candidates
+        );
+    }*/
+
+    if let Some(sysroot_dir) = sysroot_dir.as_ref() {
+        if cfg!(feature = "portable") {
+            // portable install prefers `<sysroot>/lib` and `<sysroot>/compiled`
+            let stdlib_dir = sysroot_dir.join("lib");
+            path = Value::cons(
+                ctx,
+                Str::new(*ctx, &stdlib_dir.to_string_lossy(), true).into(),
+                path,
+            );
+            let compiled_dir = sysroot_dir.join("compiled");
+            cpath = Value::cons(
+                ctx,
+                Str::new(*ctx, &compiled_dir.to_string_lossy(), true).into(),
+                cpath,
+            );
+        } else {
+            // FHS install prefers `<sysroot>/share/capy/lib` and `<sysroot>/lib/capy/compiled`
+            let stdlib_dir = sysroot_dir.join("share").join("capy").join("lib");
+            path = Value::cons(
+                ctx,
+                Str::new(*ctx, &stdlib_dir.to_string_lossy(), true).into(),
+                path,
+            );
+            let compiled_dir = sysroot_dir.join("lib").join("capy").join("compiled");
             cpath = Value::cons(
                 ctx,
                 Str::new(*ctx, &compiled_dir.to_string_lossy(), true).into(),
@@ -688,12 +731,27 @@ pub mod load_ops {
         nctx.return_(result)
     }
 
+    #[scheme(name = "%bootstrapping?")]
+    pub fn scm_bootstrapping() -> Result<Value<'gc>, Value<'gc>> {
+        #[cfg(feature = "bootstrap")]
+        {
+            nctx.return_(Ok(Value::new(true)))
+        }
+        #[cfg(not(feature = "bootstrap"))]
+        {
+            nctx.return_(Ok(Value::new(false)))
+        }
+    }
+
     /// Same as load-thunk-in-vicinity, but takes closure `k` which is involed
     /// when compilation is required. The job of this closure is to compile provided
     /// source S-expressions into TreeIL and return it for further processing.
     #[scheme(name = "load-thunk-in-vicinity-k")]
+    #[allow(dead_code)]
+    #[allow(unused_variables)]
     pub fn scm_load_thunk_in_vicinity_k(
         filename: Gc<'gc, Str<'gc>>,
+
         k: Value<'gc>,
         env: Value<'gc>,
         resolve_relative: bool,
@@ -714,57 +772,77 @@ pub mod load_ops {
                 if thunk.is::<Closure>() {
                     return nctx.return_(Ok(thunk));
                 }
-                let ctx = nctx.ctx;
-                let file = thunk.car().downcast::<Str>().to_string();
-                let file_in = match std::fs::File::open(&file).map_err(|e| {
-                    make_io_error(
+
+                #[cfg(feature = "bootstrap")]
+                {
+                    let ctx = nctx.ctx;
+                    let file = thunk.car().downcast::<Str>().to_string();
+                    let file_in = match std::fs::File::open(&file).map_err(|e| {
+                        make_io_error(
+                            ctx,
+                            "compile-file",
+                            Str::new(
+                                *ctx,
+                                format!("Cannot open input file '{}': {}", file, e),
+                                true,
+                            )
+                            .into(),
+                            &[],
+                        )
+                    }) {
+                        Ok(file_in) => file_in,
+                        Err(err) => return nctx.return_(Err(err)),
+                    };
+
+                    let text = match std::io::read_to_string(&file_in).map_err(|e| {
+                        make_io_error(
+                            ctx,
+                            "compile-file",
+                            Str::new(
+                                *ctx,
+                                format!("Cannot read input file '{}': {}", file, e),
+                                true,
+                            )
+                            .into(),
+                            &[],
+                        )
+                    }) {
+                        Ok(text) => text,
+                        Err(err) => return nctx.return_(Err(err)),
+                    };
+                    let src = Str::new(*ctx, &file, true);
+                    let parser =
+                        crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
+
+                    let program = match parser.read_program().map_err(|err| {
+                        make_lexical_violation(ctx, "compile-file", err.to_string(&file))
+                    }) {
+                        Ok(program) => program,
+                        Err(err) => return nctx.return_(Err(err)),
+                    };
+
+                    let reth = nctx.reth;
+                    let retk = nctx.retk;
+
+                    let after_call = make_closure_continue_loading_k(ctx, [thunk, retk, reth]);
+                    let program = Value::list_from_slice(ctx, program);
+                    return nctx.call(k, &[program, env], after_call.into(), reth);
+                }
+                #[cfg(not(feature = "bootstrap"))]
+                {
+                    let ctx = nctx.ctx;
+                    return nctx.return_(Err(make_io_error(
                         ctx,
-                        "compile-file",
+                        "load-thunk-in-vicinity-k",
                         Str::new(
                             *ctx,
-                            format!("Cannot open input file '{}': {}", file, e),
+                            "load-thunk-in-vicinity-k is not available in non-bootstrap builds",
                             true,
                         )
                         .into(),
                         &[],
-                    )
-                }) {
-                    Ok(file_in) => file_in,
-                    Err(err) => return nctx.return_(Err(err)),
-                };
-
-                let text = match std::io::read_to_string(&file_in).map_err(|e| {
-                    make_io_error(
-                        ctx,
-                        "compile-file",
-                        Str::new(
-                            *ctx,
-                            format!("Cannot read input file '{}': {}", file, e),
-                            true,
-                        )
-                        .into(),
-                        &[],
-                    )
-                }) {
-                    Ok(text) => text,
-                    Err(err) => return nctx.return_(Err(err)),
-                };
-                let src = Str::new(*ctx, &file, true);
-                let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
-
-                let program = match parser.read_program().map_err(|err| {
-                    make_lexical_violation(ctx, "compile-file", err.to_string(&file))
-                }) {
-                    Ok(program) => program,
-                    Err(err) => return nctx.return_(Err(err)),
-                };
-
-                let reth = nctx.reth;
-                let retk = nctx.retk;
-
-                let after_call = make_closure_continue_loading_k(ctx, [thunk, retk, reth]);
-                let program = Value::list_from_slice(ctx, program);
-                nctx.call(k, &[program, env], after_call.into(), reth)
+                    )));
+                }
             }
 
             Err(err) => nctx.return_(Err(err)),

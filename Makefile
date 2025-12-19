@@ -257,15 +257,11 @@ install-cross:
 	fi
 
 # Build the Rust library and the C launcher binaries.
-build-runtime:
+build-runtime-bootstrap:
 	@echo "Version: $(VERSION)"
 	@echo "Target path: $(TARGET_PATH)"
 	@echo "Building CapyScheme with profile '$(PROFILE)' for target '$(TARGET)'"
-	@if [ "$(PORTABLE)" = "1" ]; then \
-		$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable; \
-	else \
-		CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy; \
-	fi
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable,bootstrap
 	@echo "Build main capy binaries"
 	
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
@@ -273,22 +269,28 @@ build-runtime:
 
 
 # Aggregate build: runtime + full bootstrap chain.
-build: build-runtime stage-0 stage-1 stage-2
+build: stage-0 build-runtime stage-1 stage-2
 	@echo "Build complete: runtime and bootstrap stages 0-2"
 
-# Non-portable runtime build for FHS installs.
-build-runtime-fhs: PORTABLE=0
+build-runtime:
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+
 build-runtime-fhs: 
 	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full  -lcapy -Wl,-rpath,$(RPATH_FHS)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_FHS)
+
+build-runtime-portable: 
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
+	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 
 install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
 
 # Stage 0 of bootstrapping.
-stage-0: build-runtime
+stage-0: build-runtime-bootstrap
 	@echo "Creating stage-0 CapyScheme"
 	mkdir -p stage-0
 	
@@ -436,12 +438,12 @@ compile-r7rs:
 # Install / dist
 # -------------------------
 
-install-portable: build
+install-portable: build build-runtime-portable
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
-	cp stage-2/capy $(PREFIX)/capy/$(VERSION)/
-	cp stage-2/capyc $(PREFIX)/capy/$(VERSION)/
+	cp stage-2/capy-full $(PREFIX)/capy/$(VERSION)/
+	cp stage-2/capyc-full $(PREFIX)/capy/$(VERSION)/
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp $(TARGET_PATH)/libcapy.* $(PREFIX)/capy/$(VERSION)/
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
@@ -450,7 +452,7 @@ install-portable: build
 
 # Produces a portable tar.gz archive without installing.
 # Mirrors install-portable.
-dist-portable: build
+dist-portable: build build-runtime-portable
 	set -euxo pipefail; \
 	outdir=$${OUTDIR:-dist}; \
 	stagedir=$${STAGEDIR:-stage-dist}; \
@@ -464,9 +466,8 @@ dist-portable: build
 	rm -rf "$$stage_root"; \
 	mkdir -p "$$stage_install_dir/extensions"; \
 	rsync --checksum -r lib "$$stage_install_dir"; \
-	cp stage-2/capy "$$stage_install_dir/"; \
-	cp stage-2/capyc "$$stage_install_dir/"; \
-	ln -sf "$$stage_install_dir/capy" "$$stage_install_dir/capy-$(VERSION)"; \
+	cp stage-2/capy-full "$$stage_install_dir/"; \
+	cp stage-2/capyc-full "$$stage_install_dir/"; \
 	cp $(TARGET_PATH)/libcapy.* "$$stage_install_dir/"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
 	echo "Creating $$outdir/$$archive_name"; \

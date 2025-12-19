@@ -11,13 +11,14 @@ bytemuck.workspace = true
 easy-bitfield.workspace = true
 env_logger.workspace = true
 libm.workspace = true
-num-bigint.workspace = true
+num-bigint = { workspace = true, optional = true }
+num = { workspace = true }
 rand.workspace = true
 mmtk.workspace = true
 simplehash.workspace = true
-num.workspace = true
-tree-sitter.workspace = true
-tree-sitter-scheme.workspace = true
+
+tree-sitter = { workspace = true, optional = true }
+tree-sitter-scheme = { workspace = true, optional = true }
 rustix = { version = "*", features = ["fs", "pipe", "event"] }
 paste.workspace = true
 pretty.workspace = true
@@ -71,10 +72,11 @@ package = "im-rc"
 crate-type = ["cdylib"]
 
 [features]
-default = ["portable", "expeditor"]
+default = ["portable", "expeditor", "bootstrap"]
 portable = []
 aslr = []
 expeditor = ["crossterm"]
+bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]
 
 [build-dependencies]
 cbindgen = "*"

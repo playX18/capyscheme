@@ -8,6 +8,7 @@
 //! - Complex numbers
 //! - Various radixes (binary, octal, decimal, hexadecimal)
 //! - Exactness prefixes (#e, #i)
+use crate::frontend::error::NumberParseError;
 use crate::rsgc::Trace;
 use num::{BigInt, BigRational, Num, One, ToPrimitive, Zero};
 use std::{fmt, hash::Hash, rc::Rc};
@@ -431,37 +432,6 @@ pub fn parse_number(text: &str) -> Result<Number, NumberParseError> {
     let mut parser = NumberParser::new(text);
     parser.parse().map(|x| x.normalize())
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NumberParseError {
-    InvalidFormat(String),
-    InvalidRadix(String),
-    InvalidExactness(String),
-    InvalidDigit(char, u32),
-    EmptyNumber,
-    MultipleDecimalPoints,
-    InvalidComplex(String),
-}
-
-impl std::fmt::Display for NumberParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NumberParseError::InvalidFormat(s) => write!(f, "Invalid number format: {}", s),
-            NumberParseError::InvalidRadix(s) => write!(f, "Invalid radix: {}", s),
-            NumberParseError::InvalidExactness(s) => write!(f, "Invalid exactness: {}", s),
-            NumberParseError::InvalidDigit(c, radix) => {
-                write!(f, "Invalid digit '{}' for radix {}", c, radix)
-            }
-            NumberParseError::EmptyNumber => write!(f, "Empty number"),
-            NumberParseError::MultipleDecimalPoints => {
-                write!(f, "Multiple decimal points in number")
-            }
-            NumberParseError::InvalidComplex(s) => write!(f, "Invalid complex number: {}", s),
-        }
-    }
-}
-
-impl std::error::Error for NumberParseError {}
 
 struct NumberParser<'a> {
     input: &'a str,
