@@ -1,14 +1,9 @@
-use std::fmt::Display;
-
-use crate::rsgc::Trace;
+use crate::{frontend::error::LexicalError, rsgc::Trace};
 use tree_sitter::Node;
 
 use crate::{
     expander::add_source,
-    frontend::{
-        Directives,
-        num::{NumberParseError, parse_number},
-    },
+    frontend::{Directives, num::parse_number},
     global, list,
     runtime::{
         Context,
@@ -32,87 +27,6 @@ pub struct Annotation<'gc> {
 unsafe impl<'gc> Tagged for Annotation<'gc> {
     const TC8: TypeCode8 = TypeCode8::ANNOTATION;
     const TYPE_NAME: &'static str = "#<annotation>";
-}
-
-#[derive(Debug, Clone)]
-pub enum LexicalError<'gc> {
-    InvalidCharacter {
-        source: (u32, u32),
-        character: char,
-    },
-    UnclosedString {
-        source: (u32, u32),
-    },
-    UnclosedList {
-        start_at: (u32, u32),
-        end_at: (u32, u32),
-    },
-
-    ImproperListMultiple {
-        span: (u32, u32),
-        dot_spans: Vec<Value<'gc>>,
-        multi_tails: Vec<Value<'gc>>,
-    },
-
-    ImproperListMissingTail {
-        span: (u32, u32),
-    },
-
-    InvalidSyntax {
-        span: (u32, u32),
-    },
-
-    InvalidNumber {
-        span: (u32, u32),
-        error: NumberParseError,
-    },
-
-    ExpectedPair {
-        span: (u32, u32),
-    },
-}
-
-impl<'gc> LexicalError<'gc> {
-    pub fn to_string(&self, file: impl Display) -> String {
-        match self {
-            LexicalError::InvalidCharacter { source, character } => format!(
-                "Invalid character '{}' at {}:{}:{}",
-                character, file, source.0, source.1
-            ),
-            LexicalError::UnclosedString { source } => format!(
-                "Unclosed string starting at {}:{}:{}",
-                file, source.0, source.1
-            ),
-            LexicalError::UnclosedList { start_at, end_at } => format!(
-                "Unclosed list starting from {}:{}:{} to {}:{}:{}",
-                file, start_at.0, start_at.1, file, end_at.0, end_at.1
-            ),
-            LexicalError::ImproperListMultiple {
-                span,
-                dot_spans: _,
-                multi_tails: _,
-            } => format!(
-                "Improper list with multiple tails at {}:{}:{}",
-                file, span.0, span.1
-            ),
-            LexicalError::ImproperListMissingTail { span } => format!(
-                "Improper list missing tail at {}:{}:{}",
-                file, span.0, span.1,
-            ),
-            LexicalError::InvalidSyntax { span } => {
-                format!("Invalid syntax at {}:{}:{}", file, span.0, span.1)
-            }
-            LexicalError::InvalidNumber { span, error } => {
-                format!(
-                    "Invalid number at {}:{}:{}: {}",
-                    file, span.0, span.1, error
-                )
-            }
-            LexicalError::ExpectedPair { span } => {
-                format!("Expected pair at {}:{}:{}", file, span.0, span.1)
-            }
-        }
-    }
 }
 
 pub struct TreeSitter<'a, 'gc> {

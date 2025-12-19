@@ -1,6 +1,13 @@
 use bitflags::bitflags;
 
+pub mod error;
+
+// bootstrap needs to use tree-sitter to parse Scheme code AND `num` crate
+// to parse numbers. However, after bootstrapping we have self-hosted
+// implementations of both the reader and number parser.
+#[cfg(feature = "bootstrap")]
 pub mod num;
+#[cfg(feature = "bootstrap")]
 pub mod reader;
 
 bitflags! {

@@ -22,6 +22,7 @@ use std::{
 };
 
 use easy_bitfield::{BitField, BitFieldTrait};
+#[cfg(feature = "bootstrap")]
 use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
 
 use crate::rsgc::{
@@ -284,6 +285,7 @@ impl<'gc> BigInt<'gc> {
         Self::new::<false>(ctx, &**self, negative)
     }
 
+    #[cfg(feature = "bootstrap")]
     pub fn to_num_bigint(&self) -> NumBigInt {
         if self.is_zero() {
             return NumBigInt::from(0);
@@ -308,7 +310,7 @@ impl<'gc> BigInt<'gc> {
         let first_non_zero = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
         NumBigInt::from_bytes_be(sign, &bytes[first_non_zero..])
     }
-
+    #[cfg(feature = "bootstrap")]
     pub fn from_num_bigint(ctx: Context<'gc>, num_bigint: &NumBigInt) -> Gc<'gc, Self> {
         if *num_bigint == NumBigInt::from(0) {
             return Self::zero(ctx);

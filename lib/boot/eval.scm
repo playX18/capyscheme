@@ -112,16 +112,6 @@
                                         "Compiling file ~a" filename)
                                 ((compile-file full-filename compiled-path (current-module) #t))))])))))
 
-(define primitive-load
-    (lambda (filename)
-        (save-module-excursion (lambda ()
-            (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
-                (with-exception-handler
-                    (lambda (exn)
-                        (format #t ";; (primitive) Error loading file '~a'~%" filename)
-                        (raise exn))
-                    (lambda () (thunk))))))))
-
 
 (define (eval x . m)
     (save-module-excursion (lambda ()

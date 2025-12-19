@@ -1,21 +1,24 @@
 use std::{io::Write, path::Path};
 
-use crate::{
-    compiler::{linkutils::Linker, ssa::ModuleBuilder},
-    cps::{contify::contify, reify, term::FuncRef},
-    expander::{
-        assignment_elimination, compile_cps, core::denotations, eta_expand::eta_expand,
-        fix_letrec::fix_letrec, free_vars::resolve_free_vars, letrectify::letrectify, primitives,
-    },
-    runtime::{
-        Context,
-        modules::Module,
-        value::{Str, Value},
-        vm::thunks::{make_io_error, make_lexical_violation},
-    },
-};
-
+use crate::compiler::{linkutils::Linker, ssa::ModuleBuilder};
+use crate::cps::{reify, term::FuncRef};
 use crate::rsgc::Gc;
+use crate::runtime::vm::thunks::make_io_error;
+use crate::runtime::{
+    Context,
+    modules::Module,
+    value::{Str, Value},
+};
+#[cfg(feature = "bootstrap")]
+use crate::{
+    cps::contify::contify,
+    expander::core::denotations,
+    expander::{
+        assignment_elimination, compile_cps, eta_expand::eta_expand, fix_letrec::fix_letrec,
+        free_vars::resolve_free_vars, letrectify::letrectify, primitives,
+    },
+    runtime::vm::thunks::make_lexical_violation,
+};
 use cranelift::prelude::Configurable;
 use cranelift_codegen::settings;
 use cranelift_module::default_libcall_names;
@@ -70,6 +73,15 @@ pub mod debuginfo;
 pub mod linkutils;
 pub mod ssa;
 
+#[cfg(not(feature = "bootstrap"))]
+pub fn compile_file<'gc>(
+    _: Context<'gc>,
+    _: impl AsRef<Path>,
+    _: Option<Gc<'gc, Module<'gc>>>,
+) -> Result<FuncRef<'gc>, Value<'gc>> {
+    unreachable!("compile_file should not be called after bootstrap is complete");
+}
+#[cfg(feature = "bootstrap")]
 pub fn compile_file<'gc>(
     ctx: Context<'gc>,
     file: impl AsRef<Path>,

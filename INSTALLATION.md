@@ -1,46 +1,20 @@
 # Installation
 
 To install & run CapyScheme you need additonal dependencies:
-- Just: for running Justfile recipe
-- lld: for linking resulting Scheme dynamic libraries. Right now it is hardcoded, but in the future
-it should be possible to change it
+- lld on macOS to link Scheme files after they were built
+- Makefile
 
 After they are installed simply run:
 ```sh
-$ just install-portable
+$ make install-portable
 ```
 
-Or if you want different installation prefix:
+Or if you want to install system-wide
 ```sh
-$ just install-prefix=/usr/local/share install-portable 
+$ make PREFIX=/usr/local install
 
 ```
 
 After everything is installed you should add installed directory into PATH.
 If you wish to use native extensions also add `extensions/` directory under prefix
 into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
-
-## FHS-style install (system layout)
-
-For a traditional Unix filesystem layout (FHS), you can install:
-
-```sh
-just fhs-prefix=/usr/local install
-```
-
-This installs:
-
-- `capy` to `/usr/local/bin/capy`
-- `libcapy.*` to `/usr/local/lib/`
-- Scheme stdlib to `/usr/local/share/capy/`
-
-The FHS sysroot prefix is compiled into the `capy` binary during `just install-fhs`.
-
-## GC limitations
-
-Once the `capy` binary and heap image are built the GC algorithm is locked in. For example
-if you built with `MMTK_PLAN=GenImmix` env variable set you can only change GC plans to GenCopy 
-or StickyImmix when running this binary. 
-
-If you want to run with concurrent Immix simply perform build with `MMTK_PLAN=ConcurrentImmix` env variable
-set.
