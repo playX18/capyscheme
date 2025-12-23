@@ -91,6 +91,13 @@
                     (set! interactive? #f)
                     (set! out (cons `((@@ (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
                 (finish (arg-results-rest res) out))))
+
+    (add-flag! parser 
+      "r7rs"
+      (help "Run in R7RS compatibility mode"))
+    (add-flag! parser 
+      "r6rs"
+      (help "Run in R6RS compatibility mode"))
     (add-flag! parser 
         "help"
         (help "Show this help message and exit"))

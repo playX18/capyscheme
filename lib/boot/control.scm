@@ -115,7 +115,9 @@
                         (apply c vals)))]))
 
 (define $null-continuation 
-  (let ([k (lambda () (exit 1))])
+  (let ([k (lambda ()
+     (fprintf (current-error-port) "Error: attempted to invoke the null continuation.~%~!")
+     (exit 1))])
     (set-procedure-property! k 'continuation
       (tuple '() '()))
     k))
