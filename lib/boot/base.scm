@@ -1119,9 +1119,10 @@
   (lambda (stx)
     (syntax-case stx ()
       [(_ expr)
-       #'(with-exception-handler 
-        (lambda ex #f)
-        (lambda () expr))])))
+       #'(call/cc (lambda (k) 
+          (with-exception-handler 
+            (lambda ex (k #f))
+            (lambda () expr))))])))
 
 ;;; {`cond-expand' for SRFI-0 support.}
 ;;;
