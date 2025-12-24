@@ -115,7 +115,7 @@
 
 (define (eval x . m)
     (save-module-excursion (lambda ()
-        (let* ([m (if (null? m) (current-module) (car m))]
+        (let* ([m (if (null? m) (current-module) (or (car m) (current-module)))]
            [code (macroexpand x 'e '(eval))])
             (primitive-eval code)))))
 

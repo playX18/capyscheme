@@ -794,5 +794,3 @@
   (define s2 (keyword->symbol kw2))
 
   (string<? (symbol->string s1) (symbol->string s2)))
-
-(define capy:execution-mode (make-parameter 'rnrs))

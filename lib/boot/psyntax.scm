@@ -1257,7 +1257,7 @@
                                  
                                  (build-letrec* src var-ids vars vals tail)))))))
                      (expand-tail-expr
-                         (parse body ids labels (cons #f var-ids) (cons #f vars) (cons expand-tail-expr vals) bindings #f))
+                        (parse body ids labels (cons #f var-ids) (cons #f vars) (cons expand-tail-expr vals) bindings #f))
                      (else
                         (let ((e (cdar body)) (er (caar body)) (body (cdr body)))
                             (call-with-values

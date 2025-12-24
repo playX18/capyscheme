@@ -482,7 +482,7 @@ install: build build-runtime-fhs
 	$${SUDO}mkdir -p "$(PREFIX)/lib"; \
 	$${SUDO}mkdir -p "$(PREFIX)/lib/capy/compiled"; \
 	$${SUDO}mkdir -p "$(PREFIX)/share/capy"; \
-	$${SUDO}cp -r lib/ "$(PREFIX)/share/capy/"; \
+	$${SUDO}cp -r lib "$(PREFIX)/share/capy/lib"; \
 	$${SUDO}cp bin/capy-full "$(PREFIX)/bin/capy"; \
 	$${SUDO}cp bin/capyc-full "$(PREFIX)/bin/capyc"; \
 	$${SUDO}cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
