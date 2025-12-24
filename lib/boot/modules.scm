@@ -425,6 +425,9 @@
   (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" "sch" "sps" "ss")
           %load-extensions))
 
+(define capy:execution-mode (make-parameter 'capy))
+
+
 (let* (
       [host-arch (host-arch)]
       [host-os (host-os)]
@@ -439,3 +442,9 @@
     (append (list host-os-sld host-family-sld arch-sld
                   host-os-sls host-family-sls arch-sls)
             %load-extensions)))
+
+(define (install-r7rs!)
+  (capy:execution-mode 'r7rs))
+
+(define (install-r6rs!)
+  (capy:execution-mode 'r6rs))

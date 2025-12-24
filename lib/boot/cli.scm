@@ -83,8 +83,10 @@
                 (if (arg-results-ref res "fresh-auto-compile")
                     (set! %fresh-auto-compile #t))
                 (define out '())
-                
+
+
                 (when (arg-results-ref res "script")
+                    (set! arg0 (arg-results-ref res "script"))
                     (set! interactive? #f)
                     (set! out (cons `((@@ (capy) load) ,(arg-results-ref res "script")) out)))
                 (when (arg-results-ref res "command")

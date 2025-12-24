@@ -1,6 +1,6 @@
 
 (define-library (scheme eval)
-  (import (core primitives))
+  (import (capy))
   (export environment eval)
 (begin
   (define (environment . import-specs)

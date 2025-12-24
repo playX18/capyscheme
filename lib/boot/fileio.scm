@@ -4,7 +4,7 @@
 ;
 ; File I/O.
 
-(define (larceny:execution-mode) 'r6rs)
+
 (define (issue-deprecated-warnings?) #f)
 
 
@@ -218,20 +218,12 @@
                    (else 'block)))
          (exists? (file-io/file-exists? filename)))
     (cond ((and exists? (not dont-create) (not dont-fail))
-           (let* ((exec-mode (larceny:execution-mode)))
-             (case exec-mode
-              ((r5rs) #t)
-              ((err5rs)
-               (if (issue-deprecated-warnings?)
-                   (let ((out (current-error-port)))
-                     (display "WARNING: output file already exists: " out)
-                     (display filename out)
-                     (newline out))))
-              (else
+           (let* ((exec-mode (capy:execution-mode)))
+             
                (raise-i/o-file-already-exists 
                 'open-file-input/output-port 
                 "file already exists"
-                filename)))))
+                filename)))
           ((and (not exists?)
                 (not dont-create))
            (call-with-port (open-file-output-port filename) values))
