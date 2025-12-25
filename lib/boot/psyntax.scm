@@ -30,6 +30,59 @@
       (syntax-wrap (module-ref (current-module) 'syntax-wrap))
       (syntax-module (module-ref (current-module) 'syntax-module))
       (syntax-sourcev (module-ref (current-module) 'syntax-sourcev)))
+
+    ;; A simple pattern matcher based on Oleg Kiselyov's pmatch.
+    (define-syntax-rule (simple-match e cs ...)
+      (let ((v e)) (simple-match-1 v cs ...)))
+
+    (define-syntax simple-match-1
+      (syntax-rules ()
+        ((_ v) (error "value failed to match" v))
+        ((_ v (pat e0 e ...) cs ...)
+        (let ((fk (lambda () (simple-match-1 v cs ...))))
+          (simple-match-pat v pat (let () e0 e ...) (fk))))))
+
+    (define-syntax simple-match-patv
+      (syntax-rules ()
+        ((_ v idx () kt kf) kt)
+        ((_ v idx (x . y) kt kf)
+        (simple-match-pat (vector-ref v idx) x
+                          (simple-match-patv v (1+ idx) y kt kf)
+                          kf))))
+
+    (define-syntax simple-match-pat
+      (syntax-rules (_ quote unquote ? and or not)
+        ((_ v _ kt kf) kt)
+        ((_ v () kt kf) (if (null? v) kt kf))
+        ((_ v #t kt kf) (if (eq? v #t) kt kf))
+        ((_ v #f kt kf) (if (eq? v #f) kt kf))
+        ((_ v (and) kt kf) kt)
+        ((_ v (and x . y) kt kf)
+        (simple-match-pat v x (simple-match-pat v (and . y) kt kf) kf))
+        ((_ v (or) kt kf) kf)
+        ((_ v (or x . y) kt kf)
+        (let ((tk (lambda () kt)))
+          (simple-match-pat v x (tk) (simple-match-pat v (or . y) (tk) kf))))
+        ((_ v (not pat) kt kf) (simple-match-pat v pat kf kt))
+        ((_ v (quote lit) kt kf)
+        (if (eq? v (quote lit)) kt kf))
+        ((_ v (? proc) kt kf) (simple-match-pat v (? proc _) kt kf))
+        ((_ v (? proc pat) kt kf)
+        (if (proc v) (simple-match-pat v pat kt kf) kf))
+        ((_ v (x . y) kt kf)
+        (if (pair? v)
+            (let ((vx (car v)) (vy (cdr v)))
+              (simple-match-pat vx x (simple-match-pat vy y kt kf) kf))
+            kf))
+        ((_ v #(x ...) kt kf)
+        (if (and (vector? v)
+                  (eq? (vector-length v) (length '(x ...))))
+            (simple-match-patv v 0 (x ...) kt kf)
+            kf))
+        ((_ v var kt kf) (let ((var v)) kt))))
+
+    (define-syntax-rule (match e cs ...) (simple-match e cs ...))
+
     (define (top-level-eval exp env) (primitive-eval exp))
     (define (local-eval exp env) (primitive-eval exp))
 
@@ -128,27 +181,16 @@
                    mod)))
     )
     (define (build-sequence src exps)
-        (let* ((v exps)
-              (fk (lambda ()
-                    (let ((fk (lambda () (error "value failed to match" v))))
-                      (if (pair? v)
-                          (let ((vx (car v)) (vy (cdr v)))
-                            (let* ((head vx) (tail vy)) (make-sequence src head (build-sequence #f tail))))
-                          (fk))))))
-          
-          (if (pair? v) 
-          (let ((vx (car v)) (vy (cdr v))) 
-            (let ((tail vx)) 
-              (if (null? vy) 
-                tail 
-                (fk)))) 
-          (fk))))
+      (match exps 
+        ((tail) tail)
+        ((head . tail)
+          (make-sequence src head (build-sequence #f tail)))))
     (define (build-let src ids vars val-exps body-exp)
-      (let* ((v (map maybe-name-value ids val-exps)))
-        (cond
-          ((null? v) body-exp)
-          (else
-            (make-let src 'let ids vars v body-exp)))))
+      (match (map maybe-name-value ids val-exps)
+        (() body-exp)
+        (val-exps 
+          (make-let src 'let ids vars val-exps body-exp))))
+      
     (define (build-let* src ids vars val-exps body-exp)
       (let* ((v (map maybe-name-value ids val-exps)))
         (cond
