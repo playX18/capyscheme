@@ -72,11 +72,72 @@
                 (when (eq? name 'make-syntax)
                   (return sym)))
                 (let-ids x)
-                (let-lhs x)))))
+                (let-lhs x))
+            x))
+          x)
         #f)))
   
   (define make-syntax-gensym (find-make-syntax-lexical-binding x))
-  #f)
+  (define retry #f)
+  (define (translate-constant x)
+    (define src (term-src x))
+    (define exp (constant-value x))
+    (cond 
+      [(list? exp)
+        (define exp (map (lambda (x) (translate-constant (make-constant src x))) exp))
+        (if (and-map constant? exp)
+          x 
+          (make-primcall src 'list exp))]
+      [(pair? exp)
+        (define car* (translate-constant (make-constant src (car exp))))
+        (define cdr* (translate-constant (make-constant src (cdr exp))))
+        (if (and (constant? car*) (constant? cdr*))
+          x 
+          (make-primcall src 'cons (list car* cdr*)))]
+      [(vector? exp)
+        (define exp* (map (lambda (x) (translate-constant (make-constant src x))) (vector->list exp)))
+        (if (and-map constant? exp*)
+          x 
+          (make-primcall src 'vector exp*))]
+      [(syntax? exp)
+        (make-application src 
+          (if make-syntax-gensym 
+            (make-lref src 'make-syntax make-syntax-gensym)
+            (retry #t))
+          (list 
+            (translate-constant 
+              (make-constant src (syntax-expression exp)))
+            (translate-constant
+              (make-constant src (syntax-wrap exp)))
+            (translate-constant 
+              (make-constant src (syntax-module exp)))))]
+      [else x]))
+      
+  (let loop ()
+    (define res (call/cc 
+      (lambda (return)
+        (set! retry return)
+        (post-order 
+          (lambda (x)
+            (if (constant? x)
+              (translate-constant x)
+              x))
+          x))))
+    (cond 
+      [(boolean? res)
+        (translate-literal-syntax-objects 
+          (make-toplevel-define 
+            (term-src x)
+            (toplevel-define-mod x)
+            (toplevel-define-name x)
+            (make-let 
+              (term-src x)
+              'let 
+              (list 'make-syntax)
+              (list (module-gensym))
+              (list (make-toplevel-ref #f #f 'make-syntax))
+              (toplevel-define-value x))))]
+      [else res])))
 
 (define source (list-ref (command-line) 1))
 (define target (list-ref (command-line) 2))
@@ -94,9 +155,10 @@
       (close-port out))
     (begin 
       (pretty-print 
-        (squeeze-tree-il 
-          (tree-il->scheme 
-            (macroexpand x 'c '(compile load eval))))
+        (translate-literal-syntax-objects 
+          (squeeze-tree-il 
+            (tree-il->scheme 
+              (macroexpand x 'c '(compile load eval)))))
         out)
       (newline out)
       (loop (read in)))))

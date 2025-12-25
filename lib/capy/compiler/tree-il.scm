@@ -61,7 +61,11 @@
         pre-post-order)
     (import (capy))
     
-  (define (tree-il->scheme t)
+  (define (tree-il->scheme t . ops?)
+    (define ops (if (null? ops?) '() (car ops?)))
+    (define strip-numeric-suffixes? (memq 'strip-numeric-suffixes? ops))
+    
+
     (unless (term? t)
       (error 'tree-il->scheme "not a term" t))
     (cond 
