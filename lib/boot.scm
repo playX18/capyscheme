@@ -46,7 +46,7 @@
 ($primitive-load "boot/log.scm")
 (initialize-io-system)
 ($primitive-load "boot/match-syntax.scm")
-($primitive-load "boot/psyntax.scm")
+($primitive-load "boot/psyntax-exp.scm")
 
 ($primitive-load "boot/str2num.scm")
 ($primitive-load "boot/num2str.scm")

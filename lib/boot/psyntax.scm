@@ -743,13 +743,9 @@
                                         (lambda ()
                                           (build-global-definition s mod var (expand e r w mod)))))))))
                       ((eq? type 'begin-form)
-                          (let ((tmp ($sc-dispatch e '(_ . each-any))))
-                              (if tmp
-                                  (apply (lambda (e1) (parse e1 r w s m essew mod)) tmp)
-                                  (syntax-violation
-                                      #f
-                                      "source expansion failed to match any pattern"
-                                      e))))
+                        (syntax-case e ()
+                          ((_ exp ...)
+                            (parse #'(exp ...) r w s m essew mod))))
                       ((eq? type 'eval-when-form)
                         (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
                                           (if tmp
