@@ -105,7 +105,7 @@ BOOT_SRCS := \
 	lib/boot/format.scm \
 	lib/boot/log.scm \
 	lib/boot/match-syntax.scm \
-	lib/boot/psyntax.scm \
+	lib/boot/psyntax-exp.scm \
 	lib/boot/str2num.scm \
 	lib/boot/num2str.scm \
 	lib/boot/reader.scm \
@@ -289,6 +289,11 @@ install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
 
+compile-psyntax:
+	$(call require_var,BIN)
+	@echo "Compiling psyntax"
+	$(CAPY_ENV) $(BIN) -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+
 # Stage 0 of bootstrapping.
 stage-0: build-runtime-bootstrap
 	@echo "Creating stage-0 CapyScheme"
@@ -297,9 +302,13 @@ stage-0: build-runtime-bootstrap
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o stage-0/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
+	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
+
 	@echo "Stage-0 CapyScheme created in stage-0/ directory"
 
 stage-1: stage-0
+	
 	@$(MAKE) compile-boot  COMPILER=stage-0/capyc OUT=stage-1/compiled
 	@$(MAKE) compile-core  COMPILER=stage-0/capyc OUT=stage-1/compiled
 	@$(MAKE) compile-rnrs  COMPILER=stage-0/capyc OUT=stage-1/compiled
@@ -313,6 +322,7 @@ stage-1: stage-0
 	cp stage-0/capyc stage-1/capyc
 
 stage-2: stage-1
+	
 	@$(MAKE) compile-boot  COMPILER=stage-1/capyc OUT=stage-2/compiled
 	@$(MAKE) compile-core  COMPILER=stage-1/capyc OUT=stage-2/compiled
 	@$(MAKE) compile-rnrs  COMPILER=stage-1/capyc OUT=stage-2/compiled

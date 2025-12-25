@@ -84,8 +84,8 @@
 (define in (open-input-file source))
 (define out (open-output-file target))
 
-(write '(eval-when (compile) (current-module (resolve-module '(capy) #f #f))) out)
-(newline out)
+;(write '(eval-when (compile) (current-module (resolve-module '(capy) #f #f))) out)
+;(newline out)
 
 (let loop ((x (read in)))
   (if (eof-object? x)
