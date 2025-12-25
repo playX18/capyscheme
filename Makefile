@@ -31,6 +31,11 @@ TARGET_PATH := $(TARGET_DIR)/$(PROFILE)
 
 CC ?= clang
 
+# Compile psyntax during stage-0 creation. By default set to 0 as
+# it's not strictly needed for bootstrapping unless you change
+# psyntax.scm.
+COMPILE_PSYNTAX ?= 0
+
 PREFIX ?= $(HOME)/.local/share
 
 # Try to match the old Justfile version discovery, but allow override.
@@ -294,6 +299,7 @@ compile-psyntax:
 	@echo "Compiling psyntax"
 	$(CAPY_ENV) $(BIN) -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
 
+
 # Stage 0 of bootstrapping.
 stage-0: build-runtime-bootstrap
 	@echo "Creating stage-0 CapyScheme"
@@ -302,8 +308,11 @@ stage-0: build-runtime-bootstrap
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o stage-0/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
+ifeq ($(COMPILE_PSYNTAX),1)
 	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
 	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
+endif
+	
 
 	@echo "Stage-0 CapyScheme created in stage-0/ directory"
 
