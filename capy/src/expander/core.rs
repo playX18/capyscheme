@@ -53,6 +53,8 @@ pub struct Denotations<'gc> {
     pub denotation_of_unless: Value<'gc>,
     pub denotation_of_wcm: Value<'gc>,
     pub denotation_of_define_struct: Value<'gc>,
+    pub denotation_of_public_ref: Value<'gc>,
+    pub denotation_of_private_ref: Value<'gc>,
 }
 
 static DENOTATIONS: OnceLock<Global<crate::Rootable!(Denotations<'_>)>> = OnceLock::new();
@@ -80,6 +82,8 @@ static_symbols!(
     DENOTATION_OF_UNLESS = "unless"
     DENOTATION_OF_WCM = "with-continuation-mark"
     DENOTATION_OF_DEFINE_STRUCT = "define-struct"
+    DENOTATION_OF_PUBLIC_REF = "@"
+    DENOTATION_OF_PRIVATE_REF = "@@"
 );
 
 pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
@@ -108,6 +112,8 @@ pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
                 denotation_of_unless: denotation_of_unless(ctx).into(),
                 denotation_of_wcm: denotation_of_wcm(ctx).into(),
                 denotation_of_define_struct: denotation_of_define_struct(ctx).into(),
+                denotation_of_public_ref: denotation_of_public_ref(ctx).into(),
+                denotation_of_private_ref: denotation_of_private_ref(ctx).into(),
             })
         })
         .fetch(*ctx)
@@ -769,6 +775,10 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             expand_receive(cenv, program)
         } else if proc == cenv.denotations.denotation_of_values {
             expand_values(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_public_ref {
+            expand_public_ref(cenv, program)
+        } else if proc == cenv.denotations.denotation_of_private_ref {
+            expand_private_ref(cenv, program)
         } else {
             let proc = expand(cenv, proc)?;
             let mut xs = args;
@@ -2275,6 +2285,72 @@ fn expand_letrec_star<'gc>(
         Array::from_slice(*cenv.ctx, val_terms),
         body_term,
         syntax_annotation(cenv.ctx, form),
+    ))
+}
+
+// (@@ modname var)
+fn expand_private_ref<'gc>(
+    cenv: &mut Cenv<'gc>,
+    form: Value<'gc>,
+) -> Result<TermRef<'gc>, Error<'gc>> {
+    if form.list_length() != 3 {
+        return Err(Box::new(CompileError {
+            message: "@@ requires exactly two arguments: module name and variable name".to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let modname = form.cadr();
+    let varname = form.caddr();
+
+    if !varname.is::<Symbol>() {
+        return Err(Box::new(CompileError {
+            message: "variable name must be a symbol".to_string(),
+            irritants: vec![varname],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    Ok(Gc::new(
+        *cenv.ctx,
+        Term {
+            source: Lock::new(syntax_annotation(cenv.ctx, form)),
+            kind: TermKind::ModuleRef(modname, varname, false),
+        },
+    ))
+}
+
+fn expand_public_ref<'gc>(
+    cenv: &mut Cenv<'gc>,
+    form: Value<'gc>,
+) -> Result<TermRef<'gc>, Error<'gc>> {
+    if form.list_length() != 3 {
+        return Err(Box::new(CompileError {
+            message: "@@@ requires exactly two arguments: module name and variable name"
+                .to_string(),
+            irritants: vec![form],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    let modname = form.cadr();
+    let varname = form.caddr();
+
+    if !varname.is::<Symbol>() {
+        return Err(Box::new(CompileError {
+            message: "variable name must be a symbol".to_string(),
+            irritants: vec![varname],
+            sourcev: syntax_annotation(cenv.ctx, form),
+        }));
+    }
+
+    Ok(Gc::new(
+        *cenv.ctx,
+        Term {
+            source: Lock::new(syntax_annotation(cenv.ctx, form)),
+            kind: TermKind::ModuleRef(modname, varname, true),
+        },
     ))
 }
 

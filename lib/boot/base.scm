@@ -1450,3 +1450,99 @@
     ((and-let* (expr . rest) . body)   ; Same extension as above
       (let ((tmp expr))
         (and tmp (and-let* rest . body))))))
+
+
+
+(eval-when (expand load eval)
+  (define (%let-keywords-rec stx %let)
+    ;; arg is either
+    ;; - identifier
+    ;; - (identifier default-expr)
+    ;; - (identifier keyword default-expr)
+    (define (triplet var&default) 
+      (syntax-case var&default () 
+        ((id)
+          (identifier? #'id)
+          (values #'id (symbol->keyword (syntax->datum #'id)) (unspecified)))
+        ((id default-expr)
+          (and (identifier? #'id)
+               (not (keyword? #'default-expr)))
+          (values #'id (symbol->keyword (syntax->datum #'id)) #'default-expr))
+        ((id keyword default-expr)
+          (and 
+              (identifier? #'id)
+              (keyword? (syntax->datum #'keyword)))
+          (values #'id #'keyword #'default-expr))
+        (_ (syntax-violation #f "bad binding form in let-keywords" var&default))))
+    (define (process specs)
+      (let loop ((specs specs)
+                 (vars '()) (keys '()) (defaults '()) (tmps '()))
+        (define (finish restvar)
+          (values (reverse vars)
+                  (reverse keys)
+                  (reverse defaults)
+                  (reverse tmps)
+                  restvar))
+        (syntax-case specs () 
+          [() (finish #f)]
+          [(arg . rest)
+            (receive (var key default) (triplet #'arg)
+              (loop #'rest
+                    (cons var vars)
+                    (cons key keys)
+                    (cons default defaults)
+                    (cons (datum->syntax #f (generate-temporary-symbol)) tmps)))]
+          [rest 
+            (identifier? #'rest)
+            (finish #'rest)])))
+    (syntax-case stx () 
+      [(_ arg specs . body)
+        (let ([argvar (datum->syntax #f 'args)]
+              [loop   (datum->syntax #f 'loop)])
+          (receive (vars keys defaults tmps restvar) (process #'specs)
+              (printf "vars: ~a~%keys: ~a~%defaults: ~a~%restvar: ~a~%tmps: ~a~%"
+                      vars keys defaults restvar tmps)
+              #`(let #,loop ((#,argvar arg)
+                             #,@(if (boolean? restvar) '() #`((#,restvar '())))
+                             #,@(map (lambda (tmp) #`(#,tmp (unspecified))) tmps))
+                  (cond 
+                    [(null? #,argvar)
+                      (#,%let #,(map (lambda (var tmp default)
+                        #`(#,var (if (unspecified? #,tmp) #,default #,tmp)))
+                        vars tmps defaults)
+                        . body)]
+                    [(null? (cdr #,argvar))
+                      (error 'let-keywords "keyword list not even" #,argvar)]
+                    [else 
+                      (case (car #,argvar)
+                        #,@(map (lambda (key)
+                            #`((#,key)
+                                (#,loop (cddr #,argvar)
+                                        #,@(if (boolean? restvar) '() #`(#,restvar))
+                                        #,@(map (lambda (k t)
+                                                  (if (eq? key k)
+                                                      #`(cadr #,argvar)
+                                                      t)) keys tmps))))
+                               keys)
+                        (else 
+                          #,(cond 
+                              [(eq? restvar #t)
+                                #`(#,loop (cddr #,argvar) #,@tmps)]
+                              [(eq? restvar #f)
+                                #`(begin 
+                                  (fprintf (current-error-port) "unknown keyword ~s~%" (car #,argvar))
+                                  (#,loop (cddr #,argvar) #,@tmps))]
+                              [else 
+                                #`(#,loop 
+                                    (cddr #,argvar)
+                                    (list* (car #,argvar) (cadr #,argvar) #,restvar)
+                                    #,@tmps)])))]))))])))
+
+(define-syntax let-keywords 
+  (lambda (stx)
+    (%let-keywords-rec stx #'let)))
+    
+(define-syntax let-keywords*
+  (lambda (stx)
+    (%let-keywords-rec stx #'let*)))
+
