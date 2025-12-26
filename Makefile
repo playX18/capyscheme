@@ -186,6 +186,7 @@ SRFI_SRCS := \
 	lib/srfi/srfi-14.scm \
 	lib/srfi/srfi-16.scm \
 	lib/srfi/srfi-23.scm \
+	lib/srfi/srfi-26.scm \
 	lib/srfi/srfi-27.scm \
 	lib/srfi/srfi-28.scm \
 	lib/srfi/srfi-34.scm \
@@ -501,7 +502,7 @@ install: build build-runtime-fhs
 	$${SUDO}mkdir -p "$(PREFIX)/lib"; \
 	$${SUDO}mkdir -p "$(PREFIX)/lib/capy/compiled"; \
 	$${SUDO}mkdir -p "$(PREFIX)/share/capy"; \
-	$${SUDO}cp -r lib "$(PREFIX)/share/capy/lib"; \
+	$${SUDO}cp -r lib "$(PREFIX)/share/capy/"; \
 	$${SUDO}cp bin/capy-full "$(PREFIX)/bin/capy"; \
 	$${SUDO}cp bin/capyc-full "$(PREFIX)/bin/capyc"; \
 	$${SUDO}cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
