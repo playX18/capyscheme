@@ -160,7 +160,9 @@
         (translate-literal-syntax-objects 
           (squeeze-tree-il 
             (tree-il->scheme 
-              (macroexpand x 'c '(compile load eval)))))
+              (macroexpand x 'c '(compile load eval))
+              '(use-case?)
+            )))
         out)
       (newline out)
       (loop (read in)))))

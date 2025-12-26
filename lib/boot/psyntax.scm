@@ -1632,7 +1632,7 @@
                                     ((memv key '(lambda))
                                      (if (list? (cadr x))
                                          (build-simple-lambda no-source (cadr x) (cadr x) '() (regen (caddr x)))
-                                         (error "how did we get here" x)))
+                                         (error #f "how did we get here" x)))
                                     (else (build-primcall no-source (car x) (map regen (cdr x)))))))))
                (lambda (e r w s mod)
                  (let* ((e (source-wrap e w s mod)) (tmp e) (tmp ($sc-dispatch tmp '(_ any))))
