@@ -1411,37 +1411,34 @@
               (if (eq? type 'ellipsis)
                   (bound-id=? e value)
                   (free-id=? e (make-syntax '... top-wrap '(hygiene capy))))))))
-    (define lambda-formals
-      (lambda (orig-args)
-               (letrec* ((req (lambda (args rreq)
-                                (let* ((tmp args) (tmp-1 ($sc-dispatch tmp '())))
-                                  (if tmp-1
-                                      (apply (lambda () (check (reverse rreq) #f)) tmp-1)
-                                      (let ((tmp-1 ($sc-dispatch tmp '(any . any))))
-                                        (if (and tmp-1 (apply (lambda (a b) (id? a)) tmp-1))
-                                            (apply (lambda (a b) (req b (cons a rreq))) tmp-1)
-                                            (let ((tmp-1 (list tmp)))
-                                              (if (and tmp-1 (apply (lambda (r) (id? r)) tmp-1))
-                                                  (apply (lambda (r) (check (reverse rreq) r)) tmp-1)
-                                                  (let ((else tmp))
-                                                    (syntax-violation 'lambda "invalid argument list" orig-args args))))))))))
-                         (check (lambda (req rest)
-                                  (if (distinct-bound-ids? (if rest (cons rest req) req))
-                                      (values req #f rest #f)
-                                      (syntax-violation 'lambda "duplicate identifier in argument list" orig-args)))))
-                 (req orig-args '()))))
+    
+    (define (lambda-formals orig-args)
+      (define (req args rreq)
+        (syntax-case args () 
+          [() (check (reverse rreq) #f)]
+          [(a . b) (id? #'a)
+            (req #'b (cons #'a rreq))]
+          [r (id? #'r)
+            (check (reverse rreq) #'r)]
+          [else 
+            (syntax-violation 'lambda "invalid argument list" orig-args args)]))
+      (define (check req rest)
+        (cond 
+          [(distinct-bound-ids? (if rest (cons rest req) req))
+            (values req #f rest #f)]
+          [else 
+            (syntax-violation 'lambda "duplicate argument names" orig-args)]))
+      (req orig-args '()))
+
+
     (define (expand-public-ref e r w mod)
-        (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any))))
-                 (if (and tmp (apply (lambda (mod id) (and (and-map id? mod) (id? id))) tmp))
-                     (apply (lambda (mod id)
-                              (values
-                               (syntax->datum id)
-                               r
-                               top-wrap
-                               #f
-                               (syntax->datum (cons (make-syntax 'public top-wrap '(hygiene capy)) mod))))
-                            tmp)
-                     (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
+      (syntax-case e () 
+        [(_ (mod ...) id)
+          (and (and-map id? #'(mod ...)) (id? #'id))
+          (values 
+            (syntax->datum #'id) r top-wrap #f 
+            (syntax->datum 
+              #'(public mod ...)))]))
 
     (define (expand-private-ref e r w mod)
         (letrec* ((remodulate
@@ -2109,30 +2106,20 @@
                      (let ((e tmp-1)) (syntax-violation 'quote "bad syntax" e))))))
     (global-extend 'core 'lambda
       (lambda (e r w s mod)
-               (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ any any . each-any))))
-                 (if tmp
-                     (apply (lambda (args e1 e2)
-                              (call-with-values
-                               (lambda () (lambda-formals args))
-                               (lambda (req opt rest kw)
-                                 (let lp ((body (cons e1 e2)) (meta '()))
-                                   (let* ((tmp-1 body) (tmp ($sc-dispatch tmp-1 '(any any . each-any))))
-                                     (if (and tmp
-                                              (apply (lambda (docstring e1 e2) (string? (syntax->datum docstring))) tmp))
-                                         (apply (lambda (docstring e1 e2)
-                                                  (lp (cons e1 e2)
-                                                      (append
-                                                       meta
-                                                       (list (cons 'documentation (syntax->datum docstring))))))
-                                                tmp)
-                                         (let ((tmp ($sc-dispatch tmp-1 '(#(vector #(each (any . any))) any . each-any))))
-                                           (if tmp
-                                               (apply (lambda (k v e1 e2)
-                                                        (lp (cons e1 e2) (append meta (syntax->datum (map cons k v)))))
-                                                      tmp)
-                                               (expand-simple-lambda e r w s mod req rest meta body)))))))))
-                            tmp)
-                     (syntax-violation 'lambda "bad lambda" e)))))
+        (syntax-case e () 
+          [(_ args e1 e2 ...)
+            (receive (req opt rest kw) (lambda-formals #'args)
+              (let lp ([body #'(e1 e2 ...)] [meta '()])
+                (syntax-case body () 
+                  [(docstring e1 e2 ...)
+                    (string? (syntax->datum #'docstring))
+                    (lp #'(e1 e2 ...)
+                        (append meta 
+                          `((documentation . ,(syntax->datum #'docstring)))))]
+                  [(#((k . v) ...) e1 e2 ...)
+                    (lp #'(e1 e2 ...)
+                      (append meta (syntax->datum #'((k . v) ...))))]
+                  [_ (expand-simple-lambda e r w s mod req rest meta body)])))])))
 
     (global-extend 'core 'with-ellipsis expand-with-ellipsis)
 
