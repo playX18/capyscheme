@@ -1170,6 +1170,7 @@
     srfi-14  ;; character sets
     srfi-16  ;; case-lambda
     srfi-23  ;; `error` procedure
+    srif-26  ;; Notation for Specializing Parameters without Currying
     srfi-24  ;; define-syntax in local lexical scope
     srfi-27  ;; random sources
     srfi-28  ;; basic format strings
