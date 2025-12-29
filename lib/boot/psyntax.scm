@@ -111,36 +111,15 @@
     (define (build-primref src name) (make-primref src name))
     (define (build-void s) (make-void s))
     (define (analyze-variable mod var modref-cont bare-cont)
-      (let* ((v mod)
-                      (fk (lambda ()
-                            (let ((fk (lambda ()
-                                        (let ((fk (lambda ()
-                                                    (let ((fk (lambda () (error "value failed to match" v))))
-                                                      (if (pair? v)
-                                                          (let ((vx (car v)) (vy (cdr v)))
-                                                            (if (eq? vx 'primitive)
-                                                                (syntax-violation
-                                                                 #f
-                                                                 "primitive not in operator position"
-                                                                 var)
-                                                                (fk)))
-                                                          (fk))))))
-                                          (if (pair? v)
-                                              (let ((vx (car v)) (vy (cdr v)))
-                                                (let ((tk (lambda ()
-                                                            (let ((mod vy))
-                                                              (if (equal? mod (module-name (current-module)))
-                                                                  (bare-cont mod var)
-                                                                  (modref-cont mod var #f))))))
-                                                  (if (eq? vx 'private)
-                                                      (tk)
-                                                      (let ((tk (lambda () (tk)))) (if (eq? vx 'hygiene) (tk) (fk))))))
-                                              (fk))))))
-                              (if (pair? v)
-                                  (let ((vx (car v)) (vy (cdr v)))
-                                    (if (eq? vx 'public) (let ((mod vy)) (modref-cont mod var #t)) (fk)))
-                                  (fk))))))
-                 (if (eq? v #f) (bare-cont #f var) (fk))))
+      (match mod
+        [#f (bare-cont #f var)]
+        [('public . mod) (modref-cont mod var #t)]
+        [((or 'private 'hygiene) . mod)
+          (if (equal? mod (module-name (current-module)))
+            (bare-cont mod var)
+            (modref-cont mod var #f))]
+        [('primitive . _)
+          (syntax-violation #f "primitive not in operator position" var)]))
 
     (define (build-global-definition src mod var exp)
       (make-toplevel-define src (and mod (cdr mod)) var (maybe-name-value var exp)))
@@ -163,23 +142,23 @@
     (define (build-simple-lambda src ids vars meta exp)
       (make-proc src vars exp meta ids))
     (define (expand-simple-lambda e r w s mod req rest meta body)
-      (let* ((ids (if rest (append req (list rest)) req)) 
-             (req-vars (map gen-var req))
-             (rest-var (if rest (gen-var rest) '()))
-             (vars (append req-vars (list rest-var))) 
-             (labels (gen-labels ids)))
-                 (build-simple-lambda
-                  s
-                  ids
-                  (if (null? req-vars) rest-var (append req-vars rest-var))
-                  meta
-                  (expand-body
-                   body
-                   (source-wrap e w s mod)
-                   (extend-var-env labels vars r)
-                   (make-binding-wrap ids labels w)
-                   mod)))
-    )
+      (define ids (if rest (append req (list rest)) req))
+      (define req-vars (map gen-var req))
+      (define rest-var (if rest (gen-var rest) '()))
+      (define vars (append req-vars (list rest-var)))
+      (define labels (gen-labels ids))
+      
+      (build-simple-lambda
+        s
+        ids
+        (if (null? req-vars) rest-var (append req-vars rest-var))
+        meta
+        (expand-body
+          body
+          (source-wrap e w s mod)
+          (extend-var-env labels vars r)
+          (make-binding-wrap ids labels w)
+          mod)))
     (define (build-sequence src exps)
       (match exps 
         ((tail) tail)
@@ -221,29 +200,31 @@
       (make-constant src val))
 
 
-    (define build-named-let
-             (lambda (src ids vars val-exps body-exp)
-               (let* ((v vars) (fk (lambda () (error "value failed to match" v))))
-                 (if (pair? v)
-                     (let ((vx (car v)) (vy (cdr v)))
-                       (let* ((f vx) (vars vy) (v ids) (fk (lambda () (error "value failed to match" v))))
-                         (if (pair? v)
-                             (let ((vx (car v)) (vy (cdr v)))
-                               (let* ((f-name vx) (ids vy) (proc (build-simple-lambda src ids vars '() body-exp)))
-                                 (make-let
-                                  src
-                                  'letrec
-                                  (list f-name)
-                                  (list f)
-                                  (list (maybe-name-value f-name proc))
-                                  (build-call
-                                   src
-                                   (build-lexical-reference src f-name f)
-                                   (map maybe-name-value ids val-exps)))))
-                             (fk))))
-                     (fk)))))
+    (define (build-named-let src ids vars val-exps body-exp)
+      (match vars
+        ((f . vars)
+        (match ids
+          ((f-name . ids)
+            (let ((proc (build-simple-lambda src ids vars '() body-exp)))
+              (make-let
+                src 
+                'letrec
+                (list f-name) 
+                (list f) 
+                (list (maybe-name-value f-name proc))
+                (build-call 
+                  src 
+                  (build-lexical-reference src f-name f)
+                  (map maybe-name-value ids val-exps)))))))))
     (define (gen-lexical id) (module-gensym (symbol->string id)))
     (define (source-annotation x) (if (syntax? x) (syntax-sourcev x) (datum-sourcev x)))
+
+    (define-syntax make-binding
+      (syntax-rules (quote)
+        ((_ type value) (cons type value))
+        ((_ 'type) '(type))
+        ((_ type) (cons type '()))))
+
     (define (binding-type x) (car x))
     (define (binding-value x) (cdr x))
     (define null-env '())
@@ -291,6 +272,7 @@
                                           (fk))))
                                   (fk))))))
                  (if (null? v) '() (fk)))))
+      
     (define (nonsymbol-id? x) (and (syntax? x) (symbol? (syntax-expression x))))
     (define (id? x) 
       (cond 
@@ -877,17 +859,10 @@
       (define (decorate-source x)
         (source-wrap x empty-wrap s #f))
       (define (map* f x)
-        (let* ((v x)
-               (fk (lambda ()
-                    (let ((fk (lambda ()
-                                (let* ((fk (lambda () (error "value failed to match" v)))
-                                        (x v))
-                                  (f x)))))
-                      (if (pair? v)
-                          (let ((vx (car v)) (vy (cdr v)))
-                            (let* ((x vx) (x* vy)) (cons (f x) (map* f x*))))
-                          (fk))))))
-          (if (null? v) '() (fk))))
+        (match x 
+          [() '()]
+          [(x . x*) (cons (f x) (map* f x*))]
+          [x (f x)]))
 
 
       (define (rebuild-macro-output x m)
@@ -913,10 +888,10 @@
               (decorate-source v)))
           ((symbol? x)
             (syntax-violation
-            #f
-            (format "encountered raw symbol '~a' in macro output" x)
-            e
-            x))
+              #f
+              (format "encountered raw symbol '~a' in macro output" x)
+              e
+              x))
           (else (decorate-source x))))
       (define (apply-transformer transform e)
         (rebuild-macro-output 
@@ -1839,23 +1814,21 @@
 
     (define expand-with-ellipsis 
       (lambda (e r w s mod)
-               (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ any any . each-any))))
-                 (if (and tmp (apply (lambda (dots e1 e2) (id? dots)) tmp))
-                     (apply (lambda (dots e1 e2)
-                              (let ((id (if (symbol? dots)
-                                            '$sc-ellipsis
-                                            (make-syntax
-                                             '$sc-ellipsis
-                                             (syntax-wrap dots)
-                                             (syntax-module dots)
-                                             (syntax-sourcev dots)))))
-                                (let ((ids (list id))
-                                      (labels (list (gen-label)))
-                                      (bindings (list (cons 'ellipsis (source-wrap dots w s mod)))))
-                                  (let ((nw (make-binding-wrap ids labels w)) (nr (extend-env labels bindings r)))
-                                    (expand-body (cons e1 e2) (source-wrap e nw s mod) nr nw mod)))))
-                            tmp)
-                     (syntax-violation 'with-ellipsis "bad syntax" (source-wrap e w s mod))))))
+        (syntax-case e () 
+          [(_ dots e1 e2 ...)
+            (let ((id (if (symbol? #'dots)
+                        '$sc-ellipsis
+                        (make-syntax
+                         '$sc-ellipsis
+                         (syntax-wrap #'dots)
+                         (syntax-module #'dots)
+                         (syntax-sourcev #'dots)))))
+              (let ((ids (list id))
+                    (labels (list (gen-label)))
+                    (bindings (list (cons 'ellipsis (source-wrap #'dots w s mod)))))
+                (let ((nw (make-binding-wrap ids labels w)) (nr (extend-env labels bindings r)))
+                  (expand-body #'(e1 e2 ...) (source-wrap e nw s mod) nr nw mod))))])))
+               
     
     (set! syntax->datum (lambda (x) (strip x)))
     (set! $sc-dispatch (lambda (e p)
@@ -2065,45 +2038,43 @@
           (syntax-violation #f "invalid #%app" e))))
     (global-extend 'core 'with-continuation-mark 
       (lambda (e r w s mod)
-        (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any . each-any))))
-          (if tmp-1 
-            (apply (lambda (key value body)
-               (make-wcm 
-                s
-                (expand key r w mod)
-                (expand value r w mod)
-                (expand-body body (source-wrap e w s mod) r w mod)))
-              tmp-1)
-            (syntax-violation #f "source expression failed to match any pattern" tmp)))))
+        (syntax-case e () 
+          [(_ key value e1 e2 ...)
+            (make-wcm 
+              s
+              (expand #'key r w mod)
+              (expand #'value r w mod)
+              (expand-body #'(e1 e2 ...) (source-wrap e w s mod) r w mod))])))
+        
     (global-extend 'core 'if
         (lambda (e r w s mod)
-          (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any))))
-            (if tmp-1
-                (apply (lambda (test then)
-                         (build-conditional s (expand test r w mod) (expand then r w mod) (build-void no-source)))
-                       tmp-1)
-                (let ((tmp-1 ($sc-dispatch tmp '(_ any any any))))
-                  (if tmp-1
-                      (apply (lambda (test then else)
-                               (build-conditional
-                                s
-                                (expand test r w mod)
-                                (expand then r w mod)
-                                (expand else r w mod)))
-                             tmp-1)
-                      (syntax-violation #f "source expression failed to match any pattern" tmp)))))))
+          (syntax-case e () 
+            [(_ test then)
+              (build-conditional 
+                s
+                (expand #'test r w mod)
+                (expand #'then r w mod)
+                (build-void no-source))]
+            [(_ test then else)
+              (build-conditional 
+                s
+                (expand #'test r w mod)
+                (expand #'then r w mod)
+                (expand #'else r w mod))]
+            [_ (syntax-violation 'if "bad if form" (source-wrap e w s mod))])))
+
     (global-extend 'core 'quote
       (lambda (e r w s mod)
-        (let ((tmp ($sc-dispatch e '(_ any))))
-          (if tmp
-              (apply (lambda (e) (build-data s (strip e))) tmp)
-              (syntax-violation #f "source expression failed to match any pattern" e)))))
+        (syntax-case e () 
+          [(_ datum) (build-data s (strip #'datum))]
+          [_ (syntax-violation 'quote "bad quote form" (source-wrap e w s mod))])))
+      
     (global-extend 'core 'quote-syntax 
       (lambda (e r w s mod)
-               (let* ((tmp-1 (source-wrap e w s mod)) (tmp ($sc-dispatch tmp-1 '(_ any))))
-                 (if tmp
-                     (apply (lambda (e) (build-data s e)) tmp)
-                     (let ((e tmp-1)) (syntax-violation 'quote "bad syntax" e))))))
+        (syntax-case (source-wrap e w s mod) () 
+          [(_ datum) (build-data s #'datum)]
+          [_ (syntax-violation 'quote-syntax "bad quote form" (source-wrap e w s mod))])))
+             
     (global-extend 'core 'lambda
       (lambda (e r w s mod)
         (syntax-case e () 

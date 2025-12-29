@@ -170,6 +170,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
 
+        println!("{obj}");
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Unsupported type for FASL serialization",
@@ -302,7 +303,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             self.put(sym.into_value(self.ctx))?;
             return Ok(());
         }
-
+        println!("{obj}");
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("Unsupported type for FASL serialization: {}", obj),
