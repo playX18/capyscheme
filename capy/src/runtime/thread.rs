@@ -1,7 +1,10 @@
-use crate::rsgc::{
-    GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Trace,
-    barrier::{self},
-    mmtk::util::Address,
+use crate::{
+    prelude::{HashTable, Keyword},
+    rsgc::{
+        GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Trace,
+        barrier::{self},
+        mmtk::util::Address,
+    },
 };
 use crate::{
     prelude::{
@@ -91,6 +94,18 @@ impl<'gc> Context<'gc> {
 
     pub fn has_suspended_call(self) -> bool {
         self.state().saved_call.get().is_some()
+    }
+
+    pub fn keyword(self, s: &str) -> Gc<'gc, Keyword<'gc>> {
+        let sym = self.intern(s);
+        let globals = self.globals().keyword_map.get().downcast::<HashTable>();
+        if let Some(kw) = globals.get(self, sym) {
+            return kw.downcast();
+        }
+
+        let kw = Keyword::from_symbol(*self, sym.downcast());
+        globals.put(self, sym, kw);
+        kw
     }
 
     pub fn intern(self, s: &str) -> Value<'gc> {

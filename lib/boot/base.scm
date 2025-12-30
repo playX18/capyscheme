@@ -1500,8 +1500,6 @@
         (let ([argvar (datum->syntax #f 'args)]
               [loop   (datum->syntax #f 'loop)])
           (receive (vars keys defaults tmps restvar) (process #'specs)
-              (printf "vars: ~a~%keys: ~a~%defaults: ~a~%restvar: ~a~%tmps: ~a~%"
-                      vars keys defaults restvar tmps)
               #`(let #,loop ((#,argvar arg)
                              #,@(if (boolean? restvar) '() #`((#,restvar '())))
                              #,@(map (lambda (tmp) #`(#,tmp (unspecified))) tmps))
@@ -1546,3 +1544,108 @@
   (lambda (stx)
     (%let-keywords-rec stx #'let*)))
 
+(eval-when (expand load eval)
+  (define (parse-lambda-args formals)
+    (let loop ([rest formals] [as '()] [n 0])
+      (syntax-case rest () 
+        [() (values (reverse as) formals #f n 0 '())]
+        [(x . _) (keyword? (syntax->datum #'x))
+         (values (reverse as) formals #f n 0 rest)]
+        [(x . y) (loop #'y (cons #'x as) (+ n 1))]
+        [x (values (reverse as) formals #t n 1 '())])))
+        
+  (define (extended-lambda-body form garg kargs body)
+    (define (collect-args xs r)
+      (syntax-case xs () 
+        [() (values (reverse r) '())]
+        [(x . _) (keyword? (syntax->datum #'x))
+         (values (reverse r) xs)]
+        [(x . y) (collect-args #'y (cons #'x r))]))
+    
+    (define (parse-kargs c xs os ks r a)
+      (syntax-case xs () 
+        [() (expand-opt os ks r a)]
+        [(#:optional . xs)
+          (and 
+            (or (null? os) (syntax-violation 'lambda* "multiple #:optional sections"))
+            (receive (ks xs) (collect-args #'xs '())
+              (parse-kargs c xs os ks r a)))]
+        [(#:key . xs)
+          (and 
+            (or (null? ks)
+                (syntax-violation 'lambda* "multiple #:key sections"))
+            (receive (ks xs) (collect-args #'xs '())
+              (parse-kargs c xs os ks r a)))]
+        [(#:rest . xs)
+          (and
+            (or (not r) (syntax-violation 'lambda* "multiple #:rest sections"))
+            (receive (rs xs) (collect-args #'xs '())
+              (syntax-case rs () 
+                [(r)
+                 (identifier? #'r)
+                 (parse-kargs c xs os ks #'r a)]
+                [_ (syntax-violation 'lambda* "#:rest keyword in lambda* must be followed by a single identifier")])))]))
+    
+    (define (expand-opt os ks r a)
+      (cond 
+        [(null? os)
+          (if r 
+            #`((let ([#,r #,garg]) #,@(expand-key ks garg a)))
+            (expand-key ks garg a))]
+        [else 
+          (define binds 
+            (map (lambda (x)
+              (syntax-case x () 
+                [(o) (identifier? #'o) #'o]
+                [(o init) (identifier? #'o) #'(o init)]
+                [_ (syntax-violation 'lambda* "invalid optional argument")]))
+              os))
+          (define rest (or r (car (generate-temporaries '(rest)))))
+          #`((let-optionals* #,garg #,(append binds rest)
+              #,@(if (and (not r) (null? ks) (not a))
+                  #`((unless (null? #,rest)
+                      (error #f "too many arguments for" #,form))
+                    (let () #,@(expand-key ks rest a)))
+                  (expand-key ks rest a))))]))
+    (define (expand-key ks garg a)
+      (cond 
+        [(null? ks)
+          (if a 
+            #`((let-keywords* #,garg #,(if (boolean? a) (car (generate-temporaries '(a))) a) #,@body))
+            body)]
+        [else 
+          (define args (map (lambda (o)
+            (syntax-case o () 
+              [(o) (identifier? #'o) #'o]
+              [((key o) init)
+                (keyword? (syntax->datum #'key))
+                #'(o key init)]
+              [(o init)
+                #'(o init)]
+              [_ (syntax-violation 'lambda* "invalid keyword argument")]))
+            ks))
+          #`((let-keywords* #,garg 
+            #,(if a (append args a) args)
+            #,@body))]))
+    (parse-kargs #f kargs '() '() #f #f))        )
+
+(define-syntax lambda* 
+  (lambda (x)
+    (syntax-case x () 
+      [(_ formals body ...)
+        (receive (fargs fformals ftypes nreqs nopts kargs)
+          (parse-lambda-args #'formals)
+          (if (null? kargs)
+            #'(lambda formals body ...)
+            (with-syntax ([(restarg) (generate-temporaries '(restarg))]
+                          [(args ...) (datum->syntax #'x fargs)])
+              #`(lambda (#,@fargs . restarg)
+                  #,@(extended-lambda-body #'x #'restarg kargs #'(body ...))))))])))
+
+(define-syntax define* 
+  (lambda (x)
+    (syntax-case x () 
+      [(_ (name . formals) body ...)
+        #'(define name 
+            (lambda* formals 
+              body ...))])))
