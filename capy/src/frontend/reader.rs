@@ -604,6 +604,10 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             "directive" => {
                 return Ok(Value::null());
             }
+            "keyword" => {
+                let kw = self.ctx.keyword(&self.text_of(node)[2..]);
+                Ok(self.wrap(node, kw.into()))
+            }
 
             _ => {
                 if self.text_of(node) == "#%app" {

@@ -2032,6 +2032,11 @@ mod string_ops {
         nctx.return_(val.is::<Keyword>())
     }
 
+    #[scheme(name = "keyword=?")]
+    pub fn keyword_equal(kw1: Gc<'gc, Keyword<'gc>>, kw2: Gc<'gc, Keyword<'gc>>) -> bool {
+        nctx.return_(Gc::ptr_eq(kw1, kw2))
+    }
+
     #[scheme(name = "symbol->keyword")]
     pub fn symbol_to_keyword(sym: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Keyword<'gc>> {
         let globals = ctx.globals().keyword_map.get().downcast::<HashTable>();

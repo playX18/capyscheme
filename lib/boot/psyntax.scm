@@ -28,6 +28,27 @@
       (syntax-module (module-ref (current-module) 'syntax-module))
       (syntax-sourcev (module-ref (current-module) 'syntax-sourcev)))
 
+  (define (syntax-pair? x)
+    (cond 
+      [(syntax? x) (pair? (syntax-expression x))]
+      [else (pair? x)]))
+  
+  (define (syntax-car x)
+    (cond 
+      [(pair? x) (car x)]
+      [(syntax? x) 
+        (syntax-case x () 
+          [(head . tail) #'head])]
+      [else (error 'car "not a pair" x)]))
+  
+  (define (syntax-cdr x)
+    (cond 
+      [(pair? x) (cdr x)]
+      [(syntax? x) 
+        (syntax-case x () 
+          [(head . tail) #'tail])]
+      [else (error 'cdr "not a pair" x)]))
+
   ;; A simple pattern matcher based on Oleg Kiselyov's pmatch.
   (define-syntax-rule (simple-match e cs ...)
     (let ((v e)) (simple-match-1 v cs ...)))
@@ -1011,10 +1032,28 @@
               'macro))
           (build-primcall #f 'cons (list e (make-constant #f id)))))))
   (define (expand e r w mod)
-    (call-with-values
-      (lambda () (syntax-type e r w (source-annotation e) #f mod #f))
-      (lambda (type value form e w s mod)
-        (expand-expr type value form e r w s mod))))
+;    (cond 
+;      [(and (syntax-pair? e)
+;            (identifier? (syntax-car e)))
+;        (define id (syntax-car e))
+;        (receive (type* value* mod*) (resolve-identifier id w r mod #t)
+;          (case type* 
+;            [(macro)
+;              (expand (expand-macro value* e r w #f #f mod) r empty-wrap mod)]
+;            [(core core-form)
+;              (value* e r w #f mod)]
+;            [else 
+;              (expand-implicit app-sym value* e r w mod)]))]
+;      [else 
+;        (receive (type value form e w s mod)
+;          (expand-expr type value form e r w s mod))])
+    (receive (type value form e w s mod)
+      (syntax-type e r w (source-annotation e) #f mod #f)
+      (expand-expr type value form e r w s mod)))
+;    (call-with-values
+;      (lambda () (syntax-type e r w (source-annotation e) #f mod #f))
+;      (lambda (type value form e w s mod)
+;        (expand-expr type value form e r w s mod))))
 
   (define (make-explicit sym e r w s mod)
     (define sym-s (source-wrap sym w s mod))
