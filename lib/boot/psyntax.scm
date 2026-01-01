@@ -1,3 +1,77 @@
+;;;; -*-scheme-*-
+;;;;
+;;;; Copyright (C) 1997-1998,2000-2003,2005-2006,2008-2013,2015-2022,2024
+;;;;   Free Software Foundation, Inc.
+;;;;
+;;;; This library is free software: you can redistribute it and/or modify
+;;;; it under the terms of the GNU Lesser General Public License as
+;;;; published by the Free Software Foundation, either version 3 of the
+;;;; License, or (at your option) any later version.
+;;;;
+;;;; This library is distributed in the hope that it will be useful, but
+;;;; WITHOUT ANY WARRANTY; without even the implied warranty of
+;;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;;;; Lesser General Public License for more details.
+;;;;
+;;;; You should have received a copy of the GNU Lesser General Public
+;;;; License along with this program.  If not, see
+;;;; <http://www.gnu.org/licenses/>.
+
+
+;;; Originally extracted from Chez Scheme Version 5.9f
+;;; Authors: R. Kent Dybvig, Oscar Waddell, Bob Hieb, Carl Bruggeman
+
+;;; Copyright (c) 1992-1997 Cadence Research Systems
+;;; Permission to copy this software, in whole or in part, to use this
+;;; software for any lawful purpose, and to redistribute this software
+;;; is granted subject to the restriction that all copies made of this
+;;; software must include this copyright notice in full.  This software
+;;; is provided AS IS, with NO WARRANTY, EITHER EXPRESS OR IMPLIED,
+;;; INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY
+;;; OR FITNESS FOR ANY PARTICULAR PURPOSE.  IN NO EVENT SHALL THE
+;;; AUTHORS BE LIABLE FOR CONSEQUENTIAL OR INCIDENTAL DAMAGES OF ANY
+;;; NATURE WHATSOEVER.
+
+;;; This code is based on "Syntax Abstraction in Scheme"
+;;; by R. Kent Dybvig, Robert Hieb, and Carl Bruggeman.
+;;; Lisp and Symbolic Computation 5:4, 295-326, 1992.
+;;; <http://www.cs.indiana.edu/~dyb/pubs/LaSC-5-4-pp295-326.pdf>
+
+
+;;; This file defines Capy's syntax expander and a set of associated
+;;; syntactic forms and procedures.  For more documentation, see The
+;;; Scheme Programming Language, Fourth Edition (R. Kent Dybvig, MIT
+;;; Press, 2009), or the R6RS.
+
+;;; This file is shipped along with an expanded version of itself,
+;;; psyntax-exp.scm, which is loaded when psyntax.scm has not yet been
+;;; compiled.  In this way, psyntax bootstraps off of an expanded
+;;; version of itself.
+
+;;; NOTES ON ORIGINAL SOURCE
+;;; 
+;;; This file was extracted from Guile 3.0+ and modified to suit Capy's
+;;; needs. Thanks to Guile developers for their work.
+
+
+;;; Implementation notes:
+
+;;; Objects with no standard print syntax, including objects containing
+;;; cycles and syntax object, are allowed in quoted data as long as they
+;;; are contained within a syntax form or produced by datum->syntax.
+;;; Such objects are never copied.
+
+;;; All identifiers that don't have macro definitions and are not bound
+;;; lexically are assumed to be global variables.
+
+;;; Top-level definitions of macro-introduced identifiers are allowed.
+
+;;; When changing syntax representations, it is necessary to support
+;;; both old and new syntax representations in id-var-name.  It
+;;; should be sufficient to recognize old representations and treat
+;;; them as not lexically bound.
+
+
 (define syntax->datum #f)
 (define datum->syntax #f)
 (define identifier? #f)
@@ -48,6 +122,13 @@
         (syntax-case x () 
           [(head . tail) #'tail])]
       [else (error 'cdr "not a pair" x)]))
+
+  (define (modname? n)
+    (cond 
+      [(syntax? n) (modname? (syntax-expression n))]
+      [(symbol? n) #t]
+      [(number? n) (exact-nonnegative-integer? n)]
+      [else #f]))
 
   ;; A simple pattern matcher based on Oleg Kiselyov's pmatch.
   (define-syntax-rule (simple-match e cs ...)
@@ -259,36 +340,18 @@
         (let ((label (car labels)) (labels (cdr labels)))
           (let ((var (car vars)) (vars (cdr vars)))
             (extend-var-env labels vars (acons label (cons 'lexical var) r)))))))
-  (define macros-only-env
-    (lambda (r)
-      (let* ((v r)
-             (fk (lambda ()
-                  (let ((fk (lambda () (error "value failed to match" v))))
-                    (if (pair? v)
-                      (let ((vx (car v)) (vy (cdr v)))
-                        (let* ((a vx)
-                               (r vy)
-                               (v a)
-                               (fk (lambda ()
-                                    (let ((fk (lambda () (error "value failed to match" v))))
-                                      (macros-only-env r)))))
-                          (if (pair? v)
-                            (let ((vx (car v)) (vy (cdr v)))
-                              (let ((k vx))
-                                (if (pair? vy)
-                                  (let ((vx (car vy)) (vy (cdr vy)))
-                                    (let ((tk (lambda () (cons a (macros-only-env r)))))
-                                      (if (eq? vx 'macro)
-                                        (tk)
-                                        (let ((tk (lambda () (tk))))
-                                          (if (eq? vx 'syntax-parameter)
-                                            (tk)
-                                            (let ((tk (lambda () (tk))))
-                                              (if (eq? vx 'ellipsis) (tk) (fk))))))))
-                                  (fk))))
-                            (fk))))
-                      (fk))))))
-        (if (null? v) '() (fk)))))
+  ;; we use a "macros only" environment in expansion of local macro
+  ;; definitions so that their definitions can use local macros without
+  ;; attempting to use other lexical identifiers.
+  (define (macros-only-env r)
+    (match r
+      (() '())
+      ((a . r)
+       (match a
+         ((k . ((or 'macro 'syntax-parameter 'ellipsis) . _))
+          (cons a (macros-only-env r)))
+         (_
+          (macros-only-env r))))))
 
   (define (nonsymbol-id? x) (and (syntax? x) (symbol? (syntax-expression x))))
   (define (id? x)
@@ -719,45 +782,40 @@
                   ((_ exp ...)
                     (parse #'(exp ...) r w s m essew mod))))
               ((eq? type 'eval-when-form)
-                (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
-                  (if tmp
-                    (apply (lambda (x e1 e2)
-                            (let ((when-list (parse-when-list e x)) (body (cons e1 e2)))
-                              (letrec* ((recurse
-                                          (lambda (m esew) (parse body r w s m esew mod))))
-                                (cond
-                                  ((eq? m 'e)
-                                    (if (memq 'eval when-list)
-                                      (recurse
-                                        (if (memq 'expand when-list) 'c&e 'e)
-                                        '(eval))
-                                      (begin
-                                        (if (memq 'expand when-list)
-                                          (top-level-eval
-                                            (expand-top-sequence body r w s 'e '(eval) mod)
-                                            mod))
-                                        '())))
-                                  ((memq 'load when-list)
-                                    (cond
-                                      ((or (memq 'compile when-list)
-                                          (memq 'expand when-list)
-                                          (and (eq? m 'c&e) (memq 'eval when-list)))
-                                        (recurse 'c&e '(compile load)))
-                                      ((memq m '(c c&e)) (recurse 'c '(load)))
-                                      (else '())))
-                                  ((or (memq 'compile when-list)
-                                      (memq 'expand when-list)
-                                      (and (eq? m 'c&e) (memq 'eval when-list)))
-                                    (top-level-eval
-                                      (expand-top-sequence body r w s 'e '(eval) mod)
-                                      mod)
-                                    '())
-                                  (else '())))))
-                      tmp)
-                    (syntax-violation
-                      #f
-                      "source expression failed to match any pattern"
-                      tmp-1))))
+                (syntax-case e () 
+                  [(_ (x ...) e1 e2 ...)
+                    (let* ([when-list (parse-when-list e #'(x ...))]
+                           [body #'(e1 e2 ...)])
+                      (define (recurse m essew)
+                        (parse body r w s m essew mod))
+                      (cond
+                        ((eq? m 'e)
+                          (if (memq 'eval when-list)
+                            (recurse
+                              (if (memq 'expand when-list) 'c&e 'e)
+                              '(eval))
+                            (begin
+                              (if (memq 'expand when-list)
+                                (top-level-eval
+                                  (expand-top-sequence body r w s 'e '(eval) mod)
+                                  mod))
+                              '())))
+                        ((memq 'load when-list)
+                          (cond
+                            ((or (memq 'compile when-list)
+                                (memq 'expand when-list)
+                                (and (eq? m 'c&e) (memq 'eval when-list)))
+                              (recurse 'c&e '(compile load)))
+                            ((memq m '(c c&e)) (recurse 'c '(load)))
+                            (else '())))
+                        ((or (memq 'compile when-list)
+                            (memq 'expand when-list)
+                            (and (eq? m 'c&e) (memq 'eval when-list)))
+                          (top-level-eval
+                            (expand-top-sequence body r w s 'e '(eval) mod)
+                            mod)
+                          '())
+                        (else '())))]))
               ((or (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
                 (let* ((id (wrap value w mod))
                        (var (if (macro-introduced-identifier? id)
@@ -1103,18 +1161,6 @@
               (case when-list 
                 ((eval) (expand-sequence #'(e1 e2 ...) r w s mod))
                 (else (expand-void))))]))
-        ;(let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
-;
- ;         (if tmp
-;
-  ;          (apply (lambda (x e1 e2)
- ;                   (let ((when-list (parse-when-list e x)))
-
-   ;                   (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
-
-   ;           tmp)
-
-   ;         (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
       ((eq? type 'begin-form)
         (syntax-case e () 
           [(_ e1 e2 ...)
@@ -1135,15 +1181,7 @@
       [(e0 e1 ...)
         (build-call s x (map (lambda (e) (expand e r w mod)) #'(e1 ...)))]))
 
-  (define (parse-define-property e w s mod)
-    (define tmp ($sc-dispatch e '(_ any any any)))
-    (if tmp
-      (apply (lambda (name prop val)
-              (unless (and (id? name) (id? prop))
-                (syntax-violation #f "bad syntax" (source-wrap e w s mod)))
-              (values name prop expr w)
-              tmp)
-        (syntax-violation #f "bad syntax" (source-wrap e w s mod)))))
+ 
 
   (define (expand-body body outer-form r w mod)
 
@@ -1214,23 +1252,20 @@
                         (cons (cons 'lexical var) bindings)
                         #f))
                     ((eq? type 'begin-form)
-                      (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ . each-any))))
-                        (if tmp
-                          (apply (lambda (e1)
-                                  (parse (let f ((forms e1))
-                                          (if (null? forms)
-                                            body
-                                            (cons (cons er (wrap (car forms) w mod))
-                                              (f (cdr forms)))))
-                                    ids
-                                    labels
-                                    var-ids
-                                    vars
-                                    vals
-                                    bindings
-                                    #f))
-                            tmp)
-                          (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
+                      (syntax-case e () 
+                        [(_ es ...)
+                          (parse (let f ((forms #'(es ...)))
+                                    (if (null? forms)
+                                      body 
+                                      (cons (cons er (wrap (car forms) w mod))
+                                        (f (cdr forms)))))
+                                 ids 
+                                 labels
+                                 var-ids
+                                 vars
+                                 vals
+                                 bindings 
+                                 #f)]))
                     ((eq? type 'define-syntax-form)
                       (define id (wrap value w mod))
                       (define label (gen-label))
@@ -1388,6 +1423,9 @@
                             (values (remodulate exp mod) r w (source-annotation exp) mod)))
                     tmp-1)
                   (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
+
+
+
 
   (define expand-syntax
     (letrec* ((gen-syntax
@@ -2080,108 +2118,101 @@
                   nw
                   mod))))))
       (lambda (e r w s mod)
-        (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ #(each (any any)) any . each-any))))
-          (if (and tmp (apply (lambda (id val e1 e2) (and-map id? id)) tmp))
-            (apply (lambda (id val e1 e2) (expand-let e r w s mod build-let id val (cons e1 e2))) tmp)
-            (let ((tmp ($sc-dispatch tmp-1 '(_ any #(each (any any)) any . each-any))))
-              (if (and tmp (apply (lambda (f id val e1 e2) (and (id? f) (and-map id? id))) tmp))
-                (apply (lambda (f id val e1 e2)
-                        (expand-let e r w s mod build-named-let (cons f id) val (cons e1 e2)))
-                  tmp)
-                (syntax-violation 'let "bad let" (source-wrap e w s mod)))))))))
+        (syntax-case e () 
+          [(_ ((id val) ...) e1 e2 ...)
+            (and-map id? #'(id ...))
+            (expand-let 
+              e r w s mod
+              build-let
+              #'(id ...)
+              #'(val ...)
+              #'(e1 e2 ...))]
+          [(_ f ((id val) ...) e1 e2 ...)
+            (and (id? #'f) (and-map id? #'(id ...)))
+            (expand-let 
+              e r w s mod 
+              build-named-let 
+              #'(f id ...)
+              #'(val ...)
+              #'(e1 e2 ...))]
+          [_ (syntax-violation 'let "bad let" (source-wrap e w s mod))]))))
   (global-extend 'core 'letrec
     (lambda (e r w s mod)
-      (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ #(each (any any)) any . each-any))))
-        (if (and tmp (apply (lambda (id val e1 e2) (and-map id? id)) tmp))
-          (apply (lambda (id val e1 e2)
-                  (let ((ids id))
-                    (if (not (valid-bound-ids? ids))
-                      (syntax-violation 'letrec "duplicate bound variable" e)
-                      (let ((labels (gen-labels ids)) (new-vars (map gen-var ids)))
-                        (let ((w (make-binding-wrap ids labels w)) (r (extend-var-env labels new-vars r)))
-                          (build-letrec
-                            s
-                            (map syntax->datum ids)
-                            new-vars
-                            (map (lambda (x) (expand x r w mod)) val)
-                            (expand-body (cons e1 e2) (source-wrap e w s mod) r w mod)))))))
-            tmp)
-          (syntax-violation 'letrec "bad letrec" (source-wrap e w s mod))))))
-  (global-extend 'core 'letrec*
+      (syntax-case e () 
+        [(_ ((id val) ...) e1 e2 ...)
+          (and-map id? #'(id ...))
+          (if (not (valid-bound-ids? #'(id ...)))
+            (syntax-violation 'letrec "duplicate bound variable" e)
+            (let* ([labels (gen-labels #'(id ...))]
+                   [new-vars (map gen-var #'(id ...))]
+                   [w (make-binding-wrap #'(id ...) labels w)]
+                   [r (extend-var-env labels new-vars r)])
+              (build-letrec 
+                s 
+                (syntax->datum #'(id ...))
+                new-vars 
+                (map (lambda (x) (expand x r w mod)) #'(val ...))
+                (expand-body #'(e1 e2 ...)
+                             (source-wrap e w s mod)
+                             r w mod))))])))
+      
+   (global-extend 'core 'letrec*
     (lambda (e r w s mod)
-      (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ #(each (any any)) any . each-any))))
-        (if (and tmp (apply (lambda (id val e1 e2) (and-map id? id)) tmp))
-          (apply (lambda (id val e1 e2)
-                  (let ((ids id))
-                    (if (not (valid-bound-ids? ids))
-                      (syntax-violation 'letrec "duplicate bound variable" e)
-                      (let ((labels (gen-labels ids)) (new-vars (map gen-var ids)))
-                        (let ((w (make-binding-wrap ids labels w)) (r (extend-var-env labels new-vars r)))
-                          (build-letrec*
-                            s
-                            (map syntax->datum ids)
-                            new-vars
-                            (map (lambda (x) (expand x r w mod)) val)
-                            (expand-body (cons e1 e2) (source-wrap e w s mod) r w mod)))))))
-            tmp)
-          (syntax-violation 'letrec "bad letrec" (source-wrap e w s mod))))))
+      (syntax-case e () 
+        [(_ ((id val) ...) e1 e2 ...)
+          (and-map id? #'(id ...))
+          (if (not (valid-bound-ids? #'(id ...)))
+            (syntax-violation 'letrec* "duplicate bound variable" e)
+            (let* ([labels (gen-labels #'(id ...))]
+                   [new-vars (map gen-var #'(id ...))]
+                   [w (make-binding-wrap #'(id ...) labels w)]
+                   [r (extend-var-env labels new-vars r)])
+              (build-letrec*
+                s 
+                (syntax->datum #'(id ...))
+                new-vars 
+                (map (lambda (x) (expand x r w mod)) #'(val ...))
+                (expand-body #'(e1 e2 ...)
+                             (source-wrap e w s mod)
+                             r w mod))))])))
+      
   (global-extend 'core 'set!
     (lambda (e r w s mod)
-      (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
-        (if (and tmp (apply (lambda (id val) (id? id)) tmp))
-          (apply (lambda (id val)
-                  (call-with-values
-                    (lambda () (resolve-identifier id w r mod #t))
-                    (lambda (type value id-mod)
-                      (let ((key type))
-                        (cond
-                          ((eq? key 'lexical)
-                            (build-lexical-assignment s (syntax->datum id) value (expand val r w mod)))
-                          ((eq? key 'global)
-                            (build-global-assignment s value (expand val r w mod) id-mod))
-                          ((eq? key 'macro)
-                            (if (variable-transformer? (car value))
-                              (expand (expand-macro value e r w s #f mod) r empty-wrap mod)
-                              (syntax-violation
-                                'set!
-                                "not a variable transformer"
-                                (wrap e w mod)
-                                (wrap id w id-mod))))
-                          ((eq? key 'displaced-lexical)
-                            (syntax-violation 'set! "identifier out of context" (wrap id w mod)))
-                          (else (syntax-violation 'set! "bad set!" (source-wrap e w s mod))))))))
-            tmp)
-          (let ((tmp ($sc-dispatch tmp-1 '(_ (any . each-any) any))))
-            (if tmp
-              (apply (lambda (head tail val)
-                      (call-with-values
-                        (lambda () (syntax-type head r empty-wrap no-source #f mod #t))
-                        (lambda (type value ee* ee ww ss modmod)
-                          (let ((key type))
-                            (if (eq? key 'module-ref)
-                              (let ((val (expand val r w mod)))
-                                (call-with-values
-                                  (lambda () (value (cons head tail) r w mod))
-                                  (lambda (e r w s* mod)
-                                    (let* ((tmp-1 e) (tmp (list tmp-1)))
-                                      (if (and tmp (apply (lambda (e) (id? e)) tmp))
-                                        (apply (lambda (e)
-                                                (build-global-assignment s (syntax->datum e) val mod))
-                                          tmp)
-                                        (syntax-violation
-                                          #f
-                                          "source expression failed to match any pattern"
-                                          tmp-1))))))
-                              (build-call
-                                s
-                                (expand
-                                  (list (make-syntax 'setter top-wrap '(hygiene capy)) head)
-                                  r
-                                  w
-                                  mod)
-                                (map (lambda (e) (expand e r w mod)) (append tail (list val)))))))))
-                tmp)
-              (syntax-violation 'set! "bad set!" (source-wrap e w s mod))))))))
+      (syntax-case e () 
+        [(_ id val)
+          (id? #'id)
+          (receive (type value id-mod) (resolve-identifier #'id w r mod #t)
+            (case type 
+              [(lexical)
+                (build-lexical-assignment s (syntax->datum #'id) value (expand #'val r w mod))]
+              [(global)
+                (build-global-assignment s value (expand #'val r w mod) id-mod)]
+              [(macro)
+                (if (variable-transformer? (car value))
+                  (expand (expand-macro value e r w s #f mod) r empty-wrap mod)
+                  (syntax-violation
+                    'set!
+                    "not a variable transformer"
+                    (wrap e w mod)
+                    (wrap #'id w id-mod)))]
+              [(displaced-lexical)
+                (syntax-violation 'set! "identifier out of context" (wrap #'id w mod))]
+              [else (syntax-violation 'set! "bad set!" (source-wrap e w s mod))]))]
+        [(_ (head tail ...) val)
+          (receive (type value ee* ee ww ss modmod) (syntax-type #'head r empty-wrap no-source #f mod #t)
+            (case type 
+              [(module-ref)
+                (let ([val (expand #'val r w mod)])
+                  (receive (e r w s* mod) (value #'(head tail ...) r w mod)
+                    (syntax-case e () 
+                      [e (id? #'e)
+                        (build-global-assignment s (syntax->datum #'e) val mod)])))]
+              [else 
+                (build-call 
+                  s 
+                  (expand #'(setter head) r w mod)
+                  (map (lambda (e) (expand e r w mod)) #'(tail ... val)))]))])))
+
   (global-extend 'local-syntax 'letrec-syntax #t)
   (global-extend 'local-syntax 'let-syntax #f)
   (global-extend 'core 'syntax-case expand-syntax-case)
