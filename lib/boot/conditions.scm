@@ -647,19 +647,19 @@
         (define form-src (if (syntax? form) (syntax-sourcev form) #f))
         (define subform-src (if (and subform (syntax? subform)) (syntax-sourcev subform) #f))
         (define (fmt-source src)
-        (define file (vector-ref src 0))
-        (define line (vector-ref src 1))
-        (define col  (vector-ref src 2))
-        (format p "~a:~a:~a" file line col))
+          (define file (vector-ref src 0))
+          (define line (vector-ref src 1))
+          (define col  (vector-ref src 2))
+          (format p "~a:~a:~a" file line col))
         (format p "~a" (syntax->datum form))
         (when form-src 
-        (format p "~%       in ")
-        (fmt-source form-src))
+          (format p "~%       in ")
+          (fmt-source form-src))
         (when subform
-        (format p "~a" (syntax->datum subform))
-        (when subform-src 
-            (format p "~%     in")
-            (fmt-source subform-src))))
+          (format p "~a" (syntax->datum subform))
+          (when subform-src 
+              (format p "~%     in")
+              (fmt-source subform-src))))
 
     (cond 
         [(condition? exn)
