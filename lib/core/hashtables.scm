@@ -1,6 +1,4 @@
-
 (library (core hashtables)
-
   (export make-eq-hashtable
           make-eqv-hashtable
           make-string-hashtable
