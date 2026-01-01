@@ -860,52 +860,34 @@
       (if (not (or (procedure? p) (variable-transformer? p))) (syntax-violation #f "nonprocedure transformer" p))
       p))
   (define (expand-local-syntax rec? e r w s mod k)
-    (let* ((tmp e) (tmp ($sc-dispatch tmp '(_ #(each (any any)) . each-any))))
-      (if tmp
-        (apply (lambda (id val es)
-                (let ((ids id))
-                  (if (not (valid-bound-ids? ids))
-                    (syntax-violation #f "duplicate bound keyword" e)
-                    (let* ((labels (gen-labels ids)) (new-w (make-binding-wrap ids labels w)))
-                      (k es
-                        (extend-env
-                          labels
-                          (let ((w (if rec? new-w w)) (trans-r (macros-only-env r)))
-                            (map (lambda (x)
-                                  (cons 'macro (cons (eval-local-transformer (expand x trans-r w mod) mod) (wrap x w '(hygiene capy)))))
-                              val))
-                          r)
-                        new-w
-                        s
-                        mod)))))
-          tmp)
-        (syntax-violation #f "bad local syntax definition" (source-wrap e w s mod)))))
+    (syntax-case e () 
+      [(_ ((id val) ...) e1 e2 ...)
+        (let ((ids #'(id ...)))
+          (unless (valid-bound-ids? ids)
+            (syntax-violation #f "duplicate bound keyword" e))
+          (define labels (gen-labels ids))
+          (define new-w (make-binding-wrap ids labels w))
+          (k #'(e1 e2 ...)
+            (extend-env 
+              labels 
+              (let ([w (if rec? new-w w)] [trans-r (macros-only-env r)])
+                (map (lambda (x)
+                    (cons 'macro (cons (eval-local-transformer (expand x trans-r w mod) mod) (wrap x w '(hygiene capy)))))
+                  #'(val ...)))
+              r)
+            new-w
+            s mod))]
+      [_ (syntax-violation #f "invalid local-syntax form" e)]))
+
   (define (parse-when-list e when-list)
     (let ((result (strip when-list)))
       (let lp ((l result))
-        (let* ((v l)
-               (fk (lambda ()
-                    (let ((fk (lambda () (error "value failed to match" v))))
-                      (if (pair? v)
-                        (let ((vx (car v)) (vy (cdr v)))
-                          (let* ((x vx)
-                                 (l vy)
-                                 (v x)
-                                 (fk (lambda ()
-                                      (let ((fk (lambda () (error "value failed to match" v))))
-                                        (syntax-violation 'eval-when "invalid situation" e x))))
-                                 (tk (lambda () (lp l))))
-                            (if (eq? v 'compile)
-                              (tk)
-                              (let ((tk (lambda () (tk))))
-                                (if (eq? v 'load)
-                                  (tk)
-                                  (let ((tk (lambda () (tk))))
-                                    (if (eq? v 'eval)
-                                      (tk)
-                                      (let ((tk (lambda () (tk)))) (if (eq? v 'expand) (tk) (fk))))))))))
-                        (fk))))))
-          (if (null? v) result (fk))))))
+        (match l
+          (() result)
+          ((x . l)
+           (match x
+             ((or 'compile 'load 'eval 'expand) (lp l))
+             (_ (syntax-violation 'eval-when "invalid situation" e x))))))))
 
   (define (lambda-var-list vars)
     (let lvl ((vars vars) (ls '()) (w empty-wrap))
@@ -918,94 +900,79 @@
   (define (syntax-type e r w s rib mod for-car?)
     (cond
       ((symbol? e)
-        (call-with-values (lambda ()
-                           (resolve-identifier e w r mod #t))
-          (lambda (type value mod*)
-            (cond
-              ((eq? type 'macro)
-                (if for-car?
-                  (values type value e e w s mod)
-                  (syntax-type (expand-macro value e r w s rib mod) r empty-wrap s rib mod #f)))
-              ((eq? type 'global)
-
-                (values type value e value w s mod*))
-              (else (values type value e e w s mod))))))
+        (receive (type value mod*) (resolve-identifier e w r mod #t)
+          (case type 
+            ((macro)
+              (if for-car? 
+                (values type value e e w s mod)
+                (syntax-type (expand-macro value e r w s rib mod) r empty-wrap s rib mod #f)))
+            ((global)
+              (values type value e value w s mod*))
+            (else (values type value e e w s mod)))))
       ((pair? e)
-        (let ((first (car e)))
-          (call-with-values (lambda () (syntax-type first r w s rib mod #t))
-            (lambda (ftype fval fform fe fw fs fmod)
-              (cond
-                ((eq? ftype 'lexical) (values 'lexical-call fval e e w s mod))
-                ((eq? ftype 'global)
-                  (if (equal? fmod '(primitive))
-                    (values 'primitive-call fval e e w s mod)
-                    (values 'global-call (make-syntax fval w fmod fs) e e w s mod)))
-                ((eq? ftype 'macro)
-                  (syntax-type (expand-macro fval e r w s rib mod)
-                    r
+        (define first (car e))
+        (receive (ftype fval fform fe fw fs fmod) (syntax-type first r w s rib mod #t)
+          (case ftype
+            ((lexical) (values 'lexical-call fval e e w s mod))
+            ((global)
+              (if (equal? fmod '(primitive))
+                (values 'primitive-call fval e e w s mod)
+                (values 'global-call (make-syntax fval w fmod fs) e e w s mod)))
+            ((macro)
+              (syntax-type (expand-macro fval e r w s rib mod)
+                r
+                empty-wrap
+                s
+                rib
+                mod
+                for-car?))
+            ((module-ref)
+              (call-with-values (lambda () (fval e r w mod))
+                (lambda (e r w s mod) (syntax-type e r w s rib mod for-car?))))
+            ((core) (values 'core-form fval e e w s mod))
+            ((local-syntax) (values 'local-syntax-form fval e e w s mod))
+            ((begin) (values 'begin-form #f e e w s mod))
+            ((eval-when) (values 'eval-when-form #f e e w s mod))
+            ((define-property)
+              (values 'define-property-form #f e e w s mod))
+            ((define-syntax)
+              (syntax-case e () 
+                [(_ name val)
+                  (id? #'name)
+                  (values 'define-syntax-form #'name e #'val w s mod)]))
+            ((define-syntax-parameter)
+              (syntax-case e () 
+                [(_ name val)
+                  (id? #'name)
+                  (values 'define-syntax-parameter-form #'name e #'val w s mod)]))
+            ((define)
+              (syntax-case e () 
+                [(_ name val)
+                  (id? #'name)
+                  (values 'define-form #'name e #'val w s mod)]
+                [(_ (name . args) e1 e2 ...)
+                  (id? #'name)
+                  (values 
+                    'define-form
+                    (wrap #'name w mod)
+                    (wrap e w mod)
+                    (source-wrap
+                        (cons #'lambda (wrap #'(args e1 e2 ...) w mod))
+                        empty-wrap s #f)
                     empty-wrap
                     s
-                    rib
-                    mod
-                    for-car?))
-                ((eq? ftype 'module-ref)
-                  (call-with-values (lambda () (fval e r w mod))
-                    (lambda (e r w s mod) (syntax-type e r w s rib mod for-car?))))
-                ((eq? ftype 'core) (values 'core-form fval e e w s mod))
-                ((eq? ftype 'local-syntax) (values 'local-syntax-form fval e e w s mod))
-                ((eq? ftype 'begin) (values 'begin-form #f e e w s mod))
-                ((eq? ftype 'eval-when) (values 'eval-when-form #f e e w s mod))
-                ((eq? ftype 'define-property)
-                  (values 'define-property-form #f e e w s mod))
-                ((eq? ftype 'define-syntax)
-                  (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
-                    (if (and tmp (apply (lambda (name val) (id? name)) tmp))
-                      (apply (lambda (name val) (values 'define-syntax-form name e val w s mod)) tmp)
-                      (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
-                ((eq? ftype 'define-syntax-parameter)
-                  (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ any any))))
-                    (if (and tmp (apply (lambda (name val) (id? name)) tmp))
-                      (apply (lambda (name val) (values 'define-syntax-parameter-form name e val w s mod))
-                        tmp)
-                      (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
-                ((eq? ftype 'define)
-                  (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any any))))
-                    (if (and tmp-1 (apply (lambda (name val) (id? name)) tmp-1))
-                      (apply (lambda (name val) (values 'define-form name e val w s mod)) tmp-1)
-                      (let ((tmp-1 ($sc-dispatch tmp '(_ (any . any) any . each-any))))
-                        (if (and tmp-1
-                             (apply (lambda (name args e1 e2)
-                                     (and (id? name) (valid-bound-ids? (lambda-var-list args))))
-                               tmp-1))
-                          (apply (lambda (name args e1 e2)
-                                  (values
-                                    'define-form
-                                    (wrap name w mod)
-                                    (wrap e w mod)
-                                    (source-wrap
-                                      (cons (make-syntax 'lambda top-wrap '(hygiene capy))
-                                        (wrap (cons args (cons e1 e2)) w mod))
-                                      empty-wrap
-                                      s
-                                      #f)
-                                    empty-wrap
-                                    s
-                                    mod))
-                            tmp-1)
-                          (let ((tmp-1 ($sc-dispatch tmp '(_ any))))
-                            (if (and tmp-1 (apply (lambda (name) (id? name)) tmp-1))
-                              (apply (lambda (name)
-                                      (values
-                                        'define-form
-                                        (wrap name w mod)
-                                        (wrap e w mod)
-                                        (list (make-syntax 'if top-wrap '(hygiene capy)) #f #f)
-                                        empty-wrap
-                                        s
-                                        mod))
-                                tmp-1)
-                              (syntax-violation #f "source expression failed to match any pattern for 'define'" (strip tmp)))))))))
-                (else (values 'call #f e e w s mod)))))))
+                    mod)]
+                [(_ name)
+                  (id? #'name)
+                  (values 
+                    'define-form
+                    (wrap #'name w mod)
+                    (wrap e w mod)
+                    (list (make-syntax 'if top-wrap '(hygiene capy)) #f #f)
+                    empty-wrap
+                    s
+                    mod)]))
+            (else (values 'call #f e e w s mod)))))
       ((syntax? e)
         (syntax-type (syntax-expression e)
           r
@@ -1162,11 +1129,11 @@
       ((eq? type 'displaced-lexical)
         (syntax-violation #f "reference to identifier outside its scope" (source-wrap e w s mod)))
       (else (syntax-violation #f "unexpected syntax" type (source-wrap e w s mod)))))
+      
   (define (expand-call x e r w s mod)
-    (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(any . each-any))))
-      (if tmp
-        (apply (lambda (e0 e1) (build-call s x (map (lambda (e) (expand e r w mod)) e1))) tmp)
-        (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
+    (syntax-case e () 
+      [(e0 e1 ...)
+        (build-call s x (map (lambda (e) (expand e r w mod)) #'(e1 ...)))]))
 
   (define (parse-define-property e w s mod)
     (define tmp ($sc-dispatch e '(_ any any any)))
