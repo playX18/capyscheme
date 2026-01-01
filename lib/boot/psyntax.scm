@@ -1130,35 +1130,29 @@
       ((eq? type 'constant) (make-constant s (strip e)))
       ((eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod))
       ((eq? type 'eval-when-form)
-        (let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
+        (syntax-case e () 
+          [(_ (x ...) e1 e2 ...)
+            (let ((when-list (parse-when-list e #'(x ...))))
+              (case when-list 
+                ((eval) (expand-sequence #'(e1 e2 ...) r w s mod))
+                (else (expand-void))))]))
+        ;(let* ((tmp-1 e) (tmp ($sc-dispatch tmp-1 '(_ each-any any . each-any))))
+;
+ ;         (if tmp
+;
+  ;          (apply (lambda (x e1 e2)
+ ;                   (let ((when-list (parse-when-list e x)))
 
-          (if tmp
+   ;                   (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
 
-            (apply (lambda (x e1 e2)
-                    (let ((when-list (parse-when-list e x)))
+   ;           tmp)
 
-                      (if (memq 'eval when-list) (expand-sequence (cons e1 e2) r w s mod) (expand-void))))
-
-              tmp)
-
-            (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
+   ;         (syntax-violation #f "source expression failed to match any pattern" tmp-1))))
       ((eq? type 'begin-form)
-        (let* ((tmp e) (tmp-1 ($sc-dispatch tmp '(_ any . each-any))))
-
-          (if tmp-1
-
-            (apply (lambda (e1 e2) (expand-sequence (cons e1 e2) r w s mod)) tmp-1)
-
-            (let ((tmp-1 ($sc-dispatch tmp '(_))))
-
-              (if tmp-1
-
-                (apply (lambda ()
-                        (syntax-violation #f "sequence of zero expressions" (source-wrap e w s mod)))
-
-                  tmp-1)
-
-                (syntax-violation #f "source expression failed to match any pattern" tmp))))))
+        (syntax-case e () 
+          [(_ e1 e2 ...)
+            (expand-sequence #'(e1 e2 ...) r w s mod)]
+          [(_) (syntax-violation #f "sequence with no expressions" (source-wrap e w s mod))]))
       ((memq type '(define-form define-syntax-form define-syntax-parameter-form define-property-form))
         (syntax-violation #f "definition in expression context, where definitions are not allowed" (source-wrap e w s mod)))
       ((eq? type 'local-syntax-form)
@@ -1197,7 +1191,6 @@
                   (vals '())
                   (bindings '())
                   (expand-tail-expr #f))
-
         (cond
           ((null? body)
             (if (not expand-tail-expr)
