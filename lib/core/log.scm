@@ -44,12 +44,10 @@
           (else #f)
         )))
 
-
     (define (current-module-name-quote)
         (datum->syntax stx (module-name (current-module))))
 
     (syntax-case stx (target error warn info debug trace) 
-      
       [(_ (target trgt) (module mod) lvl arg arg* ...)
         #`(*raw-log/src* 
            #,(convert-log-level #'lvl)

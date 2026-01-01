@@ -1,11 +1,12 @@
-(library (session)
+(library (capy session)
     (export 
         module-name->filename
         find-bindings
         fold-bindings
         fold-exported-bindings
         fold-all-bindings
-        make-fold-module)
+        make-fold-module
+        root-modules)
     (import (core primitives)
             (core files)
             (common pregexp)

@@ -1,4 +1,4 @@
-(define-library (rope)
+(define-library (capy rope)
     (import (core records)
             (core optargs))    
     (export 

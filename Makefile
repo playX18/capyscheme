@@ -170,7 +170,8 @@ CAPY_SRCS_SLS := \
 	lib/capy/args/option.sls \
 	lib/capy/args/parser.sls \
 	lib/capy/args/results.sls \
-	lib/capy/args.sls
+	lib/capy/args.sls \
+	lib/capy/session.sls
 
 CAPY_SRCS_SCM := \
 	lib/capy/compiler/tree-il.scm
@@ -275,7 +276,11 @@ build-runtime-bootstrap:
 
 
 # Aggregate build: runtime + full bootstrap chain.
-build: stage-0 build-runtime stage-1 stage-2
+build: 
+	$(MAKE) PREFIX=$(PREFIX) stage-0
+	$(MAKE) PREFIX=$(PREFIX) build-runtime
+	$(MAKE) PREFIX=$(PREFIX) stage-1
+	$(MAKE) PREFIX=$(PREFIX) stage-2
 	@echo "Build complete: runtime and bootstrap stages 0-2"
 
 build-runtime:
@@ -308,7 +313,7 @@ stage-0: build-runtime-bootstrap
 	
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o stage-0/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
+	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs) (rnrs records syntactic) (common pregexp) (srfi 1) (srfi 13) (srfi 130))'
 ifeq ($(COMPILE_PSYNTAX),1)
 	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
 	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=$(TARGET_PATH) DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
@@ -317,31 +322,21 @@ endif
 
 	@echo "Stage-0 CapyScheme created in stage-0/ directory"
 
-stage-1: stage-0
-	
-	@$(MAKE) compile-boot  COMPILER=stage-0/capyc OUT=stage-1/compiled
-	@$(MAKE) compile-core  COMPILER=stage-0/capyc OUT=stage-1/compiled
-	@$(MAKE) compile-rnrs  COMPILER=stage-0/capyc OUT=stage-1/compiled
-	@$(MAKE) compile-srfi  COMPILER=stage-0/capyc OUT=stage-1/compiled
-	@$(MAKE) compile-r7rs  COMPILER=stage-0/capyc OUT=stage-1/compiled
-	@$(MAKE) compile-cli   COMPILER=stage-0/capyc OUT=stage-1/compiled
-	@$(MAKE) compile-capy  COMPILER=stage-0/capyc OUT=stage-1/compiled
+compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-cli compile-capy
+
+stage-1: 
+	$(MAKE) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled -j
 	@echo "Creating stage-1 CapyScheme"
 	mkdir -p stage-1
 	cp stage-0/capy stage-1/capy
 	cp stage-0/capyc stage-1/capyc
 
-stage-2: stage-1
+stage-2:
 	
-	@$(MAKE) compile-boot  COMPILER=stage-1/capyc OUT=stage-2/compiled
-	@$(MAKE) compile-core  COMPILER=stage-1/capyc OUT=stage-2/compiled
-	@$(MAKE) compile-rnrs  COMPILER=stage-1/capyc OUT=stage-2/compiled
-	@$(MAKE) compile-srfi  COMPILER=stage-1/capyc OUT=stage-2/compiled
-	@$(MAKE) compile-r7rs  COMPILER=stage-1/capyc OUT=stage-2/compiled
-	@$(MAKE) compile-cli   COMPILER=stage-1/capyc OUT=stage-2/compiled
-	@$(MAKE) compile-capy  COMPILER=stage-1/capyc OUT=stage-2/compiled
+	
 	@echo "Creating stage-2 CapyScheme"
 	mkdir -p stage-2
+	$(MAKE) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled -j
 	cp stage-1/capy stage-2/capy
 	cp stage-1/capyc stage-2/capyc
 
@@ -494,7 +489,8 @@ dist-portable: build build-runtime-portable
 	tar -C "$$stage_prefix" -czf "$$outdir/$$archive_name" "capy/$(VERSION)"; \
 	echo "Wrote $$outdir/$$archive_name"
 
-install: build build-runtime-fhs 
+install: build 
+	$(MAKE) PREFIX=$(PREFIX) build-runtime-fhs 
 	@echo "Installing CapyScheme (FHS) to $(PREFIX)"
 	SUDO=$$( (id -u | grep -q '^0$$' && echo '') || echo 'sudo ' ); \
 	set -e; \
