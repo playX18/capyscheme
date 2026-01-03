@@ -55,7 +55,7 @@ rpath = true
 debug = true
 debug-assertions = false
 lto = false
-#panic = "abort"
+panic = "abort"
 opt-level = 2
 
 [profile.dev]
