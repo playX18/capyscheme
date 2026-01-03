@@ -81,4 +81,6 @@ jobs:
           override: true 
           tag: nightly
           release-notes: |
-            "Nightly build of CapyScheme\n - Date: ${{ needs.check-and-run.outputs.date }}\n - Commit: ${{ needs.check-and-run.outputs.short_sha }}"
+            Nightly build of CapyScheme
+            - Date: ${{ needs.check-and-run.outputs.date }}
+            - Commit: ${{ needs.check-and-run.outputs.short_sha }}

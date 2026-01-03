@@ -483,7 +483,7 @@ dist-portable: build build-runtime-portable
 	stagedir=$${STAGEDIR:-stage-dist}; \
 	outname=$${OUTNAME:-}; \
 	mkdir -p "$$outdir"; \
-	archive_name=$${outname:-capyscheme-$(VERSION)-$(TARGET)-$(ARCH)-$(PROFILE).tar.gz}; \
+	archive_name=$${outname:-capyscheme-$(VERSION)-$(TARGET).tar.gz}; \
 	stage_root="$$stagedir"; \
 	stage_prefix="$$stage_root"; \
 	stage_install_dir="$$stage_prefix/capy/$(VERSION)"; \
