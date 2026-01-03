@@ -248,12 +248,13 @@ R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(DYNLIB_EXT),$(R7RS_SR
 
 .PHONY: all help build build-runtime build-runtime-fhs install-scm stage-0 stage-1 stage-2 \
 	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-srfi compile-r7rs \
-	install-portable dist-portable install install-cross
+	install-portable dist-portable install install-cross dist-deb dist-rpm
 
 all: build
 
 help:
 	@echo "Targets: build build-runtime build-runtime-fhs stage-0 stage-1 stage-2 install-portable dist-portable install"
+	@echo "Packaging: dist-deb dist-rpm"
 	@echo "Vars: PROFILE=release|debug TARGET=<triple> PORTABLE=1|0 PREFIX=<path> VERSION=<ver>"
 
 install-cross:
@@ -507,3 +508,117 @@ install: build
 	$${SUDO}cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
 	$${SUDO}cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
 	echo "Installation complete."
+
+# -------------------------
+# Packaging (deb / rpm)
+# -------------------------
+
+# Output/staging knobs
+DIST_DIR ?= dist
+PKG_NAME ?= capyscheme
+PKG_ROOT ?= stage-pkg
+
+# Debian metadata
+DEB_MAINTAINER ?= CapyScheme
+DEB_SECTION ?= devel
+DEB_PRIORITY ?= optional
+
+# RPM metadata
+RPM_LICENSE ?= MIT
+RPM_SUMMARY ?= CapyScheme compiler/runtime
+
+dist-deb: build
+	@echo "Building .deb package in $(DIST_DIR)/"
+	@# Build FHS runtime binaries (linked against /usr/lib)
+	$(MAKE) PREFIX=/usr build-runtime-fhs
+	rm -rf "$(PKG_ROOT)/deb"
+	mkdir -p "$(PKG_ROOT)/deb/root/usr/bin" "$(PKG_ROOT)/deb/root/usr/lib" "$(PKG_ROOT)/deb/root/usr/lib/capy" "$(PKG_ROOT)/deb/root/usr/share/capy" "$(PKG_ROOT)/deb/DEBIAN" "$(DIST_DIR)"
+	cp bin/capy-full "$(PKG_ROOT)/deb/root/usr/bin/capy"
+	cp bin/capyc-full "$(PKG_ROOT)/deb/root/usr/bin/capyc"
+	cp $(TARGET_PATH)/libcapy.* "$(PKG_ROOT)/deb/root/usr/lib/"
+	cp -r stage-2/compiled "$(PKG_ROOT)/deb/root/usr/lib/capy/"
+	cp -r lib "$(PKG_ROOT)/deb/root/usr/share/capy/"
+	installed_size_kb=$$(du -sk "$(PKG_ROOT)/deb/root/usr" | awk '{print $$1}'); \
+	arch=$$(dpkg --print-architecture 2>/dev/null || echo amd64); \
+	pkgver="$(VERSION)"; \
+	printf '%s\n' \
+		"Package: $(PKG_NAME)" \
+		"Version: $$pkgver" \
+		"Section: $(DEB_SECTION)" \
+		"Priority: $(DEB_PRIORITY)" \
+		"Architecture: $$arch" \
+		"Maintainer: $(DEB_MAINTAINER)" \
+		"Description: CapyScheme (runtime + compiler)" \
+		" A Scheme implementation with a native runtime and compiler." \
+		"Installed-Size: $$installed_size_kb" \
+		> "$(PKG_ROOT)/deb/DEBIAN/control"
+	chmod 0755 "$(PKG_ROOT)/deb/DEBIAN"
+	arch=$$(dpkg --print-architecture 2>/dev/null || echo amd64); \
+	pkgver="$(VERSION)"; \
+	if command -v fakeroot >/dev/null 2>&1; then \
+		fakeroot dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$$pkgver_$$arch.deb"; \
+	else \
+		dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$$pkgver_$$arch.deb"; \
+	fi
+	@echo "Wrote $(DIST_DIR)/$(PKG_NAME)_$(VERSION)_$$(dpkg --print-architecture 2>/dev/null || echo amd64).deb"
+
+dist-rpm: build
+	@echo "Building .rpm package in $(DIST_DIR)/"
+	@# Build FHS runtime binaries (linked against /usr/lib)
+	$(MAKE) PREFIX=/usr build-runtime-fhs
+	rm -rf "$(PKG_ROOT)/rpm"
+	mkdir -p \
+		"$(PKG_ROOT)/rpm/root/usr/bin" "$(PKG_ROOT)/rpm/root/usr/lib" "$(PKG_ROOT)/rpm/root/usr/lib/capy" "$(PKG_ROOT)/rpm/root/usr/share/capy" \
+		"$(PKG_ROOT)/rpm/rpmbuild/SPECS" "$(PKG_ROOT)/rpm/rpmbuild/SOURCES" "$(PKG_ROOT)/rpm/rpmbuild/BUILD" "$(PKG_ROOT)/rpm/rpmbuild/BUILDROOT" \
+		"$(PKG_ROOT)/rpm/rpmbuild/RPMS" "$(PKG_ROOT)/rpm/rpmbuild/SRPMS" "$(PKG_ROOT)/rpm/rpmbuild/RPMDB" "$(DIST_DIR)"
+	cp bin/capy-full "$(PKG_ROOT)/rpm/root/usr/bin/capy"
+	cp bin/capyc-full "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
+	cp $(TARGET_PATH)/libcapy.* "$(PKG_ROOT)/rpm/root/usr/lib/"
+	cp -r stage-2/compiled "$(PKG_ROOT)/rpm/root/usr/lib/capy/"
+	cp -r lib "$(PKG_ROOT)/rpm/root/usr/share/capy/"
+	rm -rf "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"
+	mkdir -p "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"
+	cp -a "$(PKG_ROOT)/rpm/root/usr" "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)/"
+	tar -C "$(PKG_ROOT)/rpm/rpmbuild/BUILD" -czf "$(PKG_ROOT)/rpm/rpmbuild/SOURCES/$(PKG_NAME)-$(VERSION).tar.gz" "$(PKG_NAME)-$(VERSION)"
+	chlog_date=$$(date '+%a %b %d %Y'); \
+	printf '%s\n' \
+		"Name:           $(PKG_NAME)" \
+		"Version:        $(VERSION)" \
+		"Release:        1%{?dist}" \
+		"Summary:        $(RPM_SUMMARY)" \
+		"License:        $(RPM_LICENSE)" \
+		"URL:            https://github.com/adelphai/capyscheme" \
+		"Source0:        %{name}-%{version}.tar.gz" \
+		"" \
+		"BuildArch:      %{_arch}" \
+		"" \
+		"%description" \
+		"CapyScheme runtime and compiler." \
+		"" \
+		"%prep" \
+		"%setup -q" \
+		"" \
+		"%build" \
+		"# no-op" \
+		"" \
+		"%install" \
+		"rm -rf %{buildroot}" \
+		"mkdir -p %{buildroot}" \
+		"cp -a usr %{buildroot}/" \
+		"" \
+		"%files" \
+		"/usr/bin/capy" \
+		"/usr/bin/capyc" \
+		"/usr/lib/libcapy.*" \
+		"/usr/lib/capy/compiled" \
+		"/usr/share/capy/lib" \
+		"" \
+		"%changelog" \
+		"* $$chlog_date $(RPM_SUMMARY)" \
+		"- Automated build" \
+		> "$(PKG_ROOT)/rpm/rpmbuild/SPECS/$(PKG_NAME).spec"
+	rpmbuild -bb "$(PKG_ROOT)/rpm/rpmbuild/SPECS/$(PKG_NAME).spec" \
+		--define "_topdir $(CURDIR)/$(PKG_ROOT)/rpm/rpmbuild" \
+		--define "_dbpath $(CURDIR)/$(PKG_ROOT)/rpm/rpmbuild/RPMDB"
+	find "$(PKG_ROOT)/rpm/rpmbuild/RPMS" -name "*.rpm" -maxdepth 2 -type f -print -exec cp -f {} "$(DIST_DIR)/" \;
+	@echo "Wrote RPM(s) to $(DIST_DIR)/"
