@@ -26,6 +26,8 @@
 ($primitive-load "boot/modules.scm")
 ($primitive-load "boot/records.scm")
 ($primitive-load "boot/conditions.scm")
+($primitive-load "boot/violations.scm")
+($primitive-load "boot/raise.scm")
 ($primitive-load "boot/exceptions.scm")
 ($primitive-load "boot/expand.scm")
 ($primitive-load "boot/interpreter.scm")
