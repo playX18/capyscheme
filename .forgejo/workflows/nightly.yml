@@ -49,8 +49,8 @@ jobs:
       - name: Install system deps
         shell: bash
         run: |
-          dnf update -y
-          dnf install -y clang lld rsync make
+          apt update -y
+          apt install -y clang lld rsync make
 
       - name: Build Capy
         shell: bash
