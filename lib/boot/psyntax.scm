@@ -93,7 +93,6 @@
 (define variable-transformer-procedure (record-accessor (record-type-rtd <variable-transformer>) 0))
 
 (define syntax-error #f)
-(define app-sym 'app)
 
 (let ((syntax? (module-ref (current-module) 'syntax?))
       (make-syntax (module-ref (current-module) 'make-syntax))
@@ -757,8 +756,8 @@
             (let ((mod (current-module-for-expansion mod)))
               (syntax-type x r w (source-annotation x) ribcage mod #f)))
           (lambda (type value form e w s mod)
-            (cond
-              ((eq? type 'define-form)
+            (case type
+              ((define-form)
                 (let* ((id (wrap value w mod))
                        (var (if (macro-introduced-identifier? id)
                              (fresh-derived-name id x)
@@ -777,11 +776,11 @@
                                  mod))
                              (lambda ()
                                (build-global-definition s mod var (expand e r w mod)))))))))
-              ((eq? type 'begin-form)
+              ((begin-form)
                 (syntax-case e ()
                   ((_ exp ...)
                     (parse #'(exp ...) r w s m essew mod))))
-              ((eq? type 'eval-when-form)
+              ((eval-when-form)
                 (syntax-case e () 
                   [(_ (x ...) e1 e2 ...)
                     (let* ([when-list (parse-when-list e #'(x ...))]
@@ -816,7 +815,8 @@
                             mod)
                           '())
                         (else '())))]))
-              ((or (eq? type 'define-syntax-form) (eq? type 'define-syntax-parameter-form))
+
+              ((define-syntax-form define-syntax-parameter-form)
                 (let* ((id (wrap value w mod))
                        (var (if (macro-introduced-identifier? id)
                              (fresh-derived-name id x)
@@ -856,6 +856,13 @@
                     '()
                     (cons ((car thunks)) (lp (cdr thunks)))))))
         (if (null? res) (build-void s) (build-sequence s res)))))
+
+  (define (parse-define-property e w s mod)
+    (syntax-case e () 
+      [(_ name prop expr)
+        (and (id? #'name) (id? #'prop))
+        (values #'name #'prop #'expr w mod)]
+      [_ (syntax-violation 'define-property "bad form" (source-wrap e w s mod))]))
 
   (define (expand-macro p e r w s rib mod)
     (define transformer (car p))
@@ -1052,9 +1059,10 @@
         'make-syntax-transformer
         (list (make-constant #f name)
           (make-constant #f
-            (if (eq? type 'define-syntax-parameter-form)
-              'syntax-parameter
-              'macro))
+            (case type 
+              ((define-syntax-parameter-form) 'syntax-parameter)
+              ((define-property-form) 'property)
+              (else 'macro)))
           (build-primcall #f 'cons (list e (make-constant #f id)))))))
   (define (expand e r w mod)
 ;    (cond 
@@ -1085,27 +1093,11 @@
     (define new-s (make-syntax (cons sym e) w mod s))
     new-s)
 
-  (define (expand-implicit sym ctx e r w s mod)
-    (define stx (if (syntax? ctx) ctx (make-syntax ctx w mod s)))
-    (define id (datum->syntax stx sym))
-
-    ;(format #t "resolving implicit syntax reference ~a for ~s in ~a~%" id e mod)
-    (call-with-values
-      (lambda () (resolve-identifier id w r mod #t))
-      (lambda (type value mod*)
-        ;(format #t "expanding implicit syntax reference ~a of type ~s in ~a~%" id type mod*)
-        (cond
-          ((eq? type 'macro)
-            (define new-app (expand (wrap (cons id e) empty-wrap mod*) r w mod)) ;(expand-macro value (wrap (cons id e) w mod*) r empty-wrap s #f mod))
-            new-app)
-          ((eq? type 'core)
-
-            (value (wrap (cons id e) w mod*) r empty-wrap s mod))
-          (else
-            (syntax-violation #f "implicit syntax reference is not a macro or core form" sym e))))))
-
   (define (expand-expr type value form e r w s mod)
     (cond
+      ((eq? type 'define-property-form)
+        (parse-define-property e w s mod)
+        (syntax-violation #f "invalid context for definition" (source-wrap e w s mod)))
       ((eq? type 'lexical)
         (build-lexical-reference s e value))
       ((or (eq? type 'core) (eq? type 'core-form))
@@ -1114,14 +1106,6 @@
         (call-with-values (lambda () (value e r w mod))
           (lambda (e r w s mod)
             (expand e r w mod))))
-      (#f ;(or (eq? type 'lexical-call) (eq? type 'global-call) (eq? type 'primitive-call) (eq? type 'call))
-
-        ;(when (eq? type 'global-call)
-        ;  (format #t "global-call of ~s in ~a~%" (syntax->datum e) (or (and (syntax? value)
-        ;                                  (syntax-module value))
-        ;                             mod)))
-
-        (expand-implicit app-sym value e r w s mod))
       ((eq? type 'lexical-call)
         (expand-call
           (let ((id (car e)))
@@ -1312,6 +1296,7 @@
                             vals
                             bindings
                             #f))))
+                    
                     (else
                       (let ((wrapped (source-wrap e w s mod)))
                         (parse body ids labels var-ids vars vals bindings
@@ -2028,20 +2013,6 @@
   (global-extend 'begin 'begin '())
   (global-extend 'eval-when 'eval-when '())
 
-  (global-extend 'core app-sym
-    (lambda (e r w s mod)
-      (define tmp ($sc-dispatch e '(any . each-any)))
-      (define (expand-app app es)
-        (cond
-          ((null? es) (make-constant s '()))
-          (else
-            (build-call
-              s
-              (expand (car es) r w mod)
-              (map (lambda (x) (expand x r w mod)) (cdr es))))))
-      (if tmp
-        (apply expand-app tmp)
-        (syntax-violation #f "invalid #%app" e))))
   (global-extend 'core 'with-continuation-mark
     (lambda (e r w s mod)
       (syntax-case e ()
@@ -2290,6 +2261,8 @@
                              tmp-1)
                            (syntax-violation #f "source expression failed to match any pattern" tmp)))))))))
         (make-syntax #f '((top)) '(hygiene capy))))))
+
+
 
 (define syntax-error
   (let ((make-syntax make-syntax))

@@ -6,11 +6,11 @@ default-members = ["capy"]
 
 [workspace.dependencies]
 mmtk = { git = "https://github.com/mmtk/mmtk-core", features = [] }
-cranelift-jit = { version = "0.125.4", features = ["selinux-fix"] }
-cranelift = "0.125.4"
-cranelift-codegen = "0.125.4"
-cranelift-module = "0.125.4"
-cranelift-object = "0.125.4"
+cranelift-jit = { version = "0.127", features = ["selinux-fix"] }
+cranelift = "0.127"
+cranelift-codegen = "0.127"
+cranelift-module = "0.127"
+cranelift-object = "0.127"
 libloading = "0.9.0"
 target-lexicon = "*"
 gimli = "0.32.2"
