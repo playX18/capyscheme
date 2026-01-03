@@ -35,7 +35,7 @@ jobs:
       matrix:
         arch: [x86_64]
 
-    runs-on: self
+    runs-on: fedora-latest
     env:
       VERSION: nightly-${{ needs.check-and-run.outputs.date }}-${{ needs.check-and-run.outputs.short_sha }}
       MMTK_GC_TRIGGER: DynamicHeapSize:1G,4G
