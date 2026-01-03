@@ -35,6 +35,8 @@
 ($primitive-load "boot/sys.scm")
 ($primitive-load "boot/osdep.scm")
 ($primitive-load "boot/iosys.scm")
+($primitive-load "boot/iosys2.scm")
+($primitive-load "boot/iosys3.scm")
 ($primitive-load "boot/portio.scm")
 ($primitive-load "boot/bytevectorio.scm")
 ($primitive-load "boot/fileio.scm")
