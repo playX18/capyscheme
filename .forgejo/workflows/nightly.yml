@@ -1,0 +1,54 @@
+name: nightly 
+on:
+  schedule:
+    - cron: '@daily'
+  workflow_dispatch:
+jobs:
+  check-and-run:
+    runs-on: self 
+    steps: 
+      - name: Checkout code 
+        uses: actions/checkout@v4
+      - name: Check recent commits 
+        id: check_commits
+        run: |
+          # git log command returns commits since "24 hours ago"
+          # We check if the output is empty
+          echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          if [ -n "$(git log --since='24 hours ago')" ]; then
+            echo "recent_commits=true" >> $GITHUB_OUTPUT
+            echo "Found recent commits."
+          else
+            echo "recent_commits=false" >> $GITHUB_OUTPUT
+            echo "No recent commits found. Skipping job."
+          fi
+  build: 
+    needs: check-and-run
+    if: needs.check-and-run.outputs.recent_commits == 'true'
+    name: Build nightly (${{ matrix.arch }})
+    
+    runs-on: self
+    env:
+      VERSION: nightly-${{ needs.check-and-run.outputs.date }}-${{ needs.check-and-run.outputs.short_sha }}
+      MMTK_GC_TRIGGER: DynamicHeapSize:1G,4G
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install system deps
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld rsync make
+
+      - name: Build Capy
+        shell: bash
+        run: |
+          make build
+      - name: Create portable tarball
+        shell: bash
+        run: |
+          make dist-portable
