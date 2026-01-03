@@ -308,6 +308,7 @@ pub fn find_path_to<'gc>(
                 candidates.push(path);
             }
         }
+
         if filename.extension().is_some() {
             candidates.push(filename.to_owned());
         }
