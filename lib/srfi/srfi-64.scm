@@ -157,6 +157,13 @@
 ;; Controls whether a log file is generated.
 (define test-log-to-file #t)
 
+(define %test-color-reset "\x1b;[0m")
+(define %test-color-bold "\x1b;[1m")
+(define %test-color-red "\x1b;[31m")
+(define %test-color-green "\x1b;[32m")
+(define %test-color-yellow "\x1b;[33m")
+(define %test-color-blue "\x1b;[34m")
+
 (define (test-runner-simple)
   (let ((runner (%test-runner-alloc)))
     (test-runner-reset runner)
@@ -245,8 +252,7 @@
 (define (test-on-group-begin-simple runner suite-name count)
   (if (null? (test-runner-group-stack runner))
       (begin
-	(display "%%%% Starting test ")
-	(display suite-name)
+	(display (string-append %test-color-blue %test-color-bold "%%%% Starting test " suite-name %test-color-reset))
 	(if test-log-to-file
 	    (let* ((log-name (if (string? test-log-to-file) test-log-to-file
                                  (string-append suite-name ".log")))
@@ -276,13 +282,13 @@
 		    (cond-expand (mzscheme
 				  (open-output-file log-file-name 'truncate/replace))
 				 (else (open-output-file log-file-name)))))
+	      (display "  (Writing full log to \"" (current-output-port))
+	      (display log-file-name (current-output-port))
+	      (display "\")" (current-output-port))
 	      (display "%%%% Starting test " log-file)
 	      (display suite-name log-file)
 	      (newline log-file)
-	      (test-runner-aux-value! runner log-file)
-	      (display "  (Writing full log to \"")
-	      (display log-file-name)
-	      (display "\")")))
+	      (test-runner-aux-value! runner log-file)))
 	(newline)))
   (let ((log (test-runner-aux-value runner)))
     (if (output-port? log)
@@ -325,30 +331,33 @@
      (else (display msg) (newline)))))
   
 
-(define (%test-final-report1 value label port)
+(define (%test-final-report1 value label color port)
   (if (> value 0)
       (begin
 	(display label port)
-	(display value port)
+    (if color
+        (display (string-append color (number->string value) %test-color-reset) port)
+        (display value port))
 	(newline port))))
 
-(define (%test-final-report-simple runner port)
-  (%test-final-report1 (test-runner-pass-count runner)
-		      "# of expected passes      " port)
-  (%test-final-report1 (test-runner-xfail-count runner)
-		      "# of expected failures    " port)
-  (%test-final-report1 (test-runner-xpass-count runner)
-		      "# of unexpected successes " port)
-  (%test-final-report1 (test-runner-fail-count runner)
-		      "# of unexpected failures  " port)
-  (%test-final-report1 (test-runner-skip-count runner)
-		      "# of skipped tests        " port))
+(define (%test-final-report-simple runner port . args)
+  (let ((color? (if (null? args) #t (car args))))
+      (%test-final-report1 (test-runner-pass-count runner)
+                          "# of expected passes      " (if color? %test-color-green #f) port)
+      (%test-final-report1 (test-runner-xfail-count runner)
+                          "# of expected failures    " (if color? %test-color-green #f) port)
+      (%test-final-report1 (test-runner-xpass-count runner)
+                          "# of unexpected successes " (if color? %test-color-red #f) port)
+      (%test-final-report1 (test-runner-fail-count runner)
+                          "# of unexpected failures  " (if color? %test-color-red #f) port)
+      (%test-final-report1 (test-runner-skip-count runner)
+                          "# of skipped tests        " (if color? %test-color-yellow #f) port)))
 
 (define (test-on-final-simple runner)
-  (%test-final-report-simple runner (current-output-port))
+  (%test-final-report-simple runner (current-output-port) #t)
   (let ((log (test-runner-aux-value runner)))
     (if (output-port? log)
-	(%test-final-report-simple runner log))))
+	(%test-final-report-simple runner log #f))))
 
 (define (%test-format-line runner)
    (let* ((line-info (test-result-alist runner))
@@ -443,23 +452,39 @@
 (define (test-on-test-end-simple runner)
   (let ((log (test-runner-aux-value runner))
 	(kind (test-result-ref runner 'result-kind)))
-    (if (memq kind '(fail xpass))
-	(let* ((results (test-result-alist runner))
-	       (source-file (assq 'source-file results))
-	       (source-line (assq 'source-line results))
-	       (test-name (assq 'test-name results)))
-	  (if (or source-file source-line)
-	      (begin
-		(if source-file (display (cdr source-file)))
-		(display ":")
-		(if source-line (display (cdr source-line)))
-		(display ": ")))
-	  (display (if (eq? kind 'xpass) "XPASS" "FAIL"))
-	  (if test-name
-	      (begin
-		(display " ")
-		(display (cdr test-name))))
-	  (newline)))
+    (let* ((results (test-result-alist runner))
+	   (source-file (assq 'source-file results))
+	   (source-line (assq 'source-line results))
+	   (test-name (assq 'test-name results)))
+      (cond ((memq kind '(fail xpass))
+             (if (or source-file source-line)
+                 (begin
+                   (if source-file (display (cdr source-file)))
+                   (display ":")
+                   (if source-line (display (cdr source-line)))
+                   (display ": ")))
+             (display (if (eq? kind 'xpass)
+                          (string-append %test-color-red "XPASS" %test-color-reset)
+                          (string-append %test-color-red "FAIL " %test-color-reset)))
+             (if test-name
+                 (begin
+                   (display " ")
+                   (display (cdr test-name))))
+             (newline))
+            ((eq? kind 'pass)
+             (display (string-append %test-color-green "PASS " %test-color-reset))
+             (if test-name
+                 (begin
+                   (display " ")
+                   (display (cdr test-name))))
+             (newline))
+            ((eq? kind 'skip)
+             (display (string-append %test-color-yellow "SKIP " %test-color-reset))
+             (if test-name
+                 (begin
+                   (display " ")
+                   (display (cdr test-name))))
+             (newline))))
     (if (output-port? log)
 	(begin
 	  (display "Test end:" log)
