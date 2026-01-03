@@ -49,8 +49,8 @@ jobs:
       - name: Install system deps
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld rsync make
+          apt-get update
+          apt-get install -y clang lld rsync make
 
       - name: Build Capy
         shell: bash
