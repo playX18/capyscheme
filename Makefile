@@ -97,6 +97,8 @@ BOOT_SRCS := \
 	lib/boot/sys.scm \
 	lib/boot/osdep.scm \
 	lib/boot/iosys.scm \
+	lib/boot/iosys2.scm \
+	lib/boot/iosys3.scm \
 	lib/boot/portio.scm \
 	lib/boot/bytevectorio.scm \
 	lib/boot/fileio.scm \
