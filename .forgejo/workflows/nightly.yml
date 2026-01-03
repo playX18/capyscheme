@@ -6,6 +6,10 @@ on:
 jobs:
   check-and-run:
     runs-on: self 
+    outputs:
+      recent_commits: ${{ steps.check_commits.outputs.recent_commits }}
+      date: ${{ steps.check_commits.outputs.date }}
+      short_sha: ${{ steps.check_commits.outputs.short_sha }}
     steps: 
       - name: Checkout code 
         uses: actions/checkout@v4
@@ -15,6 +19,7 @@ jobs:
           # git log command returns commits since "24 hours ago"
           # We check if the output is empty
           echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+          echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
           if [ -n "$(git log --since='24 hours ago')" ]; then
             echo "recent_commits=true" >> $GITHUB_OUTPUT
             echo "Found recent commits."
@@ -26,7 +31,10 @@ jobs:
     needs: check-and-run
     if: needs.check-and-run.outputs.recent_commits == 'true'
     name: Build nightly (${{ matrix.arch }})
-    
+    strategy:
+      matrix:
+        arch: [x86_64]
+
     runs-on: self
     env:
       VERSION: nightly-${{ needs.check-and-run.outputs.date }}-${{ needs.check-and-run.outputs.short_sha }}
