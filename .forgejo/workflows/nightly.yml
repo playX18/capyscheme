@@ -56,9 +56,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-apt-
       - name: Install system deps
-        uses: https://github.com/tecolicom/actions-use-apt-tools@v1
-        with:
-          tools: lld clang rsync make 
+        shell: bash
+        run: |
+          apt update -y
+          apt install -y gcc rsync make
 
       - name: Build Capy
         shell: bash
