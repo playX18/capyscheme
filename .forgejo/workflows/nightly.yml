@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 jobs:
   check-and-run:
-    runs-on: self 
+    runs-on: fedora-latest 
     outputs:
       recent_commits: ${{ steps.check_commits.outputs.recent_commits }}
       date: ${{ steps.check_commits.outputs.date }}
@@ -35,10 +35,10 @@ jobs:
       matrix:
         arch: [x86_64]
 
-    runs-on: self
+    runs-on: fedora-latest
     env:
-      VERSION: nightly-${{ needs.check-and-run.outputs.date }}-${{ needs.check-and-run.outputs.short_sha }}
-      MMTK_GC_TRIGGER: DynamicHeapSize:1G,4G
+      VERSION: nightly-${{ needs.check-and-run.outputs.date }}
+      MMTK_GC_TRIGGER: DynamicHeapSize:1G,8G
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,11 +46,21 @@ jobs:
         uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
         with: 
           toolchain: nightly
+      - name: Cache Rust dependencies
+        uses: https://github.com/Swatinem/rust-cache@v2
+     
+      - name: Cache apt dependencies
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-v1
+          restore-keys: |
+            ${{ runner.os }}-apt-
       - name: Install system deps
         shell: bash
         run: |
-          apt-get update
-          apt-get install -y clang lld rsync make
+          apt update -y
+          apt install -y gcc rsync make
 
       - name: Build Capy
         shell: bash
@@ -60,4 +70,17 @@ jobs:
         shell: bash
         run: |
           make dist-portable
-          
+      - name: Publish/Update Codeberg Release "nightly"
+        uses: actions/forgejo-release@v2.7.3
+        with: 
+          direction: upload 
+          url: https://codeberg.org
+          repo: playxe/capy
+          token: ${{ secrets.CODEBERG_TOKEN }}
+          release-dir: dist
+          override: true 
+          tag: nightly
+          release-notes: |
+            Nightly build of CapyScheme
+            - Date: ${{ needs.check-and-run.outputs.date }}
+            - Commit: ${{ needs.check-and-run.outputs.short_sha }}
