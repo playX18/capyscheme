@@ -43,7 +43,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install Rust toolchain
-        uses: wackbyte/rust-toolchain@trunk
+        uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
         with: 
           toolchain: nightly
       - name: Install system deps
