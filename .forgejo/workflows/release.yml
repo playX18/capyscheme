@@ -1,0 +1,52 @@
+on: 
+  push: 
+    tags: 
+      - 'v1.*'
+  workflow_dispatch:
+  workflow_call:
+
+jobs: 
+  release:
+    runs-on: fedora-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
+        with: 
+          toolchain: nightly
+      - name: Install system deps
+        shell: bash
+        run: |
+          apt update -y
+          apt install -y clang lld rsync make
+      - name: Build Capy
+        shell: bash
+        run: |
+          make build
+      - name: Create portable tarball
+        shell: bash
+        run: |
+          make dist-portable
+      - name: Create deb package 
+        shell: bash
+        run: |
+          make dist-deb
+      - name: Create rpm package 
+        shell: bash
+        run: |
+          make dist-rpm
+      - name: Publish release
+        uses: actions/forgejo-release@v2.7.3
+        with: 
+          direction: upload 
+          url: https://codeberg.org
+          repo: playxe/capy
+          token: ${{ secrets.CODEBERG_TOKEN }}
+          release-dir: dist
+          override: true 
+          tag: ${{ env.VERSION }}
+          release-notes: |
+            "Release of CapyScheme ${{ env.VERSION }}"

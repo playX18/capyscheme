@@ -467,8 +467,8 @@ install-portable: build build-runtime-portable
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
-	cp stage-2/capy-full $(PREFIX)/capy/$(VERSION)/
-	cp stage-2/capyc-full $(PREFIX)/capy/$(VERSION)/
+	cp bin/capy-full $(PREFIX)/capy/$(VERSION)/capy 
+	cp bin/capyc-full $(PREFIX)/capy/$(VERSION)/capyc
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp $(TARGET_PATH)/libcapy.* $(PREFIX)/capy/$(VERSION)/
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
@@ -491,8 +491,8 @@ dist-portable: build build-runtime-portable
 	rm -rf "$$stage_root"; \
 	mkdir -p "$$stage_install_dir/extensions"; \
 	rsync --checksum -r lib "$$stage_install_dir"; \
-	cp stage-2/capy-full "$$stage_install_dir/"; \
-	cp stage-2/capyc-full "$$stage_install_dir/"; \
+	cp bin/capy-full "$$stage_install_dir/capy"; \
+	cp bin/capyc-full "$$stage_install_dir/capyc"; \
 	cp $(TARGET_PATH)/libcapy.* "$$stage_install_dir/"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
 	echo "Creating $$outdir/$$archive_name"; \
