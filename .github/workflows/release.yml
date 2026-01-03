@@ -40,13 +40,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang lld rsync make fakeroot rpm
 
-      - name: Build runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          make build-runtime
-
-      - name: Bootstrap Scheme stdlib
+      - name: Build Capy
         shell: bash
         env:
           VERSION: ${{ github.ref_name }}
