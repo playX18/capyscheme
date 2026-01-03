@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 jobs:
   check-and-run:
-    runs-on: self 
+    runs-on: fedora-latest 
     outputs:
       recent_commits: ${{ steps.check_commits.outputs.recent_commits }}
       date: ${{ steps.check_commits.outputs.date }}
@@ -49,8 +49,8 @@ jobs:
       - name: Install system deps
         shell: bash
         run: |
-          apt-get update
-          apt-get install -y clang lld rsync make
+          dnf update -y
+          dnf install -y clang lld rsync make
 
       - name: Build Capy
         shell: bash
