@@ -42,12 +42,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Cache Rust dependencies
-        uses: https://github.com/Swatinem/rust-cache@v2
       - name: Install Rust toolchain
         uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
         with: 
           toolchain: nightly
+      - name: Cache Rust dependencies
+        uses: https://github.com/Swatinem/rust-cache@v2
+     
       - name: Cache apt dependencies
         uses: actions/cache@v4
         with:
