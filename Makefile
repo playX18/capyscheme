@@ -317,14 +317,14 @@ stage-0: build-runtime-bootstrap
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	cp $(TARGET_PATH)/libcapy.* stage-0/
 	
-	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
-	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
-	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
-	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
-	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
 ifeq ($(COMPILE_PSYNTAX),1)
 	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
-	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
 endif
 	
 
