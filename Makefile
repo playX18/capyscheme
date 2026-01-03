@@ -81,9 +81,6 @@ CAPY_ENV = \
 	LD_LIBRARY_PATH="$(TARGET_PATH)" \
 	DYLD_FALLBACK_LIBRARY_PATH="$(TARGET_PATH)"
 
-# -------------------------
-# Source lists ("arrays")
-# -------------------------
 
 BOOT_SRCS := \
 	lib/boot/prim.scm \
@@ -91,6 +88,8 @@ BOOT_SRCS := \
 	lib/boot/modules.scm \
 	lib/boot/records.scm \
 	lib/boot/conditions.scm \
+	lib/boot/violations.scm \
+	lib/boot/raise.scm \
 	lib/boot/exceptions.scm \
 	lib/boot/expand.scm \
 	lib/boot/interpreter.scm \
@@ -98,6 +97,8 @@ BOOT_SRCS := \
 	lib/boot/sys.scm \
 	lib/boot/osdep.scm \
 	lib/boot/iosys.scm \
+	lib/boot/iosys2.scm \
+	lib/boot/iosys3.scm \
 	lib/boot/portio.scm \
 	lib/boot/bytevectorio.scm \
 	lib/boot/fileio.scm \
@@ -316,14 +317,14 @@ stage-0: build-runtime-bootstrap
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	cp $(TARGET_PATH)/libcapy.* stage-0/
 	
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
 ifeq ($(COMPILE_PSYNTAX),1)
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
-	XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
+	MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix MMTK_GC_TRIGGER=DynamicHeapSize:2G,8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
 endif
 	
 
@@ -332,7 +333,7 @@ endif
 compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-cli compile-capy
 
 stage-1: 
-	$(MAKE) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled -j
+	$(MAKE) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled
 	@echo "Creating stage-1 CapyScheme"
 	mkdir -p stage-1
 	cp stage-0/capy stage-1/capy
@@ -341,7 +342,7 @@ stage-1:
 stage-2:
 	@echo "Creating stage-2 CapyScheme"
 	mkdir -p stage-2
-	$(MAKE) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled -j
+	$(MAKE) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled
 	cp stage-1/capy stage-2/capy
 	cp stage-1/capyc stage-2/capyc
 
@@ -466,8 +467,8 @@ install-portable: build build-runtime-portable
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
-	cp stage-2/capy-full $(PREFIX)/capy/$(VERSION)/
-	cp stage-2/capyc-full $(PREFIX)/capy/$(VERSION)/
+	cp bin/capy-full $(PREFIX)/capy/$(VERSION)/capy 
+	cp bin/capyc-full $(PREFIX)/capy/$(VERSION)/capyc
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp $(TARGET_PATH)/libcapy.* $(PREFIX)/capy/$(VERSION)/
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
@@ -482,7 +483,7 @@ dist-portable: build build-runtime-portable
 	stagedir=$${STAGEDIR:-stage-dist}; \
 	outname=$${OUTNAME:-}; \
 	mkdir -p "$$outdir"; \
-	archive_name=$${outname:-capyscheme-$(VERSION)-$(TARGET)-$(ARCH)-$(PROFILE).tar.gz}; \
+	archive_name=$${outname:-capyscheme-$(VERSION)-$(TARGET).tar.gz}; \
 	stage_root="$$stagedir"; \
 	stage_prefix="$$stage_root"; \
 	stage_install_dir="$$stage_prefix/capy/$(VERSION)"; \
@@ -490,8 +491,8 @@ dist-portable: build build-runtime-portable
 	rm -rf "$$stage_root"; \
 	mkdir -p "$$stage_install_dir/extensions"; \
 	rsync --checksum -r lib "$$stage_install_dir"; \
-	cp stage-2/capy-full "$$stage_install_dir/"; \
-	cp stage-2/capyc-full "$$stage_install_dir/"; \
+	cp bin/capy-full "$$stage_install_dir/capy"; \
+	cp bin/capyc-full "$$stage_install_dir/capyc"; \
 	cp $(TARGET_PATH)/libcapy.* "$$stage_install_dir/"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
 	echo "Creating $$outdir/$$archive_name"; \
