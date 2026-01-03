@@ -42,10 +42,28 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-rust-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-
       - name: Install Rust toolchain
         uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
         with: 
           toolchain: nightly
+      - name: Cache apt dependencies
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-v1
+          restore-keys: |
+            ${{ runner.os }}-apt-
       - name: Install system deps
         shell: bash
         run: |
