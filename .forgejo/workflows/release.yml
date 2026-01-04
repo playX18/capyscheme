@@ -48,7 +48,7 @@ jobs:
         shell: bash 
         run: |
           curl --user playXE:${{ secrets.CODEBERG_TOKEN }} \
-               --upload-file "dist/capyscheme-${{ env.VERSION }}.x86_64-1.rpm" \
+               --upload-file "dist/capyscheme-${{ env.VERSION }}-1.x86_64.rpm" \
                https://codeberg.org/api/packages/playxe/rpm/upload
       - name: Publish release
         uses: actions/forgejo-release@v2.7.3
