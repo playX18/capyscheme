@@ -926,13 +926,13 @@
       p))
   (define (expand-local-syntax rec? e r w s mod k)
     (syntax-case e () 
-      [(_ ((id val) ...) e1 e2 ...)
+      [(_ ((id val) ...) body ...)
         (let ((ids #'(id ...)))
           (unless (valid-bound-ids? ids)
             (syntax-violation #f "duplicate bound keyword" e))
           (define labels (gen-labels ids))
           (define new-w (make-binding-wrap ids labels w))
-          (k #'(e1 e2 ...)
+          (k #'(body ...)
             (extend-env 
               labels 
               (let ([w (if rec? new-w w)] [trans-r (macros-only-env r)])
