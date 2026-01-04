@@ -211,7 +211,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Greater)) {
                 return nctx.return_(false);
             }
@@ -263,7 +263,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Greater)) {
                 return nctx.return_(false);
             }
@@ -315,7 +315,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
                 return nctx.return_(false);
             }
@@ -367,7 +367,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
                 return nctx.return_(false);
             }
@@ -419,7 +419,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Less)) {
                 return nctx.return_(false);
             }
@@ -471,7 +471,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Less)) {
                 return nctx.return_(false);
             }
@@ -523,7 +523,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Less) | Some(Ordering::Equal)) {
                 return nctx.return_(false);
             }
@@ -575,7 +575,7 @@ mod string_ops {
                 );
             }
             let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, 0, 0, s1.len(), s2.len());
+            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
             if !matches!(cmp, Some(Ordering::Less) | Some(Ordering::Equal)) {
                 return nctx.return_(false);
             }

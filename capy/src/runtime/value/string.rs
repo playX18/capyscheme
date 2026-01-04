@@ -627,10 +627,10 @@ impl<'gc> Str<'gc> {
         &self,
         other: &Self,
         ci: bool,
-        start1: usize,
-        start2: usize,
-        end1: usize,
-        end2: usize,
+        start1: Option<usize>,
+        start2: Option<usize>,
+        end1: Option<usize>,
+        end2: Option<usize>,
     ) -> Option<std::cmp::Ordering> {
         compare_strings(ci, self, other, start1, start2, end1, end2)
     }
@@ -646,39 +646,57 @@ fn compare_strings<'gc>(
     ci: bool,
     s1: &Str<'gc>,
     s2: &Str<'gc>,
-    start1: usize,
-    start2: usize,
-    end1: usize,
-    end2: usize,
+    start1: Option<usize>,
+    start2: Option<usize>,
+    end1: Option<usize>,
+    end2: Option<usize>,
 ) -> Option<std::cmp::Ordering> {
     let mut cstart1;
     let mut cstart2;
     let cend1;
     let cend2;
 
-    cstart1 = if start1 < s1.length {
-        start1
+    cstart1 = if let Some(s) = start1 {
+        if s > s1.length {
+            return None;
+        }
+        s
     } else {
-        return None;
+        0
     };
 
-    cstart2 = if start2 < s2.length {
-        start2
+    cstart2 = if let Some(s) = start2 {
+        if s > s2.length {
+            return None;
+        }
+        s
     } else {
-        return None;
+        0
     };
 
-    cend1 = if end1 <= s1.length {
-        end1
+    cend1 = if let Some(end1) = end1 {
+        if end1 <= s1.length {
+            end1
+        } else {
+            return None;
+        }
     } else {
-        return None;
+        s1.length
     };
 
-    cend2 = if end2 <= s2.length {
-        end2
+    cend2 = if let Some(end2) = end2 {
+        if end2 <= s2.length {
+            end2
+        } else {
+            return None;
+        }
     } else {
-        return None;
+        s2.length
     };
+
+    if cend1 == 0 && cend2 == 0 {
+        return Some(std::cmp::Ordering::Equal);
+    }
 
     let cm = icu::casemap::CaseMapperBorrowed::new();
 
@@ -750,7 +768,7 @@ impl<'gc> std::fmt::Display for Str<'gc> {
 
 impl<'gc> PartialEq for Str<'gc> {
     fn eq(&self, other: &Self) -> bool {
-        compare_strings(false, self, other, 0, 0, self.len(), other.len())
+        compare_strings(false, self, other, None, None, None, None)
             == Some(std::cmp::Ordering::Equal)
     }
 }
@@ -759,13 +777,13 @@ impl<'gc> Eq for Str<'gc> {}
 
 impl<'gc> PartialOrd for Str<'gc> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        compare_strings(false, self, other, 0, 0, self.len(), other.len())
+        compare_strings(false, self, other, None, None, None, None)
     }
 }
 
 impl<'gc> Ord for Str<'gc> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        compare_strings(false, self, other, 0, 0, self.len(), other.len()).unwrap()
+        compare_strings(false, self, other, None, None, None, None).unwrap()
     }
 }
 
