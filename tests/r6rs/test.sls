@@ -13,7 +13,8 @@
           test/output/unspec
           run-test
           report-test-results)
-  (import (rnrs))
+  (import (rnrs)
+          (only (capy) syntax-sourcev))
 
   (define-record-type err
     (fields err-c))
@@ -30,13 +31,25 @@
   (define-record-type alts
     (fields values))
 
-  (define-syntax test
-    (syntax-rules ()
-      [(_ expr expected)
-       (begin
-         (run-test 'expr
-                   (catch-exns (lambda () expr))
-                   expected))]))
+  ;(define-syntax test
+  ;  (syntax-rules ()
+  ;    [(_ expr expected)
+  ;     (begin
+  ;       (run-test 'expr
+  ;                 (catch-exns (lambda () expr))
+  ;                 expected
+  ;                 ))]))
+  (define-syntax test 
+    (lambda (x)
+      (syntax-case x () 
+        [(_ expr expected)
+          (with-syntax ([t (datum->syntax #'expr (syntax-sourcev #'expr))])
+            #'(begin 
+                (run-test 'expr
+                          (catch-exns (lambda () expr))
+                          expected 
+                          t)))])))
+
 
    (define (catch-exns thunk)
       (guard (c [#t (make-err c)])
@@ -181,11 +194,11 @@
               (alts-values expected))]
      [else (equal? got expected)]))
     
-  (define (run-test expr got expected)
+  (define (run-test expr got expected . src?)
     (set! checked (+ 1 checked))
     (unless (same-result? got expected)
       (set! failures
-            (cons (list expr got expected)
+            (cons (list expr got expected (if (null? src?) #f (car src?)))
                   failures))))
 
   (define (write-result prefix v)
@@ -220,6 +233,10 @@
           (for-each (lambda (t)
                       (display "Expression:\n ")
                       (write (car t))
+                      (if (list-ref t 3)
+                        (begin
+                          (display "\nSource location:\n ")
+                          (write (list-ref t 3))))
                       (display "\nResult:")
                       (if (err? (cadr t))
                           (begin
