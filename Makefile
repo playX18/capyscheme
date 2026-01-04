@@ -525,13 +525,13 @@ PKG_NAME ?= capyscheme
 PKG_ROOT ?= stage-pkg
 
 # Debian metadata
-DEB_MAINTAINER ?= CapyScheme
+DEB_MAINTAINER ?= Adel Prokurov <adel.prokurov@gmail.com>
 DEB_SECTION ?= devel
 DEB_PRIORITY ?= optional
 
 # RPM metadata
-RPM_LICENSE ?= MIT
-RPM_SUMMARY ?= CapyScheme compiler/runtime
+RPM_LICENSE ?= LGPL3+
+RPM_SUMMARY ?= CapyScheme (runtime + compiler)
 
 dist-deb: build
 	@echo "Building .deb package in $(DIST_DIR)/"
@@ -593,7 +593,7 @@ dist-rpm: build
 		"Release:        1%{?dist}" \
 		"Summary:        $(RPM_SUMMARY)" \
 		"License:        $(RPM_LICENSE)" \
-		"URL:            https://github.com/adelphai/capyscheme" \
+		"URL:            https://codeberg.org/playXE/capy" \
 		"Source0:        %{name}-%{version}.tar.gz" \
 		"" \
 		"BuildArch:      %{_arch}" \
