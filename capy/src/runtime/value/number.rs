@@ -6527,7 +6527,7 @@ impl<'gc> Number<'gc> {
                     return format!("+0.0");
                 }
             } else {
-                return format!("{n}");
+                return format!("{n:?}");
             }
         }
 
