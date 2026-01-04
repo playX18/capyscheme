@@ -40,15 +40,15 @@ jobs:
           make dist-rpm
       - name: Publish Deb to package registry 
         shell: bash 
-        run: 
+        run: |
           curl --user playXE:${{ secrets.CODEBERG_TOKEN }} \
-               --upload-file "$(ls dist/capyscheme*.deb | head -n1)" \
+               --upload-file "dist/capyscheme_${{ env.VERSION }}_amd64.deb" \
                https://codeberg.org/api/packages/playxe/debian/pool/trixie/main/upload
       - name: Publish RPM to package registry 
         shell: bash 
-        run: 
+        run: |
           curl --user playXE:${{ secrets.CODEBERG_TOKEN }} \
-               --upload-file "$(ls dist/capyscheme*.rpm | head -n1)" \
+               --upload-file "dist/capyscheme-${{ env.VERSION }}.x86_64-1.rpm" \
                https://codeberg.org/api/packages/playxe/rpm/upload
       - name: Publish release
         uses: actions/forgejo-release@v2.7.3
