@@ -1,6 +1,8 @@
 ;; A script to compile psyntax into R5RS code.
 
 (import (capy compiler tree-il)
+        (capy compiler tree-il terms)
+        (capy compiler tree-il fold)
         (capy pretty-print)
         (capy)
         (scheme base)
