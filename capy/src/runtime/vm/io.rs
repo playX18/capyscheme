@@ -682,12 +682,16 @@ pub mod io_ops {
     pub fn syscall_open(filename: Gc<'gc, Str<'gc>>, flags: i32, mode: i32) -> i32 {
         let mut newflags = 0;
 
-        if flags & 0x01 != 0 {
+        if flags & 0x01 != 0 && flags & 0x02 == 0 {
             newflags |= libc::O_RDONLY;
         }
 
-        if flags & 0x02 != 0 {
+        if flags & 0x02 != 0 && flags & 0x01 == 0 {
             newflags |= libc::O_WRONLY;
+        }
+
+        if flags & 0x02 != 0 && flags & 0x01 != 0 {
+            newflags = libc::O_RDWR;
         }
 
         if flags & 0x04 != 0 {
