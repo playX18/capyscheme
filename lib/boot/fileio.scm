@@ -232,62 +232,30 @@
             'open-file-input/output-port
             "file does not exist"
             filename)))
-    (let ((dir (current-directory)))
-      (cond ((not t)
-             (let* ((initial-contents
-                     (call-with-port
-                      (open-file-input-port filename)
-                      get-bytevector-all))
-                    (initial-contents
-                     (if (bytevector? initial-contents)
-                         initial-contents
-                         (make-bytevector 0)))
-                    (bvport (open-input/output-bytevector initial-contents))
-                    (show
-                     (lambda ()
-                       '(display " ")
-                       '(write (tuple-ref bvport 7))
-                       '(newline)))
-                    (read-method
-                     (lambda (bv start count)
-                       '(write (list 'reading start count))
-                       (show)
-                       (let ((r (get-bytevector-n! bvport bv start count)))
-                         (if (eof-object? r) 0 r))))
-                    (write-method
-                     (lambda (bv start count)
-                       '(write (list 'writing start count))
-                       (show)
-                       (put-bytevector bvport bv start count)
-                       count))
-                    (get-position-method
-                     (lambda () (port-position bvport)))
-                    (set-position-method
-                     (lambda (posn) (set-port-position! bvport posn)))
-                    (close-method
-                     (lambda ()
-                       (let* ((final-contents (get-output-bytevector bvport))
-                              (current-dir (current-directory)))
-                         (dynamic-wind
-                          (lambda () (current-directory dir))
-                          (lambda ()
-                            (call-with-port
-                             (open-file-output-port filename options bufmode)
-                             (lambda (out)
-                               (put-bytevector out final-contents))))
-                          (lambda () (current-directory current-dir)))))))
-               (make-custom-binary-input/output-port
-                filename
-                read-method write-method
-                get-position-method set-position-method close-method)))
-            ((eq? (transcoder-codec t) 'latin-1)
-             (transcoded-port
-              (file-io/open-file-input/output-port filename options bufmode #f)
-              t))
-            (else
-             (assertion-violation
-              'open-file-input/output-port
-              "illegal codec" t))))))
+    (let ([fd (osdep/open-file filename 'input+output 'binary opts)])
+      (define (read! bv start count)
+        (define tmp (make-bytevector count))
+        (define nbytes (osdep/read-file fd tmp count))
+        (r6rs:bytevector-copy! tmp 0 bv start nbytes)
+        nbytes)
+      (define (write! bv start count)
+        (osdep/write-file4 fd bv count start))
+      (define (get-position)
+        (osdep/lseek-file fd 0 whence:seek-cur))
+      (define (set-position! pos)
+        (osdep/lseek-file fd pos whence:seek-set))
+      (define (close!)
+        (osdep/close-file fd))
+      (when (< fd 0)
+        (raise-i/o-filename-error 'open-file-input/output-port
+                                     "failed to open file"
+                                     filename))
+      (let ([p (make-custom-binary-input/output-port 
+        filename 
+        read! write! get-position set-position! close!)])
+        (if (and t (not (zero? t)))
+          (io/transcoded-port p t)
+          p)))))
 
 (define (file-io/close-file data)
   (let ((r (osdep/close-file (file-io/fd data))))
