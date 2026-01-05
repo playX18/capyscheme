@@ -80,9 +80,9 @@
                            (count count))
                   (let ((n (write! buffer start count)))
                     (cond ((not (fixnum? n)) 'error)
-                          ((fx=? count) 'ok)
-                          ((fx=? 0) 'error)        ; no progress, or bogus eof
-                          ((fx< n count)
+                          ((fx=? n count) 'ok)
+                          ((fx=? n 0) 'error)        ; no progress, or bogus eof
+                          ((fx<? n count)
                            (loop (+ start n) (- count n)))
                           (else 'error)))))))
         (define (customio/ioproc op)
@@ -127,7 +127,7 @@
               (lambda (data buffer)
                 (let ((n (read! buffer 0 1)))
                   (cond ((not (fixnum? n)) 'error)
-                        ((fx=? 0) 'eof)
+                        ((fx=? n 0) 'eof)
                         ((fx>? n 0) n)
                         (else 'error)))))
              (write-method
@@ -136,9 +136,9 @@
                            (count count))
                   (let ((n (write! buffer start 1)))
                     (cond ((not (fixnum? n)) 'error)
-                          ((fx=? count) 'ok)
-                          ((fx=? 0) 'error)        ; no progress, or bogus eof
-                          ((fx< n count)
+                          ((fx=? n count) 'ok)
+                          ((fx=? n 0) 'error)        ; no progress, or bogus eof
+                          ((fx<? n count)
                            (loop (+ start n) (- count n)))
                           (else 'error)))))))
         (define (customio/ioproc op)
@@ -316,9 +316,9 @@
                 (define (loop2 s start count)
                   (let ((n (write! s start count)))
                     (cond ((not (fixnum? n)) 'error)
-                          ((fx=? count) 'ok)
-                          ((fx=? 0) 'error)        ; no progress, or bogus eof
-                          ((fx< n count)
+                          ((fx=? n count) 'ok)
+                          ((fx=? n 0) 'error)        ; no progress, or bogus eof
+                          ((fx<? n count)
                            (loop2 s (+ start n) (- count n)))
                           (else 'error))))
 

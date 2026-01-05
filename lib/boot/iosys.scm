@@ -404,13 +404,15 @@
       (let ((type (tuple-ref p port.type))
             (buf  (tuple-ref p port.mainbuf))
             (ptr  (tuple-ref p port.mainptr)))
-        (cond ((eq? type type:textual-input)
+        (cond ((or (eq? type type:textual-input)
+                   (eq? type type:textual-input/output))
                (let ((unit (bytevector-ref buf ptr)))
                  (if (< unit 128)
                      (begin (tuple-set! p port.mainptr (+ ptr 1))
                             (integer->char unit))
                      (io/get-char p #f))))
-              ((eq? type type:binary-input)                 ; FIXME (was io/if)
+              ((or (eq? type type:binary-input)   
+                   (eq? type type:binary-input/output))
                (let ((x (io/get-u8 p #f)))
                  (if (eof-object? x)
                      x
@@ -428,12 +430,14 @@
       (let ((type (tuple-ref p port.type))
             (buf  (tuple-ref p port.mainbuf))
             (ptr  (tuple-ref p port.mainptr)))
-        (cond ((eq? type type:textual-input)
+        (cond ((or (eq? type type:textual-input)
+                   (eq? type type:textual-input/output))
                (let ((unit (bytevector-ref buf ptr)))
                  (if (< unit 128)
                      (integer->char unit)
                      (io/get-char p #t))))
-              ((eq? type type:binary-input)                 ; FIXME (was io/if)
+              ((or (eq? type type:binary-input)   
+                   (eq? type type:binary-input/output))
                (let ((x (io/get-u8 p #t)))
                  (if (eof-object? x)
                      x
@@ -460,7 +464,8 @@
       (let ((type (tuple-ref p port.type))
             (buf  (tuple-ref p port.mainbuf))
             (ptr  (tuple-ref p port.mainptr)))
-        (cond ((eq? type type:textual-input)
+        (cond ((or (eq? type type:textual-input)
+                   (eq? type type:textual-input/output))
                (let ((unit (bytevector-ref buf ptr)))
                  (or (< unit 128)
                      (eq? (tuple-ref p port.state)
@@ -477,7 +482,8 @@
       (let ((type (tuple-ref p port.type))
             (ptr  (tuple-ref p port.mainptr))
             (lim  (tuple-ref p port.mainlim)))
-        (cond ((eq? type type:binary-input)
+        (cond ((or (eq? type type:binary-input)   
+                   (eq? type type:binary-input/output))
                (or (< ptr lim)
                    (eq? (tuple-ref p port.state)
                         'eof)
@@ -497,14 +503,16 @@
     (error 'write-char "not a character" c))
   (if (port? p)
       (let ((type (tuple-ref p port.type)))
-        (cond ((eq? type type:binary-output)                ; FIXME (was io/if)
+        (cond ((or (eq? type type:binary-output)   
+                   (eq? type type:binary-input/output))
                (let ((sv (char->integer c)))
                  (if (< sv 256)
                      (io/put-u8 p sv)
                      (error 'write-char
                             "non-latin-1 character to binary port"
                             c p))))
-              ((eq? type type:textual-output)
+              ((or (eq? type type:textual-output)
+                   (eq? type type:textual-input/output))
                (io/put-char p c))
               (else
                (error 'write-char "not a textual output port" p)
@@ -1165,23 +1173,14 @@
 
            (cond ((or byte-posn
                       (and input? output?))
-
-                  
-
                   (reposition!))
-
                  (else
-
                   ; error case: posn > 0 and not in cache
-
                   (if (not (issue-deprecated-warnings?))
-
                       (assertion-violation 'set-port-position!
                                            (errmsg 'msg:uncachedposition)
                                            p posn)
-
                       ; FIXME: ad hoc warning message
-
                       (let ((out (current-error-port)))
                         (display "Warning from set-port-position!: " out)
                         (newline out)
@@ -1189,9 +1188,7 @@
                         (display ": " out)
                         (write posn out)
                         (newline out)
-
                         ; Attempt the operation anyway.  Hey, it might work.
-
                         (cond ((or port-position-in-chars
                                    (and
                                     (eq? 'latin-1 codec)

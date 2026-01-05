@@ -123,7 +123,7 @@
         (or (eof-object? c)
             (char-whitespace? c)
             (case (reader-mode reader)
-                ((r6rs)
+                ((r6rs capy)
                 (memv c '(#\( #\) #\[ #\] #\" #\; #\#)))
                 ((r7rs)
                 (memv c '(#\( #\) #\" #\; #\|)))
@@ -526,8 +526,8 @@
                                        (values 'value #\xFFFD))))
                                (else
                                 (let ((char-name (list->string char*))
-                                      (char-names '(("nul" #\nul r6rs capy)
-                                                    ("null" #\nul r7rs capy)
+                                      (char-names '(("nul" #\null r6rs capy)
+                                                    ("null" #\null r7rs capy)
                                                     ("alarm" #\alarm r6rs r7rs capy)
                                                     ("backspace" #\backspace r6rs r7rs capy)
                                                     ("tab" #\tab r6rs r7rs capy)
@@ -593,7 +593,7 @@
       ((char=? c #\.)                 ;peculiar identifier
        (cond ((char-delimiter? p (lookahead-char p))
               (values 'dot #f))
-             ((and (eq? (reader-mode p) 'r6rs)
+             ((and (memq (reader-mode p) '(r6rs capy))
                    (eqv? #\. (lookahead-char p)))
               (get-char p)            ;consume second dot
               (unless (eqv? #\. (get-char p)) ;consume third dot
@@ -753,7 +753,7 @@
       r
       (begin 
         (let ([reader (make-reader port (or fn (port-name port)))])
-          (reader-mode-set! reader 'r6rs)
+          (reader-mode-set! reader 'capy)
           (io/port-reader-set! port reader)
           reader)))))
       

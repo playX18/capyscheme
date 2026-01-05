@@ -131,6 +131,10 @@
                       (+ unix:open-write create-mode truncate-mode
                          binary-mode)
                       unix:create-mode))
+          ((eq? io-mode 'input+output)
+            (unix:open fn 
+                       (+ unix:open-read unix:open-write create-mode truncate-mode binary-mode)
+                       unix:create-mode))
           (else
            (error "osdep/open-file: " io-mode " is not a valid file mode.")
            #t))))
