@@ -6,7 +6,7 @@
         &module-ref module-ref? module-ref-module module-ref-name module-ref-public? make-module-ref
         &module-set module-set? module-set-module module-set-name module-set-value module-set-public? make-module-set
         &toplevel-ref toplevel-ref? toplevel-ref-mod toplevel-ref-name make-toplevel-ref
-        &toplevel-set toplevel-set? toplevel-set-mod toplevel-set-name toplevel-set-value make-toplevel
+        &toplevel-set toplevel-set? toplevel-set-mod toplevel-set-name toplevel-set-value make-toplevel-set
         &toplevel-define toplevel-define? toplevel-define-mod toplevel-define-name toplevel-define-value make-toplevel-define
         &if if? if-test if-then if-else make-if 
         &let let-style let-ids let-lhs let-rhs let-body make-let let?

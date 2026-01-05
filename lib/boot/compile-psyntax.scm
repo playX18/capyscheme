@@ -6,6 +6,7 @@
         (capy pretty-print)
         (capy)
         (scheme base)
+        (core lists)
         (scheme process-context))
 
 
@@ -74,8 +75,8 @@
                 (when (eq? name 'make-syntax)
                   (return sym)))
                 (let-ids x)
-                (let-lhs x))
-            x))
+                (let-lhs x)))
+            x)
           x)
         #f)))
   
@@ -86,10 +87,10 @@
     (define exp (constant-value x))
     (cond 
       [(list? exp)
-        (define exp (map (lambda (x) (translate-constant (make-constant src x))) exp))
-        (if (and-map constant? exp)
+        (define exp* (map (lambda (x) (translate-constant (make-constant src x))) exp))
+        (if (and-map constant? exp*)
           x 
-          (make-primcall src 'list exp))]
+          (make-primcall src 'list exp*))]
       [(pair? exp)
         (define car* (translate-constant (make-constant src (car exp))))
         (define cdr* (translate-constant (make-constant src (cdr exp))))
@@ -159,9 +160,9 @@
       (close-port out))
     (begin 
       (pretty-print 
-        (translate-literal-syntax-objects 
-          (squeeze-tree-il 
-            (tree-il->scheme 
+        (tree-il->scheme 
+          (translate-literal-syntax-objects 
+            (squeeze-tree-il 
               (macroexpand x 'c '(compile load eval))
               '(use-case?)
             )))
