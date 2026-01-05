@@ -1649,3 +1649,8 @@
         #'(define name 
             (lambda* formals 
               body ...))])))
+
+(define (set-record-type-printer! typ printer)
+  (unless (record-type? typ)
+    (assertion-violation 'set-record-type-printer! "Not an record type"))
+  (set-rtd-printer! (record-type-rtd typ) printer))
