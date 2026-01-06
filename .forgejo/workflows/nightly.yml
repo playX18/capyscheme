@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 jobs:
   check-and-run:
-    runs-on: fedora-latest 
+    runs-on: debian-trixie 
     outputs:
       recent_commits: ${{ steps.check_commits.outputs.recent_commits }}
       date: ${{ steps.check_commits.outputs.date }}
@@ -35,7 +35,7 @@ jobs:
       matrix:
         arch: [x86_64]
 
-    runs-on: fedora-latest
+    runs-on: debian-trixie
     env:
       VERSION: nightly-${{ needs.check-and-run.outputs.date }}
       MMTK_GC_TRIGGER: DynamicHeapSize:1G,8G

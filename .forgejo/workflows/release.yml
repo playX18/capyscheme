@@ -7,7 +7,7 @@ on:
 
 jobs: 
   release:
-    runs-on: fedora-latest
+    runs-on: debian-trixie
     env:
       VERSION: ${{ github.ref_name }}
     steps:
