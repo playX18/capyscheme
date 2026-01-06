@@ -79,6 +79,7 @@ jobs:
           token: ${{ secrets.CODEBERG_TOKEN }}
           release-dir: dist
           override: true 
+          prerelease: true
           tag: nightly
           release-notes: |
             Nightly build of CapyScheme

@@ -61,4 +61,4 @@ jobs:
           override: true 
           tag: ${{ env.VERSION }}
           release-notes: |
-            "Release of CapyScheme ${{ env.VERSION }}"
+            Release of CapyScheme ${{ env.VERSION }}
