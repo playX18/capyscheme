@@ -3,7 +3,7 @@
           resolve-primitives
           expand-primitives)
   (import (capy)
-          (rnrs)
+          (core match)
           (rnrs hashtables)
           (capy compiler tree-il fold)
           (capy compiler tree-il terms))
@@ -232,4 +232,80 @@
               (make-primcall src (primref-prim (application-operator x)) (application-operands x))
               x)]
           [else x]))
-      x)))
+      x))
+  (define *primitive-expand-table* (make-eq-hashtable))
+
+  (define-syntax define-primitive-expander! 
+    (syntax-rules () 
+      [(_ sym proc)
+        (hashtable-set! *primitive-expand-table* sym proc)]))
+  
+  (define-syntax primitive-expander
+    (lambda (stx)
+      (define (expand-args args)
+        (syntax-case args ()
+          (() #''())
+          ((a . b) #`(cons #,(expand-expr #'a) #,(expand-args #'b)))
+          (a (expand-expr #'a))))
+      (define (expand-expr body)
+        (syntax-case body (quote)
+          (id (identifier? #'id) #'id)
+          ((quote x) #'(make-constant src 'x))
+          ((op . args) #`(make-primcall src 'op #,(expand-args #'args)))
+          (x (self-evaluating? (syntax->datum #'x)) #'(make-constant src x))))
+      (define (match-clauses args+body)
+        (syntax-case args+body (if)
+          (() '())
+          ((args body . args+body)
+          (cons #`(args #,(expand-expr #'body))
+                (match-clauses #'args+body)))))
+      (syntax-case stx ()
+        ((_ args+body ...)
+        #`(lambda (src . args)
+            (match args
+              #,@(match-clauses #'(args+body ...))
+              (_ #f)))))))
+  
+  (define-syntax define-primitive-expander 
+    (syntax-rules () 
+      [(_ sym . clauses)
+        (define-primitive-expander! sym (primitive-expander . clauses))]))
+
+  (define-primitive-expander identity (x) x)
+  (define-primitive-expander zero? (x)
+    (= x 0))
+  
+  (define-primitive-expander + 
+    () 0
+    (x) (values x)
+    (x y) (+ x y)
+    (x y z ... last) (+ (+ x y . z) last))
+  
+  (define-primitive-expander * 
+    () 1
+    (x) (values x)
+    (x y z ... last) (* (* x y . z) last))
+  
+  (define-primitive-expander -
+    (x) (- 0 x)
+    (x y) (- x y)
+    (x y z ... last) (- (- x y . z) last))
+    
+  (define-primitive-expander /
+    (x) (/ 1 x)
+    (x y z ... last) (/ (/ x y . z) last))
+
+  (define (expand-primcall x)
+    (cond 
+      [(primcall? x)
+        (let ([src (term-src x)] 
+              [args (primcall-args x)] 
+              [expand (hashtable-ref *primitive-expand-table* (primcall-prim x) #f)])
+          (if expand
+            (apply expand src args)
+            x))]))
+  
+  (define (expand-primitives x)
+    (post-order expand-primcall x))
+)
+
