@@ -1,10 +1,13 @@
 ;; A script to compile psyntax into R5RS code.
 
+(eval-when (expand load eval)
+  (current-module (resolve-module '(capy) #f #f)))
+
 (import (capy compiler tree-il)
         (capy compiler tree-il terms)
         (capy compiler tree-il fold)
+        (capy compiler tree-il primitives)
         (capy pretty-print)
-        (capy)
         (scheme base)
         (core lists)
         (scheme process-context))
@@ -159,13 +162,13 @@
       (close-port in)
       (close-port out))
     (begin 
+      
       (pretty-print 
         (tree-il->scheme 
           (translate-literal-syntax-objects 
             (squeeze-tree-il 
-              (macroexpand x 'c '(compile load eval))
-              '(use-case?)
-            )))
+              (resolve-primitives (macroexpand x 'c '(compile load eval)) (current-module))))
+          '(use-case?))
         out)
       (newline out)
       (loop (read in)))))

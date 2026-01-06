@@ -49,7 +49,7 @@
                     [(eof-object? exp) (reverse exps)]
                     [else (lp (cons exp exps))]))))
     (define output-file (or compiled-path (compiled-file-name filename)))
-    (define module (or env (resolve-r6rs-interface '(capy user))))
+    (define module (or env (resolve-module '(capy user) #f #f)))
     (*raw-log* log:debug
                '(capy)
                'compile-file
