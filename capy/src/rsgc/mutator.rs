@@ -719,7 +719,7 @@ impl<'gc> Mutation<'gc> {
             },
 
             BarrierSelector::SATBBarrier => {
-                /*let addr = src.to_address();
+                let addr = src.to_address();
                 let meta_addr = GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS + (addr >> 6);
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = unsafe { meta_addr.load::<u8>() };
@@ -734,16 +734,6 @@ impl<'gc> Mutation<'gc> {
                                 target.to_objref(),
                             );
                     }
-                }*/
-                unsafe {
-                    self.thread
-                        .mutator_unchecked()
-                        .barrier()
-                        .object_reference_write_pre(
-                            src.to_objref().unwrap_unchecked(),
-                            slot,
-                            target.to_objref(),
-                        );
                 }
             }
 

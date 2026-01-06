@@ -168,6 +168,7 @@ impl<'gc, T> Gc<'gc, T> {
     }
 
     /// Allocate `value` on the GC heap.
+    #[inline]
     pub fn new(mc: Mutation<'gc>, value: T) -> Gc<'gc, T>
     where
         T: Trace,

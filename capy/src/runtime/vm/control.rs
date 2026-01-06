@@ -1,15 +1,11 @@
-use crate::rsgc::cell::Lock;
-use crate::rsgc::{Gc, Trace};
+//! Control utilities
+//!
+//!
+//! Continuation marks implementation based on [A CPS-like Transformation of Continuation Marks](https://jeapostrophe.github.io/home/static/students/2012-ms-kgermane.pdf).
 
+use crate::prelude::*;
 use crate::prelude::{ClosureRef, Value};
-
-/// Continuation Frame. Used to implement continuation marks.
-#[derive(Trace)]
-pub struct CFrame<'gc> {
-    pub parent: Option<CFrameRef<'gc>>,
-    pub retk: ClosureRef<'gc>,
-    pub mark_set: Lock<Value<'gc>>,
-}
+use crate::rsgc::{Gc, Trace};
 
 #[repr(C)]
 #[derive(Trace)]
@@ -23,10 +19,6 @@ unsafe impl<'gc> Tagged for ContinuationMarks<'gc> {
 
     const TYPE_NAME: &'static str = "continuation-marks";
 }
-
-pub type CFrameRef<'gc> = Gc<'gc, CFrame<'gc>>;
-
-use crate::prelude::*;
 
 /// A `C*` continuation that restores continuation marks from the captured frame.
 #[scheme(continuation)]
@@ -117,14 +109,6 @@ pub mod control_ops {
         let mut set = set.cmarks;
 
         let mut result = Vec::new();
-        /*while let Some(cmarks) = set {
-            let mark_set = cmarks.mark_set.get();
-
-            if let Some(val) = mark_set.assq(key) {
-                result.push(val.cdr());
-            }
-            set = cmarks.parent;
-        }*/
 
         while !set.is_null() {
             let mark_set = set.caar();
@@ -177,23 +161,6 @@ pub mod control_ops {
             default_value: Value<'gc>,
             ctx: Context<'gc>,
         ) -> Value<'gc> {
-            /*match mark_set {
-                None => Value::null(),
-                Some(cmarks) if !keys.list_any(|key| cmarks.mark_set.get().assq(key).is_some()) => {
-                    rec(cmarks.parent, keys, default_value, ctx)
-                }
-
-                Some(cmarks) => Value::cons(
-                    ctx,
-                    keys.map(ctx, |key| match cmarks.mark_set.get().assq(key) {
-                        Some(val) => val.cdr(),
-                        None => default_value,
-                    })
-                    .list_to_vector(ctx)
-                    .into(),
-                    rec(cmarks.parent, keys, default_value, ctx),
-                ),
-            }*/
             if mark_set.is_null() {
                 Value::null()
             } else if !keys.list_any(|key| mark_set.caar().assq(key).is_some()) {
