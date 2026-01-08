@@ -37,14 +37,19 @@ jobs:
         uses: actions/checkout@v4
         with: 
           fetch-depth: 0
+      - name: Install cargo-binstall
+        shell: bash
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+      - name: Install git-cliff 
+        shell: bash 
+        run: |
+          cargo binstall git-cliff -y 
       - name: Generate a changelog
-        uses: https://github.com/orhun/git-cliff-action@v4.7.0
+        shell: bash
         id: git-cliff
-        env: 
-          GITHUB_API_TOKEN: ${{ secrets.API_TOKEN_GITHUB }}
-        with: 
-          config: cliff.toml
-          args: -vv --latest --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          git-cliff --config cliff.toml --output CHANGELOG.md --latest --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
   build: 
     needs: check-and-run
     if: needs.check-and-run.outputs.recent_commits == 'true'
