@@ -67,12 +67,12 @@ jobs:
           fi
           FILESIZE=$(stat --printf="%s" CHANGELOG.md)
           MAXSIZE=$((40*1024*1024))
-          if [ "$FILESIZE" -le "$MAXSIZE" ]; then 
-            echo "release-body<<EOF" >> $GITHUB_OUTPUT
-            cat "CHANGELOG.md" >> $GITHUB_OUTPUT
-            echo "EOF" >> $GITHUB_OUTPUT
-            cat "CHANGELOG.md"
-          fi
+          
+          echo "release-body<<EOF" >> $GITHUB_OUTPUT
+          cat "CHANGELOG.md" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          cat "CHANGELOG.md"
+          
 
   build: 
     needs: check-and-run
