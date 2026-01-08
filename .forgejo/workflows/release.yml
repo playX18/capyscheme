@@ -102,3 +102,4 @@ jobs:
           title: Release v{{ env.VERSION }}
           release-notes: |
             Release of CapyScheme ${{ env.VERSION }}
+            ${{ steps.generate-changelog.outputs.release-body }}
