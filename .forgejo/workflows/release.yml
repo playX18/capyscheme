@@ -105,6 +105,6 @@ jobs:
           release-dir: dist
           override: true 
           tag: ${{ env.VERSION }}
-          title: Release v{{ env.VERSION }}
+          title: Release v${{ env.VERSION }}
           release-notes: |
             ${{ needs.generate-changelog.outputs.release-body }}
