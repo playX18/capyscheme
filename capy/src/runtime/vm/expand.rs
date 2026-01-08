@@ -913,15 +913,19 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 },
             ));
         } else if is_receive(self.ctx, t) {
-            let mut ids = receive_ids(self.ctx, t);
-            let mut vars = receive_vars(self.ctx, t);
+            let ids = receive_ids(self.ctx, t);
+            let vars = receive_vars(self.ctx, t);
             let producer = receive_producer(self.ctx, t);
             let consumer = receive_consumer(self.ctx, t);
-
+            //println!("receive {ids} {vars} {producer} {consumer}");
             let mut lvars = Vec::new();
-            while ids.is_pair() {
-                let id = ids.car();
-                let var = vars.car();
+
+            let mut ls_vars = vars;
+            let mut ls_ids = ids;
+
+            while ls_vars.is_pair() {
+                let var = ls_vars.car();
+                let id = ls_ids.car();
                 let lvar = Gc::new(
                     *self.ctx,
                     LVar {
@@ -933,13 +937,14 @@ impl<'gc> ScmTermToRsTerm<'gc> {
                 );
                 self.lvars.insert(var, lvar);
                 lvars.push(lvar);
-                ids = ids.cdr();
-                vars = vars.cdr();
+                ls_vars = ls_vars.cdr();
+                ls_ids = ls_ids.cdr();
             }
 
-            let variadic = if !ids.is_null() {
-                let id = ids.car();
-                let var = vars.car();
+            let variadic = if !ls_vars.is_null() {
+                let var = ls_vars;
+                let id = ls_ids.cdr();
+
                 let lvar = Gc::new(
                     *self.ctx,
                     LVar {
