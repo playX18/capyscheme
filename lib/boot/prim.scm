@@ -794,3 +794,10 @@
   (define s2 (keyword->symbol kw2))
 
   (string<? (symbol->string s1) (symbol->string s2)))
+
+(define (inf? x) (infinite?))
+(define ($set-attachments! x) ($set-attachments! x))
+(define ($winders . args)
+  (cond 
+    [(null? args) ($winders)]
+    [else ($winders (car args))]))
