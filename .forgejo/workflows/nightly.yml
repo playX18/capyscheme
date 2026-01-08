@@ -27,11 +27,12 @@ jobs:
             echo "recent_commits=false" >> $GITHUB_OUTPUT
             echo "No recent commits found. Skipping job."
           fi
+          
   generate-changelog: 
     name: Generate changelog
     runs-on: debian-trixie 
     outputs:
-      release-body: ${{ steps.git-cliff.outputs.content }}
+      release-body: ${{ steps.git-cliff.outputs.release-body }}
     steps: 
       - name: Checkout 
         uses: actions/checkout@v4
@@ -64,6 +65,7 @@ jobs:
           else 
             echo "No new changes to changelog."
           fi
+          echo "release-body=$(cat CHANGELOG.md)" >> $GITHUB_OUTPUT
 
   build: 
     needs: check-and-run
@@ -123,3 +125,4 @@ jobs:
             Nightly build of CapyScheme
             - Date: ${{ needs.check-and-run.outputs.date }}
             - Commit: ${{ needs.check-and-run.outputs.short_sha }}
+            ${{ steps.generate-changelog.outputs.release-body }}
