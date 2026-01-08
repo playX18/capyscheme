@@ -495,6 +495,8 @@ dist-portable: build build-runtime-portable
 	cp bin/capyc-full "$$stage_install_dir/capyc"; \
 	cp $(TARGET_PATH)/libcapy.* "$$stage_install_dir/"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
+	cp LICENSE "$$stage_install_dir/"; \
+	cp CHANGELOG.md "$$stage_install_dir/"; \
 	echo "Creating $$outdir/$$archive_name"; \
 	tar -C "$$stage_prefix" -czf "$$outdir/$$archive_name" "capy/$(VERSION)"; \
 	echo "Wrote $$outdir/$$archive_name"
