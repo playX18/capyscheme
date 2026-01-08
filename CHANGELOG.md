@@ -21,6 +21,7 @@
 - *(ci)* Label names fix - ([cf5263f](https://codeberg.org/playXE/capy/commit/cf5263f1207716478f8477f6f1978ba098569844))
 - *(compile-psyntax)* Compile psyntax in (capy) module - ([c3c541c](https://codeberg.org/playXE/capy/commit/c3c541ca3b3e25fd2876aaf913965023fbafc1a2))
 - *(io)* Make input/output ports work - ([96ed753](https://codeberg.org/playXE/capy/commit/96ed753f4f578fe0f9929aaabb12cc94943e9657))
+- Changelog inclusion into release notes - ([8f0668e](https://codeberg.org/playXE/capy/commit/8f0668ed12f4f9947e30df16e0dac6a74d998346))
 - Fix if condition - ([db16bee](https://codeberg.org/playXE/capy/commit/db16bee1c717e16fae89bdef13144b1887c87ed9))
 - Fix yml - ([bee9cb4](https://codeberg.org/playXE/capy/commit/bee9cb4283622c149560175a7d77acc25534c792))
 - Allow R6RS let-syntax with empty body - ([7a7c163](https://codeberg.org/playXE/capy/commit/7a7c163412523d94a65de0f8ed071d720cda7bc9))
@@ -35,6 +36,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([507fb18](https://codeberg.org/playXE/capy/commit/507fb18c8b5730a3f598d187031f02deb2132cb6))
 - Update CHANGELOG.md [skip ci] - ([301eb81](https://codeberg.org/playXE/capy/commit/301eb819d1e218137ec26753d35bfbb6da3f2815))
 - Update CHANGELOG.md [skip ci] - ([b66a83f](https://codeberg.org/playXE/capy/commit/b66a83faf31b9d1c1e37dac0aba4c9b8fd420c44))
 - Update CHANGELOG.md [skip ci] - ([d321355](https://codeberg.org/playXE/capy/commit/d321355e8828a230bbcacff544b0e8cc20958299))
