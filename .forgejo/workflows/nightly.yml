@@ -37,6 +37,10 @@ jobs:
         uses: actions/checkout@v4
         with: 
           fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
+        with: 
+          toolchain: nightly
       - name: Install cargo-binstall
         shell: bash
         run: |
