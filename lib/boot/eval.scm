@@ -1,3 +1,5 @@
+
+
 (define *compile-backtrace-key* (list 'backtrace))
 
 (define (compile-tree-il x e)
@@ -37,11 +39,16 @@
         (and (create-directory* (dirname f))
              f))))
 
-;; Compile `filename` and put output into `compiled-path`.
-;; Env is a module where the file is being compiled.
-;; load-thunk? indicates whether to return a thunk to initialize compiled
-;; file (dlopen it) or just compile and return. If its #f use load-thunk-in-vicinity
-(define (compile-file filename compiled-path env load-thunk?)
+
+;;; An active compiler for files. 
+;;; Must be overridden by the implementation depending on runtime 
+;;; status. 
+(define %%file-compiler (make-parameter #f))
+
+
+;; First, initial compiler is the default one.
+(%%file-compiler 
+  (lambda (filename compiled-path env load-thunk?)
     (define (read-all in)
         (let lp ([exps '()])
             (let ([exp (read-syntax in)])
@@ -59,8 +66,15 @@
             (define exps (read-all in))
             (define reader (get-port-reader in #f))
             (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
-                (receive (code mod new-mod) (compile-tree-il exps module)
-                    (%compile code output-file mod load-thunk?))))))
+                (receive (code mod new-mod) (compile-tree-il exps module)   
+                    (%compile code output-file mod load-thunk?)))))))
+
+;; Compile `filename` and put output into `compiled-path`.
+;; Env is a module where the file is being compiled.
+;; load-thunk? indicates whether to return a thunk to initialize compiled
+;; file (dlopen it) or just compile and return. If its #f use load-thunk-in-vicinity
+(define (compile-file filename compiled-path env load-thunk?)
+  ((%%file-compiler) filename compiled-path env load-thunk?))
 
 (define load-in-vicinity
     (lambda (filename directory)

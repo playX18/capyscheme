@@ -117,6 +117,7 @@ BOOT_SRCS := \
 	lib/boot/reader.scm \
 	lib/boot/eval.scm \
 	lib/boot/base.scm \
+	lib/boot/compiler.scm \
 	lib/boot/libraries.scm \
 	lib/boot/match.scm
 
@@ -175,7 +176,11 @@ CAPY_SRCS_SLS := \
 	lib/capy/session.sls
 
 CAPY_SRCS_SCM := \
-	lib/capy/compiler/tree-il.scm
+	lib/capy/compiler/tree-il/terms.scm 	 \
+	lib/capy/compiler/tree-il/fold.scm       \
+	lib/capy/compiler/tree-il/primitives.scm \
+	lib/capy/compiler/tree-il.scm				
+
 
 SRFI_SRCS := \
 	lib/srfi/srfi-0.scm \

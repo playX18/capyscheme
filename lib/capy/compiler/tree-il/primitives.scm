@@ -307,13 +307,12 @@
         (null? (proc-args (car args))))
         (define producer (car args))
         (define consumer (cadr args))
-        (make-receive src 
+        
+        (make-receive src   
                        (proc-ids consumer)
                        (proc-args consumer)
                        (proc-body producer)
-                       (proc-body consumer))
-      
-      ] 
+                       (proc-body consumer))] 
       [else #f])) 
 
   (define-primitive-expander eq? (x y) (eq? x y))
@@ -322,14 +321,14 @@
 
   (define (expand-memop src args op)
    (cond 
-      [(and (= (length args 2))
+      [(and (= (length args) 2)
             (constant? (cadr args))
             (list? (constant-value (cadr args)))
             (< (length (constant-value (cadr args))) 5))
         (define key (car args))
-        (define ls (cadr args))
+        (define ls (constant-value (cadr args)))
         (case (length ls)
-          [(1) (make-if src (make-primcall src op (list key (car ls)))
+          [(1) (make-if src (make-primcall src op (list key (make-constant src (car ls))))
                         (make-constant src ls)
                         (make-constant src #f))]
           [else 
@@ -342,9 +341,10 @@
                          [rest-val it]
                          [it (cdr it)])
                     (loop 
+                      it
                       ;; (if (eqv? key val) rest-val result)
                       (make-if src 
-                              (make-primcall src op (list key val))
+                              (make-primcall src op (list key (make-constant src val)))
                               (make-constant src rest-val)
                               result)))]))])]
       [else #f]))
@@ -367,7 +367,7 @@
         (make-constant src #t)]
       [(null? (cdr args))
         ;; (seq args[0] #t) for side effect
-        (make-seq src (car args) (make-constant src #t))]
+        (make-sequence src (car args) (make-constant src #t))]
       [(null? (cddr args))
         (define lhs (car args))
         (define rhs (cadr args))
@@ -541,9 +541,9 @@
   (define-primitive-expander inexact? (x) (inexact? x))
   (define-primitive-expander even? (x) (even? x))
   (define-primitive-expander odd? (x) (odd? x))
-  (define-primitive-expander zero? (x) (zero? x))
-  (define-primitive-expander positive? (x) (positive? x))
-  (define-primitive-expander negative? (x) (negative? x))
+  (define-primitive-expander zero? (x) (= x 0))
+  (define-primitive-expander positive? (x) (> x 0))
+  (define-primitive-expander negative? (x) (< x 0))
   (define-primitive-expander exact-integer? (x) (exact-integer? x))
 
   ;; (char=? x y ...)
@@ -554,22 +554,17 @@
     (define nargs (length args))
     (cond 
       [(< nargs 2) #f]
-      [(= nargs 2)
-        (make-primcall src 
-          op
-          (make-primcall src 'char->integer (car args))
-          (make-primcall src 'char->integer (cadr args)))]
       [else 
-        (let lp ([ints '()][ls args])
+        (let lp ([ints '()] [ls args])
           (cond 
             [(null? ls)
               (expand-primcall 
-                (make-primcall src op ints))]
+                (make-primcall src op (reverse ints)))]
             [else 
               (lp (cons
-                    (make-primcall src 'char->integer (car ls))
+                    (make-primcall src 'char->integer (list (car ls)))
                     ints)
-                  ls)]))]))
+                  (cdr ls))]))]))
 
   (define-primitive-expander* char=? (src args)
     (expand-charcmp src args '=))
@@ -662,7 +657,7 @@
   (define-primitive-expander* list (src args)
     (cond 
       [(null? args) (make-constant src '())]
-      [(null? (cdr args)) (make-primcall src 'cons (car args) (make-constant src '()))]
+      [(null? (cdr args)) (make-primcall src 'cons (list (car args) (make-constant src '())))]
       [else 
         (make-primcall 
           src 
@@ -679,22 +674,22 @@
       (cond 
         [(null? args)
           (if (lref? result)
-            result 
+            init
             (make-let src 
                       'let 
                       (list tmp) (list tmp)
-                      init 
+                      (list init) 
                       result))]
         [else 
           (loop 
             (+ i 1)
             (cdr args)
-            (make-seq 
+            (make-sequence 
               src 
               (make-primcall
                 src 
                 'vector-set! 
-                (list (make-constant src i) (car args)))
+                (list (make-lref src tmp tmp) (make-constant src i) (car args)))
               result))])))
   
   (define-primitive-expander* tuple (src args)
@@ -705,22 +700,22 @@
       (cond 
         [(null? args)
           (if (lref? result)
-            result 
+            init 
             (make-let src 
                       'let 
                       (list tmp) (list tmp)
-                      init 
+                      (list init) 
                       result))]
         [else 
           (loop 
             (+ i 1)
             (cdr args)
-            (make-seq 
+            (make-sequence
               src 
               (make-primcall
                 src 
                 'tuple-set! 
-                (list (make-constant src i) (car args)))
+                (list (make-lref src tmp tmp) (make-constant src i) (car args)))
               result))])))
 
   (define-primitive-expander make-tuple 
@@ -755,6 +750,9 @@
 
   (define (expand-primcall x)
     (cond 
+      [(primref? x)
+        (define src (term-src x))
+        (make-module-ref src '(capy) (primref-prim x) #f)]
       [(primcall? x)
         (let ([src (term-src x)] 
               [args (primcall-args x)] 

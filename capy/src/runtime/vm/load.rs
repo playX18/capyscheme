@@ -593,6 +593,7 @@ pub mod load_ops {
         m: Option<Value<'gc>>,
         load_thunk: Option<bool>,
     ) -> Result<Value<'gc>, Value<'gc>> {
+        let _ = m;
         let load_thunk = load_thunk.unwrap_or(true);
         let backtraces = if let Some(key) = ctx.private_ref("capy", "*compile-backtrace-key*") {
             match ctx.get_mark_first(key) {
@@ -609,19 +610,21 @@ pub mod load_ops {
             Err(err) => return nctx.return_(Err(err)),
         };
 
-        let m = if let Some(m) = m {
-            if m.is::<Module>() {
-                m.downcast()
+        let before_opts = ir;
+        #[cfg(feature = "bootstrap")]
+        {
+            let m = if let Some(m) = m {
+                if m.is::<Module>() {
+                    m.downcast()
+                } else {
+                    current_module(nctx.ctx).get(nctx.ctx).downcast()
+                }
             } else {
                 current_module(nctx.ctx).get(nctx.ctx).downcast()
-            }
-        } else {
-            current_module(nctx.ctx).get(nctx.ctx).downcast()
-        };
-
-        let before_opts = ir;
-        ir = primitives::resolve_primitives(nctx.ctx, ir, m);
-        ir = primitives::expand_primitives(nctx.ctx, ir);
+            };
+            ir = primitives::resolve_primitives(nctx.ctx, ir, m);
+            ir = primitives::expand_primitives(nctx.ctx, ir);
+        }
 
         ir = resolve_free_vars(nctx.ctx, ir);
         ir = letrectify(nctx.ctx, ir);
