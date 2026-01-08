@@ -64,6 +64,8 @@
                 x 
                 (make-if (term-src x) test* then* else*))]
             [(let? x)
+              (unless (list? (let-rhs x))
+                (assertion-violation 'fold "malformed let" (let-rhs x) (let-ids x) (let-lhs x) (term-src x)))
               (define rhs* (map loop (let-rhs x)))
               (define body* (loop (let-body x)))
               (if (and (elts-eq? rhs* (let-rhs x))
@@ -76,6 +78,8 @@
                           rhs* 
                           body*))]
             [(fix? x)
+              (unless (list? (fix-rhs x))
+                (assertion-violation 'fold "malformed fix" (fix-rhs x) (term-src x)))
               (define rhs* (map loop (fix-rhs x)))
               (define body* (loop (fix-body x)))
               (if (and (elts-eq? rhs* (fix-rhs x))
@@ -99,6 +103,8 @@
                               consumer*))]
             [(application? x)
               (define operator* (loop (application-operator x)))
+              (unless (list? (application-operands x))
+                (assertion-violation 'fold "malformed application" (application-operands x) (term-src x)))
               (define operands* (map loop (application-operands x)))
               (if (and (eq? operator* (application-operator x))
                       (elts-eq? operands* (application-operands x)))
@@ -107,6 +113,8 @@
                                   operator*
                                   operands*))]
             [(primcall? x)
+              (unless (list? (primcall-args x))
+                (assertion-violation 'fold "malformed primcall" (primcall-prim x) (primcall-args x) (term-src x)))
               (define args* (map loop (primcall-args x)))
               (if (elts-eq? args* (primcall-args x))
                 x 
@@ -124,6 +132,8 @@
                           (proc-ids x)))]
 
             [(values? x)
+              (unless (list? (values-values x))
+                (assertion-violation 'fold "malformed values" (values-values x) (term-src x)))
               (define vals* (map loop (values-values x)))
               (if (elts-eq? vals* (values-values x))
                 x 
