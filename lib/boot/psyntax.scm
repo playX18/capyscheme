@@ -82,7 +82,7 @@
 (define $sc-dispatch #f)
 (define macroexpand #f)
 (define :ellipsis? #f)
-
+(define identifier-binding #f)
 (define <variable-transformer>
   (let* ((rtd (make-record-type-descriptor '<variable-transformer> #f #f #f #f '#((immutable proc))))
          (rcd (make-record-constructor-descriptor rtd #f #f)))
@@ -2193,6 +2193,20 @@
   (global-extend 'define-property 'define-property '())
   (global-extend 'module-ref '@ expand-public-ref)
   (global-extend 'module-ref '@@ expand-private-ref)
+
+  (set! identifier-binding 
+    (lambda (id)
+      (unless (id? id)
+        (syntax-violation 'identifier-binding "not an identifier" id))
+      (let* ([name (syntax-expression id)]
+             [wrap (syntax-wrap id)]
+             [mod (syntax-module id)]
+             [result (id-var-name name wrap mod)])
+        (cond 
+          [(eq? result name) #f] ;; global
+          [(or (pair? result) (vector? result)) 'lexical]
+          [else #f]))))
+      ;(id-var-name (syntax-expression id) (syntax-wrap id) (syntax-module id))))
 
   (set! syntax-error
     (let ((make-syntax make-syntax))
