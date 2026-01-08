@@ -1594,6 +1594,11 @@ prim!(
         PrimValue::Comparison(is_null)
     },
 
+    "unspecified" => unspec(ssa, _args, _h) {
+        let val = ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64);
+        PrimValue::Value(val)
+    },
+
     "unspecified?" => is_unspecified(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let unspecified = ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64);
