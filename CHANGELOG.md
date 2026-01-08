@@ -16,6 +16,7 @@
 ### 🐛 Bug Fixes
 
 - *(boot)* Add inf?, $set-attachments! and $winders wrapper functions - ([60801f4](https://codeberg.org/playXE/capy/commit/60801f4592bd3adc0e28c6af2dec27392c847ab5))
+- *(cd)* Do not include version in release-notes - ([9d80c10](https://codeberg.org/playXE/capy/commit/9d80c107e2b30255e4d0565c37e4f1806aef727a))
 - *(ci)* Make release.yml use git cliff changelog - ([e316d9d](https://codeberg.org/playXE/capy/commit/e316d9d2a92474e1d258bf9060d7d6fe1b096ec5))
 - *(ci)* Properly output release-body in release - ([403300f](https://codeberg.org/playXE/capy/commit/403300f2abca650815d45b8f039c33769f1783d1))
 - *(ci)* Fix git-cliff version - ([6c3c624](https://codeberg.org/playXE/capy/commit/6c3c62492497ebedb46d0fdfb1dc2eb5c68b6976))
@@ -38,6 +39,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([d697884](https://codeberg.org/playXE/capy/commit/d69788421434b40f27e5cbcbdf37e09f918e1290))
 - Update CHANGELOG.md [skip ci] - ([7a89f6a](https://codeberg.org/playXE/capy/commit/7a89f6af4704c90351a1e4617e3d97449651d65b))
 - Update CHANGELOG.md [skip ci] - ([507fb18](https://codeberg.org/playXE/capy/commit/507fb18c8b5730a3f598d187031f02deb2132cb6))
 - Update CHANGELOG.md [skip ci] - ([301eb81](https://codeberg.org/playXE/capy/commit/301eb819d1e218137ec26753d35bfbb6da3f2815))
