@@ -333,7 +333,7 @@ endif
 compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-cli compile-capy
 
 stage-1: 
-	$(MAKE) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled
+	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled 
 	@echo "Creating stage-1 CapyScheme"
 	mkdir -p stage-1
 	cp stage-0/capy stage-1/capy
@@ -342,7 +342,7 @@ stage-1:
 stage-2:
 	@echo "Creating stage-2 CapyScheme"
 	mkdir -p stage-2
-	$(MAKE) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled
+	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-1/capyc OUT=stage-2/compiled
 	cp stage-1/capy stage-2/capy
 	cp stage-1/capyc stage-2/capyc
 
