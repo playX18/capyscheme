@@ -65,7 +65,14 @@ jobs:
           else 
             echo "No new changes to changelog."
           fi
-          echo "release-body=$(cat CHANGELOG.md)" >> $GITHUB_OUTPUT
+          FILESIZE=$(stat --printf="%s" CHANGELOG.md)
+          MAXSIZE=$((40*1024*1024))
+          if [ "$FILESIZE" -le "$MAXSIZE" ]; then 
+            echo "release-body<<EOF" >> $GITHUB_OUTPUT
+            cat "CHANGELOG.md" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            cat "CHANGELOG.md"
+          fi
 
   build: 
     needs: check-and-run
