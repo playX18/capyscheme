@@ -35,7 +35,7 @@ jobs:
           git-cliff --config cliff.toml --output CHANGELOG.md --latest --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
           git config user.name "playXE"
           git config user.email "adel.prokurov@gmail.com"
-          if [ -n "$(git diff CHANGELOG.md)"]; then 
+          if [ -n "$(git diff CHANGELOG.md)" ]; then 
             echo "Changes detected. Updating CHANGELOG.md"
             git add CHANGELOG.md
             git commit -m "chore: update CHANGELOG.md [skip ci]"
@@ -43,6 +43,7 @@ jobs:
           else 
             echo "No new changes to changelog."
           fi
+          echo "release-body=$(cat CHANGELOG.md)" >> $GITHUB_OUTPUT
 
   release:
     runs-on: debian-trixie
@@ -98,5 +99,6 @@ jobs:
           release-dir: dist
           override: true 
           tag: ${{ env.VERSION }}
+          title: Release v{{ env.VERSION }}
           release-notes: |
             Release of CapyScheme ${{ env.VERSION }}
