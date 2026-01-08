@@ -16,6 +16,7 @@
 ### 🐛 Bug Fixes
 
 - *(boot)* Add inf?, $set-attachments! and $winders wrapper functions - ([60801f4](https://codeberg.org/playXE/capy/commit/60801f4592bd3adc0e28c6af2dec27392c847ab5))
+- *(ci)* Properly output release-body in release - ([403300f](https://codeberg.org/playXE/capy/commit/403300f2abca650815d45b8f039c33769f1783d1))
 - *(ci)* Fix git-cliff version - ([6c3c624](https://codeberg.org/playXE/capy/commit/6c3c62492497ebedb46d0fdfb1dc2eb5c68b6976))
 - *(ci)* Label names fix - ([cf5263f](https://codeberg.org/playXE/capy/commit/cf5263f1207716478f8477f6f1978ba098569844))
 - *(compile-psyntax)* Compile psyntax in (capy) module - ([c3c541c](https://codeberg.org/playXE/capy/commit/c3c541ca3b3e25fd2876aaf913965023fbafc1a2))
@@ -34,6 +35,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([b66a83f](https://codeberg.org/playXE/capy/commit/b66a83faf31b9d1c1e37dac0aba4c9b8fd420c44))
 - Update CHANGELOG.md [skip ci] - ([d321355](https://codeberg.org/playXE/capy/commit/d321355e8828a230bbcacff544b0e8cc20958299))
 - Update CHANGELOG.md [skip ci] - ([8b55330](https://codeberg.org/playXE/capy/commit/8b5533092b4e9986d1aa82822cf7d3daaaa7c94e))
 - Update CHANGELOG.md [skip ci] - ([c4e3175](https://codeberg.org/playXE/capy/commit/c4e3175480e4c5da6eabb7996187c6828d19d5d5))
