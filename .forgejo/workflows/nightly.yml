@@ -20,7 +20,7 @@ jobs:
           # We check if the output is empty
           echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          if [ -n "$(git log --since='24 hours ago')" ]; then
+          if [ -n "$(git log --since='24 hours ago' --invert-grep --grep='\[skip ci\]')" ]; then
             echo "recent_commits=true" >> $GITHUB_OUTPUT
             echo "Found recent commits."
           else
@@ -56,7 +56,7 @@ jobs:
           git-cliff --config cliff.toml --output CHANGELOG.md --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
           git config user.name "playXE"
           git config user.email "adel.prokurov@gmail.com"
-          if [ -n "$(git diff CHANGELOG.md)"]; then 
+          if [ -n "$(git diff CHANGELOG.md)" ]; then 
             echo "Changes detected. Updating CHANGELOG.md"
             git add CHANGELOG.md
             git commit -m "chore: update CHANGELOG.md [skip ci]"
