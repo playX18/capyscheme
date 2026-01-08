@@ -1230,6 +1230,7 @@
     srfi-157 ;; Continuation marks
     srfi-180 ;; JSON
     ; srfi-226 ;; Control features (TODO: BROKEN!)
+    srfi-257 ;; Simple extendable pattern matcher with backtracking
     srfi-259 ;; Tagged procedures with type safety
     ))
 
