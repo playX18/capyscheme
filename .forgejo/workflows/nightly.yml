@@ -40,6 +40,8 @@ jobs:
       - name: Generate a changelog
         uses: https://github.com/orhun/git-cliff-action@v4.7.0
         id: git-cliff
+        env: 
+          GITHUB_API_TOKEN: ${{ secrets.API_TOKEN_GITHUB }}
         with: 
           config: cliff.toml
           args: -vv --latest --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
