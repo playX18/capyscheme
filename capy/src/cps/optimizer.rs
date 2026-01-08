@@ -20,7 +20,6 @@ use crate::{
         core::{LVarRef, fresh_lvar},
         primitives::sym_cons,
     },
-    prelude::Symbol,
     runtime::{Context, value::Value},
     utils::fixedpoint,
 };
@@ -302,11 +301,11 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
     stacker::maybe_grow(4 * 1024 * 1024, 1 * 1024 * 1024, || match *term {
         Term::Let(binding, expr, prev_body) => match expr {
             Expression::PrimCall(prim, prev_args, prev_h, source) => {
-                if state.is_dead(binding)
+                /*if state.is_dead(binding)
                     && SIDE_EFFECT_FREE_OPS.contains(&*prim.downcast::<Symbol>().as_str())
                 {
                     return shrink_tree(prev_body, state);
-                }
+                }*/
 
                 let args = state
                     .substitute_atoms(prev_args.iter().copied())
