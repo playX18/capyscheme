@@ -1,7 +1,7 @@
 (define-library (srfi srfi-98)
-  (export 
+  (export
     get-environment-variable
     get-environment-variables)
   (import (only (scheme process-context)
-                  get-environment-variable
-                  get-environment-variables)))
+           get-environment-variable
+           get-environment-variables)))

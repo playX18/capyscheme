@@ -1,5 +1,3 @@
-
-
 (define &condition
   (let* ([rtd (make-record-type-descriptor '&condition #f #f #f #f '#())]
          [rcd (make-record-constructor-descriptor rtd #f #f)])
@@ -36,19 +34,23 @@
       (rtd-ancestor? rtd (record-rtd obj))
       (if (compound-condition? obj)
         (any1 (lambda (c) (rtd-ancestor? rtd (record-rtd c))) (compound-condition-component obj))
-      #f))))
+        #f))))
 
 (define (condition-accessor rtd proc)
   (define wrong-type
     (lambda (rtd obj)
       (assertion-violation
         "condition accessor"
-        (format #f "expected condition of a subtype of ~a, but got ~a" rtd obj) rtd obj)))
+        (format #f "expected condition of a subtype of ~a, but got ~a" rtd obj)
+        rtd
+        obj)))
 
   (or (rtd-ancestor? (record-type-rtd &condition) rtd)
-      (assertion-violation
-        'condition-accessor
-        (format #f "expected record-type-descriptor of a subtype of &condition, but got ~a" rtd) rtd proc))
+    (assertion-violation
+      'condition-accessor
+      (format #f "expected record-type-descriptor of a subtype of &condition, but got ~a" rtd)
+      rtd
+      proc))
   (lambda (obj)
 
     (if (simple-condition? obj)
@@ -59,8 +61,6 @@
         (let ([res (any1 (lambda (c) (and (rtd-ancestor? rtd (record-rtd c)) c)) (compound-condition-component obj))])
           (if res (proc res) (wrong-type rtd obj)))
         (wrong-type rtd obj)))))
-
-
 
 (define &message
   (let ([rtd (make-record-type-descriptor '&message (record-type-rtd &condition) #f #f #f '#((immutable message)))])
@@ -84,80 +84,79 @@
 
 (define (make-condition-uid) #f)
 
-
 (define (print-condition exn p)
-    (define (print-syntax form subform)
-        (define form-src (if (syntax? form) (syntax-sourcev form) #f))
-        (define subform-src (if (and subform (syntax? subform)) (syntax-sourcev subform) #f))
-        (define (fmt-source src)
-          (define file (vector-ref src 0))
-          (define line (vector-ref src 1))
-          (define col  (vector-ref src 2))
-          (format p "~a:~a:~a" file line col))
-        (format p "~a" (syntax->datum form))
-        (when form-src 
-          (format p "~%       in ")
-          (fmt-source form-src))
-        (when subform
-          (format p "~a" (syntax->datum subform))
-          (when subform-src 
-              (format p "~%     in")
-              (fmt-source subform-src))))
+  (define (print-syntax form subform)
+    (define form-src (if (syntax? form) (syntax-sourcev form) #f))
+    (define subform-src (if (and subform (syntax? subform)) (syntax-sourcev subform) #f))
+    (define (fmt-source src)
+      (define file (vector-ref src 0))
+      (define line (vector-ref src 1))
+      (define col (vector-ref src 2))
+      (format p "~a:~a:~a" file line col))
+    (format p "~a" (syntax->datum form))
+    (when form-src
+      (format p "~%       in ")
+      (fmt-source form-src))
+    (when subform
+      (format p "~a" (syntax->datum subform))
+      (when subform-src
+        (format p "~%     in")
+        (fmt-source subform-src))))
 
-    (cond 
-        [(condition? exn)
-            (let ([c* (simple-conditions exn)])
-                (format p "The condition has ~a components:~%" (length c*))
-                (do ([i 1 (+ 1 i)]
-                    [c* c* (cdr c*)])
-                    [(null? c*)]
-                    (let* ([c (car c*)]
-                        [rtd (record-rtd c)])
-                        (format p " ~a. " i)
-                        (let ([supress-type
-                                (and (eq? (record-type-parent rtd)
-                                    (record-type-rtd &condition))
-                                (let ((name (symbol->string (record-type-name rtd)))
-                                        (fields (record-type-field-names rtd)))
-                                    (and (not (eqv? 0 (string-length name)))
-                                        (char=? (string-ref name 0) #\&)
-                                        (fx>? (vector-length fields) 0)
-                                        (string=? (substring name 1 (string-length name))
-                                                (symbol->string (vector-ref fields 0))))))])
-                            (if supress-type 
-                                (put-char p #\&)
-                                (let loop ([rtd rtd])
-                                    (format p "~a" (record-type-name rtd))
-                                    (cond 
-                                        [(record-type-parent rtd) => 
-                                            (lambda (parent)
-                                                (unless (eq? parent (record-type-rtd &condition))
-                                                (format p " ")
-                                                (loop parent)))])))
-                            (let loop ([rtd rtd])
-                                (do ([f* (record-type-field-names rtd)]
-                                    [i 0 (+ i 1)])
-                                    [(= i (vector-length f*))
-                                        (cond [(record-type-parent rtd) => loop])]
-                                    (unless (and supress-type (eqv? i 0))
-                                        (format p "~%     "))
-                                    (format p "~a: " (vector-ref f* i))
-                                    (let ([x ((record-accessor rtd i) c)])
-                                        (cond 
-                                            [(and (eq? rtd (record-type-rtd &syntax)))
-                                                (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
-                                            [(and (eq? rtd (record-type-rtd &irritants))
-                                                (pair? x)
-                                                (list? x))
-                                                (display "(" p)
-                                                (write (car x) p)
-                                                (for-each 
-                                                    (lambda (x)
-                                                    (display "\n                 " p)
-                                                    (write x p))
-                                                    (cdr x))
-                                                (display ")" p)]
-                                            [else (write x p)]))))))
-                            (newline p)))]
-                    [else 
-                        (format p "A non-condition object was raised:~%~s" exn)]))
+  (cond
+    [(condition? exn)
+      (let ([c* (simple-conditions exn)])
+        (format p "The condition has ~a components:~%" (length c*))
+        (do ([i 1 (+ 1 i)]
+             [c* c* (cdr c*)])
+          [(null? c*)]
+          (let* ([c (car c*)]
+                 [rtd (record-rtd c)])
+            (format p " ~a. " i)
+            (let ([supress-type
+                    (and (eq? (record-type-parent rtd)
+                          (record-type-rtd &condition))
+                      (let ((name (symbol->string (record-type-name rtd)))
+                            (fields (record-type-field-names rtd)))
+                        (and (not (eqv? 0 (string-length name)))
+                          (char=? (string-ref name 0) #\&)
+                          (fx>? (vector-length fields) 0)
+                          (string=? (substring name 1 (string-length name))
+                            (symbol->string (vector-ref fields 0))))))])
+              (if supress-type
+                (put-char p #\&)
+                (let loop ([rtd rtd])
+                  (format p "~a" (record-type-name rtd))
+                  (cond
+                    [(record-type-parent rtd) =>
+                      (lambda (parent)
+                        (unless (eq? parent (record-type-rtd &condition))
+                          (format p " ")
+                          (loop parent)))])))
+              (let loop ([rtd rtd])
+                (do ([f* (record-type-field-names rtd)]
+                     [i 0 (+ i 1)])
+                  [(= i (vector-length f*))
+                    (cond [(record-type-parent rtd) => loop])]
+                  (unless (and supress-type (eqv? i 0))
+                    (format p "~%     "))
+                  (format p "~a: " (vector-ref f* i))
+                  (let ([x ((record-accessor rtd i) c)])
+                    (cond
+                      [(and (eq? rtd (record-type-rtd &syntax)))
+                        (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
+                      [(and (eq? rtd (record-type-rtd &irritants))
+                          (pair? x)
+                          (list? x))
+                        (display "(" p)
+                        (write (car x) p)
+                        (for-each
+                          (lambda (x)
+                            (display "\n                 " p)
+                            (write x p))
+                          (cdr x))
+                        (display ")" p)]
+                      [else (write x p)]))))))
+          (newline p)))]
+    [else
+      (format p "A non-condition object was raised:~%~s" exn)]))

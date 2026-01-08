@@ -57,59 +57,59 @@
 ($primitive-load "boot/reader.scm")
 ($primitive-load "boot/eval.scm")
 
-
-
 ; load file containing base macros
 (define primitive-load
-    (lambda (filename)
-        (save-module-excursion (lambda ()
-            (cond 
-              ;; when bootstrapping we rely on tree-sitter to parse Scheme code
-              ((%bootstrapping?)
-                (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
-                  (with-exception-handler
-                      (lambda (exn)
-                          (format #t ";; (primitive) Error loading file '~a'~%" filename)
-                          (raise exn))
-                      (lambda () (thunk)))))
-              (else 
-                (let ([thunk-or-path (try-load-thunk-in-vicinity filename #f)])
-                  (cond
-                      [(procedure? thunk-or-path)
-                       (with-exception-handler
-                           (lambda (exn)
-                               (format (current-error-port) ";; (primitive) Error loading file '~a'~%" filename)
-                               ((current-exception-printer) exn (current-error-port))
-                               (flush-output-port (current-error-port))
-                               (raise exn))
-                           (lambda ()
-                               (*raw-log* log:info
-                                          '(capy)
-                                          'primitive-load
-                                          "Loading file ~a" filename)
-                               (thunk-or-path)))]
-                      [else
-                          (with-exception-handler 
-                              (lambda (exn)
-                                  (format (current-error-port) ";; (primitive) Error compiling file '~a'~%" filename)
-                                  ((current-exception-printer) exn (current-error-port))
-                                  (flush-output-port (current-error-port))
-                                  (raise exn))
-                              (lambda ()
-                                  (define filename (list-ref thunk-or-path 0))
-                                  (define full-filename (list-ref thunk-or-path 1))
-                                  (define compiled-path (list-ref thunk-or-path 2))
-                                  (*raw-log* log:info
-                                          '(capy)
-                                          'primitive-load
-                                          "Compiling file ~a" filename)
-                                  ((compile-file full-filename compiled-path (current-module) #t))))]))))))))
-            ;(let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
-            ;    (with-exception-handler
-            ;        (lambda (exn)
-            ;            (format #t ";; (primitive) Error loading file '~a'~%" filename)
-            ;            (raise exn))
-            ;        (lambda () (thunk))))))))
+  (lambda (filename)
+    (save-module-excursion (lambda ()
+                            (cond
+                              ;; when bootstrapping we rely on tree-sitter to parse Scheme code
+                              ((%bootstrapping?)
+                                (let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
+                                  (with-exception-handler
+                                    (lambda (exn)
+                                      (format #t ";; (primitive) Error loading file '~a'~%" filename)
+                                      (raise exn))
+                                    (lambda () (thunk)))))
+                              (else
+                                (let ([thunk-or-path (try-load-thunk-in-vicinity filename #f)])
+                                  (cond
+                                    [(procedure? thunk-or-path)
+                                      (with-exception-handler
+                                        (lambda (exn)
+                                          (format (current-error-port) ";; (primitive) Error loading file '~a'~%" filename)
+                                          ((current-exception-printer) exn (current-error-port))
+                                          (flush-output-port (current-error-port))
+                                          (raise exn))
+                                        (lambda ()
+                                          (*raw-log* log:info
+                                            '(capy)
+                                            'primitive-load
+                                            "Loading file ~a"
+                                            filename)
+                                          (thunk-or-path)))]
+                                    [else
+                                      (with-exception-handler
+                                        (lambda (exn)
+                                          (format (current-error-port) ";; (primitive) Error compiling file '~a'~%" filename)
+                                          ((current-exception-printer) exn (current-error-port))
+                                          (flush-output-port (current-error-port))
+                                          (raise exn))
+                                        (lambda ()
+                                          (define filename (list-ref thunk-or-path 0))
+                                          (define full-filename (list-ref thunk-or-path 1))
+                                          (define compiled-path (list-ref thunk-or-path 2))
+                                          (*raw-log* log:info
+                                            '(capy)
+                                            'primitive-load
+                                            "Compiling file ~a"
+                                            filename)
+                                          ((compile-file full-filename compiled-path (current-module) #t))))]))))))))
+;(let ([thunk (load-thunk-in-vicinity-k filename compile-tree-il (current-module) #f)])
+;    (with-exception-handler
+;        (lambda (exn)
+;            (format #t ";; (primitive) Error loading file '~a'~%" filename)
+;            (raise exn))
+;        (lambda () (thunk))))))))
 
 (primitive-load "boot/base.scm")
 (primitive-load "boot/libraries.scm")

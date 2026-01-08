@@ -9,7 +9,6 @@
 ; whose buffer is neither empty nor full, very few procedure
 ; calls are executed.
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
 ; Port data structure and invariants.
@@ -141,20 +140,20 @@
 (define (errmsg msg . rest)
   (symbol->string msg))
 
-(define type-mask:binary/textual  1)
-(define type-mask:direction       6)
+(define type-mask:binary/textual 1)
+(define type-mask:direction 6)
 
-(define type:binary               0)
-(define type:textual              1)
-(define type:input                2)
-(define type:output               4)
+(define type:binary 0)
+(define type:textual 1)
+(define type:input 2)
+(define type:output 4)
 
-(define type:closed               0)
-(define type:binary-input         2)
-(define type:textual-input        3)
-(define type:binary-output        4)
-(define type:textual-output       5)
-(define type:binary-input/output  6)
+(define type:closed 0)
+(define type:binary-input 2)
+(define type:textual-input 3)
+(define type:binary-output 4)
+(define type:textual-output 5)
+(define type:binary-input/output 6)
 (define type:textual-input/output 7)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -175,11 +174,11 @@
 ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define port.tag        0) ; port tag, used for port? procedure
-(define port.type       1) ; fixnum: see above for encoding
-(define port.mainbuf    2) ; bytevector: Latin-1 or UTF-8 encodings
-(define port.mainptr    3) ; nonnegative fixnum: next loc in mainbuf (input)
-(define port.mainlim    4) ; nonnegative fixnum: sentinel in mainbuf (input)
+(define port.tag 0) ; port tag, used for port? procedure
+(define port.type 1) ; fixnum: see above for encoding
+(define port.mainbuf 2) ; bytevector: Latin-1 or UTF-8 encodings
+(define port.mainptr 3) ; nonnegative fixnum: next loc in mainbuf (input)
+(define port.mainlim 4) ; nonnegative fixnum: sentinel in mainbuf (input)
 
 ; For input ports, port.mainpos holds the current byte
 ; or character position minus the current value of the
@@ -189,7 +188,7 @@
 ; or character position minus the current value of the
 ; port.mainlim field.
 
-(define port.mainpos    5) ; integer: byte/char position - (mainptr or mainlim)
+(define port.mainpos 5) ; integer: byte/char position - (mainptr or mainlim)
 (define port.transcoder 6) ; fixnum: see comment at make-transcoder
 
 ; The state is always one of the following symbols:
@@ -198,32 +197,32 @@
 ;     textual auxstart auxend
 ;     input/output
 
-(define port.state      7) ; symbol: see above
-(define port.iodata     8) ; port-specific data
-(define port.ioproc     9) ; port*symbol -> varies-with-symbol
+(define port.state 7) ; symbol: see above
+(define port.iodata 8) ; port-specific data
+(define port.ioproc 9) ; port*symbol -> varies-with-symbol
 
 ; output ports
 
-(define port.bufmode    10) ; symbol: none, line, datum, block
-(define port.wr-flush?  11) ; boolean: true iff bufmode is datum
+(define port.bufmode 10) ; symbol: none, line, datum, block
+(define port.wr-flush? 11) ; boolean: true iff bufmode is datum
 
 ; textual input ports
 
-(define port.auxbuf     12) ; bytevector: 4 bytes before or after mainbuf
-(define port.auxptr     13) ; fixnum: index of next byte in auxbuf
-(define port.auxlim     14) ; fixnum: 1 + index of last byte in auxbuf
-(define port.linesread  15) ; integer: number of line endings read so far
-(define port.linestart  16) ; integer: character position after last line ending
-(define port.wasreturn  17) ; boolean: last line ending was #\return
-(define port.readmode   18) ; fixnum: see comment before default-read-mode
+(define port.auxbuf 12) ; bytevector: 4 bytes before or after mainbuf
+(define port.auxptr 13) ; fixnum: index of next byte in auxbuf
+(define port.auxlim 14) ; fixnum: 1 + index of last byte in auxbuf
+(define port.linesread 15) ; integer: number of line endings read so far
+(define port.linestart 16) ; integer: character position after last line ending
+(define port.wasreturn 17) ; boolean: last line ending was #\return
+(define port.readmode 18) ; fixnum: see comment before default-read-mode
 
 ; all ports
 
-(define port.setposn    19) ; boolean: true iff supports set-port-position!
-(define port.alist      20) ; association list: used mainly by custom ports
-(define port.r7rstype   21) ; copy of port.type but unaltered by closing
-(define port.reader     22)
-(define port.structure-size 24)      ; size of port structure
+(define port.setposn 19) ; boolean: true iff supports set-port-position!
+(define port.alist 20) ; association list: used mainly by custom ports
+(define port.r7rstype 21) ; copy of port.type but unaltered by closing
+(define port.reader 22)
+(define port.structure-size 24) ; size of port structure
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -233,7 +232,7 @@
 
 ; Default length of i/o buffer.
 
-(define port.mainbuf-size    1024)
+(define port.mainbuf-size 1024)
 
 ; Textual input uses 255 as a sentinel byte to force
 ; inline code to call a procedure for the general case.
@@ -255,7 +254,7 @@
   ; Nothing, for the time being.
   #t)
 
-; 'ioproc' is a procedure of one argument: a symbol that denotes the 
+; 'ioproc' is a procedure of one argument: a symbol that denotes the
 ; operation to perform.  It returns a port-specific procedure that, when
 ; called, performs the operation.  The operations are:
 ;
@@ -284,48 +283,50 @@
     ; Parse keyword arguments.
 
     (for-each
-     (lambda (keyword)
-      (case keyword
-        ((input)         (set! input? #t))
-        ((output)        (set! output? #t))
-        ((text)          (set! textual? #t))
-        ((binary)        (set! binary? #t))
-        ((set-position!) (set! set-position? #t))
-        ((none)          (tuple-set! v port.bufmode 'none))
-        ((line)          (tuple-set! v port.bufmode 'line))
-        ((datum flush)   (tuple-set! v port.bufmode 'datum)
-                         (tuple-set! v port.wr-flush? #t))
-        ((block)         (tuple-set! v port.bufmode 'block))
-        (else
-         (assertion-violation 'io/make-port "bad attribute" (car rest))
-         #t)))
-     rest)
+      (lambda (keyword)
+        (case keyword
+          ((input) (set! input? #t))
+          ((output) (set! output? #t))
+          ((text) (set! textual? #t))
+          ((binary) (set! binary? #t))
+          ((set-position!) (set! set-position? #t))
+          ((none) (tuple-set! v port.bufmode 'none))
+          ((line) (tuple-set! v port.bufmode 'line))
+          ((datum flush) (tuple-set! v port.bufmode 'datum)
+            (tuple-set! v port.wr-flush? #t))
+          ((block) (tuple-set! v port.bufmode 'block))
+          (else
+            (assertion-violation 'io/make-port "bad attribute" (car rest))
+            #t)))
+      rest)
 
     (if (and binary? textual?)
-        (assertion-violation 'io/make-port "binary incompatible with textual"))
+      (assertion-violation 'io/make-port "binary incompatible with textual"))
     (tuple-set! v
-                 port.type
-                 (cond
-                  ((and binary? input? output?)  type:binary-input/output)
-                  ((and binary? input?)          type:binary-input)
-                  ((and binary? output?)         type:binary-output)
-                  ((and textual? input? output?) type:textual-input/output)
-                  ((and textual? input?)         type:textual-input)
-                  ((and textual? output?)        type:textual-output)
-                  (input?                        type:textual-input)
-                  (output?                       type:textual-output)
-                  (else
-                   (error
-                    'io/make-port "neither input nor output" rest))))
+      port.type
+      (cond
+        ((and binary? input? output?) type:binary-input/output)
+        ((and binary? input?) type:binary-input)
+        ((and binary? output?) type:binary-output)
+        ((and textual? input? output?) type:textual-input/output)
+        ((and textual? input?) type:textual-input)
+        ((and textual? output?) type:textual-output)
+        (input? type:textual-input)
+        (output? type:textual-output)
+        (else
+          (error
+            'io/make-port
+            "neither input nor output"
+            rest))))
 
     (tuple-set! v port.mainbuf (make-bytevector port.mainbuf-size))
     (tuple-set! v port.mainptr 0)
     (tuple-set! v port.mainlim 0)
     (tuple-set! v port.mainpos 0)
     (tuple-set! v port.transcoder
-                   (if binary?
-                       0
-                       (native-transcoder)))
+      (if binary?
+        0
+        (native-transcoder)))
     (tuple-set! v port.state (if binary? 'binary 'textual))
     (tuple-set! v port.iodata iodata)
     (tuple-set! v port.ioproc ioproc)
@@ -335,47 +336,47 @@
     (tuple-set! v port.linestart 0)
     (tuple-set! v port.wasreturn #f)
     (tuple-set! v port.readmode
-                   (if (not binary?)
-                       (default-read-mode)
-                       readmode:binary))
+      (if (not binary?)
+        (default-read-mode)
+        readmode:binary))
 
     (tuple-set! v port.setposn set-position?)
     (tuple-set! v port.alist '())
     (tuple-set! v port.r7rstype (tuple-ref v port.type))
     (tuple-set! v port.reader #f)
     (tuple-set! v 0 'type:port)
-    (io/reset-buffers! v)                     ; inserts sentinel
+    (io/reset-buffers! v) ; inserts sentinel
     v))
 
 ; Port? is integrable.
 ; Eof-object? is integrable.
 
-(define (port? x) 
+(define (port? x)
   (and (tuple? x) (eq? (tuple-ref x 0) 'type:port)))
 
 (define (io/input-port? p)
   (and (port? p)
-       (let ((direction (logand type-mask:direction
-                                  (tuple-ref p port.type))))
-         (= type:input (logand direction type:input)))))
+    (let ((direction (logand type-mask:direction
+                      (tuple-ref p port.type))))
+      (= type:input (logand direction type:input)))))
 
 (define (io/output-port? p)
   (and (port? p)
-       (let ((direction (logand type-mask:direction
-                                  (tuple-ref p port.type))))
-         (= type:output (logand direction type:output)))))
+    (let ((direction (logand type-mask:direction
+                      (tuple-ref p port.type))))
+      (= type:output (logand direction type:output)))))
 
 (define (io/r7rs-input-port? p)
   (and (port? p)
-       (let ((direction (logand type-mask:direction
-                                  (tuple-ref p port.r7rstype))))
-         (= type:input (logand direction type:input)))))
+    (let ((direction (logand type-mask:direction
+                      (tuple-ref p port.r7rstype))))
+      (= type:input (logand direction type:input)))))
 
 (define (io/r7rs-output-port? p)
   (and (port? p)
-       (let ((direction (logand type-mask:direction
-                                  (tuple-ref p port.r7rstype))))
-         (= type:output (logand direction type:output)))))
+    (let ((direction (logand type-mask:direction
+                      (tuple-ref p port.r7rstype))))
+      (= type:output (logand direction type:output)))))
 
 (define (io/open-port? p)
   (or (io/input-port? p) (io/output-port? p)))
@@ -401,52 +402,52 @@
 
 (define (io/read-char p)
   (if (port? p)
-      (let ((type (tuple-ref p port.type))
-            (buf  (tuple-ref p port.mainbuf))
-            (ptr  (tuple-ref p port.mainptr)))
-        (cond ((or (eq? type type:textual-input)
-                   (eq? type type:textual-input/output))
-               (let ((unit (bytevector-ref buf ptr)))
-                 (if (< unit 128)
-                     (begin (tuple-set! p port.mainptr (+ ptr 1))
-                            (integer->char unit))
-                     (io/get-char p #f))))
-              ((or (eq? type type:binary-input)   
-                   (eq? type type:binary-input/output))
-               (let ((x (io/get-u8 p #f)))
-                 (if (eof-object? x)
-                     x
-                     (integer->char x))))
-              (else
-               (error 'read-char "not a textual input port" p)
-               #t)))
-      (begin (error 'read-char "not a textual input port" p)
-             #t)))
+    (let ((type (tuple-ref p port.type))
+          (buf (tuple-ref p port.mainbuf))
+          (ptr (tuple-ref p port.mainptr)))
+      (cond ((or (eq? type type:textual-input)
+               (eq? type type:textual-input/output))
+             (let ((unit (bytevector-ref buf ptr)))
+               (if (< unit 128)
+                 (begin (tuple-set! p port.mainptr (+ ptr 1))
+                   (integer->char unit))
+                 (io/get-char p #f))))
+        ((or (eq? type type:binary-input)
+            (eq? type type:binary-input/output))
+          (let ((x (io/get-u8 p #f)))
+            (if (eof-object? x)
+              x
+              (integer->char x))))
+        (else
+          (error 'read-char "not a textual input port" p)
+          #t)))
+    (begin (error 'read-char "not a textual input port" p)
+      #t)))
 
 ; FIXME:  See comments for io/read-char above.
 
 (define (io/peek-char p)
   (if (port? p)
-      (let ((type (tuple-ref p port.type))
-            (buf  (tuple-ref p port.mainbuf))
-            (ptr  (tuple-ref p port.mainptr)))
-        (cond ((or (eq? type type:textual-input)
-                   (eq? type type:textual-input/output))
-               (let ((unit (bytevector-ref buf ptr)))
-                 (if (< unit 128)
-                     (integer->char unit)
-                     (io/get-char p #t))))
-              ((or (eq? type type:binary-input)   
-                   (eq? type type:binary-input/output))
-               (let ((x (io/get-u8 p #t)))
-                 (if (eof-object? x)
-                     x
-                     (integer->char x))))
-              (else
-               (error 'peek-char "not a textual input port" p)
-               #t)))
-      (begin (error 'peek-char "not a textual input port" p)
-             #t)))
+    (let ((type (tuple-ref p port.type))
+          (buf (tuple-ref p port.mainbuf))
+          (ptr (tuple-ref p port.mainptr)))
+      (cond ((or (eq? type type:textual-input)
+               (eq? type type:textual-input/output))
+             (let ((unit (bytevector-ref buf ptr)))
+               (if (< unit 128)
+                 (integer->char unit)
+                 (io/get-char p #t))))
+        ((or (eq? type type:binary-input)
+            (eq? type type:binary-input/output))
+          (let ((x (io/get-u8 p #t)))
+            (if (eof-object? x)
+              x
+              (integer->char x))))
+        (else
+          (error 'peek-char "not a textual input port" p)
+          #t)))
+    (begin (error 'peek-char "not a textual input port" p)
+      #t)))
 
 ; This was dropped in R6RS because its semantics as specified
 ; by the R5RS aren't really useful.  See below.
@@ -461,36 +462,36 @@
 
 (define (io/char-ready? p)
   (if (port? p)
-      (let ((type (tuple-ref p port.type))
-            (buf  (tuple-ref p port.mainbuf))
-            (ptr  (tuple-ref p port.mainptr)))
-        (cond ((or (eq? type type:textual-input)
-                   (eq? type type:textual-input/output))
-               (let ((unit (bytevector-ref buf ptr)))
-                 (or (< unit 128)
-                     (eq? (tuple-ref p port.state)
-                          'eof)
-                     (((tuple-ref p port.ioproc) 'ready?)
-                      (tuple-ref p port.iodata)))))
-              (else #f)))
-      (error 'char-ready? (errmsg 'msg:nottextualinput) p)))
+    (let ((type (tuple-ref p port.type))
+          (buf (tuple-ref p port.mainbuf))
+          (ptr (tuple-ref p port.mainptr)))
+      (cond ((or (eq? type type:textual-input)
+               (eq? type type:textual-input/output))
+             (let ((unit (bytevector-ref buf ptr)))
+               (or (< unit 128)
+                 (eq? (tuple-ref p port.state)
+                   'eof)
+                 (((tuple-ref p port.ioproc) 'ready?)
+                   (tuple-ref p port.iodata)))))
+        (else #f)))
+    (error 'char-ready? (errmsg 'msg:nottextualinput) p)))
 
 ; FIXME: trusts the ioproc, which might be unwise.
 
 (define (io/u8-ready? p)
   (if (port? p)
-      (let ((type (tuple-ref p port.type))
-            (ptr  (tuple-ref p port.mainptr))
-            (lim  (tuple-ref p port.mainlim)))
-        (cond ((or (eq? type type:binary-input)   
-                   (eq? type type:binary-input/output))
-               (or (< ptr lim)
-                   (eq? (tuple-ref p port.state)
-                        'eof)
-                   (((tuple-ref p port.ioproc) 'ready?)
-                    (tuple-ref p port.iodata))))
-              (else #f)))
-      (error 'u8-ready? (errmsg 'msg:notbinaryinput) p)))
+    (let ((type (tuple-ref p port.type))
+          (ptr (tuple-ref p port.mainptr))
+          (lim (tuple-ref p port.mainlim)))
+      (cond ((or (eq? type type:binary-input)
+               (eq? type type:binary-input/output))
+             (or (< ptr lim)
+               (eq? (tuple-ref p port.state)
+                 'eof)
+               (((tuple-ref p port.ioproc) 'ready?)
+                 (tuple-ref p port.iodata))))
+        (else #f)))
+    (error 'u8-ready? (errmsg 'msg:notbinaryinput) p)))
 
 ; FIXME:  For v0.94 only, io/write-char can write to binary
 ; ports, treating them as Latin-1.
@@ -502,23 +503,24 @@
   (unless (char? c)
     (error 'write-char "not a character" c))
   (if (port? p)
-      (let ((type (tuple-ref p port.type)))
-        (cond ((or (eq? type type:binary-output)   
-                   (eq? type type:binary-input/output))
-               (let ((sv (char->integer c)))
-                 (if (< sv 256)
-                     (io/put-u8 p sv)
-                     (error 'write-char
-                            "non-latin-1 character to binary port"
-                            c p))))
-              ((or (eq? type type:textual-output)
-                   (eq? type type:textual-input/output))
-               (io/put-char p c))
-              (else
-               (error 'write-char "not a textual output port" p)
-               #t)))
-      (begin (error 'write-char "not a textual output port" p)
-             #t)))
+    (let ((type (tuple-ref p port.type)))
+      (cond ((or (eq? type type:binary-output)
+               (eq? type type:binary-input/output))
+             (let ((sv (char->integer c)))
+               (if (< sv 256)
+                 (io/put-u8 p sv)
+                 (error 'write-char
+                   "non-latin-1 character to binary port"
+                   c
+                   p))))
+        ((or (eq? type type:textual-output)
+            (eq? type type:textual-input/output))
+          (io/put-char p c))
+        (else
+          (error 'write-char "not a textual output port" p)
+          #t)))
+    (begin (error 'write-char "not a textual output port" p)
+      #t)))
 
 ; FIXME:  The name is misleading, since it now requires a bytevector.
 ; FIXME:  Asm/Shared/makefasl.sch uses this procedure, mainly
@@ -536,10 +538,10 @@
   (assert (port? p))
   (assert (bytevector? bvl))
   (assert (let ((t (tuple-ref p port.transcoder)))
-            (or (eq? t codec:binary)
-                (eq? (io/transcoder-codec t) 'latin-1))))
+           (or (eq? t codec:binary)
+             (eq? (io/transcoder-codec t) 'latin-1))))
   (let ((buf (tuple-ref p port.mainbuf))
-        (tt  (typetag bvl)))
+        (tt (typetag bvl)))
     (io/flush-buffer p)
     (tuple-set! p port.mainbuf bvl)
     (tuple-set! p port.mainlim (bytevector-length bvl))
@@ -547,7 +549,7 @@
     (tuple-set! p port.mainbuf buf)
     (tuple-set! p port.mainlim 0)
     (unspecified)))
-  
+
 ; When writing the contents of an entire string,
 ; we could do the error checking just once, but
 ; this should be fast enough for now.
@@ -556,43 +558,43 @@
   (let loop ((i 0)
              (n (string-length s)))
     (if (< i n)
-        (begin
-          (io/write-char (string-ref s i) p)
-          (loop (+ i 1) n))
-        (unspecified))))
+      (begin
+        (io/write-char (string-ref s i) p)
+        (loop (+ i 1) n))
+      (unspecified))))
 
 (define (io/discretionary-flush p)
   (if (and (port? p) (io/output-port? p))
-      (if (tuple-ref p port.wr-flush?)
-          (io/flush-buffer p))
-      (begin (error "io/discretionary-flush: not an output port: " p)
-             #t)))
+    (if (tuple-ref p port.wr-flush?)
+      (io/flush-buffer p))
+    (begin (error "io/discretionary-flush: not an output port: " p)
+      #t)))
 
 ; Flushes output-only ports, but does not flush combined input/output
 ; ports because they are unbuffered on the output side.
 
 (define (io/flush p)
-  
+
   (if (and (port? p) (io/output-port? p))
-      (if (not (io/input-port? p))
-          (io/flush-buffer p))
-      (begin (error "io/flush: not an output port: " p)
-             #t)))
+    (if (not (io/input-port? p))
+      (io/flush-buffer p))
+    (begin (error "io/flush: not an output port: " p)
+      #t)))
 
 ; FIXME:  Should release buffers.
 
 (define (io/close-port p)
   (if (port? p)
-      (begin
-        (if (io/output-port? p)
-            (io/flush-buffer p))
-        (((tuple-ref p port.ioproc) 'close)
-         
-         (tuple-ref p port.iodata))
-        (io/set-closed-state! p)
-        (unspecified))
-      (begin (error "io/close-port: not a port: " p)
-             #t)))
+    (begin
+      (if (io/output-port? p)
+        (io/flush-buffer p))
+      (((tuple-ref p port.ioproc) 'close)
+
+        (tuple-ref p port.iodata))
+      (io/set-closed-state! p)
+      (unspecified))
+    (begin (error "io/close-port: not a port: " p)
+      #t)))
 
 (define (io/port-reader p)
   (if (not (port? p))
@@ -619,19 +621,19 @@
 (define (io/port-alist p)
   (cond ((port? p)
          (tuple-ref p port.alist))
-        (else
-         (error 'io/port-alist (errmsg 'msg:illegal) p)
-         #t)))
+    (else
+      (error 'io/port-alist (errmsg 'msg:illegal) p)
+      #t)))
 
 (define (io/port-alist-set! p alist)
   (cond ((not (port? p))
          (error 'io/port-alist (errmsg 'msg:illegal1) p))
-        ((not (and (list? alist)
-                   (every? pair? alist)))
-         (error 'io/port-alist (errmsg 'msg:illegal2) p))
-        (else
-         (tuple-set! p port.alist alist)
-         (unspecified))))
+    ((not (and (list? alist)
+           (every? pair? alist)))
+      (error 'io/port-alist (errmsg 'msg:illegal2) p))
+    (else
+      (tuple-set! p port.alist alist)
+      (unspecified))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -646,12 +648,12 @@
 ;;
 ;; FIXME:  This affects macro expansion, but not the reader.
 
-(define recognize-keywords? (make-parameter  #f))
+(define recognize-keywords? (make-parameter #f))
 
 (define recognize-javadot-symbols?
   (make-parameter #f boolean?))
 
-(define case-sensitive? (make-parameter  #f boolean?))
+(define case-sensitive? (make-parameter #f boolean?))
 
 ; FIXME: deprecated
 
@@ -661,7 +663,7 @@
 ;; If #t, the reader keeps track of source locations.
 
 (define datum-source-locations?
-  (make-parameter  #f boolean?))
+  (make-parameter #f boolean?))
 
 ;; Enables flags such as #!r5rs and #!larceny
 
@@ -675,7 +677,7 @@
 ;; #^B #^C #^F #^P #^G randomness (used in FASL files)
 
 (define read-larceny-weirdness?
-  (make-parameter  #t boolean?))
+  (make-parameter #t boolean?))
 
 ;; Enables:
 ;; vertical bars surrounding symbols
@@ -704,19 +706,19 @@
 ;; R5RS lexical syntax, including the now-deprecated weird parts
 
 (define read-r5rs-weirdness?
-  (make-parameter  #t boolean?))
+  (make-parameter #t boolean?))
 
 ;; Enables:
 ;; R6RS lexical syntax
 
 (define read-r6rs-weirdness?
-  (make-parameter  #t boolean?))
+  (make-parameter #t boolean?))
 
 ;; Enables:
 ;; R7RS lexical syntax
 
 (define read-r7rs-weirdness?
-  (make-parameter  #t boolean?))
+  (make-parameter #t boolean?))
 
 ;; The following were supported in v0.93 but will not be in the
 ;; future:
@@ -728,7 +730,7 @@
 ;; Its result is the value of the #!fasl flag.
 
 (define fasl-evaluator
-  (make-parameter  (lambda () (unspecified)) procedure?))
+  (make-parameter (lambda () (unspecified)) procedure?))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -770,53 +772,52 @@
 ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define readmode-mask:foldcase        1)
-(define readmode-mask:locations       2)
-(define readmode-mask:javadot         4)
-(define readmode-mask:flags           8)
-(define readmode-mask:weirdness    1008)    ; (+ 16 32 64 128 256 512)
+(define readmode-mask:foldcase 1)
+(define readmode-mask:locations 2)
+(define readmode-mask:javadot 4)
+(define readmode-mask:flags 8)
+(define readmode-mask:weirdness 1008) ; (+ 16 32 64 128 256 512)
 
-(define readmode:binary               0)
-(define readmode:nofoldcase           0)
-(define readmode:foldcase             1)
-(define readmode:nolocations          0)
-(define readmode:locations            2)
-(define readmode:nojavadot            0)
-(define readmode:javadot              4)
-(define readmode:noflags              0)
-(define readmode:flags                8)
-(define readmode:noweird              0)
-(define readmode:larceny             16)
-(define readmode:traditional         32)
-(define readmode:mzscheme            64)
-(define readmode:r5rs               128)
-(define readmode:r6rs               256)
-(define readmode:r7rs               512)
+(define readmode:binary 0)
+(define readmode:nofoldcase 0)
+(define readmode:foldcase 1)
+(define readmode:nolocations 0)
+(define readmode:locations 2)
+(define readmode:nojavadot 0)
+(define readmode:javadot 4)
+(define readmode:noflags 0)
+(define readmode:flags 8)
+(define readmode:noweird 0)
+(define readmode:larceny 16)
+(define readmode:traditional 32)
+(define readmode:mzscheme 64)
+(define readmode:r5rs 128)
+(define readmode:r6rs 256)
+(define readmode:r7rs 512)
 
 (define (default-read-mode)
   (define (default parameter iftrue iffalse)
     (if (parameter) iftrue iffalse))
-  (+ (default case-sensitive?             readmode:nofoldcase
-                                          readmode:foldcase)
-     (default datum-source-locations?     readmode:locations
-                                          readmode:nolocations)
-     (default recognize-javadot-symbols?  readmode:javadot
-                                          readmode:nojavadot)
-     (default read-r6rs-flags?            readmode:flags
-                                          readmode:noflags)
-     (default read-larceny-weirdness?     readmode:larceny
-                                          readmode:noweird)
-     (default read-traditional-weirdness? readmode:traditional
-                                          readmode:noweird)
-     (default read-mzscheme-weirdness?    readmode:mzscheme
-                                          readmode:noweird)
-     (default read-r5rs-weirdness?        readmode:r5rs
-                                          readmode:noweird)
-     (default read-r6rs-weirdness?        readmode:r6rs
-                                          readmode:noweird)
-     (default read-r7rs-weirdness?        readmode:r7rs
-                                          readmode:noweird)))
-
+  (+ (default case-sensitive? readmode:nofoldcase
+      readmode:foldcase)
+    (default datum-source-locations? readmode:locations
+      readmode:nolocations)
+    (default recognize-javadot-symbols? readmode:javadot
+      readmode:nojavadot)
+    (default read-r6rs-flags? readmode:flags
+      readmode:noflags)
+    (default read-larceny-weirdness? readmode:larceny
+      readmode:noweird)
+    (default read-traditional-weirdness? readmode:traditional
+      readmode:noweird)
+    (default read-mzscheme-weirdness? readmode:mzscheme
+      readmode:noweird)
+    (default read-r5rs-weirdness? readmode:r5rs
+      readmode:noweird)
+    (default read-r6rs-weirdness? readmode:r6rs
+      readmode:noweird)
+    (default read-r7rs-weirdness? readmode:r7rs
+      readmode:noweird)))
 
 (define (io/complain-of-illegal-argument proc arg)
   (error proc "illegal argument" arg)
@@ -825,151 +826,151 @@
 (define (io/port-folds-case? p)
   (cond ((io/input-port? p)
          (eq? (logand readmode-mask:foldcase
-                        (tuple-ref p port.readmode))
-              readmode:foldcase))
-        (else
-         (io/complain-of-illegal-argument 'io/port-folds-case? p))))
+               (tuple-ref p port.readmode))
+           readmode:foldcase))
+    (else
+      (io/complain-of-illegal-argument 'io/port-folds-case? p))))
 
 (define (io/port-folds-case! p bool)
   (cond ((and (io/input-port? p) (io/textual-port? p) (boolean? bool))
          (let* ((mode (tuple-ref p port.readmode))
                 (mode (logand mode (lognot readmode-mask:foldcase)))
                 (mode (logior mode
-                                (if bool
-                                    readmode:foldcase
-                                    readmode:nofoldcase))))
+                       (if bool
+                         readmode:foldcase
+                         readmode:nofoldcase))))
            (tuple-set! p port.readmode mode)))
-        (else
-         (io/complain-of-illegal-argument
-          'io/port-folds-case!
-          (if (boolean? bool) p bool)))))
+    (else
+      (io/complain-of-illegal-argument
+        'io/port-folds-case!
+        (if (boolean? bool) p bool)))))
 
 (define (io/port-records-source-locations? p)
   (cond ((io/input-port? p)
          (eq? (logand readmode-mask:locations
-                        (tuple-ref p port.readmode))
-              readmode:locations))
-        (else
-         (io/complain-of-illegal-argument 'io/port-records-locations? p))))
+               (tuple-ref p port.readmode))
+           readmode:locations))
+    (else
+      (io/complain-of-illegal-argument 'io/port-records-locations? p))))
 
 (define (io/port-recognizes-javadot-symbols? p)
   (cond ((io/input-port? p)
          (eq? (logand readmode-mask:javadot
-                        (tuple-ref p port.readmode))
-              readmode:javadot))
-        (else
-         (io/complain-of-illegal-argument 'io/port-recognizes-javadot-symbols?
-                                          p))))
+               (tuple-ref p port.readmode))
+           readmode:javadot))
+    (else
+      (io/complain-of-illegal-argument 'io/port-recognizes-javadot-symbols?
+        p))))
 
 (define (io/port-recognizes-javadot-symbols! p bool)
   (cond ((and (io/input-port? p) (io/textual-port? p) (boolean? bool))
          (let* ((mode (tuple-ref p port.readmode))
                 (mode (logand mode (lognot readmode-mask:javadot)))
                 (mode (logior mode
-                                (if bool
-                                    readmode:javadot
-                                    readmode:nojavadot))))
+                       (if bool
+                         readmode:javadot
+                         readmode:nojavadot))))
            (tuple-set! p port.readmode mode)))
-        (else
-         (io/complain-of-illegal-argument
-          'io/port-recognizes-javadot-symbols!
-          (if (boolean? bool) p bool)))))
+    (else
+      (io/complain-of-illegal-argument
+        'io/port-recognizes-javadot-symbols!
+        (if (boolean? bool) p bool)))))
 
 (define (io/port-allows-flags? p)
   (cond ((io/input-port? p)
          (eq? (logand readmode-mask:flags
-                        (tuple-ref p port.readmode))
-              readmode:flags))
-        (else
-         (io/complain-of-illegal-argument 'io/port-allows-flags? p))))
+               (tuple-ref p port.readmode))
+           readmode:flags))
+    (else
+      (io/complain-of-illegal-argument 'io/port-allows-flags? p))))
 
 (define (allows-weirdness-getter p themode name)
   (cond ((and (io/open-port? p) (io/textual-port? p))
          (eq? (logand themode
-                        (tuple-ref p port.readmode))
-              themode))
-        (else
-         (io/complain-of-illegal-argument name p))))
+               (tuple-ref p port.readmode))
+           themode))
+    (else
+      (io/complain-of-illegal-argument name p))))
 
 (define (allows-weirdness-setter p bool themode name)
   (cond ((and (io/open-port? p) (io/textual-port? p) (boolean? bool))
          (let* ((mode (tuple-ref p port.readmode))
                 (mode (logand mode (lognot themode)))
                 (mode (logior mode
-                                (if bool
-                                    themode
-                                    readmode:noweird))))
+                       (if bool
+                         themode
+                         readmode:noweird))))
            (tuple-set! p port.readmode mode)))
-        (else
-         (io/complain-of-illegal-argument
-          name
-          (if (boolean? bool) p bool)))))
+    (else
+      (io/complain-of-illegal-argument
+        name
+        (if (boolean? bool) p bool)))))
 
 (define (io/port-allows-larceny-weirdness? p)
   (allows-weirdness-getter p
-                           readmode:larceny
-                           'io/port-allows-larceny-weirdness?))
+    readmode:larceny
+    'io/port-allows-larceny-weirdness?))
 
 (define (io/port-allows-larceny-weirdness! p bool)
   (allows-weirdness-setter p
-                           bool
-                           readmode:larceny
-                           'io/port-allows-larceny-weirdness!))
+    bool
+    readmode:larceny
+    'io/port-allows-larceny-weirdness!))
 
 (define (io/port-allows-traditional-weirdness? p)
   (allows-weirdness-getter p
-                           readmode:traditional
-                           'io/port-allows-traditional-weirdness?))
+    readmode:traditional
+    'io/port-allows-traditional-weirdness?))
 
 (define (io/port-allows-traditional-weirdness! p bool)
   (allows-weirdness-setter p
-                           bool
-                           readmode:traditional
-                           'io/port-allows-traditional-weirdness!))
+    bool
+    readmode:traditional
+    'io/port-allows-traditional-weirdness!))
 
 (define (io/port-allows-mzscheme-weirdness? p)
   (allows-weirdness-getter p
-                           readmode:mzscheme
-                           'io/port-allows-mzscheme-weirdness?))
+    readmode:mzscheme
+    'io/port-allows-mzscheme-weirdness?))
 
 (define (io/port-allows-mzscheme-weirdness! p bool)
   (allows-weirdness-setter p
-                           bool
-                           readmode:mzscheme
-                           'io/port-allows-mzscheme-weirdness!))
+    bool
+    readmode:mzscheme
+    'io/port-allows-mzscheme-weirdness!))
 
 (define (io/port-allows-r5rs-weirdness? p)
   (allows-weirdness-getter p
-                           readmode:r5rs
-                           'io/port-allows-r5rs-weirdness?))
+    readmode:r5rs
+    'io/port-allows-r5rs-weirdness?))
 
 (define (io/port-allows-r5rs-weirdness! p bool)
   (allows-weirdness-setter p
-                           bool
-                           readmode:r5rs
-                           'io/port-allows-r5rs-weirdness!))
+    bool
+    readmode:r5rs
+    'io/port-allows-r5rs-weirdness!))
 
 (define (io/port-allows-r6rs-weirdness? p)
   (allows-weirdness-getter p
-                           readmode:r6rs
-                           'io/port-allows-r6rs-weirdness?))
+    readmode:r6rs
+    'io/port-allows-r6rs-weirdness?))
 
 (define (io/port-allows-r6rs-weirdness! p bool)
   (allows-weirdness-setter p
-                           bool
-                           readmode:r6rs
-                           'io/port-allows-r6rs-weirdness!))
+    bool
+    readmode:r6rs
+    'io/port-allows-r6rs-weirdness!))
 
 (define (io/port-allows-r7rs-weirdness? p)
   (allows-weirdness-getter p
-                           readmode:r7rs
-                           'io/port-allows-r7rs-weirdness?))
+    readmode:r7rs
+    'io/port-allows-r7rs-weirdness?))
 
 (define (io/port-allows-r7rs-weirdness! p bool)
   (allows-weirdness-setter p
-                           bool
-                           readmode:r7rs
-                           'io/port-allows-r7rs-weirdness!))
+    bool
+    readmode:r7rs
+    'io/port-allows-r7rs-weirdness!))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -1038,51 +1039,51 @@
 
 (define (io/port-position p)
   (if (io/binary-port? p)
-      (io/port-position-nocache p)
-      (let ((posn (io/port-position-nocache p)))
+    (io/port-position-nocache p)
+    (let ((posn (io/port-position-nocache p)))
 
-        (if (and (> posn 0)
-                 (tuple-ref p port.setposn))
+      (if (and (> posn 0)
+           (tuple-ref p port.setposn))
 
-            ; Cache the position for future use by set-port-position!
+        ; Cache the position for future use by set-port-position!
 
-            (let* ((posn (io/port-position-nocache p))
-                   (t (io/port-transcoder p))
-                   (alist (io/port-alist p))
-                   (probe1 (assq 'port-position alist))
-                   (port-position-in-chars (if probe1 (cdr probe1) #f))
-                   (probe2 (assq 'port-position-in-bytes alist))
-                   (port-position-in-bytes (if probe2 (cdr probe2) #f))
-                   (probe3 (assq 'cached-positions alist))
-                   (ht (if probe3
-                           (cdr probe3)
-                           (let* ((ht (make-core-hash-eqv))
-                                  (entry (cons 'cached-positions ht)))
-                             (io/port-alist-set! p (cons entry alist))
-                             ht))))
+        (let* ((posn (io/port-position-nocache p))
+               (t (io/port-transcoder p))
+               (alist (io/port-alist p))
+               (probe1 (assq 'port-position alist))
+               (port-position-in-chars (if probe1 (cdr probe1) #f))
+               (probe2 (assq 'port-position-in-bytes alist))
+               (port-position-in-bytes (if probe2 (cdr probe2) #f))
+               (probe3 (assq 'cached-positions alist))
+               (ht (if probe3
+                    (cdr probe3)
+                    (let* ((ht (make-core-hash-eqv))
+                           (entry (cons 'cached-positions ht)))
+                      (io/port-alist-set! p (cons entry alist))
+                      ht))))
 
-              (cond ((and (eq? 'latin-1 (io/transcoder-codec t))
-                          (eq? 'none (io/transcoder-eol-style t)))
-                     (core-hash-set! ht posn posn))
-                    (port-position-in-chars
-                     (core-hash-set! ht posn posn))
-                    (port-position-in-bytes
-                     (let* ((byte-posn (port-position-in-bytes))
-                            (byte-posn
-                             (if (io/input-port? p)
-                                 (- byte-posn
-                                    (- (tuple-ref p port.mainlim)
-                                       (tuple-ref p port.mainptr))
-                                    (- (tuple-ref p port.auxlim)
-                                       (tuple-ref p port.auxptr)))
-                                 byte-posn)))
-                       (core-hash-set! ht posn byte-posn)))
-                    (else
-                     (assertion-violation
-                      'port-position
-                      "internal error: no support for set-port-position!")))))
+          (cond ((and (eq? 'latin-1 (io/transcoder-codec t))
+                   (eq? 'none (io/transcoder-eol-style t)))
+                 (core-hash-set! ht posn posn))
+            (port-position-in-chars
+              (core-hash-set! ht posn posn))
+            (port-position-in-bytes
+              (let* ((byte-posn (port-position-in-bytes))
+                     (byte-posn
+                       (if (io/input-port? p)
+                         (- byte-posn
+                           (- (tuple-ref p port.mainlim)
+                             (tuple-ref p port.mainptr))
+                           (- (tuple-ref p port.auxlim)
+                             (tuple-ref p port.auxptr)))
+                         byte-posn)))
+                (core-hash-set! ht posn byte-posn)))
+            (else
+              (assertion-violation
+                'port-position
+                "internal error: no support for set-port-position!")))))
 
-        posn)))
+      posn)))
 
 ; Like io/port-position, but faster and more space-efficient
 ; because it doesn't cache.  The call to io/flush is necessary
@@ -1091,35 +1092,35 @@
 (define (io/port-position-nocache p)
   (cond ((io/input-port? p)
          (+ (tuple-ref p port.mainpos)
-            (tuple-ref p port.mainptr)))
-        ((io/output-port? p)
-         (io/flush p)
-         (+ (tuple-ref p port.mainpos)
-            (tuple-ref p port.mainlim)))
-        (else
-         (error "io/port-position: " p " is not an open port.")
-         #t)))
+           (tuple-ref p port.mainptr)))
+    ((io/output-port? p)
+      (io/flush p)
+      (+ (tuple-ref p port.mainpos)
+        (tuple-ref p port.mainlim)))
+    (else
+      (error "io/port-position: " p " is not an open port.")
+      #t)))
 
 (define (io/port-lines-read p)
   (cond ((io/input-port? p)
          (tuple-ref p port.linesread))
-        (else
-         (error 'io/port-lines-read "not a textual input port" p)
-         #t)))
+    (else
+      (error 'io/port-lines-read "not a textual input port" p)
+      #t)))
 
 (define (io/port-line-start p)
   (cond ((io/input-port? p)
          (tuple-ref p port.linestart))
-        (else
-         (error 'io/port-line-start "not a textual input port" p)
-         #t)))
+    (else
+      (error 'io/port-line-start "not a textual input port" p)
+      #t)))
 
 (define (io/port-has-set-port-position!? p)
   (cond ((port? p)
          (tuple-ref p port.setposn))
-        (else
-         (error 'io/has-set-port-position!? "illegal argument" p)
-         #t)))
+    (else
+      (error 'io/has-set-port-position!? "illegal argument" p)
+      #t)))
 
 ; FIXME: for textual output ports with variable-length encoding,
 ; any output operation should invalidate all cached positions
@@ -1127,78 +1128,79 @@
 
 (define (io/set-port-position! p posn)
   (if (io/output-port? p)
-      (io/flush p))
+    (io/flush p))
   (cond ((not (and (port? p)
-                   (tuple-ref p port.setposn)))
+               (tuple-ref p port.setposn)))
          (error 'io/set-port-position! (errmsg 'msg:illegalarg1) p posn))
-        ((eq? (tuple-ref p port.state) 'closed)
-         (unspecified))
-        ((not (and (exact? posn) (integer? posn)))
-         (error 'io/set-port-position! "illegal argument" posn))
-        ((or (= posn 0)
-             (io/binary-port? p))
-         (io/reset-buffers! p)
-         (tuple-set! p port.mainpos posn)
-         (io/set-port-position-as-binary! p posn))
-        (else
+    ((eq? (tuple-ref p port.state) 'closed)
+      (unspecified))
+    ((not (and (exact? posn) (integer? posn)))
+      (error 'io/set-port-position! "illegal argument" posn))
+    ((or (= posn 0)
+        (io/binary-port? p))
+      (io/reset-buffers! p)
+      (tuple-set! p port.mainpos posn)
+      (io/set-port-position-as-binary! p posn))
+    (else
 
-         ; Lookup the corresponding byte position.
+      ; Lookup the corresponding byte position.
 
-         (let* ((t (io/port-transcoder p))
-                (codec (io/transcoder-codec t))
-                (input? (io/input-port? p))
-                (output? (io/output-port? p))
-                (alist (io/port-alist p))
-                (probe1 (assq 'port-position alist))
-                (port-position-in-chars (if probe1 (cdr probe1) #f))
-                (probe2 (assq 'port-position-in-bytes alist))
-                (port-position-in-bytes (if probe2 (cdr probe2) #f))
-                (probe3 (assq 'cached-positions alist))
-                (ht (if probe3 (cdr probe3) #f))
-                (byte-posn (and ht (core-hash-ref ht posn #f))))
+      (let* ((t (io/port-transcoder p))
+             (codec (io/transcoder-codec t))
+             (input? (io/input-port? p))
+             (output? (io/output-port? p))
+             (alist (io/port-alist p))
+             (probe1 (assq 'port-position alist))
+             (port-position-in-chars (if probe1 (cdr probe1) #f))
+             (probe2 (assq 'port-position-in-bytes alist))
+             (port-position-in-bytes (if probe2 (cdr probe2) #f))
+             (probe3 (assq 'cached-positions alist))
+             (ht (if probe3 (cdr probe3) #f))
+             (byte-posn (and ht (core-hash-ref ht posn #f))))
 
-           (define (reposition!)
-             (io/reset-buffers! p)
-             (tuple-set! p port.mainpos posn)
-             (io/set-port-position-as-binary! p byte-posn))
+        (define (reposition!)
+          (io/reset-buffers! p)
+          (tuple-set! p port.mainpos posn)
+          (io/set-port-position-as-binary! p byte-posn))
 
-           (define (read-chars-loop n)
-             (if (> n 0)
-                 (begin
-                   (read-char p)
-                   (read-chars-loop (- n 1)))))
+        (define (read-chars-loop n)
+          (if (> n 0)
+            (begin
+              (read-char p)
+              (read-chars-loop (- n 1)))))
 
-           ; We can't enforce the R6RS restriction for combined
-           ; input/output ports because it may be a lookahead correction.
+        ; We can't enforce the R6RS restriction for combined
+        ; input/output ports because it may be a lookahead correction.
 
-           (cond ((or byte-posn
-                      (and input? output?))
-                  (reposition!))
-                 (else
-                  ; error case: posn > 0 and not in cache
-                  (if (not (issue-deprecated-warnings?))
-                      (assertion-violation 'set-port-position!
-                                           (errmsg 'msg:uncachedposition)
-                                           p posn)
-                      ; FIXME: ad hoc warning message
-                      (let ((out (current-error-port)))
-                        (display "Warning from set-port-position!: " out)
-                        (newline out)
-                        (display (errmsg 'msg:uncachedposition) out)
-                        (display ": " out)
-                        (write posn out)
-                        (newline out)
-                        ; Attempt the operation anyway.  Hey, it might work.
-                        (cond ((or port-position-in-chars
-                                   (and
-                                    (eq? 'latin-1 codec)
-                                    (eq? 'none (io/transcoder-eol-style t))))
-                               (reposition!))
-                              ((io/input-port? p)
-                               (io/set-port-position! p 0)
-                               (read-chars-loop posn))
-                              (else
-                               (reposition!))))))))))
+        (cond ((or byte-posn
+                 (and input? output?))
+               (reposition!))
+          (else
+            ; error case: posn > 0 and not in cache
+            (if (not (issue-deprecated-warnings?))
+              (assertion-violation 'set-port-position!
+                (errmsg 'msg:uncachedposition)
+                p
+                posn)
+              ; FIXME: ad hoc warning message
+              (let ((out (current-error-port)))
+                (display "Warning from set-port-position!: " out)
+                (newline out)
+                (display (errmsg 'msg:uncachedposition) out)
+                (display ": " out)
+                (write posn out)
+                (newline out)
+                ; Attempt the operation anyway.  Hey, it might work.
+                (cond ((or port-position-in-chars
+                         (and
+                           (eq? 'latin-1 codec)
+                           (eq? 'none (io/transcoder-eol-style t))))
+                       (reposition!))
+                  ((io/input-port? p)
+                    (io/set-port-position! p 0)
+                    (read-chars-loop posn))
+                  (else
+                    (reposition!))))))))))
 
   (unspecified))
 
@@ -1208,13 +1210,13 @@
             posn)))
     (cond ((eq? r 'ok)
            (if (eq? (tuple-ref p port.state) 'eof)
-               (tuple-set!
-                p
-                port.state
-                (if (binary-port? p) 'binary 'textual)))
+             (tuple-set!
+               p
+               port.state
+               (if (binary-port? p) 'binary 'textual)))
            (unspecified))
-          (else
-           (error 'set-port-position! "io error" p posn)))))
+      (else
+        (error 'set-port-position! "io error" p posn)))))
 
 (define (io/port-transcoder p)
   (assert (port? p))
@@ -1223,12 +1225,12 @@
 (define (io/textual-port? p)
   (assert (port? p))
   (not (= 0 (logand type-mask:binary/textual
-                        (tuple-ref p port.type)))))
+             (tuple-ref p port.type)))))
 
 (define (io/r7rs-textual-port? p)
   (assert (port? p))
   (not (= 0 (logand type-mask:binary/textual
-                        (tuple-ref p port.r7rstype)))))
+             (tuple-ref p port.r7rstype)))))
 
 (define (io/binary-port? p)
   (assert (port? p))
@@ -1237,7 +1239,7 @@
 (define (io/r7rs-binary-port? p)
   (assert (port? p))
   (= 0 (logand type-mask:binary/textual
-                   (tuple-ref p port.r7rstype))))
+        (tuple-ref p port.r7rstype))))
 
 ; Transcoders et cetera.
 ;
@@ -1251,7 +1253,7 @@
 ;     010 means UTF-8
 ;     011 means UTF-16
 ;     111 means UTF-16 in little-endian mode (internal only)
-; 
+;
 ; eol style (3 bits):
 ;     000 means none
 ;     001 means lf
@@ -1271,36 +1273,36 @@
 ; transcoders should return the original symbols instead of
 ; their canonical equivalents.
 
-(define transcoder-mask:codec    #b11100000)
+(define transcoder-mask:codec #b11100000)
 (define transcoder-mask:eolstyle #b00011100)
-(define transcoder-mask:errmode  #b00000011)
+(define transcoder-mask:errmode #b00000011)
 
-(define codec:binary  0)
+(define codec:binary 0)
 (define codec:latin-1 #b00100000)
-(define codec:utf-8   #b01000000)
-(define codec:utf-16  #b01100000)
+(define codec:utf-8 #b01000000)
+(define codec:utf-16 #b01100000)
 
-(define eolstyle:none  #b00000)
-(define eolstyle:lf    #b00100)
-(define eolstyle:nel   #b01000)
-(define eolstyle:ls    #b01100)
-(define eolstyle:cr    #b10000)
-(define eolstyle:crlf  #b10100)
+(define eolstyle:none #b00000)
+(define eolstyle:lf #b00100)
+(define eolstyle:nel #b01000)
+(define eolstyle:ls #b01100)
+(define eolstyle:cr #b10000)
+(define eolstyle:crlf #b10100)
 (define eolstyle:crnel #b11000)
 
-(define errmode:ignore  0)
+(define errmode:ignore 0)
 (define errmode:replace 1)
-(define errmode:raise   2)
+(define errmode:raise 2)
 
 ; May be redefined at startup as specified by system-features.
 ; (See also command-line processing).
 
 (define default-transcoder
   (make-parameter
-                  codec:utf-8
-                  (lambda (t)
-                    (and (fixnum? t)
-                         (<= codec:latin-1 t transcoder-mask:codec)))))
+    codec:utf-8
+    (lambda (t)
+      (and (fixnum? t)
+        (<= codec:latin-1 t transcoder-mask:codec)))))
 
 ; In Larceny, *every* symbol names an end-of-line style,
 ; and *every* symbol names an error handling mode.
@@ -1308,37 +1310,37 @@
 (define (io/make-transcoder codec eol-style handling-mode)
   (define (local-error msg irritant)
     (if (issue-deprecated-warnings?)
-        (let ((out (current-error-port)))
-          (display "Warning: " out)
-          (display msg out)
-          (display ": " out)
-          (write irritant out)
-          (newline out)
-          (display "Using Larceny-specific interpretation." out)
-          (newline out))))
+      (let ((out (current-error-port)))
+        (display "Warning: " out)
+        (display msg out)
+        (display ": " out)
+        (write irritant out)
+        (newline out)
+        (display "Using Larceny-specific interpretation." out)
+        (newline out))))
   (let ((bits:codec (case codec
                      ((latin-1) codec:latin-1)
-                     ((utf-8)   codec:utf-8)
-                     ((utf-16)  codec:utf-16)
+                     ((utf-8) codec:utf-8)
+                     ((utf-16) codec:utf-16)
                      (else (local-error "nonstandard codec" codec)
-                           codec:latin-1)))
+                       codec:latin-1)))
         (bits:eol (case eol-style
-                   ((none)  eolstyle:none)
-                   ((lf)    eolstyle:lf)
-                   ((nel)   eolstyle:nel)
-                   ((ls)    eolstyle:ls)
-                   ((cr)    eolstyle:cr)
-                   ((crlf)  eolstyle:crlf)
+                   ((none) eolstyle:none)
+                   ((lf) eolstyle:lf)
+                   ((nel) eolstyle:nel)
+                   ((ls) eolstyle:ls)
+                   ((cr) eolstyle:cr)
+                   ((crlf) eolstyle:crlf)
                    ((crnel) eolstyle:crnel)
                    (else (local-error "nonstandard eol style" eol-style)
-                         eolstyle:none)))
+                     eolstyle:none)))
         (bits:ehm (case handling-mode
-                   ((ignore)  errmode:ignore)
+                   ((ignore) errmode:ignore)
                    ((replace) errmode:replace)
-                   ((raise)   errmode:raise)
+                   ((raise) errmode:raise)
                    (else (local-error "nonstandard error handling mode"
-                                      handling-mode)
-                         errmode:replace))))
+                          handling-mode)
+                     errmode:replace))))
     (+ bits:codec bits:eol bits:ehm)))
 
 ; Programmers should never see a transcoder with binary codec.
@@ -1346,35 +1348,38 @@
 (define (io/transcoder-codec t)
   (let ((codec (logand t transcoder-mask:codec)))
 
-    (cond ((= codec codec:binary)  'binary)
-          ((= codec codec:latin-1) 'latin-1)
-          ((= codec codec:utf-8)   'utf-8)
-          ((= codec codec:utf-16)  'utf-16)
-          (else
-           (assertion-violation 'transcoder-codec
-                                "weird transcoder" t)))))
+    (cond ((= codec codec:binary) 'binary)
+      ((= codec codec:latin-1) 'latin-1)
+      ((= codec codec:utf-8) 'utf-8)
+      ((= codec codec:utf-16) 'utf-16)
+      (else
+        (assertion-violation 'transcoder-codec
+          "weird transcoder"
+          t)))))
 
 (define (io/transcoder-eol-style t)
   (let ((style (logand t transcoder-mask:eolstyle)))
-    (cond ((= style eolstyle:none)  'none)
-          ((= style eolstyle:lf)    'lf)
-          ((= style eolstyle:nel)   'nel)
-          ((= style eolstyle:ls)    'ls)
-          ((= style eolstyle:cr)    'cr)
-          ((= style eolstyle:crlf)  'crlf)
-          ((= style eolstyle:crnel) 'crnel)
-          (else
-           (assertion-violation 'transcoder-eol-style
-                                "weird transcoder" t)))))
+    (cond ((= style eolstyle:none) 'none)
+      ((= style eolstyle:lf) 'lf)
+      ((= style eolstyle:nel) 'nel)
+      ((= style eolstyle:ls) 'ls)
+      ((= style eolstyle:cr) 'cr)
+      ((= style eolstyle:crlf) 'crlf)
+      ((= style eolstyle:crnel) 'crnel)
+      (else
+        (assertion-violation 'transcoder-eol-style
+          "weird transcoder"
+          t)))))
 
 (define (io/transcoder-error-handling-mode t)
   (let ((mode (logand t transcoder-mask:errmode)))
-    (cond ((= mode errmode:ignore)  'ignore)
-          ((= mode errmode:replace) 'replace)
-          ((= mode errmode:raise)   'raise)
-          (else
-           (assertion-violation 'transcoder-error-handling-mode
-                                "weird transcoder" t)))))
+    (cond ((= mode errmode:ignore) 'ignore)
+      ((= mode errmode:replace) 'replace)
+      ((= mode errmode:raise) 'raise)
+      (else
+        (assertion-violation 'transcoder-error-handling-mode
+          "weird transcoder"
+          t)))))
 
 ; Like transcoded-port, but performs less error checking.
 
@@ -1382,57 +1387,59 @@
   (assert (io/open-port? p))
   (assert (eq? 'binary (tuple-ref p port.state)))
   (if (io/output-port? p)
-      (io/flush p))
+    (io/flush p))
 
   (if (not (memq (transcoder-codec t) '(latin-1 utf-8)))
-      (io/transcoded-port-random p t)
+    (io/transcoded-port-random p t)
 
-      ; shallow copy
+    ; shallow copy
 
-      (let ((newport (io/clone-port p)))
-        (tuple-set! newport
-                          port.type
-                          (logior type:textual
-                                    (tuple-ref p port.type)))
-        (tuple-set! newport
-                          port.r7rstype
-                          (tuple-ref newport port.type))
-        (tuple-set! newport port.transcoder t)
-        (tuple-set! newport port.state 'textual)
-        (tuple-set! newport port.readmode (default-read-mode))
+    (let ((newport (io/clone-port p)))
+      (tuple-set! newport
+        port.type
+        (logior type:textual
+          (tuple-ref p port.type)))
+      (tuple-set! newport
+        port.r7rstype
+        (tuple-ref newport port.type))
+      (tuple-set! newport port.transcoder t)
+      (tuple-set! newport port.state 'textual)
+      (tuple-set! newport port.readmode (default-read-mode))
 
-        ; io/transcode-port! expects a newly filled mainbuf,
-        ; so we have to fake it here.
-        ;
-        ; FIXME: Is the above really true?
-    
-        (let* ((mainbuf1 (tuple-ref p port.mainbuf))
-               (mainptr1 (tuple-ref p port.mainptr))
-               (mainlim1 (tuple-ref p port.mainlim))
-               (mainbuf2 (make-bytevector (bytevector-length mainbuf1)))
-               (mainlim2 (- mainlim1 mainptr1)))
+      ; io/transcode-port! expects a newly filled mainbuf,
+      ; so we have to fake it here.
+      ;
+      ; FIXME: Is the above really true?
 
-          ; FIXME:  Unclear what port-position should do.
+      (let* ((mainbuf1 (tuple-ref p port.mainbuf))
+             (mainptr1 (tuple-ref p port.mainptr))
+             (mainlim1 (tuple-ref p port.mainlim))
+             (mainbuf2 (make-bytevector (bytevector-length mainbuf1)))
+             (mainlim2 (- mainlim1 mainptr1)))
 
-          (tuple-set! newport port.mainpos 0)
+        ; FIXME:  Unclear what port-position should do.
 
-          (r6rs:bytevector-copy! mainbuf1
-                                 mainptr1
-                                 mainbuf2 0 mainlim2)
-          (tuple-set! newport port.mainbuf mainbuf2)
-          (tuple-set! newport port.mainptr 0)
-          (tuple-set! newport port.mainlim mainlim2))
+        (tuple-set! newport port.mainpos 0)
 
-        ; close original port, destroying original mainbuf
+        (r6rs:bytevector-copy! mainbuf1
+          mainptr1
+          mainbuf2
+          0
+          mainlim2)
+        (tuple-set! newport port.mainbuf mainbuf2)
+        (tuple-set! newport port.mainptr 0)
+        (tuple-set! newport port.mainlim mainlim2))
 
-        (io/set-closed-state! p)
+      ; close original port, destroying original mainbuf
 
-        (cond ((and (io/input-port? newport)
-                    (io/output-port? newport))
-               (assert #t))
-              ((io/input-port? newport)
-               (io/transcode-port! newport)))
-        newport)))
+      (io/set-closed-state! p)
+
+      (cond ((and (io/input-port? newport)
+               (io/output-port? newport))
+             (assert #t))
+        ((io/input-port? newport)
+          (io/transcode-port! newport)))
+      newport)))
 
 ; Latin-1 and UTF-8 are transcoded on the fly, but other
 ; codecs are transcoded by interposing an extra binary port.
@@ -1451,23 +1458,25 @@
          (mainlim1 (tuple-ref p port.mainlim))
          (mainbuf2 (make-bytevector (bytevector-length mainbuf1))))
 
-      (r6rs:bytevector-copy! mainbuf1
-                             mainptr1
-                             mainbuf2 0 (- mainlim1 mainptr1))
-      (tuple-set! newport port.mainbuf mainbuf2)
+    (r6rs:bytevector-copy! mainbuf1
+      mainptr1
+      mainbuf2
+      0
+      (- mainlim1 mainptr1))
+    (tuple-set! newport port.mainbuf mainbuf2)
 
-      ; close original port, destroying original mainbuf
+    ; close original port, destroying original mainbuf
 
-      (io/set-closed-state! p)
+    (io/set-closed-state! p)
 
-      (let* ((p (utf16/transcoded-binary-port newport))
-             (t (make-transcoder (utf-8-codec)
-                                 (transcoder-eol-style t)
-                                 (transcoder-error-handling-mode t))))
+    (let* ((p (utf16/transcoded-binary-port newport))
+           (t (make-transcoder (utf-8-codec)
+               (transcoder-eol-style t)
+               (transcoder-error-handling-mode t))))
 
-        ; FIXME: this will look like it's transcoded as UTF-8
+      ; FIXME: this will look like it's transcoded as UTF-8
 
-        (io/transcoded-port p t))))
+      (io/transcoded-port p t))))
 
 ; Like transcoded-port but preserves slightly different state
 ; and uses the correct transcoder for custom textual ports.

@@ -1,9 +1,9 @@
 (define-library (srfi srfi-6)
-  (export 
+  (export
     open-input-string
     open-output-string
     get-output-string)
   (import (only (capy)
-                open-input-string
-                open-output-string
-                get-output-string)))
+           open-input-string
+           open-output-string
+           get-output-string)))

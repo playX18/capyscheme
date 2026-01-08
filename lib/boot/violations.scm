@@ -1,4 +1,3 @@
-
 (define &warning
   (let ((rtd (make-record-type-descriptor '&warning (record-type-rtd &condition) (make-condition-uid) #f #f '#())))
     (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)))
@@ -52,7 +51,6 @@
 (define who-condition? (condition-predicate (record-type-rtd &who)))
 (define condition-who (condition-accessor (record-type-rtd &who) &who-who))
 
-
 (define &marks
   (let ((rtd (make-record-type-descriptor '&marks (record-type-rtd &condition) (make-condition-uid) #f #f '#((immutable marks)))))
     (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)))
@@ -61,8 +59,6 @@
 (define make-marks-condition (record-constructor (record-type-rcd &marks)))
 (define marks-condition? (condition-predicate (record-type-rtd &marks)))
 (define condition-marks (condition-accessor (record-type-rtd &marks) &marks-marks))
-
-
 
 (define &non-continuable
   (let ((rtd (make-record-type-descriptor '&non-continuable (record-type-rtd &violation) (make-condition-uid) #f #f '#())))
@@ -127,7 +123,7 @@
 (define i/o-write-error? (condition-predicate (record-type-rtd &i/o-write)))
 
 (define &i/o-invalid-position
-  (let ((rtd (make-record-type-descriptor '&i/o-invalid-position (record-type-rtd &i/o) (make-condition-uid) #f  #f '#((immutable position)))))
+  (let ((rtd (make-record-type-descriptor '&i/o-invalid-position (record-type-rtd &i/o) (make-condition-uid) #f #f '#((immutable position)))))
     (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &i/o) #f)))
       (make-record-type '&i/o-invalid-position rtd rcd))))
 (define &i/o-invalid-position-position
@@ -215,9 +211,8 @@
 (define make-no-nans-violation (record-constructor (record-type-rcd &no-nans)))
 (define no-nans-violation? (condition-predicate (record-type-rtd &no-nans)))
 
-
 (define &continuable-exception
-    (let ((rtd (make-record-type-descriptor '&continuable-exception (record-type-rtd &implementation-restriction) (make-condition-uid) #f #f '#((immutable continuation) (immutable base)))))
+  (let ((rtd (make-record-type-descriptor '&continuable-exception (record-type-rtd &implementation-restriction) (make-condition-uid) #f #f '#((immutable continuation) (immutable base)))))
     (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &implementation-restriction) #f)))
       (make-record-type '&continuable-exception rtd rcd))))
 
@@ -227,4 +222,3 @@
 (define continuable-exception-continuation (condition-accessor (record-type-rtd &continuable-exception) &continuable-exception-continuation))
 (define &continuable-exception-base (record-accessor (record-type-rtd &continuable-exception) 1))
 (define continuable-exception-base (condition-accessor (record-type-rtd &continuable-exception) &continuable-exception-base))
-

@@ -1,81 +1,105 @@
 (library (capy compiler tree-il)
-  (export 
-    ~term ~lref ~lset ~module-ref ~module-set 
-    ~toplevel-ref ~toplevel-set ~toplevel-define
-    ~if ~let ~fix ~receive 
-    ~application ~primcall 
-    ~proc ~void ~constant ~values ~sequence
+  (export
+    ~term
+    ~lref
+    ~lset
+    ~module-ref
+    ~module-set
+    ~toplevel-ref
+    ~toplevel-set
+    ~toplevel-define
+    ~if
+    ~let
+    ~fix
+    ~receive
+    ~application
+    ~primcall
+    ~proc
+    ~void
+    ~constant
+    ~values
+    ~sequence
     tree-il->scheme)
   (import (capy compiler tree-il terms)
-          (capy compiler tree-il fold)
-          (srfi 1)
-          (srfi 26) 
-          (srfi 257)
-          (capy)
-          (core match))
+    (capy compiler tree-il fold)
+    (srfi 1)
+    (srfi 26)
+    (srfi 257)
+    (capy)
+    (core match))
 
   ; pattern matching on TreeIL nodes
-  (define-record-match-pattern 
-    (~term src) term? 
+  (define-record-match-pattern
+    (~term src)
+    term?
     (src term-src))
 
-  (define-record-match-pattern 
-    (~lref src name sym) lref?
+  (define-record-match-pattern
+    (~lref src name sym)
+    lref?
     (src term-src)
     (name lref-name)
     (sym lref-sym))
 
-  (define-record-match-pattern 
-    (~lset src name sym val) lset?
+  (define-record-match-pattern
+    (~lset src name sym val)
+    lset?
     (src term-src)
     (name lset-name)
     (sym lset-sym)
     (val lset-value))
 
-  (define-record-match-pattern 
-    (~module-ref module name public?) module-ref?
+  (define-record-match-pattern
+    (~module-ref module name public?)
+    module-ref?
     (src term-src)
     (module module-ref-module)
     (name module-ref-name)
     (public? module-ref-public?))
 
-  (define-record-match-pattern 
-    (~module-set module name public? value) module-set?
+  (define-record-match-pattern
+    (~module-set module name public? value)
+    module-set?
     (src term-src)
     (module module-set-module)
     (name module-set-name)
     (public? module-set-public?)
     (value module-set-value))
 
-  (define-record-match-pattern 
-    (~toplevel-ref src mod name) toplevel-ref?
+  (define-record-match-pattern
+    (~toplevel-ref src mod name)
+    toplevel-ref?
     (src term-src)
     (mod toplevel-ref-mod)
     (name toplevel-ref-name))
 
   (define-record-match-pattern
-    (~toplevel-set src mod name value) toplevel-set?
+    (~toplevel-set src mod name value)
+    toplevel-set?
     (src term-src)
     (mod toplevel-set-mod)
     (name toplevel-set-name)
     (value toplevel-set-value))
 
-  (define-record-match-pattern 
-    (~toplevel-define src mod name value) toplevel-define?
+  (define-record-match-pattern
+    (~toplevel-define src mod name value)
+    toplevel-define?
     (src term-src)
     (mod toplevel-define-mod)
     (name toplevel-define-name)
     (value toplevel-define-value))
 
-  (define-record-match-pattern 
-    (~if src test then else) if?
+  (define-record-match-pattern
+    (~if src test then else)
+    if?
     (src term-src)
     (test if-test)
     (then if-then)
     (else if-else))
 
-  (define-record-match-pattern 
-    (~let src style ids lhs rhs body) let?
+  (define-record-match-pattern
+    (~let src style ids lhs rhs body)
+    let?
     (src term-src)
     (style let-style)
     (ids let-ids)
@@ -83,84 +107,91 @@
     (rhs let-rhs)
     (body let-body))
 
-  (define-record-match-pattern 
-    (~fix src ids lhs rhs body) fix?
+  (define-record-match-pattern
+    (~fix src ids lhs rhs body)
+    fix?
     (src term-src)
     (ids fix-ids)
     (lhs fix-lhs)
     (rhs fix-rhs)
     (body fix-body))
 
-  (define-record-match-pattern 
-    (~receive src ids vars producer consumer) receive?
+  (define-record-match-pattern
+    (~receive src ids vars producer consumer)
+    receive?
     (src term-src)
     (ids receive-ids)
     (vars receive-vars)
     (producer receive-producer)
     (consumer receive-consumer))
 
-  (define-record-match-pattern 
-    (~application src operator operands) application?
+  (define-record-match-pattern
+    (~application src operator operands)
+    application?
     (src term-src)
     (operator application-operator)
     (operands application-operands))
 
-  (define-record-match-pattern 
-    (~primcall src prim args) primcall?
+  (define-record-match-pattern
+    (~primcall src prim args)
+    primcall?
     (src term-src)
     (prim primcall-prim)
     (args primcall-args))
 
-  (define-record-match-pattern 
+  (define-record-match-pattern
     (~primref src name)
     (src term-src)
     (name primref-prim))
 
-  (define-record-match-pattern 
+  (define-record-match-pattern
     (~constant src value)
     (src term-src)
     (value constant-value))
 
-  (define-record-match-pattern 
-    (~void src) void?
+  (define-record-match-pattern
+    (~void src)
+    void?
     (src term-src))
 
-  (define-record-match-pattern 
-    (~proc src args body meta ids) proc?
+  (define-record-match-pattern
+    (~proc src args body meta ids)
+    proc?
     (src term-src)
     (args proc-args)
     (body proc-body)
     (meta proc-meta)
     (ids proc-ids))
 
-  (define-record-match-pattern 
-    (~values src vals) values?
+  (define-record-match-pattern
+    (~values src vals)
+    values?
     (src term-src)
     (vals values-values))
 
-  (define-record-match-pattern 
-    (~sequence src head tail) sequence?
+  (define-record-match-pattern
+    (~sequence src head tail)
+    sequence?
     (src term-src)
     (head sequence-head)
-    (tail sequence-tail)) 
+    (tail sequence-tail))
 
-  (define-record-match-pattern 
-    (~wcm src key mark result) wcm?
+  (define-record-match-pattern
+    (~wcm src key mark result)
+    wcm?
     (src term-src)
     (key wcm-key)
     (mark wcm-mark)
     (result wcm-result))
 
-    
   (define (tree-il->scheme t . ops?)
     (define ops (if (null? ops?) '() (car ops?)))
     (define strip-numeric-suffixes? (memq 'strip-numeric-suffixes? ops))
     (define use-case? (memq 'use-case? ops))
-    
+
     (define (atom? x) (not (or (pair? x) (vector? x))))
     (define (const x) (lambda (_) x))
 
-    
     (define (simplify-test e)
       (match e
         (('if ('eqv? (? atom? v) ('quote a)) #t ('eqv? v ('quote b)))
@@ -168,44 +199,44 @@
         (('if ('eqv? (? atom? v) ('quote a)) #t ('memv v ('quote (bs ...))))
           `(memv ,v '(,a ,@bs)))
         (('case (? atom? v)
-          ((datum) #t) ...
-          ('else ('eqv? v ('quote last-datum))))
+            ((datum) #t)
+            ...
+            ('else ('eqv? v ('quote last-datum))))
           `(memv ,v '(,@datum ,last-datum)))
         (_ e)))
 
     (define (build-and xs)
-      (match xs 
+      (match xs
         [() #t]
         [(x) x]
         [_ `(and ,@xs)]))
 
     (define (build-or xs)
-      (match xs 
+      (match xs
         [() #f]
         [(x) x]
         [_ `(or ,@xs)]))
 
     (define (build-begin-body e)
-      (match e 
+      (match e
         [('begin es ...) es]
         [_ (list e)]))
-    
+
     (define (case-test-var test)
       (match test
         (('memv (? atom? v) ('quote (datums ...)))
-         v)
+          v)
         (('eqv? (? atom? v) ('quote datum))
-         v)
+          v)
         (_ #f)))
 
     (define (test->datums v test)
       (match (cons v test)
         ((v 'memv v ('quote (xs ...)))
-         xs)
+          xs)
         ((v 'eqv? v ('quote x))
-         (list x))
+          (list x))
         (_ #f)))
-
 
     (define (build-else-tail e)
       (match e
@@ -213,22 +244,22 @@
         [('and xs ... x) `((,(build-and xs) ,@(build-begin-body x))
                            (else #f))]
         [_ `((else ,@(build-begin-body e)))]))
-    
+
     (define (build-cond-else-tail e)
-      (match e 
+      (match e
         [('cond clauses ...) clauses]
         [_ (build-else-tail e)]))
-    
-        (define (build-case-else-tail v e)
+
+    (define (build-case-else-tail v e)
       (match (cons v e)
         ((v 'case v clauses ...)
-         clauses)
+          clauses)
         ((v 'if ('memv v ('quote (xs ...))) consequent . alternate*)
-         `((,xs ,@(build-begin-body consequent))
-           ,@(build-case-else-tail v (build-begin alternate*))))
+          `((,xs ,@(build-begin-body consequent))
+            ,@(build-case-else-tail v (build-begin alternate*))))
         ((v 'if ('eqv? v ('quote x)) consequent . alternate*)
-         `(((,x) ,@(build-begin-body consequent))
-           ,@(build-case-else-tail v (build-begin alternate*))))
+          `(((,x) ,@(build-begin-body consequent))
+            ,@(build-case-else-tail v (build-begin alternate*))))
         (_ (build-else-tail e))))
 
     (define (clauses+tail clauses)
@@ -246,36 +277,37 @@
         ((0) alternate)
         ((1) (build-if (car tests) (car consequents) alternate))
         (else `(cond ,@(map (lambda (test consequent)
-                              `(,test ,@(build-begin-body consequent)))
-                            tests consequents)
-                     ,@(build-cond-else-tail alternate)))))
+                             `(,test ,@(build-begin-body consequent)))
+                        tests
+                        consequents)
+                ,@(build-cond-else-tail alternate)))))
 
-        (define (build-cond-or-case tests consequents alternate)
-          (if (not use-case?)
-              (build-cond tests consequents alternate)
-              (let* ((v (and (not (null? tests))
-                            (case-test-var (car tests))))
-                    (datum-lists (take-while identity
-                                              (map (cut test->datums v <>)
-                                                  tests)))
-                    (n (length datum-lists))
-                    (tail (build-case-else-tail v (build-cond
-                                                    (drop tests n)
-                                                    (drop consequents n)
-                                                    alternate))))
-                (receive (clauses tail) (clauses+tail tail)
-                  (let ((n (+ n (length clauses)))
-                        (datum-lists (append datum-lists
-                                            (map car clauses)))
-                        (consequents (append consequents
-                                            (map build-begin
-                                                  (map cdr clauses)))))
-                    (if (< n 2)
-                        (build-cond tests consequents alternate)
-                        `(case ,v
-                          ,@(map cons datum-lists (map build-begin-body
-                                                        (take consequents n)))
-                          ,@tail)))))))
+    (define (build-cond-or-case tests consequents alternate)
+      (if (not use-case?)
+        (build-cond tests consequents alternate)
+        (let* ((v (and (not (null? tests))
+                   (case-test-var (car tests))))
+               (datum-lists (take-while identity
+                             (map (cut test->datums v <>)
+                               tests)))
+               (n (length datum-lists))
+               (tail (build-case-else-tail v (build-cond
+                                              (drop tests n)
+                                              (drop consequents n)
+                                              alternate))))
+          (receive (clauses tail) (clauses+tail tail)
+            (let ((n (+ n (length clauses)))
+                  (datum-lists (append datum-lists
+                                (map car clauses)))
+                  (consequents (append consequents
+                                (map build-begin
+                                  (map cdr clauses)))))
+              (if (< n 2)
+                (build-cond tests consequents alternate)
+                `(case ,v
+                  ,@(map cons datum-lists (map build-begin-body
+                                           (take consequents n)))
+                  ,@tail)))))))
 
     (define (build-begin es)
       (match es
@@ -289,7 +321,7 @@
     (unless (term? t)
       (error 'tree-il->scheme "not a term" t))
     (define (loop t)
-      (cond 
+      (cond
         [(constant? t)
           `(quote ,(constant-value t))]
         [(void? t)
@@ -300,33 +332,33 @@
           `(set! ,(lset-name t) ,(loop (lset-value t)))]
         [(module-ref? t)
           (define m (if (module-ref-public? t)
-                        '@
-                        '@@))
+                     '@
+                     '@@))
           `(,m ,(module-ref-module t) ,(module-ref-name t))]
         [(module-set? t)
           (define m (if (module-set-public? t)
-                        '@
-                        '@@))
+                     '@
+                     '@@))
           `(set! (,m ,(module-set-module t) ,(module-set-name t))
-                ,(loop (module-set-value t)))]
+            ,(loop (module-set-value t)))]
         [(toplevel-ref? t)
           (toplevel-ref-name t)]
         [(toplevel-set? t)
           `(set! ,(toplevel-set-name t) ,(loop (toplevel-set-value t)))]
         [(toplevel-define? t)
-          `(define ,(toplevel-define-name t) 
+          `(define ,(toplevel-define-name t)
             ,(loop (toplevel-define-value t)))]
         [(if? t)
           (match `(if ,(simplify-test (loop (if-test t)))
-                      ,(loop (if-then t))
-                      ,(loop (if-else t)))
+                   ,(loop (if-then t))
+                   ,(loop (if-else t)))
             [('if test ('if ('and xs ...) consequent))
               (build-if (build-and (cons test xs))
                 consequent
                 (build-void))]
             [('if test1 ('if test2 consequent))
               (build-if (build-and (cons test1 test2))
-                consequent 
+                consequent
                 (build-void))]
             [('if (? atom? x) x ('or ys ...))
               `(or ,x ,@ys)]
@@ -340,21 +372,21 @@
               `(and ,test ,consequent)]
             [('if test1 consequent1
                 ('if test2 consequent2 . alternate*))
-              (build-cond-or-case 
+              (build-cond-or-case
                 (list test1 test2)
                 (list consequent1 consequent2)
                 (build-begin alternate*))]
             [('if test consequent ('cond clauses ...))
               `(cond (,test ,@(build-begin-body consequent))
-                     ,@clauses)]
+                ,@clauses)]
             [('if ('memv (? atom? v) ('quote (xs ...))) consequent
-                 ('case v clauses ...))
+                ('case v clauses ...))
               `(case ,v (,xs ,@(build-begin-body consequent))
-                    ,@clauses)]
+                ,@clauses)]
             [('if ('eqv? (? atom? v) ('quote x)) consequent
-                 ('case v clauses ...))
+                ('case v clauses ...))
               `(case ,v ((,x) ,@(build-begin-body consequent))
-                    ,@clauses)]
+                ,@clauses)]
             [e e])]
         [(let? t)
           (define style (let-style t))
@@ -362,24 +394,24 @@
           (define rhs (map loop (let-rhs t)))
           (define body (loop (let-body t)))
           `(,style
-            ,(map (lambda (id rhs) `(,id ,rhs) ) ids rhs)
+            ,(map (lambda (id rhs) `(,id ,rhs)) ids rhs)
             ,body)]
         [(receive? t)
           (define ids (receive-ids t))
           (define vars (map loop (receive-vars t)))
           (define producer (loop (receive-producer t)))
           (define consumer (loop (receive-consumer t)))
-          `(receive 
-                    ,vars
-                    ,producer
-                    ,consumer)]
+          `(receive
+            ,vars
+            ,producer
+            ,consumer)]
         [(fix? t)
           (define ids (fix-ids t))
           (define rhs (map loop (fix-rhs t)))
           (define body (loop (fix-body t)))
           `(fix ,ids
-                ,rhs
-                ,body)]
+            ,rhs
+            ,body)]
         [(application? t)
           (define operator (loop (application-operator t)))
           (define operands (map loop (application-operands t)))
@@ -408,5 +440,5 @@
           (define mark (loop (wcm-mark t)))
           (define result (loop (wcm-result t)))
           `(with-continuation-mark ,key ,mark ,result)]))
-  
+
     (loop t)))

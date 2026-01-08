@@ -1,6 +1,6 @@
 (library (core)
   (export
-   
+
     cond-expand
     %native-extension
     %load-path
@@ -308,7 +308,12 @@
     eof-object
     eof-object?
     eol-style
-    lf cr crlf nel crnel ls
+    lf
+    cr
+    crlf
+    nel
+    crnel
+    ls
     eq?
     equal-hash
     equal?
@@ -337,8 +342,10 @@
     no-create
     no-truncate
     no-fail
-    buffer-mode 
-    none line block
+    buffer-mode
+    none
+    line
+    block
 
     file-readable?
     file-regular?

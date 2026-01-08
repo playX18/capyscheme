@@ -1,5 +1,5 @@
 (library (srfi srfi-124)
-  (export 
+  (export
     make-ephemeron
     ephemeron-key
     ephemeron-datum

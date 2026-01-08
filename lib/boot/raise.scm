@@ -1,4 +1,3 @@
-
 (define (warning who message . irritants)
   (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
@@ -16,8 +15,6 @@
               (make-marks-condition marks)))))
       #f)
     #f))
-
-
 
 (define (assertion-violation who message . irritants)
   (define stk (shadow-stack))
@@ -51,7 +48,6 @@
       [(vector? lst) (list->vector (map loop (vector->list lst)))]
       [else lst])))
 
-
 (define (syntax-violation who message form . subform)
   (define (get-who-from-form form)
     (define obj (if (syntax? form) (unwrap-syntax form) form))
@@ -61,20 +57,20 @@
       [else #f]))
 
   (if (or (not who) (string? who) (symbol? who) (identifier? who))
-        (if (string? message)
-            (raise
-              (apply
-                condition
-                (filter
-                  values
-                  (list
-                    (make-syntax-violation form (if (pair? subform) (car subform) #f))
-                    (if who
-                        (make-who-condition who)
-                        (get-who-from-form form))
-                    (make-message-condition message)))))
-            (assertion-violation 'syntax-violation "expected string as message" message))
-        (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))
+    (if (string? message)
+      (raise
+        (apply
+          condition
+          (filter
+            values
+            (list
+              (make-syntax-violation form (if (pair? subform) (car subform) #f))
+              (if who
+                (make-who-condition who)
+                (get-who-from-form form))
+              (make-message-condition message)))))
+      (assertion-violation 'syntax-violation "expected string as message" message))
+    (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))
 
 (define (error who message . irritants)
   (define marks (current-continuation-marks))
@@ -111,7 +107,7 @@
       #f)
     #f))
 
-(define (undefined-violation who . message)  
+(define (undefined-violation who . message)
   (define marks (current-continuation-marks))
   (raise
     (apply
@@ -137,8 +133,6 @@
           (and who (make-who-condition who))
           (and (pair? message) (make-message-condition (car message))))))
     #f))
-
-
 
 (define raise-i/o-filename-error
   (lambda (who message filename . irritants)
@@ -254,7 +248,6 @@
         #f)
       #f)))
 
-
 (define (%make-assertion-violation who message . irritants)
   (define marks (current-continuation-marks))
   (if (or (not who) (string? who) (symbol? who))
@@ -271,7 +264,6 @@
             (make-marks-condition marks))))
       #f)
     #f))
-
 
 (define (%make-error who message . irritants)
   (define marks (current-continuation-marks))
