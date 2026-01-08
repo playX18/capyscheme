@@ -53,7 +53,7 @@ jobs:
         shell: bash
         id: git-cliff
         run: |
-          git-cliff --config cliff.toml --output CHANGELOG.md --latest --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
+          git-cliff --config cliff.toml --output CHANGELOG.md --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
           git config user.name "playXE"
           git config user.email "adel.prokurov@gmail.com"
           if [ -n "$(git diff CHANGELOG.md)"]; then 

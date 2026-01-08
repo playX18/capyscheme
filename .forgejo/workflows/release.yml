@@ -6,6 +6,44 @@ on:
   workflow_call:
 
 jobs: 
+  generate-changelog: 
+    name: Generate changelog
+    runs-on: debian-trixie 
+    outputs:
+      release-body: ${{ steps.git-cliff.outputs.content }}
+    steps: 
+      - name: Checkout 
+        uses: actions/checkout@v4
+        with: 
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: https://codeberg.org/wackbyte/rust-toolchain@trunk
+        with: 
+          toolchain: nightly
+      - name: Install cargo-binstall
+        shell: bash
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+      - name: Install git-cliff 
+        shell: bash 
+        run: |
+          cargo binstall git-cliff -y 
+      - name: Generate a changelog
+        shell: bash
+        id: git-cliff
+        run: |
+          git-cliff --config cliff.toml --output CHANGELOG.md --latest --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
+          git config user.name "playXE"
+          git config user.email "adel.prokurov@gmail.com"
+          if [ -n "$(git diff CHANGELOG.md)"]; then 
+            echo "Changes detected. Updating CHANGELOG.md"
+            git add CHANGELOG.md
+            git commit -m "chore: update CHANGELOG.md [skip ci]"
+            git push 
+          else 
+            echo "No new changes to changelog."
+          fi
+
   release:
     runs-on: debian-trixie
     env:
