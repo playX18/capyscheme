@@ -1024,6 +1024,4 @@
 	 (else (eval form)))
 	(cond-expand
 	 (srfi-23 (error "(not at eof)"))
-	 (else "error")))))
-
-) ;; [end]
+	 (else "error"))))))

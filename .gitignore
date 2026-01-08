@@ -13,3 +13,4 @@ bin/capy-*
 bin/capyc-*
 stage-*
 dist
+.fmt-tmp

@@ -637,3 +637,16 @@ dist-rpm: build
 		--define "_dbpath $(CURDIR)/$(PKG_ROOT)/rpm/rpmbuild/RPMDB"
 	find "$(PKG_ROOT)/rpm/rpmbuild/RPMS" -name "*.rpm" -maxdepth 2 -type f -print -exec cp -f {} "$(DIST_DIR)/" \;
 	@echo "Wrote RPM(s) to $(DIST_DIR)/"
+
+# Recursively walk *.scm, *.sls, *.sld files and call schemat
+fmt:
+	@echo "Formatting Scheme files..."
+	@mkdir -p .fmt-tmp
+	@find lib -type f \( -name "*.scm" -o -name "*.sls" -o -name "*.sld" \) | while read -r f; do \
+		echo "  $$f"; \
+		schemat < "$$f" > ".fmt-tmp/$$(basename "$$f")" && \
+		[ -s ".fmt-tmp/$$(basename "$$f")" ] && \
+		mv ".fmt-tmp/$$(basename "$$f")" "$$f"; \
+	done
+	@rmdir .fmt-tmp
+	@echo "Formatting complete."

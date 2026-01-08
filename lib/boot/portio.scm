@@ -1,4 +1,3 @@
-
 ; The deprecated buffer-mode syntax is supported only by R6RS modes,
 ; but the enumeration set has to be defined here so the i/o system
 ; can use it.  Several nonstandard symbols are included so Spanky
@@ -6,9 +5,9 @@
 
 (define *file-option-symbols*
   '(no-create no-fail no-truncate
-    spanky0 spanky1 spanky2))
-
-
+    spanky0
+    spanky1
+    spanky2))
 
 (define no-create 'no-create)
 (define no-fail 'no-fail)
@@ -17,9 +16,9 @@
 (define *file-options-enumeration-set* #f)
 
 (define (file-options-enumeration-set)
-  (unless *file-options-enumeration-set* 
+  (unless *file-options-enumeration-set*
     (set! *file-options-enumeration-set*
-           (make-enumeration *file-option-symbols*)))
+      (make-enumeration *file-option-symbols*)))
   *file-options-enumeration-set*)
 
 (define (make-file-options-set syms)
@@ -28,23 +27,22 @@
 (define (file-options->list options)
   (enum-set->list options))
 
-
-
 (define (file-options . symbols)
   (make-file-options-set
     (filter (lambda (sym) (memq sym *file-option-symbols*))
-           symbols)))
+      symbols)))
 
 (define none 'none)
 (define line 'line)
 (define block 'block)
 
 (define (buffer-mode mode)
-  (case mode 
+  (case mode
     ((none line block) mode)
-    (else 
+    (else
       (assertion-violation 'buffer-mode
-                           "invalid buffer mode" mode))))
+        "invalid buffer mode"
+        mode))))
 
 ; The R6RS specification of buffer-mode? does not allow it
 ; to return true for the datum buffer mode, so this predicate
@@ -52,8 +50,8 @@
 
 (define (buffer-mode? mode)
   (case mode
-   ((none line block) #t)
-   (else #f)))
+    ((none line block) #t)
+    (else #f)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -68,7 +66,7 @@
 
 ; The deprecated eol-style syntax is supported only by R6RS modes.
 
-(define (native-eol-style) 'none)   ; FIXME: for backward compatibility
+(define (native-eol-style) 'none) ; FIXME: for backward compatibility
 
 ; FIXME:  &i/o-decoding, &i/o-encoding, and their associated
 ; operations might not be implemented yet.
@@ -78,14 +76,14 @@
 (define (make-transcoder codec . rest)
   (cond ((null? rest)
          (io/make-transcoder codec (native-eol-style) 'replace))
-        ((null? (cdr rest))
-         (io/make-transcoder codec (car rest) 'replace))
-        ((null? (cddr rest))
-         (io/make-transcoder codec (car rest) (cadr rest)))
-        (else
-         (assertion-violation 'make-transcoder
-                              (errmsg 'msg:wna)
-                              (cons codec rest)))))
+    ((null? (cdr rest))
+      (io/make-transcoder codec (car rest) 'replace))
+    ((null? (cddr rest))
+      (io/make-transcoder codec (car rest) (cadr rest)))
+    (else
+      (assertion-violation 'make-transcoder
+        (errmsg 'msg:wna)
+        (cons codec rest)))))
 
 ; FIXME: let's see how far we get...
 
@@ -107,8 +105,8 @@
             (transcoded-port (open-input-bytevector bv) t)
             get-string-all)))
     (if (eof-object? s)
-        ""
-        s)))
+      ""
+      s)))
 
 ; When converting a string to a bytevector using the UTF-8
 ; or UTF-16 encoding forms, no encoding errors are possible
@@ -121,48 +119,52 @@
         (errmode (transcoder-error-handling-mode t)))
     (cond ((eq? eolstyle 'none)
            (case codec
-            ((latin-1)
-             (call-with-port
-              (open-output-bytevector)
-              (lambda (out)
-                (let ((bv (make-bytevector n)))
-                        (let loop ((i 0))
-                          (if (= i n)
-                            (get-output-bytevector out)
-                            (let ((sv (char->integer (string-ref s i))))
-                            (cond ((< sv 256)
-                                 (put-u8 out sv)
-                                 (loop (+ i 1)))
-                                ((eq? errmode 'replace)
-                                 (put-u8 out (char->integer #\?))
-                                 (loop (+ i 1)))
-                                ((eq? errmode 'raise)
-                                 (let ((c (integer->char sv)))
-                                  (raise-i/o-encoding-error 
+             ((latin-1)
+               (call-with-port
+                 (open-output-bytevector)
+                 (lambda (out)
+                   (let ((bv (make-bytevector n)))
+                     (let loop ((i 0))
+                       (if (= i n)
+                         (get-output-bytevector out)
+                         (let ((sv (char->integer (string-ref s i))))
+                           (cond ((< sv 256)
+                                  (put-u8 out sv)
+                                  (loop (+ i 1)))
+                             ((eq? errmode 'replace)
+                               (put-u8 out (char->integer #\?))
+                               (loop (+ i 1)))
+                             ((eq? errmode 'raise)
+                               (let ((c (integer->char sv)))
+                                 (raise-i/o-encoding-error
                                    'string->bytevector
                                    "invalid encoding"
-                                   out c)))
-                                (else
-                                 (loop (+ i 1)))))))))))
-            ((utf-8)
-             (string->utf8 s))
-            ((utf-16)
-             (string->utf16 s))
-            (else
-             (assertion-violation 'string->bytevector
-                                  (errmsg 'msg:illegalarg2) s t))))
-          ((eq? codec 'utf-8)
-           (call-with-port
-            (string-io/open-output-string t)
-            (lambda (out)
-              (put-string out s)
-              (string->utf8 (get-output-string out)))))
-          (else
-           (string->bytevector
-            (utf8->string
-             (string->bytevector
-              s (make-transcoder (utf-8-codec) eolstyle 'ignore)))
-            (make-transcoder codec 'none errmode))))))
+                                   out
+                                   c)))
+                             (else
+                               (loop (+ i 1)))))))))))
+             ((utf-8)
+               (string->utf8 s))
+             ((utf-16)
+               (string->utf16 s))
+             (else
+               (assertion-violation 'string->bytevector
+                 (errmsg 'msg:illegalarg2)
+                 s
+                 t))))
+      ((eq? codec 'utf-8)
+        (call-with-port
+          (string-io/open-output-string t)
+          (lambda (out)
+            (put-string out s)
+            (string->utf8 (get-output-string out)))))
+      (else
+        (string->bytevector
+          (utf8->string
+            (string->bytevector
+              s
+              (make-transcoder (utf-8-codec) eolstyle 'ignore)))
+          (make-transcoder codec 'none errmode))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -174,32 +176,34 @@
 (define (port-transcoder p)
   (let ((t (io/port-transcoder p)))
     (if (eq? (io/transcoder-codec t) 'binary)
-        #f
-        t)))
+      #f
+      t)))
 
 ;;; The R6RS says textual-port? and binary-port? take a port as argument.
 ;;; The R7RS says they accept any argument.
 
 (define (textual-port? p)
   (and (port? p)
-       (io/r7rs-textual-port? p)))
+    (io/r7rs-textual-port? p)))
 
 (define (binary-port? p)
   (and (port? p)
-       (io/r7rs-binary-port? p)))
+    (io/r7rs-binary-port? p)))
 
 (define (transcoded-port p t)
   (if (and (io/binary-port? p)
-           (memq (transcoder-codec t) '(latin-1 utf-8 utf-16))
-           (memq (transcoder-eol-style t) '(none lf cr crlf nel crnel ls))
-           (memq (transcoder-error-handling-mode t) '(ignore replace raise))
-           (if (and (io/input-port? p) (io/output-port? p))
-               (and (eq? (transcoder-codec t) 'latin-1)
-                    (eq? (transcoder-eol-style t) 'none))
-               #t))
-      (io/transcoded-port p t)
-      (assertion-violation 'transcoded-port
-                           (errmsg 'msg:illegalargs) p t)))
+       (memq (transcoder-codec t) '(latin-1 utf-8 utf-16))
+       (memq (transcoder-eol-style t) '(none lf cr crlf nel crnel ls))
+       (memq (transcoder-error-handling-mode t) '(ignore replace raise))
+       (if (and (io/input-port? p) (io/output-port? p))
+         (and (eq? (transcoder-codec t) 'latin-1)
+           (eq? (transcoder-eol-style t) 'none))
+         #t))
+    (io/transcoded-port p t)
+    (assertion-violation 'transcoded-port
+      (errmsg 'msg:illegalargs)
+      p
+      t)))
 
 ; All binary and textual ports support port-position internally
 ; but custom ports may claim not to.
@@ -208,8 +212,8 @@
   (let ((probe (assq 'port-position (io/port-alist p))))
     (cond ((not probe)
            (or (binary-port? p) (textual-port? p)))
-          ((cdr probe) #t)
-          (else #f))))
+      ((cdr probe) #t)
+      (else #f))))
 
 ; FIXME:  Custom implementations of port-position are ignored.
 
@@ -228,10 +232,10 @@
 
 (define (call-with-port p f)
   (call-with-values
-   (lambda () (f p))
-   (lambda results
-     (if (io/open-port? p) (io/close-port p))
-     (apply values results))))
+    (lambda () (f p))
+    (lambda results
+      (if (io/open-port? p) (io/close-port p))
+      (apply values results))))
 
 ; FIXME:  Do these extensions to R6RS i/o belong in this file?
 
@@ -250,33 +254,35 @@
   (assert (io/input-port? p))
   (cond ((io/binary-port? p)
          (eof-object? (lookahead-u8 p)))
-        ((io/textual-port? p)
-         (eof-object? (lookahead-char p)))
-        (else
-         ; probably closed
-         #f)))
+    ((io/textual-port? p)
+      (eof-object? (lookahead-char p)))
+    (else
+      ; probably closed
+      #f)))
 
 (define (open-file-input-port filename . rest)
   (cond ((null? rest)
          (file-io/open-file-input-port filename (file-options) 'block #f))
-        ((null? (cdr rest))
-         (file-io/open-file-input-port filename (car rest) 'block #f))
-        ((null? (cddr rest))
-         (file-io/open-file-input-port filename (car rest) (cadr rest) #f))
-        ((null? (cdddr rest))
-         (file-io/open-file-input-port filename
-                                  (car rest) (cadr rest) (caddr rest)))
-        (else
-         (assertion-violation 'open-file-input-port
-                              (errmsg 'msg:wna)
-                              (cons filename rest)))))
+    ((null? (cdr rest))
+      (file-io/open-file-input-port filename (car rest) 'block #f))
+    ((null? (cddr rest))
+      (file-io/open-file-input-port filename (car rest) (cadr rest) #f))
+    ((null? (cdddr rest))
+      (file-io/open-file-input-port filename
+        (car rest)
+        (cadr rest)
+        (caddr rest)))
+    (else
+      (assertion-violation 'open-file-input-port
+        (errmsg 'msg:wna)
+        (cons filename rest)))))
 
 (define (open-bytevector-input-port bv . rest)
   (let ((transcoder (if (null? rest) #f (car rest)))
         (port (bytevector-io/open-input-bytevector bv)))
     (if transcoder
-        (transcoded-port port transcoder)
-        port)))
+      (transcoded-port port transcoder)
+      port)))
 
 (define (open-string-input-port s)
   (let ((transcoder (make-transcoder (utf-8-codec) 'none 'ignore))
@@ -286,9 +292,9 @@
 (define (standard-input-port)
   (let ((fd (osdep/open-console 'input)))
     (io/make-port console-io/ioproc
-                  (file-io/data fd "*console-input*")
-                  'input
-                  'binary)))
+      (file-io/data fd "*console-input*")
+      'input
+      'binary)))
 
 ; FIXME: current-input-port is implemented elsewhere
 
@@ -304,120 +310,132 @@
 
 (define (output-port-buffer-mode p)
   (if (output-port? p)
-      (io/buffer-mode p)
-      (assertion-violation 'output-port-buffer-mode
-                           (errmsg 'msg:notoutput) p)))
+    (io/buffer-mode p)
+    (assertion-violation 'output-port-buffer-mode
+      (errmsg 'msg:notoutput)
+      p)))
 
 ; FIXME: fakes file options
 
 (define (open-file-output-port filename . rest)
   (cond ((null? rest)
          (file-io/open-file-output-port filename (file-options) 'block #f))
-        ((null? (cdr rest))
-         (file-io/open-file-output-port filename (car rest) 'block #f))
-        ((null? (cddr rest))
-         (file-io/open-file-output-port filename (car rest) (cadr rest) #f))
-        ((null? (cdddr rest))
-         (file-io/open-file-output-port filename
-                                  (car rest) (cadr rest) (caddr rest)))
-        (else
-         (assertion-violation 'open-file-output-port
-                              (errmsg 'msg:wna)
-                              (cons filename rest)))))
+    ((null? (cdr rest))
+      (file-io/open-file-output-port filename (car rest) 'block #f))
+    ((null? (cddr rest))
+      (file-io/open-file-output-port filename (car rest) (cadr rest) #f))
+    ((null? (cdddr rest))
+      (file-io/open-file-output-port filename
+        (car rest)
+        (cadr rest)
+        (caddr rest)))
+    (else
+      (assertion-violation 'open-file-output-port
+        (errmsg 'msg:wna)
+        (cons filename rest)))))
 
 ; FIXME:  Doesn't check legitimacy of the transcoder.
 
 (define (open-bytevector-output-port . rest)
   (let ((transcoder (if (null? rest) #f (car rest))))
     (if transcoder
-        (let ((out (open-output-string)))
-          (values out
-                  (lambda ()
-                    (let* ((s (get-output-string out))
-                           (bv (string->bytevector s transcoder)))
-                      (reset-output-string out)
-                      bv))))
-        (let ((out (open-output-bytevector)))
-          (values out
-                  (lambda ()
-                    (let ((bv (get-output-bytevector out)))
-                      (reset-output-bytevector out)
-                      bv)))))))
+      (let ((out (open-output-string)))
+        (values out
+          (lambda ()
+            (let* ((s (get-output-string out))
+                   (bv (string->bytevector s transcoder)))
+              (reset-output-string out)
+              bv))))
+      (let ((out (open-output-bytevector)))
+        (values out
+          (lambda ()
+            (let ((bv (get-output-bytevector out)))
+              (reset-output-bytevector out)
+              bv)))))))
 
 ; FIXME:  Doesn't check legitimacy of the transcoder.
 
 (define (call-with-bytevector-output-port f . rest)
   (if (and (procedure? f)
-           (or (null? rest)
-               (null? (cdr rest))))
-      (let ((transcoder (if (null? rest) #f (car rest))))
-        (if transcoder
-            (call-with-port
-             (open-output-string)
-             (lambda (out)
-               (f out)
-               (let ((s (get-output-string out)))
-                 (reset-output-string out)
-                 (string->bytevector s transcoder))))
-            (call-with-port
-             (open-output-bytevector)
-             (lambda (out)
-               (f out)
-               (get-output-bytevector out)))))
-      (assertion-violation 'call-with-bytevector-output-port
-                           (errmsg 'msg:illegalargs) f)))
+       (or (null? rest)
+         (null? (cdr rest))))
+    (let ((transcoder (if (null? rest) #f (car rest))))
+      (if transcoder
+        (call-with-port
+          (open-output-string)
+          (lambda (out)
+            (f out)
+            (let ((s (get-output-string out)))
+              (reset-output-string out)
+              (string->bytevector s transcoder))))
+        (call-with-port
+          (open-output-bytevector)
+          (lambda (out)
+            (f out)
+            (get-output-bytevector out)))))
+    (assertion-violation 'call-with-bytevector-output-port
+      (errmsg 'msg:illegalargs)
+      f)))
 
 (define (open-string-output-port)
   (let* ((transcoder (make-transcoder (utf-8-codec) 'none 'ignore))
          (port (bytevector-io/open-output-bytevector))
          (port (transcoded-port port transcoder))
          (f (lambda ()
-              (let ((s (utf8->string
-                        (bytevector-io/get-output-bytevector port))))
-                (bytevector-io/reset-output-bytevector port)
-                s))))
+             (let ((s (utf8->string
+                       (bytevector-io/get-output-bytevector port))))
+               (bytevector-io/reset-output-bytevector port)
+               s))))
     (values port f)))
 
 (define (call-with-string-output-port f)
   (if (procedure? f)
-      (call-with-port
-       (open-output-string)
-       (lambda (out) (f out) (get-output-string out)))
-      (assertion-violation 'call-with-string-output-port
-                           (errmsg 'msg:illegalarg) f)))
+    (call-with-port
+      (open-output-string)
+      (lambda (out) (f out) (get-output-string out)))
+    (assertion-violation 'call-with-string-output-port
+      (errmsg 'msg:illegalarg)
+      f)))
 
 (define (open-file-input/output-port filename . rest)
   (cond ((null? rest)
          (file-io/open-file-input/output-port
-          filename (file-options) 'block #f))
-        ((null? (cdr rest))
-         (file-io/open-file-input/output-port filename (car rest) 'block #f))
-        ((null? (cddr rest))
-         (file-io/open-file-input/output-port filename
-                                              (car rest) (cadr rest) #f))
-        ((null? (cdddr rest))
-         (file-io/open-file-input/output-port filename
-                                  (car rest) (cadr rest) (caddr rest)))
-        (else
-         (assertion-violation 'open-file-input/output-port
-                              (errmsg 'msg:wna)
-                              (cons filename rest)))))
+           filename
+           (file-options)
+           'block
+           #f))
+    ((null? (cdr rest))
+      (file-io/open-file-input/output-port filename (car rest) 'block #f))
+    ((null? (cddr rest))
+      (file-io/open-file-input/output-port filename
+        (car rest)
+        (cadr rest)
+        #f))
+    ((null? (cdddr rest))
+      (file-io/open-file-input/output-port filename
+        (car rest)
+        (cadr rest)
+        (caddr rest)))
+    (else
+      (assertion-violation 'open-file-input/output-port
+        (errmsg 'msg:wna)
+        (cons filename rest)))))
 
 (define (standard-output-port)
   (let ((fd (osdep/open-console 'output)))
     (io/make-port console-io/ioproc
-                  (file-io/data fd "*console-output*")
-                  'output
-                  'flush
-                  'binary)))
+      (file-io/data fd "*console-output*")
+      'output
+      'flush
+      'binary)))
 
 (define (standard-error-port)
   (let ((fd (osdep/open-console 'error)))
     (io/make-port console-io/ioproc
-                  (file-io/data fd "*error-output*")
-                  'output
-                  'flush
-                  'binary)))
+      (file-io/data fd "*error-output*")
+      'output
+      'flush
+      'binary)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -426,35 +444,87 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (make-custom-binary-input-port
-         id read! get-position set-position! close)
-  
+         id
+         read!
+         get-position
+         set-position!
+         close)
+
   (customio/make-binary-input-port
-   id read! get-position set-position! close))
+    id
+    read!
+    get-position
+    set-position!
+    close))
 
 (define (make-custom-binary-output-port
-         id write! get-position set-position! close)
+         id
+         write!
+         get-position
+         set-position!
+         close)
   (customio/make-binary-output-port
-   id write! get-position set-position! close))
+    id
+    write!
+    get-position
+    set-position!
+    close))
 
 (define (make-custom-binary-input/output-port
-         id read! write! get-position set-position! close)
+         id
+         read!
+         write!
+         get-position
+         set-position!
+         close)
   (customio/make-binary-input/output-port
-   id read! write! get-position set-position! close))
+    id
+    read!
+    write!
+    get-position
+    set-position!
+    close))
 
 (define (make-custom-textual-input-port
-         id read! get-position set-position! close)
+         id
+         read!
+         get-position
+         set-position!
+         close)
   (customio/make-textual-input-port
-   id read! get-position set-position! close))
+    id
+    read!
+    get-position
+    set-position!
+    close))
 
 (define (make-custom-textual-output-port
-         id write! get-position set-position! close)
+         id
+         write!
+         get-position
+         set-position!
+         close)
   (customio/make-textual-output-port
-   id write! get-position set-position! close))
+    id
+    write!
+    get-position
+    set-position!
+    close))
 
 (define (make-custom-textual-input/output-port
-         id read! write! get-position set-position! close)
+         id
+         read!
+         write!
+         get-position
+         set-position!
+         close)
   (customio/make-textual-input/output-port
-   id read! write! get-position set-position! close))
+    id
+    read!
+    write!
+    get-position
+    set-position!
+    close))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;
@@ -462,79 +532,79 @@
 ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (lookahead-u8 p)   (io/get-u8 p #t))
-(define (get-u8 p)         (io/get-u8 p #f))
+(define (lookahead-u8 p) (io/get-u8 p #t))
+(define (get-u8 p) (io/get-u8 p #f))
 (define (lookahead-char p) (io/get-char p #t))
-(define (get-char p)       (io/get-char p #f))
+(define (get-char p) (io/get-char p #f))
 
 (define (get-bytevector-n p count)
   (if (and (io/input-port? p)
-           (io/binary-port? p)
-           (fixnum? count)
-           (<= 0 count))
-      (let* ((bv (make-bytevector count))
-             (n (get-bytevector-n! p bv 0 count)))
-        (cond ((not (fixnum? n))
-               n)
-              ((= n count)
-               bv)
-              (else
-               (let ((bv2 (make-bytevector n)))
-                 (r6rs:bytevector-copy! bv 0 bv2 0 n)
-                 bv2))))
-      (portio/illegal-arguments 'get-bytevector-n p count)))
+       (io/binary-port? p)
+       (fixnum? count)
+       (<= 0 count))
+    (let* ((bv (make-bytevector count))
+           (n (get-bytevector-n! p bv 0 count)))
+      (cond ((not (fixnum? n))
+             n)
+        ((= n count)
+          bv)
+        (else
+          (let ((bv2 (make-bytevector n)))
+            (r6rs:bytevector-copy! bv 0 bv2 0 n)
+            bv2))))
+    (portio/illegal-arguments 'get-bytevector-n p count)))
 
 (define (get-bytevector-n! p bv start count)
   (if (and (io/input-port? p)
-           (io/binary-port? p)
-           (bytevector? bv)
-           (fixnum? start)
-           (<= 0 start)
-           (fixnum? count)
-           (<= 0 count)
-           (<= (+ start count) (bytevector-length bv)))
-      (if (= 0 count)
-          0
-          (let loop ((i start)
-                     (n (+ start count)))
-            (cond ((= i n)
-                   (- i start))
-                  (else
-                   (let ((byte (get-u8 p)))
-                     (cond ((fixnum? byte)
-                            (bytevector-set! bv i byte)
-                            (loop (+ i 1) n))
-                           ((= i start)
-                            (eof-object))
-                           (else
-                            (- i start))))))))
-      (portio/illegal-arguments 'get-bytevector-n! p bv start count)))
+       (io/binary-port? p)
+       (bytevector? bv)
+       (fixnum? start)
+       (<= 0 start)
+       (fixnum? count)
+       (<= 0 count)
+       (<= (+ start count) (bytevector-length bv)))
+    (if (= 0 count)
+      0
+      (let loop ((i start)
+                 (n (+ start count)))
+        (cond ((= i n)
+               (- i start))
+          (else
+            (let ((byte (get-u8 p)))
+              (cond ((fixnum? byte)
+                     (bytevector-set! bv i byte)
+                     (loop (+ i 1) n))
+                ((= i start)
+                  (eof-object))
+                (else
+                  (- i start))))))))
+    (portio/illegal-arguments 'get-bytevector-n! p bv start count)))
 
 ; FIXME:  This is extremely inefficient.
 
 (define (get-bytevector-some p)
   (if (and (io/input-port? p)
-           (io/binary-port? p))
-      (let ((byte (get-u8 p)))
-        (if (eof-object? byte)
-            byte
-            (make-bytevector 1 byte)))
-      (portio/illegal-arguments 'get-bytevector-some p)))
+       (io/binary-port? p))
+    (let ((byte (get-u8 p)))
+      (if (eof-object? byte)
+        byte
+        (make-bytevector 1 byte)))
+    (portio/illegal-arguments 'get-bytevector-some p)))
 
 (define (get-bytevector-all p)
   (if (and (io/input-port? p)
-           (io/binary-port? p))
-      (let ((bv (call-with-port
-                 (open-output-bytevector)
-                 (lambda (out)
-                   (do ((byte (get-u8 p) (get-u8 p)))
-                       ((eof-object? byte)
-                        (get-output-bytevector out))
-                     (put-u8 out byte))))))
-        (if (= 0 (bytevector-length bv))
-            (eof-object)
-            bv))
-      (portio/illegal-arguments 'get-bytevector-all p)))
+       (io/binary-port? p))
+    (let ((bv (call-with-port
+               (open-output-bytevector)
+               (lambda (out)
+                 (do ((byte (get-u8 p) (get-u8 p)))
+                   ((eof-object? byte)
+                     (get-output-bytevector out))
+                   (put-u8 out byte))))))
+      (if (= 0 (bytevector-length bv))
+        (eof-object)
+        bv))
+    (portio/illegal-arguments 'get-bytevector-all p)))
 
 ; FIXME:  The R6RS specifications for get-string-n and
 ; get-string-n! insist that (get-string-n p 0) returns
@@ -545,82 +615,82 @@
 
 (define (get-string-n p count)
   (if (and (io/input-port? p)
-           (io/textual-port? p)
-           (fixnum? count)
-           (<= 0 count))
-      (let ((out (open-output-string)))
-        (define (loop count)
-          (cond ((<= count 0)
-                 (get-output-string out))
+       (io/textual-port? p)
+       (fixnum? count)
+       (<= 0 count))
+    (let ((out (open-output-string)))
+      (define (loop count)
+        (cond ((<= count 0)
+               (get-output-string out))
+          (else
+            (let ((c (get-char p)))
+              (cond ((eof-object? c)
+                     (let ((s (get-output-string out)))
+                       (if (= 0 (string-length s))
+                         c
+                         s)))
                 (else
-                 (let ((c (get-char p)))
-                   (cond ((eof-object? c)
-                          (let ((s (get-output-string out)))
-                            (if (= 0 (string-length s))
-                                c
-                                s)))
-                         (else
-                          (put-char out c)
-                          (loop (- count 1))))))))
-        (loop count))
-      (portio/illegal-arguments 'get-string-n p count)))
+                  (put-char out c)
+                  (loop (- count 1))))))))
+      (loop count))
+    (portio/illegal-arguments 'get-string-n p count)))
 
 (define (get-string-n! p s start count)
   (if (and (io/input-port? p)
-           (io/textual-port? p)
-           (string? s)
-           (fixnum? start)
-           (<= 0 start)
-           (fixnum? count)
-           (<= 0 count)
-           (<= (+ start count) (string-length s)))
-      (let ((n (+ start count)))
-        (define (loop i)
-          (cond ((= i n)
-                 (- i start))
+       (io/textual-port? p)
+       (string? s)
+       (fixnum? start)
+       (<= 0 start)
+       (fixnum? count)
+       (<= 0 count)
+       (<= (+ start count) (string-length s)))
+    (let ((n (+ start count)))
+      (define (loop i)
+        (cond ((= i n)
+               (- i start))
+          (else
+            (let ((c (get-char p)))
+              (cond ((eof-object? c)
+                     (if (= i start)
+                       c
+                       (- i start)))
                 (else
-                 (let ((c (get-char p)))
-                   (cond ((eof-object? c)
-                          (if (= i start)
-                              c
-                              (- i start)))
-                         (else
-                          (string-set! s i c)
-                          (loop (+ i 1))))))))
-        (loop start))
-      (portio/illegal-arguments 'get-string-n! p s start count)))
+                  (string-set! s i c)
+                  (loop (+ i 1))))))))
+      (loop start))
+    (portio/illegal-arguments 'get-string-n! p s start count)))
 
 (define (get-string-all p)
   (if (and (io/input-port? p)
-           (io/textual-port? p))
-      (let ((s (call-with-string-output-port
-                 (lambda (out)
-                   (do ((char (get-char p) (get-char p)))
-                       ((eof-object? char))
-                     (put-char out char))))))
-        (if (= 0 (string-length s))
-            (eof-object)
-            s))
-      (portio/illegal-arguments 'get-string-all p)))
+       (io/textual-port? p))
+    (let ((s (call-with-string-output-port
+              (lambda (out)
+                (do ((char (get-char p) (get-char p)))
+                  ((eof-object? char))
+                  (put-char out char))))))
+      (if (= 0 (string-length s))
+        (eof-object)
+        s))
+    (portio/illegal-arguments 'get-string-all p)))
 
 (define (portio/get-line p)
   (if (and (io/input-port? p)
-           (io/textual-port? p))
-      (let* ((eof? #f)
-             (s (call-with-string-output-port
-                 (lambda (out)
-                   (do ((char (get-char p) (get-char p)))
-                       ((or (eof-object? char) (char=? char #\linefeed))
-                        (if (eof-object? char) (set! eof? #t)))
-                     (put-char out char))))))
-        (if (and eof? (= 0 (string-length s)))
-            (eof-object)
-            s))
-      (portio/illegal-arguments 'get-line p)))
+       (io/textual-port? p))
+    (let* ((eof? #f)
+           (s (call-with-string-output-port
+               (lambda (out)
+                 (do ((char (get-char p) (get-char p)))
+                   ((or (eof-object? char) (char=? char #\linefeed))
+                     (if (eof-object? char) (set! eof? #t)))
+                   (put-char out char))))))
+      (if (and eof? (= 0 (string-length s)))
+        (eof-object)
+        s))
+    (portio/illegal-arguments 'get-line p)))
 
 (define (get-line p)
   (or (io/get-line-maybe p)
-      (portio/get-line p)))
+    (portio/get-line p)))
 
 (define (portio/illegal-arguments who . irritants)
   (apply assertion-violation who (errmsg 'msg:illegalargs) irritants))
@@ -631,70 +701,78 @@
 ;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (put-u8 p k)   (io/put-u8 p k))
+(define (put-u8 p k) (io/put-u8 p k))
 (define (put-char p c) (io/put-char p c))
 
 (define (put-bytevector p bv . rest)
   (define (put-bytevector p bv start count)
     (if (and (io/binary-port? p)
-             (io/output-port? p)
-             (bytevector? bv)
-             (fixnum? start)
-             (fixnum? count)
-             (<= 0 start)
-             (<= 0 count)
-             (<= (+ start count) (bytevector-length bv)))
-        (let ((n (+ start count)))
-          (do ((i start (+ i 1)))
-              ((= i n))
-            (put-u8 p (bytevector-ref bv i))))
-        (assertion-violation 'put-bytevector
-                             (errmsg 'msg:illegalargs) p bv start count)))
+         (io/output-port? p)
+         (bytevector? bv)
+         (fixnum? start)
+         (fixnum? count)
+         (<= 0 start)
+         (<= 0 count)
+         (<= (+ start count) (bytevector-length bv)))
+      (let ((n (+ start count)))
+        (do ((i start (+ i 1)))
+          ((= i n))
+          (put-u8 p (bytevector-ref bv i))))
+      (assertion-violation 'put-bytevector
+        (errmsg 'msg:illegalargs)
+        p
+        bv
+        start
+        count)))
   (cond ((null? rest)
          (put-bytevector p bv 0 (bytevector-length bv)))
-        ((null? (cdr rest))
-         (let* ((start (car rest))
-                (count (- (bytevector-length bv) start)))
-           (put-bytevector p bv start count)))
-        ((null? (cddr rest))
-         (put-bytevector p bv (car rest) (cadr rest)))
-        (else
-         (assertion-violation 'put-bytevector
-                              (errmsg 'msg:toomanyargs)
-                              (cons p (cons bv rest))))))
+    ((null? (cdr rest))
+      (let* ((start (car rest))
+             (count (- (bytevector-length bv) start)))
+        (put-bytevector p bv start count)))
+    ((null? (cddr rest))
+      (put-bytevector p bv (car rest) (cadr rest)))
+    (else
+      (assertion-violation 'put-bytevector
+        (errmsg 'msg:toomanyargs)
+        (cons p (cons bv rest))))))
 
 (define (put-string p s . rest)
 
   (define (portio/put-string p s start count)
     (if (and (io/textual-port? p)
-             (io/output-port? p)
-             (string? s)
-             (fixnum? start)
-             (fixnum? count)
-             (<= 0 start)
-             (<= 0 count)
-             (<= (+ start count) (string-length s)))
-        (let ((n (+ start count)))
-          (do ((i start (+ i 1)))
-              ((= i n))
-            (put-char p (string-ref s i))))
-        (assertion-violation 'put-string
-                             (errmsg 'msg:illegalargs) p s start count)))
+         (io/output-port? p)
+         (string? s)
+         (fixnum? start)
+         (fixnum? count)
+         (<= 0 start)
+         (<= 0 count)
+         (<= (+ start count) (string-length s)))
+      (let ((n (+ start count)))
+        (do ((i start (+ i 1)))
+          ((= i n))
+          (put-char p (string-ref s i))))
+      (assertion-violation 'put-string
+        (errmsg 'msg:illegalargs)
+        p
+        s
+        start
+        count)))
 
   (define (put-string p s start count)
     (or (io/put-string-maybe p s start count)
-        (portio/put-string p s start count)))
+      (portio/put-string p s start count)))
 
   (cond ((null? rest)
          (put-string p s 0 (string-length s)))
-        ((null? (cdr rest))
-         (put-string p s (car rest) (- (string-length s) (car rest))))
-        ((null? (cddr rest))
-         (put-string p s (car rest) (cadr rest)))
-        (else
-         (assertion-violation 'put-string
-                              (errmsg 'msg:toomanyargs)
-                              (cons p (cons s rest))))))
+    ((null? (cdr rest))
+      (put-string p s (car rest) (- (string-length s) (car rest))))
+    ((null? (cddr rest))
+      (put-string p s (car rest) (cadr rest)))
+    (else
+      (assertion-violation 'put-string
+        (errmsg 'msg:toomanyargs)
+        (cons p (cons s rest))))))
 
 (define (put-datum p x)
   (write x p))

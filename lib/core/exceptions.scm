@@ -1,11 +1,11 @@
 (library (core exceptions)
 
   (export with-exception-handler
-          guard
-          raise
-          raise-continuable
-          else
-          =>)
+    guard
+    raise
+    raise-continuable
+    else
+    =>)
 
   (import (core primitives))
 
@@ -26,66 +26,65 @@
   ; publish, distribute, sublicense, and/or sell copies of
   ; the Software, and to permit persons to whom the Software
   ; is furnished to do so, subject to the following conditions:
-  ; 
+  ;
   ; The above copyright notice and this permission notice
   ; shall be included in all copies or substantial portions
-  ; of the Software. 
+  ; of the Software.
 
   ; The original call to raise has been changed to a call to
   ; raise-continuable.  See
   ; http://www.r6rs.org/r6rs-errata.html
-  
+
   (define-syntax guard
     (lambda (stx)
       (syntax-case stx ()
         [(guard (var clause ...) e1 e2 ...)
-         #'((call-with-current-continuation
-             (lambda (guard-k)
+          #'((call-with-current-continuation
+              (lambda (guard-k)
                (with-exception-handler
                 (lambda (condition)
-                  ((call-with-current-continuation
-                     (lambda (handler-k)
-                       (guard-k
-                        (lambda ()
-                          (let ((var condition))      ; clauses may SET! var
-                            (guard-aux (handler-k (lambda ()
-                                                    (raise-continuable condition)))
-                                       clause ...))))))))
+                 ((call-with-current-continuation
+                   (lambda (handler-k)
+                    (guard-k
+                     (lambda ()
+                      (let ((var condition)) ; clauses may SET! var
+                       (guard-aux (handler-k (lambda ()
+                                              (raise-continuable condition)))
+                        clause
+                        ...))))))))
                 (lambda ()
-                  (call-with-values
-                   (lambda () e1 e2 ...)
-                   (lambda args
-                     (guard-k (lambda ()
-                                (apply values args))))))))))])))
-  (define-syntax guard-aux 
+                 (call-with-values
+                  (lambda () e1 e2 ...)
+                  (lambda args
+                   (guard-k (lambda ()
+                             (apply values args))))))))))])))
+  (define-syntax guard-aux
     (lambda (stx)
       (syntax-case stx (else =>)
         [(guard-aux reraise (else result1 result2 ...))
-         #'(begin result1 result2 ...)]
+          #'(begin result1 result2 ...)]
         [(guard-aux reraise (test => result))
-         #'(let ((temp test))
-             (if temp 
-                 (result temp)
-                 reraise))]
+          #'(let ((temp test))
+             (if temp
+              (result temp)
+              reraise))]
         [(guard-aux reraise (test => result) clause1 clause2 ...)
-         #'(let ((temp test))
+          #'(let ((temp test))
              (if temp
-                 (result temp)
-                 (guard-aux reraise clause1 clause2 ...)))]
+              (result temp)
+              (guard-aux reraise clause1 clause2 ...)))]
         [(guard-aux reraise (test))
-         #'test]
+          #'test]
         [(guard-aux reraise (test) clause1 clause2 ...)
-         #'(let ((temp test))
+          #'(let ((temp test))
              (if temp
-                 temp
-                 (guard-aux reraise clause1 clause2 ...)))]
+              temp
+              (guard-aux reraise clause1 clause2 ...)))]
         [(guard-aux reraise (test result1 result2 ...))
-         #'(if test
-               (begin result1 result2 ...)
-               reraise)]
+          #'(if test
+             (begin result1 result2 ...)
+             reraise)]
         [(guard-aux reraise (test result1 result2 ...) clause1 clause2 ...)
-         #'(if test
-               (begin result1 result2 ...)
-               (guard-aux reraise clause1 clause2 ...))])))
-
-  ) ;[end]
+          #'(if test
+             (begin result1 result2 ...)
+             (guard-aux reraise clause1 clause2 ...))])))) ;[end]

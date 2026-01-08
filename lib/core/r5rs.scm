@@ -1,12 +1,11 @@
-
 (library (core r5rs)
 
   (export (rename (inexact exact->inexact) (exact inexact->exact))
-          quotient
-          remainder
-          modulo
-          delay
-          force)
+    quotient
+    remainder
+    modulo
+    delay
+    force)
 
   (import (core primitives))
 
@@ -20,17 +19,15 @@
             (result #f))
         (lambda ()
           (if result-ready?
-              result
-              (let ((x (proc)))
-                (if result-ready?
-                    result
-                    (begin (set! result-ready? #t)
-                      (set! result x)
-                      result))))))))
+            result
+            (let ((x (proc)))
+              (if result-ready?
+                result
+                (begin (set! result-ready? #t)
+                  (set! result x)
+                  result))))))))
 
   (define-syntax delay
     (syntax-rules ()
       ((delay expression)
-       (make-promise (lambda () expression)))))
-
-  ) ;[end]
+        (make-promise (lambda () expression)))))) ;[end]

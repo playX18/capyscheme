@@ -4,22 +4,20 @@
   (current-module (resolve-module '(capy) #f #f)))
 
 (import (capy compiler tree-il)
-        (capy compiler tree-il terms)
-        (capy compiler tree-il fold)
-        (capy compiler tree-il primitives)
-        (capy pretty-print)
-        (scheme base)
-        (core lists)
-        (scheme process-context))
-
-
+  (capy compiler tree-il terms)
+  (capy compiler tree-il fold)
+  (capy compiler tree-il primitives)
+  (capy pretty-print)
+  (scheme base)
+  (core lists)
+  (scheme process-context))
 
 (define (squeeze-syntax-object syn)
   (define (ensure-list x)
     (if (vector? x)
-        (vector->list x)
-        x))
-  
+      (vector->list x)
+      x))
+
   (define x (syntax-expression syn))
   (define wrap (syntax-wrap syn))
   (define mod (syntax-module syn))
@@ -29,116 +27,117 @@
 
   (define (squeeze-wrap marks subst)
     (make-syntax x (cons marks subst) mod))
-  
-  (cond 
+
+  (cond
     [(symbol? x)
       (let loop ((marks marks) (subst subst))
-        (cond 
+        (cond
           [(null? subst) (squeeze-wrap marks subst)]
           [(eq? 'shift (car subst)) (loop (cdr marks) (cdr subst))]
           [(find (lambda (entry) (and (eq? x (car entry))
-                                      (equal? marks (cadr entry))))
-                 (apply map list (map ensure-list (cdr (vector->list (car subst))))))
-            => (lambda (entry)
-                 (squeeze-wrap marks 
-                               (list (list->vector
-                                      (cons 'ribcage
-                                            (map vector entry))))))]
+                                  (equal? marks (cadr entry))))
+              (apply map list (map ensure-list (cdr (vector->list (car subst))))))
+            =>
+            (lambda (entry)
+              (squeeze-wrap marks
+                (list (list->vector
+                       (cons 'ribcage
+                         (map vector entry))))))]
           [else (loop marks (cdr subst))]))]
     [(or (pair? x) (vector? x)) syn]
     [else x]))
 
 (define (squeeze-constant x)
-  (cond 
+  (cond
     [(syntax? x) (squeeze-syntax-object x)]
     [(pair? x)
       (cons (squeeze-constant (car x))
-            (squeeze-constant (cdr x)))]
+        (squeeze-constant (cdr x)))]
     [(vector? x)
       (list->vector (map squeeze-constant (vector->list x)))]
     [else x]))
 
 (define (squeeze-tree-il x)
-  (post-order 
+  (post-order
     (lambda (x)
       (if (constant? x)
         (make-constant (term-src x)
-                       (squeeze-constant (constant-value x)))
+          (squeeze-constant (constant-value x)))
         x))
     x))
 
 (define (translate-literal-syntax-objects x)
   (define (find-make-syntax-lexical-binding x)
-    (call/cc 
+    (call/cc
       (lambda (return)
-        (pre-order 
+        (pre-order
           (lambda (x)
             (when (let? x)
               (for-each (lambda (name sym)
-                (when (eq? name 'make-syntax)
-                  (return sym)))
+                         (when (eq? name 'make-syntax)
+                           (return sym)))
                 (let-ids x)
                 (let-lhs x)))
             x)
           x)
         #f)))
-  
+
   (define make-syntax-gensym (find-make-syntax-lexical-binding x))
   (define retry #f)
   (define (translate-constant x)
     (define src (term-src x))
     (define exp (constant-value x))
-    (cond 
+    (cond
       [(list? exp)
         (define exp* (map (lambda (x) (translate-constant (make-constant src x))) exp))
         (if (and-map constant? exp*)
-          x 
+          x
           (make-primcall src 'list exp*))]
       [(pair? exp)
         (define car* (translate-constant (make-constant src (car exp))))
         (define cdr* (translate-constant (make-constant src (cdr exp))))
         (if (and (constant? car*) (constant? cdr*))
-          x 
+          x
           (make-primcall src 'cons (list car* cdr*)))]
       [(vector? exp)
         (define exp* (map (lambda (x) (translate-constant (make-constant src x))) (vector->list exp)))
         (if (and-map constant? exp*)
-          x 
+          x
           (make-primcall src 'vector exp*))]
       [(syntax? exp)
-        (make-application src 
-          (if make-syntax-gensym 
+        (make-application src
+          (if make-syntax-gensym
             (make-lref src 'make-syntax make-syntax-gensym)
             (retry #t))
-          (list 
-            (translate-constant 
+          (list
+            (translate-constant
               (make-constant src (syntax-expression exp)))
             (translate-constant
               (make-constant src (syntax-wrap exp)))
-            (translate-constant 
+            (translate-constant
               (make-constant src (syntax-module exp)))))]
       [else x]))
-      
+
   (let loop ()
-    (define res (call/cc 
-      (lambda (return)
-        (set! retry return)
-        (post-order 
-          (lambda (x)
-            (if (constant? x)
-              (translate-constant x)
-              x))
-          x))))
-    (cond 
+    (define res (call/cc
+                 (lambda (return)
+                   (set! retry return)
+                   (post-order
+                     (lambda (x)
+                       (if (constant? x)
+                         (translate-constant x)
+                         x))
+                     x))))
+    (cond
       [(boolean? res)
-        (translate-literal-syntax-objects 
-          (make-toplevel-define 
+        (translate-literal-syntax-objects
+          (make-toplevel-define
             (term-src x)
             (toplevel-define-mod x)
             (toplevel-define-name x)
-            (make-let 
+            (make-let
               (term-src x)
-              'let 
+              'let
               (list 'make-syntax)
               (list (module-gensym))
               (list (make-toplevel-ref #f #f 'make-syntax))
@@ -158,19 +157,17 @@
 
 (let loop ((x (read in)))
   (if (eof-object? x)
-    (begin 
+    (begin
       (close-port in)
       (close-port out))
-    (begin 
-      
-      (pretty-print 
-        (tree-il->scheme 
-          (translate-literal-syntax-objects 
-            (squeeze-tree-il 
+    (begin
+
+      (pretty-print
+        (tree-il->scheme
+          (translate-literal-syntax-objects
+            (squeeze-tree-il
               (resolve-primitives (macroexpand x 'c '(compile load eval)) (current-module))))
           '(use-case?))
         out)
       (newline out)
       (loop (read in)))))
-
-      

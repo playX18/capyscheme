@@ -1,119 +1,122 @@
-
 (library (core arithmetic)
 
   (export fixnum?
-          fixnum-width
-          least-fixnum
-          greatest-fixnum
-          fx=?
-          fx<?
-          fx>?
-          fx<=?
-          fx>=?
-          fxzero?
-          fxpositive?
-          fxnegative?
-          fxodd?
-          fxeven?
-          fxmax
-          fxmin
-          fx+
-          fx*
-          fx-
-          fxdiv
-          fxmod
-          fxdiv-and-mod
-          fxdiv0
-          fxmod0
-          fxdiv0-and-mod0
-          fx+/carry
-          fx-/carry
-          fx*/carry
-          fxnot
-          fxand
-          fxior
-          fxxor
-          fxif
-          fxbit-count
-          fxlength
-          fxfirst-bit-set
-          fxbit-set?
-          fxcopy-bit
-          fxbit-field
-          fxcopy-bit-field
-          fxarithmetic-shift
-          fxarithmetic-shift-left
-          fxarithmetic-shift-right
-          fxrotate-bit-field
-          fxreverse-bit-field
+    fixnum-width
+    least-fixnum
+    greatest-fixnum
+    fx=?
+    fx<?
+    fx>?
+    fx<=?
+    fx>=?
+    fxzero?
+    fxpositive?
+    fxnegative?
+    fxodd?
+    fxeven?
+    fxmax
+    fxmin
+    fx+
+    fx*
+    fx-
+    fxdiv
+    fxmod
+    fxdiv-and-mod
+    fxdiv0
+    fxmod0
+    fxdiv0-and-mod0
+    fx+/carry
+    fx-/carry
+    fx*/carry
+    fxnot
+    fxand
+    fxior
+    fxxor
+    fxif
+    fxbit-count
+    fxlength
+    fxfirst-bit-set
+    fxbit-set?
+    fxcopy-bit
+    fxbit-field
+    fxcopy-bit-field
+    fxarithmetic-shift
+    fxarithmetic-shift-left
+    fxarithmetic-shift-right
+    fxrotate-bit-field
+    fxreverse-bit-field
 
-          flonum?
-          real->flonum
-          fl=?
-          fl<?
-          fl>?
-          fl<=?
-          fl>=?
-          flinteger?
-          flzero?
-          flpositive?
-          flnegative?
-          flodd?
-          fleven?
-          flfinite?
-          flinfinite?
-          flnan?
-          flmax
-          flmin
-          fl+
-          fl*
-          fl-
-          fl/
-          fldiv-and-mod
-          fldiv
-          flmod
-          fldiv0-and-mod0
-          fldiv0
-          flmod0
-          flnumerator
-          fldenominator
-          flfloor
-          flceiling
-          fltruncate
-          flround
-          flexp
-          flexpt
-          fllog
-          flsin
-          flcos
-          fltan
-          flasin
-          flacos
-          flatan
-          flabs
-          flsqrt
-          fixnum->flonum
+    flonum?
+    real->flonum
+    fl=?
+    fl<?
+    fl>?
+    fl<=?
+    fl>=?
+    flinteger?
+    flzero?
+    flpositive?
+    flnegative?
+    flodd?
+    fleven?
+    flfinite?
+    flinfinite?
+    flnan?
+    flmax
+    flmin
+    fl+
+    fl*
+    fl-
+    fl/
+    fldiv-and-mod
+    fldiv
+    flmod
+    fldiv0-and-mod0
+    fldiv0
+    flmod0
+    flnumerator
+    fldenominator
+    flfloor
+    flceiling
+    fltruncate
+    flround
+    flexp
+    flexpt
+    fllog
+    flsin
+    flcos
+    fltan
+    flasin
+    flacos
+    flatan
+    flabs
+    flsqrt
+    fixnum->flonum
 
-          bitwise-not
-          bitwise-and
-          bitwise-ior
-          bitwise-xor
-          bitwise-if
-          bitwise-bit-count
-          bitwise-length
-          bitwise-first-bit-set
-          bitwise-bit-set?
-          bitwise-copy-bit
-          bitwise-bit-field
-          bitwise-copy-bit-field
-          bitwise-arithmetic-shift
-          bitwise-arithmetic-shift-left
-          bitwise-arithmetic-shift-right
-          bitwise-rotate-bit-field
-          bitwise-reverse-bit-field
+    bitwise-not
+    bitwise-and
+    bitwise-ior
+    bitwise-xor
+    bitwise-if
+    bitwise-bit-count
+    bitwise-length
+    bitwise-first-bit-set
+    bitwise-bit-set?
+    bitwise-copy-bit
+    bitwise-bit-field
+    bitwise-copy-bit-field
+    bitwise-arithmetic-shift
+    bitwise-arithmetic-shift-left
+    bitwise-arithmetic-shift-right
+    bitwise-rotate-bit-field
+    bitwise-reverse-bit-field
 
-          &no-infinities make-no-infinities-violation no-infinities-violation?
-          &no-nans make-no-nans-violation no-nans-violation?)
+    &no-infinities
+    make-no-infinities-violation
+    no-infinities-violation?
+    &no-nans
+    make-no-nans-violation
+    no-nans-violation?)
 
   (import (core primitives))
 
@@ -184,13 +187,15 @@
              (count ei4)
              (width (fx- end start)))
         (if (fxpositive? width)
-            (fxcopy-bit-field n start end
-                              (fxior
-                               (fxarithmetic-shift-left
-                                (fxbit-field n start (fx- end count)) count)
-                               (fxarithmetic-shift-right
-                                (fxbit-field n start end) (fx- width count))))
-            n))))
+          (fxcopy-bit-field n start end
+            (fxior
+              (fxarithmetic-shift-left
+                (fxbit-field n start (fx- end count))
+                count)
+              (fxarithmetic-shift-right
+                (fxbit-field n start end)
+                (fx- width count))))
+          n))))
 
   (define fxreverse-bit-field
     (lambda (ei1 ei2 ei3)
@@ -199,29 +204,30 @@
              (end ei3)
              (width (fx- end start)))
         (if (fxpositive? width)
-            (let loop ((reversed 0) (field (fxbit-field n start end)) (width width))
-              (if (fxzero? width)
-                  (fxcopy-bit-field n start end reversed)
-                  (if (fxzero? (fxand field 1))
-                      (loop (fxarithmetic-shift-left reversed 1)
-                            (fxarithmetic-shift-right field 1)
-                            (fx- width 1))
-                      (loop (fxior (fxarithmetic-shift-left reversed 1) 1)
-                            (fxarithmetic-shift-right field 1)
-                            (fx- width 1)))))
-            n))))
+          (let loop ((reversed 0) (field (fxbit-field n start end)) (width width))
+            (if (fxzero? width)
+              (fxcopy-bit-field n start end reversed)
+              (if (fxzero? (fxand field 1))
+                (loop (fxarithmetic-shift-left reversed 1)
+                  (fxarithmetic-shift-right field 1)
+                  (fx- width 1))
+                (loop (fxior (fxarithmetic-shift-left reversed 1) 1)
+                  (fxarithmetic-shift-right field 1)
+                  (fx- width 1)))))
+          n))))
 
-  (define bitwise-arithmetic-shift-left 
+  (define bitwise-arithmetic-shift-left
     (lambda (ei1 ei2)
       (if (< ei2 0)
         (assertion-violation 'bitwise-arithmetic-shift-left
-                             "negative shift count" ei2))
+          "negative shift count"
+          ei2))
       (bitwise-arithmetic-shift ei1 ei2)))
 
   (define bitwise-if
     (lambda (ei1 ei2 ei3)
       (bitwise-ior (bitwise-and ei1 ei2)
-                   (bitwise-and (bitwise-not ei1) ei3))))
+        (bitwise-and (bitwise-not ei1) ei3))))
 
   (define bitwise-bit-set?
     (lambda (ei1 ei2)
@@ -252,10 +258,10 @@
     (lambda (ei1 ei2)
       (if (< ei2 0)
         (assertion-violation 'bitwise-arithmetic-shift-right
-                             "negative shift count" ei2))
+          "negative shift count"
+          ei2))
       (bitwise-arithmetic-shift ei1 (- ei2))))
 
-      
   (define bitwise-rotate-bit-field
     (lambda (ei1 ei2 ei3 ei4)
       (let* ((n ei1)
@@ -264,13 +270,13 @@
              (count ei4)
              (width (- end start)))
         (if (positive? width)
-            (let* ((count (mod count width))
-                   (field0 (bitwise-bit-field n start end))
-                   (field1 (bitwise-arithmetic-shift field0 count))
-                   (field2 (bitwise-arithmetic-shift-right field0 (- width count)))
-                   (field (bitwise-ior field1 field2)))
-              (bitwise-copy-bit-field n start end field))
-            n))))
+          (let* ((count (mod count width))
+                 (field0 (bitwise-bit-field n start end))
+                 (field1 (bitwise-arithmetic-shift field0 count))
+                 (field2 (bitwise-arithmetic-shift-right field0 (- width count)))
+                 (field (bitwise-ior field1 field2)))
+            (bitwise-copy-bit-field n start end field))
+          n))))
 
   (define bitwise-reverse-bit-field
     (lambda (ei1 ei2 ei3)
@@ -279,16 +285,14 @@
              (end ei3)
              (width (- end start)))
         (if (positive? width)
-            (let loop ((reversed 0) (field (bitwise-bit-field n start end)) (width width))
-              (if (zero? width)
-                  (bitwise-copy-bit-field n start end reversed)
-                  (if (zero? (bitwise-and field 1))
-                      (loop (bitwise-arithmetic-shift reversed 1)
-                            (bitwise-arithmetic-shift-right field 1)
-                            (- width 1))
-                      (loop (bitwise-ior (bitwise-arithmetic-shift reversed 1) 1)
-                            (bitwise-arithmetic-shift-right field 1)
-                            (- width 1)))))
-            n))))
-
-  ) ;[end]
+          (let loop ((reversed 0) (field (bitwise-bit-field n start end)) (width width))
+            (if (zero? width)
+              (bitwise-copy-bit-field n start end reversed)
+              (if (zero? (bitwise-and field 1))
+                (loop (bitwise-arithmetic-shift reversed 1)
+                  (bitwise-arithmetic-shift-right field 1)
+                  (- width 1))
+                (loop (bitwise-ior (bitwise-arithmetic-shift reversed 1) 1)
+                  (bitwise-arithmetic-shift-right field 1)
+                  (- width 1)))))
+          n))))) ;[end]

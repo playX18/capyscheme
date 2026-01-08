@@ -15,35 +15,35 @@
 
 (define (vector-find-median < v knil . rest)
   (let* ((mean (if (null? rest)
-                   (lambda (a b) (/ (+ a b) 2))
-                   (car rest)))
+                (lambda (a b) (/ (+ a b) 2))
+                (car rest)))
          (n (vector-length v)))
     (cond ((zero? n)
            knil)
-          ((odd? n)
-           (%vector-select < v (quotient n 2) 0 n))
-          (else
-           (call-with-values
-            (lambda () (%vector-select2 < v (- (quotient n 2) 1) 0 n))
-            (lambda (a b)
-              (mean a b)))))))
+      ((odd? n)
+        (%vector-select < v (quotient n 2) 0 n))
+      (else
+        (call-with-values
+          (lambda () (%vector-select2 < v (- (quotient n 2) 1) 0 n))
+          (lambda (a b)
+            (mean a b)))))))
 
 ;;; For this procedure, the SRFI 132 specification
 ;;; demands the vector be sorted (by side effect).
 
 (define (vector-find-median! < v knil . rest)
   (let* ((mean (if (null? rest)
-                   (lambda (a b) (/ (+ a b) 2))
-                   (car rest)))
+                (lambda (a b) (/ (+ a b) 2))
+                (car rest)))
          (n (vector-length v)))
     (vector-sort! < v)
     (cond ((zero? n)
            knil)
-          ((odd? n)
-           (vector-ref v (quotient n 2)))
-          (else
-           (mean (vector-ref v (- (quotient n 2) 1))
-                 (vector-ref v (quotient n 2)))))))
+      ((odd? n)
+        (vector-ref v (quotient n 2)))
+      (else
+        (mean (vector-ref v (- (quotient n 2) 1))
+          (vector-ref v (quotient n 2)))))))
 
 ;;; SRFI 132 says this procedure runs in O(n) time.
 ;;; As implemented, however, the worst-case time is O(n^2).
@@ -54,12 +54,12 @@
 
 (define (vector-select < v k . rest)
   (let* ((start (if (null? rest)
-                    0
-                    (car rest)))
+                 0
+                 (car rest)))
          (end (if (and (pair? rest)
-                       (pair? (cdr rest)))
-                  (car (cdr rest))
-                  (vector-length v))))
+                   (pair? (cdr rest)))
+               (car (cdr rest))
+               (vector-length v))))
     (%vector-select < v k start end)))
 
 ;;; The vector-select procedure is needed internally to implement
@@ -73,25 +73,25 @@
 
 (define (vector-separate! < v k . rest)
   (let* ((start (if (null? rest)
-                    0
-                    (car rest)))
+                 0
+                 (car rest)))
          (end (if (and (pair? rest)
-                       (pair? (cdr rest)))
-                  (car (cdr rest))
-                  (vector-length v))))
+                   (pair? (cdr rest)))
+               (car (cdr rest))
+               (vector-length v))))
     (if (and (> k 0)
-             (> end start))
-        (let ((pivot (vector-select < v (- k 1) start end)))
-          (call-with-values
-           (lambda () (count-smaller < pivot v start end 0 0))
-           (lambda (count count2)
-             (let* ((v2 (make-vector count))
-                    (v3 (make-vector (- end start count count2))))
-               (copy-smaller! < pivot v2 0 v start end)
-               (copy-bigger! < pivot v3 0 v start end)
-               (r7rs-vector-copy! v start v2)
-               (r7rs-vector-fill! v pivot (+ start count) (+ start count count2))
-               (r7rs-vector-copy! v (+ start count count2) v3))))))))
+         (> end start))
+      (let ((pivot (vector-select < v (- k 1) start end)))
+        (call-with-values
+          (lambda () (count-smaller < pivot v start end 0 0))
+          (lambda (count count2)
+            (let* ((v2 (make-vector count))
+                   (v3 (make-vector (- end start count count2))))
+              (copy-smaller! < pivot v2 0 v start end)
+              (copy-bigger! < pivot v3 0 v start end)
+              (r7rs-vector-copy! v start v2)
+              (r7rs-vector-fill! v pivot (+ start count) (+ start count count2))
+              (r7rs-vector-copy! v (+ start count count2) v3))))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -115,13 +115,13 @@
 
 (define (%vector-select <? v k start end)
   (assert (and 'vector-select
-               (procedure? <?)
-               (vector? v)
-               (exact-integer? k)
-               (exact-integer? start)
-               (exact-integer? end)
-               (<= 0 k (- end start 1))
-               (<= 0 start end (vector-length v))))
+           (procedure? <?)
+           (vector? v)
+           (exact-integer? k)
+           (exact-integer? start)
+           (exact-integer? end)
+           (<= 0 k (- end start 1))
+           (<= 0 start end (vector-length v))))
   (%%vector-select <? v k start end))
 
 ;;; Given
@@ -140,13 +140,13 @@
 
 (define (%vector-select2 <? v k start end)
   (assert (and 'vector-select
-               (procedure? <?)
-               (vector? v)
-               (exact-integer? k)
-               (exact-integer? start)
-               (exact-integer? end)
-               (<= 0 k (- end start 1 1))
-               (<= 0 start end (vector-length v))))
+           (procedure? <?)
+           (vector? v)
+           (exact-integer? k)
+           (exact-integer? start)
+           (exact-integer? end)
+           (<= 0 k (- end start 1 1))
+           (<= 0 start end (vector-length v))))
   (%%vector-select2 <? v k start end))
 
 ;;; Like %vector-select, but its preconditions have been checked.
@@ -155,33 +155,33 @@
   (let ((size (- end start)))
     (cond ((= 1 size)
            (vector-ref v (+ k start)))
-          ((= 2 size)
-           (cond ((<? (vector-ref v start)
-                      (vector-ref v (+ start 1)))
-                  (vector-ref v (+ k start)))
-                 (else
-                  (vector-ref v (+ (- 1 k) start)))))
-          ((< size just-sort-it-threshold)
-           (vector-ref (vector-sort <? (r7rs-vector-copy v start end)) k))
+      ((= 2 size)
+        (cond ((<? (vector-ref v start)
+                 (vector-ref v (+ start 1)))
+               (vector-ref v (+ k start)))
           (else
-           (let* ((ip (random-integer size))
-                  (pivot (vector-ref v (+ start ip))))
-             (call-with-values
-              (lambda () (count-smaller <? pivot v start end 0 0))
-              (lambda (count count2)
-                (cond ((< k count)
-                       (let* ((n count)
-                              (v2 (make-vector n)))
-                         (copy-smaller! <? pivot v2 0 v start end)
-                         (%%vector-select <? v2 k 0 n)))
-                      ((< k (+ count count2))
-                       pivot)
-                      (else
-                       (let* ((n (- size count count2))
-                              (v2 (make-vector n))
-                              (k2 (- k count count2)))
-                         (copy-bigger! <? pivot v2 0 v start end)
-                         (%%vector-select <? v2 k2 0 n)))))))))))
+            (vector-ref v (+ (- 1 k) start)))))
+      ((< size just-sort-it-threshold)
+        (vector-ref (vector-sort <? (r7rs-vector-copy v start end)) k))
+      (else
+        (let* ((ip (random-integer size))
+               (pivot (vector-ref v (+ start ip))))
+          (call-with-values
+            (lambda () (count-smaller <? pivot v start end 0 0))
+            (lambda (count count2)
+              (cond ((< k count)
+                     (let* ((n count)
+                            (v2 (make-vector n)))
+                       (copy-smaller! <? pivot v2 0 v start end)
+                       (%%vector-select <? v2 k 0 n)))
+                ((< k (+ count count2))
+                  pivot)
+                (else
+                  (let* ((n (- size count count2))
+                         (v2 (make-vector n))
+                         (k2 (- k count count2)))
+                    (copy-bigger! <? pivot v2 0 v start end)
+                    (%%vector-select <? v2 k2 0 n)))))))))))
 
 ;;; Like %%vector-select, but returns two values:
 ;;;
@@ -198,37 +198,37 @@
                  (b (vector-ref v (+ start 1))))
              (cond ((<? a b)
                     (values a b))
-                   (else
-                    (values b a)))))
-          ((< size just-sort-it-threshold)
-           (let ((v2 (vector-sort <? (r7rs-vector-copy v start end))))
-             (values (vector-ref v2 k)
-                     (vector-ref v2 (+ k 1)))))
-          (else
-           (let* ((ip (random-integer size))
-                  (pivot (vector-ref v (+ start ip))))
-             (call-with-values
-              (lambda () (count-smaller <? pivot v start end 0 0))
-              (lambda (count count2)
-                (cond ((= (+ k 1) count)
-                       (values (%%vector-select <? v k start end)
-                               pivot))
-                      ((< k count)
-                       (let* ((n count)
-                              (v2 (make-vector n)))
-                         (copy-smaller! <? pivot v2 0 v start end)
-                         (%%vector-select2 <? v2 k 0 n)))
-                      ((< k (+ count count2))
-                       (values pivot
-                               (if (< (+ k 1) (+ count count2))
-                                   pivot
-                                   (%%vector-select <? v (+ k 1) start end))))
-                      (else
-                       (let* ((n (- size count count2))
-                              (v2 (make-vector n))
-                              (k2 (- k count count2)))
-                         (copy-bigger! <? pivot v2 0 v start end)
-                         (%%vector-select2 <? v2 k2 0 n)))))))))))
+               (else
+                 (values b a)))))
+      ((< size just-sort-it-threshold)
+        (let ((v2 (vector-sort <? (r7rs-vector-copy v start end))))
+          (values (vector-ref v2 k)
+            (vector-ref v2 (+ k 1)))))
+      (else
+        (let* ((ip (random-integer size))
+               (pivot (vector-ref v (+ start ip))))
+          (call-with-values
+            (lambda () (count-smaller <? pivot v start end 0 0))
+            (lambda (count count2)
+              (cond ((= (+ k 1) count)
+                     (values (%%vector-select <? v k start end)
+                       pivot))
+                ((< k count)
+                  (let* ((n count)
+                         (v2 (make-vector n)))
+                    (copy-smaller! <? pivot v2 0 v start end)
+                    (%%vector-select2 <? v2 k 0 n)))
+                ((< k (+ count count2))
+                  (values pivot
+                    (if (< (+ k 1) (+ count count2))
+                      pivot
+                      (%%vector-select <? v (+ k 1) start end))))
+                (else
+                  (let* ((n (- size count count2))
+                         (v2 (make-vector n))
+                         (k2 (- k count count2)))
+                    (copy-bigger! <? pivot v2 0 v start end)
+                    (%%vector-select2 <? v2 k2 0 n)))))))))))
 
 ;;; Counts how many elements within the range are less than the pivot
 ;;; and how many are equal to the pivot, returning both of those counts.
@@ -236,30 +236,30 @@
 (define (count-smaller <? pivot v i end count count2)
   (cond ((= i end)
          (values count count2))
-        ((<? (vector-ref v i) pivot)
-         (count-smaller <? pivot v (+ i 1) end (+ count 1) count2))
-        ((<? pivot (vector-ref v i))
-         (count-smaller <? pivot v (+ i 1) end count count2))
-        (else
-         (count-smaller <? pivot v (+ i 1) end count (+ count2 1)))))
+    ((<? (vector-ref v i) pivot)
+      (count-smaller <? pivot v (+ i 1) end (+ count 1) count2))
+    ((<? pivot (vector-ref v i))
+      (count-smaller <? pivot v (+ i 1) end count count2))
+    (else
+      (count-smaller <? pivot v (+ i 1) end count (+ count2 1)))))
 
 ;;; Like vector-copy! but copies an element only if it is less than the pivot.
 ;;; The destination vector must be large enough.
 
 (define (copy-smaller! <? pivot dst at src start end)
   (cond ((= start end) dst)
-        ((<? (vector-ref src start) pivot)
-         (vector-set! dst at (vector-ref src start))
-         (copy-smaller! <? pivot dst (+ at 1) src (+ start 1) end))
-        (else
-         (copy-smaller! <? pivot dst at src (+ start 1) end))))
+    ((<? (vector-ref src start) pivot)
+      (vector-set! dst at (vector-ref src start))
+      (copy-smaller! <? pivot dst (+ at 1) src (+ start 1) end))
+    (else
+      (copy-smaller! <? pivot dst at src (+ start 1) end))))
 
 ;;; Like copy-smaller! but copies only elements that are greater than the pivot.
 
 (define (copy-bigger! <? pivot dst at src start end)
   (cond ((= start end) dst)
-        ((<? pivot (vector-ref src start))
-         (vector-set! dst at (vector-ref src start))
-         (copy-bigger! <? pivot dst (+ at 1) src (+ start 1) end))
-        (else
-         (copy-bigger! <? pivot dst at src (+ start 1) end))))
+    ((<? pivot (vector-ref src start))
+      (vector-set! dst at (vector-ref src start))
+      (copy-bigger! <? pivot dst (+ at 1) src (+ start 1) end))
+    (else
+      (copy-bigger! <? pivot dst at src (+ start 1) end))))

@@ -1,12 +1,11 @@
-
 ; Making current-input-port and current-output-port into parameters
 ; lost the pure elegance of Lars Hansen's factory idea, but it still
 ; works (to some extent) by going through an error handler.
 
-(define current-input-port 
+(define current-input-port
   (make-parameter #f (lambda (x) (io/input-port? x))))
 
-(define current-output-port 
+(define current-output-port
   (make-parameter #f (lambda (x) (io/output-port? x))))
 
 ; Rebinding the current-error-port can cause an infinite loop
@@ -21,7 +20,7 @@
   (console-io/initialize)
   (current-input-port (console-input-port))
   (current-output-port (console-output-port))
-; (current-error-port (console-error-port))     ; see comment above
+  ; (current-error-port (console-error-port))     ; see comment above
   (unspecified))
 
 (define (shutdown-io-system)
@@ -41,15 +40,15 @@
 
 (define (open-raw-latin-1-input-file filename)
   (open-file-input-port filename
-                        (file-options)
-                        'block
-                        (make-transcoder (latin-1-codec) 'none 'ignore)))
+    (file-options)
+    'block
+    (make-transcoder (latin-1-codec) 'none 'ignore)))
 
 (define (open-raw-latin-1-output-file filename)
   (open-file-output-port filename
-                         (file-options)
-                         'block
-                         (make-transcoder (latin-1-codec) 'none 'ignore)))
+    (file-options)
+    'block
+    (make-transcoder (latin-1-codec) 'none 'ignore)))
 
 (define (call-with-raw-latin-1-input-file file proc)
   (let ((port (open-raw-latin-1-input-file file)))
@@ -113,32 +112,32 @@
 ;
 (define (read-char . rest)
   (cond ((null? rest)
-        (io/read-char (current-input-port)))
-       ((null? (cdr rest))
-        (io/read-char (car rest)))
-       (else
-        (error 'read-char "too many arguments.")
-        #t)))
+         (io/read-char (current-input-port)))
+    ((null? (cdr rest))
+      (io/read-char (car rest)))
+    (else
+      (error 'read-char "too many arguments.")
+      #t)))
 
 (define (peek-char . rest)
   (cond ((null? rest)
          (io/peek-char (current-input-port)))
-        ((null? (cdr rest))
-         (io/peek-char (car rest)))
-        (else
-         (error "peek-char: too many arguments.")
-         #t)))
+    ((null? (cdr rest))
+      (io/peek-char (car rest)))
+    (else
+      (error "peek-char: too many arguments.")
+      #t)))
 
 ; FIXME:  This no longer works!
 
 (define (char-ready? . rest)
   (cond ((null? rest)
          (io/char-ready? (current-input-port)))
-        ((null? (cdr rest))
-         (io/char-ready? (car rest)))
-        (else
-         (error "char-ready?: too many arguments.")
-         #t)))
+    ((null? (cdr rest))
+      (io/char-ready? (car rest)))
+    (else
+      (error "char-ready?: too many arguments.")
+      #t)))
 
 ;;; New for R7RS.  FIXME: Performance could be improved.
 
@@ -164,22 +163,22 @@
     (let ((c (get-char p)))
       (define (finish c)
         (if (and (null? chars)
-                 (eof-object? c))
-            c
-            (list->string (reverse chars))))
+             (eof-object? c))
+          c
+          (list->string (reverse chars))))
       (cond ((not (char? c))
              (finish c))
-            ((char=? c #\newline)
-             (finish c))
-            ((char=? c #\return)
-             (let ((c2 (peek-char p)))
-               (if (char=? c2 #\newline)
-                   (get-char p)))
-             (finish c))
-            (else
-             (loop p (cons c chars))))))
+        ((char=? c #\newline)
+          (finish c))
+        ((char=? c #\return)
+          (let ((c2 (peek-char p)))
+            (if (char=? c2 #\newline)
+              (get-char p)))
+          (finish c))
+        (else
+          (loop p (cons c chars))))))
   (loop (if (null? rest) (current-input-port) (car rest))
-        '()))
+    '()))
 
 (define (read-string k . rest)
   (let ((p (if (null? rest) (current-input-port) (car rest))))
@@ -209,36 +208,36 @@
   (let* ((p (if (null? rest) (current-input-port) (car rest)))
          (start (if (or (null? rest) (null? (cdr rest))) 0 (cadr rest)))
          (end (if (or (null? rest) (null? (cdr rest)) (null? (cddr rest)))
-                  (bytevector-length bv)
-                  (caddr rest))))
+               (bytevector-length bv)
+               (caddr rest))))
     (get-bytevector-n! p bv start (- end start))))
 
 (define (write-bytevector bv . rest)
   (let* ((p (if (null? rest) (current-output-port) (car rest)))
          (start (if (or (null? rest) (null? (cdr rest))) 0 (cadr rest)))
          (end (if (or (null? rest) (null? (cdr rest)) (null? (cddr rest)))
-                  (bytevector-length bv)
-                  (caddr rest))))
+               (bytevector-length bv)
+               (caddr rest))))
     (put-bytevector p bv start (- end start))))
 
 ; Write-char has been re-coded in MAL for performance; see Lib/malcode.mal.
 ;
 (define (write-char c . rest)
   (cond ((null? rest)
-        (io/write-char c (current-output-port)))
-       ((null? (cdr rest))
-        (io/write-char c (car rest)))
-       (else
-        (error "write-char: too many arguments.")
-        #t)))
+         (io/write-char c (current-output-port)))
+    ((null? (cdr rest))
+      (io/write-char c (car rest)))
+    (else
+      (error "write-char: too many arguments.")
+      #t)))
 
 (define (write-bytevector-like bvl . rest)
   (if (pair? rest)
-      (if (null? (cdr rest))
-          (io/write-bytevector-like bvl (car rest))
-          (begin (error "write-bytevector-like: too many arguments.")
-                 #t))
-      (io/write-bytevector-like bvl (current-output-port))))
+    (if (null? (cdr rest))
+      (io/write-bytevector-like bvl (car rest))
+      (begin (error "write-bytevector-like: too many arguments.")
+        #t))
+    (io/write-bytevector-like bvl (current-output-port))))
 
 ;; Simply emits the characters in string to the port.
 
@@ -247,33 +246,33 @@
          (p (if (null? rest) (current-output-port) (car rest)))
          (start (if (or (null? rest) (null? (cdr rest))) 0 (cadr rest)))
          (end (if (or (null? rest) (null? (cdr rest)) (null? (cddr rest)))
-                  n
-                  (caddr rest)))
+               n
+               (caddr rest)))
          (s (if (and (= start 0) (= end n))
-                string
-                (substring string start end))))
+             string
+             (substring string start end))))
     (io/write-string s p)))
 
 ;;; The R7RS says these next two procedures accept any argument.
 
 (define (input-port? p)
   (and (port? p)
-       (io/r7rs-input-port? p)))
+    (io/r7rs-input-port? p)))
 
 (define (output-port? p)
   (and (port? p)
-       (io/r7rs-output-port? p)))
+    (io/r7rs-output-port? p)))
 
 ;;; The next two procedures still require a port as their argument,
 ;;; but no great harm should come from generalizing that.
 
 (define (input-port-open? p)
   (and (input-port? p)
-       (io/open-port? p)))
+    (io/open-port? p)))
 
 (define (output-port-open? p)
   (and (output-port? p)
-       (io/open-port? p)))
+    (io/open-port? p)))
 
 (define (port-name p)
   (io/port-name p))
@@ -286,15 +285,15 @@
 
 (define (open-input-file filename)
   (open-file-input-port filename
-                        (file-options)
-                        'block
-                        (native-transcoder)))
+    (file-options)
+    'block
+    (native-transcoder)))
 
 (define (open-output-file filename)
   (open-file-output-port filename
-                         (file-options)
-                         'block
-                         (native-transcoder)))
+    (file-options)
+    'block
+    (native-transcoder)))
 
 (define (console-input-port)
   ((console-input-port-factory)))
@@ -307,18 +306,18 @@
 
 (define console-input-port-factory
   (make-parameter
-                  console-io/console-input-port
-                  procedure?))
+    console-io/console-input-port
+    procedure?))
 
 (define console-output-port-factory
   (make-parameter
-                  console-io/console-output-port
-                  procedure?))
+    console-io/console-output-port
+    procedure?))
 
 (define console-error-port-factory
-  (make-parameter 
-                  console-io/console-error-port
-                  procedure?))
+  (make-parameter
+    console-io/console-error-port
+    procedure?))
 
 (define (open-input-string s)
   (string-io/open-input-string s))
@@ -347,32 +346,32 @@
 (define (reset-output-bytevector port)
   (bytevector-io/reset-output-bytevector port))
 
-(define (close-input-port p) 
+(define (close-input-port p)
   (cond ((io/input-port? p)
          (io/close-port p))
-        ((input-port? p)    ; port is closed
-         (unspecified))
-        (else
-         (error "close-input-port: not an input port: " p)
-         #t)))
+    ((input-port? p) ; port is closed
+      (unspecified))
+    (else
+      (error "close-input-port: not an input port: " p)
+      #t)))
 
 (define (close-output-port p)
   (cond ((io/output-port? p)
          (io/close-port p))
-        ((output-port? p)    ; port is closed
-         (unspecified))
-        (else
-         (error "close-output-port: not an output port: " p)
-         #t)))
+    ((output-port? p) ; port is closed
+      (unspecified))
+    (else
+      (error "close-output-port: not an output port: " p)
+      #t)))
 
 (define (flush-output-port . rest)
   (cond ((null? rest)
          (io/flush (current-output-port)))
-        ((null? (cdr rest))
-         (io/flush (car rest)))
-        (else
-         (error "flush-output-port: too many arguments.")
-         #t)))
+    ((null? (cdr rest))
+      (io/flush (car rest)))
+    (else
+      (error "flush-output-port: too many arguments.")
+      #t)))
 
 (define (call-with-input-file file proc)
   (call-with-port (open-input-file file) proc))
@@ -402,18 +401,17 @@
 
 (define (with-input-from-port port thunk)
   (define old (current-input-port))
-  (dynamic-wind 
+  (dynamic-wind
     (lambda () (current-input-port port))
     thunk
     (lambda () (current-input-port old))))
 
 (define (with-output-to-port port thunk)
   (define old (current-output-port))
-  (dynamic-wind 
+  (dynamic-wind
     (lambda () (current-output-port port))
     thunk
     (lambda () (current-output-port old))))
-
 
 (define (with-input-from-file fn thunk)
   (call-with-input-file fn
@@ -456,10 +454,10 @@
         (t2 (file-modification-time f2)))
     (let loop ((i 0))
       (cond ((= i (vector-length t1)) #f)
-            ((= (vector-ref t1 i) (vector-ref t2 i))
-             (loop (+ i 1)))
-            (else
-              (> (vector-ref t1 i) (vector-ref t2 i)))))))
+        ((= (vector-ref t1 i) (vector-ref t2 i))
+          (loop (+ i 1)))
+        (else
+          (> (vector-ref t1 i) (vector-ref t2 i)))))))
 
 (define (file-exists? filename)
   (file-io/file-exists? filename))
@@ -488,24 +486,22 @@
 (define crnel 'crnel)
 (define ls 'ls)
 
-
 (define (eol-style style) style)
 
-
 (define (open-binary-fd-output-port name fd b-mode)
-  
-  (define p (io/make-port file-io/ioproc 
-                          (file-io/data fd name)
-                          'binary
-                          'output
-                          'flush))
+
+  (define p (io/make-port file-io/ioproc
+             (file-io/data fd name)
+             'binary
+             'output
+             'flush))
   p)
 
 (define (open-binary-fd-input-port name fd b-mode)
-  (define p (io/make-port file-io/ioproc 
-                          (file-io/data fd name)
-                          'binary
-                          'input))
+  (define p (io/make-port file-io/ioproc
+             (file-io/data fd name)
+             'binary
+             'input))
   p)
 
 ; eof
