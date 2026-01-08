@@ -931,6 +931,40 @@
                                         (let () e1 e2 ...)
                                         (let () c ... (do step ...))))))))))))
   
+
+(define-syntax do* 
+  (lambda (stx)
+    "(do* ({(var [init] [step])}*) (test exit-form*) declaration-form*)
+    Iteration construct. Each var is initialized sequentially like let* to the 
+    value specified by init form. On subsequent iterations, the vars are
+    sequentially assigned the value of the step form (if any). The test
+    is evaluated before each evaluation of the body forms."
+    (syntax-case stx ()
+      [(_ ((var init . step) ...) (e0 e1 ...) c ...)
+        (with-syntax (((step ...)
+                        (map (lambda (v s)
+                              (syntax-case s () 
+                                [() v]
+                                [(e) #'e]
+                                [_ (syntax-violation 'do* "invalid step" stx s)]))
+                            #'(var ...)
+                            #'(step ...))))
+          (syntax-case #'(e1 ...) ()
+            [() #'(let* ([var init] ...)
+                        (let do* ((var var) ...)
+                          (if (not e0)
+                            (let () c ...
+                              (let* ([var step] ...)
+                                (do* var ...))))))]
+            [(e1 e2 ...)
+              #'(let* ([var init] ...)
+                (let do* ([var var] ...)
+                  (if e0 
+                    (let () e1 e2 ...)
+                    (let () c ...
+                      (let* ([var step] ...)
+                        (do* var ...))))))]))])))
+
 ;; Implements `receive` syntax by translating to `call-with-values`.
 ;; Compiler will later on eliminate `call-with-values` to `receive` IR form.
 (define-syntax receive
