@@ -3,7 +3,9 @@
 ### ⛰️  Features
 
 - *(runtime)* Use self-hosted primitive expansion after bootstrap - ([82c55a7](https://codeberg.org/playXE/capy/commit/82c55a76aa03b9f6e9211c79245380458e143f6f))
+- *(srfi-257)* Simple extendable pattern matcher with backtracking - ([2c435b4](https://codeberg.org/playXE/capy/commit/2c435b477755665647079a14da566dde96448da1))
 - *(ssa)* Add (unspecified) lowering - ([2b9fba2](https://codeberg.org/playXE/capy/commit/2b9fba26990230212328aeaeb72501a0b003886f))
+- *(tree-il)* Add pattern matchers for IL - ([34b0430](https://codeberg.org/playXE/capy/commit/34b043015abc838acef9511327f541dd249e5c96))
 
 ### 🐛 Bug Fixes
 
@@ -12,6 +14,9 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Add fmt commit to git-blame-ignore-vars - ([a683138](https://codeberg.org/playXE/capy/commit/a683138ccc708456ebf2fe570b2afbcd9825b4fd))
+- The great formatting - ([be734fa](https://codeberg.org/playXE/capy/commit/be734fadb066deb725b70b72729df149eb4591c1))
+- Update CHANGELOG.md [skip ci] - ([be6eaec](https://codeberg.org/playXE/capy/commit/be6eaecb77e028db71ef0d63a7f977c774a4b1aa))
 - Update CHANGELOG.md [skip ci] - ([10407cd](https://codeberg.org/playXE/capy/commit/10407cdb9c10ee0ab649730735efab8f9ed312f9))
 
 
