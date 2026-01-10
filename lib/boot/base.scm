@@ -1753,7 +1753,7 @@
             (with-syntax ([(restarg) (generate-temporaries '(restarg))]
                           [(args ...) (datum->syntax #'x fargs)])
               #`(lambda (#,@fargs . restarg)
-                 #,@(extended-lambda-body #'ctx #'restarg kargs #'(body ...))))))])))
+                 #,@(extended-lambda-body #`('#,x) #'restarg kargs #'(body ...))))))])))
 
 (define-syntax define*
   (lambda (x)
