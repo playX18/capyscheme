@@ -463,6 +463,8 @@ impl TypeCode8 {
     pub const POLLER: Self = Self(72);
     pub const POLL_EVENT: Self = Self(73);
 
+    pub const SOCKET: Self = Self(74);
+
     pub const UNKNOWN: Self = Self(0xFF);
 }
 
