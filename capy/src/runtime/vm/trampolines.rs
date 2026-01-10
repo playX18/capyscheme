@@ -29,11 +29,15 @@ use crate::{
     },
 };
 
-struct Trampolines {
+pub struct Trampolines {
     module: Mutex<JITModule>,
     enter_scheme_trampoline: FuncId,
     native_trampoline: FuncId,
     native_continuation_trampoline: FuncId,
+
+    pub enter_scheme_size: usize,
+    pub native_trampoline_size: usize,
+    pub native_continuation_trampoline_size: usize,
 }
 
 fn enter_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
@@ -420,18 +424,22 @@ impl Trampolines {
 
         let mut ctx = module.make_context();
         let mut fctx = FunctionBuilderContext::new();
-
+        let enter_scheme_size;
+        let native_trampoline_size;
+        let native_continuation_size;
         {
             ctx.func.signature = call_signature!(SystemV (I64, I64, I64, I64) -> (I64, I64));
             enter_scheme_trampoline_code(&mut fctx, &mut ctx);
             module
                 .define_function(enter_scheme_trampoline, &mut ctx)
                 .unwrap();
+            enter_scheme_size = ctx.compiled_code().unwrap().code_info().total_size as usize;
             module.clear_context(&mut ctx);
             fctx = FunctionBuilderContext::new();
             ctx.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
             scheme_native_trampoline_code(&mut fctx, &mut ctx);
             module.define_function(native_trampoline, &mut ctx).unwrap();
+            native_trampoline_size = ctx.compiled_code().unwrap().code_info().total_size as usize;
             module.clear_context(&mut ctx);
             fctx = FunctionBuilderContext::new();
             ctx.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
@@ -439,6 +447,7 @@ impl Trampolines {
             module
                 .define_function(native_continuation_trampoline, &mut ctx)
                 .unwrap();
+            native_continuation_size = ctx.compiled_code().unwrap().code_info().total_size as usize;
             module.clear_context(&mut ctx);
         }
 
@@ -446,8 +455,11 @@ impl Trampolines {
 
         Self {
             enter_scheme_trampoline,
+            enter_scheme_size,
             native_trampoline,
+            native_trampoline_size,
             native_continuation_trampoline,
+            native_continuation_trampoline_size: native_continuation_size,
             module: Mutex::new(module),
         }
     }
@@ -456,7 +468,7 @@ impl Trampolines {
 unsafe impl Send for Trampolines {}
 unsafe impl Sync for Trampolines {}
 
-static TRAMPOLINES: LazyLock<Trampolines> = LazyLock::new(|| Trampolines::new());
+pub(crate) static TRAMPOLINES: LazyLock<Trampolines> = LazyLock::new(|| Trampolines::new());
 
 static TRAMPOLINE_INTO_SCHEME: LazyLock<Address> = LazyLock::new(|| {
     Address::from_ptr(
