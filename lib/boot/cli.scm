@@ -210,6 +210,7 @@
     (define r7rs-mode (arg-results-ref res "r7rs"))
     (define r6rs-mode (arg-results-ref res "r6rs"))
     (define verbose (arg-results-ref res "verbose"))
+    (define backtrace (not (arg-results-ref res "nobacktrace")))
     (if (and r7rs-mode r6rs-mode)
       (error "Cannot specify both --r7rs and --r6rs modes"))
     (define source-files (arg-results-rest res))
@@ -245,19 +246,24 @@
               (lambda ()
                 (when verbose
                   (format #t ";; Compiling file ~a~%" file))
-                (define out (compile-file
-                             file
-                             out-file
-                             (or (and module-name (resolve-module module-name #t #t)) #f)
-                             #f))
-                (when verbose
-                  (format #t ";; Compiled ~a -> ~a~%" file out)))))
+                (with-continuation-mark *compile-backtrace-key* backtrace
+                  (define out (compile-file
+                               file
+                               out-file
+                               (or (and module-name (resolve-module module-name #t #t)) #f)
+                               #f))
+                  (when verbose
+                    (format #t ";; Compiled ~a -> ~a~%" file out))))))
           source-files))))
 
   (add-option! parser
     "output"
     (abbreviation "o")
     (help "Specify output file"))
+
+  (add-flag! parser
+    "nobacktrace"
+    (help "Disable backtrace code generation; Greatly speeds up runtime"))
 
   (add-flag! parser
     "r7rs"
