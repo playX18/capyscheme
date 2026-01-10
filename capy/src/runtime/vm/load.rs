@@ -215,60 +215,6 @@ static DYNLIB_EXTENSION: &str = if cfg!(target_os = "linux") {
     "dylib"
 };
 
-#[allow(dead_code)]
-fn hash_filename(path: impl AsRef<Path>) -> PathBuf {
-    use sha3::{Digest, Sha3_256};
-
-    let mut hasher = Sha3_256::new();
-    let path = path.as_ref();
-
-    // Content-addressed cache key so compiled artifacts can be shared across machines
-    // as long as ABI-relevant inputs match.
-    //
-    // We include:
-    // - CapyScheme version (prevents cross-version ABI mismatches)
-    // - OS/ARCH (prevents cross-platform collisions)
-    // - GC type + MMTk plan selector (compiled thunks can be GC-plan sensitive)
-    // - Source file bytes (content addressability, independent of absolute paths)
-    hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
-    hasher.update(b"\0");
-    hasher.update(std::env::consts::OS.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(std::env::consts::ARCH.as_bytes());
-    hasher.update(b"\0");
-
-    //  let gc_typ = ALLOWED_GC.get().unwrap();
-    //  let gc_typ = (*gc_typ) as u8;
-    //  hasher.update(&[gc_typ]);
-    //  hasher.update(b"\0");
-
-    let plan_selector = *crate::GarbageCollector::get().mmtk.get_options().plan;
-    hasher.update(format!("{:?}", plan_selector).as_bytes());
-    hasher.update(b"\0");
-
-    // Include the source file name (but not the full path) to avoid collisions between
-    // different modules that happen to have identical bytes.
-    let name = path
-        .file_name()
-        .unwrap_or_else(|| path.as_os_str())
-        .to_string_lossy();
-    hasher.update(name.as_bytes());
-    hasher.update(b"\0");
-
-    match std::fs::read(path) {
-        Ok(bytes) => hasher.update(&bytes),
-        Err(_) => {
-            // If the source isn't readable, we still have a stable key component via `name`.
-            // Intentionally do not hash the full path (machine-specific).
-        }
-    }
-
-    let bytes = hasher.finalize();
-
-    let hex_string = hex::encode(bytes);
-
-    PathBuf::from(hex_string)
-}
 
 pub fn init_load<'gc>(ctx: Context<'gc>) {
     load_ops::register(ctx);
