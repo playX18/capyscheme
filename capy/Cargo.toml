@@ -31,7 +31,6 @@ cranelift-codegen.workspace = true
 cranelift-module.workspace = true
 cranelift-object.workspace = true
 libloading.workspace = true
-sha3.workspace = true
 hex.workspace = true
 log.workspace = true
 gimli.workspace = true
@@ -55,13 +54,6 @@ icu = { version = "2.0.0", features = ["compiled_data"] }
 sys-locale = "0.3.2"
 capy-derive.workspace = true
 cranelift-entity = "0.125.3"
-refpool = "0.4.3"
-zstd = "0.13.3"
-tempfile = "3.23.0"
-lz4 = "1.28.1"
-crossterm = { version = "0.29.0", optional = true, default-features = false, features = [
-    "bracketed-paste",
-] }
 polling = "3.11.0"
 
 [dependencies.im]
@@ -75,7 +67,7 @@ crate-type = ["cdylib"]
 default = ["portable", "expeditor", "bootstrap"]
 portable = []
 aslr = []
-expeditor = ["crossterm"]
+expeditor = []
 bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]
 
 [build-dependencies]
