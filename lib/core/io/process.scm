@@ -17,8 +17,12 @@
     (let ([fn (foreign-library-function
                #f
                "system"
+               #:return
                int
-               `(*))])
+               #:arguments
+               '(*)
+               #:blocking?
+               #t)])
       (lambda (cmd)
         (unless (string? cmd)
           (error 'system "expected string for command" cmd))
