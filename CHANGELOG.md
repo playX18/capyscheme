@@ -2,10 +2,19 @@
 
 ### ⛰️  Features
 
+- *(capyc)* Add --nobacktrace flag - ([8185020](https://codeberg.org/playXE/capy/commit/8185020315558d2f940781dbe4b56c1b35f3a8c9))
+- *(core/foreign)* Use keyword arguments - ([30f707d](https://codeberg.org/playXE/capy/commit/30f707d8c5130011e44a91ae3803bcd3f0111d14))
+- *(ffi)* Add blocking calls support - ([bf23f49](https://codeberg.org/playXE/capy/commit/bf23f495b91866660d9a1896a644146b605e967f))
+- *(gc)* Pinning roots - ([bf8a1af](https://codeberg.org/playXE/capy/commit/bf8a1af2b2c3e4c0b49107eb382824dd835bacaa))
+- *(runtime)* Add Socket type - ([149a4d3](https://codeberg.org/playXE/capy/commit/149a4d35b08c931c5c35763f928aa1012a88a2db))
 - *(runtime)* Use self-hosted primitive expansion after bootstrap - ([82c55a7](https://codeberg.org/playXE/capy/commit/82c55a76aa03b9f6e9211c79245380458e143f6f))
 - *(srfi-257)* Simple extendable pattern matcher with backtracking - ([2c435b4](https://codeberg.org/playXE/capy/commit/2c435b477755665647079a14da566dde96448da1))
 - *(ssa)* Add (unspecified) lowering - ([2b9fba2](https://codeberg.org/playXE/capy/commit/2b9fba26990230212328aeaeb72501a0b003886f))
+- *(tree-il)* Tree-il-fold - ([23f831c](https://codeberg.org/playXE/capy/commit/23f831c67a338fcb65ee8a45e1a0a5e6f8d6b18f))
+- *(tree-il)* Define record match patterns from SRFI-257 - ([bd19b85](https://codeberg.org/playXE/capy/commit/bd19b8574806e41d3cb108f878c55fd1ce86d883))
 - *(tree-il)* Add pattern matchers for IL - ([34b0430](https://codeberg.org/playXE/capy/commit/34b043015abc838acef9511327f541dd249e5c96))
+- Add foreign and process libraries into makefile - ([97e5c3a](https://codeberg.org/playXE/capy/commit/97e5c3a7f981b301f767b14bb5b11d557d2e9e4d))
+- Add trampoline code size - ([4cfece1](https://codeberg.org/playXE/capy/commit/4cfece1cc5a4a55f964c411210760742631872a8))
 
 ### 🐛 Bug Fixes
 
@@ -14,6 +23,10 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Remove unused dependencies - ([249e542](https://codeberg.org/playXE/capy/commit/249e542f366978883ae65785285fedd332775b59))
+- Document blocking operation - ([73548a9](https://codeberg.org/playXE/capy/commit/73548a9f96b865799b3d793d18970b0690050216))
+- Remove dead code in load.rs - ([59e032c](https://codeberg.org/playXE/capy/commit/59e032c9bd95a854a335be9226cc3d50eddd14df))
+- Update CHANGELOG.md [skip ci] - ([b03c591](https://codeberg.org/playXE/capy/commit/b03c59178b2140e8d8504bac8aafec6bea2a9459))
 - Update CHANGELOG.md [skip ci] - ([490d19f](https://codeberg.org/playXE/capy/commit/490d19f713a6c409470a0e214a62632f4ec6dea7))
 - Add fmt commit to git-blame-ignore-vars - ([a683138](https://codeberg.org/playXE/capy/commit/a683138ccc708456ebf2fe570b2afbcd9825b4fd))
 - The great formatting - ([be734fa](https://codeberg.org/playXE/capy/commit/be734fadb066deb725b70b72729df149eb4591c1))
