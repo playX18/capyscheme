@@ -14,6 +14,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([490d19f](https://codeberg.org/playXE/capy/commit/490d19f713a6c409470a0e214a62632f4ec6dea7))
 - Add fmt commit to git-blame-ignore-vars - ([a683138](https://codeberg.org/playXE/capy/commit/a683138ccc708456ebf2fe570b2afbcd9825b4fd))
 - The great formatting - ([be734fa](https://codeberg.org/playXE/capy/commit/be734fadb066deb725b70b72729df149eb4591c1))
 - Update CHANGELOG.md [skip ci] - ([be6eaec](https://codeberg.org/playXE/capy/commit/be6eaecb77e028db71ef0d63a7f977c774a4b1aa))
