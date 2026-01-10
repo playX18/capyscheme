@@ -1,6 +1,8 @@
+use crate::prelude::port::Socket;
 use crate::prelude::*;
 use crate::runtime::{AfterBlockingOperationCallback, BlockingOperationWithReturn};
 use crate::static_symbols;
+use mmtk::util::options::PlanSelector;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
 static_symbols!(
@@ -23,7 +25,15 @@ pub enum IoOperation {
 }
 #[scheme(path=capy)]
 pub mod io_ops {
-    use crate::runtime::PollOperation;
+    use std::{ffi::CStr, ptr::null_mut};
+
+    use mmtk::AllocationSemantics;
+
+    use crate::{
+        CAN_PIN_OBJECTS,
+        prelude::port::{Socket, SocketMode},
+        runtime::PollOperation,
+    };
 
     #[scheme(name = "usleep")]
     pub fn usleep(microseconds: u64) -> bool {
@@ -675,6 +685,15 @@ pub mod io_ops {
             let gname = Str::new(*ctx, &newname, true);
             let res = crate::list!(ctx, ret, gname);
             nctx.return_(res)
+        }
+    }
+
+    #[scheme(name = "syscall:socket")]
+    pub fn syscall_socket(domain: i32, typ: i32, protocol: i32) -> i32 {
+        unsafe {
+            let typ = typ | libc::SOCK_NONBLOCK;
+            let ret = libc::socket(domain, typ, protocol);
+            nctx.return_(ret)
         }
     }
 
@@ -1395,10 +1414,492 @@ pub mod io_ops {
             nctx.raise_error("poller-wait", "failed to wait for events", &[arg])
         }
     }
+
+    #[scheme(name = "make-socket")]
+    pub fn make_socket(
+        node: Either<StringRef<'gc>, bool>,
+        service: Either<StringRef<'gc>, bool>,
+        family: i32,
+        socktype: i32,
+        flags: i32,
+        protocol: i32,
+    ) -> Gc<'gc, Socket> {
+        let node = match node {
+            Either::Left(node) => Some(node),
+            Either::Right(false) => None,
+            _ => {
+                return nctx.raise_error(
+                    "make-socket",
+                    "node must be a string or #f",
+                    &[node.into_value(ctx)],
+                );
+            }
+        };
+
+        let service = match service {
+            Either::Left(service) => Some(service),
+            Either::Right(false) => None,
+            _ => {
+                return nctx.raise_error(
+                    "make-socket",
+                    "service must be a string or #f",
+                    &[service.into_value(ctx)],
+                );
+            }
+        };
+        let mut sock = Socket {
+            header: ScmHeader::with_type_bits(TypeCode8::SOCKET.bits() as _),
+            addr: unsafe { std::mem::MaybeUninit::zeroed().assume_init() },
+            addrlen: 0,
+            family: 0,
+            fd: -1,
+            mode: SocketMode::None,
+            protocol: 0,
+            socktype: 0,
+        };
+
+        unsafe {
+            let mut hints: libc::addrinfo = std::mem::MaybeUninit::zeroed().assume_init();
+            hints.ai_family = family as libc::c_int;
+            hints.ai_socktype = socktype as libc::c_int;
+            hints.ai_protocol = protocol as libc::c_int;
+            hints.ai_flags = flags as libc::c_int;
+            hints.ai_canonname = null_mut();
+            hints.ai_addr = null_mut();
+            hints.ai_next = null_mut();
+
+            let mut retval;
+            let cnode_storage;
+            let cnode = match node {
+                Some(str) => {
+                    cnode_storage = CString::new(str.as_str().to_string()).unwrap();
+                    cnode_storage.as_ptr()
+                }
+                None => null_mut(),
+            };
+            let cservice_storage;
+            let cservice = match service {
+                Some(str) => {
+                    cservice_storage = CString::new(str.as_str().to_string()).unwrap();
+                    cservice_storage.as_ptr()
+                }
+                None => null_mut(),
+            };
+            let mut list: *mut libc::addrinfo = null_mut();
+
+            loop {
+                if !cservice.is_null() {
+                    libc::printf(c"cservice: %s\n".as_ptr(), cservice);
+                }
+                retval = libc::getaddrinfo(cnode, cservice, &hints, &mut list);
+                if retval != libc::EAI_AGAIN {
+                    break;
+                }
+            }
+
+            if retval != 0 {
+                libc::freeaddrinfo(list);
+                let err = std::io::Error::from_raw_os_error(errno::errno().0);
+
+                if retval == libc::EAI_SYSTEM {
+                    return nctx.raise_io_error(
+                        err,
+                        IoOperation::Open,
+                        "make-socket",
+                        "failed to open socket (getaddrinfo)",
+                        Value::new(false),
+                    );
+                } else {
+                    let err = libc::gai_strerror(retval);
+                    let error = std::io::Error::last_os_error();
+                    let msg = { CStr::from_ptr(err) }.to_string_lossy();
+                    return nctx.raise_io_error(
+                        error,
+                        IoOperation::Open,
+                        "make-socket",
+                        &format!("failed to open socket (getaddrinfo): {msg}"),
+                        Value::new(false),
+                    );
+                }
+            }
+
+            let mut first_error = 0;
+
+            'done: {
+                if flags & libc::AI_PASSIVE != 0 {
+                    let mut p = list;
+                    while !p.is_null() {
+                        let fd = libc::socket(
+                            (*p).ai_family,
+                            (*p).ai_socktype | libc::SOCK_NONBLOCK,
+                            (*p).ai_protocol,
+                        );
+                        if fd < 0 {
+                            if first_error == 0 {
+                                first_error = errno::errno().0;
+                            }
+                            p = (*p).ai_next;
+                            continue;
+                        }
+                        sock.mode = SocketMode::Server;
+                        sock.fd = fd;
+                        sock.family = (*p).ai_family as i32;
+                        sock.socktype = (*p).ai_socktype as i32;
+                        sock.protocol = (*p).ai_protocol as i32;
+                        sock.addrlen = (*p).ai_addrlen as i32;
+
+                        libc::memcpy(
+                            &mut sock.addr as *mut _ as _,
+                            (*p).ai_addr.cast(),
+                            (*p).ai_addrlen as usize,
+                        );
+
+                        // Set the socket to be non-blocking and close-on-exec.
+                        libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC | libc::O_NONBLOCK);
+                        let mut one = 1i32;
+                        if libc::setsockopt(
+                            fd,
+                            libc::SOL_SOCKET,
+                            libc::SO_REUSEADDR,
+                            &mut one as *mut _ as _,
+                            std::mem::size_of::<i32>() as _,
+                        ) == 0
+                        {
+                            if libc::bind(fd, (*p).ai_addr, (*p).ai_addrlen) == 0 {
+                                println!("bind fd: {}", fd);
+
+                                if sock.socktype == libc::SOCK_STREAM {
+                                    if libc::listen(fd, 5) == 0 {
+                                        println!("listen fd: {}", fd);
+                                        libc::freeaddrinfo(list);
+                                        break 'done;
+                                    }
+                                } else {
+                                    libc::freeaddrinfo(list);
+                                    break 'done;
+                                }
+                            }
+                        }
+                        if first_error == 0 {
+                            first_error = errno::errno().0;
+                        }
+                        libc::close(fd);
+                        p = (*p).ai_next;
+                    }
+                    libc::freeaddrinfo(list);
+                    let err = std::io::Error::from_raw_os_error(first_error);
+                    return nctx.raise_io_error(
+                        err,
+                        IoOperation::Open,
+                        "make-socket",
+                        "failed to open socket",
+                        Value::new(false),
+                    );
+                } else {
+                    let mut p = list;
+                    while !p.is_null() {
+                        let fd = libc::socket(
+                            (*p).ai_family,
+                            (*p).ai_socktype | libc::SOCK_NONBLOCK,
+                            (*p).ai_protocol,
+                        );
+                        if fd < 0 {
+                            if first_error == 0 {
+                                first_error = errno::errno().0;
+                            }
+                            p = (*p).ai_next;
+                            continue;
+                        }
+                        sock.mode = SocketMode::Client;
+                        sock.fd = fd;
+                        sock.family = (*p).ai_family;
+                        sock.socktype = (*p).ai_socktype;
+                        sock.protocol = (*p).ai_protocol;
+                        sock.addrlen = (*p).ai_addrlen as _;
+
+                        libc::memcpy(
+                            &mut sock.addr as *mut _ as _,
+                            (*p).ai_addr.cast(),
+                            (*p).ai_addrlen as usize,
+                        );
+
+                        libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC | libc::O_NONBLOCK);
+
+                        if libc::connect(fd, &sock.addr as *const _ as _, sock.addrlen as _) == 0 {
+                            libc::freeaddrinfo(list);
+                            break 'done;
+                        }
+
+                        if first_error == 0 {
+                            first_error = errno::errno().0;
+                        }
+                        libc::close(fd);
+                        p = (*p).ai_next;
+                    }
+                    libc::freeaddrinfo(list);
+                    let err = std::io::Error::from_raw_os_error(first_error);
+                    return nctx.raise_io_error(
+                        err,
+                        IoOperation::Open,
+                        "make-socket",
+                        "failed to open socket",
+                        Value::new(false),
+                    );
+                }
+            }
+
+            // sockets are used in blocking operations.
+            // To prevent GC from moving them we have CAN_PIN_OBJECTS which is #t only
+            // when currently selected plan can pin them, if GC can't pin them
+            // we have to manually put critical object into NonMoving space manually.
+            let opts = if CAN_PIN_OBJECTS.load(std::sync::atomic::Ordering::Relaxed) {
+                AllocationSemantics::Default
+            } else {
+                AllocationSemantics::NonMoving
+            };
+
+            let sock = ctx.allocate(sock, opts);
+            return nctx.return_(sock);
+        }
+    }
+
+    #[scheme(name = "socket-shutdown")]
+    pub fn socket_shutdown(sock: Gc<'gc, Socket>, how: i32) -> Value<'gc> {
+        if how < 0 || how > 2 {
+            return nctx.raise_error("socket-shutdown", "invalid how argument", &[how.into()]);
+        }
+        unsafe {
+            libc::shutdown(sock.fd, how as libc::c_int);
+
+            nctx.return_(Value::undefined())
+        }
+    }
+
+    #[scheme(name = "socket-close")]
+    pub fn socket_close(sock: Gc<'gc, Socket>) -> Value<'gc> {
+        unsafe {
+            libc::close(sock.fd);
+        }
+
+        nctx.return_(Value::undefined())
+    }
+
+    #[scheme(name = "socket-send")]
+    pub fn socket_send(sock: Gc<'gc, Socket>, bv: Gc<'gc, ByteVector>, flags: i32) -> isize {
+        unsafe {
+            let res = libc::send(
+                sock.fd,
+                bv.as_ptr() as _,
+                bv.len() as _,
+                flags as libc::c_int,
+            );
+
+            if res == -1
+                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+            {
+                return nctx.perform(PollOperation::Write(sock.fd));
+            }
+
+            if res < 0 {
+                let err = std::io::Error::last_os_error();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Write,
+                    "socket-send",
+                    "failed to send data",
+                    Value::new(false),
+                );
+            }
+
+            nctx.return_(res)
+        }
+    }
+
+    #[scheme(name = "socket-recv")]
+    pub fn socket_recv(sock: Gc<'gc, Socket>, bv: Gc<'gc, ByteVector>, flags: i32) -> isize {
+        unsafe {
+            let ptr = bv.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
+            println!("receive into {:p}, len: {}", ptr, bv.len());
+            let res = libc::recv(sock.fd, ptr, bv.len() as _, flags as libc::c_int);
+
+            if res == -1
+                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+            {
+                println!("EAGAIN or EWOULDBLOCK");
+                return nctx.perform(PollOperation::Read(sock.fd));
+            }
+
+            if res < 0 {
+                let err = std::io::Error::last_os_error();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Read,
+                    "socket-recv",
+                    "failed to receive data",
+                    Value::new(false),
+                );
+            }
+
+            nctx.return_(res)
+        }
+    }
+
+    #[scheme(name = "socket-accept")]
+    pub fn socket_accept(sock: Gc<'gc, Socket>, blocking: Option<bool>) -> Value<'gc> {
+        unsafe {
+            let blocking = blocking.unwrap_or(false);
+            let mut addr: libc::sockaddr_storage = std::mem::MaybeUninit::zeroed().assume_init();
+            let mut addrlen: libc::socklen_t = std::mem::size_of::<libc::sockaddr_storage>() as _;
+            let mut res;
+            loop {
+                res = libc::accept(
+                    sock.fd,
+                    &mut addr as *mut _ as _,
+                    &mut addrlen as *mut _ as _,
+                );
+
+                if res == -1
+                    && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+                {
+                    if !blocking {
+                        return nctx.return_(Value::new(false));
+                    }
+                    return nctx.perform(PollOperation::Read(sock.fd));
+                }
+
+                if res == -1 && errno::errno().0 == libc::EINTR {
+                    continue;
+                }
+
+                if res < 0 {
+                    let err = std::io::Error::last_os_error();
+                    return nctx.raise_io_error(
+                        err,
+                        IoOperation::Open,
+                        "socket-accept",
+                        "failed to accept connection",
+                        Value::new(false),
+                    );
+                }
+                break;
+            }
+
+            let client = Socket {
+                header: ScmHeader::with_type_bits(TypeCode8::SOCKET.bits() as _),
+                mode: SocketMode::Client,
+                fd: res,
+                family: sock.family,
+                socktype: sock.socktype,
+                protocol: sock.protocol,
+                addrlen: addrlen as _,
+                addr,
+            };
+
+            let opts = if CAN_PIN_OBJECTS.load(std::sync::atomic::Ordering::Relaxed) {
+                AllocationSemantics::Default
+            } else {
+                AllocationSemantics::NonMoving
+            };
+
+            let client = ctx.allocate(client, opts);
+
+            nctx.return_(client.into())
+        }
+    }
+
+    #[scheme(name = "socket?")]
+    pub fn is_socket(x: Value<'gc>) -> bool {
+        nctx.return_(x.is::<Socket>())
+    }
+
+    #[scheme(name = "socket-ready?")]
+    pub fn socket_readyp(sock: Gc<'gc, Socket>) -> bool {
+        unsafe {
+            // check readiness by select and immediate timeout.
+            let mut tm = libc::timeval {
+                tv_sec: 0,
+                tv_usec: 0,
+            };
+            let mut fds: libc::fd_set = std::mem::MaybeUninit::zeroed().assume_init();
+            libc::FD_ZERO(&mut fds);
+            libc::FD_SET(sock.fd, &mut fds);
+            let state = libc::select(
+                sock.fd + 1,
+                &mut fds,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut tm,
+            );
+
+            if state < 0 {
+                if errno::errno().0 == libc::EINTR {
+                    return nctx.return_(false);
+                }
+
+                return nctx.raise_io_error(
+                    std::io::Error::last_os_error(),
+                    IoOperation::Read,
+                    "socket-ready?",
+                    "failed to check socket readiness",
+                    Value::new(false),
+                );
+            }
+            nctx.return_(state != 0)
+        }
+    }
 }
 
 pub fn init_io<'gc>(ctx: Context<'gc>) {
     io_ops::register(ctx);
+
+    let module = ctx.module("capy").unwrap();
+    let host_features_tab = HashTable::new(*ctx, HashTableType::Eq, 64, 0.80);
+    module.define(ctx, ctx.intern("*host-features*"), host_features_tab.into());
+
+    macro_rules! cconst {
+        ($name: ident) => {
+            let name = stringify!($name);
+            let sym = ctx.intern(name);
+            host_features_tab.put(ctx, sym, Value::new(libc::$name));
+        };
+    }
+
+    cconst!(AF_UNSPEC);
+    cconst!(AF_INET);
+    cconst!(AF_INET6);
+    cconst!(AF_UNIX);
+    cconst!(SOCK_STREAM);
+    cconst!(SOCK_DGRAM);
+    cconst!(SOCK_RAW);
+    cconst!(AI_PASSIVE);
+    cconst!(AI_CANONNAME);
+    cconst!(AI_NUMERICHOST);
+    cconst!(AI_NUMERICSERV);
+    cconst!(AI_V4MAPPED);
+    cconst!(AI_ALL);
+    cconst!(AI_ADDRCONFIG);
+    cconst!(IPPROTO_TCP);
+    cconst!(IPPROTO_UDP);
+    cconst!(IPPROTO_RAW);
+    cconst!(SHUT_RD);
+    cconst!(SHUT_WR);
+    cconst!(SHUT_RDWR);
+    cconst!(MSG_OOB);
+    cconst!(MSG_PEEK);
+    cconst!(MSG_DONTROUTE);
+    cconst!(MSG_CTRUNC);
+
+    cconst!(MSG_TRUNC);
+    cconst!(MSG_DONTWAIT);
+    cconst!(MSG_EOR);
+    cconst!(MSG_WAITALL);
+    cconst!(MSG_FIN);
+    cconst!(MSG_SYN);
+    cconst!(MSG_CONFIRM);
+    cconst!(MSG_RST);
+    cconst!(MSG_ERRQUEUE);
+    cconst!(MSG_NOSIGNAL);
+    cconst!(MSG_MORE);
 }
 
 #[repr(C)]
@@ -1505,4 +2006,58 @@ fn event_to_flags(ev: polling::Event) -> i32 {
         flags |= EERROR;
     }
     flags
+}
+
+pub struct SendOperation<'gc> {
+    sock: Gc<'gc, Socket>,
+    bv: Gc<'gc, ByteVector>,
+    flags: i32,
+}
+
+unsafe impl<'gc> Trace for SendOperation<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        let gc = crate::rsgc::GarbageCollector::get();
+        let opts = gc.mmtk.get_options();
+        match *opts.plan {
+            PlanSelector::MarkSweep
+            | PlanSelector::StickyImmix
+            | PlanSelector::Immix
+            | PlanSelector::ConcurrentImmix => {
+                visitor.pin_root(self.sock.to_object_reference());
+                visitor.pin_root(self.bv.to_object_reference());
+            }
+
+            _ => {
+                // TODO: This can move the pointers and invalidate them. We solve this
+                // by allocating on non-moving heap for these types when using GenImmix/GenCopy/Semispace.
+                visitor.trace(&mut self.sock);
+                visitor.trace(&mut self.bv);
+            }
+        }
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let _ = weak_processor;
+    }
+}
+
+impl<'gc> BlockingOperationWithReturn<'gc> for SendOperation<'gc> {
+    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce() -> AfterBlockingOperationCallback> {
+        let sock = Gc::as_ptr(self.sock);
+        let bv = Gc::as_ptr(self.bv);
+        let flags = self.flags;
+
+        Box::new(move || unsafe {
+            let sock = &*sock;
+            let bv = &*bv;
+            let res = libc::send(
+                sock.fd,
+                bv.as_ptr() as _,
+                bv.len() as _,
+                flags as libc::c_int,
+            );
+
+            Box::new(move |ctx, args: &mut Vec<Value<'_>>| args.push(res.into_value(ctx)))
+        })
+    }
 }

@@ -1,13 +1,18 @@
 use std::{
+    cell::Cell,
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex, atomic::Ordering},
 };
 
-use crate::rsgc::{
-    Trace,
-    finalizer::FinalizerQueue,
-    mmtk::util::{Address, ObjectReference},
-    object::GCObject,
+use crate::{
+    CAN_PIN_OBJECTS,
+    rsgc::{
+        Trace,
+        finalizer::FinalizerQueue,
+        mmtk::util::{Address, ObjectReference},
+        object::GCObject,
+    },
+    runtime::BlockingOperationWithReturn,
 };
 use crate::{
     global,
@@ -15,7 +20,7 @@ use crate::{
     runtime::{
         modules::define,
         prelude::*,
-        vm::thunks::{ThunkResult, make_assertion_violation},
+        vm::thunks::make_assertion_violation,
         vmthread::{VM_THREAD, VMThreadTask},
     },
     static_symbols,
@@ -834,13 +839,14 @@ fn make_cif<'gc>(
     Ok(Gc::new(*ctx, cif))
 }
 
-unsafe extern "C-unwind" fn foreign_call<'gc>(
+unsafe fn foreign_call<'a, 'gc>(
+    nctx: NativeCallContext<'a, 'gc>,
     ctx: Context<'gc>,
     cif: Value<'gc>,
     pointer: Value<'gc>,
     num_rands: usize,
     rands: *const Value<'gc>,
-) -> ThunkResult<'gc> {
+) -> NativeCallReturn<'gc> {
     let rands = unsafe { std::slice::from_raw_parts(rands, num_rands) };
     let cif = cif.downcast::<CIF>();
     let pointer = pointer.downcast::<Pointer>().value();
@@ -860,9 +866,7 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
             for rand in rands[cif.nargs as usize..].iter() {
                 let ftype = match guess_ffi_type(ctx, *rand) {
                     Ok(t) => t,
-                    Err(e) => {
-                        return ThunkResult { code: 1, value: e };
-                    }
+                    Err(e) => return nctx.return_error(e),
                 };
                 arg_size += (*ftype).size + (*ftype).alignment as usize - 1;
             }
@@ -887,7 +891,7 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
                 false,
             ) {
                 Ok(()) => (),
-                Err(e) => return ThunkResult { code: 1, value: e },
+                Err(e) => return nctx.return_error(e),
             }
             off = args[i] - data_ptr as usize + (*(*raw).arg_types.add(i).read()).size;
         }
@@ -897,7 +901,7 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
                 let ftype = match guess_ffi_type(ctx, *rand) {
                     Ok(t) => t,
                     Err(e) => {
-                        return ThunkResult { code: 1, value: e };
+                        return nctx.return_error(e);
                     }
                 };
                 args.push(round_up(
@@ -912,20 +916,31 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
                     false,
                 ) {
                     Ok(()) => (),
-                    Err(e) => return ThunkResult { code: 1, value: e },
+                    Err(e) => return nctx.return_error(e),
                 }
                 off = args.last().copied().unwrap() - data_ptr as usize + (*ftype).size;
             }
-        }
-
-        if cif.blocking {
-            // Blocking call: yield to native and perform call there
         }
 
         let rvalue = round_up(
             data_ptr.wrapping_add(off) as usize,
             size_of::<usize>().max((*(*raw).rtype).alignment as usize),
         ) as *mut ();
+
+        if cif.blocking {
+            let ffi_op = FFICallOperation {
+                arg_size,
+                cif,
+                arguments: rands.to_vec(),
+                args: Cell::new(args),
+                data: Cell::new(data),
+                rvalue,
+                target: pointer.cast(),
+            };
+            let retk = nctx.retk;
+            // yield to native, then run ffi_op and only then return to retk.
+            return nctx.perform_returning_to(retk, ffi_op);
+        }
 
         libffi::raw::ffi_call(
             raw,
@@ -934,10 +949,11 @@ unsafe extern "C-unwind" fn foreign_call<'gc>(
             args.as_mut_ptr().cast(),
         );
 
-        ThunkResult {
+        /*ThunkResult {
             code: 0,
             value: pack(ctx, (*raw).rtype, rvalue, true),
-        }
+        }*/
+        nctx.return_(pack(ctx, (*raw).rtype, rvalue, true))
     }
 }
 
@@ -1368,11 +1384,17 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
             return ctx.return_call(reth, [err], None);
         }
 
-        let value = foreign_call(ctx, cif.into(), pointer.into(), num_rands, rands.as_ptr());
-        if value.code != 0 {
-            return ctx.return_call(reth, [value.value], None);
-        }
-        ctx.return_call(retk, [value.value], None)
+        let nctx = NativeCallContext::from_raw(ctx, rator, rands.as_ptr(), num_rands, retk, reth);
+
+        foreign_call(
+            nctx,
+            ctx,
+            cif.into(),
+            pointer.into(),
+            num_rands,
+            rands.as_ptr(),
+        )
+        .into_inner()
     }
 }
 
@@ -1466,24 +1488,77 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
 
     define(ctx, "%null-pointer", nullp);
 
-    define(
-        ctx,
-        "RTLD_LAZY",
-        Value::new(libloading::os::unix::RTLD_LAZY as i32),
-    );
-    define(
-        ctx,
-        "RTLD_NOW",
-        Value::new(libloading::os::unix::RTLD_NOW as i32),
-    );
-    define(
-        ctx,
-        "RTLD_GLOBAL",
-        Value::new(libloading::os::unix::RTLD_GLOBAL as i32),
-    );
-    define(
-        ctx,
-        "RTLD_LOCAL",
-        Value::new(libloading::os::unix::RTLD_LOCAL as i32),
-    );
+    define(ctx, "RTLD_LAZY", Value::new(libc::RTLD_LAZY as i32));
+    define(ctx, "RTLD_NOW", Value::new(libc::RTLD_NOW as i32));
+    define(ctx, "RTLD_GLOBAL", Value::new(libc::RTLD_GLOBAL as i32));
+    define(ctx, "RTLD_LOCAL", Value::new(libc::RTLD_LOCAL as i32));
+}
+
+// TODO: Shrink this type?
+
+/// A FFI call operation performed by the VM outside of Scheme context.
+pub struct FFICallOperation<'gc> {
+    pub cif: Gc<'gc, CIF<'gc>>,
+    pub arguments: Vec<Value<'gc>>,
+    pub args: Cell<Vec<usize>>,
+    pub arg_size: usize,
+    pub data: Cell<Vec<u8>>,
+
+    pub rvalue: *mut (),
+    pub target: *mut (),
+}
+
+unsafe impl<'gc> Trace for FFICallOperation<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        println!("TRACE FFI");
+        let can_pin = CAN_PIN_OBJECTS.load(Ordering::Relaxed);
+        for argument in self.arguments.iter_mut().filter(|arg| arg.is_cell()) {
+            if can_pin {
+                visitor.pin_root(argument.as_cell_raw().to_objref().unwrap());
+            } else {
+                unsafe { argument.trace(visitor) }
+            }
+        }
+
+        if can_pin {
+            visitor.pin_root(self.cif.to_object_reference());
+        } else {
+            visitor.trace(&mut self.cif);
+        }
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let _ = weak_processor;
+    }
+}
+
+impl<'gc> BlockingOperationWithReturn<'gc> for FFICallOperation<'gc> {
+    fn prepare(
+        &self,
+        _ctx: Context<'gc>,
+    ) -> Box<dyn FnOnce() -> crate::runtime::AfterBlockingOperationCallback> {
+        let mut args = self.args.replace(Vec::new());
+        let data = self.data.replace(Vec::new());
+        let rvalue = self.rvalue;
+        let target = self.target;
+        let raw_cif = self.cif.cif.as_raw_ptr();
+        let rtype = unsafe { (*raw_cif).rtype };
+        Box::new(move || unsafe {
+            let data = data;
+            libffi::raw::ffi_call(
+                raw_cif,
+                Some(std::mem::transmute(target)),
+                rvalue.cast(),
+                args.as_mut_ptr().cast(),
+            );
+
+            Box::new(move |ctx, args| {
+                let _ = data;
+
+                let val = pack(ctx, rtype, rvalue, true);
+
+                args.push(val)
+            })
+        })
+    }
 }
