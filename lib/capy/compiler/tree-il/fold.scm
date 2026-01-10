@@ -2,10 +2,66 @@
   (export
     pre-order
     post-order
-    pre-post-order)
+    pre-post-order
+    make-tree-il-folder
+    tree-il-fold)
   (import (capy compiler tree-il terms)
     (only (capy) printf)
+    (srfi 257)
     (rnrs))
+  (define-syntax make-tree-il-folder
+    (syntax-rules ()
+      [(_ seed ...)
+        (lambda (tree down up seed ...)
+          (define (fold-values proc exps seed ...)
+            (if (null? exps)
+              (values seed ...)
+              (let-values ([(seed ...) (proc (car exps) seed ...)])
+                (fold-values proc (cdr exps) seed ...))))
+
+          (let foldts ([tree tree] [seed seed] ...)
+            (let*-values
+              (([seed ...] (down tree seed ...))
+                ([seed ...]
+                  (match tree
+                    [(~or
+                        (~lset _ _ _ exp)
+                        (~module-set _ _ _ _ exp)
+                        (~toplevel-set _ _ _ exp)
+                        (~toplevel-define _ _ _ exp))
+                      (foldts exp seed ...)]
+                    [(~or
+                        (~let _ _ _ _ rhs body)
+                        (~fix _ _ _ rhs body))
+                      (let*-values (([seed ...] (fold-values foldts rhs seed ...)))
+                        (foldts body seed ...))]
+                    [(~receive _ _ _ producer consumer)
+                      (let*-values (([seed ...] (foldts producer seed ...)))
+                        (foldts consumer seed ...))]
+                    [(~application _ operator operands)
+                      (let*-values (([seed ...] (foldts operator seed ...)))
+                        (fold-values foldts operands seed ...))]
+                    [(~primcall _ _ args)
+                      (fold-values foldts args seed ...)]
+                    [(~proc _ _ body _ _)
+                      (foldts body seed ...)]
+                    [(~values _ vals)
+                      (fold-values foldts vals seed ...)]
+                    [(~sequence _ head tail)
+                      (let*-values (([seed ...] (foldts head seed ...)))
+                        (foldts tail seed ...))]
+                    [(~wcm _ _ mark result)
+                      (let*-values (([seed ...] (foldts mark seed ...)))
+                        (foldts result seed ...))]
+                    [(~if _ test then els)
+                      (let*-values (([seed ...] (foldts test seed ...))
+                                    ([seed ...] (foldts then seed ...)))
+                        (foldts els seed ...))]
+                    [_ (values seed ...)])))
+              (up tree seed ...))))]))
+
+  (define (tree-il-fold down up seed tree)
+    ((make-tree-il-folder tree) tree down up seed))
 
   (define (pre-post-order pre post term)
     (define (elts-eq? a b)
