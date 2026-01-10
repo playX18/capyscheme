@@ -1,7 +1,9 @@
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
 
 use mmtk::vm::SlotVisitor;
 
+use crate::CAN_PIN_OBJECTS;
 use crate::rsgc::ObjectSlot;
 use crate::rsgc::collection::{Visitor, VisitorKind};
 use crate::rsgc::{mm::MemoryManager, object::GCObject, sync::thread::Thread, traits::Trace};
@@ -58,7 +60,9 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         }
 
         let Some(mut state) = thread.native_data_mut().mutator_state else {
-            factory.create_process_pinning_roots_work(visitor.pinned_roots);
+            if CAN_PIN_OBJECTS.load(Ordering::Relaxed) {
+                factory.create_process_pinning_roots_work(visitor.pinned_roots);
+            }
             factory.create_process_roots_work(sv.set.into_iter().collect());
 
             return;
@@ -72,7 +76,10 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
                     .weak
                     .add_root_with_weak_ref(&mut state.as_mut().root as *mut dyn Trace);
             }
-            factory.create_process_pinning_roots_work(visitor.pinned_roots);
+            if CAN_PIN_OBJECTS.load(Ordering::Relaxed) {
+                factory.create_process_pinning_roots_work(visitor.pinned_roots);
+            }
+
             factory.create_process_roots_work(sv.set.into_iter().collect());
         }
     }
