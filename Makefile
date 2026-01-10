@@ -141,7 +141,10 @@ CORE_SRCS := \
 	lib/core/struct.scm \
 	lib/core/unicode.scm \
 	lib/core/repl.scm \
-	lib/core/io/assistants.scm
+	lib/core/io/assistants.scm \
+	lib/core/io/process.scm \
+	lib/core/foreign.scm \
+	lib/core/foreign-library.scm 
 
 RNRS_SRCS := \
 	lib/rnrs/base.scm \
@@ -364,52 +367,52 @@ OUT ?=
 # Boot
 $(OUT)/boot/%.$(DYNLIB_EXT): lib/boot/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy" -L lib $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy" -L lib $<
 
 # Core
 $(OUT)/core/%.$(DYNLIB_EXT): lib/core/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 $(OUT)/core.$(DYNLIB_EXT): lib/core.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # RNRS
 $(OUT)/rnrs/%.$(DYNLIB_EXT): lib/rnrs/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 $(OUT)/rnrs.$(DYNLIB_EXT): lib/rnrs.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # Capy (sls/scm)
 $(OUT)/capy/%.$(DYNLIB_EXT): lib/capy/%.sls
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 $(OUT)/capy/%.$(DYNLIB_EXT): lib/capy/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 $(OUT)/capy/args.$(DYNLIB_EXT): lib/capy/args.sls
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # SRFI
 $(OUT)/srfi/%.$(DYNLIB_EXT): lib/srfi/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # R7RS
 $(OUT)/scheme/%.$(DYNLIB_EXT): lib/scheme/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 $(OUT)/scheme/%.$(DYNLIB_EXT): lib/scheme/%.sld
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # -------------------------
 # High-level compile targets
