@@ -296,7 +296,8 @@
 
   ;; TODO: Lower into function call
   (define-unhandled-primitive apply)
-
+  (define-primitive-expander* values (src args)
+    (make-values src args))
   (define-primitive-expander* call-with-values (src args)
     (cond
       ;; (call-with-values (lambda ()  ...) (lambda (x ...) ...))
