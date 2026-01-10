@@ -1068,6 +1068,9 @@ pub trait BlockingOperationWithReturn<'gc>: Trace {
 }
 
 pub type BlockingOperationCallback = Box<dyn FnOnce()>;
+
+/// A callback which is executed after [`BlockingOperationWithReturn`] completes. It accepts
+/// two arguments: Scheme context and vector to push return values to.
 pub type AfterBlockingOperationCallback =
     Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>;
 
