@@ -20,9 +20,11 @@
 
 - *(cps)* Disable DCE of primcalls in optimizer - ([73e27e1](https://codeberg.org/playXE/capy/commit/73e27e17c260d64560cb7deaca9b7663fa7885ad))
 - *(expand)* Proper conversion of receive to Rust enum - ([dc28c8a](https://codeberg.org/playXE/capy/commit/dc28c8a1ef7305fb4425bb4e094fe2a5ac439b24))
+- *(gc)* Create pinning work only when CAN_PIN_OBJECTS is #t - ([ee31692](https://codeberg.org/playXE/capy/commit/ee3169243e058089a25cc49425859851c9b82fd0))
 
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([bed40ba](https://codeberg.org/playXE/capy/commit/bed40ba7f66e25777912bd76a6734f5ec20f681e))
 - Remove unused dependencies - ([249e542](https://codeberg.org/playXE/capy/commit/249e542f366978883ae65785285fedd332775b59))
 - Document blocking operation - ([73548a9](https://codeberg.org/playXE/capy/commit/73548a9f96b865799b3d793d18970b0690050216))
 - Remove dead code in load.rs - ([59e032c](https://codeberg.org/playXE/capy/commit/59e032c9bd95a854a335be9226cc3d50eddd14df))
@@ -32,6 +34,10 @@
 - The great formatting - ([be734fa](https://codeberg.org/playXE/capy/commit/be734fadb066deb725b70b72729df149eb4591c1))
 - Update CHANGELOG.md [skip ci] - ([be6eaec](https://codeberg.org/playXE/capy/commit/be6eaecb77e028db71ef0d63a7f977c774a4b1aa))
 - Update CHANGELOG.md [skip ci] - ([10407cd](https://codeberg.org/playXE/capy/commit/10407cdb9c10ee0ab649730735efab8f9ed312f9))
+
+### ◀️ Revert
+
+- Do not use CAN_PIN_OBJECTS for bytevector - ([dfca5f0](https://codeberg.org/playXE/capy/commit/dfca5f05367a24583caf14c4f7cc6711e2bbf8c5))
 
 
 ## [1.1.0](https://codeberg.org/playXE/capy/compare/1.0.2..1.1.0) - 2026-01-08
