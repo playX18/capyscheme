@@ -132,10 +132,6 @@
   (define (foreign-library-pointer lib name)
     (let ([handle (foreign-library-handle (->foreign-library lib))])
       (dlsym handle name)))
-  (define (foreign-library-function lib name . args)
-    (let-optionals args
-      ([return-type void]
-        [arg-types '()]
-        [variadic? #f])
-      (let ([ptr (foreign-library-pointer lib name)])
-        (pointer->procedure return-type ptr arg-types variadic?)))))
+  (define* (foreign-library-function lib name #:key (return void) (arguments '()) (variadic? #f) (blocking? #t))
+    (let ([ptr (foreign-library-pointer lib name)])
+      (pointer->procedure return ptr arguments variadic? blocking?))))
