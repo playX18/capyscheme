@@ -224,7 +224,7 @@
             ,body)]
         [(receive? t)
           (define ids (receive-ids t))
-          (define vars (map loop (receive-vars t)))
+          (define vars (receive-vars t))
           (define producer (loop (receive-producer t)))
           (define consumer (loop (receive-consumer t)))
           `(receive
