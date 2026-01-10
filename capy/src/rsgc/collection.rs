@@ -98,6 +98,7 @@ pub struct Visitor<'a> {
     kind: VisitorKind<'a>,
     pub(crate) has_weak_refs: bool,
     pub(crate) current_object: Option<ObjectReference>,
+    pub(crate) pinned_roots: Vec<ObjectReference>,
 }
 
 impl<'a> SlotVisitor<ObjectSlot> for Visitor<'a> {
@@ -133,6 +134,7 @@ impl<'a> Visitor<'a> {
             kind: tracer.into(),
             current_object,
             has_weak_refs: false,
+            pinned_roots: Vec::new(),
         }
     }
 
@@ -165,5 +167,9 @@ impl<'a> Visitor<'a> {
         unsafe {
             value.trace(self);
         }
+    }
+
+    pub fn pin_root(&mut self, root: ObjectReference) {
+        self.pinned_roots.push(root);
     }
 }

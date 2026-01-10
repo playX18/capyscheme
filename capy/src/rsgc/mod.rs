@@ -8,6 +8,7 @@ pub use ::mmtk;
 use finalizer::Finalizers;
 use mm::MemoryManager;
 use mmtk::util::Address;
+use mmtk::util::options::PlanSelector;
 pub use mmtk::{MMTK, MMTKBuilder};
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU32;
@@ -60,6 +61,16 @@ impl GarbageCollector {
             (mmtk::memory_manager::starting_heap_address() - 4096, 3)
         };
 
+        match *mmtk.options.plan {
+            PlanSelector::Immix
+            | PlanSelector::MarkSweep
+            | PlanSelector::ConcurrentImmix
+            | PlanSelector::StickyImmix => {
+                CAN_PIN_OBJECTS.store(true, std::sync::atomic::Ordering::Relaxed)
+            }
+            _ => (),
+        }
+
         BASE.store(heap_base.as_usize(), std::sync::atomic::Ordering::Relaxed);
         SHIFT.store(heap_shift, std::sync::atomic::Ordering::Relaxed);
         this
@@ -109,6 +120,8 @@ pub use global::*;
 pub use ptr::*;
 pub use traits::Trace;
 pub use weak::*;
+
+use crate::CAN_PIN_OBJECTS;
 
 pub fn compressed_heap_base() -> Address {
     unsafe { Address::from_usize(BASE.load(std::sync::atomic::Ordering::Relaxed)) }

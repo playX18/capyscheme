@@ -26,6 +26,8 @@ pub mod rsgc;
 pub mod runtime;
 pub mod utils;
 
+use std::sync::atomic::AtomicBool;
+
 pub use capy_derive::__unelide_lifetimes;
 pub use capy_derive::Trace;
 pub use rsgc::*;
@@ -45,3 +47,5 @@ pub mod prelude {
 }
 
 pub use capy_derive::scheme;
+
+pub(crate) static CAN_PIN_OBJECTS: AtomicBool = AtomicBool::new(false);

@@ -89,7 +89,7 @@ impl Variable {
                     #name,
                     init
                 );
-                #loc_static.set(Global::new(var)).is_ok()
+                #loc_static.set(Global::new(ctx, var)).is_ok()
             }
 
             #[allow(non_snake_case)]

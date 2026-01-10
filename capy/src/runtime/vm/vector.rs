@@ -51,6 +51,8 @@ impl<'gc> IntoValue<'gc> for Endianness {
 
 #[scheme(path=capy)]
 pub mod vector_ops {
+    use crate::CAN_PIN_OBJECTS;
+
     #[scheme(name = "vector")]
     pub fn vector(values: &'gc [Value<'gc>]) -> Value<'gc> {
         let v = Vector::from_slice(*nctx.ctx, values);
@@ -203,7 +205,11 @@ pub mod vector_ops {
 
     #[scheme(name = "make-bytevector")]
     pub fn make_bytevector(nelems: usize, init: Option<i16>) -> Value<'gc> {
-        let v = ByteVector::new::<false>(*nctx.ctx, nelems, true);
+        let v = ByteVector::new::<false>(
+            *nctx.ctx,
+            nelems,
+            CAN_PIN_OBJECTS.load(std::sync::atomic::Ordering::Relaxed),
+        );
         if let Some(init) = init {
             if init >= i8::MIN as i16 && init <= u8::MAX as i16 {
                 let byte = (init & 0xff) as u8;
