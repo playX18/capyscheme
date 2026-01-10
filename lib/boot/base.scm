@@ -1608,8 +1608,54 @@
 (define-syntax let-keywords*
   (lambda (stx)
     (%let-keywords-rec stx #'let*)))
+(define-syntax let-optionals*
+  (syntax-rules ()
+    ((let-optionals* arg (opt-clause ...) body ...)
+      (let ((rest arg))
+        (%let-optionals* rest (opt-clause ...) body ...)))))
+
+(define-syntax %let-optionals*
+  (syntax-rules ()
+    ((%let-optionals* arg (((var ...) xparser) opt-clause ...) body ...)
+      (call-with-values (lambda () (xparser arg))
+        (lambda (rest var ...)
+          (%let-optionals* rest (opt-clause ...) body ...))))
+
+    ((%let-optionals* arg ((var default) opt-clause ...) body ...)
+      (call-with-values (lambda () (if (null? arg) (values default '())
+                                    (values (car arg) (cdr arg))))
+        (lambda (var rest)
+          (%let-optionals* rest (opt-clause ...) body ...))))
+
+    ((%let-optionals* arg ((var default test) opt-clause ...) body ...)
+      (call-with-values (lambda ()
+                         (if (null? arg) (values default '())
+                           (let ((var (car arg)))
+                             (if test (values var (cdr arg))
+                               (error "arg failed LET-OPT test" var)))))
+        (lambda (var rest)
+          (%let-optionals* rest (opt-clause ...) body ...))))
+
+    ((%let-optionals* arg ((var default test supplied?) opt-clause ...) body ...)
+      (call-with-values (lambda ()
+                         (if (null? arg) (values default #f '())
+                           (let ((var (car arg)))
+                             (if test (values var #t (cdr arg))
+                               (error "arg failed LET-OPT test" var)))))
+        (lambda (var supplied? rest)
+          (%let-optionals* rest (opt-clause ...) body ...))))
+
+    ((%let-optionals* arg (rest) body ...)
+      (let ((rest arg)) body ...))
+
+    ((%let-optionals* arg () body ...)
+      (if (null? arg) (begin body ...)
+        (error "Too many arguments in let-opt" arg)))))
 
 (eval-when (expand load eval)
+  (define (dd x)
+    ;(pretty-print (syntax->datum x))
+    x)
   (define (parse-lambda-args formals)
     (let loop ([rest formals] [as '()] [n 0])
       (syntax-case rest ()
@@ -1632,46 +1678,48 @@
         [() (expand-opt os ks r a)]
         [(#:optional . xs)
           (and
-            (or (null? os) (syntax-violation 'lambda* "multiple #:optional sections"))
-            (receive (ks xs) (collect-args #'xs '())
+            (or (null? os) (syntax-violation 'lambda* "multiple #:optional sections" #'xs))
+            (receive (os xs) (collect-args #'xs '())
               (parse-kargs c xs os ks r a)))]
         [(#:key . xs)
           (and
             (or (null? ks)
-              (syntax-violation 'lambda* "multiple #:key sections"))
+              (syntax-violation 'lambda* "multiple #:key sections" #'xs))
             (receive (ks xs) (collect-args #'xs '())
               (parse-kargs c xs os ks r a)))]
         [(#:rest . xs)
           (and
-            (or (not r) (syntax-violation 'lambda* "multiple #:rest sections"))
+            (or (not r) (syntax-violation 'lambda* "multiple #:rest sections" #'xs))
             (receive (rs xs) (collect-args #'xs '())
               (syntax-case rs ()
                 [(r)
                   (identifier? #'r)
                   (parse-kargs c xs os ks #'r a)]
-                [_ (syntax-violation 'lambda* "#:rest keyword in lambda* must be followed by a single identifier")])))]))
+                [_ (syntax-violation 'lambda* "#:rest keyword in lambda* must be followed by a single identifier" rs)])))]))
 
     (define (expand-opt os ks r a)
+
       (cond
         [(null? os)
           (if r
             #`((let ([#,r #,garg]) #,@(expand-key ks garg a)))
             (expand-key ks garg a))]
         [else
+
           (define binds
             (map (lambda (x)
                   (syntax-case x ()
                     [(o) (identifier? #'o) #'o]
                     [(o init) (identifier? #'o) #'(o init)]
-                    [_ (syntax-violation 'lambda* "invalid optional argument")]))
+                    [_ (syntax-violation 'lambda* "invalid optional argument" os)]))
               os))
-          (define rest (or r (car (generate-temporaries '(rest)))))
-          #`((let-optionals* #,garg #,(append binds rest)
-              #,@(if (and (not r) (null? ks) (not a))
-                  #`((unless (null? #,rest)
-                      (error #f "too many arguments for" #,form))
-                     (let () #,@(expand-key ks rest a)))
-                  (expand-key ks rest a))))]))
+          (define rest (list (or r (car (generate-temporaries '(rest))))))
+          (dd #`((let-optionals* #,garg #,(append binds rest)
+                  #,@(if (and (not r) (null? ks) (not a))
+                      #`((unless (null? #,(car rest))
+                          (error #f "too many arguments for" #,form))
+                         (let () #,@(expand-key ks rest a)))
+                      (expand-key ks (car rest) a)))))]))
     (define (expand-key ks garg a)
       (cond
         [(null? ks)
@@ -1687,11 +1735,11 @@
                                  #'(o key init)]
                                [(o init)
                                  #'(o init)]
-                               [_ (syntax-violation 'lambda* "invalid keyword argument")]))
+                               [_ (syntax-violation 'lambda* "invalid keyword argument" ks)]))
                         ks))
-          #`((let-keywords* #,garg
-              #,(if a (append args a) args)
-              #,@body))]))
+          (dd #`((let-keywords* #,garg
+                  #,(if a (append args a) args)
+                  #,@body)))]))
     (parse-kargs #f kargs '() '() #f #f)))
 
 (define-syntax lambda*
@@ -1705,7 +1753,7 @@
             (with-syntax ([(restarg) (generate-temporaries '(restarg))]
                           [(args ...) (datum->syntax #'x fargs)])
               #`(lambda (#,@fargs . restarg)
-                 #,@(extended-lambda-body #'x #'restarg kargs #'(body ...))))))])))
+                 #,@(extended-lambda-body #'ctx #'restarg kargs #'(body ...))))))])))
 
 (define-syntax define*
   (lambda (x)
@@ -1715,7 +1763,6 @@
            (lambda* formals
             body
             ...))])))
-
 (define (set-record-type-printer! typ printer)
   (unless (record-type? typ)
     (assertion-violation 'set-record-type-printer! "Not an record type"))
