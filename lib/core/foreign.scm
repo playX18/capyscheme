@@ -58,7 +58,13 @@
     errno
     ioctl/pointer
     dll-suffix)
-  (import (core control) (core primitives) (core match) (capy))
+  (import
+    (core control)
+    (core bytevectors)
+    (core primitives)
+    (core match)
+    (capy)
+    (srfi 1))
   (eval-when (expand load eval)
     (define void %void)
     (define float %float)
@@ -99,217 +105,151 @@
   (define (null-pointer? x)
     (= (pointer-address x) 0))
 
-  (define-syntax-rule (align off alignment)
-    (+ 1 (logior (- off 1) (- alignment 1))))
+  ;;;
+  ;;; Packed structures.
+  ;;;
+  (define-syntax sizeof*
+    (syntax-rules (int128 array)
+      ((_ int128)
+        16)
+      ((_ (array type n))
+        (* (sizeof* type) n))
+      ((_ type)
+        (let-syntax ((v (lambda (s)
+                         (syntax-case s ()
+                           (_
+                             (sizeof type))))))
+          v))))
 
-  (define bytevector-pointer-ref
-    (case (sizeof '*)
-      [(4) (lambda (bf off)
-            (make-pointer (bytevector-u32-ref bf off) '*))]
-      [(8) (lambda (bf off)
-            (make-pointer (bytevector-u64-ref bf off) '*))]))
+  (define-syntax alignof*
+    (syntax-rules (int128 array)
+      ((_ int128)
+        16)
+      ((_ (array type n))
+        (alignof* type))
+      ((_ type)
+        (let-syntax ((v (lambda (s)
+                         (syntax-case s ()
+                           (_
+                             (alignof type))))))
+          v))))
 
-  (define bytevector-pointer-set!
-    (case (sizeof '*)
-      [(4) (lambda (bf off p)
-            (bytevector-u32-set! bf off (pointer-address p)))]
-      [(8) (lambda (bf off p)
-            (bytevector-u64-set! bf off (pointer-address p)))]))
+  (define-syntax align ;as found in (system foreign)
+    (syntax-rules (~)
+      "Add to OFFSET whatever it takes to get proper alignment for TYPE."
+      ((_ offset (type ~ endianness))
+        (align offset type))
+      ((_ offset type)
+        (+ 1 (logior (- offset 1) (- (alignof* type) 1))))))
 
-  (define-syntax-rule (define-complex-accessors (read write) (%read %write size))
-    (begin
-      (define (read bv offset)
-        (make-rectangular
-          (%read bv offset)
-          (%read bv (+ offset size))))
-      (define (write bv offset val)
-        (%write bv offset (real-part val))
-        (%write bv (+ offset size) (imag-part val)))))
-
-  (define-complex-accessors
-    (bytevector-complex-single-native-ref bytevector-complex-single-native-set!)
-    (bytevector-ieee-single-native-ref bytevector-ieee-single-native-set! 4))
-
-  (define-complex-accessors
-    (bytevector-complex-double-native-ref bytevector-complex-double-native-set!)
-    (bytevector-ieee-double-native-ref bytevector-ieee-double-native-set! 8))
-  (define-syntax cte
-    (lambda (x)
-      (syntax-case x ()
-        [(_ exp)
-          #`(quote #,(datum->syntax #'here (eval (syntax->datum #'exp))))])))
-
-  (define-syntax switch/cte
-    (syntax-rules (else)
-      [(_ x (k expr) ... (else alt))
-        (let ([t x])
-          (cond
-            [(eq? t (cte k)) expr]
-            ...
-            [else alt]))]))
-
-  (define-syntax-rule (read-field %bv %offset %type)
-    (let ((bv %bv)
-          (offset %offset)
-          (type %type))
-      (define-syntax-rule (%read type reader)
-        (let* ((offset (align offset (cte (alignof type))))
-               (val (reader bv offset)))
-          (values val
-            (+ offset (cte (sizeof type))))))
-      (define-syntax-rule (dispatch-read type (%%type reader) (... ...))
-        (switch/cte
-          type
-          (%%type (%read %%type reader))
-          (... ...)
-          (else
-            (let ((offset (align offset (alignof type))))
-              (values (%read-c-struct bv offset type)
-                (+ offset (sizeof type)))))))
-      (dispatch-read
-        type
-        (int8 bytevector-s8-ref)
-        (uint8 bytevector-u8-ref)
-        (int16 bytevector-s16-native-ref)
-        (uint16 bytevector-u16-native-ref)
-        (int32 bytevector-s32-native-ref)
-        (uint32 bytevector-u32-native-ref)
-        (int64 bytevector-s64-native-ref)
-        (uint64 bytevector-u64-native-ref)
-        (float bytevector-ieee-single-native-ref)
-        (double bytevector-ieee-double-native-ref)
-        (complex-float bytevector-complex-single-native-ref)
-        (complex-double bytevector-complex-double-native-ref)
-        ('* bytevector-pointer-ref))))
-  (define-syntax-rule (read-c-struct %bv %offset ((field type) ...) k)
-    (let ((bv %bv)
-          (offset %offset)
-          (size (cte (sizeof (list type ...)))))
-      (unless (>= (bytevector-length bv) (+ offset size))
-        (error 'read-c-struct "destination bytevector too small"))
-      (let*-values (((field offset)
-                      (read-field bv offset (cte type)))
-                    ...)
-        (k field ...))))
-
-  (define-syntax-rule (write-field %bv %offset %type %value)
-    (let ((bv %bv)
-          (offset %offset)
-          (type %type)
-          (value %value))
-      (define-syntax-rule (%write type writer)
-        (let ((offset (align offset (cte (alignof type)))))
-          (writer bv offset value)
-          (+ offset (cte (sizeof type)))))
-      (define-syntax-rule (dispatch-write type (%%type writer) (... ...))
-        (switch/cte
-          type
-          (%%type (%write %%type writer))
-          (... ...)
-          (else
-            (let ((offset (align offset (alignof type))))
-              (%write-c-struct bv offset type value)
-              (+ offset (sizeof type))))))
-      (dispatch-write
-        type
-        (int8 bytevector-s8-set!)
-        (uint8 bytevector-u8-set!)
-        (int16 bytevector-s16-native-set!)
-        (uint16 bytevector-u16-native-set!)
-        (int32 bytevector-s32-native-set!)
-        (uint32 bytevector-u32-native-set!)
-        (int64 bytevector-s64-native-set!)
-        (uint64 bytevector-u64-native-set!)
-        (float bytevector-ieee-single-native-set!)
-        (double bytevector-ieee-double-native-set!)
-        (complex-float bytevector-complex-single-native-set!)
-        (complex-double bytevector-complex-double-native-set!)
-        ('* bytevector-pointer-set!))))
-
-  (define-syntax-rule (write-c-struct %bv %offset ((field type) ...))
-    (let ((bv %bv)
-          (offset %offset)
-          (size (cte (sizeof (list type ...)))))
-      (unless (>= (bytevector-length bv) (+ offset size))
-        (error 'write-c-struct "destination bytevector too small"))
-      (let* ((offset (write-field bv offset (cte type) field))
-             ...)
-        (values (unspecified)))))
-
-  (define (%write-c-struct bv offset types vals)
-    (let lp ((offset offset) (types types) (vals vals))
-      (match types
-        (() (match vals
-             (() #t)
-             (_ (error "too many values" vals))))
-        (`(array ,type ,count)
-          (let loop ([i 0]
-                     [value vals]
-                     [o offset])
-            (if (= i count)
-              #t
-              (match value
-                [(head . tail)
-                  (write-field bv o type head)
-                  (loop (+ i 1) tail (+ o (sizeof type)))]))))
-        ((`(array ,type ,count) . types)
-          (let loop ([i 0]
-                     [value vals]
-                     [o offset])
-            (if (= i count)
-              (lp o types value)
-              (match value
-                [(head . tail)
-                  (write-field bv o type head)
-                  (loop (+ i 1) tail (+ o (sizeof type)))]))))
-        ((type . types)
-          (match vals
-            ((val . vals)
-              (lp (write-field bv offset type val) types vals))
-            (() (error 'write-c-struct "too few values" vals)))))))
-
-  (define (%read-c-struct bv offset types)
-    (let lp ((offset offset) (types types))
-      (match types
-        (() '())
-        (`(array ,type ,count)
-          (let loop ([i 0]
-                     [vals '()]
-                     [o offset])
-            (if (= i count)
-              (reverse vals)
-              (let-values (((val no) (read-field bv o type)))
-                (loop (+ i 1) (cons val vals) no)))))
-
-        ((type . types)
-          (call-with-values (lambda () (read-field bv offset type))
-            (lambda (val offset)
-              (cons val (lp offset types))))))))
-
-  (define (make-c-struct types vals)
-    (let ((bv (make-bytevector (sizeof types) 0)))
-      (%write-c-struct bv 0 types vals)
-      (bytevector->pointer bv)))
-
-  (define (parse-c-struct foreign types)
-    (%read-c-struct (pointer->bytevector foreign (sizeof types)) 0 types))
+  (define-syntax type-size
+    (syntax-rules (~)
+      ((_ (type ~ order))
+        (sizeof* type))
+      ((_ type)
+        (sizeof* type))))
 
   (define-syntax struct-alignment
     (syntax-rules ()
-      [(_ offset types ...)
-        (max (align offset (alignof types)) ...)]))
+      "Compute the alignment for the aggregate made of TYPES at OFFSET.  The
+result is the alignment of the \"most strictly aligned component\"."
+      ((_ offset types ...)
+        (max (align offset types) ...))))
+
   (define-syntax struct-size
     (syntax-rules ()
-      [(_ offset (processed ...))
-        (+ 1 (logior (- offset 1) (- (struct-alignment offset processed ...) 1)))]
-      [(_ offset (processed ...) type0 types ...)
-        (struct-size (+ (sizeof type0) (align offset (alignof type0)))
-          (type0 processed ...)
+      "Return the size in bytes of the structure made of TYPES."
+      ((_ offset (types-processed ...))
+        ;; The SysV ABI P.S. says: "Aggregates (structures and arrays) and unions
+        ;; assume the alignment of their most strictly aligned component."  As an
+        ;; example, a struct such as "int32, int16" has size 8, not 6.
+        (+ 1 (logior (- offset 1)
+              (- (struct-alignment offset types-processed ...) 1))))
+      ((_ offset (types-processed ...) type0 types ...)
+        (struct-size (+ (type-size type0) (align offset type0))
+          (type0 types-processed ...)
           types
-          ...)]))
+          ...))))
+
+  (define-syntax write-type
+    (syntax-rules (~ array *)
+      ((_ bv offset (type ~ order) value)
+        (bytevector-uint-set! bv offset value
+          (endianness order)
+          (sizeof* type)))
+      ((_ bv offset (array type n) value)
+        (let loop ((i 0)
+                   (value value)
+                   (o offset))
+          (unless (= i n)
+            (match value
+              ((head . tail)
+                (write-type bv o type head)
+                (loop (+ 1 i) tail (+ o (sizeof* type))))))))
+      ((_ bv offset '* value)
+        (bytevector-uint-set! bv offset (pointer-address value)
+          (native-endianness)
+          (sizeof* '*)))
+      ((_ bv offset type value)
+        (bytevector-uint-set! bv offset value
+          (native-endianness)
+          (sizeof* type)))))
+
+  (define-syntax write-types
+    (syntax-rules ()
+      ((_ bv offset () ())
+        #t)
+      ((_ bv offset (type0 types ...) (field0 fields ...))
+        (begin
+          (write-type bv (align offset type0) type0 field0)
+          (write-types bv
+            (+ (align offset type0) (type-size type0))
+            (types ...)
+            (fields ...))))))
+
+  (define-syntax read-type
+    (syntax-rules (~ array quote *)
+      ((_ bv offset '*)
+        (make-pointer (bytevector-uint-ref bv offset
+                       (native-endianness)
+                       (sizeof* '*))))
+      ((_ bv offset (type ~ order))
+        (bytevector-uint-ref bv offset
+          (endianness order)
+          (sizeof* type)))
+      ((_ bv offset (array type n))
+        (unfold
+          (lambda (i) (= i n))
+          (lambda (i)
+            (read-type bv (+ offset (* i (sizeof* type))) type))
+          (lambda (x) (+ 1 x))
+          0))
+      ((_ bv offset type)
+        (bytevector-uint-ref bv offset
+          (native-endianness)
+          (sizeof* type)))))
+
+  (define-syntax read-types
+    (syntax-rules ()
+      ((_ return bv offset () (values ...))
+        (return values ...))
+      ((_ return bv offset (type0 types ...) (values ...))
+        (read-types return
+          bv
+          (+ (align offset type0) (type-size type0))
+          (types ...)
+          (values ... (read-type bv
+                       (align offset type0)
+                       type0))))))
 
   (define-syntax define-c-struct-macro
     (syntax-rules ()
+      "Define NAME as a macro that can be queried to get information about the C
+struct it represents.  In particular:
+
+  (NAME field-offset FIELD)
+
+returns the offset in bytes of FIELD within the C struct represented by NAME."
       ((_ name ((fields types) ...))
         (define-c-struct-macro name
           (fields ...)
@@ -319,8 +259,8 @@
       ((_ name (fields ...) offset (clauses ...) ((field type) rest ...))
         (define-c-struct-macro name
           (fields ...)
-          (+ (align offset (alignof type)) (cte (sizeof type)))
-          (clauses ... ((_ field-offset field) (align offset (alignof type))))
+          (+ (align offset type) (type-size type))
+          (clauses ... ((_ field-offset field) (align offset type)))
           (rest ...)))
       ((_ name (fields ...) offset (clauses ...) ())
         (define-syntax name
@@ -329,15 +269,23 @@
             ...)))))
 
   (define-syntax define-c-struct
-    (lambda (x)
-      (syntax-case x ()
-        [(_ name size wrap-fields read write! (fields types) ...)
-          (identifier? #'name)
-          #'(begin
-             (define-c-struct-macro name ((fields types) ...))
-             (define size (struct-size 0 () types ...))
-             (define (write! bv offset fields ...)
-              (write-c-struct bv offset ((fields types) ...)))
-             (define (read bv . offset)
-              (define off (if (null? offset) 0 (car offset)))
-              (read-c-struct bv off ((fields types) ...) wrap-fields)))]))))
+    (syntax-rules ()
+      "Define SIZE as the size in bytes of the C structure made of FIELDS.  READ
+as a deserializer and WRITE! as a serializer for the C structure with the
+given TYPES.  READ uses WRAP-FIELDS to return its value."
+      ((_ name size wrap-fields read write! (fields types) ...)
+        (begin
+          (define-c-struct-macro name
+            ((fields types) ...))
+          (define size
+            (struct-size 0 () types ...))
+          (define (write! bv offset fields ...)
+            (write-types bv offset (types ...) (fields ...)))
+          (define* (read bv #:optional (offset 0))
+            (read-types wrap-fields bv offset (types ...) ()))))))
+
+  (define-syntax-rule (c-struct-field-offset type field)
+    "Return the offset in BYTES of FIELD within TYPE, where TYPE is a C struct
+defined with 'define-c-struct' and FIELD is a field identifier.  An
+expansion-time error is raised if FIELD does not exist in TYPE."
+    (type field-offset field)))
