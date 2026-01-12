@@ -25,15 +25,8 @@ pub enum IoOperation {
 }
 #[scheme(path=capy)]
 pub mod io_ops {
-    use std::{ffi::CStr, ptr::null_mut};
 
-    use mmtk::AllocationSemantics;
-
-    use crate::{
-        CAN_PIN_OBJECTS,
-        prelude::port::{Socket, SocketMode},
-        runtime::PollOperation,
-    };
+    use crate::runtime::PollOperation;
 
     #[scheme(name = "usleep")]
     pub fn usleep(microseconds: u64) -> bool {
@@ -687,8 +680,6 @@ pub mod io_ops {
             nctx.return_(res)
         }
     }
-
-  
 
     #[scheme(name = "syscall:open")]
     pub fn syscall_open(filename: Gc<'gc, Str<'gc>>, flags: i32, mode: i32) -> i32 {
@@ -1407,7 +1398,6 @@ pub mod io_ops {
             nctx.raise_error("poller-wait", "failed to wait for events", &[arg])
         }
     }
-
 }
 
 pub fn init_io<'gc>(ctx: Context<'gc>) {
