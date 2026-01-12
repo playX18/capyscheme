@@ -26,8 +26,13 @@
 - *(tree-il/primitives)* Expand values to values term - ([c382724](https://codeberg.org/playXE/capy/commit/c382724eb9f4e22f5eab634d79c747d5b95afdc6))
 - Quote form in lambda* - ([2eb1964](https://codeberg.org/playXE/capy/commit/2eb1964c90fd57de56927be718901509e198df65))
 
+### 🚜 Refactor
+
+- *(foreign)* Simplify C struct macros - ([bcb0f9b](https://codeberg.org/playXE/capy/commit/bcb0f9b97b7d3efbebd572035f9675e38fc7e29f))
+
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([f00e169](https://codeberg.org/playXE/capy/commit/f00e1694fea81ea5b18f1079f2208d72476d15ca))
 - Update CHANGELOG.md [skip ci] - ([be53eb1](https://codeberg.org/playXE/capy/commit/be53eb17a211a1cee849774bb481a145238cddbf))
 - Update CHANGELOG.md [skip ci] - ([bed40ba](https://codeberg.org/playXE/capy/commit/bed40ba7f66e25777912bd76a6734f5ec20f681e))
 - Remove unused dependencies - ([249e542](https://codeberg.org/playXE/capy/commit/249e542f366978883ae65785285fedd332775b59))
