@@ -688,14 +688,7 @@ pub mod io_ops {
         }
     }
 
-    #[scheme(name = "syscall:socket")]
-    pub fn syscall_socket(domain: i32, typ: i32, protocol: i32) -> i32 {
-        unsafe {
-            let typ = typ | libc::SOCK_NONBLOCK;
-            let ret = libc::socket(domain, typ, protocol);
-            nctx.return_(ret)
-        }
-    }
+  
 
     #[scheme(name = "syscall:open")]
     pub fn syscall_open(filename: Gc<'gc, Str<'gc>>, flags: i32, mode: i32) -> i32 {
@@ -1471,6 +1464,7 @@ pub fn init_io<'gc>(ctx: Context<'gc>) {
     cconst!(MSG_CONFIRM);
     #[cfg(target_os = "linux")]
     cconst!(MSG_RST);
+    #[cfg(target_os = "linux")]
     cconst!(MSG_ERRQUEUE);
     cconst!(MSG_NOSIGNAL);
     #[cfg(target_os = "linux")]
