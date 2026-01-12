@@ -1878,6 +1878,8 @@ pub fn init_io<'gc>(ctx: Context<'gc>) {
     cconst!(AI_V4MAPPED);
     cconst!(AI_ALL);
     cconst!(AI_ADDRCONFIG);
+    cconst!(IPPROTO_IP);
+    cconst!(IPPROTO_ICMP);
     cconst!(IPPROTO_TCP);
     cconst!(IPPROTO_UDP);
     cconst!(IPPROTO_RAW);
