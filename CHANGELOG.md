@@ -24,6 +24,8 @@
 - *(gc)* Create pinning work only when CAN_PIN_OBJECTS is #t - ([ee31692](https://codeberg.org/playXE/capy/commit/ee3169243e058089a25cc49425859851c9b82fd0))
 - *(tree-il)* Fix tree-il->scheme for receive term - ([c70231d](https://codeberg.org/playXE/capy/commit/c70231d5def0d91eced9518c06e656c9e4542a41))
 - *(tree-il/primitives)* Expand values to values term - ([c382724](https://codeberg.org/playXE/capy/commit/c382724eb9f4e22f5eab634d79c747d5b95afdc6))
+- Warnings - ([4e2bb1e](https://codeberg.org/playXE/capy/commit/4e2bb1e28551bd57630494632af1a22fea6dd5b3))
+- Cfg some constants for macOS build - ([2fd054c](https://codeberg.org/playXE/capy/commit/2fd054ceefe5a375d6f03b9a24a7b09d3313c72b))
 - Quote form in lambda* - ([2eb1964](https://codeberg.org/playXE/capy/commit/2eb1964c90fd57de56927be718901509e198df65))
 
 ### 🚜 Refactor
@@ -32,6 +34,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([78063d4](https://codeberg.org/playXE/capy/commit/78063d46b20764d436fb56275eec1f3764235e06))
 - Update CHANGELOG.md [skip ci] - ([f00e169](https://codeberg.org/playXE/capy/commit/f00e1694fea81ea5b18f1079f2208d72476d15ca))
 - Update CHANGELOG.md [skip ci] - ([be53eb1](https://codeberg.org/playXE/capy/commit/be53eb17a211a1cee849774bb481a145238cddbf))
 - Update CHANGELOG.md [skip ci] - ([bed40ba](https://codeberg.org/playXE/capy/commit/bed40ba7f66e25777912bd76a6734f5ec20f681e))
@@ -47,6 +50,7 @@
 
 ### ◀️ Revert
 
+- Remove syscall:socket - ([02938eb](https://codeberg.org/playXE/capy/commit/02938ebb05ad65edaa9e497c3936d89901e6beaa))
 - Do not use CAN_PIN_OBJECTS for bytevector - ([dfca5f0](https://codeberg.org/playXE/capy/commit/dfca5f05367a24583caf14c4f7cc6711e2bbf8c5))
 
 
