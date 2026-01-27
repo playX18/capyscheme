@@ -34,6 +34,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Update CHANGELOG.md [skip ci] - ([1cef306](https://codeberg.org/playXE/capy/commit/1cef306e18d049621051ba9b184c31001517c4fb))
 - Update CHANGELOG.md [skip ci] - ([32bf43e](https://codeberg.org/playXE/capy/commit/32bf43e62fda1dcf970d8398549102e10ea2c608))
 - Update CHANGELOG.md [skip ci] - ([af57399](https://codeberg.org/playXE/capy/commit/af57399f57aa45cb0ee46fb6de3390b3210ad871))
 - Update CHANGELOG.md [skip ci] - ([3948bfc](https://codeberg.org/playXE/capy/commit/3948bfc412d65aee6302bbbb68dc8e68c32395cf))
