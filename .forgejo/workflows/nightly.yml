@@ -54,7 +54,6 @@ jobs:
         run: |
           cargo binstall git-cliff -y 
       - name: Generate a changelog
-        if: needs.check-and-run.outputs.recent_commits == 'true'
         shell: bash
         id: git-cliff
         run: |
