@@ -215,7 +215,6 @@ static DYNLIB_EXTENSION: &str = if cfg!(target_os = "linux") {
     "dylib"
 };
 
-
 pub fn init_load<'gc>(ctx: Context<'gc>) {
     load_ops::register(ctx);
 }

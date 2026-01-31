@@ -291,7 +291,7 @@ pub mod hash_ops {
     }
 
     /// Computes the `eq?` hash of the value. If `bound` is provided, the result is taken modulo `bound`.
-    /// 
+    ///
     /// The main difference between `hash` and `hash-eq` is that `hash` never hashes by object identity,
     /// while this function does.
     #[scheme(name = "hash-eq")]
@@ -299,7 +299,7 @@ pub mod hash_ops {
         let mut hasher = simplehash::CityHasher64::new();
         value.hash(&mut hasher);
         let hash = hasher.finish_raw() % bound.unwrap_or(u64::MAX);
-      
+
         let hash = hash.into_value(nctx.ctx);
 
         nctx.return_(hash)

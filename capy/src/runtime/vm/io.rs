@@ -1415,6 +1415,16 @@ pub fn init_io<'gc>(ctx: Context<'gc>) {
         };
     }
 
+    macro_rules! cvalue {
+        ($name: ident, $val: expr) => {
+            let name = stringify!($name);
+            let sym = ctx.intern(name);
+            host_features_tab.put(ctx, sym, Value::new($val));
+        };
+    }
+
+    cvalue!(ADDRESS_BITS, usize::BITS as i32);
+
     cconst!(AF_UNSPEC);
     cconst!(AF_INET);
     cconst!(AF_INET6);

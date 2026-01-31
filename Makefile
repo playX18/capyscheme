@@ -218,8 +218,10 @@ SRFI_SRCS := \
 	lib/srfi/srfi-132/sorting.scm \
 	lib/srfi/srfi-132/sortp.scm \
 	lib/srfi/srfi-132/vector-util.scm \
+	lib/srfi/srfi-145.scm \
 	lib/srfi/srfi-157.scm \
 	lib/srfi/srfi-180.scm \
+	lib/srfi/srfi-214.scm \
 	lib/srfi/srfi-257.scm \
 	lib/srfi/srfi-257/misc.sld \
 	lib/srfi/srfi-259.scm

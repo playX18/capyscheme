@@ -79,7 +79,10 @@ pub fn compile_file<'gc>(
     file: impl AsRef<Path>,
     _: Option<Gc<'gc, Module<'gc>>>,
 ) -> Result<FuncRef<'gc>, Value<'gc>> {
-    unreachable!("compile_file should not be called after bootstrap is complete, trying to compile: {}", file.as_ref().display());
+    unreachable!(
+        "compile_file should not be called after bootstrap is complete, trying to compile: {}",
+        file.as_ref().display()
+    );
 }
 #[cfg(feature = "bootstrap")]
 pub fn compile_file<'gc>(

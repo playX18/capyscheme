@@ -1245,8 +1245,10 @@
     srfi-128 ;; comparators (reduced)
     srfi-130 ;; Cursor-based string library
     srfi-132 ;; sorting
+    srfi-145 ;; assumptions
     srfi-157 ;; Continuation marks
     srfi-180 ;; JSON
+    srfi-214 ;; Flexvectors
     ; srfi-226 ;; Control features (TODO: BROKEN!)
     srfi-257 ;; Simple extendable pattern matcher with backtracking
     srfi-259)) ;; Tagged procedures with type safety
