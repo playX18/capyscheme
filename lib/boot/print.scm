@@ -1,3 +1,10 @@
+(define %tuple-printers (make-parameter '()))
+
+(define (register-tuple-printer! type printer)
+  (let ((printers (%tuple-printers)))
+    (%tuple-printers
+      (cons (cons type printer) printers))))
+
 (define procedure-printer
   (make-parameter
     (lambda (proc port slashify)
@@ -698,7 +705,17 @@
         (display "#<condition " port)
         (print-condition obj port)
         (display ">" port)]
-      [else (display "#<unknown>" port)])))
+      [else
+        (let ([printers (%tuple-printers)])
+          (let loop ((printers printers))
+           
+            (cond
+              [(null? printers)
+                (display "#<UNKNOWN TUPLE>" port)]
+              [(eq? (car (car printers)) (tuple-ref obj 0))
+                ((cdr (car printers)) obj port quote?)]
+              [else
+                (loop (cdr printers))])))])))
 (define (newline . port) (display "\n" (if (null? port) (current-output-port) (car port))))
 
 (define (displayln x . rest)
@@ -709,3 +726,4 @@
   (let ((p (if (pair? rest) (car rest) (current-output-port))))
     (write x p)
     (newline p)))
+
