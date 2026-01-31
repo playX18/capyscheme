@@ -84,10 +84,8 @@ commit_preprocessors = [
   # If the spelling is incorrect, it will be fixed automatically.
   { pattern = '.*', replace_command = 'typos --write-changes -' },
 ]
-# An array of regex based parsers for extracting data from the commit message.
-# Assigns commits to groups.
-# Optionally sets the commit's scope and can decide to exclude commits from further processing.
 commit_parsers = [
+  { message = '.*\[skip ci\].*', skip = true },
   { message = "^feat", group = "<!-- 0 -->⛰️  Features" },
   { message = "^fix", group = "<!-- 1 -->🐛 Bug Fixes" },
   { message = "^doc", group = "<!-- 3 -->📚 Documentation" },
@@ -104,7 +102,9 @@ commit_parsers = [
   { message = "^chore|^ci", group = "<!-- 7 -->⚙️ Miscellaneous Tasks" },
   { body = ".*security", group = "<!-- 8 -->🛡️ Security" },
   { message = "^revert", group = "<!-- 9 -->◀️ Revert" },
-]
+]# An array of regex based parsers for extracting data from the commit message.
+# Assigns commits to groups.
+# Optionally sets the commit's scope and can decide to exclude commits from further processing.
 # Prevent commits that are breaking from being excluded by commit parsers.
 protect_breaking_commits = false
 # Exclude commits that are not matched by any commit parser.
