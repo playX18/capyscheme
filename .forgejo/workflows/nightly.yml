@@ -20,9 +20,10 @@ jobs:
           # We check if the output is empty
           echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          if [ -n "$(git log --since='24 hours ago' --invert-grep --grep='\[skip ci\]')" ]; then
+          recent_count=$(git log --since='24 hours ago' --invert-grep --grep='\[skip ci\]' --pretty=format:%H | wc -l)
+          if [ "$recent_count" -gt 0 ]; then
             echo "recent_commits=true" >> $GITHUB_OUTPUT
-            echo "Found recent commits."
+            echo "Found recent commits: $recent_count"
           else
             echo "recent_commits=false" >> $GITHUB_OUTPUT
             echo "No recent commits found. Skipping job."
