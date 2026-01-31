@@ -12,9 +12,31 @@
     mutex-acquire
     mutex-release
     call-with-new-thread
-    join-thread)
+    join-thread
+    &uncaught-exception
+    uncaught-exception?
+    uncaught-exception-reason
+    &terminated-thread-exception
+    terminated-thread-exception?
+    terminated-thread-exception-thread)
   (import (core primitives)
-    (core hashtables))
+          (core hashtables)
+          (core conditions)
+          (core records))
+
+  (define-condition-type &uncaught-exception &error 
+    make-uncaught-exception
+    uncaught-exception?
+    (reason uncaught-exception-reason))
+
+  (define-condition-type terminated-thread-exception &error 
+    make-terminated-thread-exception
+    terminated-thread-exception?
+    (thread terminated-thread-exception-thread))
+
+  (define-record-type uncaught
+    (fields 
+      reason))
 
   ;; weak hashtable which keeps thread data until thread object is alive
   (define %thread-results (make-weak-hashtable))
@@ -27,19 +49,26 @@
 
     (let ([t (fork-thread
               (lambda ()
-                (call-with-values
-                  (lambda ()
-                    (with-mutex mutex
-                      (set! thread (current-thread))
-                      (hashtable-set! %thread-join-data thread (cons cv mutex))
-                      (condition-signal cv))
-                    (with-exception-handler
-                      (lambda (exn) exn)
-                      thunk))
-                  (lambda vals
-                    (with-mutex mutex
-                      (hashtable-set! %thread-results cv vals)
-                      (condition-broadcast cv))))))])
+                (call/cc 
+                  (lambda (return)
+                    (call-with-values
+                      (lambda ()
+                        (with-mutex mutex
+                          (set! thread (current-thread))
+                          (hashtable-set! %thread-join-data thread (cons cv mutex))
+                          (condition-signal cv))
+                        (with-exception-handler
+                          (lambda (exn)
+                            (define obj (make-uncaught exn))
+                            (with-mutex mutex 
+                              (hashtable-set! %thread-results cv obj)
+                              (condition-broadcast cv))
+                            (return #f))
+                          thunk))
+                      (lambda vals
+                        (with-mutex mutex
+                          (hashtable-set! %thread-results cv vals)
+                          (condition-broadcast cv))))))))])
 
       (with-mutex mutex
         (let loop ()
@@ -51,6 +80,9 @@
               (loop)])))))
 
   (define (join-thread thread)
+    "Wait for thread to terminate and return its values. If exception
+    was raised in the thread, this function will raise &uncaught-exception
+    with the original exception as reason."
     (define data (hashtable-ref %thread-join-data thread #f))
 
     (unless data
@@ -62,6 +94,8 @@
           (cond
             [(hashtable-ref %thread-results cv #f) =>
               (lambda (res)
+                (if (uncaught? res)
+                  (raise (make-uncaught-exception (uncaught-reason res))))
                 (apply values res))]
             [else
               (condition-wait cv mutex)

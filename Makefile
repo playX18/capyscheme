@@ -144,7 +144,8 @@ CORE_SRCS := \
 	lib/core/io/assistants.scm \
 	lib/core/io/process.scm \
 	lib/core/foreign.scm \
-	lib/core/foreign-library.scm 
+	lib/core/foreign-library.scm \
+	lib/core/threading.scm
 
 RNRS_SRCS := \
 	lib/rnrs/base.scm \
@@ -176,7 +177,9 @@ CAPY_SRCS_SLS := \
 	lib/capy/args/parser.sls \
 	lib/capy/args/results.sls \
 	lib/capy/args.sls \
-	lib/capy/session.sls
+	lib/capy/session.sls \
+	lib/capy/deque.sls \
+	lib/capy/channel.sls
 
 CAPY_SRCS_SCM := \
 	lib/capy/compiler/tree-il/terms.scm 	 \
