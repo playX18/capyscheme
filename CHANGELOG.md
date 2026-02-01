@@ -2,23 +2,30 @@
 
 ### ⛰️  Features
 
+- *(capy)* Add deque and channel libraries - ([b199e73](https://codeberg.org/playXE/capy/commit/b199e732c7ec5a9d45545728d02ae262fef1f937))
 - *(capyc)* Add --nobacktrace flag - ([8185020](https://codeberg.org/playXE/capy/commit/8185020315558d2f940781dbe4b56c1b35f3a8c9))
+- *(core)* Propagate thread exceptions on join - ([8c0ce26](https://codeberg.org/playXE/capy/commit/8c0ce2610b26bee32c66b9b25e0fe0ff7f45049b))
+- *(core)* Add tuple printer registry and safe struct predicate - ([f4a3d8a](https://codeberg.org/playXE/capy/commit/f4a3d8ac76c5b8ab0b34e1b37a7561a01f395a66))
 - *(core/foreign)* Use keyword arguments - ([30f707d](https://codeberg.org/playXE/capy/commit/30f707d8c5130011e44a91ae3803bcd3f0111d14))
 - *(ffi)* Add blocking calls support - ([bf23f49](https://codeberg.org/playXE/capy/commit/bf23f495b91866660d9a1896a644146b605e967f))
 - *(gc)* Pinning roots - ([bf8a1af](https://codeberg.org/playXE/capy/commit/bf8a1af2b2c3e4c0b49107eb382824dd835bacaa))
 - *(runtime)* Add Socket type - ([149a4d3](https://codeberg.org/playXE/capy/commit/149a4d35b08c931c5c35763f928aa1012a88a2db))
 - *(runtime)* Use self-hosted primitive expansion after bootstrap - ([82c55a7](https://codeberg.org/playXE/capy/commit/82c55a76aa03b9f6e9211c79245380458e143f6f))
+- *(srfi)* SRFI-214: Flexvectors - ([1a98b4e](https://codeberg.org/playXE/capy/commit/1a98b4e5ed496005f6d6a33ed3b81508cf5b5e0d))
+- *(srfi)* SRFI-145: Assumptions - ([a79a542](https://codeberg.org/playXE/capy/commit/a79a5422edc5a56ad798036dfaa1d8f7367200de))
 - *(srfi-257)* Simple extendable pattern matcher with backtracking - ([2c435b4](https://codeberg.org/playXE/capy/commit/2c435b477755665647079a14da566dde96448da1))
 - *(ssa)* Add (unspecified) lowering - ([2b9fba2](https://codeberg.org/playXE/capy/commit/2b9fba26990230212328aeaeb72501a0b003886f))
 - *(tree-il)* Tree-il-fold - ([23f831c](https://codeberg.org/playXE/capy/commit/23f831c67a338fcb65ee8a45e1a0a5e6f8d6b18f))
 - *(tree-il)* Define record match patterns from SRFI-257 - ([bd19b85](https://codeberg.org/playXE/capy/commit/bd19b8574806e41d3cb108f878c55fd1ce86d883))
 - *(tree-il)* Add pattern matchers for IL - ([34b0430](https://codeberg.org/playXE/capy/commit/34b043015abc838acef9511327f541dd249e5c96))
+- Add new SRFIs to build system and cond-expand - ([5444268](https://codeberg.org/playXE/capy/commit/5444268284acf1abf15a7a8ad1dfdcf738cc0bd3))
 - Add let-optionals* to base - ([90b8b25](https://codeberg.org/playXE/capy/commit/90b8b2519cd91f54fd2a019984a4e81304fc7c69))
 - Add foreign and process libraries into makefile - ([97e5c3a](https://codeberg.org/playXE/capy/commit/97e5c3a7f981b301f767b14bb5b11d557d2e9e4d))
 - Add trampoline code size - ([4cfece1](https://codeberg.org/playXE/capy/commit/4cfece1cc5a4a55f964c411210760742631872a8))
 
 ### 🐛 Bug Fixes
 
+- *(ci)* Better logic to check for recent commits - ([899c4f8](https://codeberg.org/playXE/capy/commit/899c4f891370398f667a8da4f1ebac1855218226))
 - *(cps)* Disable DCE of primcalls in optimizer - ([73e27e1](https://codeberg.org/playXE/capy/commit/73e27e17c260d64560cb7deaca9b7663fa7885ad))
 - *(expand)* Proper conversion of receive to Rust enum - ([dc28c8a](https://codeberg.org/playXE/capy/commit/dc28c8a1ef7305fb4425bb4e094fe2a5ac439b24))
 - *(gc)* Create pinning work only when CAN_PIN_OBJECTS is #t - ([ee31692](https://codeberg.org/playXE/capy/commit/ee3169243e058089a25cc49425859851c9b82fd0))
@@ -34,38 +41,12 @@
 
 ### ⚙️ Miscellaneous Tasks
 
-- Update CHANGELOG.md [skip ci] - ([6ac73d8](https://codeberg.org/playXE/capy/commit/6ac73d8275bafa5516eef68574e564319ec17652))
-- Update CHANGELOG.md [skip ci] - ([55b7418](https://codeberg.org/playXE/capy/commit/55b74184386897a009ee9eef23721facb434a0fc))
-- Update CHANGELOG.md [skip ci] - ([944336e](https://codeberg.org/playXE/capy/commit/944336e391a612a628ce8b0959d8a5f5d5d6c7ee))
-- Update CHANGELOG.md [skip ci] - ([eaa5313](https://codeberg.org/playXE/capy/commit/eaa5313070f04d6239cea6c849a38b72560bd898))
-- Update CHANGELOG.md [skip ci] - ([1cef306](https://codeberg.org/playXE/capy/commit/1cef306e18d049621051ba9b184c31001517c4fb))
-- Update CHANGELOG.md [skip ci] - ([32bf43e](https://codeberg.org/playXE/capy/commit/32bf43e62fda1dcf970d8398549102e10ea2c608))
-- Update CHANGELOG.md [skip ci] - ([af57399](https://codeberg.org/playXE/capy/commit/af57399f57aa45cb0ee46fb6de3390b3210ad871))
-- Update CHANGELOG.md [skip ci] - ([3948bfc](https://codeberg.org/playXE/capy/commit/3948bfc412d65aee6302bbbb68dc8e68c32395cf))
-- Update CHANGELOG.md [skip ci] - ([d640d21](https://codeberg.org/playXE/capy/commit/d640d21c44d960f0324963c461c632ae715259a7))
-- Update CHANGELOG.md [skip ci] - ([20ee95e](https://codeberg.org/playXE/capy/commit/20ee95e70df2e14ee2002cf0ea2011e4455db56c))
-- Update CHANGELOG.md [skip ci] - ([accfa23](https://codeberg.org/playXE/capy/commit/accfa236fce5523cd964e0a971e150d8f9015baf))
-- Update CHANGELOG.md [skip ci] - ([a491bb4](https://codeberg.org/playXE/capy/commit/a491bb49a240386dba80e5f796bb86dd2564ff40))
-- Update CHANGELOG.md [skip ci] - ([53b8e47](https://codeberg.org/playXE/capy/commit/53b8e47a9a84e2083d17e4df0338fb6fc8c1aaa6))
-- Update CHANGELOG.md [skip ci] - ([168da6b](https://codeberg.org/playXE/capy/commit/168da6b368939fba0d2f706087ea11961c28b0b4))
-- Update CHANGELOG.md [skip ci] - ([3fa17cc](https://codeberg.org/playXE/capy/commit/3fa17ccaebc16fc1ad9fdc25e0f9e4ed1811e638))
-- Update CHANGELOG.md [skip ci] - ([5e97926](https://codeberg.org/playXE/capy/commit/5e979264e5ca523d1895a77d1d7e62003d5f96a2))
-- Update CHANGELOG.md [skip ci] - ([685a71a](https://codeberg.org/playXE/capy/commit/685a71a503a9bf5273bfe5176331eca7add73e81))
-- Update CHANGELOG.md [skip ci] - ([3afd573](https://codeberg.org/playXE/capy/commit/3afd57316dbad9419647020c3515215b77f54139))
-- Update CHANGELOG.md [skip ci] - ([617862c](https://codeberg.org/playXE/capy/commit/617862c90704b5fee1ff2535e57de268763f22a5))
-- Update CHANGELOG.md [skip ci] - ([78063d4](https://codeberg.org/playXE/capy/commit/78063d46b20764d436fb56275eec1f3764235e06))
-- Update CHANGELOG.md [skip ci] - ([f00e169](https://codeberg.org/playXE/capy/commit/f00e1694fea81ea5b18f1079f2208d72476d15ca))
-- Update CHANGELOG.md [skip ci] - ([be53eb1](https://codeberg.org/playXE/capy/commit/be53eb17a211a1cee849774bb481a145238cddbf))
-- Update CHANGELOG.md [skip ci] - ([bed40ba](https://codeberg.org/playXE/capy/commit/bed40ba7f66e25777912bd76a6734f5ec20f681e))
+- *(ci)* Always generate nightly changelog - ([5d63646](https://codeberg.org/playXE/capy/commit/5d6364616fe87f972984d8fa51f743991faf28d7))
 - Remove unused dependencies - ([249e542](https://codeberg.org/playXE/capy/commit/249e542f366978883ae65785285fedd332775b59))
 - Document blocking operation - ([73548a9](https://codeberg.org/playXE/capy/commit/73548a9f96b865799b3d793d18970b0690050216))
 - Remove dead code in load.rs - ([59e032c](https://codeberg.org/playXE/capy/commit/59e032c9bd95a854a335be9226cc3d50eddd14df))
-- Update CHANGELOG.md [skip ci] - ([b03c591](https://codeberg.org/playXE/capy/commit/b03c59178b2140e8d8504bac8aafec6bea2a9459))
-- Update CHANGELOG.md [skip ci] - ([490d19f](https://codeberg.org/playXE/capy/commit/490d19f713a6c409470a0e214a62632f4ec6dea7))
 - Add fmt commit to git-blame-ignore-vars - ([a683138](https://codeberg.org/playXE/capy/commit/a683138ccc708456ebf2fe570b2afbcd9825b4fd))
 - The great formatting - ([be734fa](https://codeberg.org/playXE/capy/commit/be734fadb066deb725b70b72729df149eb4591c1))
-- Update CHANGELOG.md [skip ci] - ([be6eaec](https://codeberg.org/playXE/capy/commit/be6eaecb77e028db71ef0d63a7f977c774a4b1aa))
-- Update CHANGELOG.md [skip ci] - ([10407cd](https://codeberg.org/playXE/capy/commit/10407cdb9c10ee0ab649730735efab8f9ed312f9))
 
 ### ◀️ Revert
 
@@ -112,19 +93,6 @@
 - *(capy)* Formatting - ([f90e0a7](https://codeberg.org/playXE/capy/commit/f90e0a78664ceb47c744402e71dd8deaf7ebd4f7))
 - *(ci)* Mark nightly release as pre-release - ([f1351b9](https://codeberg.org/playXE/capy/commit/f1351b98207b9ebd61a5f62d05e8dd071ca620ab))
 - Split tree-il module into multiple files - ([a8d087c](https://codeberg.org/playXE/capy/commit/a8d087c0354d547c53434d06de640f3a5f6fdeb8))
-
-### ⚙️ Miscellaneous Tasks
-
-- Update CHANGELOG.md [skip ci] - ([4b87e26](https://codeberg.org/playXE/capy/commit/4b87e262b448ba8d53f9c2ce0e88a1b7ff2177f1))
-- Update CHANGELOG.md [skip ci] - ([d697884](https://codeberg.org/playXE/capy/commit/d69788421434b40f27e5cbcbdf37e09f918e1290))
-- Update CHANGELOG.md [skip ci] - ([7a89f6a](https://codeberg.org/playXE/capy/commit/7a89f6af4704c90351a1e4617e3d97449651d65b))
-- Update CHANGELOG.md [skip ci] - ([507fb18](https://codeberg.org/playXE/capy/commit/507fb18c8b5730a3f598d187031f02deb2132cb6))
-- Update CHANGELOG.md [skip ci] - ([301eb81](https://codeberg.org/playXE/capy/commit/301eb819d1e218137ec26753d35bfbb6da3f2815))
-- Update CHANGELOG.md [skip ci] - ([b66a83f](https://codeberg.org/playXE/capy/commit/b66a83faf31b9d1c1e37dac0aba4c9b8fd420c44))
-- Update CHANGELOG.md [skip ci] - ([d321355](https://codeberg.org/playXE/capy/commit/d321355e8828a230bbcacff544b0e8cc20958299))
-- Update CHANGELOG.md [skip ci] - ([8b55330](https://codeberg.org/playXE/capy/commit/8b5533092b4e9986d1aa82822cf7d3daaaa7c94e))
-- Update CHANGELOG.md [skip ci] - ([c4e3175](https://codeberg.org/playXE/capy/commit/c4e3175480e4c5da6eabb7996187c6828d19d5d5))
-- Update CHANGELOG.md [skip ci] - ([16d81bc](https://codeberg.org/playXE/capy/commit/16d81bcd2b9549a142ba6d8051b06a5112f06f94))
 
 
 ## [1.0.2](https://codeberg.org/playXE/capy/compare/1.0.1..1.0.2) - 2026-01-04
