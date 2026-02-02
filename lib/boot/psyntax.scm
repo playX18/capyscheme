@@ -1773,6 +1773,45 @@
               (let ((nw (make-binding-wrap ids labels w)) (nr (extend-env labels bindings r)))
                 (expand-body #'(e1 e2 ...) (source-wrap e nw s mod) nr nw mod))))])))
 
+
+  (define (expand-syntax-parameterize e r w s mod)
+    (syntax-case e ()
+      ((_ ((var val) ...) e1 e2 ...)
+       (valid-bound-ids? #'(var ...))
+       (let ((names
+              (map (lambda (x)
+                     (call-with-values
+                         (lambda () (resolve-identifier x w r mod #f))
+                       (lambda (type value mod)
+                         (case type
+                           ((displaced-lexical)
+                            (syntax-violation 'syntax-parameterize
+                                              "identifier out of context"
+                                              e
+                                              (source-wrap x w s mod)))
+                           ((syntax-parameter)
+                            value)
+                           (else
+                            (syntax-violation 'syntax-parameterize
+                                              "invalid syntax parameter"
+                                              e
+                                              (source-wrap x w s mod)))))))
+                   #'(var ...)))
+             (bindings
+              (let ((trans-r (macros-only-env r)))
+                (map (lambda (x)
+                       (make-binding
+                        'syntax-parameter
+                        (cons (eval-local-transformer (expand x trans-r w mod) mod) #f)))
+                     #'(val ...)))))
+         (expand-body #'(e1 e2 ...)
+                      (source-wrap e w s mod)
+                      (extend-env names bindings r)
+                      w
+                      mod)))
+      (_ (syntax-violation 'syntax-parameterize "bad syntax"
+                           (source-wrap e w s mod)))))
+
   (set! syntax->datum (lambda (x) (strip x)))
   (set! $sc-dispatch (lambda (e p)
                       ;; $sc-dispatch expects an expression and a pattern.  If the expression
@@ -2193,6 +2232,7 @@
   (global-extend 'define-property 'define-property '())
   (global-extend 'module-ref '@ expand-public-ref)
   (global-extend 'module-ref '@@ expand-private-ref)
+  (global-extend 'core 'syntax-parameterize expand-syntax-parameterize)
 
   (set! identifier-binding 
     (lambda (id)
