@@ -179,7 +179,12 @@ CAPY_SRCS_SLS := \
 	lib/capy/args.sls \
 	lib/capy/session.sls \
 	lib/capy/deque.sls \
-	lib/capy/channel.sls
+	lib/capy/channel.sls \
+	lib/capy/generator.sls \
+	lib/capy/future.sls \
+	lib/capy/binary-heap.sls \
+	lib/capy/intrusive/dlist.sls \
+	lib/capy/intrusive/slist.sls \
 
 CAPY_SRCS_SCM := \
 	lib/capy/compiler/tree-il/terms.scm 	 \
