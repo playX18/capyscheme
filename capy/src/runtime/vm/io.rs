@@ -1356,7 +1356,7 @@ pub mod io_ops {
 
     #[scheme(name = "poller-wait")]
     /// Waits for at least one I/O event and returns a list of events.
-    pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<i32>) -> () {
+    pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> () {
         let k = make_closure_poller_wait_k(ctx, [nctx.retk, nctx.reth]);
         let operation = PollerOperation { poller, timeout };
         nctx.perform_returning_to(k.into(), operation)
@@ -1505,7 +1505,7 @@ pub const EEDGEONESHOT: i32 = 0x08;
 
 pub struct PollerOperation<'gc> {
     poller: Gc<'gc, Poller>,
-    timeout: Option<i32>,
+    timeout: Option<u64>,
 }
 
 unsafe impl<'gc> Trace for PollerOperation<'gc> {
@@ -1522,7 +1522,7 @@ impl<'gc> BlockingOperationWithReturn<'gc> for PollerOperation<'gc> {
     fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce() -> AfterBlockingOperationCallback> {
         let timeout = self
             .timeout
-            .map(|t| std::time::Duration::from_millis(t as u64));
+            .map(|t| std::time::Duration::from_micros(t as u64));
         let ptr = Gc::as_ptr(self.poller);
 
         Box::new(move || unsafe {
