@@ -2,6 +2,9 @@
 
 ### ⛰️  Features
 
+- *(capy)* Add intrusive lists (capy intrusive dlist) and (capy intrusive slist) - ([44a7ffd](https://codeberg.org/playXE/capy/commit/44a7ffd22f87510b091531acd5a645416083c0ce))
+- *(capy)* Add (capy future) and (capy generator) modules - ([60110a2](https://codeberg.org/playXE/capy/commit/60110a21329f7453f972514236810643f115b691))
+- *(capy)* Add binary heap in (capy binaryheap) - ([4844858](https://codeberg.org/playXE/capy/commit/4844858d39a7ae29ec1ee0f1eed9a55030742026))
 - *(capy)* Add deque and channel libraries - ([b199e73](https://codeberg.org/playXE/capy/commit/b199e732c7ec5a9d45545728d02ae262fef1f937))
 - *(capyc)* Add --nobacktrace flag - ([8185020](https://codeberg.org/playXE/capy/commit/8185020315558d2f940781dbe4b56c1b35f3a8c9))
 - *(core)* Propagate thread exceptions on join - ([8c0ce26](https://codeberg.org/playXE/capy/commit/8c0ce2610b26bee32c66b9b25e0fe0ff7f45049b))
@@ -9,6 +12,8 @@
 - *(core/foreign)* Use keyword arguments - ([30f707d](https://codeberg.org/playXE/capy/commit/30f707d8c5130011e44a91ae3803bcd3f0111d14))
 - *(ffi)* Add blocking calls support - ([bf23f49](https://codeberg.org/playXE/capy/commit/bf23f495b91866660d9a1896a644146b605e967f))
 - *(gc)* Pinning roots - ([bf8a1af](https://codeberg.org/playXE/capy/commit/bf8a1af2b2c3e4c0b49107eb382824dd835bacaa))
+- *(io)* Use microsecond timeouts for polling instead of milliseconds - ([eb50d27](https://codeberg.org/playXE/capy/commit/eb50d27ddb77aeaa364a5e55081ac8aeff86c5f1))
+- *(psyntax)* Syntax-parameterize - ([52a9d80](https://codeberg.org/playXE/capy/commit/52a9d8078a541ba4ade8b1869d59cb871cc066f9))
 - *(runtime)* Add Socket type - ([149a4d3](https://codeberg.org/playXE/capy/commit/149a4d35b08c931c5c35763f928aa1012a88a2db))
 - *(runtime)* Use self-hosted primitive expansion after bootstrap - ([82c55a7](https://codeberg.org/playXE/capy/commit/82c55a76aa03b9f6e9211c79245380458e143f6f))
 - *(srfi)* SRFI-214: Flexvectors - ([1a98b4e](https://codeberg.org/playXE/capy/commit/1a98b4e5ed496005f6d6a33ed3b81508cf5b5e0d))
@@ -42,6 +47,7 @@
 ### ⚙️ Miscellaneous Tasks
 
 - *(ci)* Always generate nightly changelog - ([5d63646](https://codeberg.org/playXE/capy/commit/5d6364616fe87f972984d8fa51f743991faf28d7))
+- Update Makefile - ([e3978bb](https://codeberg.org/playXE/capy/commit/e3978bbac2b4dbc192f1171e11ddbd4f94526142))
 - Remove unused dependencies - ([249e542](https://codeberg.org/playXE/capy/commit/249e542f366978883ae65785285fedd332775b59))
 - Document blocking operation - ([73548a9](https://codeberg.org/playXE/capy/commit/73548a9f96b865799b3d793d18970b0690050216))
 - Remove dead code in load.rs - ([59e032c](https://codeberg.org/playXE/capy/commit/59e032c9bd95a854a335be9226cc3d50eddd14df))
