@@ -294,7 +294,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_cell_raw(self) -> GCObject {
-        debug_assert!(self.is_cell());
+        // debug_assert!(self.is_cell());
         unsafe { self.desc.ptr() }
     }
 }
@@ -464,6 +464,10 @@ impl TypeCode8 {
     pub const POLL_EVENT: Self = Self(73);
 
     pub const SOCKET: Self = Self(74);
+
+    pub const CODE_BLOCK: Self = Self(75);
+
+    pub const CLOSURE2: Self = Self(76);
 
     pub const UNKNOWN: Self = Self(0xFF);
 }
@@ -732,118 +736,7 @@ unsafe impl Trace for GlobalValue {
 }
 
 impl<'gc> std::fmt::Display for Value<'gc> {
-    #[allow(clippy::collapsible_else_if)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        /*if let Some(number) = self.number() {
-            write!(f, "{number}")?;
-            return Ok(());
-        }
-        if self.is_immediate() {
-            if self.is_null() {
-                write!(f, "'()")
-            } else if self.is_void() {
-                write!(f, "#<void>")
-            } else if *self == Value::undefined() {
-                write!(f, "#<undefined>")
-            } else if self.is_unspecified() {
-                write!(f, "#<unspecified>")
-            } else if self.is_eof() {
-                write!(f, "#<eof-object>")
-            } else if self.is_bwp() {
-                write!(f, "#<bwp>")
-            } else if self.is_char() {
-                write!(f, "'{}'", self.char())
-            } else if self.is_bool() {
-                write!(f, "{}", self.as_bool())
-            } else if self.is_int32() {
-                write!(f, "{}", self.as_int32())
-            } else if self.is_flonum() {
-                write!(f, "{}", self.as_flonum())
-            } else {
-                write!(f, "{:x}", self.raw_i64())
-            }
-        } else {
-            if self.is::<Module>() {
-                write!(f, "#<module {}>", self.downcast::<Module>().name.get())
-            } else if self.is::<Pair>() {
-                write!(f, "(")?;
-                format_list_contents(f, *self)?;
-                write!(f, ")")
-            } else if self.is::<Str>() {
-                write!(f, "{}", self.downcast::<Str>())
-            } else if self.is::<Symbol>() {
-                write!(f, "{}", self.downcast::<Symbol>())
-            } else if self.is::<Vector>() {
-                let v = self.downcast::<Vector>();
-
-                write!(f, "#(")?;
-
-                for i in 0..v.len() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", v[i].get())?;
-                }
-                write!(f, ")")
-            } else if self.is::<Tuple>() {
-                let v = self.downcast::<Tuple>();
-
-                write!(f, "#t(")?;
-
-                for i in 0..v.len() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", v[i].get())?;
-                }
-                write!(f, ")")
-            } else if self.is::<ByteVector>() {
-                let bv = self.downcast::<ByteVector>();
-
-                write!(f, "#u8(")?;
-
-                for i in 0..bv.len() {
-                    if i > 0 {
-                        write!(f, " ")?;
-                    }
-                    write!(f, "{}", bv[i])?;
-                }
-                write!(f, ")")
-            } else if self.is::<Annotation>() {
-                let an = self.downcast::<Annotation>();
-
-                write!(
-                    f,
-                    "{} @ {}:{}:{}",
-                    an.expression,
-                    an.source,
-                    an.start_point.0 + 1,
-                    an.start_point.1
-                )
-            } else if self.is::<Closure>() {
-                let clo = self.downcast::<Closure>();
-                if clo.is_continuation() {
-                    write!(f, "#<continuation {:p}>", clo)
-                } else {
-                    write!(f, "#<closure {:p}>", clo)
-                }
-            } else if self.is::<Syntax>() {
-                let syn = self.downcast::<Syntax>();
-                write!(
-                    f,
-                    "#<syntax {} at {}, wrap={}>",
-                    syn.expr(),
-                    syn.source(),
-                    syn.wrap()
-                )
-            } else if self.is::<SyntaxTransformer>() {
-                let st = self.downcast::<SyntaxTransformer>();
-                write!(f, "#<syntax-transformer {}>", st.name())
-            } else {
-                write!(f, "{:p} with tc={}", self, self.typ16().bits())
-            }
-        }*/
-
         let mut formatter = print::ValueFmt::new(f);
 
         formatter.print(*self, false, usize::MAX)

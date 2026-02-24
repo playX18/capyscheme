@@ -1,6 +1,5 @@
 use super::SSABuilder;
 use crate::cps::term::Atom;
-use crate::expander::core::LVarRef;
 use crate::runtime::Context;
 use crate::runtime::State;
 use crate::runtime::modules::Variable;
@@ -15,20 +14,20 @@ use std::mem::offset_of;
 macro_rules! prim {
     ($($sname: literal => $name: ident ($ssa: ident, $args: ident, $h: ident) $b: block),*) => {
         pub struct PrimitiveLowerer<'gc> {
-            pub map: HashMap<Value<'gc>, for <'a, 'f>fn(&mut SSABuilder<'gc, 'a, 'f>, &[Atom<'gc>], LVarRef<'gc>) -> PrimValue>,
+            pub map: HashMap<Value<'gc>, for <'a, 'f>fn(&mut SSABuilder<'gc, 'a, 'f>, &[Atom<'gc>]) -> PrimValue>,
         }
 
 
         $(
 
-            pub fn $name<'gc_, 'a, 'f>($ssa: &mut SSABuilder<'gc_, 'a, 'f>, $args: &[Atom<'gc_>], $h: LVarRef<'gc_>) -> PrimValue $b
+            pub fn $name<'gc_, 'a, 'f>($ssa: &mut SSABuilder<'gc_, 'a, 'f>, $args: &[Atom<'gc_>]) -> PrimValue $b
         )*
 
         impl<'gc> PrimitiveLowerer<'gc> {
             pub fn new(ctx: Context<'gc>) -> Self {
                 let mut map = HashMap::new();
                 $(
-                    map.insert(Symbol::from_str(ctx, $sname).into(), $name as for <'a, 'f>fn(&mut SSABuilder<'gc, 'a, 'f>, &[Atom<'gc>], LVarRef<'gc>) -> PrimValue);
+                    map.insert(Symbol::from_str(ctx, $sname).into(), $name as for <'a, 'f>fn(&mut SSABuilder<'gc, 'a, 'f>, &[Atom<'gc>]) -> PrimValue);
                 )*
                 Self { map }
             }
@@ -1469,7 +1468,7 @@ prim!(
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
 
-        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup, &[ctx, module, name], handler))
+        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup, &[ctx, module, name]))
     },
 
     "lookup-bound" => lookup_bound(ssa, args, handler) {
@@ -1477,7 +1476,7 @@ prim!(
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
 
-        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound, &[ctx, module, name], handler))
+        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound, &[ctx, module, name]))
     },
 
     "lookup-bound-public" => lookup_bound_public(ssa, args, handler) {
@@ -1485,7 +1484,7 @@ prim!(
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
 
-        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound_public, &[ctx, module, name], handler))
+        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound_public, &[ctx, module, name]))
     },
 
     "lookup-bound-private" => lookup_bound_private(ssa, args, handler) {
@@ -1493,7 +1492,7 @@ prim!(
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
 
-        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound_private, &[ctx, module, name], handler))
+        PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound_private, &[ctx, module, name]))
     },
 
     "current-module" => current_module(ssa, args, _h) {
@@ -1626,7 +1625,6 @@ prim!(
         let result = ssa.handle_thunk_call_result(
             ssa.thunks.append,
             &[ctx, ls1, ls2],
-            _h
         );
 
         PrimValue::Value(result)
@@ -1680,7 +1678,7 @@ prim!(
     },
 
     "tuple" => tuple(ssa, args, _h) {
-        let PrimValue::Value(tup) = make_tuple(ssa, &[Atom::Constant(Value::new(args.len() as i32))], _h) else {
+        let PrimValue::Value(tup) = make_tuple(ssa, &[Atom::Constant(Value::new(args.len() as i32))]) else {
             panic!("tuple make-tuple failed")
         };
 
@@ -1704,7 +1702,6 @@ prim!(
         let result = ssa.handle_thunk_call_result(
             ssa.thunks.make_tuple,
             &[ctx, size, fill],
-            _h
         );
 
         PrimValue::Value(result)
@@ -1721,7 +1718,6 @@ prim!(
         let result = ssa.handle_thunk_call_result(
             ssa.thunks.make_vector,
             &[ctx, size, fill],
-            _h
         );
 
         PrimValue::Value(result)
@@ -1772,7 +1768,7 @@ prim!(
         {
             ssa.builder.func.layout.set_cold(slowpath);
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let result = ssa.handle_thunk_call_result(ssa.thunks.vector_ref, &[ctx, vec, ix], _h);
+            let result = ssa.handle_thunk_call_result(ssa.thunks.vector_ref, &[ctx, vec, ix]);
             ssa.builder.ins().jump(merge, &[BlockArg::Value(result)]);
         }
 
@@ -1800,7 +1796,7 @@ prim!(
             },
             |ssa, _| {
                 let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-                let result = ssa.handle_thunk_call_result(ssa.thunks.vector_ref, &[ctx, vec, ix], _h);
+                let result = ssa.handle_thunk_call_result(ssa.thunks.vector_ref, &[ctx, vec, ix]);
                 ssa.builder.ins().jump(merge, &[BlockArg::Value(result)]);
             }
         );
@@ -1835,7 +1831,7 @@ prim!(
             },
             |ssa, _| {
                 let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-                let _ = ssa.handle_thunk_call_result(ssa.thunks.vector_set, &[ctx, vec, ix, new_val], _h);
+                let _ = ssa.handle_thunk_call_result(ssa.thunks.vector_set, &[ctx, vec, ix, new_val]);
                 ssa.builder.ins().jump(merge, &[]);
             }
         );
@@ -1906,7 +1902,7 @@ prim!(
         let val = ssa.atom(args[0]);
 
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let check = ssa.handle_thunk_call_result(ssa.thunks.exact_integerp, &[ctx, val], _h);
+        let check = ssa.handle_thunk_call_result(ssa.thunks.exact_integerp, &[ctx, val]);
 
 
         PrimValue::Value(check)
@@ -1961,7 +1957,7 @@ prim!(
     "nan?" => is_nan(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.nanp, &[ctx, val], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.nanp, &[ctx, val]);
         PrimValue::Value(result)
     },
 
@@ -1970,14 +1966,14 @@ prim!(
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
 
-        let result = ssa.handle_thunk_call_result(ssa.thunks.ash, &[ctx, lhs, rhs], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.ash, &[ctx, lhs, rhs]);
         PrimValue::Value(result)
     },
     "logand" => logand(ssa, args, _h) {
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.logand, &[ctx, lhs, rhs], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.logand, &[ctx, lhs, rhs]);
         PrimValue::Value(result)
     },
 
@@ -1985,28 +1981,28 @@ prim!(
         let lhs = ssa.atom(args[0]);
         let rhs = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.logior, &[ctx, lhs, rhs], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.logior, &[ctx, lhs, rhs]);
         PrimValue::Value(result)
     },
 
     "lognot" => lognot(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.lognot, &[ctx, val], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.lognot, &[ctx, val]);
         PrimValue::Value(result)
     },
 
     "integer->char" => integer_to_char(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.integer_to_char, &[ctx, val], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.integer_to_char, &[ctx, val]);
         PrimValue::Value(result)
     },
 
     "char->integer" => char_to_integer(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.char_to_integer, &[ctx, val], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.char_to_integer, &[ctx, val]);
         PrimValue::Value(result)
     },
 
@@ -2014,14 +2010,14 @@ prim!(
         let base = ssa.atom(args[0]);
         let exp = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.expt, &[ctx, base, exp], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.expt, &[ctx, base, exp]);
         PrimValue::Value(result)
     },
 
     "abs" => abs(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.abs, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.abs, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
@@ -2035,7 +2031,7 @@ prim!(
             },
             |ssa, arg| {
                 let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-                ssa.handle_thunk_call_result(ssa.thunks.sqrt, &[ctx, arg], _h)
+                ssa.handle_thunk_call_result(ssa.thunks.sqrt, &[ctx, arg])
             }
         );
 
@@ -2045,7 +2041,7 @@ prim!(
     "cos" => cos(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.cos, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.cos, &[ctx, arg]);
 
         PrimValue::Value(result)
     },
@@ -2053,14 +2049,14 @@ prim!(
     "sin" => sin(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.sin, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.sin, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
     "tan" => tan(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.tan, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.tan, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
@@ -2069,25 +2065,25 @@ prim!(
         if args.len() == 2 {
             let arg2 = ssa.atom(args[1]);
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let result = ssa.handle_thunk_call_result(ssa.thunks.atan2, &[ctx, arg, arg2], _h);
+            let result = ssa.handle_thunk_call_result(ssa.thunks.atan2, &[ctx, arg, arg2]);
             return PrimValue::Value(result);
         }
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.atan, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.atan, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
     "asin" => asin(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.asin, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.asin, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
     "acos" => acos(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.acos, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.acos, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
@@ -2098,21 +2094,21 @@ prim!(
     "ceiling" => ceiling(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.ceiling, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.ceiling, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
     "floor" => floor(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.floor, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.floor, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
     "truncate" => truncate(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.truncate, &[ctx, arg], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.truncate, &[ctx, arg]);
         PrimValue::Value(result)
     },
 
@@ -2129,7 +2125,7 @@ prim!(
 
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            acc = emit_plus(ssa, acc, rhs, _h);
+            acc = emit_plus(ssa, acc, rhs);
         }
 
         PrimValue::Value(acc)
@@ -2143,14 +2139,14 @@ prim!(
         if args.len() == 1 {
             let val = ssa.atom(args[0]);
 
-            return PrimValue::Value(emit_negate(ssa, val, _h));
+            return PrimValue::Value(emit_negate(ssa, val));
         }
 
         let mut acc = ssa.atom(args[0]);
 
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            acc = emit_minus(ssa, acc, rhs, _h);
+            acc = emit_minus(ssa, acc, rhs);
         }
 
         PrimValue::Value(acc)
@@ -2169,7 +2165,7 @@ prim!(
 
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            acc = emit_times(ssa, acc, rhs, _h);
+            acc = emit_times(ssa, acc, rhs);
         }
 
         PrimValue::Value(acc)
@@ -2179,7 +2175,7 @@ prim!(
         let a = ssa.atom(args[0]);
         let b = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.number_div, &[ctx, a, b], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.number_div, &[ctx, a, b]);
         PrimValue::Value(result)
     },
 
@@ -2191,7 +2187,7 @@ prim!(
             // handle 2 args without introducing more blocks
             let lhs = ssa.atom(args[0]);
             let rhs = ssa.atom(args[1]);
-            let eq = emit_icmp(ssa, lhs, rhs, IntCC::Equal, _h);
+            let eq = emit_icmp(ssa, lhs, rhs, IntCC::Equal);
             return PrimValue::Comparison(eq);
         }
 
@@ -2200,7 +2196,7 @@ prim!(
 
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            let eq = emit_icmp(ssa, acc,rhs, IntCC::Equal, _h);
+            let eq = emit_icmp(ssa, acc,rhs, IntCC::Equal);
             if ssa.builder.func.dfg.value_type(eq) != ssa.builder.func.dfg.value_type(acc) {
                 unreachable!()
             }
@@ -2217,7 +2213,7 @@ prim!(
             // handle 2 args without introducing more blocks
             let lhs = ssa.atom(args[0]);
             let rhs = ssa.atom(args[1]);
-            let lt = emit_icmp(ssa, lhs, rhs, IntCC::SignedLessThan,  _h);
+            let lt = emit_icmp(ssa, lhs, rhs, IntCC::SignedLessThan);
             return PrimValue::Comparison(lt);
         }
 
@@ -2226,7 +2222,7 @@ prim!(
 
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            let lt = emit_icmp(ssa, acc,rhs, IntCC::SignedLessThan, _h);
+            let lt = emit_icmp(ssa, acc,rhs, IntCC::SignedLessThan);
             if ssa.builder.func.dfg.value_type(lt) != ssa.builder.func.dfg.value_type(acc) {
                 unreachable!()
             }
@@ -2243,7 +2239,7 @@ prim!(
             // handle 2 args without introducing more blocks
             let lhs = ssa.atom(args[0]);
             let rhs = ssa.atom(args[1]);
-            let gt = emit_icmp(ssa, lhs, rhs, IntCC::SignedGreaterThan,  _h);
+            let gt = emit_icmp(ssa, lhs, rhs, IntCC::SignedGreaterThan);
             assert_eq!(ssa.builder.func.dfg.value_type(gt), types::I8);
             return PrimValue::Comparison(gt);
         }
@@ -2253,7 +2249,7 @@ prim!(
 
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            let gt = emit_icmp(ssa, acc,rhs, IntCC::SignedGreaterThan, _h);
+            let gt = emit_icmp(ssa, acc,rhs, IntCC::SignedGreaterThan);
             if ssa.builder.func.dfg.value_type(gt) != ssa.builder.func.dfg.value_type(acc) {
                 unreachable!()
             }
@@ -2270,7 +2266,7 @@ prim!(
             // handle 2 args without introducing more blocks
             let lhs = ssa.atom(args[0]);
             let rhs = ssa.atom(args[1]);
-            let gte = emit_icmp(ssa, lhs, rhs, IntCC::SignedGreaterThanOrEqual,  _h);
+            let gte = emit_icmp(ssa, lhs, rhs, IntCC::SignedGreaterThanOrEqual);
             return PrimValue::Comparison(gte);
         }
 
@@ -2280,7 +2276,7 @@ prim!(
         ssa.builder.append_block_param(end, types::I8);
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            let gte = emit_icmp(ssa, acc,rhs, IntCC::SignedGreaterThanOrEqual, _h);
+            let gte = emit_icmp(ssa, acc,rhs, IntCC::SignedGreaterThanOrEqual);
             if ssa.builder.func.dfg.value_type(gte) != ssa.builder.func.dfg.value_type(acc) {
                 unreachable!()
             }
@@ -2298,8 +2294,8 @@ prim!(
             let lhs = ssa.atom(args[0]);
             let rhs = ssa.atom(args[1]);
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let lte = ssa.handle_thunk_call_result(ssa.thunks.number_le, &[ctx, lhs, rhs], _h);
-            //emit_icmp(ssa, lhs, rhs, IntCC::SignedLessThanOrEqual,  _h);
+            let lte = ssa.handle_thunk_call_result(ssa.thunks.number_le, &[ctx, lhs, rhs]);
+            //emit_icmp(ssa, lhs, rhs, IntCC::SignedLessThanOrEqual);
             return PrimValue::Value(lte);
         }
 
@@ -2308,7 +2304,7 @@ prim!(
 
         for arg in &args[1..] {
             let rhs = ssa.atom(*arg);
-            let lte = emit_icmp(ssa, acc,rhs, IntCC::SignedLessThanOrEqual, _h);
+            let lte = emit_icmp(ssa, acc,rhs, IntCC::SignedLessThanOrEqual);
             if ssa.builder.func.dfg.value_type(lte) != ssa.builder.func.dfg.value_type(acc) {
                 unreachable!("type mismatch in <=: {:?} vs {:?}, args: {:?}", ssa.builder.func.dfg.value_type(lte), ssa.builder.func.dfg.value_type(acc), args)
             }
@@ -2321,7 +2317,7 @@ prim!(
         let item = ssa.atom(args[0]);
         let list = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.memq, &[ctx, item, list], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.memq, &[ctx, item, list]);
         PrimValue::Value(result)
     },
 
@@ -2329,21 +2325,21 @@ prim!(
         let item = ssa.atom(args[0]);
         let list = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.memv, &[ctx, item, list], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.memv, &[ctx, item, list]);
         PrimValue::Value(result)
     },
 
     "exact->inexact" => exact_to_inexact(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.exact2inexact, &[ctx, val], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.exact2inexact, &[ctx, val]);
         PrimValue::Value(result)
     },
 
     "inexact->exact" => inexact_to_exact(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.inexact_to_exact, &[ctx, val], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.inexact_to_exact, &[ctx, val]);
         PrimValue::Value(result)
     },
 
@@ -2366,14 +2362,14 @@ prim!(
     "inexact?" => is_inexact(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let check = ssa.handle_thunk_call_result(ssa.thunks.inexactp, &[ctx, val], _h);
+        let check = ssa.handle_thunk_call_result(ssa.thunks.inexactp, &[ctx, val]);
         PrimValue::Value(check)
     },
 
     "exact?" => is_exact(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let check = ssa.handle_thunk_call_result(ssa.thunks.exactp, &[ctx, val], _h);
+        let check = ssa.handle_thunk_call_result(ssa.thunks.exactp, &[ctx, val]);
         PrimValue::Value(check)
     },
 
@@ -2396,7 +2392,7 @@ prim!(
         ssa.builder.switch_to_block(thunk_call);
         {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let val = ssa.handle_thunk_call_result(ssa.thunks.evenp, &[ctx, val], _h);
+            let val = ssa.handle_thunk_call_result(ssa.thunks.evenp, &[ctx, val]);
             let is_even = ssa.builder.ins().icmp_imm(IntCC::Equal, val, Value::new(true).bits() as i64);
             ssa.builder.ins().jump(join, &[BlockArg::Value(is_even)]);
         }
@@ -2425,7 +2421,7 @@ prim!(
         ssa.builder.switch_to_block(thunk_call);
         {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let val = ssa.handle_thunk_call_result(ssa.thunks.oddp, &[ctx, val], _h);
+            let val = ssa.handle_thunk_call_result(ssa.thunks.oddp, &[ctx, val]);
             let is_odd = ssa.builder.ins().icmp_imm(IntCC::Equal, val, Value::new(true).bits() as i64);
             ssa.builder.ins().jump(join, &[BlockArg::Value(is_odd)]);
         }
@@ -2457,7 +2453,7 @@ prim!(
         ssa.builder.switch_to_block(thunk_call);
         {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let val = ssa.handle_thunk_call_result(ssa.thunks.is_zero, &[ctx, val], _h);
+            let val = ssa.handle_thunk_call_result(ssa.thunks.is_zero, &[ctx, val]);
             let is_zero = ssa.builder.ins().icmp_imm(IntCC::Equal, val, Value::new(true).bits() as i64);
             ssa.builder.ins().jump(join, &[BlockArg::Value(is_zero)]);
         }
@@ -2509,7 +2505,7 @@ prim!(
     "tuple-size" => tuple_size(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let size = ssa.handle_thunk_call_result(ssa.thunks.tuple_size, &[ctx, arg], _h);
+        let size = ssa.handle_thunk_call_result(ssa.thunks.tuple_size, &[ctx, arg]);
         PrimValue::Value(size)
     },
 
@@ -2552,14 +2548,14 @@ prim!(
     "symbol->string" => symbol_to_string(ssa, args, _h) {
         let sym = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.symbol2string, &[ctx, sym], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.symbol2string, &[ctx, sym]);
         PrimValue::Value(result)
     },
 
     "string->symbol" => string_to_symbol(ssa, args, _h) {
         let str = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.string2symbol, &[ctx, str], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.string2symbol, &[ctx, str]);
         PrimValue::Value(result)
     },
 
@@ -2569,7 +2565,7 @@ prim!(
         let val = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
 
-        let result = ssa.handle_thunk_call_result(ssa.thunks.length, &[ctx, val], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.length, &[ctx, val]);
         PrimValue::Value(result)
     },
 
@@ -2578,7 +2574,7 @@ prim!(
         let a = ssa.atom(args[0]);
         let b = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.quotient, &[ctx, a, b], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.quotient, &[ctx, a, b]);
         PrimValue::Value(result)
     },
 
@@ -2586,7 +2582,7 @@ prim!(
         let a = ssa.atom(args[0]);
         let b = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.remainder, &[ctx, a, b], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.remainder, &[ctx, a, b]);
         PrimValue::Value(result)
     },
 
@@ -2594,7 +2590,7 @@ prim!(
         let a = ssa.atom(args[0]);
         let b = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let result = ssa.handle_thunk_call_result(ssa.thunks.modulo, &[ctx, a, b], _h);
+        let result = ssa.handle_thunk_call_result(ssa.thunks.modulo, &[ctx, a, b]);
         PrimValue::Value(result)
     },
 
@@ -2617,7 +2613,7 @@ prim!(
         let attachments = ssa.atom(args[0]);
 
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let res = ssa.handle_thunk_call_result(ssa.thunks.set_attachments, &[ctx, attachments], _h);
+        let res = ssa.handle_thunk_call_result(ssa.thunks.set_attachments, &[ctx, attachments]);
         PrimValue::Value(res)
     },
 
@@ -2643,6 +2639,12 @@ prim!(
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let result = ssa.builder.ins().call(ssa.thunks.make_syntax, &[ctx, exp, wrap, module, source, properties]);
         PrimValue::Value(ssa.builder.inst_results(result)[0])
+    },
+
+    "#%default-retk" => default_retk(ssa, _args, _h) {
+        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+        let result = ssa.builder.ins().call(ssa.thunks.default_retk, &[ctx]);
+        PrimValue::Value(ssa.builder.inst_results(result)[0])
     }
 );
 
@@ -2650,7 +2652,6 @@ fn emit_plus<'gc, 'a, 'f>(
     ssa: &mut SSABuilder<'gc, 'a, 'f>,
     a: ir::Value,
     b: ir::Value,
-    h: LVarRef<'gc>,
 ) -> ir::Value {
     ssa.inline_binary_op(
         a,
@@ -2667,7 +2668,7 @@ fn emit_plus<'gc, 'a, 'f>(
         },
         |ssa, lhs, rhs| {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            ssa.handle_thunk_call_result(ssa.thunks.number_plus, &[ctx, lhs, rhs], h)
+            ssa.handle_thunk_call_result(ssa.thunks.number_plus, &[ctx, lhs, rhs])
         },
     )
 }
@@ -2676,7 +2677,6 @@ fn emit_minus<'gc, 'a, 'f>(
     ssa: &mut SSABuilder<'gc, 'a, 'f>,
     a: ir::Value,
     b: ir::Value,
-    h: LVarRef<'gc>,
 ) -> ir::Value {
     ssa.inline_binary_op(
         a,
@@ -2694,16 +2694,12 @@ fn emit_minus<'gc, 'a, 'f>(
         },
         |ssa, lhs, rhs| {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            ssa.handle_thunk_call_result(ssa.thunks.number_minus, &[ctx, lhs, rhs], h)
+            ssa.handle_thunk_call_result(ssa.thunks.number_minus, &[ctx, lhs, rhs])
         },
     )
 }
 
-fn emit_negate<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
-    a: ir::Value,
-    h: LVarRef<'gc>,
-) -> ir::Value {
+fn emit_negate<'gc, 'a, 'f>(ssa: &mut SSABuilder<'gc, 'a, 'f>, a: ir::Value) -> ir::Value {
     ssa.inline_unary_op(
         a,
         |ssa, val| {
@@ -2720,7 +2716,7 @@ fn emit_negate<'gc, 'a, 'f>(
         },
         |ssa, val| {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            ssa.handle_thunk_call_result(ssa.thunks.negate, &[ctx, val], h)
+            ssa.handle_thunk_call_result(ssa.thunks.negate, &[ctx, val])
         },
     )
 }
@@ -2729,7 +2725,6 @@ fn emit_times<'gc, 'a, 'f>(
     ssa: &mut SSABuilder<'gc, 'a, 'f>,
     a: ir::Value,
     b: ir::Value,
-    h: LVarRef<'gc>,
 ) -> ir::Value {
     ssa.inline_binary_op(
         a,
@@ -2746,7 +2741,7 @@ fn emit_times<'gc, 'a, 'f>(
         },
         |ssa, lhs, rhs| {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            ssa.handle_thunk_call_result(ssa.thunks.number_times, &[ctx, lhs, rhs], h)
+            ssa.handle_thunk_call_result(ssa.thunks.number_times, &[ctx, lhs, rhs])
         },
     )
 }
@@ -2756,7 +2751,6 @@ fn emit_icmp<'gc, 'a, 'f>(
     a: ir::Value,
     b: ir::Value,
     cond: IntCC,
-    h: LVarRef<'gc>,
 ) -> ir::Value {
     let result = ssa.inline_cmp_op(
         a,
@@ -2776,7 +2770,7 @@ fn emit_icmp<'gc, 'a, 'f>(
                 _ => panic!("unsupported comparison"),
             };
 
-            let result = ssa.handle_thunk_call_result(thunk, &[ctx, a, b], h);
+            let result = ssa.handle_thunk_call_result(thunk, &[ctx, a, b]);
             ssa.to_boolean(result)
         },
     );

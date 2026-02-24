@@ -24,9 +24,8 @@ pub fn cps_func<'a, 'gc>(
     let old_meta = builder.current_meta;
     builder.current_meta = proc.meta;
     let return_cont = builder.fresh_variable("return");
-    let handler_cont = builder.fresh_variable("handler");
 
-    let body = convert(builder, proc.body, return_cont, handler_cont);
+    let body = convert(builder, proc.body, return_cont);
     builder.current_meta = old_meta;
     Gc::new(
         *builder.ctx,
@@ -38,7 +37,6 @@ pub fn cps_func<'a, 'gc>(
             binding,
             source: proc.source,
             return_cont,
-            handler_cont,
             variadic: proc.variadic,
             body: Lock::new(body),
             free_vars: Lock::new(None),
@@ -88,7 +86,6 @@ pub type PrimitiveTransformer = for<'a, 'gc, 'b> fn(
     op: Value<'gc>,
     params: &'b [Atom<'gc>],
     k: LVarRef<'gc>,
-    h: LVarRef<'gc>,
 ) -> Option<TermRef<'gc>>;
 
 pub struct PrimitiveTable<'gc> {
@@ -113,7 +110,7 @@ static PRIMTABLE: OnceLock<Global<crate::Rootable!(PrimitiveTable<'_>)>> = OnceL
 
 macro_rules! primitive_transformers {
     ($(
-        $prim: literal => $name : ident ($cps: ident, $src: ident, $op: ident, $args: ident, $k: ident, $h: ident) $b: block
+        $prim: literal => $name : ident ($cps: ident, $src: ident, $op: ident, $args: ident, $k: ident) $b: block
     )*) => {
         #[allow(dead_code, unused_mut, unused_variables)]
         fn make_primitive_table<'gc>(ctx: Context<'gc>) -> HashMap<Value<'gc>, PrimitiveTransformer> {
@@ -121,7 +118,7 @@ macro_rules! primitive_transformers {
             $(
                 table.insert(
                     Value::new(Symbol::from_str(ctx, $prim)),
-                    { fn $name<'gc>($cps: &mut CPSBuilder<'gc>, $src: Value<'gc>, $op: Value<'gc>, $args: &[Atom<'gc>], $k: LVarRef<'gc>, $h: LVarRef<'gc>) -> Option<TermRef<'gc>> {
+                    { fn $name<'gc>($cps: &mut CPSBuilder<'gc>, $src: Value<'gc>, $op: Value<'gc>, $args: &[Atom<'gc>], $k: LVarRef<'gc>) -> Option<TermRef<'gc>> {
                         $b
                     } $name },
                 );
@@ -148,10 +145,9 @@ impl<'gc> PrimitiveTable<'gc> {
         prim: Value<'gc>,
         args: &[Atom<'gc>],
         k: LVarRef<'gc>,
-        h: LVarRef<'gc>,
     ) -> Option<TermRef<'gc>> {
         if let Some(transformer) = self.table.get(&prim) {
-            transformer(cps, src, prim, args, k, h)
+            transformer(cps, src, prim, args, k)
         } else {
             None
         }
@@ -166,16 +162,12 @@ static_symbols!(
 
 /// Generate a call to `assertion-violation` in the `capy` module with the given
 /// message and irritants.
-///
-/// Note that call passes `h` both as return and handler continuation
-/// so there's no way that the call can return normally to the caller.
 pub fn assertion_violation<'gc>(
     cps: &mut CPSBuilder<'gc>,
     src: Value<'gc>,
     opc: Value<'gc>,
     message: &str,
     irritants: &[Atom<'gc>],
-    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     let assertion_violation = Value::new(Symbol::from_str(cps.ctx, "assertion-violation"));
     let module = list!(cps.ctx, Value::new(Symbol::from_str(cps.ctx, "capy")));
@@ -189,11 +181,14 @@ pub fn assertion_violation<'gc>(
             args.extend_from_slice(irritants);
 
             with_cps!(cps;
-                let value = #% "variable-ref" (h, var) @ src;
-                value(h, h,  args...) @ src
+                letk kretk (xretk) = with_cps!(cps;
+                    let value = #% "variable-ref" (var) @ src;
+                    value(xretk,  args...) @ src
+                );
+                let retk = #% "#%default-retk" () @ src;
+                continue kretk (retk)
             )
         },
-        h,
         module,
         assertion_violation,
         true,
@@ -207,7 +202,6 @@ pub fn ensure_string<'gc, F>(
     src: Value<'gc>,
     op: Value<'gc>,
     x: Atom<'gc>,
-    h: LVarRef<'gc>,
 
     have_length: F,
 ) -> TermRef<'gc>
@@ -215,20 +209,20 @@ where
     F: FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
 {
     with_cps!(cps;
-        letk cold (h) not_string () = assertion_violation(cps, src, op, "not a string", &[x], h);
-        letk (h) k () = with_cps!(cps;
-            let length = #% "%refptr" (h, x, offset_of!(Str, length) as i32) @ src;
+        letk cold not_string () = assertion_violation(cps, src, op, "not a string", &[x]);
+        letk k () = with_cps!(cps;
+            let length = #% "%refptr" (x, offset_of!(Str, length) as i32) @ src;
             # {
                 have_length(cps, Atom::Local(length))
             }
         );
-        letk (h) check_str_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (h, x) @ src;
-            let str_typecode = #% "u8=" (h, tc8, Value::new(TypeCode8::STRING.bits() as i32)) @ src;
+        letk check_str_typecode () = with_cps!(cps;
+            let tc8 = #% "%typecode8" (x) @ src;
+            let str_typecode = #% "u8=" (tc8, Value::new(TypeCode8::STRING.bits() as i32)) @ src;
             if str_typecode => k | not_string
         );
 
-        let is_immediate = #% "immediate?" (h, x) @ src;
+        let is_immediate = #% "immediate?" (x) @ src;
         if is_immediate => not_string | check_str_typecode
     )
 }
@@ -238,26 +232,25 @@ pub fn ensure_pair<'gc, F>(
     src: Value<'gc>,
     op: Value<'gc>,
     x: Atom<'gc>,
-    h: LVarRef<'gc>,
     have_pair: F,
 ) -> TermRef<'gc>
 where
     F: FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
 {
     with_cps!(cps;
-        letk cold (h) not_pair () = assertion_violation(cps, src, op, "not a pair", &[x], h);
-        letk (h) k () = with_cps!(cps;
+        letk cold not_pair () = assertion_violation(cps, src, op, "not a pair", &[x]);
+        letk k () = with_cps!(cps;
             # {
                 have_pair(cps, x)
             }
         );
-        letk (h) check_pair_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (h, x) @ src;
-            let pair_typecode = #% "u8=" (h, tc8, Value::new(TypeCode8::PAIR.bits() as i32)) @ src;
+        letk check_pair_typecode () = with_cps!(cps;
+            let tc8 = #% "%typecode8" (x) @ src;
+            let pair_typecode = #% "u8=" (tc8, Value::new(TypeCode8::PAIR.bits() as i32)) @ src;
             if pair_typecode => k | not_pair
         );
 
-        let is_immediate = #% "immediate?" (h, x) @ src;
+        let is_immediate = #% "immediate?" (x) @ src;
         if is_immediate => not_pair | check_pair_typecode
     )
 }
@@ -267,27 +260,26 @@ pub fn ensure_vector<'gc, F>(
     src: Value<'gc>,
     op: Value<'gc>,
     x: Atom<'gc>,
-    h: LVarRef<'gc>,
     have_vector: F,
 ) -> TermRef<'gc>
 where
     F: FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
 {
     with_cps!(cps;
-        letk cold (h) not_vector () = assertion_violation(cps, src, op, "not a vector", &[x], h);
-        letk (h) k () = with_cps!(cps;
-            let length = #% "%refptr" (h, x, offset_of!(Vector, length) as i32) @ src;
+        letk cold not_vector () = assertion_violation(cps, src, op, "not a vector", &[x]);
+        letk k () = with_cps!(cps;
+            let length = #% "%refptr" (x, offset_of!(Vector, length) as i32) @ src;
             # {
                 have_vector(cps, Atom::Local(length))
             }
         );
-        letk (h) check_vector_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (h, x) @ src;
-            let vector_typecode = #% "u8=" (h, tc8, Value::new(TypeCode8::VECTOR.bits() as i32)) @ src;
+        letk check_vector_typecode () = with_cps!(cps;
+            let tc8 = #% "%typecode8" (x) @ src;
+            let vector_typecode = #% "u8=" (tc8, Value::new(TypeCode8::VECTOR.bits() as i32)) @ src;
             if vector_typecode => k | not_vector
         );
 
-        let is_immediate = #% "immediate?" (h, x) @ src;
+        let is_immediate = #% "immediate?" (x) @ src;
         if is_immediate => not_vector | check_vector_typecode
     )
 }
@@ -297,26 +289,25 @@ fn ensure_variable<'gc, F>(
     src: Value<'gc>,
     op: Value<'gc>,
     x: Atom<'gc>,
-    h: LVarRef<'gc>,
     have_variable: F,
 ) -> TermRef<'gc>
 where
     F: FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
 {
     with_cps!(cps;
-        letk cold (h) not_variable () = assertion_violation(cps, src, op, &format!("not a variable {}", not_variable.name), &[x], h);
-        letk (h) k () = with_cps!(cps;
+        letk cold not_variable () = assertion_violation(cps, src, op, &format!("not a variable {}", not_variable.name), &[x]);
+        letk k () = with_cps!(cps;
             # {
                 have_variable(cps, x)
             }
         );
-        letk (h) check_variable_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (h, x) @ src;
-            let variable_typecode = #% "u8=" (h, tc8, Value::new(TypeCode8::VARIABLE.bits() as i32)) @ src;
+        letk check_variable_typecode () = with_cps!(cps;
+            let tc8 = #% "%typecode8" (x) @ src;
+            let variable_typecode = #% "u8=" (tc8, Value::new(TypeCode8::VARIABLE.bits() as i32)) @ src;
             if variable_typecode => k | not_variable
         );
 
-        let is_immediate = #% "immediate?" (h, x) @ src;
+        let is_immediate = #% "immediate?" (x) @ src;
         if is_immediate => not_variable | check_variable_typecode
     )
 }
@@ -333,25 +324,25 @@ pub fn fixnum_in_range_to_usize<'gc>(
     have_index_in_range: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
 ) -> TermRef<'gc> {
     with_cps!(cps;
-        letk (h) bound (uidx) = have_index_in_range(cps, Atom::Local(uidx));
-        letk (h) boundlen (fix) = with_cps!(cps;
-            let uidx = #% "s32->u64" (h, fix) @ src;
-            let in_range = #% "u64<=" (h, uidx, ulen) @ src;
+        letk bound (uidx) = have_index_in_range(cps, Atom::Local(uidx));
+        letk boundlen (fix) = with_cps!(cps;
+            let uidx = #% "s32->u64" (fix) @ src;
+            let in_range = #% "u64<=" (uidx, ulen) @ src;
             if in_range => bound (uidx) | h()
         );
-        letk (h) untag () = with_cps!(cps;
-            let fix = #% "untag-fixnum" (h, idx) @ src;
-            let below0 = #% "s32<" (h, fix, Value::new(0)) @ src;
+        letk untag () = with_cps!(cps;
+            let fix = #% "untag-fixnum" (idx) @ src;
+            let below0 = #% "s32<" (fix, Value::new(0)) @ src;
             if below0 => h() | boundlen(fix)
         );
 
-        let is_fixnum = #% "fixnum?" (h, idx) @ src;
+        let is_fixnum = #% "fixnum?" (idx) @ src;
         if is_fixnum =>  untag | h
     )
 }
 
 primitive_transformers!(
-    "string-length" => string_length(cps, src, op, args, k, h) {
+    "string-length" => string_length(cps, src, op, args, k) {
         let x = args.first().copied()?;
         if let Atom::Constant(val) = x
             && val.is::<Str>() {
@@ -360,15 +351,15 @@ primitive_transformers!(
             );
             return Some(x);
         }
-        Some(ensure_string(cps, src, op, x, h, |cps, len| {
+        Some(ensure_string(cps, src, op, x, |cps, len| {
             with_cps!(cps;
-                let vlen = #% "usize->value" (h, len) @ src;
+                let vlen = #% "usize->value" (len) @ src;
                 continue k (vlen)
             )
         }))
     }
 
-    "vector-length" => vector_length(cps, src, op, args, k, h) {
+    "vector-length" => vector_length(cps, src, op, args, k) {
         let x = args.first().copied()?;
         if let Atom::Constant(val) = x
             && val.is::<Vector>() {
@@ -377,9 +368,9 @@ primitive_transformers!(
             );
             return Some(x);
         }
-        Some(ensure_vector(cps, src, op, x, h, |cps, len| {
+        Some(ensure_vector(cps, src, op, x, |cps, len| {
             with_cps!(cps;
-                let vlen = #% "usize->value" (h, len) @ src;
+                let vlen = #% "usize->value" (len) @ src;
                 continue k (vlen)
             )
         }))
@@ -387,92 +378,92 @@ primitive_transformers!(
 
 
 
-    "car" => car(cps, src, op, args, k, h) {
+    "car" => car(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args, h));
+            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
 
-        Some(ensure_pair(cps, src, op, x, h, |cps, pair| {
+        Some(ensure_pair(cps, src, op, x, |cps, pair| {
             with_cps!(cps;
-                let car = #% "car" (h, pair) @ src;
+                let car = #% "car" (pair) @ src;
                 continue k (car)
             )
         }))
     }
 
-    "cdr" => cdr(cps, src, op, args, k, h) {
+    "cdr" => cdr(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args, h));
+            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
 
-        Some(ensure_pair(cps, src, op, x, h, |cps, pair| {
+        Some(ensure_pair(cps, src, op, x, |cps, pair| {
             with_cps!(cps;
-                let cdr = #% "cdr" (h, pair) @ src;
+                let cdr = #% "cdr" (pair) @ src;
                 continue k (cdr) @ src
             )
         }))
     }
 
-    "set-car!" => set_car(cps, src, op, args, k, h) {
+    "set-car!" => set_car(cps, src, op, args, k) {
         let Some((pair, value)) = (args.len() == 2).then(|| (args[0], args[1])) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args, h));
+            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
         let undef = Atom::Constant(Value::undefined());
-        Some(ensure_pair(cps, src, op, pair, h, |cps, pair| {
+        Some(ensure_pair(cps, src, op, pair, |cps, pair| {
             with_cps!(cps;
-                let _v = #% "set-car!" (h, pair, value) @ src;
+                let _v = #% "set-car!" (pair, value) @ src;
                 continue k (undef) @ src
             )
         }))
     }
 
-    "set-cdr!" => set_cdr(cps, src, op, args, k, h) {
+    "set-cdr!" => set_cdr(cps, src, op, args, k) {
         let Some((pair, value)) = (args.len() == 2).then(|| (args[0], args[1])) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args, h));
+            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
         let undef = Atom::Constant(Value::undefined());
-        Some(ensure_pair(cps, src, op, pair, h, |cps, pair| {
+        Some(ensure_pair(cps, src, op, pair, |cps, pair| {
             with_cps!(cps;
-                let _v = #% "set-cdr!" (h, pair, value) @ src;
+                let _v = #% "set-cdr!" (pair, value) @ src;
                 continue k (undef) @ src
             )
         }))
     }
 
-    "variable-ref" => variable_ref(cps, src, op, args, k, h) {
+    "variable-ref" => variable_ref(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args, h));
+            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
 
-        Some(ensure_variable(cps, src, op, x, h, |cps, var| {
+        Some(ensure_variable(cps, src, op, x, |cps, var| {
             with_cps!(cps;
-                let value = #% "variable-ref" (h, var) @ src;
+                let value = #% "variable-ref" (var) @ src;
                 continue k (value) @ src
             )
         }))
     }
 
-    "variable-set!" => variable_set(cps, src, op, args, k, h) {
+    "variable-set!" => variable_set(cps, src, op, args, k) {
         let Some((var, value)) = (args.len() == 2).then(|| (args[0], args[1])) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args, h));
+            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
         let undef = Atom::Constant(Value::undefined());
-        Some(ensure_variable(cps, src, op, var, h, |cps, var| {
+        Some(ensure_variable(cps, src, op, var, |cps, var| {
             with_cps!(cps;
-                let _v = #% "variable-set!" (h, var, value) @ src;
+                let _v = #% "variable-set!" (var, value) @ src;
                 continue k (undef) @ src
             )
         }))
     }
 
-    "variable-bound?" => variable_bound(cps, src, op, args, k, h) {
+    "variable-bound?" => variable_bound(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args, h));
+            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
 
-        Some(ensure_variable(cps, src, op, x, h, |cps, var| {
+        Some(ensure_variable(cps, src, op, x, |cps, var| {
             with_cps!(cps;
-                let bound = #% "variable-bound?" (h, var) @ src;
+                let bound = #% "variable-bound?" (var) @ src;
                 continue k (bound) @ src
             )
         }))
@@ -486,20 +477,19 @@ pub fn toplevel_box<'gc>(
     name: Value<'gc>,
     bound: bool,
     have_var: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
-    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     match cps.current_topbox_scope {
         None => {
             if bound {
                 with_cps!(cps;
-                    let module = #% "current-module" (h,) @ src;
-                    let variable = #% "lookup-bound" (h, Atom::Local(module), Atom::Constant(name)) @ src;
+                    let module = #% "current-module" () @ src;
+                    let variable = #% "lookup-bound" (Atom::Local(module), Atom::Constant(name)) @ src;
                     # have_var(cps, Atom::Local(variable))
                 )
             } else {
                 with_cps!(cps;
-                    let module = #% "current-module" (h,) @ src;
-                    let variable = #% "lookup" (h, Atom::Local(module), Atom::Constant(name)) @ src;
+                    let module = #% "current-module" () @ src;
+                    let variable = #% "lookup" (Atom::Local(module), Atom::Constant(name)) @ src;
                     # have_var(cps, Atom::Local(variable))
                 )
             }
@@ -507,8 +497,8 @@ pub fn toplevel_box<'gc>(
 
         Some(scope) => {
             with_cps!(cps;
-                letk (h) kbox (box_) = have_var(cps, Atom::Local(box_));
-                # cached_toplevel_box(cps, kbox, h, src, (scope as i32).into(), name, bound)
+                letk kbox (box_) = have_var(cps, Atom::Local(box_));
+                # cached_toplevel_box(cps, kbox, src, (scope as i32).into(), name, bound)
             )
         }
     }
@@ -517,7 +507,6 @@ pub fn toplevel_box<'gc>(
 pub fn module_box<'gc>(
     cps: &mut CPSBuilder<'gc>,
     val_proc: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
-    h: LVarRef<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
     public: bool,
@@ -526,8 +515,8 @@ pub fn module_box<'gc>(
 ) -> TermRef<'gc> {
     let _ = bound;
     with_cps!(cps;
-        letk (h) kbox (var) = val_proc(cps, Atom::Local(var));
-        # cached_module_box(cps, kbox, h, src, module, name, public,)
+        letk kbox (var) = val_proc(cps, Atom::Local(var));
+        # cached_module_box(cps, kbox, src, module, name, public,)
     )
 }
 
@@ -536,18 +525,16 @@ pub fn capture_toplevel_scope<'gc>(
     src: Value<'gc>,
     scope_id: u32,
     fk: impl FnOnce(&mut CPSBuilder<'gc>) -> TermRef<'gc>,
-    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     with_cps!(cps;
-        let module = #% "current-module" (h,) @ src;
-        # cache_current_module(cps, fk, h, src, Atom::Constant(Value::new(scope_id as i32)), Atom::Local(module))
+        let module = #% "current-module" () @ src;
+        # cache_current_module(cps, fk, src, Atom::Constant(Value::new(scope_id as i32)), Atom::Local(module))
     )
 }
 
 pub fn cached_toplevel_box<'gc>(
     cps: &mut CPSBuilder<'gc>,
     k: LVarRef<'gc>,
-    h: LVarRef<'gc>,
     src: Value<'gc>,
     scope: Value<'gc>,
     name: Value<'gc>,
@@ -555,20 +542,20 @@ pub fn cached_toplevel_box<'gc>(
 ) -> TermRef<'gc> {
     let cache_key = Value::cons(cps.ctx, scope, name);
     with_cps!(cps;
-        let cached = #% "cache-ref" (h, cache_key) @ src;
-        let is_heap_obj = #% "heap-object?" (h, cached) @ src;
+        let cached = #% "cache-ref" (cache_key) @ src;
+        let is_heap_obj = #% "heap-object?" (cached) @ src;
         // do not inline results of the cache lookup, this can blow up the code size
-        letk noinline (h) merge (cached) = with_cps!(cps; continue k (cached));
-        letk cold (h) kinit () = with_cps!(cps;
-            let module = #%"cache-ref" (h, Atom::Constant(scope)) @ src;
-            # reify_lookup(cps, src, module, name, bound, h, |cps, var| {
+        letk noinline merge (cached) = with_cps!(cps; continue k (cached));
+        letk cold kinit () = with_cps!(cps;
+            let module = #%"cache-ref" (Atom::Constant(scope)) @ src;
+            # reify_lookup(cps, src, module, name, bound, |cps, var| {
                 with_cps!(cps;
-                    let _k = #%"cache-set!"(h, cache_key, var) @ src;
+                    let _k = #%"cache-set!"(cache_key, var) @ src;
                     continue merge(var)
                 )
             })
         );
-        letk (h) kok () = with_cps!(cps; continue merge (cached));
+        letk kok () = with_cps!(cps; continue merge (cached));
         if is_heap_obj => kok | kinit
     )
 }
@@ -576,7 +563,6 @@ pub fn cached_toplevel_box<'gc>(
 pub fn cached_module_box<'gc>(
     cps: &mut CPSBuilder<'gc>,
     k: LVarRef<'gc>,
-    h: LVarRef<'gc>,
     src: Value<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
@@ -585,25 +571,25 @@ pub fn cached_module_box<'gc>(
     let cache_key = Value::cons(cps.ctx, module, Value::cons(cps.ctx, name, public.into()));
 
     with_cps!(cps;
-        let cache_entry = #% "cache-ref" (h, cache_key) @ src;
-        let is_heap_obj = #% "heap-object?" (h, cache_entry) @ src;
+        let cache_entry = #% "cache-ref" (cache_key) @ src;
+        let is_heap_obj = #% "heap-object?" (cache_entry) @ src;
         // do not inline results of the cache lookup, this can blow up the code size
-        letk noinline (h) merge (cached) = with_cps!(cps; continue k (cached));
-        letk cold (h) kinit () = if public {
+        letk noinline merge (cached) = with_cps!(cps; continue k (cached));
+        letk cold kinit () = if public {
             with_cps!(cps;
-                let var = #% "lookup-bound-public" (h, Atom::Constant(module), Atom::Constant(name)) @ src;
-                let _k = #% "cache-set!" (h, cache_key, Atom::Local(var)) @ src;
+                let var = #% "lookup-bound-public" (Atom::Constant(module), Atom::Constant(name)) @ src;
+                let _k = #% "cache-set!" (cache_key, Atom::Local(var)) @ src;
                 continue merge (Atom::Local(var))
             )
         } else {
             with_cps!(cps;
-                let var = #% "lookup-bound-private" (h, Atom::Constant(module), Atom::Constant(name)) @ src;
-                let _k = #% "cache-set!" (h, cache_key, Atom::Local(var)) @ src;
+                let var = #% "lookup-bound-private" (Atom::Constant(module), Atom::Constant(name)) @ src;
+                let _k = #% "cache-set!" (cache_key, Atom::Local(var)) @ src;
                 continue merge (Atom::Local(var))
             )
         };
 
-        letk (h) kok () = with_cps!(cps; continue merge (cache_entry));
+        letk kok () = with_cps!(cps; continue merge (cache_entry));
 
         if is_heap_obj => kok | kinit
     )
@@ -612,28 +598,26 @@ pub fn cached_module_box<'gc>(
 pub fn cached_module_boxk<'gc>(
     cps: &mut CPSBuilder<'gc>,
     fk: impl FnOnce(&mut CPSBuilder<'gc>, LVarRef<'gc>) -> TermRef<'gc>,
-    h: LVarRef<'gc>,
     src: Value<'gc>,
     module: Value<'gc>,
     name: Value<'gc>,
     public: bool,
 ) -> TermRef<'gc> {
     with_cps!(cps;
-        letk (h) kbox (var) = fk(cps, var);
-        # cached_toplevel_box(cps, kbox, h, src, module, name, public)
+        letk kbox (var) = fk(cps, var);
+        # cached_toplevel_box(cps, kbox, src, module, name, public)
     )
 }
 
 pub fn cache_current_module<'gc>(
     cps: &mut CPSBuilder<'gc>,
     fk: impl FnOnce(&mut CPSBuilder<'gc>) -> TermRef<'gc>,
-    h: LVarRef<'gc>,
     src: Value<'gc>,
     scope: Atom<'gc>,
     module: Atom<'gc>,
 ) -> TermRef<'gc> {
     with_cps!(cps;
-        let _k = #% "cache-set!" (h, scope, module) @ src;
+        let _k = #% "cache-set!" (scope, module) @ src;
         # fk(cps)
     )
 }
@@ -644,17 +628,16 @@ pub fn reify_lookup<'gc>(
     mod_var: LVarRef<'gc>,
     name: Value<'gc>,
     assert_bound: bool,
-    h: LVarRef<'gc>,
     have_var: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
 ) -> TermRef<'gc> {
     if assert_bound {
         with_cps!(cps;
-            let variable = #%"lookup-bound" (h, Atom::Local(mod_var), Atom::Constant(name)) @ src;
+            let variable = #%"lookup-bound" (Atom::Local(mod_var), Atom::Constant(name)) @ src;
             #have_var(cps, Atom::Local(variable))
         )
     } else {
         with_cps!(cps;
-            let variable = #%"lookup" (h, Atom::Local(mod_var), Atom::Constant(name)) @ src;
+            let variable = #%"lookup" (Atom::Local(mod_var), Atom::Constant(name)) @ src;
             #have_var(cps, Atom::Local(variable))
         )
     }
@@ -663,13 +646,12 @@ pub fn reify_lookup<'gc>(
 pub fn reify_resolve_module<'gc>(
     cps: &mut CPSBuilder<'gc>,
     k: LVarRef<'gc>,
-    h: LVarRef<'gc>,
     src: Value<'gc>,
     module: Value<'gc>,
     public: bool,
 ) -> TermRef<'gc> {
     with_cps!(cps;
-        let resolved = #% "resolve-module" (h, Atom::Constant(public.into()), Atom::Constant(module)) @ src;
+        let resolved = #% "resolve-module" (Atom::Constant(public.into()), Atom::Constant(module)) @ src;
         continue k (resolved)
     )
 }
@@ -703,7 +685,6 @@ pub fn convert_arg<'gc, 'a>(
     cps: &mut CPSBuilder<'gc>,
     exp: CoreTermRef<'gc>,
     k: Box<dyn FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc> + 'a>,
-    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     let src = exp.source();
     match exp.kind {
@@ -711,17 +692,17 @@ pub fn convert_arg<'gc, 'a>(
 
         _ if is_single_valued(exp) => {
             with_cps!(cps;
-                letk (h) karg (arg) @ src = k(cps, Atom::Local(arg));
+                letk karg (arg) @ src = k(cps, Atom::Local(arg));
                 # {
-                    convert(cps, exp, karg, h, )
+                    convert(cps, exp, karg, )
             }
             )
         }
 
         _ => {
             with_cps!(cps;
-                letk (h) karg (arg & rest) @ src = k(cps, Atom::Local(arg));
-                # convert(cps, exp, karg, h, )
+                letk karg (arg & rest) @ src = k(cps, Atom::Local(arg));
+                # convert(cps, exp, karg, )
             )
         }
     }
@@ -731,7 +712,6 @@ pub fn convert_args<'gc, 'a>(
     cps: &mut CPSBuilder<'gc>,
     exps: &'a [CoreTermRef<'gc>],
     fk: Box<dyn FnOnce(&mut CPSBuilder<'gc>, Vec<Atom<'gc>>) -> TermRef<'gc> + 'a>,
-    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     if exps.is_empty() {
         return fk(cps, Vec::new());
@@ -753,10 +733,8 @@ pub fn convert_args<'gc, 'a>(
                     all_args.append(&mut args);
                     fk(cps, all_args)
                 }),
-                h,
             )
         }),
-        h,
     )
 }
 
@@ -764,7 +742,6 @@ pub fn convert<'gc>(
     cps: &mut CPSBuilder<'gc>,
     exp: CoreTermRef<'gc>,
     k: LVarRef<'gc>,
-    h: LVarRef<'gc>,
 ) -> TermRef<'gc> {
     let src = exp.source();
 
@@ -777,7 +754,6 @@ pub fn convert<'gc>(
                     continue k args ...
                 )
             }),
-            h,
         ),
 
         TermKind::If(test, consequent, alternate) => convert_arg(
@@ -785,12 +761,11 @@ pub fn convert<'gc>(
             *test,
             Box::new(move |cps, test| {
                 with_cps!(cps;
-                    letk (h) kconseq () = convert(cps, *consequent, k, h,);
-                    letk (h) kalt () = convert(cps, *alternate, k, h,);
+                    letk kconseq () = convert(cps, *consequent, k,);
+                    letk kalt () = convert(cps, *alternate, k,);
                     if test => kconseq | kalt
                 )
             }),
-            h,
         ),
 
         TermKind::LSet(..) => unreachable!(),
@@ -813,11 +788,10 @@ pub fn convert<'gc>(
                 cps,
                 |cps, var| {
                     with_cps!(cps;
-                        let val = #% "variable-ref" (h, var) @ src;
+                        let val = #% "variable-ref" (var) @ src;
                         continue k(Atom::Local(val))
                     )
                 },
-                h,
                 module,
                 *name,
                 true,
@@ -826,29 +800,21 @@ pub fn convert<'gc>(
             )
         }
 
-        TermKind::ToplevelRef(_, name) => toplevel_box(
-            cps,
-            src,
-            *name,
-            true,
-            |cps, var| {
-                with_cps!(cps;
-                    let val = #% "variable-ref" (h, var) @ src;
-                    continue k(Atom::Local(val))
-                )
-            },
-            h,
-        ),
+        TermKind::ToplevelRef(_, name) => toplevel_box(cps, src, *name, true, |cps, var| {
+            with_cps!(cps;
+                let val = #% "variable-ref" (var) @ src;
+                continue k(Atom::Local(val))
+            )
+        }),
 
         TermKind::ModuleRef(module, name, public) => module_box(
             cps,
             |cps, var| {
                 with_cps!(cps;
-                    let val = #% "variable-ref" (h, var) @ src;
+                    let val = #% "variable-ref" (var) @ src;
                     continue k(Atom::Local(val))
                 )
             },
-            h,
             *module,
             *name,
             *public,
@@ -860,21 +826,13 @@ pub fn convert<'gc>(
             cps,
             *exp,
             Box::new(move |cps, atom| {
-                toplevel_box(
-                    cps,
-                    src,
-                    *name,
-                    false,
-                    |cps, var| {
-                        with_cps!(cps;
-                            let _val = #% "variable-set!" (h, var, atom) @ src;
-                            continue k(_val) @ src
-                        )
-                    },
-                    h,
-                )
+                toplevel_box(cps, src, *name, false, |cps, var| {
+                    with_cps!(cps;
+                        let _val = #% "variable-set!" (var, atom) @ src;
+                        continue k(_val) @ src
+                    )
+                })
             }),
-            h,
         ),
 
         TermKind::ModuleSet(module, name, public, exp) => convert_arg(
@@ -885,11 +843,10 @@ pub fn convert<'gc>(
                     cps,
                     |cps, var| {
                         with_cps!(cps;
-                            let _val = #% "variable-set!" (h, var, exp) @ src;
+                            let _val = #% "variable-set!" (var, exp) @ src;
                             continue k(_val) @ src
                         )
                     },
-                    h,
                     *module,
                     *name,
                     *public,
@@ -897,7 +854,6 @@ pub fn convert<'gc>(
                     src,
                 )
             }),
-            h,
         ),
 
         TermKind::Proc(proc) => {
@@ -917,17 +873,11 @@ pub fn convert<'gc>(
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
             let id = cps.current_topbox_scope.unwrap();
-            capture_toplevel_scope(
-                cps,
-                src,
-                id,
-                |cps| {
-                    let form = convert(cps, exp, k, h);
-                    cps.current_topbox_scope = prev;
-                    form
-                },
-                h,
-            )
+            capture_toplevel_scope(cps, src, id, |cps| {
+                let form = convert(cps, exp, k);
+                cps.current_topbox_scope = prev;
+                form
+            })
         }
 
         TermKind::Define(_module, name, exp) => convert_arg(
@@ -935,11 +885,10 @@ pub fn convert<'gc>(
             *exp,
             Box::new(move |cps, atom| {
                 with_cps! {cps;
-                    let _rv = #% "define" (h, Atom::Constant(*name), atom) @ src;
+                    let _rv = #% "define" (Atom::Constant(*name), atom) @ src;
                      continue k (_rv) @ src
                 }
             }),
-            h,
         ),
 
         TermKind::Call(proc, args) => convert_arg(
@@ -951,13 +900,11 @@ pub fn convert<'gc>(
                     args,
                     Box::new(move |cps, args| {
                         with_cps!(cps;
-                            proc(k, h, args ...) @ src
+                            proc(k, args ...) @ src
                         )
                     }),
-                    h,
                 )
             }),
-            h,
         ),
 
         TermKind::PrimCall(prim, args) => {
@@ -967,17 +914,16 @@ pub fn convert<'gc>(
                 args,
                 Box::new(move |cps, args| {
                     if let Some(term) =
-                        get_primitive_table(cps.ctx).try_expand(cps, src, prim, &args, k, h)
+                        get_primitive_table(cps.ctx).try_expand(cps, src, prim, &args, k)
                     {
                         term
                     } else {
                         with_cps!(cps;
-                            let atom = #% prim (h) args ... @ src;
+                            let atom = #% prim args ... @ src;
                             continue k (atom) @ src
                         )
                     }
                 }),
-                h,
             )
         }
 
@@ -987,19 +933,19 @@ pub fn convert<'gc>(
                 LetStyle::LetRec | LetStyle::LetRecStar | LetStyle::LetStar
             ));
 
-            let mut body = convert(cps, let_.body, k, h);
+            let mut body = convert(cps, let_.body, k);
 
             for (binding, expr) in let_.lhs.iter().zip(let_.rhs.iter()) {
                 let single = Array::from_slice(*cps.ctx, &[*binding]);
                 if is_single_valued(*expr) {
                     body = with_cps!(cps;
-                        letk (h) r#let (single...) @ src = body;
-                        # convert(cps, *expr, r#let, h)
+                        letk r#let (single...) @ src = body;
+                        # convert(cps, *expr, r#let,)
                     );
                 } else {
                     body = with_cps!(cps;
-                        letk (h) r#let (single... & rest) @ src = body;
-                        # convert(cps, *expr, r#let, h)
+                        letk r#let (single... & rest) @ src = body;
+                        # convert(cps, *expr, r#let,)
                     );
                 }
             }
@@ -1010,13 +956,13 @@ pub fn convert<'gc>(
         TermKind::Seq(head, etail) => {
             if is_zero_valued(*head) {
                 with_cps!(cps;
-                    letk (h) ktail (&vals) = convert(cps, *etail, k, h, );
-                    # convert(cps, *head, ktail, h)
+                    letk ktail (&vals) = convert(cps, *etail, k, );
+                    # convert(cps, *head, ktail,)
                 )
             } else {
                 with_cps!(cps;
-                    letk (h) ktail (&vals) = convert(cps, *etail, k, h);
-                    # convert(cps, *head, ktail, h)
+                    letk ktail (&vals) = convert(cps, *etail, k,);
+                    # convert(cps, *head, ktail,)
                 )
             }
         }
@@ -1033,7 +979,7 @@ pub fn convert<'gc>(
                     })
                     .collect::<Vec<_>>();
 
-                let body = convert(cps, fix.body, k, h);
+                let body = convert(cps, fix.body, k);
 
                 return Gc::new(
                     *cps.ctx,
@@ -1044,17 +990,11 @@ pub fn convert<'gc>(
             let prev = cps.current_topbox_scope;
             cps.enter_scope();
             let id = cps.current_topbox_scope.unwrap();
-            capture_toplevel_scope(
-                cps,
-                src,
-                id,
-                |cps| {
-                    let form = convert(cps, exp, k, h);
-                    cps.current_topbox_scope = prev;
-                    form
-                },
-                h,
-            )
+            capture_toplevel_scope(cps, src, id, |cps| {
+                let form = convert(cps, exp, k);
+                cps.current_topbox_scope = prev;
+                form
+            })
         }
 
         TermKind::Receive(vars, variadic, producer, consumer) => {
@@ -1068,16 +1008,15 @@ pub fn convert<'gc>(
                 variadic: *variadic,
                 noinline: false,
 
-                body: Lock::new(convert(cps, *consumer, k, h)),
+                body: Lock::new(convert(cps, *consumer, k)),
 
                 source: src,
                 free_vars: Lock::new(None),
                 reified: Cell::new(false),
-                handler: Lock::new(h),
                 cold: false,
             };
 
-            let letk_body = convert(cps, *producer, consumer_k_var, h);
+            let letk_body = convert(cps, *producer, consumer_k_var);
             let consumer_k = Gc::new(*cps.ctx, consumer_k);
 
             Gc::new(
@@ -1122,7 +1061,7 @@ pub fn convert<'gc>(
                 },
             );
 
-            convert(cps, call, k, h)
+            convert(cps, call, k)
         }
     }
 }

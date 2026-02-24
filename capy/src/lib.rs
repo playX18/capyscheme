@@ -13,7 +13,8 @@
     min_specialization,
     portable_simd,
     const_type_name,
-    explicit_tail_calls
+    explicit_tail_calls,
+    unsafe_cell_access
 )]
 
 pub mod api;
@@ -22,6 +23,7 @@ pub mod compiler;
 pub mod cps;
 pub mod expander;
 pub mod frontend;
+pub mod interp;
 pub mod rsgc;
 pub mod runtime;
 pub mod utils;

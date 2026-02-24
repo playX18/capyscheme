@@ -62,17 +62,14 @@ pub fn call_scheme<'gc>(
     let procs = PROCEDURES.fetch(*ctx);
 
     let retk = procs.register_static_cont_closure(ctx, default_retk, Value::null());
-    let reth = procs.register_static_cont_closure(ctx, default_reth, Value::null());
 
-    call_scheme_with_k(ctx, retk.into(), reth.into(), rator, args)
+    call_scheme_with_k(ctx, retk.into(), rator, args)
 }
 
-/// Call Scheme code with explicit return and error continuations.
+/// Call Scheme code with explicit return continuation.
 pub extern "C" fn call_scheme_with_k<'gc>(
     ctx: Context<'gc>,
     retk: Value<'gc>,
-    reth: Value<'gc>,
-
     rator: Value<'gc>,
     args: impl IntoIterator<Item = Value<'gc>>,
 ) -> VMResult<'gc> {
@@ -87,31 +84,30 @@ pub extern "C" fn call_scheme_with_k<'gc>(
 
     unsafe {
         rands.store(retk);
-        rands.add(size_of::<Value>()).store(reth);
 
         for (i, arg) in args.into_iter().enumerate() {
-            if rands.add((i + 2) * size_of::<Value>()) >= ctx.state().runstack_end {
+            if rands.add((i + 1) * size_of::<Value>()) >= ctx.state().runstack_end {
                 panic!(
                     "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
-                    rands.add((i + 2) * size_of::<Value>()),
+                    rands.add((i + 1) * size_of::<Value>()),
                     ctx.state().runstack_end,
-                    i + 2,
+                    i + 1,
                     (ctx.state().runstack_end - ctx.state().runstack_start) / size_of::<Value>()
                 );
             }
-            if rands.add((i + 2) * size_of::<Value>()) < ctx.state().runstack_start {
+            if rands.add((i + 1) * size_of::<Value>()) < ctx.state().runstack_start {
                 panic!("runstack underflow");
             }
-            rands.add((i + 2) * size_of::<Value>()).store(arg);
+            rands.add((i + 1) * size_of::<Value>()).store(arg);
             argc += 1;
         }
 
         ctx.state()
             .runstack
-            .set(rands.add((argc + 2) * size_of::<Value>()));
+            .set(rands.add((argc + 1) * size_of::<Value>()));
     }
 
-    let num_rands = argc + 2;
+    let num_rands = argc + 1;
 
     let f = get_trampoline_into_scheme().to_ptr::<()>();
 
@@ -241,29 +237,20 @@ pub(crate) extern "C-unwind" fn default_retk<'gc>(
     }
 }
 
-pub(crate) extern "C-unwind" fn default_reth<'gc>(
+pub(crate) extern "C-unwind" fn default_exception_handler<'gc>(
     _ctx: Context<'gc>,
     _rator: Value<'gc>,
     rands: *const Value<'gc>,
     num_rands: usize,
+    _retk: Value<'gc>,
 ) -> NativeReturn<'gc> {
-    println!("error occured");
     unsafe {
-        let slice = std::slice::from_raw_parts(rands, num_rands);
-        if !slice.is_empty() {
-            println!(
-                "irritants: {}",
-                slice
-                    .iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+        assert!(num_rands >= 1, "exception handler called with no arguments");
+        let exception = *rands;
+        NativeReturn {
+            code: ReturnCode::ReturnErr,
+            value: exception,
         }
-    }
-    NativeReturn {
-        code: ReturnCode::ReturnErr,
-        value: Value::new(42),
     }
 }
 
@@ -309,7 +296,6 @@ pub struct NativeCallContext<'a, 'gc, R: TryIntoValues<'gc> = Value<'gc>> {
     rands: &'a [Value<'gc>],
 
     pub(crate) retk: Value<'gc>,
-    pub(crate) reth: Value<'gc>,
 
     return_data: PhantomData<R>,
 }
@@ -326,14 +312,12 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         rands: *const Value<'gc>,
         num_rands: usize,
         retk: Value<'gc>,
-        reth: Value<'gc>,
     ) -> Self {
         Self {
             ctx,
             rator,
             rands: unsafe { std::slice::from_raw_parts(rands, num_rands) },
 
-            reth,
             retk,
             return_data: PhantomData,
         }
@@ -355,8 +339,18 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         let values = match values.try_into_values(self.ctx) {
             Ok(values) => values,
             Err(err) => {
+                let handler = self.ctx.exception_handler().unwrap_or_else(|| {
+                    PROCEDURES
+                        .fetch(*self.ctx)
+                        .register_static_closure(
+                            self.ctx,
+                            default_exception_handler as _,
+                            Value::new(false),
+                        )
+                        .into()
+                });
                 return NativeCallReturn {
-                    ret: self.ctx.return_call(self.reth, [err], None),
+                    ret: self.ctx.return_call(handler, [err], Some(self.retk)),
                 };
             }
         };
@@ -383,7 +377,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     }
 
     pub fn throw(self, key: Value<'gc>, args: Value<'gc>) -> NativeCallReturn<'gc> {
-        let throw = throw::throw(self.ctx, key, args, self.retk, self.reth);
+        let throw = throw::throw(self.ctx, key, args, self.retk);
 
         NativeCallReturn { ret: throw }
     }
@@ -402,7 +396,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         NativeCallReturn {
             ret: self
                 .ctx
-                .return_call(proc, args.iter().copied(), Some([self.retk, self.reth])),
+                .return_call(proc, args.iter().copied(), Some(self.retk)),
         }
     }
 
@@ -490,7 +484,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         }
     }
 
-    /// Perform call into `proc` with `args`, using `retk` and `reth` as return and error continuations.
+    /// Perform call into `proc` with `args`, using `retk` as return continuation.
     ///
     /// # Safety
     ///
@@ -498,15 +492,11 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     pub unsafe fn return_call_unsafe(
         self,
         retk: Value<'gc>,
-        reth: Value<'gc>,
-
         proc: Value<'gc>,
         args: &[Value<'gc>],
     ) -> NativeCallReturn<'gc> {
         NativeCallReturn {
-            ret: self
-                .ctx
-                .return_call(proc, args.iter().copied(), Some([retk, reth])),
+            ret: self.ctx.return_call(proc, args.iter().copied(), Some(retk)),
         }
     }
 
@@ -540,7 +530,6 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         proc: Value<'gc>,
         args: &[Value<'gc>],
         retk: Value<'gc>,
-        reth: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
         if !proc.has_typ16(TypeCode16::CLOSURE_PROC) {
             crate::runtime::vm::debug::print_stacktraces_impl(self.ctx);
@@ -566,21 +555,8 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             );
         }
 
-        if !reth.has_typ16(TypeCode16::CLOSURE_K) {
-            return self.wrong_argument_violation(
-                "apply",
-                "expected continuation for return continuation",
-                Some(reth),
-                Some(0),
-                0,
-                &[],
-            );
-        }
-
         NativeCallReturn {
-            ret: self
-                .ctx
-                .return_call(proc, args.iter().copied(), Some([retk, reth])),
+            ret: self.ctx.return_call(proc, args.iter().copied(), Some(retk)),
         }
     }
 

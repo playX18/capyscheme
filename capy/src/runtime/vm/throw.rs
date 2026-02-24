@@ -5,7 +5,7 @@ use crate::{
     runtime::{
         Context,
         modules::{Variable, define},
-        value::{NativeReturn, Str, Value},
+        value::{NativeReturn, PROCEDURES, Str, Value},
     },
 };
 
@@ -18,9 +18,18 @@ pub fn throw<'gc>(
     key: Value<'gc>,
     args: Value<'gc>,
     retk: Value<'gc>,
-    reth: Value<'gc>,
 ) -> NativeReturn<'gc> {
     let throw = var_throw(ctx).get();
+    let handler = ctx.exception_handler().unwrap_or_else(|| {
+        PROCEDURES
+            .fetch(*ctx)
+            .register_static_closure(
+                ctx,
+                super::default_exception_handler as _,
+                Value::new(false),
+            )
+            .into()
+    });
 
     if throw == Value::new(false) {
         let str = Str::new(
@@ -29,7 +38,7 @@ pub fn throw<'gc>(
             false,
         );
 
-        return ctx.return_call(reth, [str.into()], None);
+        return ctx.return_call(handler, [str.into()], None);
     }
-    ctx.return_call(throw, [retk, reth], None)
+    ctx.return_call(throw, [retk, handler], None)
 }

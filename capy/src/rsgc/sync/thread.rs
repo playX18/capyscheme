@@ -435,10 +435,10 @@ impl Thread {
                     .native_data
                     .get()
                     .as_mut()
-                    .unwrap()
+                    .unwrap_unchecked()
                     .mutator
                     .as_mut()
-                    .unwrap(),
+                    .unwrap_unchecked(),
             )
         }
     }
@@ -446,7 +446,13 @@ impl Thread {
     pub fn is_mutator(&self) -> bool {
         unsafe {
             self.active_mutator_context()
-                && self.native_data.get().as_ref().unwrap().mutator.is_some()
+                && self
+                    .native_data
+                    .get()
+                    .as_ref()
+                    .unwrap_unchecked()
+                    .mutator
+                    .is_some()
         }
     }
 
@@ -467,12 +473,12 @@ impl Thread {
     }
 
     pub(crate) fn native_data(&self) -> &ThreadNativeData {
-        unsafe { self.native_data.get().as_ref().unwrap() }
+        unsafe { self.native_data.get().as_ref().unwrap_unchecked() }
     }
 
     #[allow(clippy::mut_from_ref)]
     pub(crate) fn native_data_mut(&self) -> &mut ThreadNativeData {
-        unsafe { self.native_data.get().as_mut().unwrap() }
+        unsafe { self.native_data.get().as_mut().unwrap_unchecked() }
     }
 
     pub fn is_thread_state_initialized(&self) -> bool {

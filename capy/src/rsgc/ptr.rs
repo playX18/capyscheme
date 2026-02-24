@@ -133,7 +133,7 @@ impl<'gc, T> Gc<'gc, T> {
     /// Panics if `obj` is null.
     pub unsafe fn from_gcobj(obj: GCObject) -> Self {
         Self {
-            ptr: NonNull::new(obj.to_address().to_mut_ptr()).unwrap(),
+            ptr: unsafe { NonNull::new(obj.to_address().to_mut_ptr()).unwrap_unchecked() },
             pd: PhantomData,
         }
     }

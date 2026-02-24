@@ -233,7 +233,6 @@ impl FunctionDefinition {
                     rator,
                     rands,
                     num_rands,
-                    Value::undefined(),
                     Value::undefined()
                 );
             }
@@ -245,8 +244,7 @@ impl FunctionDefinition {
                     rator,
                     rands,
                     num_rands,
-                    retk,
-                    reth
+                    retk
                 );
             }
         };
@@ -352,7 +350,6 @@ impl FunctionDefinition {
                     rands: *const Value<'gc>,
                     num_rands: usize,
                     retk: Value<'gc>,
-                    reth: Value<'gc>,
 
                 ) -> NativeReturn<'gc>
                 {

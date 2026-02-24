@@ -6,7 +6,7 @@
   (let ([res (with-continuation-mark
               exception-handler-key
               proc
-              (%with-handler proc thunk))])
+              (thunk))])
     (unspecified)
     res))
 

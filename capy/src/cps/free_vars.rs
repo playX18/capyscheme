@@ -12,9 +12,8 @@ type Vars<'gc> = HashSet<LVarRef<'gc>>;
 pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarRef<'gc>> {
     stacker::maybe_grow(64 * 1024, 16 * 1024 * 1024, || match *term {
         Term::Let(bind, expr, body) => match expr {
-            Expression::PrimCall(_, args, h, _) => {
-                let mut map: Vars = args.iter().copied().flat_map(get_fva).collect();
-                map.insert(h);
+            Expression::PrimCall(_, args, _) => {
+                let map: Vars = args.iter().copied().flat_map(get_fva).collect();
                 for arg in args.iter() {
                     if let Atom::Local(lvar) = *arg
                         && fv.conts.contains_key(&lvar)
@@ -64,16 +63,14 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
             .chain(std::iter::once(k))
             .collect(),
 
-        Term::App(func, k, h, args, _) => {
+        Term::App(func, k, args, _) => {
             fv.cvals.insert(k);
-            fv.cvals.insert(h);
 
             args.iter()
                 .copied()
                 .flat_map(get_fva)
                 .chain(std::iter::once(func).flat_map(get_fva))
                 .chain(std::iter::once(k))
-                .chain(std::iter::once(h))
                 .collect()
         }
 
@@ -111,13 +108,11 @@ fn get_fva<'gc>(atom: Atom<'gc>) -> Option<LVarRef<'gc>> {
 
 fn get_fvc<'gc>(cont: ContRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
     let mut map = get_fvt(cont.body(), fv);
-    map.insert(cont.handler.get());
 
     for arg in cont.args.iter().chain(cont.variadic.iter()) {
         map.remove(arg);
     }
     map.remove(&cont.binding);
-    assert!(map.contains(&cont.handler.get()));
     map
 }
 
@@ -128,7 +123,6 @@ pub fn get_fvf<'gc>(func: FuncRef<'gc>, fv: &mut FreeVars<'gc>) -> Vars<'gc> {
         map.remove(arg);
     }
     map.remove(&func.return_cont);
-    map.remove(&func.handler_cont);
 
     map
 }

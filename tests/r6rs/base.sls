@@ -3,8 +3,8 @@
 (library (tests r6rs base)
   (export run-base-tests)
   (import (rnrs)
+    (only (capy) printf)
     (tests r6rs test))
-
   (define (try-reals f but-not)
     (if (not (member 0 but-not))
       (f 0))
@@ -161,6 +161,7 @@
   ;; Expressions ----------------------------------------
 
   (define (run-base-tests)
+     
     ;; 11.2.1
     (test (add3 3) 6)
     (test (first '(1 2)) 1)

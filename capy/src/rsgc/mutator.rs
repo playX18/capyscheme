@@ -628,7 +628,7 @@ impl<'gc> Mutation<'gc> {
     /// This function is safe only if `vtable` provided will be valid for object which means all the methods
     /// in vtable are soundly implemented. VTable's derived from [`VTableOf`] should be the safest ones.
     ///
-    /// - [VTableOf](super::object::VTableOf)
+    /// - [VTableOf]
     #[inline(always)]
     pub unsafe fn raw_allocate(
         &self,

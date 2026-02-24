@@ -19,7 +19,7 @@ use crate::{
         Address,
         options::{Options, PlanSelector},
     },
-    runtime::vm::{default_reth, default_retk},
+    runtime::vm::default_retk,
 };
 
 use crate::runtime::Context;
@@ -35,8 +35,6 @@ pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
     let mut native_procedures = Vec::with_capacity(600);
     unsafe {
         native_procedures.push(Address::from_ptr(default_retk as *const ()));
-
-        native_procedures.push(Address::from_ptr(default_reth as *const ()));
 
         runtime::fluids::fluid_ops::for_each_continuation(ctx, |addr| {
             native_procedures.push(Address::from_ptr(addr));

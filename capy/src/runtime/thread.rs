@@ -1,4 +1,5 @@
 use crate::{
+    interp::stack::InterpreterStack,
     prelude::{HashTable, Keyword},
     rsgc::{
         GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Trace,
@@ -171,9 +172,8 @@ impl<'gc> Context<'gc> {
 
         if call.from_procedure {
             let retk = call.rands[0];
-            let reth = call.rands[1];
 
-            call_scheme_with_k(self, retk, reth, call.rator, args.into_iter())
+            call_scheme_with_k(self, retk, call.rator, args.into_iter())
         } else {
             unsafe { continue_to(self, call.rator, args.into_iter()) }
         }
@@ -189,15 +189,8 @@ impl<'gc> Context<'gc> {
 
         if call.from_procedure {
             let retk = call.rands[0];
-            let reth = call.rands[1];
 
-            call_scheme_with_k(
-                self,
-                retk,
-                reth,
-                call.rator,
-                call.rands[2..].iter().copied(),
-            )
+            call_scheme_with_k(self, retk, call.rator, call.rands[1..].iter().copied())
         } else {
             unsafe { continue_to(self, call.rator, call.rands[..].iter().copied()) }
         }
@@ -207,14 +200,13 @@ impl<'gc> Context<'gc> {
         self,
         rator: Value<'gc>,
         rands: impl IntoIterator<Item = Value<'gc>>,
-        conts: Option<[Value<'gc>; 2]>,
+        retk: Option<Value<'gc>>,
     ) -> NativeReturn<'gc> {
         let rands_ptr = self.state().runstack.get().to_mut_ptr::<Value>();
-        let disp = if conts.is_some() { 2 } else { 0 };
+        let disp = if retk.is_some() { 1 } else { 0 };
         unsafe {
-            if let Some(conts) = conts {
-                *rands_ptr = conts[0];
-                *(rands_ptr.add(1)) = conts[1];
+            if let Some(retk) = retk {
+                *rands_ptr = retk;
             }
             let mut count = 0;
             for (i, rand) in rands.into_iter().enumerate() {
@@ -224,7 +216,7 @@ impl<'gc> Context<'gc> {
 
             self.state()
                 .runstack
-                .set(Address::from_ptr(rands_ptr.add(count)));
+                .set(Address::from_ptr(rands_ptr.add(count + disp)));
             self.state().call_data.rands.set(rands_ptr);
             self.state().call_data.num_rands.set(count + disp);
             self.state().call_data.rator.set(rator);
@@ -257,6 +249,11 @@ impl<'gc> Context<'gc> {
         self.state()
             .nest_level
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[allow(unused, dead_code)]
+    pub(crate) fn stack(&self) -> &InterpreterStack<'gc> {
+        unsafe { self.state().stack.get().as_ref_unchecked() }
     }
 
     pub fn public_ref(self, mname: &str, name: &str) -> Option<Value<'gc>> {
@@ -337,6 +334,14 @@ impl<'gc> Context<'gc> {
 
         None
     }
+
+    /// Return the current exception handler, if any.
+    ///
+    /// Searches the current continuation marks for a mark with the key `|exception-handler-key aeee9cb5-b850-45ad-b460-c9868b7f2736|` and returns its value if found.
+    pub fn exception_handler(&self) -> Option<Value<'gc>> {
+        let key = self.intern("exception-handler-key aeee9cb5-b850-45ad-b460-c9868b7f2736");
+        self.get_mark_first(key)
+    }
 }
 
 impl<'gc> std::ops::Deref for Context<'gc> {
@@ -395,6 +400,7 @@ pub struct State<'gc> {
     pub(crate) accumulator: Cell<Value<'gc>>,
     pub(crate) current_marks: Cell<Value<'gc>>,
     pub(crate) winders: Cell<Value<'gc>>,
+    pub(crate) stack: UnsafeCell<InterpreterStack<'gc>>,
 }
 
 #[repr(C)]
@@ -486,6 +492,7 @@ impl<'gc> State<'gc> {
             accumulator: Cell::new(Value::new(false)),
             current_marks: Cell::new(Value::null()),
             winders: Cell::new(Value::null()),
+            stack: UnsafeCell::new(InterpreterStack::empty()),
         }
     }
 

@@ -524,17 +524,15 @@ dist-portable: build build-runtime-portable
 install: build 
 	$(MAKE) PREFIX=$(PREFIX) build-runtime-fhs 
 	@echo "Installing CapyScheme (FHS) to $(PREFIX)"
-	SUDO=$$( (id -u | grep -q '^0$$' && echo '') || echo 'sudo ' ); \
-	set -e; \
-	$${SUDO}mkdir -p "$(PREFIX)/bin"; \
-	$${SUDO}mkdir -p "$(PREFIX)/lib"; \
-	$${SUDO}mkdir -p "$(PREFIX)/lib/capy/compiled"; \
-	$${SUDO}mkdir -p "$(PREFIX)/share/capy"; \
-	$${SUDO}cp -r lib "$(PREFIX)/share/capy/"; \
-	$${SUDO}cp bin/capy-full "$(PREFIX)/bin/capy"; \
-	$${SUDO}cp bin/capyc-full "$(PREFIX)/bin/capyc"; \
-	$${SUDO}cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
-	$${SUDO}cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
+	mkdir -p "$(PREFIX)/bin"; \
+	mkdir -p "$(PREFIX)/lib"; \
+	mkdir -p "$(PREFIX)/lib/capy/compiled"; \
+	mkdir -p "$(PREFIX)/share/capy"; \
+	cp -r lib "$(PREFIX)/share/capy/"; \
+	cp bin/capy-full "$(PREFIX)/bin/capy"; \
+	cp bin/capyc-full "$(PREFIX)/bin/capyc"; \
+	cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
+	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
 	echo "Installation complete."
 
 # -------------------------

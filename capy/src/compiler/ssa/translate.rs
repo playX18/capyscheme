@@ -151,11 +151,57 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.load_arguments(rands, num_rands);
     }
 
-    pub fn default_error_handler(&mut self) -> LVarRef<'gc> {
+    pub(crate) fn current_retk_value(&mut self) -> ir::Value {
         match self.target {
-            ContOrFunc::Func(func) => func.handler_cont,
-            ContOrFunc::Cont(cont) => cont.handler.get(),
+            ContOrFunc::Func(func) => self.var(func.return_cont),
+            ContOrFunc::Cont(_) => {
+                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                let call = self.builder.ins().call(self.thunks.default_retk, &[ctx]);
+                self.builder.inst_results(call)[0]
+            }
         }
+    }
+
+    pub(crate) fn call_proc_with_retk(
+        &mut self,
+        proc: ir::Value,
+        retk: ir::Value,
+        args: &[ir::Value],
+    ) -> ir::Inst {
+        let rands = std::iter::once(retk)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>();
+        let rands = self.push_args(&rands);
+        let num_rands = self
+            .builder
+            .ins()
+            .iconst(types::I64, (args.len() + 1) as i64);
+        let code = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            proc,
+            offset_of!(Closure, code) as i32,
+        );
+        self.builder.ins().jump(
+            self.exit_block,
+            &[
+                BlockArg::Value(code),
+                BlockArg::Value(proc),
+                BlockArg::Value(rands),
+                BlockArg::Value(num_rands),
+            ],
+        )
+    }
+
+    pub(crate) fn raise_to_exception_handler(&mut self, err: ir::Value) -> ir::Inst {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let call = self
+            .builder
+            .ins()
+            .call(self.thunks.exception_handler, &[ctx]);
+        let handler = self.builder.inst_results(call)[0];
+        let retk = self.current_retk_value();
+        self.call_proc_with_retk(handler, retk, &[err])
     }
 
     fn load_arguments(&mut self, mut rands: ir::Value, mut num_rands: ir::Value) {
@@ -199,22 +245,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 rands,
                 0,
             );
-            let reth = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                rands,
-                8,
-            );
 
-            rands = self.builder.ins().iadd_imm(rands, 16);
-            num_rands = self.builder.ins().iadd_imm(num_rands, -2);
+            rands = self.builder.ins().iadd_imm(rands, 8);
+            num_rands = self.builder.ins().iadd_imm(num_rands, -1);
 
             self.debug_local(func.return_cont, retk);
-            self.debug_local(func.handler_cont, reth);
 
             self.variables.insert(func.return_cont, VarDef::Value(retk));
-            self.variables
-                .insert(func.handler_cont, VarDef::Value(reth));
         }
 
         if params.len() != 0 {
@@ -240,9 +277,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         &[ctx, self.rator, got, expected, rands],
                     );
                     let err = self.builder.inst_results(err)[0];
-                    let error_handler = self.default_error_handler();
-
-                    self.continue_to(error_handler, &[err]);
+                    self.raise_to_exception_handler(err);
                 }
                 self.builder.switch_to_block(succ);
                 {
@@ -326,9 +361,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         &[ctx, self.rator, got, expected, rands],
                     );
                     let err = self.builder.inst_results(err)[0];
-                    let error_handler = self.default_error_handler();
-
-                    self.continue_to(error_handler, &[err]);
+                    self.raise_to_exception_handler(err);
                 }
                 self.builder.switch_to_block(succ);
                 for (i, param) in params.iter().enumerate() {
@@ -400,13 +433,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let got = num_rands;
                     let expected = 0isize;
                     let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let handler = self.default_error_handler();
                     let err = self.builder.ins().call(
                         self.thunks.wrong_number_of_args,
                         &[ctx, num_rands, got, expected, rands],
                     );
                     let err = self.builder.inst_results(err)[0];
-                    self.continue_to(handler, &[err]);
+                    self.raise_to_exception_handler(err);
                 }
 
                 self.builder.switch_to_block(succ);
@@ -477,8 +509,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    /// Get callee entrypoint or report error to `handler`.
-    pub fn get_callee(&mut self, callee: &Atom<'gc>, handler: LVarRef<'gc>) -> Callee {
+    /// Get callee entrypoint or report non-applicable error via current exception handler.
+    pub fn get_callee(&mut self, callee: &Atom<'gc>) -> Callee {
         if let Atom::Local(var) = callee {
             if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(var)
                 && let Some(func_id) = self.module_builder.func_for_func.get(func)
@@ -509,7 +541,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .ins()
                 .call(self.thunks.non_applicable, &[ctx, callee]);
             let err = self.builder.inst_results(err)[0];
-            self.continue_to(handler, &[err]);
+            self.raise_to_exception_handler(err);
         }
 
         self.builder.switch_to_block(get_clos_code);
@@ -710,7 +742,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     /* helpers */
 
-    pub fn check_argcount(&mut self, proc: &str, h: LVarRef<'gc>, got_: usize, expected_: usize) {
+    pub fn check_argcount(&mut self, proc: &str, got_: usize, expected_: usize) {
         let got = self.builder.ins().iconst(types::I64, got_ as i64);
         let expected = self.builder.ins().iconst(types::I64, expected_ as i64);
 
@@ -723,7 +755,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.func.layout.set_cold(on_err);
         self.builder.switch_to_block(on_err);
         {
-            self.wrong_num_args(proc, h, got_, expected_ as _);
+            self.wrong_num_args(proc, got_, expected_ as _);
         }
         self.builder.switch_to_block(on_succ);
     }
@@ -912,12 +944,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         match &*term {
             Term::Let(var, expr, next) => {
                 match expr {
-                    Expression::PrimCall(prim, args, handler, _) => {
+                    Expression::PrimCall(prim, args, _) => {
                         let Some(lowerer) = self.module_builder.prims.map.get(prim).copied() else {
                             panic!("undefined primitive: {prim}")
                         };
 
-                        let val = match lowerer(self, args, *handler) {
+                        let val = match lowerer(self, args) {
                             PrimValue::Value(val) => VarDef::Value(val),
                             PrimValue::Comparison(val) => VarDef::Comparison(val),
                         };
@@ -937,17 +969,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.term(*next);
             }
 
-            Term::App(rator, retk, reth, rands, _) => {
-                let num_rands = rands.len() + 2;
+            Term::App(rator, retk, rands, _) => {
+                let num_rands = rands.len() + 1;
                 let num_rands = self.builder.ins().iconst(types::I64, num_rands as i64);
 
-                let err_handler = self.default_error_handler();
-                let callee = self.get_callee(rator, err_handler);
+                let callee = self.get_callee(rator);
 
                 let retk = self.var(*retk);
-                let reth = self.var(*reth);
 
-                let rands = [retk, reth]
+                let rands = [retk]
                     .into_iter()
                     .chain(rands.iter().copied().map(|a| self.atom(a)))
                     .collect::<Vec<_>>();
