@@ -1357,7 +1357,7 @@ pub mod io_ops {
     #[scheme(name = "poller-wait")]
     /// Waits for at least one I/O event and returns a list of events.
     pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> () {
-        let k = make_closure_poller_wait_k(ctx, [nctx.retk, nctx.reth]);
+        let k = make_closure_poller_wait_k(ctx, [nctx.retk]);
         let operation = PollerOperation { poller, timeout };
         nctx.perform_returning_to(k.into(), operation)
     }
@@ -1385,12 +1385,9 @@ pub mod io_ops {
     fn poller_wait_k(succ: bool, arg: Value<'gc>) -> Value<'gc> {
         // [0] = <native-proc>
         // [1] = retk
-        // [2] = reth
         let retk = nctx.rator().downcast::<Closure>().free.downcast::<Vector>()[1].get();
-        let reth = nctx.rator().downcast::<Closure>().free.downcast::<Vector>()[2].get();
 
         nctx.retk = retk;
-        nctx.reth = reth;
 
         if succ {
             nctx.return_(arg)

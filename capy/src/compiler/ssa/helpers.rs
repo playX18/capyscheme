@@ -460,7 +460,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .brif(has_typ, then, then_args, else_, else_args);
     }
 
-    pub fn wrong_num_args(&mut self, proc: &str, h: LVarRef<'gc>, got: usize, expected: isize) {
+    pub fn wrong_num_args(&mut self, proc: &str, got: usize, expected: isize) {
         let c = Symbol::from_str(self.module_builder.ctx, proc);
         let c = self.module_builder.intern_constant(c.into()).unwrap();
         let c = self.import_data(c);
@@ -478,14 +478,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             &[ctx, value, got, expected],
         );
         let val = self.builder.inst_results(err)[0];
-        self.continue_to(h, &[val]);
+        self.raise_to_exception_handler(val);
     }
 
     pub fn handle_thunk_call_result(
         &mut self,
         thunk: ir::FuncRef,
         args: &[ir::Value],
-        handler: LVarRef<'gc>,
     ) -> ir::Value {
         let call = self.builder.ins().call(thunk, args);
 
@@ -510,7 +509,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(on_error);
         {
             let value = self.builder.block_params(on_error)[0];
-            self.continue_to(handler, &[value]);
+            self.raise_to_exception_handler(value);
         }
         self.builder.switch_to_block(on_success);
         self.builder.block_params(on_success)[0]

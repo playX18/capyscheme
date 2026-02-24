@@ -708,7 +708,6 @@
       [else
         (let ([printers (%tuple-printers)])
           (let loop ((printers printers))
-           
             (cond
               [(null? printers)
                 (display "#<UNKNOWN TUPLE>" port)]

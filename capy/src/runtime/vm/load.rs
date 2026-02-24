@@ -770,12 +770,11 @@ pub mod load_ops {
                         Err(err) => return nctx.return_(Err(err)),
                     };
 
-                    let reth = nctx.reth;
                     let retk = nctx.retk;
 
-                    let after_call = make_closure_continue_loading_k(ctx, [thunk, retk, reth]);
+                    let after_call = make_closure_continue_loading_k(ctx, [thunk, retk]);
                     let program = Value::list_from_slice(ctx, program);
-                    return nctx.call(k, &[program, env], after_call.into(), reth);
+                    return nctx.call(k, &[program, env], after_call.into());
                 }
                 #[cfg(not(feature = "bootstrap"))]
                 {
@@ -846,9 +845,6 @@ pub(crate) fn continue_loading_k(
     let free = rator.free.downcast::<Vector>();
     let source_and_compiled_path = free[1].get();
     let retk = free[2].get();
-    let reth = free[3].get();
-
-    nctx.reth = reth;
     nctx.retk = retk;
 
     let mut reader = ScmTermToRsTerm::new(nctx.ctx);

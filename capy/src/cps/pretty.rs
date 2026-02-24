@@ -31,7 +31,7 @@ impl<'gc> Func<'gc> {
             alloc,
             self.name,
             Some(self.return_cont),
-            Some(self.handler_cont),
+            None,
             self.args.iter().map(|arg| alloc.text(arg.name.to_string())),
             self.variadic.map(|v| alloc.text(v.name.to_string())),
         );
@@ -65,14 +65,12 @@ impl<'gc> Term<'gc> {
             .group()
             .parens(),
 
-            Term::App(f, k, h, args, _) => {
+            Term::App(f, k, args, _) => {
                 let args_doc =
                     alloc.intersperse(args.iter().map(|arg| arg.pretty(alloc)), alloc.space());
                 (f.pretty(alloc)
                     + alloc.space()
                     + alloc.text(k.name.to_string())
-                    + alloc.space()
-                    + alloc.text(h.name.to_string())
                     + alloc.space()
                     + if args.is_empty() {
                         alloc.nil()
@@ -190,13 +188,9 @@ impl<'gc> Expression<'gc> {
     {
         match self {
             // #%prim(args...)
-            Expression::PrimCall(prim, args, h, _) => {
-                let args_doc = alloc.intersperse(
-                    std::iter::once(h)
-                        .map(|h| alloc.text(h.name.to_string()))
-                        .chain(args.iter().map(|arg| arg.pretty(alloc))),
-                    alloc.space(),
-                );
+            Expression::PrimCall(prim, args, _) => {
+                let args_doc =
+                    alloc.intersperse(args.iter().map(|arg| arg.pretty(alloc)), alloc.space());
                 (alloc.text("#%") + alloc.text(prim.to_string()) + alloc.space() + args_doc)
                     .group()
                     .parens()
@@ -238,7 +232,6 @@ impl<'gc> Cont<'gc> {
                     + binding_doc
                     + alloc.space()
                     + args
-                    + alloc.text(format!(" @ {}", self.handler.get().name))
                     + alloc.hardline()
                     + body.get().pretty(alloc).indent(2).nest(2))
                 .group()

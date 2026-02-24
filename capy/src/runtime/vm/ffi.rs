@@ -1349,7 +1349,6 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
     rands: *const Value<'gc>,
     num_rands: usize,
     retk: Value<'gc>,
-    reth: Value<'gc>,
 ) -> NativeReturn<'gc> {
     unsafe {
         let rands = std::slice::from_raw_parts(rands, num_rands);
@@ -1381,10 +1380,10 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
                 &[],
             );
 
-            return ctx.return_call(reth, [err], None);
+            return ctx.return_call(retk, [err], None);
         }
 
-        let nctx = NativeCallContext::from_raw(ctx, rator, rands.as_ptr(), num_rands, retk, reth);
+        let nctx = NativeCallContext::from_raw(ctx, rator, rands.as_ptr(), num_rands, retk);
 
         foreign_call(
             nctx,

@@ -160,27 +160,32 @@ pub mod base_ops {
         nctx.return_(Value::new(v == Value::new(false)))
     }
 
-    /// Calls thunk with no arguments and sets `reth` to provided handler.
+    /// Calls thunk with no arguments.
     ///
-    /// This function will make handler to return to `retk` and `reth` of the caller of
-    /// `.with-handler`.
+    /// The active exception handler is resolved from continuation marks
+    /// (see `exception-handler-key`), rather than being threaded through
+    /// a dedicated continuation parameter.
     #[scheme(name = "%with-handler")]
     pub fn with_exception_handler(
-        handler: Value<'gc>,
+        _handler: Value<'gc>,
         thunk: Value<'gc>,
     ) -> Result<Value<'gc>, Value<'gc>> {
-        let retk = nctx.retk;
-        let reth = nctx.reth;
-        let handler_closure = make_closure_handler_cont(nctx.ctx, [retk, reth, handler]);
-        unsafe { nctx.return_call_unsafe(retk, handler_closure.into(), thunk, &[]) }
+        nctx.return_call(thunk, &[])
     }
 
     #[scheme(name = "%raise")]
     pub fn raise(e: Value<'gc>) -> () {
-        unsafe {
-            let reth = nctx.reth;
-            nctx.continue_to(reth, &[e])
-        }
+        let handler = nctx.ctx.exception_handler().unwrap_or_else(|| {
+            PROCEDURES
+                .fetch(*nctx.ctx)
+                .register_static_closure(
+                    nctx.ctx,
+                    crate::runtime::vm::default_exception_handler as _,
+                    Value::new(false),
+                )
+                .into()
+        });
+        nctx.return_call(handler, &[e])
     }
 
     #[scheme(name = "gensym")]
@@ -501,16 +506,6 @@ pub mod base_ops {
     pub fn collect_garbage() -> Value<'gc> {
         nctx.yield_and_return(YieldReason::CollectGarbage, &[Value::new(true)])
     }
-}
-
-#[scheme(continuation)]
-pub fn handler_cont(ans: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
-    let free = nctx.rator().downcast::<Closure>().free.downcast::<Vector>();
-    let retk = free[1].get();
-    let reth = free[2].get();
-    let handler = free[3].get();
-
-    unsafe { nctx.return_call_unsafe(retk, reth, handler, &[ans]) }
 }
 
 pub fn init_base<'gc>(ctx: Context<'gc>) {

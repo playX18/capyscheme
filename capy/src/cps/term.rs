@@ -39,13 +39,7 @@ impl<'gc> std::fmt::Display for Atom<'gc> {
 pub enum Term<'gc> {
     Continue(LVarRef<'gc>, Atoms<'gc>, Value<'gc>),
 
-    App(
-        Atom<'gc>,
-        LVarRef<'gc>,
-        LVarRef<'gc>,
-        Atoms<'gc>,
-        Value<'gc>,
-    ),
+    App(Atom<'gc>, LVarRef<'gc>, Atoms<'gc>, Value<'gc>),
 
     If {
         test: Atom<'gc>,
@@ -76,7 +70,7 @@ impl<'gc> Into<Atom<'gc>> for LVarRef<'gc> {
 #[derive(Debug, Clone, Trace, Copy, PartialEq, Eq)]
 #[collect(no_drop)]
 pub enum Expression<'gc> {
-    PrimCall(Value<'gc>, Atoms<'gc>, LVarRef<'gc>, Value<'gc>),
+    PrimCall(Value<'gc>, Atoms<'gc>, Value<'gc>),
 }
 
 pub type TermRef<'gc> = Gc<'gc, Term<'gc>>;
@@ -89,8 +83,6 @@ pub struct Func<'gc> {
     pub binding: LVarRef<'gc>,
     /// Continuation to return to
     pub return_cont: LVarRef<'gc>,
-    /// Exception handler continuation
-    pub handler_cont: LVarRef<'gc>,
 
     pub args: Vars<'gc>,
     pub variadic: Option<LVarRef<'gc>>,
@@ -143,7 +135,6 @@ pub struct Cont<'gc> {
     pub source: Value<'gc>,
     pub free_vars: Lock<Option<Vars<'gc>>>,
     pub reified: Cell<bool>,
-    pub handler: Lock<LVarRef<'gc>>,
     pub cold: bool,
     pub noinline: bool,
     pub meta: Value<'gc>,
@@ -210,7 +201,6 @@ impl<'gc> Cont<'gc> {
                 noinline: self.noinline,
                 free_vars: Lock::new(self.free_vars.get()),
                 reified: Cell::new(self.reified.get()),
-                handler: Lock::new(self.handler.get()),
                 cold: self.cold,
             },
         );
@@ -287,8 +277,8 @@ impl<'gc> TreeEq for Func<'gc> {
 impl<'gc> TreeEq for Term<'gc> {
     fn tree_eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Term::App(f, k, h, args, _), Term::App(g, l, lh, bargs, _)) => {
-                f.tree_eq(g) && Gc::ptr_eq(*k, *l) && Gc::ptr_eq(*h, *lh) && args.tree_eq(bargs)
+            (Term::App(f, k, args, _), Term::App(g, l, bargs, _)) => {
+                f.tree_eq(g) && Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
             }
             (Term::Continue(k, args, _), Term::Continue(l, bargs, _)) => {
                 Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
@@ -333,8 +323,8 @@ impl<'gc> TreeEq for Term<'gc> {
 impl<'gc> TreeEq for Expression<'gc> {
     fn tree_eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Expression::PrimCall(f, args, h, _), Expression::PrimCall(g, bargs, gh, _)) => {
-                f.tree_eq(g) && args.tree_eq(bargs) && Gc::ptr_eq(*h, *gh)
+            (Expression::PrimCall(f, args, _), Expression::PrimCall(g, bargs, _)) => {
+                f.tree_eq(g) && args.tree_eq(bargs)
             }
         }
     }
@@ -343,7 +333,7 @@ impl<'gc> TreeEq for Expression<'gc> {
 impl<'gc> Term<'gc> {
     pub fn source(&self) -> Value<'gc> {
         match self {
-            Term::Continue(_, _, source) | Term::App(_, _, _, _, source) => *source,
+            Term::Continue(_, _, source) | Term::App(_, _, _, source) => *source,
             Term::If { .. } => Value::new(false),
             Term::Letk(_, body) | Term::Fix(_, body) | Term::Let(_, _, body) => body.source(),
         }
@@ -396,7 +386,7 @@ impl<'gc> Term<'gc> {
             Term::Let(binding, exp, body) => {
                 binding.ref_count.set(0);
                 match exp {
-                    Expression::PrimCall(_, args, _, _) => {
+                    Expression::PrimCall(_, args, _) => {
                         for arg in args.iter() {
                             arg.count_refs();
                         }
@@ -412,7 +402,6 @@ impl<'gc> Term<'gc> {
 
                 for func in funcs.iter() {
                     func.return_cont.ref_count.set(0);
-                    func.handler_cont.ref_count.set(0);
                     for arg in func.args.iter().chain(func.variadic.iter()) {
                         arg.ref_count.set(0);
                     }
@@ -434,10 +423,9 @@ impl<'gc> Term<'gc> {
                 body.count_refs();
             }
 
-            Term::App(func, k, h, args, _) => {
+            Term::App(func, k, args, _) => {
                 func.count_refs();
                 k.ref_count.set(k.ref_count.get() + 1);
-                h.ref_count.set(h.ref_count.get() + 1);
 
                 for arg in args.iter() {
                     arg.count_refs();

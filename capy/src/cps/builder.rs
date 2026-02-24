@@ -73,7 +73,7 @@ macro_rules! with_cps {
         }
     };
 
-    ($builder: ident; letk ($h: ident) $($k: ident ($($arg: ident),* $(& $variadic: ident)? ) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
+    ($builder: ident; letk $($k: ident ($($arg: ident),* $(& $variadic: ident)? ) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
         let mut conts = Vec::new();
         $(
             let $k = $builder.fresh_variable(stringify!($k));
@@ -119,7 +119,6 @@ macro_rules! with_cps {
                     source: src,
                     reified: std::cell::Cell::new(false),
                     free_vars: $crate::rsgc::cell::Lock::new(None),
-                    handler: $crate::rsgc::cell::Lock::new($h),
                     cold: false
 
                 });
@@ -135,7 +134,7 @@ macro_rules! with_cps {
     }
     };
 
-        ($builder: ident; letk noinline ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
+        ($builder: ident; letk noinline $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)?)? = $e: expr),*;$($rest:tt)+) => {{
         let mut conts = Vec::new();
         $(
             let $k = $builder.fresh_variable(stringify!($k));
@@ -175,7 +174,6 @@ macro_rules! with_cps {
                     source: src,
                     reified: std::cell::Cell::new(false),
                     free_vars: $crate::rsgc::cell::Lock::new(None),
-                    handler: $crate::rsgc::cell::Lock::new($h),
                     cold: false
 
                 });
@@ -191,7 +189,7 @@ macro_rules! with_cps {
     }
     };
 
-    ($builder: ident; letk cold ($h: ident) $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)? )? = $e: expr),*;$($rest:tt)+) => {{
+    ($builder: ident; letk cold $($k: ident ($($arg: ident),*) $(@ $src: ident $($meta: ident)? )? = $e: expr),*;$($rest:tt)+) => {{
         let mut conts = Vec::new();
         $(
             let $k = $builder.fresh_variable(stringify!($k));
@@ -229,7 +227,6 @@ macro_rules! with_cps {
                     source: src,
                     reified: std::cell::Cell::new(false),
                     free_vars: $crate::rsgc::cell::Lock::new(None),
-                    handler: $crate::rsgc::cell::Lock::new($h),
                     cold: true
 
                 });
@@ -245,7 +242,7 @@ macro_rules! with_cps {
     }
     };
 
-    ($builder: ident; letk ($h: ident) $k: ident ($args: ident ... $(&$variadic: ident)?) @ $src: ident $($meta: ident)? = $e: expr; $($rest:tt)+) => {
+    ($builder: ident; letk $k: ident ($args: ident ... $(&$variadic: ident)?) @ $src: ident $($meta: ident)? = $e: expr; $($rest:tt)+) => {
         {let $k = $builder.fresh_variable(stringify!($k));
 
             let args = $args;
@@ -275,7 +272,6 @@ macro_rules! with_cps {
             noinline: false,
             free_vars: $crate::rsgc::cell::Lock::new(None),
             reified: std::cell::Cell::new(false),
-            handler: $crate::rsgc::cell::Lock::new($h),
             cold: false
         });
         let conts = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, &[cont]);
@@ -336,26 +332,24 @@ macro_rules! with_cps {
         }
     };
 
-    ($builder: ident; $callee: ident ($k: ident, $h: ident $(,)? $($arg:ident),*) @ $src: expr) => {
+    ($builder: ident; $callee: ident ($k: ident $(,)? $($arg:ident),*) @ $src: expr) => {
         {
             let args = $crate::rsgc::alloc::array::Array::from_slice(&$builder.ctx, &[$($arg),*]);
             $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::App(
                 $callee,
                 $k,
-                $h,
                 args,
                 $src,
             ))
         }
     };
 
-    ($builder: ident; $callee: ident ($k: ident, $h: ident, $args: ident ...) @ $src: expr) => {
+    ($builder: ident; $callee: ident ($k: ident, $args: ident ...) @ $src: expr) => {
         {
             let args = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, $args);
             $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Term::App(
                 $callee.into(),
                 $k,
-                $h,
                 args,
                 $src,
             ))
@@ -421,72 +415,72 @@ macro_rules! with_cps {
         }
     };
 
-    ($cps: ident; let $binder: ident = #% $prim: ident ($h: expr, $($arg: expr),*); $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: ident ($($arg: expr),*); $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let rv = $binder.clone();
-        let e = $crate::cps::term::Expression::PrimCall($prim, $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, [$($arg.clone().into()),*]), $h, $crate::runtime::value::Value::new(false));
+        let e = $crate::cps::term::Expression::PrimCall($prim, $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, [$($arg.clone().into()),*]), $crate::runtime::value::Value::new(false));
         let inner = with_cps!($cps; ;$($rest)+);
         $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
-    ($cps: ident; let $binder: ident = #% $prim: ident ($h: expr, $($arg: expr),*) @ $span: expr; $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: ident ($($arg: expr),*) @ $span: expr; $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let rv = $binder.clone();
 
-        let e = $crate::cps::term::Expression::PrimCall($prim, $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, [$($arg.clone().into()),*]), $h, $span);
+        let e = $crate::cps::term::Expression::PrimCall($prim, $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, [$($arg.clone().into()),*]), $span);
         let inner = with_cps!($cps; $($rest)+);
         $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
-    ($cps: ident; let $binder: ident = #% $prim: literal ($h: ident $(,)? $($arg: expr),*); $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: literal ($($arg: expr),*); $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let name = $crate::runtime::value::Symbol::from_str($cps.ctx, $prim);
         let rv = $binder.clone();
-        let e = $crate::cps::term::Expression::PrimCall(name.into(), $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, [$($arg.clone().into()),*]), $h, $crate::runtime::value::Value::new(false));
+        let e = $crate::cps::term::Expression::PrimCall(name.into(), $crate::rsgc::alloc::array::Array::from_slice(&$cps.ctx, [$($arg.clone().into()),*]), $crate::runtime::value::Value::new(false));
         let inner = with_cps!($cps; $($rest)+);
         $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
-    ($cps: ident; let $binder: ident = #% $prim: literal ($h: expr, $($arg: expr),*) @ $span: expr; $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: literal ($($arg: expr),*) @ $span: expr; $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let name = $crate::runtime::value::Symbol::from_str($cps.ctx, $prim);
         let rv = $binder.clone();
-        let e = $crate::cps::term::Expression::PrimCall(name.into(), $crate::rsgc::alloc::array::Array::from_slice(*$cps.ctx, [$($arg.clone().into()),*]), $h, $span);
+        let e = $crate::cps::term::Expression::PrimCall(name.into(), $crate::rsgc::alloc::array::Array::from_slice(*$cps.ctx, [$($arg.clone().into()),*]), $span);
         let inner = with_cps!($cps; $($rest)+);
         $crate::rsgc::Gc::new(*$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
-    ($cps: ident; let $binder: ident = #% $prim: ident ($h: expr) $args: ident ... @ $span: expr; $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: ident $args: ident ... @ $span: expr; $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let args = $crate::rsgc::alloc::array::Array::from_slice(*$cps.ctx, $args);
-        let e = $crate::cps::term::Expression::PrimCall($prim, args, $h, $span);
+        let e = $crate::cps::term::Expression::PrimCall($prim, args, $span);
         let rv = $binder.clone();
         let inner = with_cps!($cps; $($rest)+);
         $crate::rsgc::Gc::new(*$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
-    ($cps: ident; let $binder: ident = #% $prim: ident ($h: expr) $args: ident ...; $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: ident $args: ident ...; $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let rv = $binder.clone();
-        let e = $crate::cps::term::Expression::PrimCall($prim, $args, $h, $crate::runtime::value::Value::new(false));
+        let e = $crate::cps::term::Expression::PrimCall($prim, $args, $crate::runtime::value::Value::new(false));
         let inner = with_cps!($cps; $($rest)+);
         $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
-    ($cps: ident; let $binder: ident = #% $prim: literal ($h: expr) $args: ident ... @ $span: expr; $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: literal $args: ident ... @ $span: expr; $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let rv = $binder.clone();
         let name = $crate::runtime::value::Symbol::from_str($cps.ctx, $prim);
-        let e = $crate::cps::term::Expression::PrimCall(name.into(), $args, $h, $span);
+        let e = $crate::cps::term::Expression::PrimCall(name.into(), $args, $span);
         let inner = with_cps!($cps; $($rest)+);
         $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};
 
-    ($cps: ident; let $binder: ident = #% $prim: literal ($h: expr) $args: ident ...; $($rest:tt)+) => {{
+    ($cps: ident; let $binder: ident = #% $prim: literal $args: ident ...; $($rest:tt)+) => {{
         let $binder = $cps.fresh_variable(stringify!($binder));
         let rv = $binder.clone();
         let name = $crate::runtime::value::Symbol::from_str($cps.ctx, $prim);
-        let e = $crate::cps::term::Expression::PrimCall(name.into(), $args, $h, $crate::runtime::value::Value::new(false));
+        let e = $crate::cps::term::Expression::PrimCall(name.into(), $args, $crate::runtime::value::Value::new(false));
         let inner = with_cps!($cps; $($rest)+);
         $crate::rsgc::Gc::new(&$cps.ctx, $crate::cps::term::Term::Let(rv, e, inner))
     }};

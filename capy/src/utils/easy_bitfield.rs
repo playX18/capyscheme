@@ -31,8 +31,8 @@ use std::{marker::PhantomData, sync::atomic::Ordering};
 ///
 /// # Parameters
 /// - `S`: Storage container for bitfield, must be larger or equal to `SIZE`.
-/// - `T`: Type to store in a bitfield, must implement [`ToBitfield`](ToBitfield) and
-///   [`FromBitfield`](FromBitfield) traits, this allows us to also encode booleans and enums
+/// - `T`: Type to store in a bitfield, must implement [`ToBitfield`] and
+///   [`FromBitfield`] traits, this allows us to also encode booleans and enums
 ///   easily in bitfield.
 /// - `POSITION`: position of bitfield in storage container, must not be out of bounds.
 /// - `SIZE`: Size of the bitfield, note that if T is u32 and we set size to 16 then only

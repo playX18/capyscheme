@@ -291,7 +291,7 @@ pub enum TermKind<'gc> {
 
     Let(Let<'gc>),
     Fix(Fix<'gc>),
-    /// receive (<formals> . <opt-formal>) <producer> <consumer>:
+    /// receive `(<formals> . <opt-formal>) <producer> <consumer>`:
     ///
     /// Execute `<producer>` and bind the result to <formals>, then
     /// execute `<consumer>` with the bound values.

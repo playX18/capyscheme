@@ -69,6 +69,7 @@ macro_rules! call_signature {
     }
 }
 
+pub mod bytecompiler;
 pub mod debuginfo;
 pub mod linkutils;
 pub mod ssa;

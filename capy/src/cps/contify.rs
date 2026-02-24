@@ -33,7 +33,6 @@ use std::cell::Cell;
 use crate::rsgc::{
     Gc,
     alloc::{Array, ArrayRef},
-    barrier::{self},
     cell::Lock,
     traits::IterGc,
 };
@@ -48,8 +47,8 @@ use crate::{
     utils::fixedpoint,
 };
 
-/// A pair of (return_cont, handler_cont)
-type ContPair<'gc> = (LVarRef<'gc>, LVarRef<'gc>);
+/// Return continuation used for contification.
+type ContPair<'gc> = LVarRef<'gc>;
 
 /// Entry point: repeatedly applies `rec` until no further contifiable
 /// opportunities remain (idempotent fixed point).
@@ -114,7 +113,7 @@ impl<'gc> Func<'gc> {
     /// tail-calls (only direct tail calls counted; used to build the
     /// call graph restricted to sibling bindings inside the same `Fix`).
     pub fn tailcalls(&self) -> Set<LVarRef<'gc>> {
-        self.body().tailcalls(self.return_cont, self.handler_cont)
+        self.body().tailcalls(self.return_cont)
     }
 }
 
@@ -122,27 +121,25 @@ impl<'gc> Term<'gc> {
     /// Traverses term and records any `App` whose
     /// continuation equals the given return continuation,
     /// indicating a tail call site.
-    pub fn tailcalls(&self, retc: LVarRef<'gc>, reth: LVarRef<'gc>) -> Set<LVarRef<'gc>> {
+    pub fn tailcalls(&self, retc: LVarRef<'gc>) -> Set<LVarRef<'gc>> {
         match self {
-            Self::Fix(_, body) | Self::Let(_, _, body) => body.tailcalls(retc, reth),
+            Self::Fix(_, body) | Self::Let(_, _, body) => body.tailcalls(retc),
 
             Self::Letk(ks, body) => {
-                let body_tc = body.tailcalls(retc, reth);
+                let body_tc = body.tailcalls(retc);
                 ks.iter().fold(body_tc, |mut acc, k| {
-                    acc.extend(k.body().tailcalls(retc, reth));
+                    acc.extend(k.body().tailcalls(retc));
                     acc
                 })
             }
 
-            Self::App(Atom::Local(f), c, h, m, ..) if *c == retc && *h == reth => {
-                [*f].into_iter().collect()
-            }
+            Self::App(Atom::Local(f), c, m, ..) if *c == retc => [*f].into_iter().collect(),
 
             _ => Set::default(),
         }
     }
 
-    /// Attempts to discover a single common (return_cont, handler_cont) pair
+    /// Attempts to discover a single common return continuation
     /// for all *external* tail calls within the given set `ns` of functions.
     ///
     /// The lattice `SingleValueSet`:
@@ -151,7 +148,7 @@ impl<'gc> Term<'gc> {
     /// * Top     : conflict (multiple distinct pairs or interfering uses)
     ///
     /// `ignore` temporarily suppresses counting of a function's own
-    /// (return, handler) pair during recursive descent in its body
+    /// return continuation during recursive descent in its body
     /// to avoid self-bias when analyzing mutually recursive groups.
     pub fn common_return_cont(
         &self,
@@ -160,7 +157,7 @@ impl<'gc> Term<'gc> {
     ) -> SingleValueSet<ContPair<'gc>> {
         match self {
             Self::Let(_, expr, body) => match expr {
-                Expression::PrimCall(_, args, _, _) => {
+                Expression::PrimCall(_, args, _) => {
                     if args
                         .iter()
                         .filter_map(|arg| match arg {
@@ -185,9 +182,7 @@ impl<'gc> Term<'gc> {
             Self::Fix(funs, body) => {
                 funs.iter()
                     .fold(body.common_return_cont(ns, ignore), |acc, fun| {
-                        let new_ignore = ns
-                            .contains(&fun.binding())
-                            .then_some((fun.return_cont, fun.handler_cont));
+                        let new_ignore = ns.contains(&fun.binding()).then_some(fun.return_cont);
                         acc.join(fun.body().common_return_cont(ns, new_ignore))
                     })
             }
@@ -207,7 +202,7 @@ impl<'gc> Term<'gc> {
                 }
             }
 
-            Self::App(Atom::Local(fun), retc, reth, args, _) => {
+            Self::App(Atom::Local(fun), retc, args, _) => {
                 if args
                     .iter()
                     .filter_map(|arg| match arg {
@@ -219,8 +214,8 @@ impl<'gc> Term<'gc> {
                     return SingleValueSet::Top;
                 }
 
-                if ns.contains(fun) && ignore != Some((*retc, *reth)) {
-                    return SingleValueSet::Singleton((*retc, *reth));
+                if ns.contains(fun) && ignore != Some(*retc) {
+                    return SingleValueSet::Singleton(*retc);
                 }
 
                 SingleValueSet::Bottom
@@ -232,7 +227,7 @@ impl<'gc> Term<'gc> {
         }
     }
 
-    /// Returns a list of (function-name-set, common_return/handler pair) for
+    /// Returns a list of (function-name-set, common return continuation) for
     /// all SCCs in the tail-call graph that are eligible for contification.
     /// SCCs without a unique common continuation pair are discarded.
     pub fn contifiables(&self) -> Vec<(Set<LVarRef<'gc>>, ContPair<'gc>)> {
@@ -283,19 +278,19 @@ impl<'gc> Term<'gc> {
     }
 
     /// Contifies the group `ns` (a set of mutually recursive function
-    /// bindings) assuming they share the continuation pair `rc`.
+    /// bindings) assuming they share the return continuation `rc`.
     ///
     /// Steps:
     /// 1. Split functions: (to_contify, untouched).
     /// 2. Convert each target function into a `Cont::Local`, substituting
-    ///    its individual (return, handler) with the shared `rc` pair.
+    ///    its individual return continuation with the shared `rc`.
     /// 3. Rebuild the surrounding `Fix` with any untouched functions.
     /// 4. Insert the new continuations via a `Letk`, pushing them down
     ///    as deep as possible (to narrow scope) using `push_down`.
     /// 5. Rewrite tail `App`s to these functions into `Continue`.
     ///
     /// `ns`: set of function bindings to contify.
-    /// `rc`: (return_cont, handler_cont) chosen by `common_return_cont`.
+    /// `rc`: return_cont chosen by `common_return_cont`.
     pub fn contify(
         &self,
         ns: &Set<LVarRef<'gc>>,
@@ -313,11 +308,8 @@ impl<'gc> Term<'gc> {
         let contified: ArrayRef<'_, ContRef> = to_contify
             .into_iter()
             .map(|f| {
-                // Substitute each function's own (ret, handler) pair with the shared one
                 let subst_map: Map<LVarRef<'gc>, LVarRef<'gc>> =
-                    [(f.return_cont(), rc.0), (f.handler_cont, rc.1)]
-                        .into_iter()
-                        .collect();
+                    [(f.return_cont(), rc)].into_iter().collect();
 
                 Gc::new(
                     *ctx,
@@ -332,7 +324,6 @@ impl<'gc> Term<'gc> {
 
                         free_vars: Lock::new(None),
                         reified: Cell::new(false),
-                        handler: Lock::new(rc.1),
                         cold: false,
                         meta: f.meta,
                     },
@@ -444,7 +435,7 @@ fn push_down<'gc>(
 /// continuation invocations (`Continue`). Traverses structure.
 fn transform_apps<'gc>(t: TermRef<'gc>, ns: &Set<LVarRef<'gc>>, ctx: Context<'gc>) -> TermRef<'gc> {
     match *t {
-        Term::App(Atom::Local(f), _, _, args, src) if ns.contains(&f) => {
+        Term::App(Atom::Local(f), _, args, src) if ns.contains(&f) => {
             // Tail call now becomes a continuation jump.
             Gc::new(*ctx, Term::Continue(f, args, src))
         }
@@ -531,10 +522,9 @@ impl<'gc> Term<'gc> {
                 TermRef::new(*ctx, Self::Fix(funs, body))
             }
 
-            Self::App(prev_func, prev_k, prev_h, prev_args, src) => {
+            Self::App(prev_func, prev_k, prev_args, src) => {
                 let func = prev_func.subst(ctx, subst);
                 let k = subst.subst(*prev_k);
-                let h = subst.subst(*prev_h);
 
                 let args = prev_args
                     .iter()
@@ -546,15 +536,11 @@ impl<'gc> Term<'gc> {
                     Array::from_slice(*ctx, args)
                 };
 
-                if &func == prev_func
-                    && *prev_k == k
-                    && *prev_h == h
-                    && Gc::ptr_eq(args, *prev_args)
-                {
+                if &func == prev_func && *prev_k == k && Gc::ptr_eq(args, *prev_args) {
                     return self;
                 }
 
-                TermRef::new(*ctx, Self::App(func, k, h, args, *src))
+                TermRef::new(*ctx, Self::App(func, k, args, *src))
             }
 
             Self::Continue(prev_k, prev_args, src) => {
@@ -662,21 +648,15 @@ impl<'gc> Cont<'gc> {
         ctx: Context<'gc>,
         subst: &Map<LVarRef<'gc>, LVarRef<'gc>>,
     ) -> ContRef<'gc> {
-        let handler = subst.subst(self.handler.get());
         let body = self.body().subst(ctx, subst);
-        let k = self.with_body(ctx, body);
-
-        barrier::field!(Gc::write(*ctx, k), Cont, handler)
-            .unlock()
-            .set(handler);
-        k
+        self.with_body(ctx, body)
     }
 }
 
 impl<'gc> Expression<'gc> {
     pub fn subst(self, ctx: Context<'gc>, subst: &Map<LVarRef<'gc>, LVarRef<'gc>>) -> Self {
         match self {
-            Self::PrimCall(name, prev_args, h, src) => {
+            Self::PrimCall(name, prev_args, src) => {
                 let args = prev_args
                     .iter()
                     .map(|arg| arg.subst(ctx, subst))
@@ -686,8 +666,7 @@ impl<'gc> Expression<'gc> {
                 } else {
                     Array::from_slice(*ctx, args)
                 };
-                let h = subst.subst(h);
-                Self::PrimCall(name, args, h, src)
+                Self::PrimCall(name, args, src)
             }
         }
     }

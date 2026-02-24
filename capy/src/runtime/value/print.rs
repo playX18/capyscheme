@@ -28,12 +28,40 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x.is_pair() {
             write!(self.fmt, " ")?;
             self.print(x.car(), slashify, level)?;
-            write!(self.fmt, " ")?;
             self.print_cdr(x.cdr(), slashify, level, length.saturating_sub(1))
         } else {
             write!(self.fmt, " . ")?;
             self.print(x, slashify, level)?;
             write!(self.fmt, ")")
+        }
+    }
+
+    fn quoter_prefix(&self, x: Value<'gc>) -> Option<&'static str> {
+        if !x.is_pair() {
+            return None;
+        }
+
+        let cdr = x.cdr();
+        if !cdr.is_pair() || !cdr.cdr().is_null() {
+            return None;
+        }
+
+        let car = x.car();
+        if !car.is::<Symbol>() {
+            return None;
+        }
+
+        let symbol = car.downcast::<Symbol>();
+        match symbol.as_str().as_ref() {
+            "quote" => Some("'"),
+            "quasiquote" => Some("`"),
+            "unquote" => Some(","),
+            "unquote-splicing" => Some(",@"),
+            "syntax" => Some("#'"),
+            "quasisyntax" => Some("#`"),
+            "unsyntax" => Some("#,"),
+            "unsyntax-splicing" => Some("#,@"),
+            _ => None,
         }
     }
 
@@ -67,6 +95,9 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
             write!(self.fmt, "...")
         } else if !x.is_pair() {
             self.patom(x, slashify, level)
+        } else if let Some(prefix) = self.quoter_prefix(x) {
+            write!(self.fmt, "{}", prefix)?;
+            self.print(x.cdr().car(), slashify, level.saturating_sub(1))
         } else {
             write!(self.fmt, "(")?;
             self.print(x.car(), slashify, level.saturating_sub(1))?;
@@ -86,7 +117,7 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x.is::<Str>() {
             let s = x.downcast::<Str>();
             if slashify {
-                write!(self.fmt, "\"{s:?}\"")
+                write!(self.fmt, "{s:?}")
             } else {
                 write!(self.fmt, "{s}")
             }
@@ -111,7 +142,7 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
             let vec = x.downcast::<Vector>();
             write!(self.fmt, "#(")?;
             for (i, item) in vec.iter().enumerate() {
-                if i > 0 && i < vec.len() - 1 {
+                if i > 0 {
                     write!(self.fmt, " ")?;
                 }
                 self.print(item.get(), slashify, level.saturating_sub(1))?;
@@ -127,7 +158,7 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
             let tuple = x.downcast::<Tuple>();
             write!(self.fmt, "#tuple(")?;
             for (i, item) in tuple.iter().enumerate() {
-                if i > 0 && i < tuple.len() - 1 {
+                if i > 0 {
                     write!(self.fmt, " ")?;
                 }
                 self.print(item.get(), slashify, level.saturating_sub(1))?;

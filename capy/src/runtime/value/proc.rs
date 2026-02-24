@@ -1,9 +1,13 @@
-use std::{collections::HashMap, sync::LazyLock};
+use std::{collections::HashMap, ops::Index, sync::LazyLock};
 
-use crate::rsgc::{
-    Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor,
+use crate::{
+    IndexWrite, WeakProcessor,
+    bytecode::code_block::CodeBlock,
+    object::VTable,
+    rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
 };
 use easy_bitfield::{BitField, BitFieldTrait};
+use mmtk::AllocationSemantics;
 
 use crate::runtime::{
     Context,
@@ -22,7 +26,6 @@ pub type NativeFn<'gc> = extern "C-unwind" fn(
     rands: *const Value<'gc>,
     num_rands: usize,
     retk: Value<'gc>,
-    reth: Value<'gc>,
 ) -> NativeReturn<'gc>;
 
 pub type NativeContinuation<'gc> = extern "C-unwind" fn(
@@ -457,3 +460,94 @@ pub struct SavedCall<'gc> {
     pub from_procedure: bool,
     pub rands: ArrayRef<'gc, Value<'gc>>,
 }
+
+#[repr(C)]
+pub struct Closure2<'gc> {
+    pub header: ScmHeader,
+    pub code_block: Gc<'gc, CodeBlock<'gc>>,
+    pub nfree: usize,
+    pub free: [Lock<Value<'gc>>; 0],
+}
+
+impl<'gc> Closure2<'gc> {
+    extern "C" fn compute_size(this: GCObject) -> usize {
+        unsafe {
+            let this = this.to_address().as_ref::<Self>();
+            size_of::<Value>() * this.nfree
+        }
+    }
+
+    extern "C" fn trace(this: GCObject, visitor: &mut Visitor) {
+        unsafe {
+            let this = this.to_address().as_mut_ref::<Self>();
+            visitor.trace(&mut this.code_block);
+            for i in 0..this.nfree {
+                visitor.trace(this.free.as_mut_ptr().add(i).as_mut().unwrap());
+            }
+        }
+    }
+
+    extern "C" fn weak(this: GCObject, weak_processor: &mut WeakProcessor) {
+        let _ = this;
+        let _ = weak_processor;
+    }
+
+    pub const VTABLE: &'static VTable = &VTable {
+        alignment: align_of::<Closure2>(),
+        compute_alignment: None,
+        instance_size: size_of::<Self>(),
+        compute_size: Some(Self::compute_size),
+        trace: Self::trace,
+        weak_proc: Self::weak,
+        type_name: "#<procedure>",
+    };
+
+    pub fn new(
+        ctx: Context<'gc>,
+        code_block: Gc<'gc, CodeBlock<'gc>>,
+        nfree: usize,
+    ) -> Gc<'gc, Self> {
+        unsafe {
+            let size = size_of::<Self>() + (size_of::<Value>() * nfree);
+            let ptr = ctx.raw_allocate(
+                size,
+                align_of::<Self>(),
+                Self::VTABLE,
+                AllocationSemantics::Default,
+            );
+            let this = ptr.to_address().as_mut_ref::<Self>();
+            this.header = ScmHeader::with_type_bits(TypeCode8::CLOSURE2.bits() as _);
+            this.code_block = code_block;
+            this.nfree = nfree;
+
+            for i in 0..nfree {
+                this.free
+                    .as_mut_ptr()
+                    .add(i)
+                    .write(Lock::new(Value::undefined()));
+            }
+
+            Gc::from_gcobj(ptr)
+        }
+    }
+}
+
+unsafe impl<'gc> Tagged for Closure2<'gc> {
+    const TC8: TypeCode8 = TypeCode8::CLOSURE2;
+    const TYPE_NAME: &'static str = "#<procedure>";
+}
+
+impl<'gc> Index<usize> for Closure2<'gc> {
+    type Output = Lock<Value<'gc>>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        debug_assert!(
+            index < self.nfree,
+            "index out of bounds: index={index}, len={nfree}",
+            nfree = self.nfree
+        );
+        unsafe { self.free.as_ptr().add(index).as_ref_unchecked() }
+    }
+}
+
+unsafe impl<'gc> IndexWrite<usize> for Closure2<'gc> {}

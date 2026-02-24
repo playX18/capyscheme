@@ -5,7 +5,9 @@
 //! in order to make them callable from compiled code.
 
 #![allow(dead_code, unused_variables)]
+use crate::prelude::PROCEDURES;
 use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
+use crate::runtime::vm::{default_exception_handler, default_retk as vm_default_retk};
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
     runtime::{
@@ -3852,7 +3854,7 @@ thunks! {
     ) -> () {
         unsafe {
             let retk = rands.read();
-            let args = std::slice::from_raw_parts(rands.add(2), nrands - 2);
+            let args = std::slice::from_raw_parts(rands.add(1), nrands - 1);
             let args = args.iter()
                 .rfold(Value::null(), |acc, v| Value::cons(ctx, *v, acc));
 
@@ -3940,6 +3942,29 @@ thunks! {
             source
         };
         Syntax::new(ctx, exp, wrap, module, source, properties).into()
+    }
+
+    pub fn exception_handler(
+        ctx: Context<'gc>
+    ) -> Value<'gc> {
+        let handler = ctx.exception_handler();
+        if let Some(handler) = handler {
+            handler
+        } else {
+            /* fetch default handler which returns to runtime */
+            let procs = PROCEDURES.fetch(*ctx);
+            let clos = procs.register_static_closure(ctx, default_exception_handler as _, Value::new(false));
+
+            clos.into()
+        }
+    }
+
+    pub fn default_retk(
+        ctx: Context<'gc>
+    ) -> Value<'gc> {
+        let procs = PROCEDURES.fetch(*ctx);
+        let clos = procs.register_static_cont_closure(ctx, vm_default_retk as _, Value::new(false));
+        clos.into()
     }
 }
 

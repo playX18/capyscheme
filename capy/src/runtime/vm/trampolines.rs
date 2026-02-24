@@ -97,17 +97,13 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
     let retk = builder
         .ins()
         .load(types::I64, ir::MemFlags::new(), rands, 0);
-    let reth = builder
-        .ins()
-        .load(types::I64, ir::MemFlags::new(), rands, 8);
 
     let sig = call_signature!(SystemV(
         I64, /* ctx */
         I64, /* rator */
         I64, /* rands */
         I64, /* num_rands */
-        I64, /* retk */
-        I64  /* reth */
+        I64  /* retk */
     ) -> (I64, I64));
     let sigref = builder.import_signature(sig);
 
@@ -155,13 +151,12 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
         offset_of!(State, runstack) as i32,
     );
 
-    let rands = builder.ins().iadd_imm(rands, 16);
-    let num_rands = builder.ins().iadd_imm(num_rands, -2);
+    let rands = builder.ins().iadd_imm(rands, 8);
+    let num_rands = builder.ins().iadd_imm(num_rands, -1);
 
-    let call =
-        builder
-            .ins()
-            .call_indirect(sigref, proc, &[ctx, rator, rands, num_rands, retk, reth]);
+    let call = builder
+        .ins()
+        .call_indirect(sigref, proc, &[ctx, rator, rands, num_rands, retk]);
     let code = builder.inst_results(call)[0];
     let value = builder.inst_results(call)[1];
 
