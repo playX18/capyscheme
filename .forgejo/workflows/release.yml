@@ -1,16 +1,16 @@
 on: 
   push: 
     tags: 
-      - '1.*'
+      - 'v1.*'
   workflow_dispatch:
   workflow_call:
 
 jobs: 
-  generate-changelog: 
+  generate_changelog: 
     name: Generate changelog
     runs-on: debian-trixie 
     outputs:
-      release-body: ${{ steps.git-cliff.outputs.release_body }}
+      release_body: ${{ steps.git-cliff.outputs.release_body }}
     steps: 
       - name: Checkout 
         uses: actions/checkout@v4
@@ -32,7 +32,7 @@ jobs:
         shell: bash
         id: git-cliff
         run: |
-          git-cliff --config cliff.toml --output CHANGELOG.md --latest --no-exec --gitea-repo ${{ forgejo.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
+          git-cliff --config cliff.toml --output CHANGELOG.md --latest --no-exec --gitea-repo ${{ github.repository }} --gitea-token ${{ secrets.CODEBERG_TOKEN }}
           git config user.name "playXE"
           git config user.email "adel.prokurov@gmail.com"
           if [ -n "$(git diff CHANGELOG.md)" ]; then 
@@ -51,7 +51,7 @@ jobs:
         
 
   release:
-    needs: [generate-changelog]
+    needs: [generate_changelog]
     runs-on: debian-trixie
     env:
       VERSION: ${{ github.ref_name }}
@@ -107,4 +107,4 @@ jobs:
           tag: ${{ env.VERSION }}
           title: Release v${{ env.VERSION }}
           release-notes: |
-            ${{ needs.generate-changelog.outputs.release-body }}
+            ${{ needs.generate_changelog.outputs.release_body }}
