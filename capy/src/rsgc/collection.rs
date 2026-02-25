@@ -2,6 +2,8 @@ use mmtk::{
     util::{ObjectReference, VMThread, VMWorkerThread},
     vm::{ActivePlan, GCThreadContext, ObjectTracer, SlotVisitor, slot::Slot},
 };
+use parking_lot::Mutex;
+use std::time::Instant;
 
 use crate::rsgc::{
     Gc, ObjectSlot,
@@ -15,11 +17,14 @@ use crate::rsgc::{
 #[derive(Default)]
 pub struct Collection;
 
+static GC_CYCLE_START: Mutex<Option<Instant>> = Mutex::new(None);
+
 impl mmtk::vm::Collection<MemoryManager> for Collection {
     fn stop_all_mutators<F>(_tls: mmtk::util::VMWorkerThread, mut mutator_visitor: F)
     where
         F: FnMut(&'static mut mmtk::Mutator<MemoryManager>),
     {
+        *GC_CYCLE_START.lock() = Some(Instant::now());
         let threads = &super::GarbageCollector::get().threads;
         threads.block_all_mutators_for_gc();
         unsafe { threads.flush_tlabs() };
@@ -31,6 +36,9 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
     fn resume_mutators(_tls: mmtk::util::VMWorkerThread) {
         let threads = &super::GarbageCollector::get().threads;
         threads.resume_all_mutators_from_gc();
+        if let Some(start) = GC_CYCLE_START.lock().take() {
+            crate::runtime::thread::record_stw_cycle(start.elapsed());
+        }
     }
 
     fn block_for_gc(tls: mmtk::util::VMMutatorThread) {

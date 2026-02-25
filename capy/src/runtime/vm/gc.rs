@@ -116,4 +116,21 @@ pub mod gc {
     pub fn reference_barrier(_x: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::undefined())
     }
+
+    #[scheme(name = "runtime-stats-enable!")]
+    pub fn runtime_stats_enable(enabled: bool) -> Value<'gc> {
+        crate::runtime::thread::set_runtime_stats_enabled(enabled);
+        nctx.return_(Value::undefined())
+    }
+
+    #[scheme(name = "runtime-stats-enabled?")]
+    pub fn runtime_stats_enabled() -> bool {
+        nctx.return_(crate::runtime::thread::runtime_stats_enabled())
+    }
+
+    #[scheme(name = "runtime-stats-report")]
+    pub fn runtime_stats_report() -> Value<'gc> {
+        let report = crate::runtime::thread::format_runtime_stats_report();
+        nctx.return_(Str::from_str(*ctx, &report).into())
+    }
 }

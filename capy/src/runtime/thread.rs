@@ -33,7 +33,11 @@ use crate::{
 use std::{
     cell::{Cell, UnsafeCell},
     ptr::NonNull,
-    sync::{Once, atomic::AtomicUsize},
+    sync::{
+        Once,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 /// cbindgen:ignore
@@ -379,6 +383,105 @@ impl<'gc> Drop for DeferYield<'gc> {
 /// Hardcoded limit for runstack to not make calls too slow and runstack too large.
 const RUNSTACK_SIZE: usize = 4096;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RuntimeStatsSnapshot {
+    pub gc_count: u64,
+    pub stw_time_ns: u64,
+    pub mutator_time_ns: u64,
+    pub io_wait_time_ns: u64,
+    pub blocking_wait_time_ns: u64,
+}
+
+static RUNTIME_STATS_ENABLED: AtomicBool = AtomicBool::new(false);
+static RUNTIME_STATS_GC_COUNT: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_STATS_STW_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_STATS_MUTATOR_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_STATS_IO_WAIT_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static RUNTIME_STATS_BLOCKING_WAIT_TIME_NS: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn duration_to_nanos(duration: Duration) -> u64 {
+    duration.as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn reset_runtime_stats() {
+    RUNTIME_STATS_GC_COUNT.store(0, Ordering::Relaxed);
+    RUNTIME_STATS_STW_TIME_NS.store(0, Ordering::Relaxed);
+    RUNTIME_STATS_MUTATOR_TIME_NS.store(0, Ordering::Relaxed);
+    RUNTIME_STATS_IO_WAIT_TIME_NS.store(0, Ordering::Relaxed);
+    RUNTIME_STATS_BLOCKING_WAIT_TIME_NS.store(0, Ordering::Relaxed);
+}
+
+pub fn runtime_stats_enabled() -> bool {
+    RUNTIME_STATS_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_runtime_stats_enabled(enabled: bool) {
+    let previous = RUNTIME_STATS_ENABLED.swap(enabled, Ordering::Relaxed);
+    if enabled && !previous {
+        reset_runtime_stats();
+    }
+}
+
+pub fn runtime_stats_snapshot() -> RuntimeStatsSnapshot {
+    RuntimeStatsSnapshot {
+        gc_count: RUNTIME_STATS_GC_COUNT.load(Ordering::Relaxed),
+        stw_time_ns: RUNTIME_STATS_STW_TIME_NS.load(Ordering::Relaxed),
+        mutator_time_ns: RUNTIME_STATS_MUTATOR_TIME_NS.load(Ordering::Relaxed),
+        io_wait_time_ns: RUNTIME_STATS_IO_WAIT_TIME_NS.load(Ordering::Relaxed),
+        blocking_wait_time_ns: RUNTIME_STATS_BLOCKING_WAIT_TIME_NS.load(Ordering::Relaxed),
+    }
+}
+
+pub(crate) fn record_stw_cycle(duration: Duration) {
+    if !runtime_stats_enabled() {
+        return;
+    }
+
+    RUNTIME_STATS_GC_COUNT.fetch_add(1, Ordering::Relaxed);
+    RUNTIME_STATS_STW_TIME_NS.fetch_add(duration_to_nanos(duration), Ordering::Relaxed);
+}
+
+pub(crate) fn record_mutator_time(duration: Duration) {
+    if !runtime_stats_enabled() {
+        return;
+    }
+
+    RUNTIME_STATS_MUTATOR_TIME_NS.fetch_add(duration_to_nanos(duration), Ordering::Relaxed);
+}
+
+pub(crate) fn record_io_wait_time(duration: Duration) {
+    if !runtime_stats_enabled() {
+        return;
+    }
+
+    RUNTIME_STATS_IO_WAIT_TIME_NS.fetch_add(duration_to_nanos(duration), Ordering::Relaxed);
+}
+
+pub(crate) fn record_blocking_wait_time(duration: Duration) {
+    if !runtime_stats_enabled() {
+        return;
+    }
+
+    RUNTIME_STATS_BLOCKING_WAIT_TIME_NS.fetch_add(duration_to_nanos(duration), Ordering::Relaxed);
+}
+
+fn format_duration_ns(ns: u64) -> String {
+    format!("{:.3}ms", (ns as f64) / 1_000_000.0)
+}
+
+pub fn format_runtime_stats_report() -> String {
+    let stats = runtime_stats_snapshot();
+    format!(
+        "runtime stats: gc-count={} stw-time={} mutator-time={} io-wait-time={} blocking-wait-time={}",
+        stats.gc_count,
+        format_duration_ns(stats.stw_time_ns),
+        format_duration_ns(stats.mutator_time_ns),
+        format_duration_ns(stats.io_wait_time_ns),
+        format_duration_ns(stats.blocking_wait_time_ns),
+    )
+}
+
 pub struct State<'gc> {
     pub(crate) dynamic_state: DynamicState<'gc>,
     pub(crate) runstack: Cell<Address>,
@@ -530,12 +633,14 @@ impl Scheme {
     where
         F: for<'gc> FnOnce(Context<'gc>) -> T,
     {
+        let mutator_start = Instant::now();
         let (result, should_gc) = self.mutator.mutate(|mc, _| {
             let ctx = Context { mc };
             let result = f(ctx);
             unsafe { (*ctx.state().shadow_stack.get()).clear() };
             (result, mc.take_yieldpoint() != 0)
         });
+        record_mutator_time(mutator_start.elapsed());
 
         if should_gc {
             self.mutator.yieldpoint();
@@ -659,33 +764,42 @@ impl Scheme {
                 }
 
                 Yield::Operation(op) => {
+                    let wait_start = Instant::now();
                     op();
+                    record_blocking_wait_time(wait_start.elapsed());
 
                     result = Err(Yield::None);
                     continue; // retry
                 }
 
                 Yield::OperationWithReturn(op) => {
+                    let wait_start = Instant::now();
                     next = Some(op());
+                    record_blocking_wait_time(wait_start.elapsed());
                     result = Err(Yield::None);
                     continue; // retry
                 }
 
                 Yield::Lock(lock) => {
+                    let wait_start = Instant::now();
                     lock.lock();
+                    record_blocking_wait_time(wait_start.elapsed());
 
                     result = Err(Yield::None);
                     continue; // retry
                 }
 
                 Yield::Wait(wait) => {
+                    let wait_start = Instant::now();
                     wait.wait();
+                    record_blocking_wait_time(wait_start.elapsed());
 
                     result = Err(Yield::None);
                     continue; // retry
                 }
 
                 Yield::PollRead(fd) => unsafe {
+                    let wait_start = Instant::now();
                     let mut readfs = [rustix::event::FdSetElement::default(); 1];
                     rustix::event::fd_set_insert(&mut readfs, fd);
 
@@ -702,10 +816,13 @@ impl Scheme {
                         Err(_) => (),
                     }
 
+                    record_io_wait_time(wait_start.elapsed());
+
                     result = Err(Yield::None);
                 },
 
                 Yield::PollWrite(fd) => unsafe {
+                    let wait_start = Instant::now();
                     let mut writefs = [rustix::event::FdSetElement::default(); 1];
                     rustix::event::fd_set_insert(&mut writefs, fd);
 
@@ -721,6 +838,8 @@ impl Scheme {
                         Ok(_) => (),
                         Err(_) => (),
                     }
+
+                    record_io_wait_time(wait_start.elapsed());
 
                     result = Err(Yield::None);
                 },

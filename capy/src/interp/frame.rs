@@ -46,7 +46,9 @@ impl<'gc> ActivationFrame<'gc> {
 
     pub fn constant(&self, ix: usize) -> Value<'gc> {
         let cb = self.code_block();
-        cb.constants.downcast::<Vector>()[ix].get()
+        let constants = cb.constants.downcast::<Vector>();
+        debug_assert!(ix < constants.len());
+        unsafe { constants.get_unchecked(ix).get() }
     }
 
     pub fn argument(&self, ix: usize) -> Value<'gc> {

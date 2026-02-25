@@ -83,6 +83,9 @@
             (set! %fresh-auto-compile #t))
           (define out '())
 
+          (when (arg-results-ref res "runtime-stats")
+            (set! out (cons `((@@ (capy) runtime-stats-enable!) #t) out)))
+
           (when (arg-results-ref res "script")
             (set! arg0 (arg-results-ref res "script"))
             (set! interactive? #f)
@@ -90,6 +93,8 @@
           (when (arg-results-ref res "command")
             (set! interactive? #f)
             (set! out (cons `((@@ (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
+          (when (and (arg-results-ref res "runtime-stats") (not interactive?))
+            (set! out (cons `((@@ (capy) format) #t "~a~%" ((@@ (capy) runtime-stats-report))) out)))
           (finish (arg-results-rest res) out))))
 
     (add-flag! parser
@@ -153,6 +158,10 @@
       "fresh-auto-compile"
       (defaults-to #f)
       (help "Enable fresh auto compilation of loaded files"))
+    (add-flag! parser
+      "runtime-stats"
+      (defaults-to #f)
+      (help "Enable runtime timing/counter statistics"))
     (argparser-add-separator! parser "Logging options:")
     (add-flag! parser
       "log-trace"
@@ -210,6 +219,7 @@
     (define r7rs-mode (arg-results-ref res "r7rs"))
     (define r6rs-mode (arg-results-ref res "r6rs"))
     (define verbose (arg-results-ref res "verbose"))
+    (define runtime-stats (arg-results-ref res "runtime-stats"))
     (define backtrace (not (arg-results-ref res "nobacktrace")))
     (if (and r7rs-mode r6rs-mode)
       (error "Cannot specify both --r7rs and --r6rs modes"))
@@ -219,6 +229,9 @@
 
     (when (arg-results-ref res "help")
       (print-help))
+
+    (when runtime-stats
+      ((@@ (capy) runtime-stats-enable!) #t))
 
     (define module-name (or (parse-module (arg-results-ref res "module"))
                          '(capy user)))
@@ -254,7 +267,9 @@
                                #f))
                   (when verbose
                     (format #t ";; Compiled ~a -> ~a~%" file out))))))
-          source-files))))
+          source-files)
+        (when runtime-stats
+          ((@@ (capy) format) #t "~a~%" ((@@ (capy) runtime-stats-report)))))))
 
   (add-option! parser
     "output"
@@ -276,6 +291,11 @@
     "verbose"
     (abbreviation "v")
     (help "Enable verbose output"))
+
+  (add-flag! parser
+    "runtime-stats"
+    (defaults-to #f)
+    (help "Enable runtime timing/counter statistics"))
 
   (add-multi-option! parser
     "load-path"

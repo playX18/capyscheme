@@ -166,68 +166,45 @@ impl<'gc> FromValue<'gc> for bool {
     }
 }
 
-impl<'gc> FromValue<'gc> for u8 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "u8", value));
-        };
-
-        n.exact_integer_to_u8()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "u8", value))
-    }
+macro_rules! impl_from_value_number {
+    ($($ty:ty => $method:ident),* $(,)?) => { $(
+        impl<'gc> FromValue<'gc> for $ty {
+            fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
+                let Some(n) = value.number() else {
+                    return Err(ConversionError::type_mismatch(0, stringify!($ty), value));
+                };
+                n.$method()
+                    .ok_or_else(|| ConversionError::type_mismatch(0, stringify!($ty), value))
+            }
+        }
+    )* };
 }
 
-impl<'gc> FromValue<'gc> for i8 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "i8", value));
-        };
-
-        n.exact_integer_to_i8()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "i8", value))
-    }
-}
-
-impl<'gc> FromValue<'gc> for i16 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "i16", value));
-        };
-
-        n.exact_integer_to_i16()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "i16", value))
-    }
-}
-
-impl<'gc> FromValue<'gc> for u16 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "u16", value));
-        };
-
-        n.exact_integer_to_u16()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "u16", value))
-    }
-}
+impl_from_value_number!(
+    u8 => exact_integer_to_u8,
+    i8 => exact_integer_to_i8,
+    i16 => exact_integer_to_i16,
+    u16 => exact_integer_to_u16,
+    u32 => exact_integer_to_u32,
+    usize => exact_integer_to_usize,
+    i64 => exact_integer_to_i64,
+    isize => exact_integer_to_isize,
+    u64 => exact_integer_to_u64,
+    u128 => exact_integer_to_u128,
+);
 
 impl<'gc> FromValue<'gc> for i32 {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is_int32() {
-            return Ok(value.as_int32());
+            Ok(value.as_int32())
         } else {
-            return Err(ConversionError::type_mismatch(0, "i32", value));
+            // Fall back to generic number path for bignums that fit in i32
+            let Some(n) = value.number() else {
+                return Err(ConversionError::type_mismatch(0, "i32", value));
+            };
+            n.exact_integer_to_i32()
+                .ok_or_else(|| ConversionError::type_mismatch(0, "i32", value))
         }
-    }
-}
-
-impl<'gc> FromValue<'gc> for u32 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "u32", value));
-        };
-
-        n.exact_integer_to_u32()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "u32", value))
     }
 }
 
@@ -251,50 +228,6 @@ impl<'gc> FromValue<'gc> for f64 {
     }
 }
 
-impl<'gc> FromValue<'gc> for usize {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "usize", value));
-        };
-
-        n.exact_integer_to_usize()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "usize", value))
-    }
-}
-
-impl<'gc> FromValue<'gc> for i64 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "i64", value));
-        };
-
-        n.exact_integer_to_i64()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "i64", value))
-    }
-}
-
-impl<'gc> FromValue<'gc> for isize {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "isize", value));
-        };
-
-        n.exact_integer_to_isize()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "isize", value))
-    }
-}
-
-impl<'gc> FromValue<'gc> for u64 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "u64", value));
-        };
-
-        n.exact_integer_to_u64()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "u64", value))
-    }
-}
-
 impl<'gc, T: Tagged> FromValue<'gc> for Gc<'gc, T> {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is::<T>() {
@@ -311,76 +244,41 @@ impl<'gc> IntoValue<'gc> for Value<'gc> {
     }
 }
 
-impl<'gc> IntoValue<'gc> for usize {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_usize(mc, self).into_value(mc)
-    }
+macro_rules! impl_into_value_number {
+    ($($ty:ty => $method:ident),* $(,)?) => { $(
+        impl<'gc> IntoValue<'gc> for $ty {
+            fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+                Number::$method(mc, self).into_value(mc)
+            }
+        }
+    )* };
 }
 
-impl<'gc> IntoValue<'gc> for isize {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_isize(mc, self).into_value(mc)
-    }
+macro_rules! impl_into_value_number_nomc {
+    ($($ty:ty => $method:ident),* $(,)?) => { $(
+        impl<'gc> IntoValue<'gc> for $ty {
+            fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
+                Number::$method(self).into_value(mc)
+            }
+        }
+    )* };
 }
 
-impl<'gc> IntoValue<'gc> for i64 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_i64(mc, self).into_value(mc)
-    }
-}
+impl_into_value_number!(
+    usize => from_usize,
+    isize => from_isize,
+    i64 => from_i64,
+    u64 => from_u64,
+    u128 => from_u128,
+    u32 => from_u32,
+);
 
-impl<'gc> IntoValue<'gc> for u64 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_u64(mc, self).into_value(mc)
-    }
-}
-
-impl<'gc> FromValue<'gc> for u128 {
-    fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
-        let Some(n) = value.number() else {
-            return Err(ConversionError::type_mismatch(0, "u128", value));
-        };
-
-        n.exact_integer_to_u128()
-            .ok_or_else(|| ConversionError::type_mismatch(0, "u128", value))
-    }
-}
-
-impl<'gc> IntoValue<'gc> for u128 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_u128(mc, self).into_value(mc)
-    }
-}
-
-impl<'gc> IntoValue<'gc> for u32 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_u32(mc, self).into_value(mc)
-    }
-}
-
-impl<'gc> IntoValue<'gc> for u16 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_u16(self).into_value(mc)
-    }
-}
-
-impl<'gc> IntoValue<'gc> for u8 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_u8(self).into_value(mc)
-    }
-}
-
-impl<'gc> IntoValue<'gc> for i16 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_i16(self).into_value(mc)
-    }
-}
-
-impl<'gc> IntoValue<'gc> for i8 {
-    fn into_value(self, mc: Context<'gc>) -> Value<'gc> {
-        Number::from_i8(self).into_value(mc)
-    }
-}
+impl_into_value_number_nomc!(
+    u16 => from_u16,
+    u8 => from_u8,
+    i16 => from_i16,
+    i8 => from_i8,
+);
 
 impl<'gc> IntoValue<'gc> for () {
     fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
@@ -394,33 +292,33 @@ impl<'gc> IntoValue<'gc> for f32 {
     }
 }
 
-impl<'gc> Into<Value<'gc>> for i32 {
-    fn into(self) -> Value<'gc> {
-        Value::from_i32(self)
+impl<'gc> From<i32> for Value<'gc> {
+    fn from(v: i32) -> Self {
+        Value::from_i32(v)
     }
 }
 
-impl<'gc> Into<Value<'gc>> for f64 {
-    fn into(self) -> Value<'gc> {
-        Value::from_f64(self)
+impl<'gc> From<f64> for Value<'gc> {
+    fn from(v: f64) -> Self {
+        Value::from_f64(v)
     }
 }
 
-impl<'gc> Into<Value<'gc>> for bool {
-    fn into(self) -> Value<'gc> {
-        Value::from_bool(self)
+impl<'gc> From<bool> for Value<'gc> {
+    fn from(v: bool) -> Self {
+        Value::from_bool(v)
     }
 }
 
-impl<'gc> Into<Value<'gc>> for () {
-    fn into(self) -> Value<'gc> {
+impl<'gc> From<()> for Value<'gc> {
+    fn from(_: ()) -> Self {
         Value::undefined()
     }
 }
 
-impl<'gc> Into<Value<'gc>> for char {
-    fn into(self) -> Value<'gc> {
-        Value::from_char(self)
+impl<'gc> From<char> for Value<'gc> {
+    fn from(v: char) -> Self {
+        Value::from_char(v)
     }
 }
 
