@@ -25,7 +25,7 @@ use crate::{
     call_signature,
     runtime::{
         State,
-        value::{Closure, NativeProc, Vector},
+        value::{Closure, NativeProc},
     },
 };
 
@@ -107,17 +107,11 @@ fn scheme_native_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Co
     ) -> (I64, I64));
     let sigref = builder.import_signature(sig);
 
-    let fv = builder.ins().load(
-        types::I64,
-        MemFlags::new(),
-        rator,
-        offset_of!(Closure, free) as i32,
-    );
     let native_data = builder.ins().load(
         types::I64,
         MemFlags::new(),
-        fv,
-        Vector::OFFSET_OF_DATA as i32,
+        rator,
+        Closure::DATA_OFFSET as i32,
     );
 
     let proc = builder.ins().load(
@@ -256,18 +250,11 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
     ) -> (I64, I64));
     let sigref = builder.import_signature(sig);
 
-    let fv = builder.ins().load(
-        types::I64,
-        MemFlags::new(),
-        rator,
-        offset_of!(Closure, free) as i32,
-    );
-
     let native_data = builder.ins().load(
         types::I64,
         MemFlags::new(),
-        fv,
-        Vector::OFFSET_OF_DATA as i32,
+        rator,
+        Closure::DATA_OFFSET as i32,
     );
 
     let proc = builder.ins().load(

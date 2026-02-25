@@ -5,7 +5,8 @@
 //! in order to make them callable from compiled code.
 
 #![allow(dead_code, unused_variables)]
-use crate::prelude::PROCEDURES;
+use crate::cell::Lock;
+use crate::prelude::{CLOSURE_VTABLE, PROCEDURES};
 use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
 use crate::runtime::vm::{default_exception_handler, default_retk as vm_default_retk};
 use crate::{
@@ -549,33 +550,38 @@ thunks! {
         is_cont: bool,
         meta: Value<'gc>
     ) -> Value<'gc> {
-
-        let free = if nfree == 0 {
-            Value::new(false)
-        } else {
-            Vector::new::<false>(*ctx, nfree, Value::undefined()).into()
-        };
-
         let meta = if meta == Value::new(false) {
             Value::null()
         } else {
             meta
         };
 
+        unsafe {
+            let clos = ctx.mc.raw_allocate(
+                std::mem::size_of::<Closure>() + nfree * 8,
+                align_of::<Closure>(),
+                CLOSURE_VTABLE,
+                AllocationSemantics::Default
+            );
 
-        let clos = Closure {
-            header: ScmHeader::with_type_bits(if is_cont {
+            let header = ScmHeader::with_type_bits(if is_cont {
                 TypeCode16::CLOSURE_K.bits()
             } else {
                 TypeCode16::CLOSURE_PROC.bits()
-            }),
-            code: Address::from_ptr(func),
-            direct: Address::ZERO,
-            free,
-            meta: crate::rsgc::cell::Lock::new(meta),
-        };
+            });
 
-        Gc::new(*ctx, clos).into()
+            let ptr = clos.to_address().as_mut_ref::<Closure>();
+            ptr.header = header;
+            ptr.code = Address::from_ptr(func);
+            ptr.meta = Lock::new(meta);
+            ptr.nfree = nfree;
+
+            for i in 0..nfree {
+                ptr.free.as_mut_ptr().add(i).write(Lock::new(Value::undefined()));
+            }
+
+            Gc::<Closure>::from_gcobj(clos).into()
+        }
     }
 
     pub fn fasl_read_nofail(

@@ -77,51 +77,95 @@ unsafe impl Trace for NativeProc {
 pub struct Closure<'gc> {
     pub header: ScmHeader,
     pub code: Address,
-    pub direct: Address,
-    pub free: Value<'gc>,
+
     pub meta: Lock<Value<'gc>>,
+    pub nfree: usize,
+    pub free: [Lock<Value<'gc>>; 0],
 }
+
+impl<'gc> Index<usize> for Closure<'gc> {
+    type Output = Lock<Value<'gc>>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        debug_assert!(
+            index < self.nfree,
+            "index out of bounds: index={index}, len={nfree}",
+            nfree = self.nfree
+        );
+        unsafe { self.free.as_ptr().add(index).as_ref_unchecked() }
+    }
+}
+
+unsafe impl<'gc> IndexWrite<usize> for Closure<'gc> {}
+
+extern "C" fn trace_closure(obj: GCObject, visitor: &mut Visitor) {
+    unsafe {
+        let closure = obj.to_address().as_mut_ref::<Closure>();
+        visitor.trace(&mut closure.meta);
+        for i in 0..closure.nfree {
+            visitor.trace(closure.free.as_mut_ptr().add(i).as_mut().unwrap());
+        }
+    }
+}
+
+extern "C" fn process_weak(_obj: GCObject, _weak_processor: &mut crate::rsgc::WeakProcessor) {
+    // No weak references in Closure, so do nothing.
+}
+
+extern "C" fn compute_closure_size(obj: GCObject) -> usize {
+    unsafe {
+        let closure = obj.to_address().as_ref::<Closure>();
+        size_of::<Value>() * closure.nfree
+    }
+}
+
+pub static CLOSURE_VTABLE: &'static VTable = &VTable {
+    alignment: align_of::<Closure>(),
+    compute_alignment: None,
+    instance_size: size_of::<Closure>(),
+    compute_size: Some(compute_closure_size),
+    trace: trace_closure,
+    weak_proc: process_weak,
+    type_name: "procedure",
+};
 
 pub type ClosureRef<'gc> = Gc<'gc, Closure<'gc>>;
 
 impl<'gc> Closure<'gc> {
+    /// Offset of the free variables array from the start of the Closure struct. Used for codegen.
+    pub const DATA_OFFSET: isize = std::mem::offset_of!(Closure, free) as isize;
+
     pub fn new(
         ctx: Context<'gc>,
         code: Address,
-        direct: Address,
+
         free: &[Value<'gc>],
         is_cont: bool,
         meta: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code, direct, free, is_cont, false, meta)
+        Self::new_inner(ctx, code, free, is_cont, false, meta)
     }
 
     pub fn new_native(
         ctx: Context<'gc>,
         code: Address,
-        direct: Address,
+
         free: &[Value<'gc>],
         is_cont: bool,
         meta: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code, direct, free, is_cont, true, meta)
+        Self::new_inner(ctx, code, free, is_cont, true, meta)
     }
 
     fn new_inner(
         ctx: Context<'gc>,
         code: Address,
-        direct: Address,
+
         free: &[Value<'gc>],
         is_cont: bool,
         is_native: bool,
         meta: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        let free = if free.is_empty() {
-            Value::new(false)
-        } else {
-            Vector::from_slice(*ctx, free).into()
-        };
-
         let meta = if meta == Value::new(false) {
             Value::null()
         } else {
@@ -138,7 +182,7 @@ impl<'gc> Closure<'gc> {
             header.word |= ClosureNativeFlag::encode(true);
         }
 
-        Gc::new(
+        /*Gc::new(
             *ctx,
             Self {
                 header,
@@ -147,7 +191,27 @@ impl<'gc> Closure<'gc> {
                 free,
                 meta: Lock::new(meta),
             },
-        )
+        )*/
+
+        let size = size_of::<Self>() + (size_of::<Value>() * free.len());
+        unsafe {
+            let ptr = ctx.raw_allocate(
+                size,
+                align_of::<Self>(),
+                CLOSURE_VTABLE,
+                AllocationSemantics::Default,
+            );
+            let this = ptr.to_address().as_mut_ref::<Self>();
+            this.header = header;
+            this.code = code;
+
+            this.meta = Lock::new(meta);
+            this.nfree = free.len();
+            for i in 0..free.len() {
+                this.free.as_mut_ptr().add(i).write(Lock::new(free[i]));
+            }
+            Gc::from_gcobj(ptr)
+        }
     }
 
     pub fn documentation(&self, ctx: Context<'gc>) -> Option<Value<'gc>> {
@@ -214,17 +278,6 @@ unsafe impl<'gc> Tagged for Closure<'gc> {
     ];
 
     const TYPE_NAME: &'static str = "procedure";
-}
-
-unsafe impl<'gc> Trace for Closure<'gc> {
-    unsafe fn trace(&mut self, vis: &mut Visitor) {
-        vis.trace(&mut self.free);
-        vis.trace(&mut self.meta);
-    }
-
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
-        let _ = weak_processor;
-    }
 }
 
 impl<'gc> Closure<'gc> {
@@ -344,7 +397,7 @@ impl<'gc> Procedures<'gc> {
         }
         let proc = register_fn(self, ctx);
 
-        let clos = Closure::new(ctx, trampoline_fn(), Address::ZERO, &[proc], is_cont, meta);
+        let clos = Closure::new(ctx, trampoline_fn(), &[proc], is_cont, meta);
 
         closures.insert(addr, clos);
         clos
@@ -402,7 +455,7 @@ impl<'gc> Procedures<'gc> {
         if !meta.is_alist() {
             panic!("Continuation closures must have alist metadata");
         }
-        Closure::new(ctx, trampoline_fn(), Address::ZERO, &fv, is_cont, meta)
+        Closure::new(ctx, trampoline_fn(), &fv, is_cont, meta)
     }
 }
 

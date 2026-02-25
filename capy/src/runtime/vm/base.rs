@@ -7,7 +7,7 @@ use crate::{
         Context,
         modules::Variable,
         prelude::*,
-        value::{Closure, Str, Symbol, Tuple, Value, Vector},
+        value::{Closure, Str, Symbol, Tuple, Value},
     },
 };
 
@@ -150,7 +150,7 @@ pub mod base_ops {
 
     #[scheme(name = " .call/cc-cont ")]
     pub fn call_cc_cont(ans: &'gc [Value<'gc>]) -> &'gc [Value<'gc>] {
-        let k = nctx.rator().downcast::<Closure>().free.downcast::<Vector>()[1].get();
+        let k = nctx.rator().downcast::<Closure>()[1].get();
         // SAFETY: only `.call/cc-unsafe` can construct us and variable at 1 is always a continuation
         unsafe { nctx.continue_to(k, ans) }
     }
