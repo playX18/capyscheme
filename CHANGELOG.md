@@ -1,4 +1,4 @@
-## [unreleased]
+## [1.1.0](https://codeberg.org/playXE/capy/compare/1.1.0..v1.1.0) - 2026-02-25
 
 ### ⛰️  Features
 
@@ -43,6 +43,8 @@
 ### 🚜 Refactor
 
 - *(foreign)* Simplify C struct macros - ([bcb0f9b](https://codeberg.org/playXE/capy/commit/bcb0f9b97b7d3efbebd572035f9675e38fc7e29f))
+- *(runime)* Store free variables inline in closure - ([652afb8](https://codeberg.org/playXE/capy/commit/652afb87554dcfe1f19cd77b42b5519efcd0dd34))
+- *(runtime)* Stats and cleaner code - ([29dfb7c](https://codeberg.org/playXE/capy/commit/29dfb7cea71cf0af98002aecfb714a368d1614c9))
 
 ### ⚙️ Miscellaneous Tasks
 
