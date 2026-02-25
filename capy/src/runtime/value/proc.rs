@@ -93,6 +93,29 @@ impl<'gc> Closure<'gc> {
         is_cont: bool,
         meta: Value<'gc>,
     ) -> Gc<'gc, Self> {
+        Self::new_inner(ctx, code, direct, free, is_cont, false, meta)
+    }
+
+    pub fn new_native(
+        ctx: Context<'gc>,
+        code: Address,
+        direct: Address,
+        free: &[Value<'gc>],
+        is_cont: bool,
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Self> {
+        Self::new_inner(ctx, code, direct, free, is_cont, true, meta)
+    }
+
+    fn new_inner(
+        ctx: Context<'gc>,
+        code: Address,
+        direct: Address,
+        free: &[Value<'gc>],
+        is_cont: bool,
+        is_native: bool,
+        meta: Value<'gc>,
+    ) -> Gc<'gc, Self> {
         let free = if free.is_empty() {
             Value::new(false)
         } else {
@@ -105,50 +128,22 @@ impl<'gc> Closure<'gc> {
             meta
         };
 
-        Gc::new(
-            *ctx,
-            Self {
-                header: ScmHeader::with_type_bits(if is_cont {
-                    TypeCode16::CLOSURE_K.0
-                } else {
-                    TypeCode16::CLOSURE_PROC.0
-                }),
-                direct,
-                code,
-                free,
-                meta: Lock::new(meta),
-            },
-        )
-    }
-
-    pub fn new_native(
-        ctx: Context<'gc>,
-        code: Address,
-        direct: Address,
-        free: &[Value<'gc>],
-        is_cont: bool,
-        meta: Value<'gc>,
-    ) -> Gc<'gc, Self> {
-        let free = if free.is_empty() {
-            Value::new(false)
-        } else {
-            Vector::from_slice(*ctx, free).into()
-        };
-
         let mut header = ScmHeader::with_type_bits(if is_cont {
             TypeCode16::CLOSURE_K.0
         } else {
             TypeCode16::CLOSURE_PROC.0
         });
 
-        header.word |= ClosureNativeFlag::encode(true);
+        if is_native {
+            header.word |= ClosureNativeFlag::encode(true);
+        }
 
         Gc::new(
             *ctx,
             Self {
                 header,
-                code,
                 direct,
+                code,
                 free,
                 meta: Lock::new(meta),
             },
@@ -306,53 +301,52 @@ impl<'gc> Procedures<'gc> {
         &self,
         ctx: Context<'gc>,
         f: NativeFn<'gc>,
-
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
-        let mut closures = self.static_closures.lock();
-        if let Some(&clos) = closures.get(&Address::from_ptr(f as *const ())) {
-            return clos;
-        }
-        let proc = self.register_procedure(ctx, f);
-
-        let clos = Closure::new(
+        self.register_static_closure_inner(
             ctx,
-            get_trampoline_from_scheme(),
-            Address::ZERO,
-            &[proc.into()],
+            Address::from_ptr(f as *const ()),
             false,
             meta,
-        );
-
-        closures.insert(Address::from_ptr(f as *const ()), clos);
-
-        clos
+            |s, ctx| s.register_procedure(ctx, f).into(),
+            get_trampoline_from_scheme,
+        )
     }
 
     pub fn register_static_cont_closure(
         &self,
         ctx: Context<'gc>,
         f: NativeContinuation<'gc>,
-
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
-        let mut closures = self.static_closures.lock();
-        if let Some(&clos) = closures.get(&Address::from_ptr(f as *const ())) {
-            return clos;
-        }
-        let proc = self.register_continuation(ctx, f);
-
-        let clos = Closure::new(
+        self.register_static_closure_inner(
             ctx,
-            get_cont_trampoline_from_scheme(),
-            Address::ZERO,
-            &[proc.into()],
+            Address::from_ptr(f as *const ()),
             true,
             meta,
-        );
+            |s, ctx| s.register_continuation(ctx, f).into(),
+            get_cont_trampoline_from_scheme,
+        )
+    }
 
-        closures.insert(Address::from_ptr(f as *const ()), clos);
+    fn register_static_closure_inner(
+        &self,
+        ctx: Context<'gc>,
+        addr: Address,
+        is_cont: bool,
+        meta: Value<'gc>,
+        register_fn: impl FnOnce(&Self, Context<'gc>) -> Value<'gc>,
+        trampoline_fn: impl FnOnce() -> Address,
+    ) -> Gc<'gc, Closure<'gc>> {
+        let mut closures = self.static_closures.lock();
+        if let Some(&clos) = closures.get(&addr) {
+            return clos;
+        }
+        let proc = register_fn(self, ctx);
 
+        let clos = Closure::new(ctx, trampoline_fn(), Address::ZERO, &[proc], is_cont, meta);
+
+        closures.insert(addr, clos);
         clos
     }
 
@@ -361,26 +355,16 @@ impl<'gc> Procedures<'gc> {
         ctx: Context<'gc>,
         f: NativeFn<'gc>,
         free_vars: impl IntoIterator<Item = Value<'gc>>,
-
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         let proc = self.register_procedure(ctx, f);
-        let mut fv = Vec::with_capacity(1);
-        fv.push(proc.into());
-        for val in free_vars.into_iter() {
-            fv.push(val);
-        }
-
-        if !meta.is_alist() {
-            panic!("Continuation closures must have alist metadata");
-        }
-        Closure::new(
+        self.make_closure_inner(
             ctx,
-            get_trampoline_from_scheme(),
-            Address::ZERO,
-            &fv,
+            proc.into(),
             false,
+            free_vars,
             meta,
+            get_trampoline_from_scheme,
         )
     }
 
@@ -392,22 +376,33 @@ impl<'gc> Procedures<'gc> {
         meta: Value<'gc>,
     ) -> Gc<'gc, Closure<'gc>> {
         let proc = self.register_continuation(ctx, f);
+        self.make_closure_inner(
+            ctx,
+            proc.into(),
+            true,
+            free_vars,
+            meta,
+            get_cont_trampoline_from_scheme,
+        )
+    }
+
+    fn make_closure_inner(
+        &self,
+        ctx: Context<'gc>,
+        proc: Value<'gc>,
+        is_cont: bool,
+        free_vars: impl IntoIterator<Item = Value<'gc>>,
+        meta: Value<'gc>,
+        trampoline_fn: impl FnOnce() -> Address,
+    ) -> Gc<'gc, Closure<'gc>> {
         let mut fv = Vec::with_capacity(1);
-        fv.push(proc.into());
-        for val in free_vars.into_iter() {
-            fv.push(val);
-        }
+        fv.push(proc);
+        fv.extend(free_vars);
+
         if !meta.is_alist() {
             panic!("Continuation closures must have alist metadata");
         }
-        Closure::new(
-            ctx,
-            get_cont_trampoline_from_scheme(),
-            Address::ZERO,
-            &fv,
-            true,
-            meta,
-        )
+        Closure::new(ctx, trampoline_fn(), Address::ZERO, &fv, is_cont, meta)
     }
 }
 

@@ -185,6 +185,7 @@ use crate::bytecode::opc::*;
 use crate::interp::frame::{ActivationFrame, Slot};
 use crate::prelude::*;
 use crate::runtime::value::proc::Closure2;
+use crate::runtime::vm::thunks as vm_thunks;
 use crate::{Gc, bytecode::code_block::CodeBlock};
 
 /// Recursively defines handlers for each opcode.
@@ -549,11 +550,15 @@ define_interpreter! {
 
         op_return_call =>
         fn (pc, pb, op) {
-            let callee = pop!(sp);
+            let callee = unsafe { sp.read().value };
             let argc = op.argc as usize;
-            let callee_closure = callee.downcast::<Closure>();
+            if !callee.is::<Closure2>() {
+                become op_return_call_non_applicable_slowpath(pc, pb, ctx, bp, sp);
+            }
+            let callee = pop!(sp);
+            let callee_closure = callee.downcast::<Closure2>();
             unsafe {
-                let cb = callee_closure.meta.get().downcast::<CodeBlock>();
+                let cb = callee_closure.code_block;
                 let start = bp.start();
                 let new_sp = start.sub(argc);
 
@@ -579,6 +584,67 @@ define_interpreter! {
 
         op_arity_exact =>
         fn (pc, pb, op) {
+            let got = bp.argument_count();
+            let expected = op.expected as usize;
+            if got != expected {
+                ctx.state().accumulator.set(Value::new(expected as i32));
+                become op_arity_exact_slowpath(pc, pb, ctx, bp, sp);
+            }
+            become dispatch(pc, pb, ctx, bp, sp);
+        },
+
+        op_arity_min =>
+        fn (pc, pb, op) {
+            let got = bp.argument_count();
+            let expected = op.expected as usize;
+            if got < expected {
+                let err = vm_thunks::wrong_number_of_args(
+                    ctx,
+                    bp.callee(),
+                    got,
+                    expected as isize,
+                    bp.arguments().as_ptr(),
+                );
+                ctx.state().accumulator.set(err);
+                become raise_violation(pc, pb, ctx, bp, sp);
+            }
+
+            become dispatch(pc, pb, ctx, bp, sp);
+        },
+
+        op_arity_max =>
+        fn(pc, pb, op) {
+            let got = bp.argument_count();
+            let expected = op.expected as usize;
+            if got > expected {
+                let err = vm_thunks::wrong_number_of_args(
+                    ctx,
+                    bp.callee(),
+                    got,
+                    -(expected as isize),
+                    bp.arguments().as_ptr(),
+                );
+                ctx.state().accumulator.set(err);
+                become raise_violation(pc, pb, ctx, bp, sp);
+            }
+
+            become dispatch(pc, pb, ctx, bp, sp);
+        },
+
+        op_newclos =>
+        fn(pc, pb, op) {
+            let code_block_ix = op.prot as usize;
+            let cb = bp.constant(code_block_ix).downcast::<CodeBlock>();
+            let nfree = op.nfree as usize;
+
+            let clos = Closure2::new(ctx, cb, nfree);
+            let wclos = Gc::write(*ctx, clos);
+            for i in 0..nfree {
+                let val = pop!(sp);
+                wclos[i].unlock().set(val);
+            }
+
+            push!(sp, clos.into());
             become dispatch(pc, pb, ctx, bp, sp);
         }
     }
@@ -586,3 +652,82 @@ define_interpreter! {
 
 pub mod frame;
 pub mod stack;
+
+#[cold]
+fn op_return_call_non_applicable_slowpath<'gc>(
+    pc: usize,
+    pb: Gc<'gc, CodeBlock<'gc>>,
+    ctx: Context<'gc>,
+    bp: &'gc mut ActivationFrame<'gc>,
+    sp: *mut Slot<'gc>,
+) {
+    let _ = (pc, pb);
+    let callee = unsafe { sp.read().value };
+    let err = vm_thunks::non_applicable(ctx, callee);
+    ctx.state().accumulator.set(err);
+    become raise_violation(pc, pb, ctx, bp, sp);
+}
+
+#[cold]
+fn op_arity_exact_slowpath<'gc>(
+    pc: usize,
+    pb: Gc<'gc, CodeBlock<'gc>>,
+    ctx: Context<'gc>,
+    bp: &'gc mut ActivationFrame<'gc>,
+    sp: *mut Slot<'gc>,
+) {
+    let expected = ctx.state().accumulator.get().as_int32() as usize;
+    let err = vm_thunks::wrong_number_of_args(
+        ctx,
+        bp.callee(),
+        bp.argument_count(),
+        expected as isize,
+        bp.arguments().as_ptr(),
+    );
+    ctx.state().accumulator.set(err);
+    become raise_violation(pc, pb, ctx, bp, sp);
+}
+
+#[cold]
+fn raise_violation<'gc>(
+    pc: usize,
+    pb: Gc<'gc, CodeBlock<'gc>>,
+    ctx: Context<'gc>,
+    mut bp: &'gc mut ActivationFrame<'gc>,
+    sp: *mut Slot<'gc>,
+) {
+    let _ = (pc, pb, sp);
+    let err = ctx.state().accumulator.get();
+    let handler = vm_thunks::exception_handler(ctx);
+    if !handler.is::<Closure2>() {
+        panic!("exception handler is not a bytecode closure: {handler}");
+    }
+
+    let retk = if bp.argument_count() > 0 {
+        bp.argument(0)
+    } else {
+        vm_thunks::default_retk(ctx)
+    };
+
+    let handler = handler.downcast::<Closure2>();
+    unsafe {
+        let cb = handler.code_block;
+        let start = bp.start();
+        let argc = 2usize;
+        let new_sp = start.sub(argc);
+        let frame_sp = new_sp.sub(3);
+
+        new_sp.write(Slot { value: retk });
+        new_sp.add(1).write(Slot { value: err });
+
+        frame_sp.add(2).write(Slot { u8: argc as _ });
+        frame_sp.add(1).write(Slot {
+            value: handler.into(),
+        });
+        frame_sp.write(Slot { cb });
+
+        bp = (frame_sp as *mut ActivationFrame<'gc>).as_mut_unchecked();
+
+        become dispatch(0, cb, ctx, bp, frame_sp);
+    }
+}

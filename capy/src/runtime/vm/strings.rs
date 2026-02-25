@@ -58,6 +58,64 @@ fn utf32_bom_type(bv: &[u8]) -> Option<Endianness> {
     }
 }
 
+/// Helper for chained string ordering comparisons (>, >=, <, <=, and their -ci variants).
+fn string_compare_chain<'gc>(
+    nctx: NativeCallContext<'_, 'gc, bool>,
+    rest: &[Value<'gc>],
+    name: &str,
+    case_insensitive: bool,
+    accept: &[Ordering],
+) -> NativeCallReturn<'gc> {
+    if rest.is_empty() {
+        return nctx.wrong_argument_violation(
+            name,
+            "at least 1 argument required",
+            None,
+            None,
+            0,
+            rest,
+        );
+    }
+
+    if rest.len() < 2 {
+        return nctx.return_(true);
+    }
+
+    let s1 = rest[0];
+    if !s1.is::<Str>() {
+        return nctx.wrong_argument_violation(
+            name,
+            "expected a string",
+            Some(s1),
+            Some(1),
+            rest.len(),
+            rest,
+        );
+    }
+    let mut s1 = s1.downcast::<Str>();
+
+    for (i, val) in rest.iter().enumerate().skip(1) {
+        if !val.is::<Str>() {
+            return nctx.wrong_argument_violation(
+                name,
+                "expected a string",
+                Some(*val),
+                Some(i + 1),
+                rest.len(),
+                rest,
+            );
+        }
+        let s2 = val.downcast::<Str>();
+        let cmp = Str::compare(&s1, &s2, case_insensitive, None, None, None, None);
+        if !cmp.is_some_and(|o| accept.contains(&o)) {
+            return nctx.return_(false);
+        }
+        s1 = s2;
+    }
+
+    nctx.return_(true)
+}
+
 #[scheme(path=capy)]
 mod string_ops {
     use crate::runtime::vm::vector::{Endianness, sym_big, sym_little};
@@ -171,418 +229,66 @@ mod string_ops {
 
     #[scheme(name = "string>?")]
     pub fn string_gt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string>?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string>?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string>?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Greater)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(nctx, rest, "string>?", false, &[Ordering::Greater])
     }
 
     #[scheme(name = "string-ci>?")]
     pub fn string_ci_gt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string-ci>?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string-ci>?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string-ci>?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Greater)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(nctx, rest, "string-ci>?", true, &[Ordering::Greater])
     }
 
     #[scheme(name = "string>=?")]
     pub fn string_ge(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string>=?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string>=?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string>=?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(
+            nctx,
+            rest,
+            "string>=?",
+            false,
+            &[Ordering::Greater, Ordering::Equal],
+        )
     }
 
     #[scheme(name = "string-ci>=?")]
     pub fn string_ci_ge(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string-ci>=?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string-ci>=?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string-ci>=?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Greater) | Some(Ordering::Equal)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(
+            nctx,
+            rest,
+            "string-ci>=?",
+            true,
+            &[Ordering::Greater, Ordering::Equal],
+        )
     }
 
     #[scheme(name = "string<?")]
     pub fn string_lt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string<?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string<?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string<?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Less)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(nctx, rest, "string<?", false, &[Ordering::Less])
     }
 
     #[scheme(name = "string-ci<?")]
     pub fn string_ci_lt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string-ci<?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string-ci<?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string-ci<?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Less)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(nctx, rest, "string-ci<?", true, &[Ordering::Less])
     }
 
     #[scheme(name = "string<=?")]
     pub fn string_le(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string<=?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string<=?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string<=?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, false, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Less) | Some(Ordering::Equal)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(
+            nctx,
+            rest,
+            "string<=?",
+            false,
+            &[Ordering::Less, Ordering::Equal],
+        )
     }
 
     #[scheme(name = "string-ci<=?")]
     pub fn string_ci_le(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
-            return nctx.wrong_argument_violation(
-                "string-ci<=?",
-                "at least 1 argument required",
-                None,
-                None,
-                0,
-                rest,
-            );
-        }
-
-        if rest.len() < 2 {
-            return nctx.return_(true);
-        }
-
-        let s1 = rest[0];
-        if !s1.is::<Str>() {
-            return nctx.wrong_argument_violation(
-                "string-ci<=?",
-                "expected a string",
-                Some(s1),
-                Some(1),
-                rest.len(),
-                rest,
-            );
-        }
-        let mut s1 = s1.downcast::<Str>();
-
-        for (i, val) in rest.iter().enumerate().skip(1) {
-            if !val.is::<Str>() {
-                return nctx.wrong_argument_violation(
-                    "string-ci<=?",
-                    "expected a string",
-                    Some(*val),
-                    Some(i + 1),
-                    rest.len(),
-                    rest,
-                );
-            }
-            let s2 = val.downcast::<Str>();
-            let cmp = Str::compare(&s1, &s2, true, None, None, None, None);
-            if !matches!(cmp, Some(Ordering::Less) | Some(Ordering::Equal)) {
-                return nctx.return_(false);
-            }
-            s1 = s2;
-        }
-
-        nctx.return_(true)
+        string_compare_chain(
+            nctx,
+            rest,
+            "string-ci<=?",
+            true,
+            &[Ordering::Less, Ordering::Equal],
+        )
     }
 
     #[scheme(name = "string-length")]

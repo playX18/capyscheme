@@ -62,10 +62,7 @@ impl GarbageCollector {
         };
 
         match *mmtk.options.plan {
-            PlanSelector::Immix
-            | PlanSelector::MarkSweep
-            | PlanSelector::ConcurrentImmix
-            | PlanSelector::StickyImmix => {
+            PlanSelector::Immix | PlanSelector::MarkSweep | PlanSelector::StickyImmix => {
                 CAN_PIN_OBJECTS.store(true, std::sync::atomic::Ordering::Relaxed)
             }
             _ => (),
