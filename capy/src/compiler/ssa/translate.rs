@@ -8,7 +8,7 @@ use crate::{
     expander::core::LVarRef,
     runtime::{
         Context, State,
-        value::{Closure, ReturnCode, Tagged, Value, Vector},
+        value::{Closure, ReturnCode, Tagged, Value},
     },
 };
 use cranelift::prelude::{InstBuilder, IntCC, types};
@@ -116,18 +116,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 val
             }
             VarDef::Free(ix) => {
-                let free = self.builder.ins().load(
+                let value: ir::Value = self.builder.ins().load(
                     types::I64,
                     ir::MemFlags::trusted().with_can_move(),
                     self.rator,
-                    offset_of!(Closure, free) as i32,
+                    Closure::DATA_OFFSET as i32 + (ix * 8) as i32,
                 );
-                let value = self.builder.ins().load(
-                    types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
-                    free,
-                    Vector::OFFSET_OF_DATA as i32 + (ix * 8) as i32,
-                );
+
                 value
             }
 
@@ -721,22 +716,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
            We can directly load values without later modifying `free` vector
            as all variables are immutable, mutable variables should've been boxed by optimizing compiler.
         */
-        let free = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            self.rator,
-            offset_of!(Closure, free) as i32,
-        );
         for (i, var) in fvs.iter().copied().enumerate() {
-            let offset = Vector::OFFSET_OF_DATA as i32 + (i as i32 * 8);
-            let fv = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                free,
-                offset,
-            );
-            self.variables.insert(var, VarDef::Value(fv));
-            //self.variables.insert(var, VarDef::Free(i));
+            self.variables.insert(var, VarDef::Free(i));
         }
     }
 
@@ -830,20 +811,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let clos = self.var(func.binding);
             let free = func.free_vars.get();
             if let Some(free) = free {
-                let fv = self.builder.ins().load(
-                    types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
-                    clos,
-                    offset_of!(Closure, free) as i32,
-                );
                 for (i, &var) in free.iter().enumerate() {
                     let var = self.var(var);
 
                     self.builder.ins().store(
                         ir::MemFlags::trusted().with_can_move(),
                         var,
-                        fv,
-                        (Vector::OFFSET_OF_DATA as i32 + (i as i32 * 8)) as i32,
+                        clos,
+                        (Closure::DATA_OFFSET as i32 + (i as i32 * 8)) as i32,
                     );
                 }
             }
@@ -880,21 +855,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let free = cont.free_vars.get();
 
             if let Some(free) = free {
-                let fv = self.builder.ins().load(
-                    types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
-                    clos,
-                    offset_of!(Closure, free) as i32,
-                );
-
                 for (i, &var) in free.iter().enumerate() {
                     let var = self.var(var);
 
                     self.builder.ins().store(
                         ir::MemFlags::trusted().with_can_move(),
                         var,
-                        fv,
-                        (Vector::OFFSET_OF_DATA as i32 + (i as i32 * 8)) as i32,
+                        clos,
+                        (Closure::DATA_OFFSET as i32 + (i as i32 * 8)) as i32,
                     );
                 }
             }

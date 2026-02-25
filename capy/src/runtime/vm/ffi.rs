@@ -1353,9 +1353,9 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
     unsafe {
         let rands = std::slice::from_raw_parts(rands, num_rands);
         let closure = rator.downcast::<Closure>();
-        let free = closure.free.downcast::<Vector>();
-        let cif = free[1].get().downcast::<CIF>();
-        let pointer = free[2].get().downcast::<Pointer>();
+
+        let cif = closure[1].get().downcast::<CIF>();
+        let pointer = closure[2].get().downcast::<Pointer>();
 
         let fits = if cif.variadic {
             num_rands >= cif.nargs as usize

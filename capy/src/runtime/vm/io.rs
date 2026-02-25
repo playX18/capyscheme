@@ -1385,7 +1385,7 @@ pub mod io_ops {
     fn poller_wait_k(succ: bool, arg: Value<'gc>) -> Value<'gc> {
         // [0] = <native-proc>
         // [1] = retk
-        let retk = nctx.rator().downcast::<Closure>().free.downcast::<Vector>()[1].get();
+        let retk = nctx.rator().downcast::<Closure>()[1].get();
 
         nctx.retk = retk;
 

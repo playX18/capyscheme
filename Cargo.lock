@@ -249,7 +249,7 @@ dependencies = [
 
 [[package]]
 name = "capy"
-version = "1.0.2"
+version = "1.1.0"
 dependencies = [
  "atomic",
  "backtrace",
@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "capy-bytecode"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "bytecodegen",
  "paste",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "capy-derive"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "proc-macro2",
  "quote",

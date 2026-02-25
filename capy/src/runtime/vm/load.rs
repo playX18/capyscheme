@@ -842,9 +842,9 @@ pub(crate) fn continue_loading_k(
     _unused: Value<'gc>,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let rator = nctx.rator().downcast::<Closure>();
-    let free = rator.free.downcast::<Vector>();
-    let source_and_compiled_path = free[1].get();
-    let retk = free[2].get();
+
+    let source_and_compiled_path = rator[1].get();
+    let retk = rator[2].get();
     nctx.retk = retk;
 
     let mut reader = ScmTermToRsTerm::new(nctx.ctx);
