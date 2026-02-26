@@ -567,9 +567,10 @@ dist-deb: build
 	installed_size_kb=$$(du -sk "$(PKG_ROOT)/deb/root/usr" | awk '{print $$1}'); \
 	arch=$$(dpkg --print-architecture 2>/dev/null || echo amd64); \
 	pkgver="$(VERSION)"; \
+	deb_ver=$${pkgver#v}; \
 	printf '%s\n' \
 		"Package: $(PKG_NAME)" \
-		"Version: $$pkgver" \
+		"Version: $$deb_ver" \
 		"Section: $(DEB_SECTION)" \
 		"Priority: $(DEB_PRIORITY)" \
 		"Architecture: $$arch" \
@@ -581,12 +582,13 @@ dist-deb: build
 	chmod 0755 "$(PKG_ROOT)/deb/DEBIAN"
 	arch=$$(dpkg --print-architecture 2>/dev/null || echo amd64); \
 	pkgver="$(VERSION)"; \
+	deb_ver=$${pkgver#v}; \
 	if command -v fakeroot >/dev/null 2>&1; then \
-		fakeroot dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$(VERSION)_$$arch.deb"; \
+		fakeroot dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$$deb_ver_$$arch.deb"; \
 	else \
-		dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$(VERSION)_$$arch.deb"; \
+		dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$$deb_ver_$$arch.deb"; \
 	fi
-	@echo "Wrote $(DIST_DIR)/$(PKG_NAME)_$(VERSION)_$$(dpkg --print-architecture 2>/dev/null || echo amd64).deb"
+	@echo "Wrote $(DIST_DIR)/$(PKG_NAME)_$$(v='$(VERSION)'; echo $${v#v})_$$(dpkg --print-architecture 2>/dev/null || echo amd64).deb"
 
 dist-rpm: build
 	@echo "Building .rpm package in $(DIST_DIR)/"
