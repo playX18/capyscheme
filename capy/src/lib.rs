@@ -11,10 +11,8 @@
     try_trait_v2,
     link_llvm_intrinsics,
     min_specialization,
-    portable_simd,
     const_type_name,
-    explicit_tail_calls,
-    unsafe_cell_access
+    explicit_tail_calls
 )]
 
 pub mod api;

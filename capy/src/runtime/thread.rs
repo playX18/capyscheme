@@ -927,6 +927,37 @@ impl Scheme {
         if should_init { scm.boot() } else { scm }
     }
 
+    pub fn new_uninit() -> Self {
+        let mut should_init = false;
+
+        // if VM is not initialized yet, we need to run init code
+        SCM_INITIALIZED.call_once(|| {
+            should_init = true;
+
+            let mmtk_builder = MMTKBuilder::new();
+            GarbageCollector::init(mmtk_builder);
+        });
+
+        let scm = Self {
+            mutator: {
+                let m = Mutator::new(|mc| {
+                    if should_init {
+                        init_weak_sets(mc);
+                        init_weak_tables(mc);
+                        init_symbols(mc);
+                    }
+
+                    let state = State::new(mc, ThreadObject::new(mc, None));
+                    mc.init_state(state);
+                    ()
+                });
+                m
+            },
+        };
+
+        scm
+    }
+
     /*pub fn from_image(image: &[u8]) -> Self {
         let allowed_gc = match image[0] {
             0 => AllowedGC::Generational,
