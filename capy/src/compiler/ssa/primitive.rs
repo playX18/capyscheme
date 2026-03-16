@@ -17,7 +17,6 @@ macro_rules! prim {
             pub map: HashMap<Value<'gc>, for <'a, 'f>fn(&mut SSABuilder<'gc, 'a, 'f>, &[Atom<'gc>]) -> PrimValue>,
         }
 
-
         $(
 
             pub fn $name<'gc_, 'a, 'f>($ssa: &mut SSABuilder<'gc_, 'a, 'f>, $args: &[Atom<'gc_>]) -> PrimValue $b
