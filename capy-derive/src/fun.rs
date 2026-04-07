@@ -134,31 +134,25 @@ impl VisitMut for TransformationContext {
 
     fn visit_expr_block_mut(&mut self, i: &mut syn::ExprBlock) {
         for stmt in &mut i.block.stmts {
-            match stmt {
-                syn::Stmt::Expr(expr, None) => {
+            if let syn::Stmt::Expr(expr, None) = stmt {
                     let nctx = self.native_ctx.clone();
                     let new_expr = quote! {
                         #nctx.return_(#expr)
                     };
                     *expr = syn::parse2(new_expr).expect("parsing block final expr");
                 }
-                _ => {}
-            }
         }
     }
 
     fn visit_block_mut(&mut self, i: &mut syn::Block) {
         for stmt in &mut i.stmts {
-            match stmt {
-                syn::Stmt::Expr(expr, None) => {
+            if let syn::Stmt::Expr(expr, None) = stmt {
                     let nctx = self.native_ctx.clone();
                     let new_expr = quote! {
                         #nctx.return_(#expr)
                     };
                     *expr = syn::parse2(new_expr).expect("parsing block final expr");
                 }
-                _ => {}
-            }
         }
     }
 }
@@ -254,9 +248,9 @@ impl FunctionDefinition {
             .sig
             .inputs
             .iter()
-            .filter_map(|arg| {
+            .map(|arg| {
                 if let syn::FnArg::Typed(pat_type) = arg {
-                    Some(pat_type.ty.clone())
+                    pat_type.ty.clone()
                 } else {
                     todo!("methods")
                 }
@@ -266,9 +260,9 @@ impl FunctionDefinition {
             .sig
             .inputs
             .iter()
-            .filter_map(|arg| {
+            .map(|arg| {
                 if let syn::FnArg::Typed(pat_type) = arg {
-                    Some(pat_type.pat.clone())
+                    pat_type.pat.clone()
                 } else {
                     todo!("methods")
                 }
@@ -376,7 +370,7 @@ impl FunctionDefinition {
     }
 
     pub fn meta_name(&self) -> syn::Ident {
-        let meta_static_name = syn::Ident::new(
+        syn::Ident::new(
             &format!(
                 "_SCHEME_META_{}",
                 self.transformed_function
@@ -386,12 +380,11 @@ impl FunctionDefinition {
                     .to_uppercase()
             ),
             self.transformed_function.sig.ident.span(),
-        );
-        meta_static_name
+        )
     }
 
     pub fn get_meta_name(&self) -> syn::Ident {
-        let get_meta_name = syn::Ident::new(
+        syn::Ident::new(
             &format!(
                 "_scheme_meta_{}",
                 self.transformed_function
@@ -401,11 +394,10 @@ impl FunctionDefinition {
                     .to_lowercase()
             ),
             self.transformed_function.sig.ident.span(),
-        );
-        get_meta_name
+        )
     }
 
-    pub fn to_tokens(&mut self) -> proc_macro2::TokenStream {
+    pub fn emit_tokens(&mut self) -> proc_macro2::TokenStream {
         let trampoline = self.make_trampoline();
         let native_ctx = &self.nctx;
         let lifetime = &self.gc_lifetime;

@@ -16,6 +16,7 @@ pub struct Variable {
 }
 
 impl Variable {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         item: syn::ItemStatic,
         name: syn::LitStr,

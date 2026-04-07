@@ -1,3 +1,5 @@
+//! Code block representation for bytecode sequences.
+
 use capy_bytecode::bytecodegen::BytecodeBuffer;
 
 use crate::{
@@ -45,7 +47,7 @@ extern "C" fn compute_size(_obj: GCObject) -> usize {
     }
 }
 
-pub static CODE_BLOCK_VTABLE: &'static VTable = &VTable {
+pub static CODE_BLOCK_VTABLE: &VTable = &VTable {
     alignment: std::mem::align_of::<CodeBlock>(),
     compute_size: Some(compute_size),
     compute_alignment: None,

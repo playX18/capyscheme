@@ -110,7 +110,7 @@ macro_rules! with_cps {
                 let cont = $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Cont {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
-                    args: args,
+                    args,
                     meta,
                     noinline: false,
 
@@ -165,7 +165,7 @@ macro_rules! with_cps {
                 let cont = $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Cont {
                     name: $crate::runtime::value::Value::new(false),
                     binding: $k,
-                    args: args,
+                    args,
                     meta,
                     noinline: true,
 
@@ -220,7 +220,7 @@ macro_rules! with_cps {
                     binding: $k,
                     meta,
                     noinline: false,
-                    args: args,
+                    args,
                     variadic: None,
                     body: body.into(),
 
@@ -296,15 +296,7 @@ macro_rules! with_cps {
         }
     };
 
-    ($builder: ident; raise $k: ident ($($arg: expr),*)) => {
-        {
-          $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::Raise(
-            $k,
-            $crate::rsgc::alloc::array::Array::from_slice(&[$($arg.into()),*]),
-            $crate::runtime::value::Value::new(false),
-          ))
-        }
-    };
+    // TODO: Add `raise` macro branch when Term::Raise is implemented
 
     ($builder: ident; continue $k: ident $args: ident ... $(@ $src : expr)?) => {
         {
@@ -322,15 +314,7 @@ macro_rules! with_cps {
         }
     };
 
-    ($builder: ident; raise $k: ident ($args: ident ...)) => {
-        {
-            $crate::rsgc::Gc::new(&$builder.ctx, $crate::cps::term::Term::Raise(
-                $k,
-                $args,
-                $crate::runtime::value::Value::new(false),
-            ))
-        }
-    };
+    // TODO: Add `raise` (splat) macro branch when Term::Raise is implemented
 
     ($builder: ident; $callee: ident ($k: ident $(,)? $($arg:ident),*) @ $src: expr) => {
         {
@@ -505,33 +489,7 @@ macro_rules! with_cps {
         $expr
     }};
 
-    ($cps: ident; throw $key: expr, $val: expr; $src: expr) => {
-        {
-            $crate::rsgc::Gc::new(&$cps.ctx,$crate::cps::term::Term::Throw($crate::cps::term::Throw::Throw(
-                $key.into(),
-                $val.into(),
-            ), $src))
-        }
-    };
-
-    ($cps: ident; throw_val_data $key: expr, $val: expr; $src: expr) => {
-        {
-            $crate::rsgc::Gc::new(&$cps.ctx,$crate::cps::term::Term::Throw($crate::cps::term::Throw::ValueAndData(
-                $key,
-                $val,
-                $src
-            )))
-        }
-    };
-
-    ($cps: ident; throw_value $key: expr, $val: expr; $src: expr) => {
-        {
-            $crate::rsgc::Gc::new(&$cps.ctx,$crate::cps::term::Term::Throw($crate::cps::term::Throw::Value(
-                $key,
-                $val,
-                $src
-            )))
-        }
-    };
+    // TODO: Add `throw`, `throw_val_data`, and `throw_value` macro branches
+    // when Term::Throw is implemented
 
 }

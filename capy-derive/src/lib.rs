@@ -24,7 +24,7 @@ pub fn scheme(
 
     match item {
         syn::Item::Fn(fun) => fun::handle(input, fun)
-            .map(|mut x| x.to_tokens())
+            .map(|mut x| x.emit_tokens())
             .unwrap_or_else(|e| e.to_compile_error())
             .into(),
         syn::Item::Static(static_) => var::handle(input, static_)
@@ -32,7 +32,7 @@ pub fn scheme(
             .unwrap_or_else(|e| e.to_compile_error())
             .into(),
         syn::Item::Mod(module) => module::handle(input, module)
-            .map(|mut x| x.to_tokens())
+            .map(|mut x| x.emit_tokens())
             .unwrap_or_else(|e| e.to_compile_error())
             .into(),
 
