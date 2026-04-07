@@ -225,6 +225,8 @@ ScmRef scm_new(void);
  * Create a Scheme thread instance and VM from the given heap image.
  *
  * This function can only be invoked once per process.
+ *
+ * **Note:** This function is currently unimplemented and will panic if called.
  */
 ScmRef scm_from_image(const uint8_t *_image_data, uintptr_t _image_size);
 
@@ -257,12 +259,13 @@ int scm_enter(ScmRef scm, ScmEnterFn enter, void *arg);
  * Example:
  *
  * ```c
- * ScmRef scm = scm_new();
- *
- * scm_enter(scm, [](ContextRef ctx, void*){
+ * int my_enter(ContextRef ctx, void* arg) {
  *     Value var = scm_public_ref(ctx, "boot cli", "enter", VALUE_NULL);
- * }, NULL);
+ *     return 0;
+ * }
  *
+ * ScmRef scm = scm_new();
+ * scm_enter(scm, my_enter, NULL);
  * ```
  */
 struct Value scm_public_ref(ContextRef ctx,
@@ -276,10 +279,13 @@ struct Value scm_public_ref(ContextRef ctx,
  *
  * Example:
  * ```c
- * ScmRef scm = scm_new();
- * scm_enter(scm, [](ContextRef ctx, void*){
+ * int my_enter(ContextRef ctx, void* arg) {
  *     Value var = scm_private_ref(ctx, "boot cli", "internal-variable", VALUE_NULL);
- * }, NULL);
+ *     return 0;
+ * }
+ *
+ * ScmRef scm = scm_new();
+ * scm_enter(scm, my_enter, NULL);
  * ```
  */
 struct Value scm_private_ref(ContextRef ctx,
@@ -298,50 +304,53 @@ struct Value scm_intern_symbol(ContextRef ctx, const char *name);
 struct Value scm_string(ContextRef ctx, const char *data);
 
 /**
- * Create Scheme number from a 32-bit unsigned integer.
+ * Convert a Scheme real number to an `f64`. Writes the result into `res` and
+ * returns `true` on success, or `false` if `value` is not a number.
  */
-struct Value scm_uint32(ContextRef ctx, uint32_t value);
-
-struct Value scm_uint64(ContextRef ctx, uint64_t value);
-
-struct Value scm_int64(ContextRef ctx, int64_t value);
-
-bool scm_to_u8(ContextRef ctx, struct Value value, uint8_t *res);
-
-bool scm_to_u16(ContextRef ctx, struct Value value, uint16_t *res);
-
-bool scm_to_u32(ContextRef ctx, struct Value value, uint32_t *res);
-
-bool scm_to_u64(ContextRef ctx, struct Value value, uint64_t *res);
-
-bool scm_to_i64(ContextRef ctx, struct Value value, int64_t *res);
-
-bool scm_to_f64(ContextRef ctx, struct Value value, double *res);
-
 bool scm_real_to_f64(ContextRef ctx, struct Value value, double *res);
 
-bool scm_to_i32(ContextRef ctx, struct Value value, int32_t *res);
-
-bool scm_to_f32(ContextRef ctx, struct Value value, float *res);
-
-bool scm_to_i16(ContextRef ctx, struct Value value, int16_t *res);
-
-bool scm_to_i8(ContextRef ctx, struct Value value, int8_t *res);
-
+/**
+ * Construct a new Scheme pair (cons cell) from the given car and cdr values.
+ */
 struct Value scm_cons(ContextRef ctx, struct Value car, struct Value cdr);
 
+/**
+ * Set the car (first element) of a Scheme pair.
+ */
 void scm_set_car(ContextRef ctx, struct Value pair, struct Value car);
 
+/**
+ * Set the cdr (second element / rest) of a Scheme pair.
+ */
 void scm_set_cdr(ContextRef ctx, struct Value pair, struct Value cdr);
 
+/**
+ * Set the element at `index` in a Scheme vector to `value`.
+ */
 void scm_vector_set(ContextRef ctx, struct Value vector, uintptr_t index, struct Value value);
 
+/**
+ * Set the element at `index` in a Scheme tuple to `value`.
+ */
 void scm_tuple_set(ContextRef ctx, struct Value tuple, uintptr_t index, struct Value value);
 
+/**
+ * Set the character at `index` in a Scheme string to `ch` (as a Unicode code point).
+ * If `ch` is not a valid Unicode scalar value, the replacement character U+FFFD is used.
+ */
 void scm_string_set(ContextRef ctx, struct Value string, uintptr_t index, uint32_t ch);
 
+/**
+ * Return the character at `index` in a Scheme string as a Unicode code point.
+ */
 uint32_t scm_string_ref(ContextRef _ctx, struct Value string, uintptr_t index);
 
+/**
+ * Call a named Scheme procedure from a given module.
+ *
+ * `prepare` is invoked to build the argument list, and `finish` is invoked
+ * with the result (or error) once the call completes.
+ */
 int scm_call(ScmRef scm,
              const char *mod_name,
              const char *func_name,
@@ -350,16 +359,37 @@ int scm_call(ScmRef scm,
              FinishCallFn finish,
              void *data2);
 
+/**
+ * Resume a call using the current accumulator value as the procedure.
+ *
+ * `prepare` builds the argument list, and `finish` receives the result or error.
+ */
 int scm_resume_accumulator(ScmRef scm,
                            PrepareCallFn prepare,
                            void *data1,
                            FinishCallFn finish,
                            void *data2);
 
+/**
+ * Load and evaluate a Scheme source file by path. Returns 0 on success, -1 on failure.
+ */
 int scm_load_file(ScmRef scm, const char *name);
 
+/**
+ * Return the current program arguments as a Scheme list of strings.
+ */
 struct Value scm_program_arguments(ContextRef ctx);
 
+/**
+ * Initialize program arguments from a C-style `argc`/`argv` pair.
+ *
+ * # Safety
+ *
+ * `argv` must point to an array of at least `argc` valid, non-null C strings.
+ */
 void scm_program_arguments_init(ContextRef ctx, uintptr_t argc, const char *const *argv);
 
+/**
+ * Set the program arguments to the given Scheme list of strings.
+ */
 void scm_set_program_arguments(ContextRef ctx, struct Value args);

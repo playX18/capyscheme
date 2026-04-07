@@ -61,6 +61,8 @@ impl NativeProc {
     }
 }
 
+// SAFETY: NativeProc contains no GC-managed fields — `proc` is a raw function pointer.
+// No tracing or weak processing is needed.
 unsafe impl Tagged for NativeProc {
     const TC8: TypeCode8 = TypeCode8::NATIVE_PROCEDURE;
     const TC16: &[TypeCode16] = &[TypeCode16::NATIVE_PROC, TypeCode16::NATIVE_K];
@@ -68,8 +70,10 @@ unsafe impl Tagged for NativeProc {
 }
 
 unsafe impl Trace for NativeProc {
+    // SAFETY: No GC references in NativeProc; nothing to trace.
     unsafe fn trace(&mut self, _vis: &mut Visitor) {}
 
+    // SAFETY: No weak references in NativeProc.
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
@@ -92,13 +96,19 @@ impl<'gc> Index<usize> for Closure<'gc> {
             "index out of bounds: index={index}, len={nfree}",
             nfree = self.nfree
         );
+        // SAFETY: `free` is a flexible array member allocated with `nfree` elements.
+        // The `debug_assert` above ensures `index < nfree`, so the pointer arithmetic is in-bounds.
         unsafe { self.free.as_ptr().add(index).as_ref_unchecked() }
     }
 }
 
+// SAFETY: Closure's Index impl already validates bounds; IndexWrite just permits mutable
+// access to the same in-bounds slots. The GC write barrier is handled at the call site.
 unsafe impl<'gc> IndexWrite<usize> for Closure<'gc> {}
 
 extern "C" fn trace_closure(obj: GCObject, visitor: &mut Visitor) {
+    // SAFETY: `obj` is guaranteed by the GC to point to a valid `Closure` allocated with
+    // `CLOSURE_VTABLE`. We iterate exactly `nfree` trailing elements.
     unsafe {
         let closure = obj.to_address().as_mut_ref::<Closure>();
         visitor.trace(&mut closure.meta);
@@ -113,6 +123,7 @@ extern "C" fn process_weak(_obj: GCObject, _weak_processor: &mut crate::rsgc::We
 }
 
 extern "C" fn compute_closure_size(obj: GCObject) -> usize {
+    // SAFETY: `obj` is a valid `Closure` allocated by the GC with `CLOSURE_VTABLE`.
     unsafe {
         let closure = obj.to_address().as_ref::<Closure>();
         size_of::<Value>() * closure.nfree
@@ -194,6 +205,8 @@ impl<'gc> Closure<'gc> {
         )*/
 
         let size = size_of::<Self>() + (size_of::<Value>() * free.len());
+        // SAFETY: We raw-allocate a `Closure` + trailing `free` array via the GC allocator.
+        // The VTable ensures proper tracing. We initialize all fields before returning the Gc handle.
         unsafe {
             let ptr = ctx.raw_allocate(
                 size,
@@ -268,6 +281,8 @@ impl<'gc> Closure<'gc> {
     }
 }
 
+// SAFETY: Closure stores its TC8 in the ScmHeader. The header is initialized with
+// the correct type code at construction time in `Closure::new`.
 unsafe impl<'gc> Tagged for Closure<'gc> {
     const TC8: TypeCode8 = TypeCode8::CLOSURE;
 
@@ -459,6 +474,8 @@ impl<'gc> Procedures<'gc> {
     }
 }
 
+// SAFETY: Procedures contains GC-managed Values in its registered/static_closures maps.
+// We trace all entries during GC. The Monitor lock ensures exclusive access.
 unsafe impl<'gc> Trace for Procedures<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         for (_, proc) in self.registered.get_mut().iter_mut() {
@@ -519,6 +536,7 @@ pub struct Closure2<'gc> {
 
 impl<'gc> Closure2<'gc> {
     extern "C" fn compute_size(this: GCObject) -> usize {
+        // SAFETY: `this` is a valid `Closure2` allocated with `VTABLE`.
         unsafe {
             let this = this.to_address().as_ref::<Self>();
             size_of::<Value>() * this.nfree
@@ -526,6 +544,7 @@ impl<'gc> Closure2<'gc> {
     }
 
     extern "C" fn trace(this: GCObject, visitor: &mut Visitor) {
+        // SAFETY: `this` is a valid `Closure2`. We trace `code_block` and all `nfree` trailing slots.
         unsafe {
             let this = this.to_address().as_mut_ref::<Self>();
             visitor.trace(&mut this.code_block);
@@ -555,6 +574,8 @@ impl<'gc> Closure2<'gc> {
         code_block: Gc<'gc, CodeBlock<'gc>>,
         nfree: usize,
     ) -> Gc<'gc, Self> {
+        // SAFETY: We raw-allocate a Closure2 + `nfree` trailing Value slots via the GC.
+        // All fields are initialized before returning: header, code_block, nfree, and each free slot.
         unsafe {
             let size = size_of::<Self>() + (size_of::<Value>() * nfree);
             let ptr = ctx.raw_allocate(
@@ -580,6 +601,7 @@ impl<'gc> Closure2<'gc> {
     }
 }
 
+// SAFETY: Closure2 stores its TC8 in the ScmHeader, initialized at construction.
 unsafe impl<'gc> Tagged for Closure2<'gc> {
     const TC8: TypeCode8 = TypeCode8::CLOSURE2;
     const TYPE_NAME: &'static str = "#<procedure>";
@@ -594,8 +616,10 @@ impl<'gc> Index<usize> for Closure2<'gc> {
             "index out of bounds: index={index}, len={nfree}",
             nfree = self.nfree
         );
+        // SAFETY: Same as Closure — `free` has `nfree` elements; `debug_assert` ensures in-bounds.
         unsafe { self.free.as_ptr().add(index).as_ref_unchecked() }
     }
 }
 
+// SAFETY: Closure2's Index impl validates bounds; IndexWrite permits mutable access to the same slots.
 unsafe impl<'gc> IndexWrite<usize> for Closure2<'gc> {}

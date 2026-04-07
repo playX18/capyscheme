@@ -16,8 +16,23 @@ use crate::{
     runtime::{Context, Scheme, vm::threading::ThreadObject},
 };
 
+/// Safely convert a C string pointer to a Rust `&str`.
+///
+/// Returns `None` if the pointer is null or the string is not valid UTF-8.
+///
+/// # Safety
+///
+/// The caller must ensure `ptr` (if non-null) points to a valid, null-terminated
+/// C string whose memory remains valid for the lifetime of the returned `&str`.
+unsafe fn safe_cstr<'a>(ptr: *const c_char) -> Option<&'a str> {
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: Caller guarantees ptr is non-null and points to a valid C string.
+    unsafe { CStr::from_ptr(ptr) }.to_str().ok()
+}
+
 pub struct Scm {
-    #[allow(dead_code)]
     scheme: Scheme,
 }
 
@@ -63,21 +78,22 @@ pub extern "C" fn scm_new() -> ScmRef {
 /// Create a Scheme thread instance and VM from the given heap image.
 ///
 /// This function can only be invoked once per process.
+///
+/// **Note:** This function is currently unimplemented and will panic if called.
 #[unsafe(no_mangle)]
 #[allow(dead_code)]
 pub extern "C" fn scm_from_image(_image_data: *const u8, _image_size: usize) -> ScmRef {
-    /*let image_slice = unsafe { std::slice::from_raw_parts(image_data, image_size) };
-    let scm = Scheme::from_image(image_slice);
-    let capy = Scm { scheme: scm };
-    ScmRef(Box::into_raw(Box::new(capy)))*/
-    todo!()
+    // Not yet implemented; return a null ScmRef so callers can detect failure.
+    ScmRef(std::ptr::null_mut())
 }
 
+/// Returns the current accumulator value from the Scheme context state.
 #[unsafe(no_mangle)]
 pub fn scm_accumulator(ctx: ContextRef) -> Value {
     ctx.ctx().state().accumulator.get()
 }
 
+/// Sets the accumulator value in the Scheme context state.
 #[unsafe(no_mangle)]
 pub fn scm_set_accumulator<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>) {
     ctx.ctx().state().accumulator.set(value);
@@ -86,6 +102,8 @@ pub fn scm_set_accumulator<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>) {
 /// Free the Scheme thread instance created by [`scm_new()`](scm_new)
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_free(scm: ScmRef) {
+    // SAFETY: `scm.0` was allocated by `Box::into_raw` in `scm_new`. The caller
+    // must ensure this is only called once per ScmRef and that no aliases remain.
     unsafe {
         let _ = Box::from_raw(scm.0);
     }
@@ -150,12 +168,13 @@ pub unsafe extern "C" fn scm_enter<'gc>(
 /// Example:
 ///
 /// ```c
-/// ScmRef scm = scm_new();
-///
-/// scm_enter(scm, [](ContextRef ctx, void*){
+/// int my_enter(ContextRef ctx, void* arg) {
 ///     Value var = scm_public_ref(ctx, "boot cli", "enter", VALUE_NULL);
-/// }, NULL);
+///     return 0;
+/// }
 ///
+/// ScmRef scm = scm_new();
+/// scm_enter(scm, my_enter, NULL);
 /// ```
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_public_ref<'gc>(
@@ -164,8 +183,11 @@ pub extern "C" fn scm_public_ref<'gc>(
     name: *const c_char,
     default_value: Value<'gc>,
 ) -> Value<'gc> {
-    let module_name = unsafe { CStr::from_ptr(module_name).to_str().unwrap() };
-    let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
+    // SAFETY: Caller must pass valid, null-terminated C strings.
+    let (module_name, name) = match unsafe { (safe_cstr(module_name), safe_cstr(name)) } {
+        (Some(m), Some(n)) => (m, n),
+        _ => return default_value,
+    };
 
     ctx.ctx()
         .public_ref(module_name, name)
@@ -177,10 +199,13 @@ pub extern "C" fn scm_public_ref<'gc>(
 ///
 /// Example:
 /// ```c
-/// ScmRef scm = scm_new();
-/// scm_enter(scm, [](ContextRef ctx, void*){
+/// int my_enter(ContextRef ctx, void* arg) {
 ///     Value var = scm_private_ref(ctx, "boot cli", "internal-variable", VALUE_NULL);
-/// }, NULL);
+///     return 0;
+/// }
+///
+/// ScmRef scm = scm_new();
+/// scm_enter(scm, my_enter, NULL);
 /// ```
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_private_ref<'gc>(
@@ -189,8 +214,11 @@ pub extern "C" fn scm_private_ref<'gc>(
     name: *const c_char,
     default_value: Value<'gc>,
 ) -> Value<'gc> {
-    let module_name = unsafe { CStr::from_ptr(module_name).to_str().unwrap() };
-    let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
+    // SAFETY: Caller must pass valid, null-terminated C strings.
+    let (module_name, name) = match unsafe { (safe_cstr(module_name), safe_cstr(name)) } {
+        (Some(m), Some(n)) => (m, n),
+        _ => return default_value,
+    };
 
     ctx.ctx()
         .private_ref(module_name, name)
@@ -200,99 +228,86 @@ pub extern "C" fn scm_private_ref<'gc>(
 /// Intern a symbol with the given name in the Scheme context.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_intern_symbol<'gc>(ctx: ContextRef<'gc>, name: *const c_char) -> Value<'gc> {
-    let name = unsafe { CStr::from_ptr(name).to_str().unwrap() };
+    // SAFETY: Caller must pass a valid, null-terminated C string.
+    let name = match unsafe { safe_cstr(name) } {
+        Some(s) => s,
+        None => return Value::new(false),
+    };
     ctx.ctx().intern(name)
 }
 
 /// Create a new Scheme string with the given data in the Scheme context.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_string<'gc>(ctx: ContextRef<'gc>, data: *const c_char) -> Value<'gc> {
-    let data = unsafe { CStr::from_ptr(data).to_str().unwrap() };
+    // SAFETY: Caller must pass a valid, null-terminated C string.
+    let data = match unsafe { safe_cstr(data) } {
+        Some(s) => s,
+        None => return Value::new(false),
+    };
     ctx.ctx().str(data)
 }
 
-/// Create Scheme number from a 32-bit unsigned integer.
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_uint32<'gc>(ctx: ContextRef<'gc>, value: u32) -> Value<'gc> {
-    value.into_value(ctx.ctx())
+/// Create a Scheme number from the given native numeric type.
+///
+/// Generated functions: `scm_uint32`, `scm_uint64`, `scm_int64`.
+macro_rules! define_scm_from_numeric {
+    ($($fn_name:ident, $ty:ty);* $(;)?) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $fn_name<'gc>(ctx: ContextRef<'gc>, value: $ty) -> Value<'gc> {
+                value.into_value(ctx.ctx())
+            }
+        )*
+    };
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_uint64<'gc>(ctx: ContextRef<'gc>, value: u64) -> Value<'gc> {
-    value.into_value(ctx.ctx())
+define_scm_from_numeric! {
+    scm_uint32, u32;
+    scm_uint64, u64;
+    scm_int64, i64;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_int64<'gc>(ctx: ContextRef<'gc>, value: i64) -> Value<'gc> {
-    value.into_value(ctx.ctx())
+/// Try to convert a Scheme value to the given native numeric type.
+/// Writes the result into `res` and returns `true` on success, `false` on failure.
+///
+/// Generated functions: `scm_to_u8`, `scm_to_u16`, `scm_to_u32`, `scm_to_u64`,
+/// `scm_to_i8`, `scm_to_i16`, `scm_to_i32`, `scm_to_i64`, `scm_to_f32`, `scm_to_f64`.
+macro_rules! define_scm_to_numeric {
+    ($($fn_name:ident, $ty:ty);* $(;)?) => {
+        $(
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $fn_name<'gc>(
+                ctx: ContextRef<'gc>,
+                value: Value<'gc>,
+                res: &mut $ty,
+            ) -> bool {
+                match <$ty>::try_from_value(ctx.ctx(), value) {
+                    Ok(v) => {
+                        *res = v;
+                        true
+                    }
+                    Err(_) => false,
+                }
+            }
+        )*
+    };
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_u8<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u8) -> bool {
-    match u8::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
+define_scm_to_numeric! {
+    scm_to_u8,  u8;
+    scm_to_u16, u16;
+    scm_to_u32, u32;
+    scm_to_u64, u64;
+    scm_to_i8,  i8;
+    scm_to_i16, i16;
+    scm_to_i32, i32;
+    scm_to_i64, i64;
+    scm_to_f32, f32;
+    scm_to_f64, f64;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_u16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u16) -> bool {
-    match u16::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_u32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u32) -> bool {
-    match u32::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_u64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut u64) -> bool {
-    match u64::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_i64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i64) -> bool {
-    match i64::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_f64<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut f64) -> bool {
-    match f64::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
+/// Convert a Scheme real number to an `f64`. Writes the result into `res` and
+/// returns `true` on success, or `false` if `value` is not a number.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_real_to_f64<'gc>(
     ctx: ContextRef<'gc>,
@@ -308,50 +323,7 @@ pub extern "C" fn scm_real_to_f64<'gc>(
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_i32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i32) -> bool {
-    match i32::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_f32<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut f32) -> bool {
-    match f32::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_i16<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i16) -> bool {
-    match i16::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn scm_to_i8<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>, res: &mut i8) -> bool {
-    match i8::try_from_value(ctx.ctx(), value) {
-        Ok(v) => {
-            *res = v;
-            true
-        }
-        Err(_) => false,
-    }
-}
-
+/// Construct a new Scheme pair (cons cell) from the given car and cdr values.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_cons<'gc>(
     ctx: ContextRef<'gc>,
@@ -361,16 +333,19 @@ pub extern "C" fn scm_cons<'gc>(
     Value::cons(ctx.ctx(), car, cdr)
 }
 
+/// Set the car (first element) of a Scheme pair.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_set_car<'gc>(ctx: ContextRef<'gc>, pair: Value<'gc>, car: Value<'gc>) {
     pair.set_car(ctx.ctx(), car);
 }
 
+/// Set the cdr (second element / rest) of a Scheme pair.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_set_cdr<'gc>(ctx: ContextRef<'gc>, pair: Value<'gc>, cdr: Value<'gc>) {
     pair.set_cdr(ctx.ctx(), cdr);
 }
 
+/// Set the element at `index` in a Scheme vector to `value`.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_vector_set<'gc>(
     ctx: ContextRef<'gc>,
@@ -379,10 +354,14 @@ pub extern "C" fn scm_vector_set<'gc>(
     value: Value<'gc>,
 ) {
     let vector = vector.downcast::<Vector>();
+    if index >= vector.len() {
+        return;
+    }
     let wvector = Gc::write(*ctx.ctx(), vector);
     wvector[index].unlock().set(value);
 }
 
+/// Set the element at `index` in a Scheme tuple to `value`.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_tuple_set<'gc>(
     ctx: ContextRef<'gc>,
@@ -391,10 +370,15 @@ pub extern "C" fn scm_tuple_set<'gc>(
     value: Value<'gc>,
 ) {
     let t = tuple.downcast::<Tuple>();
+    if index >= t.len() {
+        return;
+    }
     let wt = Gc::write(*ctx.ctx(), t);
     wt[index].unlock().set(value);
 }
 
+/// Set the character at `index` in a Scheme string to `ch` (as a Unicode code point).
+/// If `ch` is not a valid Unicode scalar value, the replacement character U+FFFD is used.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_string_set<'gc>(
     ctx: ContextRef<'gc>,
@@ -405,16 +389,24 @@ pub extern "C" fn scm_string_set<'gc>(
     const REPLACEMENT_CHAR: char = '\u{FFFD}';
     let ch = std::char::from_u32(ch).unwrap_or(REPLACEMENT_CHAR);
 
-    Str::set(string.downcast(), *ctx.ctx(), index, ch);
+    let s = string.downcast::<Str>();
+    if index >= s.len() {
+        return;
+    }
+    Str::set(s, *ctx.ctx(), index, ch);
 }
 
+/// Return the character at `index` in a Scheme string as a Unicode code point.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_string_ref<'gc>(
     _ctx: ContextRef<'gc>,
     string: Value<'gc>,
     index: usize,
 ) -> u32 {
-    string.downcast::<Str>().get(index).unwrap() as u32
+    match string.downcast::<Str>().get(index) {
+        Some(ch) => ch as u32,
+        None => 0,
+    }
 }
 
 pub type PrepareCallFn =
@@ -427,6 +419,10 @@ pub type FinishCallFn = for<'gc> extern "C" fn(
     data: *mut c_void,
 ) -> libc::c_int;
 
+/// Call a named Scheme procedure from a given module.
+///
+/// `prepare` is invoked to build the argument list, and `finish` is invoked
+/// with the result (or error) once the call completes.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_call(
     scm: ScmRef,
@@ -437,9 +433,17 @@ pub extern "C" fn scm_call(
     finish: FinishCallFn,
     data2: *mut c_void,
 ) -> libc::c_int {
+    // SAFETY: Caller must pass valid, null-terminated C strings for mod_name
+    // and func_name. The function pointers `prepare` and `finish` must be valid.
     unsafe {
-        let mod_name = CStr::from_ptr(mod_name).to_str().unwrap();
-        let func_name = CStr::from_ptr(func_name).to_str().unwrap();
+        let mod_name = match safe_cstr(mod_name) {
+            Some(s) => s,
+            None => return -1,
+        };
+        let func_name = match safe_cstr(func_name) {
+            Some(s) => s,
+            None => return -1,
+        };
         scm.scheme.call(
             mod_name,
             func_name,
@@ -465,6 +469,9 @@ pub extern "C" fn scm_call(
     }
 }
 
+/// Resume a call using the current accumulator value as the procedure.
+///
+/// `prepare` builds the argument list, and `finish` receives the result or error.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_resume_accumulator<'gc>(
     scm: ScmRef,
@@ -503,33 +510,52 @@ pub extern "C" fn scm_resume_accumulator<'gc>(
     x
 }
 
+/// Load and evaluate a Scheme source file by path. Returns 0 on success, -1 on failure.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int {
-    let name = unsafe { CStr::from_ptr(name as _).to_str().unwrap() };
+    // SAFETY: Caller must pass a valid, null-terminated C string.
+    let name = match unsafe { safe_cstr(name) } {
+        Some(s) => s,
+        None => return -1,
+    };
 
     let x = scm.scheme.call_value(
-        |ctx, _| load_thunk_in_vicinity::<true>(ctx, &name, None::<String>, true, None).unwrap(),
+        |ctx, _| {
+            load_thunk_in_vicinity::<true>(ctx, &name, None::<String>, true, None)
+                .unwrap_or_else(|_| Value::void())
+        },
         |_, res| matches!(res, Ok(_)),
     );
 
     if x { 0 } else { -1 }
 }
 
+/// Return the current program arguments as a Scheme list of strings.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_program_arguments<'gc>(ctx: ContextRef<'gc>) -> Value<'gc> {
     crate::runtime::vm::base::get_program_arguments_fluid(ctx.ctx())
 }
 
+/// Initialize program arguments from a C-style `argc`/`argv` pair.
+///
+/// # Safety
+///
+/// `argv` must point to an array of at least `argc` valid, non-null C strings.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_program_arguments_init<'gc>(
     ctx: ContextRef<'gc>,
     argc: usize,
     argv: *const *const c_char,
 ) {
+    // SAFETY: Caller must pass a valid argv array of `argc` non-null,
+    // null-terminated C string pointers.
     unsafe {
         let mut ls = Value::null();
         for i in (0..argc).rev() {
-            let arg = CStr::from_ptr(*argv.add(i)).to_str().unwrap();
+            let arg = match safe_cstr(*argv.add(i)) {
+                Some(s) => s,
+                None => continue, // skip invalid arguments
+            };
             let str_value = ctx.ctx().str(arg);
             ls = Value::cons(ctx.ctx(), str_value, ls);
         }
@@ -538,6 +564,7 @@ pub extern "C" fn scm_program_arguments_init<'gc>(
     }
 }
 
+/// Set the program arguments to the given Scheme list of strings.
 #[unsafe(no_mangle)]
 pub extern "C" fn scm_set_program_arguments<'gc>(ctx: ContextRef<'gc>, args: Value<'gc>) {
     crate::runtime::vm::base::program_arguments_fluid(ctx.ctx()).set(ctx.ctx(), args);

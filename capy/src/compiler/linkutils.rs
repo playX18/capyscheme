@@ -1,3 +1,5 @@
+//! Platform-specific linker invocation utilities.
+
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -8,17 +10,21 @@ pub struct Linker {
 }
 
 impl Linker {
-    pub fn new() -> Self {
-        let path = if cfg!(target_os = "macos") {
-            "ld64.lld".to_string()
+    pub fn new() -> std::io::Result<Self> {
+        let name = if cfg!(target_os = "macos") {
+            "ld64.lld"
         } else if cfg!(unix) {
-            "ld".to_string()
+            "ld"
         } else {
-            // Fallback for other platforms
-            "ld".to_string()
+            "ld"
         };
-        let path = which::which(path).expect("No linker found in PATH");
-        Self { path: path }
+        let path = which::which(name).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("No linker '{}' found in PATH: {}", name, e),
+            )
+        })?;
+        Ok(Self { path })
     }
 
     pub fn link(&self, from: &Path, to: &Path) -> std::io::Result<()> {
@@ -31,7 +37,10 @@ impl Linker {
             } else if cfg!(target_arch = "aarch64") {
                 "arm64"
             } else {
-                panic!("Unsupported architecture");
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Unsupported architecture for macOS linking",
+                ));
             };
             cmd.arg("-dynamic")
                 .arg("-dylib")
@@ -59,7 +68,12 @@ impl Linker {
             ));
         }
         if cfg!(target_os = "macos") {
-            let dsymutil = which::which("dsymutil").expect("No dsymutil found in PATH");
+            let dsymutil = which::which("dsymutil").map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("No dsymutil found in PATH: {}", e),
+                )
+            })?;
             if !Command::new(dsymutil).arg(to).status()?.success() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Other,

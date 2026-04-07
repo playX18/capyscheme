@@ -44,9 +44,10 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter::Language::new(tree_sitter_scheme::LANGUAGE))
-            .unwrap();
+            .expect("tree-sitter scheme language should be valid");
 
-        let tree = parser.parse(text, None).unwrap();
+        let tree = parser.parse(text, None)
+            .expect("tree-sitter failed to parse input text");
 
         Self {
             wrap_stx,
@@ -142,7 +143,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         let mut cursor = node.walk();
         let mut children = node.children(&mut cursor);
 
-        let terminator = match self.text_of(&children.next().unwrap()) {
+        let terminator = match self.text_of(&children.next()
+            .expect("compound node should have at least one child")) {
             "(" => ")",
             "#(" => ")",
             "#u8(" => ")",
@@ -426,7 +428,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "quote" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("quote node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -438,7 +441,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "syntax" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("syntax node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -450,7 +454,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "quasisyntax" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("quasisyntax node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -462,7 +467,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "unsyntax" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("unsyntax node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -474,7 +480,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "unsyntax_splicing" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("unsyntax_splicing node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -487,7 +494,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "quasiquote" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("quasiquote node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -499,7 +507,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "unquote" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("unquote node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -511,7 +520,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
 
             "unquote_splicing" => {
                 let mut cursor = node.walk();
-                let child = node.children(&mut cursor).skip(1).next().unwrap();
+                let child = node.children(&mut cursor).skip(1).next()
+                    .expect("unquote_splicing node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
@@ -528,7 +538,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             }
 
             "character" => {
-                let rest = text.strip_prefix("#\\").unwrap();
+                let rest = text.strip_prefix("#\\")
+                    .expect("character literal should start with #\\");
 
                 if let Some(hex_part) = rest.strip_prefix("x") {
                     let end_of_hex = hex_part

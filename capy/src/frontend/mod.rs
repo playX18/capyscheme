@@ -1,3 +1,5 @@
+//! Source code parsing and reader for Scheme expressions.
+
 use bitflags::bitflags;
 
 pub mod error;

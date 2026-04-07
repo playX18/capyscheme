@@ -1,3 +1,5 @@
+//! Shared utility functions for memory alignment, formatting, and platform queries.
+
 use crate::rsgc::{Gc, Trace, alloc::array::Array};
 use crate::runtime::value::Value;
 use mmtk::util::Address;
@@ -167,7 +169,6 @@ pub fn align_allocation_no_fill(region: Address, alignment: usize, offset: usize
 }
 
 pub mod easy_bitfield;
-pub mod graph;
 #[cfg(test)]
 mod tests {
     use super::*;

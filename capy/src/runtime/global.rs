@@ -45,6 +45,10 @@ unsafe impl Sync for GlobalTable<'_> {}
 
 static GLOBALS: OnceLock<crate::rsgc::Global<crate::Rootable!(GlobalTable<'_>)>> = OnceLock::new();
 
+/// Strongly-typed index into the global variable table.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GlobalIndex(pub(crate) usize);
+
 /// The main difference between [`rsgc::Global`] and this type
 /// is that this type does not store pointer, but just an index into
 /// the side global table. Global table itself stores [`Value`]s directly
@@ -54,7 +58,7 @@ where
     R: for<'a> Rootable<'a>,
     for<'a> Root<'a, R>: Sized + Trace,
 {
-    index: usize,
+    index: GlobalIndex,
     marker: PhantomData<*const R>,
 }
 
@@ -104,7 +108,7 @@ where
     {
         let globals = globals().fetch(*ctx);
         let mut guard = globals.globals.lock();
-        let index = guard.len();
+        let index = GlobalIndex(guard.len());
         guard.push(initial.into_value(ctx));
         Self {
             index,
@@ -119,7 +123,7 @@ where
     {
         let globals = globals().fetch(*ctx);
         let guard = globals.globals.lock();
-        let value = guard[self.index];
+        let value = guard[self.index.0];
         Root::<R>::try_from_value(ctx, value).expect("global variable has wrong type")
     }
 
@@ -130,12 +134,12 @@ where
     {
         let globals = globals().fetch(*ctx);
         let mut guard = globals.globals.lock();
-        guard[self.index] = value.into_value(ctx);
+        guard[self.index.0] = value.into_value(ctx);
     }
 
     pub unsafe fn from_index(index: usize) -> Self {
         Self {
-            index,
+            index: GlobalIndex(index),
             marker: PhantomData,
         }
     }

@@ -33,6 +33,9 @@ pub union EncodedValueDescriptor {
 
 impl EncodedValueDescriptor {
     pub(crate) unsafe fn ptr(self) -> GCObject {
+        // SAFETY: `*mut ()` and `GCObject` have the same layout (both pointer-sized).
+        // Caller must ensure the value is a cell (i.e. `is_cell()` is true) so that `self.ptr`
+        // contains a valid GC-managed pointer, not a NaN-boxed integer/float/tag.
         unsafe { std::mem::transmute(self.ptr) }
     }
 }
@@ -48,6 +51,7 @@ impl<'gc> Hash for Value<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         if self.is_cell() {
             unsafe {
+                // SAFETY: `is_cell()` guard above ensures `desc.ptr` is a valid GC object pointer.
                 let obj = self.desc.ptr();
                 state.write_u64(obj.hashcode());
             }
@@ -81,10 +85,15 @@ impl<'gc> Value<'gc> {
     }
 }
 
+// SAFETY: Value's Trace impl correctly identifies GC-managed pointers via `is_cell()`.
+// Non-cell values (ints, floats, tags) are ignored; cell values point into the GC heap
+// and `desc.ptr` is at a stable address suitable for `ObjectSlot` construction.
 unsafe impl<'gc> Trace for Value<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         unsafe {
             if self.is_cell() && !self.is_empty() {
+                // SAFETY: `is_cell() && !is_empty()` ensures `desc.ptr` holds a live GC pointer.
+                // `&mut self.desc.ptr` is a stable reference to the slot the GC may update.
                 visitor.visit_slot(ObjectSlot::from_address(Address::from_mut_ptr(
                     &mut self.desc.ptr,
                 )));
@@ -243,6 +252,8 @@ impl<'gc> Value<'gc> {
 
     pub fn char(self) -> char {
         debug_assert!(self.is_char());
+        // SAFETY: Values with `is_char()` were created via `from_char()`, which stores a valid
+        // `char` (a Unicode scalar value) shifted left by 16 bits. Reversing the shift recovers it.
         unsafe { char::from_u32_unchecked((self.raw_i64() >> 16) as i32 as u32) }
     }
 
@@ -294,6 +305,8 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_cell_raw(self) -> GCObject {
+        // SAFETY: Caller must ensure the value is a cell. The NaN-boxing encoding guarantees
+        // the low bits of a cell value form a valid pointer into the GC heap.
         // debug_assert!(self.is_cell());
         unsafe { self.desc.ptr() }
     }
@@ -345,6 +358,9 @@ impl<'gc> WeakValue<'gc> {
     }
 }
 
+// SAFETY: WeakValue wraps the same NaN-boxed representation as Value. During tracing we only
+// register for weak processing; actual pointer updates happen in `process_weak_refs` where
+// we check liveness and null out dead references (replacing with BWP sentinel).
 unsafe impl<'gc> Trace for WeakValue<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.register_for_weak_processing();
@@ -352,6 +368,8 @@ unsafe impl<'gc> Trace for WeakValue<'gc> {
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         unsafe {
+            // SAFETY: Called by the GC during weak-ref processing. `is_cell()` check ensures
+            // we only query liveness for actual heap pointers. Dead refs become BWP.
             let value = self.as_value();
 
             if value.is_cell() {
@@ -706,6 +724,7 @@ impl<'gc, T: Tagged> From<Gc<'gc, T>> for Value<'gc> {
     }
 }
 
+// SAFETY: All-zero bit pattern corresponds to VALUE_EMPTY, which is a valid (non-cell) Value.
 unsafe impl<'gc> bytemuck::Zeroable for Value<'gc> {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -721,9 +740,14 @@ impl GlobalValue {
     }
 }
 
+// SAFETY: Zero bits is a valid GlobalValue (wraps VALUE_EMPTY).
 unsafe impl bytemuck::Zeroable for GlobalValue {}
+// SAFETY: GlobalValue is #[repr(transparent)] over u64 — any bit pattern is a valid value,
+// and it has no padding or interior references that would violate Pod requirements.
 unsafe impl bytemuck::Pod for GlobalValue {}
 
+// SAFETY: GlobalValue stores the same NaN-boxed bits as Value. The `is_cell()` check
+// ensures we only expose GC pointers to the visitor; `&mut self.0` is a stable slot.
 unsafe impl Trace for GlobalValue {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         let value = Value::from_raw_i64(self.0 as i64);

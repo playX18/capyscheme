@@ -1,3 +1,5 @@
+//! Thread and GC context management.
+
 use crate::{
     interp::stack::InterpreterStack,
     prelude::{HashTable, Keyword},
@@ -60,8 +62,13 @@ impl<'gc> Context<'gc> {
         self.mc.as_ptr()
     }
 
+    /// # Safety
+    ///
+    /// `ptr` must have been obtained from `Context::as_ptr()` on a live mutator thread.
+    /// The underlying `Mutation` must still be valid for the `'gc` lifetime.
     pub unsafe fn from_ptr(ptr: *const ()) -> Self {
         Self {
+            // SAFETY: Delegates to `Mutation::from_ptr`; caller guarantees the pointer is valid.
             mc: unsafe { Mutation::from_ptr(ptr) },
         }
     }
@@ -179,6 +186,8 @@ impl<'gc> Context<'gc> {
 
             call_scheme_with_k(self, retk, call.rator, args.into_iter())
         } else {
+            // SAFETY: `continue_to` requires a valid closure and matching arg iterator.
+            // `call.rator` was stored from a prior scheme call; the GC keeps it alive.
             unsafe { continue_to(self, call.rator, args.into_iter()) }
         }
     }
@@ -196,6 +205,8 @@ impl<'gc> Context<'gc> {
 
             call_scheme_with_k(self, retk, call.rator, call.rands[1..].iter().copied())
         } else {
+            // SAFETY: Same as above — `call.rator` and `call.rands` are traced by the GC
+            // and remain valid through the saved_call mechanism.
             unsafe { continue_to(self, call.rator, call.rands[..].iter().copied()) }
         }
     }
@@ -208,6 +219,8 @@ impl<'gc> Context<'gc> {
     ) -> NativeReturn<'gc> {
         let rands_ptr = self.state().runstack.get().to_mut_ptr::<Value>();
         let disp = if retk.is_some() { 1 } else { 0 };
+        // SAFETY: `runstack` is a pre-allocated buffer of `RUNSTACK_SIZE` Values.
+        // `rands_ptr` points within that buffer; the caller must not exceed stack capacity.
         unsafe {
             if let Some(retk) = retk {
                 *rands_ptr = retk;
@@ -257,6 +270,8 @@ impl<'gc> Context<'gc> {
 
     #[allow(unused, dead_code)]
     pub(crate) fn stack(&self) -> &InterpreterStack<'gc> {
+        // SAFETY: `stack` is initialized in `State::new` and lives for `'gc`. The `UnsafeCell`
+        // is only accessed from the owning thread; no concurrent mutation occurs here.
         unsafe { self.state().stack.get().as_ref_unchecked() }
     }
 
@@ -513,10 +528,15 @@ pub struct CallData<'gc> {
     pub num_rands: Cell<usize>,
 }
 
+// SAFETY: CallData stores GC-managed Values (rator + rands array). During tracing we
+// visit each live slot. `rands` is a raw pointer to the runstack region — valid while
+// the owning State/mutator is alive.
 unsafe impl<'gc> Trace for CallData<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.trace(&mut self.rator);
         unsafe {
+            // SAFETY: `rands` points into the runstack buffer allocated by `make_fresh_runstack`.
+            // `num_rands` is set when the call is saved, bounding the iteration.
             if !self.rands.get().is_null() {
                 for i in 0..self.num_rands.get() {
                     (*self.rands.get().add(i)).trace(visitor);
@@ -529,6 +549,8 @@ unsafe impl<'gc> Trace for CallData<'gc> {
     }
 }
 
+// SAFETY: State contains GC roots (dynamic_state, runstack values, shadow_stack, etc.).
+// All traced fields are exclusively owned by this mutator thread during GC stop-the-world.
 unsafe impl Trace for State<'_> {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 
@@ -536,6 +558,8 @@ unsafe impl Trace for State<'_> {
         visitor.trace(&mut self.dynamic_state);
 
         let runstack = unsafe {
+            // SAFETY: `runstack_start` through `runstack.get()` is a contiguous buffer of Values
+            // allocated in `make_fresh_runstack`. The distance gives the number of live slots.
             std::slice::from_raw_parts_mut(
                 self.runstack_start.to_mut_ptr::<Value>(),
                 (self.runstack.get() - self.runstack_start) / size_of::<Value>(),
@@ -547,6 +571,8 @@ unsafe impl Trace for State<'_> {
         }
 
         unsafe {
+            // SAFETY: `shadow_stack` UnsafeCell is only accessed during GC tracing (stop-the-world)
+            // while no other thread can mutate it.
             let stack = &mut *self.shadow_stack.get();
 
             stack.for_each_mut(|frame| {
@@ -562,6 +588,7 @@ unsafe impl Trace for State<'_> {
         visitor.trace(&mut self.thread_object);
         visitor.trace(&mut self.accumulator);
         unsafe {
+            // SAFETY: `yield_reason` UnsafeCell accessed during stop-the-world GC tracing.
             match &mut *self.yield_reason.get() {
                 Some(reason) => visitor.trace(reason),
                 None => {}
@@ -1054,6 +1081,8 @@ impl Scheme {
         Self {
             mutator: {
                 let m = Mutator::new(|mc| {
+                    // SAFETY: `thread_object_bits` was obtained from `Gc::as_ptr()` on the
+                    // parent thread. The GC keeps the object alive via the parent's root set.
                     let thread_object = unsafe { Gc::from_ptr(thread_object_bits as _) };
                     let state = State::new(mc, thread_object);
                     mc.init_state(state);
@@ -1073,6 +1102,8 @@ impl Scheme {
 
 impl<'gc> Drop for State<'gc> {
     fn drop(&mut self) {
+        // SAFETY: `runstack_start` was allocated in `make_fresh_runstack` with the same
+        // layout. We deallocate it here on State drop; no other code frees this buffer.
         unsafe {
             let layout = std::alloc::Layout::from_size_align(
                 RUNSTACK_SIZE * std::mem::size_of::<Value>(),
@@ -1090,6 +1121,9 @@ fn make_fresh_runstack() -> (Address, Address) {
         std::mem::align_of::<Value>(),
     )
     .unwrap();
+    // SAFETY: Layout is valid (non-zero, properly aligned). `alloc` returns a valid
+    // pointer or null; we handle the null case. The returned addresses are valid for the
+    // lifetime of the State that owns them.
     unsafe {
         let ptr = std::alloc::alloc(layout) as *mut Value;
         if ptr.is_null() {

@@ -40,11 +40,11 @@ struct State<'gc> {
     atom_subst: im::HashMap<Atom<'gc>, Atom<'gc>>,
     var_subst: Map<LVarRef<'gc>, LVarRef<'gc>>,
 
-    e_inv_env: im::HashMap<(Value<'gc>, Atoms<'gc>), Atom<'gc>>,
-    cenv: im::HashMap<LVarRef<'gc>, ContRef<'gc>>,
-    fenv: im::HashMap<LVarRef<'gc>, FuncRef<'gc>>,
+    e_inv_env: im::HashMap<(Value<'gc>, Atoms<'gc>), Atom<'gc>>, // expression-inverse environment: maps (primop, args) to previously computed results
+    cenv: im::HashMap<LVarRef<'gc>, ContRef<'gc>>, // continuation environment: maps variables to their continuation definitions
+    fenv: im::HashMap<LVarRef<'gc>, FuncRef<'gc>>, // function environment: maps variables to their function definitions
 
-    aenv: im::HashSet<LVarRef<'gc>>,
+    aenv: im::HashSet<LVarRef<'gc>>, // alias environment: set of variables known to be aliased
 }
 
 impl<'gc> State<'gc> {

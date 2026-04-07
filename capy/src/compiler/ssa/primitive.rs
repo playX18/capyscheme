@@ -1380,7 +1380,7 @@ prim!(
         assert_eq!(args.len(), 1);
 
         let Atom::Constant(cache_key) = args[0] else {
-            panic!("invalid cache-ref")
+            panic!("invalid cache-ref: expected Atom::Constant, got {:?}", args[0])
         };
 
         let cell = ssa.module_builder.intern_cache_cell(cache_key);
@@ -1393,7 +1393,7 @@ prim!(
         assert_eq!(args.len(), 2);
 
         let Atom::Constant(cache_key) = args[0] else {
-            panic!("invalid cache-set!")
+            panic!("invalid cache-set!: expected Atom::Constant, got {:?}", args[0])
         };
 
         let value = ssa.atom(args[1]);
@@ -1678,7 +1678,7 @@ prim!(
 
     "tuple" => tuple(ssa, args, _h) {
         let PrimValue::Value(tup) = make_tuple(ssa, &[Atom::Constant(Value::new(args.len() as i32))]) else {
-            panic!("tuple make-tuple failed")
+            panic!("tuple: make-tuple failed to return a Value for {} elements", args.len())
         };
 
         for (i, &arg) in args.iter().enumerate() {
@@ -2766,7 +2766,7 @@ fn emit_icmp<'gc, 'a, 'f>(
                 IntCC::SignedGreaterThanOrEqual => ssa.thunks.number_ge,
                 IntCC::SignedLessThan => ssa.thunks.number_lt,
                 IntCC::SignedLessThanOrEqual => ssa.thunks.number_le,
-                _ => panic!("unsupported comparison"),
+                _ => panic!("unsupported comparison operator: {cond:?}"),
             };
 
             let result = ssa.handle_thunk_call_result(thunk, &[ctx, a, b]);

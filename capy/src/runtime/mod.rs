@@ -1,7 +1,8 @@
+//! Runtime system: value representation, virtual machine, modules, and thread management.
+
 pub mod fasl;
 pub mod fluids;
 pub mod global;
-//pub mod image;
 pub mod libs;
 pub mod modules;
 pub mod thread;

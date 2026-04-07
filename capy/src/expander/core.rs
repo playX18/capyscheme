@@ -688,20 +688,16 @@ pub struct CompileError<'gc> {
     pub sourcev: Value<'gc>,
 }
 
-impl<'gc> CompileError<'gc> {
-    pub fn to_string(&self) -> String {
-        let mut s = String::new();
-        s.push_str(&self.message);
+impl<'gc> std::fmt::Display for CompileError<'gc> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)?;
         if !self.irritants.is_empty() {
-            s.push_str("\nIrritants:");
+            write!(f, "\nIrritants:")?;
             for irritant in &self.irritants {
-                s.push_str(&format!("\n  {}", irritant));
+                write!(f, "\n  {}", irritant)?;
             }
         }
-
-        s.push_str(&format!("\nAt: {}", self.sourcev));
-
-        s
+        write!(f, "\nAt: {}", self.sourcev)
     }
 }
 
