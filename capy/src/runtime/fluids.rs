@@ -31,11 +31,14 @@ impl<'gc> CacheEntry<'gc> {
     }
 }
 
-/// A fixed-size cache with 16 entries that evicts least recently used entries
+const CACHE_SIZE: usize = 16;
+const CACHE_MASK: usize = CACHE_SIZE - 1;
+
+/// A fixed-size cache with `CACHE_SIZE` entries that evicts least recently used entries
 #[derive(Trace)]
 #[collect(no_drop)]
 pub struct Cache<'gc> {
-    entries: [Lock<CacheEntry<'gc>>; 16],
+    entries: [Lock<CacheEntry<'gc>>; CACHE_SIZE],
     clock: Cell<u32>,
 }
 
@@ -44,7 +47,7 @@ impl<'gc> Cache<'gc> {
         Gc::new(
             mc,
             Self {
-                entries: [const { Lock::new(CacheEntry::empty()) }; 16],
+                entries: [const { Lock::new(CacheEntry::empty()) }; CACHE_SIZE],
                 clock: Cell::new(1),
             },
         )
@@ -55,7 +58,7 @@ impl<'gc> Cache<'gc> {
         let mut hash = simplehash::Fnv1aHasher64::new();
 
         key.hash(&mut hash);
-        (hash.finish_raw() as usize) & 15
+        (hash.finish_raw() as usize) & CACHE_MASK
     }
 
     /// Get the current time and increment the clock
@@ -70,8 +73,8 @@ impl<'gc> Cache<'gc> {
         let slot = self.hash_key(key);
 
         // Linear probing for collision resolution
-        for i in 0..16 {
-            let index = (slot + i) & 15;
+        for i in 0..CACHE_SIZE {
+            let index = (slot + i) & CACHE_MASK;
             let entry = self.entries[index].get();
 
             if entry.key == key {
@@ -102,8 +105,8 @@ impl<'gc> Cache<'gc> {
         let access_time = self.next_time();
 
         // First try to find existing key or empty slot
-        for i in 0..16 {
-            let index = (slot + i) & 15;
+        for i in 0..CACHE_SIZE {
+            let index = (slot + i) & CACHE_MASK;
             let entry = self.entries[index].get();
 
             // Update existing key
@@ -131,8 +134,8 @@ impl<'gc> Cache<'gc> {
         let access_time = self.next_time();
 
         // First try to find existing key or empty slot
-        for i in 0..16 {
-            let index = (slot + i) & 15;
+        for i in 0..CACHE_SIZE {
+            let index = (slot + i) & CACHE_MASK;
             let entry = self.entries[index].get();
 
             // Update existing key
@@ -160,8 +163,8 @@ impl<'gc> Cache<'gc> {
         let mut lru_index = slot;
         let mut lru_time = self.entries[slot].get().access_time;
 
-        for i in 1..16 {
-            let index = (slot + i) & 15;
+        for i in 1..CACHE_SIZE {
+            let index = (slot + i) & CACHE_MASK;
             let entry_time = self.entries[index].get().access_time;
             if entry_time < lru_time {
                 lru_time = entry_time;
@@ -187,8 +190,8 @@ impl<'gc> Cache<'gc> {
     pub fn remove(self: Gc<'gc, Self>, mc: Mutation<'gc>, key: Value<'gc>) -> Option<Value<'gc>> {
         let slot = self.hash_key(key);
 
-        for i in 0..16 {
-            let index = (slot + i) & 15;
+        for i in 0..CACHE_SIZE {
+            let index = (slot + i) & CACHE_MASK;
             let entry = self.entries[index].get();
 
             if entry.key == key {
@@ -208,7 +211,7 @@ impl<'gc> Cache<'gc> {
 
     /// Clear all entries from the cache
     pub fn clear(self: Gc<'gc, Self>, mc: Mutation<'gc>) {
-        for i in 0..16 {
+        for i in 0..CACHE_SIZE {
             Gc::write(mc, self)[i].unlock().set(CacheEntry::empty());
         }
         self.clock.set(1);
@@ -237,7 +240,7 @@ impl<'gc> Index<usize> for Cache<'gc> {
     type Output = Lock<CacheEntry<'gc>>;
 
     fn index(&self, index: usize) -> &Self::Output {
-        &self.entries[index % 16]
+        &self.entries[index % CACHE_SIZE]
     }
 }
 
@@ -277,7 +280,7 @@ impl<'gc> DynamicState<'gc> {
     pub fn save(&self, ctx: Context<'gc>) -> Value<'gc> {
         let mut saved = Value::from(self.values.get());
 
-        for slot in 0..16 {
+        for slot in 0..CACHE_SIZE {
             let CacheEntry { key, value, .. } = self.cache[slot].get();
 
             if key.is_empty() {
@@ -303,7 +306,7 @@ impl<'gc> DynamicState<'gc> {
     }
 
     pub fn restore(&self, ctx: Context<'gc>, mut saved: Value<'gc>) {
-        for slot in 0..16 {
+        for slot in 0..CACHE_SIZE {
             let entry = &Gc::write(*ctx, self.cache)[slot];
             if saved.is_pair() {
                 let key = saved.caar();

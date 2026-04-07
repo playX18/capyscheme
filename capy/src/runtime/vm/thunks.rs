@@ -4014,7 +4014,7 @@ pub fn make_assertion_violation<'gc>(
             Symbol::from_str(ctx, "%make-assertion-violation").into(),
         )
         .unwrap_or_else(|| {
-            panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
+            panic!("failed to resolve %make-assertion-violation (pre-boot): who={who}, message={message}, irritants={irritants:?}",)
         });
 
     match call_scheme(ctx, assertion_violation, args) {
@@ -4041,7 +4041,7 @@ pub fn make_undefined_violation<'gc>(
             Symbol::from_str(ctx, "%make-undefined-violation").into(),
         )
         .unwrap_or_else(|| {
-            panic!("pre boot code, who={who}, message={message}, irritants={irritants:?}",)
+            panic!("failed to resolve %make-undefined-violation (pre-boot): who={who}, message={message}, irritants={irritants:?}",)
         });
     match call_scheme(ctx, undefined_violation, args) {
         VMResult::Ok(val) => val,
@@ -4065,7 +4065,7 @@ pub fn make_error<'gc>(
         .globals()
         .root_module()
         .get(ctx, Symbol::from_str(ctx, "%make-error").into())
-        .expect("pre boot code");
+        .expect("failed to resolve %make-error (pre-boot)");
 
     match call_scheme(ctx, error, args) {
         VMResult::Ok(val) => val,
@@ -4092,7 +4092,7 @@ pub fn make_io_error<'gc>(
         .get(ctx, Symbol::from_str(ctx, "%make-io-error").into())
         .unwrap_or_else(|| {
             panic!(
-                "pre boot code, who={who}, message={message}, irritants={:?}",
+                "failed to resolve %make-io-error (pre-boot): who={who}, message={message}, irritants={:?}",
                 irritants
             )
         });
@@ -4117,7 +4117,7 @@ pub fn make_lexical_violation<'gc>(
         .globals()
         .root_module()
         .get(ctx, Symbol::from_str(ctx, "%make-lexical-violation").into())
-        .unwrap_or_else(|| panic!("pre boot code, who={who}, message={message}",));
+        .unwrap_or_else(|| panic!("failed to resolve %make-lexical-violation (pre-boot): who={who}, message={message}",));
 
     match call_scheme(ctx, lexical_violation, args) {
         VMResult::Ok(val) => val,

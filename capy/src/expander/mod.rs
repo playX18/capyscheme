@@ -1,3 +1,5 @@
+//! Scheme macro expander for R6RS/R7RS syntax-case and syntax-rules.
+
 #[cfg(feature = "bootstrap")]
 use crate::expander::core::denotation_of_begin;
 #[cfg(feature = "bootstrap")]

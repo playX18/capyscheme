@@ -41,7 +41,7 @@ pub enum LexicalError<'gc> {
 }
 
 impl<'gc> LexicalError<'gc> {
-    pub fn to_string(&self, file: impl Display) -> String {
+    pub fn display_with_file(&self, file: impl Display) -> String {
         match self {
             LexicalError::InvalidCharacter { source, character } => format!(
                 "Invalid character '{}' at {}:{}:{}",

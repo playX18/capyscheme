@@ -1,3 +1,5 @@
+//! Core virtual machine: call dispatch, stack management, and Scheme ↔ native transitions.
+
 use std::{
     io::ErrorKind,
     marker::PhantomData,

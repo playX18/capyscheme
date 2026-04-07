@@ -1,3 +1,5 @@
+//! SSA (Static Single Assignment) code generation using Cranelift.
+
 use crate::{
     compiler::{
         debuginfo::{DebugContext, FunctionDebugContext},
@@ -87,7 +89,7 @@ impl<'gc> ModuleBuilder<'gc> {
             let func_id = self
                 .module
                 .declare_function(&name, Linkage::Export, &sig)
-                .unwrap();
+                .expect("failed to declare function in cranelift module");
 
             self.func_for_func.insert(func, func_id);
         }
@@ -105,7 +107,7 @@ impl<'gc> ModuleBuilder<'gc> {
             let cont_id = self
                 .module
                 .declare_function(&name, Linkage::Local, &sig)
-                .unwrap();
+                .expect("failed to declare continuation in cranelift module");
             self.func_for_cont.insert(cont, cont_id);
         }
 
@@ -119,7 +121,8 @@ impl<'gc> ModuleBuilder<'gc> {
             let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
             let func_debug_cx = self.debug_context.define_function(func, &name);
 
-            let func_id = self.func_for_func.get(&func).copied().unwrap();
+            let func_id = self.func_for_func.get(&func).copied()
+                .expect("function should have been declared before compilation");
             let mut ssa =
                 SSABuilder::new(self, builder, ContOrFunc::Func(func), thunks, func_debug_cx);
 
@@ -198,11 +201,11 @@ impl<'gc> ModuleBuilder<'gc> {
         let globals_array = self
             .module
             .declare_data("CAPY_GLOBALS", Linkage::Export, true, false)
-            .unwrap();
+            .expect("failed to declare CAPY_GLOBALS data");
         let globals_size = self
             .module
             .declare_data("CAPY_GLOBALS_LEN", Linkage::Export, false, false)
-            .unwrap();
+            .expect("failed to declare CAPY_GLOBALS_LEN data");
 
         let mut desc = DataDescription::new();
         desc.set_align(size_of::<usize>() as _);
@@ -220,13 +223,15 @@ impl<'gc> ModuleBuilder<'gc> {
         }
         desc.define(vec![0; offset as usize].into_boxed_slice());
 
-        self.module.define_data(globals_array, &desc).unwrap();
+        self.module.define_data(globals_array, &desc)
+            .expect("failed to define CAPY_GLOBALS data");
 
         desc = DataDescription::new();
 
         desc.define(Box::new((offset / 8).to_le_bytes()));
         desc.set_align(size_of::<usize>() as _);
-        self.module.define_data(globals_size, &desc).unwrap();
+        self.module.define_data(globals_size, &desc)
+            .expect("failed to define CAPY_GLOBALS_LEN data");
 
         // First let's get some stable way to iterate constants
         let constants = self
@@ -249,18 +254,19 @@ impl<'gc> ModuleBuilder<'gc> {
         let init_fn_id = self
             .module
             .declare_function("capy_module_init", Linkage::Export, &sig)
-            .unwrap();
+            .expect("failed to declare capy_module_init function");
 
         let fasl_data = self
             .module
             .declare_data("capy_fasl_constants", Linkage::Export, false, false)
-            .unwrap();
+            .expect("failed to declare capy_fasl_constants data");
         let mut desc = DataDescription::new();
 
         let size = buf.len();
         desc.set_align(align_of::<usize>() as _);
         desc.define(buf.into_boxed_slice());
-        self.module.define_data(fasl_data, &desc).unwrap();
+        self.module.define_data(fasl_data, &desc)
+            .expect("failed to define capy_fasl_constants data");
         {
             ctx.func.signature = sig;
             let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
@@ -324,7 +330,8 @@ impl<'gc> ModuleBuilder<'gc> {
             builder.finalize();
         }
 
-        self.module.define_function(init_fn_id, ctx).unwrap();
+        self.module.define_function(init_fn_id, ctx)
+            .expect("failed to define capy_module_init function");
     }
 
     /// Add an object to constant table, and return a data ID that can be used
@@ -348,11 +355,12 @@ impl<'gc> ModuleBuilder<'gc> {
         let data_id = self
             .module
             .declare_data(&name, Linkage::Local, true, false)
-            .unwrap();
+            .expect("failed to declare constant data");
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size_of::<Value>());
         desc.set_align(align_of::<usize>() as _);
-        self.module.define_data(data_id, &desc).unwrap();
+        self.module.define_data(data_id, &desc)
+            .expect("failed to define constant data");
 
         self.constants.insert(ValueEqual(obj), data_id);
 
@@ -370,11 +378,12 @@ impl<'gc> ModuleBuilder<'gc> {
         let data_id = self
             .module
             .declare_data(&name, Linkage::Local, true, false)
-            .unwrap();
+            .expect("failed to declare cache cell data");
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size_of::<Value>());
         desc.set_align(align_of::<usize>() as _);
-        self.module.define_data(data_id, &desc).unwrap();
+        self.module.define_data(data_id, &desc)
+            .expect("failed to define cache cell data");
 
         self.cache_cells.insert(ValueEqual(key), data_id);
 

@@ -764,7 +764,7 @@ pub mod load_ops {
                         crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), true);
 
                     let program = match parser.read_program().map_err(|err| {
-                        make_lexical_violation(ctx, "compile-file", err.to_string(&file))
+                        make_lexical_violation(ctx, "compile-file", err.display_with_file(&file))
                     }) {
                         Ok(program) => program,
                         Err(err) => return nctx.return_(Err(err)),

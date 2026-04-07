@@ -59,7 +59,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.module_builder
                     .module
                     .declare_data(name, Linkage::Import, false, false)
-                    .unwrap()
+                    .expect("failed to declare imported data symbol")
             });
         let data = self.import_data(data_id);
 
@@ -90,9 +90,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 ContOrFunc::Cont(c) => c.pretty::<_, &BoxAllocator>(&alloc),
             };
 
-            pretty.1.render(80, &mut std::io::stdout()).unwrap();
+            let _ = pretty.1.render(80, &mut std::io::stdout());
             println!();
-            std::io::stdout().flush().unwrap();
+            let _ = std::io::stdout().flush();
             panic!(
                 "{}@{:p} var not found when compiling {}({})",
                 var.name,

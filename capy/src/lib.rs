@@ -15,6 +15,8 @@
     explicit_tail_calls
 )]
 
+//! CapyScheme: R6RS/R7RS Scheme compiler and runtime.
+
 pub mod api;
 pub mod bytecode;
 pub mod compiler;

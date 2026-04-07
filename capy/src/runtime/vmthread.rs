@@ -60,9 +60,7 @@ impl VmThread {
                         Ok(task) => match task {
                             VMThreadTask::FinalizePointers => (),
                             VMThreadTask::ClosePorts => {
-                                /*mutator.mutate(|mc, _| {
-                                    super::value::port::close_ports(mc);
-                                });*/
+                                // TODO: implement port closing on thread shutdown
                             }
                             VMThreadTask::VacuumWeakSets => {
                                 mutator.mutate(|mc, _| {
@@ -95,6 +93,9 @@ impl VmThread {
                                 mmtk::memory_manager::gc_poll(
                                     &GarbageCollector::get().mmtk,
                                     unsafe {
+                                        // SAFETY: `mc.thread()` and `VMMutatorThread` are both
+                                        // thin wrappers around the same `*mut Thread` pointer.
+                                        // The RSGC crate guarantees layout compatibility.
                                         transmute::<_, crate::rsgc::mmtk::util::VMMutatorThread>(
                                             mc.thread(),
                                         )

@@ -1,3 +1,5 @@
+//! Native code compilation pipeline: CPS → SSA → Cranelift → machine code.
+
 use std::{io::Write, path::Path};
 
 use crate::compiler::{linkutils::Linker, ssa::ModuleBuilder};
@@ -127,7 +129,7 @@ pub fn compile_file<'gc>(
     let parser = crate::frontend::reader::TreeSitter::new(ctx, &text, src.into(), false);
 
     let program = parser.read_program().map_err(|err| {
-        make_lexical_violation(ctx, "compile-file", err.to_string(file.display()))
+        make_lexical_violation(ctx, "compile-file", err.display_with_file(file.display()))
     })?;
 
     let mut env =
@@ -148,7 +150,6 @@ pub fn compile_file<'gc>(
     il = primitives::expand_primitives(ctx, il);
     il = resolve_free_vars(ctx, il);
     il = letrectify(ctx, il);
-    let letrectified = il;
     il = fix_letrec(ctx, il);
     il = eta_expand(ctx, il);
     il = assignment_elimination::eliminate_assignments(ctx, il);
@@ -158,58 +159,6 @@ pub fn compile_file<'gc>(
     cps = crate::cps::rewrite_func(ctx, cps);
 
     cps = cps.with_body(ctx, contify(ctx, cps.body()));
-
-    let path = file.to_owned();
-    if !true {
-        let cps_name = format!("{}.cps", path.display());
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(&cps_name)
-            .expect("Failed to open file");
-
-        println!(";; (Pre-boot) Writing CPS to file '{}'", cps_name);
-
-        let mut writer = std::io::BufWriter::new(file);
-        let doc = cps.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        doc.1.render(70, &mut writer).unwrap();
-        writeln!(writer, "").unwrap();
-        writer.flush().unwrap();
-
-        let tree_name = format!("{}.tree", path.display());
-        println!(";; (Pre-boot) Writing IL tree to file '{}'", tree_name);
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(tree_name)
-            .expect("Failed to open file");
-
-        let mut writer = std::io::BufWriter::new(file);
-        let doc = il.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        doc.1.render(70, &mut writer).unwrap();
-        writeln!(writer, "").unwrap();
-        writer.flush().unwrap();
-
-        let letrectified_name = format!("{}.letrectified.tree", path.display());
-        println!(
-            ";; (Pre-boot) Writing letrectified IL tree to file '{}'",
-            letrectified_name
-        );
-
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(letrectified_name)
-            .expect("Failed to open file");
-        let mut writer = std::io::BufWriter::new(file);
-        let doc = letrectified.pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
-        doc.1.render(70, &mut writer).unwrap();
-        writeln!(writer, "").unwrap();
-        writer.flush().unwrap();
-    }
 
     Ok(cps)
 }
@@ -324,7 +273,19 @@ pub fn link_object_product<'gc>(
         )
     })?;
 
-    let linker = Linker::new();
+    let linker = Linker::new().map_err(|e| {
+        make_io_error(
+            ctx,
+            "link-object",
+            Str::new(
+                *ctx,
+                format!("Failed to find linker: {}", e),
+                true,
+            )
+            .into(),
+            &[],
+        )
+    })?;
 
     linker.link(&obj_output, &output).map_err(|e| {
         make_io_error(

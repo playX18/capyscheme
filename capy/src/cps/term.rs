@@ -13,9 +13,13 @@ use crate::{
     utils::TreeEq,
 };
 
+/// Array of CPS atom references.
 pub type Atoms<'gc> = ArrayRef<'gc, Atom<'gc>>;
+/// Array of local variable references.
 pub type Vars<'gc> = ArrayRef<'gc, LVarRef<'gc>>;
+/// Array of continuation references.
 pub type Conts<'gc> = ArrayRef<'gc, ContRef<'gc>>;
+/// Array of function references.
 pub type Funcs<'gc> = ArrayRef<'gc, FuncRef<'gc>>;
 
 #[derive(Debug, Clone, Trace, Copy, PartialEq, Eq, Hash)]
@@ -61,9 +65,9 @@ impl<'gc, T: Into<Value<'gc>>> From<T> for Atom<'gc> {
     }
 }
 
-impl<'gc> Into<Atom<'gc>> for LVarRef<'gc> {
-    fn into(self) -> Atom<'gc> {
-        Atom::Local(self)
+impl<'gc> From<LVarRef<'gc>> for Atom<'gc> {
+    fn from(value: LVarRef<'gc>) -> Self {
+        Atom::Local(value)
     }
 }
 
