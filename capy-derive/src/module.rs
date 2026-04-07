@@ -107,7 +107,7 @@ pub fn handle(Input { meta: args }: Input, input: syn::ItemMod) -> syn::Result<M
 }
 
 impl Module {
-    pub fn to_tokens(&mut self) -> proc_macro2::TokenStream {
+    pub fn emit_tokens(&mut self) -> proc_macro2::TokenStream {
         let Module {
             rust_name,
             path,
@@ -140,7 +140,7 @@ impl Module {
             })
             .collect::<Vec<_>>();
         let item_tokens = items.iter_mut().map(|item| match item {
-            ModuleItem::Function(fun) => fun.to_tokens(),
+            ModuleItem::Function(fun) => fun.emit_tokens(),
             ModuleItem::Variable(var) => var.to_tokens(),
             ModuleItem::Use(use_) => quote_spanned! {
                 use_.span() =>
