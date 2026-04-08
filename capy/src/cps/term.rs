@@ -8,9 +8,8 @@ use crate::rsgc::{
 };
 
 use crate::{
-    expander::core::{LVar, LVarRef},
+    expander::core::LVarRef,
     runtime::{Context, value::Value},
-    utils::TreeEq,
 };
 
 /// Array of CPS atom references.
@@ -237,101 +236,6 @@ pub enum BranchHint {
     /// Cold branch. This will try to move resulting block
     /// of code to the end of the function.
     Cold,
-}
-
-impl<'gc> TreeEq for Atom<'gc> {
-    fn tree_eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Atom::Constant(a), Atom::Constant(b)) => a.tree_eq(b),
-
-            (Atom::Local(a), Atom::Local(b)) => Gc::ptr_eq(*a, *b),
-
-            _ => false,
-        }
-    }
-}
-
-impl<'gc> TreeEq for LVar<'gc> {
-    fn tree_eq(&self, other: &Self) -> bool {
-        self == other
-    }
-}
-
-impl<'gc> TreeEq for Cont<'gc> {
-    fn tree_eq(&self, other: &Self) -> bool {
-        self.binding().name == other.binding().name
-            && self.args().tree_eq(&other.args())
-            && self.variadic().tree_eq(&other.variadic())
-            && self.body().tree_eq(&other.body())
-    }
-}
-
-impl<'gc> TreeEq for Func<'gc> {
-    fn tree_eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.source == other.source
-            && Gc::ptr_eq(self.binding, other.binding)
-            && Gc::ptr_eq(self.return_cont, other.return_cont)
-            && self.args.tree_eq(&other.args)
-            && self.variadic.tree_eq(&other.variadic)
-            && self.body().tree_eq(&other.body())
-    }
-}
-
-impl<'gc> TreeEq for Term<'gc> {
-    fn tree_eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Term::App(f, k, args, _), Term::App(g, l, bargs, _)) => {
-                f.tree_eq(g) && Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
-            }
-            (Term::Continue(k, args, _), Term::Continue(l, bargs, _)) => {
-                Gc::ptr_eq(*k, *l) && args.tree_eq(bargs)
-            }
-
-            (
-                Term::If {
-                    test: f,
-                    consequent: k,
-                    consequent_args: args,
-                    alternative: l,
-                    alternative_args: bargs,
-                    hints,
-                },
-                Term::If {
-                    test: g,
-                    consequent: m,
-                    consequent_args: cargs,
-                    alternative: n,
-                    alternative_args: dargs,
-                    hints: bhints,
-                },
-            ) => {
-                f.tree_eq(g)
-                    && Gc::ptr_eq(*k, *m)
-                    && Gc::ptr_eq(*l, *n)
-                    && args.tree_eq(cargs)
-                    && bargs.tree_eq(dargs)
-                    && hints == bhints
-            }
-            (Term::Letk(ks, body), Term::Letk(ls, bbody)) => ks.tree_eq(ls) && body.tree_eq(bbody),
-            (Term::Fix(fs, body), Term::Fix(ls, bbody)) => fs.tree_eq(ls) && body.tree_eq(bbody),
-            (Term::Let(k, expr, body), Term::Let(l, bexpr, bbody)) => {
-                Gc::ptr_eq(*k, *l) && expr.tree_eq(bexpr) && body.tree_eq(bbody)
-            }
-
-            _ => false,
-        }
-    }
-}
-
-impl<'gc> TreeEq for Expression<'gc> {
-    fn tree_eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Expression::PrimCall(f, args, _), Expression::PrimCall(g, bargs, _)) => {
-                f.tree_eq(g) && args.tree_eq(bargs)
-            }
-        }
-    }
 }
 
 impl<'gc> Term<'gc> {

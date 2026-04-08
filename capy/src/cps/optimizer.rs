@@ -305,7 +305,7 @@ fn census<'gc>(term: TermRef<'gc>) -> im::HashMap<LVarRef<'gc>, Count> {
     census
 }
 
-fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
+fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, bool) {
     stacker::maybe_grow(4 * 1024 * 1024, 1 * 1024 * 1024, || match *term {
         Term::Let(binding, expr, prev_body) => match expr {
             Expression::PrimCall(prim, prev_args, source) => {
@@ -323,102 +323,122 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                     if let Some(atom) = folding_table(state.ctx).try_fold(state.ctx, prim, &args) {
                         let state =
                             state.with_atom_subst(Atom::Local(binding), Atom::Constant(atom));
-                        return shrink_tree(prev_body, state);
+                        let (body, _) = shrink_tree(prev_body, state);
+                        return (body, true);
                     }
                 }
                 let ctx = state.ctx;
-                let atoms = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                let args_changed = !args.iter().zip(prev_args.iter()).all(|(a, b)| a == b);
+                let atoms = if !args_changed {
                     prev_args
                 } else {
                     Array::from_slice(*state.ctx, args)
                 };
 
-                let body = shrink_tree(prev_body, state);
+                let (body, body_changed) = shrink_tree(prev_body, state);
 
-                if Gc::ptr_eq(body, prev_body) && Gc::ptr_eq(atoms, prev_args) {
-                    return term;
+                if !body_changed && !args_changed {
+                    return (term, false);
                 }
 
-                Gc::new(
-                    *ctx,
-                    Term::Let(binding, Expression::PrimCall(prim, atoms, source), body),
+                (
+                    Gc::new(
+                        *ctx,
+                        Term::Let(binding, Expression::PrimCall(prim, atoms, source), body),
+                    ),
+                    true,
                 )
             }
         },
 
         Term::Letk(prev_conts, prev_body) => {
+            let mut changed = false;
             let (inlined, not_inlined) = prev_conts
                 .iter()
                 .filter_map(|cont| {
                     if state.is_dead(cont.binding()) {
+                        changed = true;
                         return None;
                     }
-                    let body = shrink_tree(cont.body(), state.clone());
+                    let (body, body_changed) = shrink_tree(cont.body(), state.clone());
+                    changed |= body_changed;
 
-                    Some(cont.with_body(state.ctx, body))
+                    Some(if body_changed {
+                        cont.with_body(state.ctx, body)
+                    } else {
+                        *cont
+                    })
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
                 .partition::<Vec<_>, _>(|&cont| {
                     !cont.noinline && state.applied_once(cont.binding())
                 });
+            changed |= !inlined.is_empty();
 
             let state = state.with_continuations(&inlined);
             if not_inlined.is_empty() {
-                return shrink_tree(prev_body, state);
+                let (body, _) = shrink_tree(prev_body, state);
+                return (body, true);
             }
 
             let ctx = state.ctx;
 
-            let conts = if inlined.is_empty()
+            let conts_changed = !(inlined.is_empty()
                 && not_inlined
                     .iter()
                     .zip(prev_conts.iter())
-                    .all(|(a, b)| Gc::ptr_eq(*a, *b))
-            {
+                    .all(|(a, b)| Gc::ptr_eq(*a, *b)));
+            let conts = if !conts_changed {
                 prev_conts
             } else {
                 Array::from_slice(*state.ctx, not_inlined)
             };
-            let body = shrink_tree(prev_body, state);
-            if Gc::ptr_eq(body, prev_body) && Gc::ptr_eq(conts, prev_conts) {
-                return term;
+            let (body, body_changed) = shrink_tree(prev_body, state);
+            changed |= conts_changed || body_changed;
+            if !changed {
+                return (term, false);
             }
-            Gc::new(*ctx, Term::Letk(conts, body))
+            (Gc::new(*ctx, Term::Letk(conts, body)), true)
         }
 
         Term::Fix(prev_funcs, prev_body) => {
+            let mut changed = false;
             let funcs = prev_funcs
                 .iter()
                 .copied()
                 .filter_map(|func| {
                     if state.is_dead(func.binding) {
+                        changed = true;
                         return None;
                     }
 
-                    let body = shrink_tree(func.body(), state.clone());
+                    let (body, body_changed) = shrink_tree(func.body(), state.clone());
+                    changed |= body_changed;
                     Some(func.with_body(state.ctx, body))
                 })
                 .collect::<Vec<_>>();
 
             if funcs.is_empty() {
-                return shrink_tree(prev_body, state);
+                let (body, _) = shrink_tree(prev_body, state);
+                return (body, true);
             }
             let ctx = state.ctx;
-            let funcs = if funcs
+            let funcs_changed = !(funcs
                 .iter()
                 .zip(prev_funcs.iter())
-                .all(|(a, b)| Gc::ptr_eq(*a, *b))
-            {
+                .all(|(a, b)| Gc::ptr_eq(*a, *b)));
+            let funcs = if !funcs_changed {
                 prev_funcs
             } else {
                 Array::from_slice(*state.ctx, funcs)
             };
-            let body = shrink_tree(prev_body, state);
-            if Gc::ptr_eq(body, prev_body) && Gc::ptr_eq(funcs, prev_funcs) {
-                return term;
+            let (body, body_changed) = shrink_tree(prev_body, state);
+            changed |= funcs_changed || body_changed;
+            if !changed {
+                return (term, false);
             }
-            Gc::new(*ctx, Term::Fix(funcs, body))
+            (Gc::new(*ctx, Term::Fix(funcs, body)), true)
         }
 
         Term::Continue(k_prev, args_prev, src) => {
@@ -427,7 +447,8 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 .substitute_atoms(args_prev.iter().copied())
                 .collect::<Vec<_>>();
 
-            let args = if args.iter().zip(args_prev.iter()).all(|(a, b)| a == b) {
+            let args_changed = !args.iter().zip(args_prev.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
                 args_prev
             } else {
                 Array::from_slice(*state.ctx, args)
@@ -436,7 +457,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 && !k.noinline
                 && k.arity_matches(args.len())
             {
-                if let Some(variadic) = k.variadic() {
+                let body = if let Some(variadic) = k.variadic() {
                     let fixed_args = &args[0..k.args.len()];
                     if variadic.is_referenced() {
                         materialize_list(
@@ -453,7 +474,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                                     state = state.with_var_to_atom_subst(var, arg);
                                 }
 
-                                shrink_tree(k.body(), state)
+                                shrink_tree(k.body(), state).0
                             }),
                         )
                     } else {
@@ -461,17 +482,18 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                         let mut state = state.with_vars_to_atoms(&k.args(), fixed_args);
                         state =
                             state.with_var_to_atom_subst(variadic, Atom::Constant(Value::null()));
-                        shrink_tree(k.body(), state)
+                        shrink_tree(k.body(), state).0
                     }
                 } else {
                     let state = state.with_vars_to_atoms(&k.args(), &args);
-                    shrink_tree(k.body(), state)
-                }
+                    shrink_tree(k.body(), state).0
+                };
+                (body, true)
             } else {
-                if Gc::ptr_eq(k, k_prev) && Gc::ptr_eq(args, args_prev) {
-                    return term;
+                if Gc::ptr_eq(k, k_prev) && !args_changed {
+                    return (term, false);
                 }
-                Gc::new(*state.ctx, Term::Continue(k, args, src))
+                (Gc::new(*state.ctx, Term::Continue(k, args, src)), true)
             }
         }
 
@@ -481,7 +503,8 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
             let args = state
                 .substitute_atoms(args_prev.iter().copied())
                 .collect::<Vec<_>>();
-            let args = if args.iter().zip(args_prev.iter()).all(|(a, b)| a == b) {
+            let args_changed = !args.iter().zip(args_prev.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
                 args_prev
             } else {
                 Array::from_slice(*state.ctx, args)
@@ -495,7 +518,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                     if fun.arity_matches(args.len()) {
                         let mut state = state.with_c_subst(fun.return_cont, retc);
                         if let Some(variadic) = fun.variadic {
-                            return materialize_list(
+                            let body = materialize_list(
                                 state,
                                 &args[fun.args.len()..],
                                 Box::new(|state, rest| {
@@ -510,12 +533,16 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                                         state = state.with_var_to_atom_subst(var, arg);
                                     }
 
-                                    shrink_tree(fun.body(), state)
+                                    shrink_tree(fun.body(), state).0
                                 }),
                             );
+                            return (body, true);
                         } else {
                             state = state.with_vars_to_atoms(&fun.args, &args);
-                            return shrink_tree(fun.body(), state);
+                            return {
+                                let (body, _) = shrink_tree(fun.body(), state);
+                                (body, true)
+                            };
                         }
                     }
                 }
@@ -523,11 +550,11 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                 _ => {}
             }
 
-            if Gc::ptr_eq(retc, retc_prev) && Gc::ptr_eq(args, args_prev) && fun == fun_prev {
-                return term;
+            if Gc::ptr_eq(retc, retc_prev) && !args_changed && fun == fun_prev {
+                return (term, false);
             }
 
-            return Gc::new(*state.ctx, Term::App(fun, retc, args, span));
+            return (Gc::new(*state.ctx, Term::App(fun, retc, args, span)), true);
         }
 
         Term::If {
@@ -572,13 +599,16 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                     (alternative, alternative_args)
                 };
 
-                return Gc::new(
-                    *state.ctx,
-                    Term::Continue(
-                        k,
-                        args.unwrap_or_else(|| Array::from_slice(*state.ctx, [])),
-                        Value::new(false),
+                return (
+                    Gc::new(
+                        *state.ctx,
+                        Term::Continue(
+                            k,
+                            args.unwrap_or_else(|| Array::from_slice(*state.ctx, [])),
+                            Value::new(false),
+                        ),
                     ),
+                    true,
                 );
             }
 
@@ -596,25 +626,28 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> TermRef<'gc> {
                         .all(|(a, b)| a.iter().zip(b.iter()).all(|(x, y)| x == y)))
                 && test == test_prev
             {
-                return term;
+                return (term, false);
             }
 
-            Gc::new(
-                *state.ctx,
-                Term::If {
-                    test,
-                    consequent,
-                    consequent_args,
-                    alternative,
-                    alternative_args,
-                    hints,
-                },
+            (
+                Gc::new(
+                    *state.ctx,
+                    Term::If {
+                        test,
+                        consequent,
+                        consequent_args,
+                        alternative,
+                        alternative_args,
+                        hints,
+                    },
+                ),
+                true,
             )
         }
     })
 }
 
-pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
+pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> (TermRef<'gc>, bool) {
     let census = census(term);
     let state = State::new(ctx, census);
     term.count_refs();
@@ -622,11 +655,11 @@ pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
 }
 
 pub fn rewrite<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
-    let simplified_tree = fixedpoint(term, Some(3))(|term| shrink(ctx, *term));
+    let simplified_tree = fixedpoint(term, Some(3))(|term| shrink(ctx, term));
 
     let max_size = size(simplified_tree) * 3 / 2;
 
-    fixedpoint(simplified_tree, Some(2))(|term| inline(ctx, *term, max_size))
+    fixedpoint(simplified_tree, Some(2))(|term| inline(ctx, term, max_size))
 }
 
 pub fn rewrite_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> FuncRef<'gc> {
@@ -848,7 +881,7 @@ fn copy_f<'gc>(
     )
 }
 
-fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> TermRef<'gc> {
+fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (TermRef<'gc>, bool) {
     let loop_limit = LOOP_UNROLL[cnt_limit];
     let fun_limit = FIBONACCI[cnt_limit];
 
@@ -870,45 +903,72 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                 }
             };
             let ctx = state.ctx;
-            let body = inline_t(state, prev_body, cnt_limit);
-            if exp == prev_exp && Gc::ptr_eq(body, prev_body) {
-                return term;
+            let exp_changed = exp != prev_exp;
+            let (body, body_changed) = inline_t(state, prev_body, cnt_limit);
+            if !exp_changed && !body_changed {
+                return (term, false);
             }
-            Gc::new(*ctx, Term::Let(name, exp, body))
+            (Gc::new(*ctx, Term::Let(name, exp, body)), true)
         }
 
-        Term::Letk(conts, body) => {
-            let conts = conts.iter().copied().map(|cnt| {
-                let orig = cnt.body();
+        Term::Letk(prev_conts, prev_body) => {
+            let mut changed = false;
+            let conts = prev_conts
+                .iter()
+                .copied()
+                .map(|cnt| {
+                    let orig = cnt.body();
 
-                let body = inline_t(state.clone(), cnt.body(), cnt_limit);
-                let newk = cnt.with_body(state.ctx, body);
+                    let (body, body_changed) = inline_t(state.clone(), cnt.body(), cnt_limit);
+                    changed |= body_changed;
+                    let newk = if body_changed {
+                        cnt.with_body(state.ctx, body)
+                    } else {
+                        cnt
+                    };
 
-                let my_size = size(orig);
-                let dont = cnt.noinline
-                    || my_size > cnt_limit
-                    || (my_size > loop_limit && census(body).contains_key(&cnt.binding));
-                (newk, if dont { None } else { Some(newk) })
-            });
+                    let my_size = size(orig);
+                    let dont = cnt.noinline
+                        || my_size > cnt_limit
+                        || (my_size > loop_limit && census(body).contains_key(&cnt.binding));
+                    (newk, if dont { None } else { Some(newk) })
+                })
+                .collect::<Vec<_>>();
 
-            let (i_ks, to_inline): (Vec<_>, Vec<_>) = conts.unzip();
+            let (i_ks, to_inline): (Vec<_>, Vec<_>) = conts.into_iter().unzip();
             let ctx = state.ctx;
             let s =
                 state.with_continuations(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
-            let body = inline_t(s, body, cnt_limit);
-            let i_ks = Array::from_slice(*ctx, i_ks);
-            Gc::new(*ctx, Term::Letk(i_ks, body))
+            let (body, body_changed) = inline_t(s, prev_body, cnt_limit);
+            changed |= body_changed;
+            let ks_changed = !i_ks
+                .iter()
+                .zip(prev_conts.iter())
+                .all(|(a, b)| Gc::ptr_eq(*a, *b));
+            changed |= ks_changed;
+            if !changed {
+                return (term, false);
+            }
+            let i_ks = if ks_changed {
+                Array::from_slice(*ctx, i_ks)
+            } else {
+                prev_conts
+            };
+            (Gc::new(*ctx, Term::Letk(i_ks, body)), true)
         }
 
-        Term::Fix(funcs, body) => {
-            let funcs = funcs
+        Term::Fix(prev_funcs, prev_body) => {
+            let mut changed = false;
+            let funcs = prev_funcs
                 .iter()
                 .copied()
                 .map(|func| {
-                    let nbody = inline_t(state.clone(), func.body(), cnt_limit);
+                    let orig = func.body();
+                    let (nbody, body_changed) = inline_t(state.clone(), orig, cnt_limit);
+                    changed |= body_changed;
                     let newf = func.with_body(state.ctx, nbody);
 
-                    let my_size = size(func.body());
+                    let my_size = size(orig);
                     let dont = my_size > fun_limit
                         || (my_size > loop_limit && census(nbody).contains_key(&func.binding));
 
@@ -919,16 +979,30 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
             let (i_fs, to_inline): (Vec<_>, Vec<_>) = funcs.into_iter().unzip();
             let ctx = state.ctx;
             let s = state.with_functions(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
-            let body = inline_t(s, body, cnt_limit);
-            let ifs = Array::from_slice(*ctx, i_fs);
-            Gc::new(*ctx, Term::Fix(ifs, body))
+            let (body, body_changed) = inline_t(s, prev_body, cnt_limit);
+            changed |= body_changed;
+            let fs_changed = !i_fs
+                .iter()
+                .zip(prev_funcs.iter())
+                .all(|(a, b)| Gc::ptr_eq(*a, *b));
+            changed |= fs_changed;
+            if !changed {
+                return (term, false);
+            }
+            let ifs = if fs_changed {
+                Array::from_slice(*ctx, i_fs)
+            } else {
+                prev_funcs
+            };
+            (Gc::new(*ctx, Term::Fix(ifs, body)), true)
         }
 
         Term::Continue(prev_cnt, prev_args, src) => {
             let args = state
                 .substitute_atoms(prev_args.iter().copied())
                 .collect::<Vec<_>>();
-            let args = if prev_args.iter().zip(args.iter()).all(|(a, b)| a == b) {
+            let args_changed = !prev_args.iter().zip(args.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
                 prev_args
             } else {
                 Array::from_slice(*state.ctx, args)
@@ -945,23 +1019,35 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                             .map(|(arg, val)| (Atom::Local(*arg), *val))
                             .collect::<HashMap<_, _>>();
 
-                        return copy_t(state.ctx, new_cnt.body(), &mut subst, &mut HashMap::new());
+                        return (
+                            copy_t(state.ctx, new_cnt.body(), &mut subst, &mut HashMap::new()),
+                            true,
+                        );
                     }
                 }
             }
 
-            Gc::new(*state.ctx, Term::Continue(cnt, args, src))
+            if Gc::ptr_eq(cnt, prev_cnt) && !args_changed {
+                return (term, false);
+            }
+            (Gc::new(*state.ctx, Term::Continue(cnt, args, src)), true)
         }
 
-        Term::App(fun, ret_cp, args, src) => {
-            let retc = state.var_subst(ret_cp);
+        Term::App(prev_fun, prev_retc, prev_args, src) => {
+            let retc = state.var_subst(prev_retc);
 
             let args = state
-                .substitute_atoms(args.iter().copied())
+                .substitute_atoms(prev_args.iter().copied())
                 .collect::<Vec<_>>();
-            let args = Array::from_slice(*state.ctx, args);
+            let args_changed = !args.iter().zip(prev_args.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
+                prev_args
+            } else {
+                Array::from_slice(*state.ctx, args)
+            };
 
-            if let Atom::Local(new_fun) = state.atom_subst(fun) {
+            let fun = state.atom_subst(prev_fun);
+            if let Atom::Local(new_fun) = fun {
                 if let Some(func) = state.fenv.get(&new_fun).copied() {
                     if func.args.len() == args.len() && func.variadic.is_none() {
                         let mut subv = func
@@ -974,62 +1060,89 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> Ter
                         let mut subc = HashMap::new();
                         subc.insert(func.return_cont, retc);
 
-                        return copy_t(state.ctx, func.body(), &mut subv, &mut subc);
+                        return (copy_t(state.ctx, func.body(), &mut subv, &mut subc), true);
                     }
                 }
             }
 
-            Gc::new(*state.ctx, Term::App(fun, retc, args, src))
+            if Gc::ptr_eq(retc, prev_retc) && !args_changed && fun == prev_fun {
+                return (term, false);
+            }
+            (Gc::new(*state.ctx, Term::App(fun, retc, args, src)), true)
         }
 
         Term::If {
-            test,
-            consequent,
-            consequent_args,
-            alternative,
-            alternative_args,
+            test: prev_test,
+            consequent: prev_consequent,
+            consequent_args: prev_consequent_args,
+            alternative: prev_alternative,
+            alternative_args: prev_alternative_args,
             hints,
         } => {
-            let test = state.atom_subst(test);
-            let consequent = state.var_subst(consequent);
-            let alternative = state.var_subst(alternative);
-            let consequent_args = consequent_args.map(|args| {
+            let test = state.atom_subst(prev_test);
+            let consequent = state.var_subst(prev_consequent);
+            let alternative = state.var_subst(prev_alternative);
+            let consequent_args = prev_consequent_args.map(|args| {
                 args.iter()
                     .map(|&a| state.atom_subst(a))
                     .collect_gc(*state.ctx)
             });
-            let alternative_args = alternative_args.map(|args| {
+            let alternative_args = prev_alternative_args.map(|args| {
                 args.iter()
                     .map(|&a| state.atom_subst(a))
                     .collect_gc(*state.ctx)
             });
-            Gc::new(
-                *state.ctx,
-                Term::If {
-                    test,
-                    consequent,
-                    consequent_args,
-                    alternative,
-                    alternative_args,
-                    hints,
-                },
+            let consequent_args_changed = match (consequent_args, prev_consequent_args) {
+                (Some(a), Some(b)) => !Gc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
+            };
+            let alternative_args_changed = match (alternative_args, prev_alternative_args) {
+                (Some(a), Some(b)) => !Gc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
+            };
+            let changed = test != prev_test
+                || !Gc::ptr_eq(consequent, prev_consequent)
+                || !Gc::ptr_eq(alternative, prev_alternative)
+                || consequent_args_changed
+                || alternative_args_changed;
+            if !changed {
+                return (term, false);
+            }
+            (
+                Gc::new(
+                    *state.ctx,
+                    Term::If {
+                        test,
+                        consequent,
+                        consequent_args,
+                        alternative,
+                        alternative_args,
+                        hints,
+                    },
+                ),
+                true,
             )
         }
     }
 }
 
-pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -> TermRef<'gc> {
+pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -> (TermRef<'gc>, bool) {
+    let mut changed = false;
     for i in 0..FIBONACCI.len() {
         if size(term) > max_size {
-            return term;
+            return (term, changed);
         }
 
         let state = State::new(ctx, census(term));
-
-        term = fixedpoint(inline_t(state, term, i), Some(1))(|term| shrink(ctx, *term));
+        let (next, pass_changed) = inline_t(state, term, i);
+        let (next, shrink_changed) = shrink(ctx, next);
+        changed |= pass_changed || shrink_changed;
+        term = next;
     }
 
-    term
+    (term, changed)
 }
 
 /// Given a term, returns the size of it.

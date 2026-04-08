@@ -53,58 +53,85 @@ type ContPair<'gc> = LVarRef<'gc>;
 /// Entry point: repeatedly applies `rec` until no further contifiable
 /// opportunities remain (idempotent fixed point).
 pub fn contify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
-    fixedpoint(t, Some(2))(|&t| rec(ctx, t))
+    fixedpoint(t, Some(2))(|t| rec(ctx, t))
 }
 
 /// Recursive traversal that performs contification *inside* each `Fix`
 /// after transforming its substructure.
-fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
+fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> (TermRef<'gc>, bool) {
     match &*t {
         Term::Let(name, expr, prev_body) => {
-            let body = rec(ctx, *prev_body);
-            if Gc::ptr_eq(body, *prev_body) {
-                return t;
+            let (body, changed) = rec(ctx, *prev_body);
+            if !changed {
+                return (t, false);
             }
-            Gc::new(*ctx, Term::Let(*name, *expr, body))
+            (Gc::new(*ctx, Term::Let(*name, *expr, body)), true)
         }
 
         Term::Letk(prev_ks, prev_body) => {
+            let mut changed = false;
             let ks = prev_ks
                 .iter()
-                .map(|k| k.with_body(ctx, rec(ctx, k.body())))
+                .map(|k| {
+                    let (body, body_changed) = rec(ctx, k.body());
+                    changed |= body_changed;
+                    if body_changed { k.with_body(ctx, body) } else { *k }
+                })
                 .collect::<Vec<_>>();
             let ks = if ks.iter().zip(prev_ks.iter()).all(|(a, b)| a == b) {
                 *prev_ks
             } else {
+                changed = true;
                 Array::from_slice(*ctx, ks)
             };
 
-            let body = rec(ctx, *prev_body);
-            if Gc::ptr_eq(body, *prev_body) && Gc::ptr_eq(ks, *prev_ks) {
-                return t;
+            let (body, body_changed) = rec(ctx, *prev_body);
+            changed |= body_changed;
+            if !changed {
+                return (t, false);
             }
-            Gc::new(*ctx, Term::Letk(ks, body))
+            (Gc::new(*ctx, Term::Letk(ks, body)), true)
         }
 
         Term::Fix(funs, body) => {
             // (1) Transform functions & body first so analysis sees normalized children.
+            let mut changed = false;
             let funs = funs
                 .iter()
-                .map(|f| f.with_body(ctx, rec(ctx, f.body())))
+                .map(|f| {
+                    let (body, body_changed) = rec(ctx, f.body());
+                    changed |= body_changed;
+                    if body_changed {
+                        f.with_body(ctx, body)
+                    } else {
+                        *f
+                    }
+                })
                 .collect_gc(*ctx);
-            let body = rec(ctx, *body);
+            let (body, body_changed) = rec(ctx, *body);
+            changed |= body_changed;
 
-            let fix1 = Gc::new(*ctx, Term::Fix(funs, body));
+            let fix1 = if changed {
+                Gc::new(*ctx, Term::Fix(funs, body))
+            } else {
+                t
+            };
 
             // (2) Identify contifiable SCCs (each yields (names, common_rc)).
             let cf = fix1.contifiables();
+            if cf.is_empty() {
+                return (fix1, changed);
+            }
 
             // (3) Fold: successively contify each qualifying SCC.
-            cf.iter()
-                .fold(fix1, |fix, (ns, rc)| fix.contify(ns, *rc, ctx))
+            (
+                cf.iter()
+                    .fold(fix1, |fix, (ns, rc)| fix.contify(ns, *rc, ctx)),
+                true,
+            )
         }
 
-        _ => t,
+        _ => (t, false),
     }
 }
 
