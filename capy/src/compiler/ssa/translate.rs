@@ -79,6 +79,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .clone()
     }
 
+    fn load_data_value(&mut self, data: DataId) -> ir::Value {
+        let global_value = self.import_data(data);
+        let addr = self.builder.ins().global_value(types::I64, global_value);
+        self.builder
+            .ins()
+            .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0)
+    }
+
     pub fn var(&mut self, var: LVarRef<'gc>) -> ir::Value {
         if self.is_self_reference(var) {
             return self.rator;
@@ -789,19 +797,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let nfree = free.map_or(0, |f| f.len());
             let nfree = self.builder.ins().iconst(types::I64, nfree as i64);
             let is_cont = self.builder.ins().iconst(types::I8, 0);
-            let fref = self.module_builder.func_for_func[&func];
-            let fref = self
-                .module_builder
-                .module
-                .declare_func_in_func(fref, &mut self.builder.func);
-            let addr = self.builder.ins().func_addr(types::I64, fref);
-            let meta = self.meta_for_func(*func);
+            let code_block = self.load_data_value(self.module_builder.code_block_for_func[&func]);
             let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
             let clos = self
                 .builder
                 .ins()
-                .call(self.thunks.make_closure, &[ctx, addr, nfree, is_cont, meta]);
+                .call(self.thunks.make_closure, &[ctx, code_block, nfree, is_cont]);
             let clos = self.builder.inst_results(clos)[0];
             self.debug_local_with_source(func.binding, clos, func.source);
             self.variables.insert(func.binding, VarDef::Value(clos));
@@ -830,21 +832,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let free = cont.free_vars.get();
             let nfree = free.map_or(0, |f| f.len());
 
-            let func_for_k = self.module_builder.func_for_cont[&cont];
-            let func_for_k = self
-                .module_builder
-                .module
-                .declare_func_in_func(func_for_k, &mut self.builder.func);
-
             let nfree = self.builder.ins().iconst(types::I64, nfree as i64);
             let is_cont = self.builder.ins().iconst(types::I8, 1);
-            let addr = self.builder.ins().func_addr(types::I64, func_for_k);
-            let meta = self.meta_for_cont(*cont);
+            let code_block = self.load_data_value(self.module_builder.code_block_for_cont[&cont]);
             let ctx = self.builder.ins().get_pinned_reg(types::I64);
             let clos = self
                 .builder
                 .ins()
-                .call(self.thunks.make_closure, &[ctx, addr, nfree, is_cont, meta]);
+                .call(self.thunks.make_closure, &[ctx, code_block, nfree, is_cont]);
             let clos = self.builder.inst_results(clos)[0];
             self.debug_local_with_source(cont.binding, clos, cont.source);
             self.variables.insert(cont.binding, VarDef::Value(clos));

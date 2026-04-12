@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include "wchar.h"
 
+#define FORMAT_VERSION 4
+
 
 
 /**
@@ -206,6 +208,20 @@ typedef int (*ScmEnterFn)(ContextRef ctx, void *arg);
 typedef void (*PrepareCallFn)(ContextRef ctx, struct Value *args, void *data);
 
 typedef int (*FinishCallFn)(ContextRef ctx, bool success, struct Value result, void *data);
+
+#define RETURN0 RAX
+
+#define RETURN1 RDX
+
+#define ARGC_REG RAX
+
+#define CLOSURE_POINTER_REG R14
+
+#define CONTEXT_POINTER_REG R15
+
+#define SCRATCH_REGISTER R11
+
+#define SCRATCH_REGISTER_2 R12
 
 
 

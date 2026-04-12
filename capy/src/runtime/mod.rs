@@ -5,6 +5,7 @@ pub mod fluids;
 pub mod global;
 pub mod libs;
 pub mod modules;
+pub mod stats;
 pub mod thread;
 pub mod value;
 pub mod vm;
@@ -45,9 +46,10 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     //let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
 }
 
+use parking_lot::Mutex;
 pub use thread::*;
 
-use crate::runtime::{global::VM_GLOBALS, vmthread::VM_THREAD};
+use crate::runtime::{global::VM_GLOBALS, stats::GlobalStats, vmthread::VM_THREAD};
 
 #[allow(ambiguous_glob_imports)]
 pub mod prelude {
@@ -65,3 +67,5 @@ pub mod prelude {
     pub type StringRef<'gc> = Gc<'gc, Str<'gc>>;
     pub type SymbolRef<'gc> = Gc<'gc, Symbol<'gc>>;
 }
+
+pub(crate) static GLOBAL_STATS: Mutex<GlobalStats> = Mutex::new(GlobalStats::new());

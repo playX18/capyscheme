@@ -7,7 +7,7 @@ default-members = ["capy"]
 [workspace.dependencies]
 capy-bytecode = { path = "capy-bytecode" }
 bytecodegen = { git = "https://codeberg.org/playxe/bytecodegen" }
-mmtk = { git = "https://github.com/mmtk/mmtk-core", features = [] }
+mmtk = { git = "https://github.com/mmtk/mmtk-core", default-features = false }
 cranelift-jit = { version = "0.127", features = ["selinux-fix"] }
 cranelift = "0.127"
 cranelift-codegen = "0.127"
@@ -44,6 +44,7 @@ tinyvec = "1.6.0"
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 capy-derive = { path = "capy-derive" }
+serde = { version = "1.0.228", features = ["derive"] }
 
 [profile.release]
 incremental = true

@@ -314,7 +314,8 @@ impl<'gc> DebugContext<'gc> {
         );
 
         let mut sections = Sections::new(WriterRelocate::new(self.endian));
-        self.dwarf.write(&mut sections)
+        self.dwarf
+            .write(&mut sections)
             .expect("failed to write DWARF debug sections");
 
         let mut section_map = HashMap::default();
@@ -363,7 +364,8 @@ impl<'gc> FunctionDebugContext<'gc> {
 
         let mut func_end = 0;
 
-        let mcr = context.compiled_code()
+        let mcr = context
+            .compiled_code()
             .expect("function should have compiled code at this point");
 
         for &MachSrcLoc { start, end, loc } in mcr.buffer.get_srclocs_sorted() {
@@ -801,11 +803,15 @@ impl WriteDebugInfo for ObjectProduct {
         reloc: &DebugReloc,
     ) {
         let (symbol, symbol_offset) = match reloc.name {
-            DebugRelocName::Section(id) => (section_map.get(&id)
-                .expect("debug section should exist in section map").1, 0),
+            DebugRelocName::Section(id) => (
+                section_map
+                    .get(&id)
+                    .expect("debug section should exist in section map")
+                    .1,
+                0,
+            ),
             DebugRelocName::Symbol(id) => {
-                let id = id.try_into()
-                    .expect("debug symbol id should fit in u32");
+                let id = id.try_into().expect("debug symbol id should fit in u32");
                 let symbol_id = if id & 1 << 31 == 0 {
                     self.function_symbol(FuncId::from_u32(id))
                 } else {
@@ -827,8 +833,8 @@ impl WriteDebugInfo for ObjectProduct {
                         encoding: RelocationEncoding::Generic,
                         size: reloc.size * 8,
                     },
-                    addend: i64::try_from(symbol_offset)
-                        .expect("symbol offset should fit in i64") + reloc.addend,
+                    addend: i64::try_from(symbol_offset).expect("symbol offset should fit in i64")
+                        + reloc.addend,
                 },
             )
             .expect("failed to add debug relocation");

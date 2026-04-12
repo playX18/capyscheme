@@ -5,6 +5,7 @@ pub mod contify;
 pub mod fold;
 pub mod free_vars;
 pub mod optimizer;
+pub mod packed;
 pub mod pretty;
 pub mod reify;
 pub mod term;

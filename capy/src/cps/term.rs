@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{cell::Cell, hash::Hash};
 
 use crate::rsgc::{
@@ -225,7 +226,7 @@ pub type ContRef<'gc> = Gc<'gc, Cont<'gc>>;
 /// A branch hint given to `if` term in CPS code.
 ///
 /// This is mainly used to generate efficient code for type-checks.
-#[derive(Debug, Clone, Trace, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Trace, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BranchHint {
     /// Normal branch, block will be reordered as needed.
     Normal,

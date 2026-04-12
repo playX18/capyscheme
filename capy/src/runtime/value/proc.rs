@@ -1,8 +1,7 @@
 use std::{collections::HashMap, ops::Index, sync::LazyLock};
 
 use crate::{
-    IndexWrite, WeakProcessor,
-    bytecode::code_block::CodeBlock,
+    IndexWrite, cps_ssa,
     object::VTable,
     rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
 };
@@ -81,6 +80,7 @@ unsafe impl Trace for NativeProc {
 pub struct Closure<'gc> {
     pub header: ScmHeader,
     pub code: Address,
+    pub code_block: Gc<'gc, CodeBlock<'gc>>,
 
     pub meta: Lock<Value<'gc>>,
     pub nfree: usize,
@@ -111,6 +111,7 @@ extern "C" fn trace_closure(obj: GCObject, visitor: &mut Visitor) {
     // `CLOSURE_VTABLE`. We iterate exactly `nfree` trailing elements.
     unsafe {
         let closure = obj.to_address().as_mut_ref::<Closure>();
+        visitor.trace(&mut closure.code_block);
         visitor.trace(&mut closure.meta);
         for i in 0..closure.nfree {
             visitor.trace(closure.free.as_mut_ptr().add(i).as_mut().unwrap());
@@ -148,40 +149,30 @@ impl<'gc> Closure<'gc> {
 
     pub fn new(
         ctx: Context<'gc>,
-        code: Address,
-
+        code_block: Gc<'gc, CodeBlock<'gc>>,
         free: &[Value<'gc>],
         is_cont: bool,
-        meta: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code, free, is_cont, false, meta)
+        Self::new_inner(ctx, code_block, free, is_cont, false)
     }
 
     pub fn new_native(
         ctx: Context<'gc>,
-        code: Address,
-
+        code_block: Gc<'gc, CodeBlock<'gc>>,
         free: &[Value<'gc>],
         is_cont: bool,
-        meta: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code, free, is_cont, true, meta)
+        Self::new_inner(ctx, code_block, free, is_cont, true)
     }
 
     fn new_inner(
         ctx: Context<'gc>,
-        code: Address,
-
+        code_block: Gc<'gc, CodeBlock<'gc>>,
         free: &[Value<'gc>],
         is_cont: bool,
         is_native: bool,
-        meta: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        let meta = if meta == Value::new(false) {
-            Value::null()
-        } else {
-            meta
-        };
+        let meta = code_block.metadata.get();
 
         let mut header = ScmHeader::with_type_bits(if is_cont {
             TypeCode16::CLOSURE_K.0
@@ -216,7 +207,8 @@ impl<'gc> Closure<'gc> {
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
             this.header = header;
-            this.code = code;
+            this.code = code_block.entrypoint;
+            this.code_block = code_block;
 
             this.meta = Lock::new(meta);
             this.nfree = free.len();
@@ -411,8 +403,10 @@ impl<'gc> Procedures<'gc> {
             return clos;
         }
         let proc = register_fn(self, ctx);
+        let code_block =
+            CodeBlock::new_native(ctx, trampoline_fn(), CodeArity::variadic(0), is_cont, meta);
 
-        let clos = Closure::new(ctx, trampoline_fn(), &[proc], is_cont, meta);
+        let clos = Closure::new_native(ctx, code_block, &[proc], is_cont);
 
         closures.insert(addr, clos);
         clos
@@ -470,7 +464,9 @@ impl<'gc> Procedures<'gc> {
         if !meta.is_alist() {
             panic!("Continuation closures must have alist metadata");
         }
-        Closure::new(ctx, trampoline_fn(), &fv, is_cont, meta)
+        let code_block =
+            CodeBlock::new_native(ctx, trampoline_fn(), CodeArity::variadic(0), is_cont, meta);
+        Closure::new_native(ctx, code_block, &fv, is_cont)
     }
 }
 
@@ -527,99 +523,234 @@ pub struct SavedCall<'gc> {
 }
 
 #[repr(C)]
-pub struct Closure2<'gc> {
+pub struct CodeBlock<'gc> {
     pub header: ScmHeader,
-    pub code_block: Gc<'gc, CodeBlock<'gc>>,
-    pub nfree: usize,
-    pub free: [Lock<Value<'gc>>; 0],
+    pub entrypoint: Address,
+    pub kind: CodeBlockKind<'gc>,
+    pub arity: CodeArity,
+    pub flags: CodeBlockFlags,
+    pub metadata: Lock<Value<'gc>>,
 }
 
-impl<'gc> Closure2<'gc> {
-    extern "C" fn compute_size(this: GCObject) -> usize {
-        // SAFETY: `this` is a valid `Closure2` allocated with `VTABLE`.
-        unsafe {
-            let this = this.to_address().as_ref::<Self>();
-            size_of::<Value>() * this.nfree
+impl<'gc> CodeBlock<'gc> {
+    fn normalize_metadata(metadata: Value<'gc>) -> Value<'gc> {
+        if metadata == Value::new(false) {
+            Value::null()
+        } else {
+            metadata
         }
     }
 
-    extern "C" fn trace(this: GCObject, visitor: &mut Visitor) {
-        // SAFETY: `this` is a valid `Closure2`. We trace `code_block` and all `nfree` trailing slots.
-        unsafe {
-            let this = this.to_address().as_mut_ref::<Self>();
-            visitor.trace(&mut this.code_block);
-            for i in 0..this.nfree {
-                visitor.trace(this.free.as_mut_ptr().add(i).as_mut().unwrap());
-            }
-        }
-    }
-
-    extern "C" fn weak(this: GCObject, weak_processor: &mut WeakProcessor) {
-        let _ = this;
-        let _ = weak_processor;
-    }
-
-    pub const VTABLE: &'static VTable = &VTable {
-        alignment: align_of::<Closure2>(),
-        compute_alignment: None,
-        instance_size: size_of::<Self>(),
-        compute_size: Some(Self::compute_size),
-        trace: Self::trace,
-        weak_proc: Self::weak,
-        type_name: "#<procedure>",
-    };
-
-    pub fn new(
+    fn new_inner(
         ctx: Context<'gc>,
-        code_block: Gc<'gc, CodeBlock<'gc>>,
-        nfree: usize,
+        entrypoint: Address,
+        kind: CodeBlockKind<'gc>,
+        arity: CodeArity,
+        is_cont: bool,
+        metadata: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        // SAFETY: We raw-allocate a Closure2 + `nfree` trailing Value slots via the GC.
-        // All fields are initialized before returning: header, code_block, nfree, and each free slot.
-        unsafe {
-            let size = size_of::<Self>() + (size_of::<Value>() * nfree);
-            let ptr = ctx.raw_allocate(
-                size,
-                align_of::<Self>(),
-                Self::VTABLE,
-                AllocationSemantics::Default,
-            );
-            let this = ptr.to_address().as_mut_ref::<Self>();
-            this.header = ScmHeader::with_type_bits(TypeCode8::CLOSURE2.bits() as _);
-            this.code_block = code_block;
-            this.nfree = nfree;
+        Gc::new(
+            *ctx,
+            Self {
+                header: ScmHeader::with_type_bits(TypeCode8::CODE_BLOCK.bits() as _),
+                entrypoint,
+                kind,
+                arity,
+                flags: if is_cont {
+                    CodeBlockFlags::CONTINUATION
+                } else {
+                    CodeBlockFlags::empty()
+                },
+                metadata: Lock::new(Self::normalize_metadata(metadata)),
+            },
+        )
+    }
 
-            for i in 0..nfree {
-                this.free
-                    .as_mut_ptr()
-                    .add(i)
-                    .write(Lock::new(Value::undefined()));
+    pub fn new_aot(
+        ctx: Context<'gc>,
+        entrypoint: Address,
+        arity: CodeArity,
+        is_cont: bool,
+        metadata: Value<'gc>,
+    ) -> Gc<'gc, Self> {
+        Self::new_inner(
+            ctx,
+            entrypoint,
+            CodeBlockKind::AOT,
+            arity,
+            is_cont,
+            metadata,
+        )
+    }
+
+    pub fn new_native(
+        ctx: Context<'gc>,
+        entrypoint: Address,
+        arity: CodeArity,
+        is_cont: bool,
+        metadata: Value<'gc>,
+    ) -> Gc<'gc, Self> {
+        Self::new_inner(
+            ctx,
+            entrypoint,
+            CodeBlockKind::NativeProc,
+            arity,
+            is_cont,
+            metadata,
+        )
+    }
+}
+
+unsafe impl<'gc> Tagged for CodeBlock<'gc> {
+    const TC8: TypeCode8 = TypeCode8::CODE_BLOCK;
+
+    const TYPE_NAME: &'static str = "code-block";
+}
+
+unsafe impl<'gc> Trace for CodeBlock<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        visitor.trace(&mut self.metadata);
+        match &mut self.kind {
+            CodeBlockKind::JIT { module, proc } => {
+                visitor.trace(module);
+                visitor.trace(proc);
             }
+            CodeBlockKind::AOT | CodeBlockKind::NativeProc => {}
+        }
+    }
 
-            Gc::from_gcobj(ptr)
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodeArity(i32);
+
+impl CodeArity {
+    pub fn new(arity: i32) -> Self {
+        Self(arity)
+    }
+
+    pub fn variadic(fixed_arity: usize) -> Self {
+        Self(-((fixed_arity as i32) + 1))
+    }
+
+    pub fn is_variadic(&self) -> bool {
+        self.0 < 0
+    }
+
+    pub fn fixed_arity(&self) -> usize {
+        if self.is_variadic() {
+            (-self.0 - 1) as usize
+        } else {
+            self.0 as usize
         }
     }
 }
 
-// SAFETY: Closure2 stores its TC8 in the ScmHeader, initialized at construction.
-unsafe impl<'gc> Tagged for Closure2<'gc> {
-    const TC8: TypeCode8 = TypeCode8::CLOSURE2;
-    const TYPE_NAME: &'static str = "#<procedure>";
-}
+bitflags::bitflags! {
+    pub struct CodeBlockFlags: u32 {
+        const CONTINUATION = 1 << 0;
 
-impl<'gc> Index<usize> for Closure2<'gc> {
-    type Output = Lock<Value<'gc>>;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        debug_assert!(
-            index < self.nfree,
-            "index out of bounds: index={index}, len={nfree}",
-            nfree = self.nfree
-        );
-        // SAFETY: Same as Closure — `free` has `nfree` elements; `debug_assert` ensures in-bounds.
-        unsafe { self.free.as_ptr().add(index).as_ref_unchecked() }
     }
 }
 
-// SAFETY: Closure2's Index impl validates bounds; IndexWrite permits mutable access to the same slots.
-unsafe impl<'gc> IndexWrite<usize> for Closure2<'gc> {}
+pub enum CodeBlockKind<'gc> {
+    JIT {
+        module: Gc<'gc, cps_ssa::Module<'gc>>,
+        proc: Gc<'gc, cps_ssa::Proc<'gc>>,
+    },
+    AOT,
+    NativeProc,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{rsgc::barrier, runtime::Scheme};
+
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    extern "C-unwind" fn test_native_proc<'gc>(
+        _ctx: Context<'gc>,
+        _rator: Value<'gc>,
+        _rands: *const Value<'gc>,
+        _num_rands: usize,
+        _retk: Value<'gc>,
+    ) -> NativeReturn<'gc> {
+        NativeReturn {
+            code: ReturnCode::ReturnOk,
+            value: Value::undefined(),
+        }
+    }
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(f);
+    }
+
+    #[test]
+    fn closure_inherits_metadata_from_code_block() {
+        with_ctx(|ctx| {
+            let metadata = Value::cons(ctx, ctx.intern("name"), ctx.str("closure-a"));
+            let code_block = CodeBlock::new_aot(
+                ctx,
+                Address::from_ptr(test_native_proc as *const ()),
+                CodeArity::new(0),
+                false,
+                metadata,
+            );
+            let closure = Closure::new(ctx, code_block, &[], false);
+
+            assert_eq!(closure.code, code_block.entrypoint);
+            assert!(Gc::ptr_eq(closure.code_block, code_block));
+            assert_eq!(closure.meta.get(), code_block.metadata.get());
+        });
+    }
+
+    #[test]
+    fn mutating_closure_metadata_does_not_mutate_code_block_default() {
+        with_ctx(|ctx| {
+            let metadata = Value::cons(ctx, ctx.intern("name"), ctx.str("prototype"));
+            let code_block = CodeBlock::new_aot(
+                ctx,
+                Address::from_ptr(test_native_proc as *const ()),
+                CodeArity::new(0),
+                false,
+                metadata,
+            );
+
+            let closure_a = Closure::new(ctx, code_block, &[], false);
+            let updated = Value::cons(ctx, ctx.intern("name"), ctx.str("updated"));
+            let wclosure = Gc::write(*ctx, closure_a);
+            barrier::field!(wclosure, Closure, meta)
+                .unlock()
+                .set(updated);
+
+            let closure_b = Closure::new(ctx, code_block, &[], false);
+
+            assert_eq!(code_block.metadata.get(), metadata);
+            assert_eq!(closure_a.meta.get(), updated);
+            assert_eq!(closure_b.meta.get(), metadata);
+        });
+    }
+
+    #[test]
+    fn native_closure_keeps_native_proc_in_first_free_slot() {
+        with_ctx(|ctx| {
+            let closure = PROCEDURES.fetch(*ctx).make_closure(
+                ctx,
+                test_native_proc,
+                [Value::new(true)],
+                Value::null(),
+            );
+
+            assert_eq!(closure.code, closure.code_block.entrypoint);
+            assert!(closure.code_block.metadata.get().is_null());
+            assert!(closure[0].get().is::<NativeProc>());
+            assert_eq!(closure[1].get(), Value::new(true));
+        });
+    }
+}

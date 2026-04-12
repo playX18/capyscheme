@@ -1128,7 +1128,11 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
     }
 }
 
-pub fn inline<'gc>(ctx: Context<'gc>, mut term: TermRef<'gc>, max_size: usize) -> (TermRef<'gc>, bool) {
+pub fn inline<'gc>(
+    ctx: Context<'gc>,
+    mut term: TermRef<'gc>,
+    max_size: usize,
+) -> (TermRef<'gc>, bool) {
     let mut changed = false;
     for i in 0..FIBONACCI.len() {
         if size(term) > max_size {

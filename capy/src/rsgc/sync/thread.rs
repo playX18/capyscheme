@@ -2,7 +2,7 @@ use crate::rsgc::{
     GarbageCollector, lab::LocalAllocationBuffer, mm::MemoryManager, mutator::MutatorState,
     sync::monitor::Monitor, traits::Trace,
 };
-use crate::runtime::State;
+use crate::runtime::{GLOBAL_STATS, State};
 use crate::utils::easy_bitfield::*;
 use mmtk::{
     AllocationSemantics, BarrierSelector, Mutator,
@@ -131,6 +131,14 @@ impl Thread {
     pub const NATIVE_DATA_OFFSET: usize = std::mem::offset_of!(Self, native_data);
     pub const RT_STATE_OFFSET: usize =
         Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, state);
+
+    pub const LAB_OFFSET: usize =
+        Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, lab);
+
+    pub const LAB_OFFSET_LIMIT: usize =
+        Self::LAB_OFFSET + std::mem::offset_of!(LocalAllocationBuffer, limit);
+    pub const LAB_OFFSET_CURSOR: usize =
+        Self::LAB_OFFSET + std::mem::offset_of!(LocalAllocationBuffer, cursor);
 
     #[inline(always)]
     pub fn heap_base(&self) -> Address {
@@ -718,6 +726,16 @@ impl BlockAdapter for GCBlockAdapter {
     }
 
     fn set_blocked(&self, thread: &Thread, value: bool) {
+        unsafe {
+            let state = thread.state_ptr().as_ref().unwrap();
+            if value {
+                state.stats.start_stw();
+            } else {
+                state.stats.end_stw();
+            }
+            let mut global_stats = GLOBAL_STATS.lock();
+            global_stats.add_thread_stats(&state.stats);
+        }
         thread.status_word.update::<IsBlockedForGC>(value)
     }
 
@@ -777,7 +795,13 @@ impl ThreadManager {
 
     pub fn remove_current_thread(&self) {
         let thread = current_thread();
-
+        let state = thread.state_ptr();
+        unsafe {
+            if let Some(state) = state.as_ref() {
+                let mut global_stats = GLOBAL_STATS.lock();
+                global_stats.add_thread_stats(&state.stats);
+            }
+        }
         let mut threads = self.threads.lock();
         let idx = thread.index_in_thread_list.load(Ordering::Relaxed);
         let last = threads.pop().expect("no threads left");
@@ -834,6 +858,9 @@ impl ThreadManager {
 
         for thread in handshake_threads.drain(..) {
             thread.unblock(&GC_BLOCK_ADAPTER);
+            unsafe {
+                thread.state_ptr().as_ref().unwrap().stats.end_stw();
+            }
         }
     }
 

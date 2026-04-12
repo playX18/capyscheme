@@ -1643,6 +1643,7 @@ prim!(
     "vector?" => is_vector(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let is_vector = ssa.has_typ8(val, TypeCode8::VECTOR.bits());
+
         PrimValue::Comparison(is_vector)
     },
 

@@ -244,14 +244,8 @@ where
                 have_pair(cps, x)
             }
         );
-        letk check_pair_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (x) @ src;
-            let pair_typecode = #% "u8=" (tc8, Value::new(TypeCode8::PAIR.bits() as i32)) @ src;
-            if pair_typecode => k | not_pair
-        );
-
-        let is_immediate = #% "immediate?" (x) @ src;
-        if is_immediate => not_pair | check_pair_typecode
+        let is_pair = #% "pair?" (x) @ src;
+        if is_pair => k | not_pair
     )
 }
 
@@ -273,14 +267,8 @@ where
                 have_vector(cps, Atom::Local(length))
             }
         );
-        letk check_vector_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (x) @ src;
-            let vector_typecode = #% "u8=" (tc8, Value::new(TypeCode8::VECTOR.bits() as i32)) @ src;
-            if vector_typecode => k | not_vector
-        );
-
-        let is_immediate = #% "immediate?" (x) @ src;
-        if is_immediate => not_vector | check_vector_typecode
+        let is_vector = #% "vector?" (x) @ src;
+        if is_vector => k | not_vector
     )
 }
 
@@ -301,14 +289,8 @@ where
                 have_variable(cps, x)
             }
         );
-        letk check_variable_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (x) @ src;
-            let variable_typecode = #% "u8=" (tc8, Value::new(TypeCode8::VARIABLE.bits() as i32)) @ src;
-            if variable_typecode => k | not_variable
-        );
-
-        let is_immediate = #% "immediate?" (x) @ src;
-        if is_immediate => not_variable | check_variable_typecode
+        let is_variable = #% "variable?" (x) @ src;
+        if is_variable => k | not_variable
     )
 }
 
