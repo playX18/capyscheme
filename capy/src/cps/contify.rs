@@ -75,7 +75,11 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> (TermRef<'gc>, bool) {
                 .map(|k| {
                     let (body, body_changed) = rec(ctx, k.body());
                     changed |= body_changed;
-                    if body_changed { k.with_body(ctx, body) } else { *k }
+                    if body_changed {
+                        k.with_body(ctx, body)
+                    } else {
+                        *k
+                    }
                 })
                 .collect::<Vec<_>>();
             let ks = if ks.iter().zip(prev_ks.iter()).all(|(a, b)| a == b) {

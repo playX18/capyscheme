@@ -16,10 +16,7 @@ use std::{
     iter::Peekable,
 };
 
-use crate::rsgc::{
-    Gc, Trace,
-    collection::Visitor,
-};
+use crate::rsgc::{Gc, Trace, collection::Visitor};
 
 use crate::runtime::{
     Context,
@@ -30,8 +27,6 @@ use crate::runtime::value::{FromValue, IntoValue, Tagged, TypeCode8, TypeCode16,
 
 const IEXPT_2N53: i64 = 0x20000000000000;
 const IEXPT_2N52: i64 = 0x10000000000000;
-
-
 
 #[derive(Trace)]
 #[collect(no_drop)]
@@ -89,10 +84,6 @@ unsafe impl<'gc> Tagged for Rational<'gc> {
     const ONLY_TC16: bool = true;
     const TYPE_NAME: &'static str = "rational";
 }
-
-
-
-
 
 /// A number type which represents one of the types from numerical tower of Scheme:
 /// - `integer`: represented by `Fixnum` or `BigInt`, `fixnum` is 32-bit integer

@@ -307,7 +307,9 @@ dependencies = [
  "pretty",
  "probe",
  "rand",
+ "regalloc2 0.15.0",
  "rustix",
+ "serde",
  "simplehash",
  "slotmap",
  "smallvec",
@@ -503,7 +505,7 @@ dependencies = [
  "gimli",
  "hashbrown 0.15.5",
  "log",
- "regalloc2",
+ "regalloc2 0.13.5",
  "rustc-hash",
  "serde",
  "smallvec",
@@ -1717,7 +1719,6 @@ dependencies = [
  "delegate",
  "downcast-rs",
  "enum-map",
- "env_logger",
  "is-terminal",
  "itertools",
  "lazy_static",
@@ -2127,6 +2128,20 @@ name = "regalloc2"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08effbc1fa53aaebff69521a5c05640523fab037b34a4a2c109506bc938246fa"
+dependencies = [
+ "allocator-api2",
+ "bumpalo",
+ "hashbrown 0.15.5",
+ "log",
+ "rustc-hash",
+ "smallvec",
+]
+
+[[package]]
+name = "regalloc2"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "952ddbfc6f9f64d006c3efd8c9851a6ba2f2b944ba94730db255d55006e0ffda"
 dependencies = [
  "allocator-api2",
  "bumpalo",

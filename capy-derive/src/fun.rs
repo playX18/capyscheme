@@ -135,24 +135,24 @@ impl VisitMut for TransformationContext {
     fn visit_expr_block_mut(&mut self, i: &mut syn::ExprBlock) {
         for stmt in &mut i.block.stmts {
             if let syn::Stmt::Expr(expr, None) = stmt {
-                    let nctx = self.native_ctx.clone();
-                    let new_expr = quote! {
-                        #nctx.return_(#expr)
-                    };
-                    *expr = syn::parse2(new_expr).expect("parsing block final expr");
-                }
+                let nctx = self.native_ctx.clone();
+                let new_expr = quote! {
+                    #nctx.return_(#expr)
+                };
+                *expr = syn::parse2(new_expr).expect("parsing block final expr");
+            }
         }
     }
 
     fn visit_block_mut(&mut self, i: &mut syn::Block) {
         for stmt in &mut i.stmts {
             if let syn::Stmt::Expr(expr, None) = stmt {
-                    let nctx = self.native_ctx.clone();
-                    let new_expr = quote! {
-                        #nctx.return_(#expr)
-                    };
-                    *expr = syn::parse2(new_expr).expect("parsing block final expr");
-                }
+                let nctx = self.native_ctx.clone();
+                let new_expr = quote! {
+                    #nctx.return_(#expr)
+                };
+                *expr = syn::parse2(new_expr).expect("parsing block final expr");
+            }
         }
     }
 }
@@ -243,30 +243,20 @@ impl FunctionDefinition {
             }
         };
 
-        let arg_tys = self
-            .transformed_function
-            .sig
-            .inputs
-            .iter()
-            .map(|arg| {
-                if let syn::FnArg::Typed(pat_type) = arg {
-                    pat_type.ty.clone()
-                } else {
-                    todo!("methods")
-                }
-            });
-        let arg_pats = self
-            .transformed_function
-            .sig
-            .inputs
-            .iter()
-            .map(|arg| {
-                if let syn::FnArg::Typed(pat_type) = arg {
-                    pat_type.pat.clone()
-                } else {
-                    todo!("methods")
-                }
-            });
+        let arg_tys = self.transformed_function.sig.inputs.iter().map(|arg| {
+            if let syn::FnArg::Typed(pat_type) = arg {
+                pat_type.ty.clone()
+            } else {
+                todo!("methods")
+            }
+        });
+        let arg_pats = self.transformed_function.sig.inputs.iter().map(|arg| {
+            if let syn::FnArg::Typed(pat_type) = arg {
+                pat_type.pat.clone()
+            } else {
+                todo!("methods")
+            }
+        });
         let scm_name = &self.scheme_attribute.name;
         let real_name = &self.transformed_function.sig.ident;
         let arg_tys1 = arg_tys.clone();

@@ -741,6 +741,144 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    pub unsafe fn raw_alloc_uninit(
+        &self,
+        size: usize,
+        alignment: usize,
+        mut semantics: AllocationSemantics,
+    ) -> GCObject {
+        unsafe {
+            if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
+                semantics = AllocationSemantics::Los;
+            }
+
+            let alignment = alignment.min(8);
+            let size = raw_align_up(size, alignment);
+
+            if semantics == AllocationSemantics::Default
+                && self.thread.alloc_fastpath() == AllocFastPath::TLAB
+            {
+                let lab = &mut self.thread.native_data_mut().lab;
+
+                let object_start = lab.allocate(size + size_of::<HeapObjectHeader>(), alignment, 0);
+                if !object_start.is_zero() {
+                    return GCObject::from(object_start + OBJECT_REF_OFFSET);
+                }
+
+                return self.raw_allocate_slow_uninit(size, alignment, semantics);
+            }
+
+            self.raw_allocate_out_of_line_uninit(size, alignment, semantics)
+        }
+    }
+
+    pub unsafe fn raw_allocate_slow_uninit(
+        &self,
+        size: usize,
+        alignment: usize,
+        semantics: AllocationSemantics,
+    ) -> GCObject {
+        unsafe {
+            self.flush_tlab();
+            let object_start = mmtk::memory_manager::alloc_slow_with_options(
+                self.thread.mutator_unchecked(),
+                size + size_of::<HeapObjectHeader>(),
+                alignment,
+                OBJECT_REF_OFFSET as usize,
+                semantics,
+                DEFAULT_ALLOC_OPTIONS,
+            );
+            self.refill_tlab();
+
+            GCObject::from(object_start + OBJECT_REF_OFFSET)
+        }
+    }
+
+    pub unsafe fn raw_allocate_out_of_line_uninit(
+        &self,
+        size: usize,
+        alignment: usize,
+        mut semantics: AllocationSemantics,
+    ) -> GCObject {
+        if semantics == AllocationSemantics::Default
+            && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
+        {
+            semantics = AllocationSemantics::Los;
+        }
+
+        let size = raw_align_up(size, alignment);
+        unsafe {
+            match semantics {
+                AllocationSemantics::Los => self.raw_allocate_los_uninit(size, alignment),
+                AllocationSemantics::Immortal => self.raw_allocate_immortal_uninit(size, alignment),
+                AllocationSemantics::NonMoving => {
+                    self.raw_allocate_nonmoving_uninit(size, alignment)
+                }
+                _ => self.raw_allocate_slow_uninit(size, alignment, semantics),
+            }
+        }
+    }
+
+    pub fn raw_allocate_los_uninit(&self, size: usize, alignment: usize) -> GCObject {
+        unsafe {
+            self.flush_tlab();
+            let object_start = mmtk::memory_manager::alloc_slow_with_options(
+                self.thread.mutator_unchecked(),
+                size + size_of::<HeapObjectHeader>(),
+                alignment,
+                OBJECT_REF_OFFSET as usize,
+                AllocationSemantics::Los,
+                DEFAULT_ALLOC_OPTIONS,
+            );
+            self.refill_tlab();
+
+            let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
+
+            mmtk::memory_manager::post_alloc(
+                self.thread.mutator_unchecked(),
+                object.to_objref().unwrap(),
+                size,
+                AllocationSemantics::Los,
+            );
+
+            object
+        }
+    }
+
+    pub unsafe fn raw_allocate_immortal_uninit(&self, size: usize, alignment: usize) -> GCObject {
+        unsafe {
+            self.flush_tlab();
+            let object_start = mmtk::memory_manager::alloc_slow_with_options(
+                self.thread.mutator_unchecked(),
+                size + size_of::<HeapObjectHeader>(),
+                alignment,
+                OBJECT_REF_OFFSET as usize,
+                AllocationSemantics::Immortal,
+                DEFAULT_ALLOC_OPTIONS,
+            );
+            self.refill_tlab();
+
+            GCObject::from(object_start + OBJECT_REF_OFFSET)
+        }
+    }
+
+    pub unsafe fn raw_allocate_nonmoving_uninit(&self, size: usize, alignment: usize) -> GCObject {
+        unsafe {
+            self.flush_tlab();
+            let object_start = mmtk::memory_manager::alloc_slow_with_options(
+                self.thread.mutator_unchecked(),
+                size + size_of::<HeapObjectHeader>(),
+                alignment,
+                OBJECT_REF_OFFSET as usize,
+                AllocationSemantics::NonMoving,
+                DEFAULT_ALLOC_OPTIONS,
+            );
+            self.refill_tlab();
+
+            GCObject::from(object_start + OBJECT_REF_OFFSET)
+        }
+    }
+
     pub fn barrier(&self) -> BarrierSelector {
         self.thread.barrier()
     }

@@ -361,6 +361,18 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.block_params(succ)[0]
     }
 
+    pub fn as_boolean(&mut self, v: ir::Value) -> ir::Value {
+        let tr = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(true).raw_i64());
+        let fs = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(false).raw_i64());
+        self.builder.ins().select(v, tr, fs)
+    }
+
     pub fn has_typ8(&mut self, v: ir::Value, typ: u8) -> ir::Value {
         let check_object = self.builder.create_block();
         let done = self.builder.create_block();

@@ -11,19 +11,18 @@
     try_trait_v2,
     link_llvm_intrinsics,
     min_specialization,
-    const_type_name,
-    explicit_tail_calls
+    const_type_name
 )]
 
 //! CapyScheme: R6RS/R7RS Scheme compiler and runtime.
 
 pub mod api;
-pub mod bytecode;
 pub mod compiler;
 pub mod cps;
+pub mod cps_ssa;
 pub mod expander;
 pub mod frontend;
-pub mod interp;
+pub mod jit;
 pub mod rsgc;
 pub mod runtime;
 pub mod utils;
@@ -46,8 +45,32 @@ pub mod prelude {
     pub use crate::runtime::vm::{NativeCallContext, NativeCallReturn};
     pub use crate::vector;
     pub use capy_derive::scheme;
+    pub use capy_derive::scm_match;
 }
 
 pub use capy_derive::scheme;
+pub use capy_derive::scm_match;
 
 pub(crate) static CAN_PIN_OBJECTS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+mod tests {
+    use crate::{prelude::*, runtime::Scheme};
+
+    #[test]
+    fn matching() {
+        let scm = Scheme::new_uninit();
+
+        scm.enter(|ctx| {
+            let sym = ctx.intern("foo");
+            let val = list!(ctx, sym, 2, list!(ctx, 3, 4), 5, 6);
+
+            scm_match!(ctx, val, {
+                    ('foo 2 x . rest) => {
+                        println!("{x} {rest}");
+                    }
+                }
+            );
+        });
+    }
+}

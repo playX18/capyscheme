@@ -40,8 +40,71 @@ pub fn scheme(
     }
 }
 
+/// Pattern-match a Scheme [`Value`] using a small Rust-side pattern DSL.
+///
+/// Syntax:
+///
+/// ```text
+/// scm_match!(ctx, value, {
+///     PATTERN [if GUARD] => EXPR,
+///     ...
+/// })
+/// ```
+///
+/// The macro evaluates `ctx` and `value` once, then checks arms from top to bottom.
+/// The first matching arm is returned. If no arm matches, the expanded code panics at runtime
+/// with `scm_match!: non-exhaustive match`.
+///
+/// Valid patterns:
+///
+/// - `_`: wildcard.
+/// - `name`: bind the current [`Value`] to a Rust identifier.
+/// - `()`: the null value.
+/// - Rust literals `true`, `false`, integer literals, float literals, character literals, and
+///   string literals.
+/// - Symbol literals written as `'name` or `sym("name")`.
+/// - List patterns written as `(p1 p2 ... pn)`.
+/// - Dotted list patterns written as `(p1 p2 ... . tail)`.
+///
+/// List patterns may nest arbitrarily, so forms like `('if test conseq alt)` and
+/// `((head . rest) tail)` are valid.
+///
+/// Guards:
+///
+/// - An arm may include `if <expr>` after the pattern.
+/// - Guards run only after the pattern has matched and all bindings from the pattern are in scope.
+///
+/// Matching semantics:
+///
+/// - Symbol literals compare by interned `Value` equality.
+/// - String literals compare with Scheme `r5rs_equal` semantics.
+/// - Proper list patterns require a null tail.
+/// - Dotted list patterns bind or match the final cdr directly.
+/// - Duplicate binding names within one pattern are rejected at macro expansion time.
+///
+/// Literal symbols and strings are cached lazily in generated code, so repeated matches do not
+/// rebuild the same runtime values on every call.
+///
+/// Example:
+///
+/// ```ignore
+/// let kind = scm_match!(ctx, form, {
+///     ('if test conseq alt) => expand_if(ctx, test, conseq, alt),
+///     ('quote datum) => expand_quote(ctx, datum),
+///     ((head . rest) if head.is::<Symbol>()) => handle_call(ctx, head, rest),
+///     _ => fallback(ctx, form),
+/// });
+/// ```
+#[proc_macro]
+pub fn scm_match(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    scm_match::expand(input)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
 mod fun;
 mod module;
+mod scm_match;
 mod structure;
 mod thunks;
 mod var;

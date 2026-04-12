@@ -445,10 +445,25 @@ pub fn load_thunk_in_vicinity<'gc, const FORCE_COMPILE: bool>(
         let full_source_path_str = Str::new(*ctx, full_source_path.display().to_string(), true);
         return Ok(list!(ctx, source_str, full_source_path_str, compiled_str));
     }
+    ctx.stats.end_execution();
+    ctx.stats.start_compilation();
     let f =
-        crate::compiler::compile_file(ctx, source, Some(current_module(ctx).get(ctx).downcast()))?;
-    let product = crate::compiler::compile_cps_to_object(ctx, f, Default::default())?;
-    crate::compiler::link_object_product(ctx, product, &fallback)?;
+        crate::compiler::compile_file(ctx, source, Some(current_module(ctx).get(ctx).downcast()))
+            .inspect_err(|_| {
+            ctx.stats.end_compilation();
+            ctx.stats.start_execution();
+        })?;
+    let product =
+        crate::compiler::compile_cps_to_object(ctx, f, Default::default()).inspect_err(|_| {
+            ctx.stats.end_compilation();
+            ctx.stats.start_execution();
+        })?;
+    crate::compiler::link_object_product(ctx, product, &fallback).inspect_err(|_| {
+        ctx.stats.end_compilation();
+        ctx.stats.start_execution();
+    })?;
+    ctx.stats.end_compilation();
+    ctx.stats.start_execution();
 
     libs.load(&fallback, ctx).map_err(|err| {
         make_io_error(
@@ -540,6 +555,7 @@ pub mod load_ops {
     ) -> Result<Value<'gc>, Value<'gc>> {
         let _ = m;
         let load_thunk = load_thunk.unwrap_or(true);
+
         let backtraces = if let Some(key) = ctx.private_ref("capy", "*compile-backtrace-key*") {
             match ctx.get_mark_first(key) {
                 Some(mark) => mark != Value::new(false),
@@ -549,10 +565,17 @@ pub mod load_ops {
             true
         };
 
+        ctx.stats.end_execution();
+        ctx.stats.start_compilation();
+
         let mut reader = ScmTermToRsTerm::new(nctx.ctx);
         let mut ir = match reader.convert(expanded) {
             Ok(ir) => ir,
-            Err(err) => return nctx.return_(Err(err)),
+            Err(err) => {
+                ctx.stats.end_compilation();
+                ctx.stats.start_execution();
+                return nctx.return_(Err(err));
+            }
         };
 
         let before_opts = ir;
@@ -619,18 +642,30 @@ pub mod load_ops {
 
         let object = match compile_cps_to_object(nctx.ctx, cps, CompilationOptions { backtraces }) {
             Ok(product) => product,
-            Err(err) => return nctx.return_(Err(err)),
+            Err(err) => {
+                ctx.stats.end_compilation();
+                ctx.stats.start_execution();
+                return nctx.return_(Err(err));
+            }
         };
         let compiled_path = destination.to_string();
         match link_object_product(nctx.ctx, object, &compiled_path) {
             Ok(_) => (),
-            Err(err) => return nctx.return_(Err(err)),
+            Err(err) => {
+                ctx.stats.end_compilation();
+                ctx.stats.start_execution();
+                return nctx.return_(Err(err));
+            }
         }
         let ctx = nctx.ctx;
         if !load_thunk {
+            ctx.stats.end_compilation();
+            ctx.stats.start_execution();
             return nctx.return_(Ok(Str::new(*ctx, &compiled_path, true).into()));
         }
         let libs = LIBRARY_COLLECTION.fetch(*ctx);
+        ctx.stats.end_compilation();
+        ctx.stats.start_execution();
         match libs.load(&compiled_path, ctx) {
             Err(err) => nctx.return_(Err(make_io_error(
                 ctx,

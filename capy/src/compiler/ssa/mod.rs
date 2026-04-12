@@ -55,6 +55,8 @@ pub struct ModuleBuilder<'gc> {
     pub prims: PrimitiveLowerer<'gc>,
     pub func_for_cont: HashMap<ContRef<'gc>, FuncId>,
     pub func_for_func: HashMap<FuncRef<'gc>, FuncId>,
+    pub code_block_for_cont: HashMap<ContRef<'gc>, DataId>,
+    pub code_block_for_func: HashMap<FuncRef<'gc>, DataId>,
     pub import_data: HashMap<&'static str, DataId>,
 
     pub thunks: Thunks,
@@ -78,13 +80,29 @@ impl<'gc> ModuleBuilder<'gc> {
             prims,
             func_for_cont: HashMap::new(),
             func_for_func: HashMap::new(),
+            code_block_for_cont: HashMap::new(),
+            code_block_for_func: HashMap::new(),
 
             thunks,
         }
     }
     pub fn compile(&mut self) {
+        let funcs = self
+            .reify_info
+            .functions
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let conts = self
+            .reify_info
+            .continuations
+            .iter()
+            .copied()
+            .filter(|c| c.reified.get())
+            .collect::<Vec<_>>();
+
         let sig = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
-        for (i, &func) in self.reify_info.functions.iter().enumerate() {
+        for (i, func) in funcs.iter().copied().enumerate() {
             let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
             let func_id = self
                 .module
@@ -92,36 +110,36 @@ impl<'gc> ModuleBuilder<'gc> {
                 .expect("failed to declare function in cranelift module");
 
             self.func_for_func.insert(func, func_id);
+            let code_block_data_id = self.declare_code_block_slot(&format!("codeblock_fn{}", i));
+            self.code_block_for_func.insert(func, code_block_data_id);
         }
 
         let sig = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
 
-        for (i, &cont) in self
-            .reify_info
-            .continuations
-            .iter()
-            .filter(|c| c.reified.get())
-            .enumerate()
-        {
+        for (i, cont) in conts.iter().copied().enumerate() {
             let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
             let cont_id = self
                 .module
                 .declare_function(&name, Linkage::Local, &sig)
                 .expect("failed to declare continuation in cranelift module");
             self.func_for_cont.insert(cont, cont_id);
+            let code_block_data_id = self.declare_code_block_slot(&format!("codeblock_cont{}", i));
+            self.code_block_for_cont.insert(cont, code_block_data_id);
         }
 
         let mut context = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
-        let funcs = self.reify_info.functions;
-        for (i, &func) in funcs.iter().enumerate() {
+        for (i, func) in funcs.iter().copied().enumerate() {
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
             let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
             let func_debug_cx = self.debug_context.define_function(func, &name);
 
-            let func_id = self.func_for_func.get(&func).copied()
+            let func_id = self
+                .func_for_func
+                .get(&func)
+                .copied()
                 .expect("function should have been declared before compilation");
             let mut ssa =
                 SSABuilder::new(self, builder, ContOrFunc::Func(func), thunks, func_debug_cx);
@@ -149,9 +167,7 @@ impl<'gc> ModuleBuilder<'gc> {
             self.module.clear_context(&mut context);
         }
 
-        let conts = self.reify_info.continuations;
-
-        for (i, &cont) in conts.iter().filter(|c| c.reified.get()).enumerate() {
+        for (i, cont) in conts.iter().copied().enumerate() {
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
 
             let name = format!("cont_{}_{}_{}", i, cont.name, cont.binding.name);
@@ -198,6 +214,27 @@ impl<'gc> ModuleBuilder<'gc> {
         ctx: &mut cranelift_codegen::Context,
         fctx: &mut FunctionBuilderContext,
     ) {
+        let funcs = self
+            .reify_info
+            .functions
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        let conts = self
+            .reify_info
+            .continuations
+            .iter()
+            .copied()
+            .filter(|cont| cont.reified.get())
+            .collect::<Vec<_>>();
+
+        for func in funcs.iter().copied() {
+            let _ = self.intern_constant(func.meta);
+        }
+        for cont in conts.iter().copied() {
+            let _ = self.intern_constant(cont.meta);
+        }
+
         let globals_array = self
             .module
             .declare_data("CAPY_GLOBALS", Linkage::Export, true, false)
@@ -213,7 +250,9 @@ impl<'gc> ModuleBuilder<'gc> {
             .constants
             .values()
             .copied()
-            .chain(self.cache_cells.values().copied());
+            .chain(self.cache_cells.values().copied())
+            .chain(self.code_block_for_func.values().copied())
+            .chain(self.code_block_for_cont.values().copied());
         let mut offset = 0;
         for data in datas {
             let gv = self.module.declare_data_in_data(data, &mut desc);
@@ -223,14 +262,16 @@ impl<'gc> ModuleBuilder<'gc> {
         }
         desc.define(vec![0; offset as usize].into_boxed_slice());
 
-        self.module.define_data(globals_array, &desc)
+        self.module
+            .define_data(globals_array, &desc)
             .expect("failed to define CAPY_GLOBALS data");
 
         desc = DataDescription::new();
 
         desc.define(Box::new((offset / 8).to_le_bytes()));
         desc.set_align(size_of::<usize>() as _);
-        self.module.define_data(globals_size, &desc)
+        self.module
+            .define_data(globals_size, &desc)
             .expect("failed to define CAPY_GLOBALS_LEN data");
 
         // First let's get some stable way to iterate constants
@@ -265,7 +306,8 @@ impl<'gc> ModuleBuilder<'gc> {
         let size = buf.len();
         desc.set_align(align_of::<usize>() as _);
         desc.define(buf.into_boxed_slice());
-        self.module.define_data(fasl_data, &desc)
+        self.module
+            .define_data(fasl_data, &desc)
             .expect("failed to define capy_fasl_constants data");
         {
             ctx.func.signature = sig;
@@ -304,25 +346,74 @@ impl<'gc> ModuleBuilder<'gc> {
                     .store(ir::MemFlags::trusted().with_can_move(), value, addr, 0);
             }
 
-            let entrypoint_fn_id = self.func_for_func[&self.reify_info.entrypoint];
-            let entrypoint_fn_ref = self
+            let make_aot_code_block = self
                 .module
-                .declare_func_in_func(entrypoint_fn_id, &mut builder.func);
-
-            let nfree = builder.ins().iconst(types::I64, 0);
-            let is_cont = builder.ins().iconst(types::I8, 0);
-
+                .declare_func_in_func(self.thunks.make_aot_code_block, &mut builder.func);
             let make_closure = self
                 .module
                 .declare_func_in_func(self.thunks.make_closure, &mut builder.func);
-            let entrypoint_fn_ref = builder.ins().func_addr(types::I64, entrypoint_fn_ref);
-            let meta = builder
-                .ins()
-                .iconst(types::I64, Value::new(false).bits() as i64);
-            let call = builder.ins().call(
-                make_closure,
-                &[ctx, entrypoint_fn_ref, nfree, is_cont, meta],
+
+            for func in funcs.iter().copied() {
+                let func_id = self.func_for_func[&func];
+                let func_ref = self.module.declare_func_in_func(func_id, &mut builder.func);
+                let entrypoint = builder.ins().func_addr(types::I64, func_ref);
+                let arity = builder
+                    .ins()
+                    .iconst(types::I32, Self::arity_for_func(func) as i64);
+                let is_cont = builder.ins().iconst(types::I8, 0);
+                let metadata = self.load_constant(&mut builder, func.meta);
+                let call = builder.ins().call(
+                    make_aot_code_block,
+                    &[ctx, entrypoint, arity, is_cont, metadata],
+                );
+                let code_block = builder.inst_results(call)[0];
+                let data_id = self.code_block_for_func[&func];
+                let gv = self.module.declare_data_in_func(data_id, &mut builder.func);
+                let addr = builder.ins().global_value(types::I64, gv);
+                builder
+                    .ins()
+                    .store(ir::MemFlags::trusted().with_can_move(), code_block, addr, 0);
+            }
+
+            for cont in conts.iter().copied() {
+                let cont_id = self.func_for_cont[&cont];
+                let cont_ref = self.module.declare_func_in_func(cont_id, &mut builder.func);
+                let entrypoint = builder.ins().func_addr(types::I64, cont_ref);
+                let arity = builder
+                    .ins()
+                    .iconst(types::I32, Self::arity_for_cont(cont) as i64);
+                let is_cont = builder.ins().iconst(types::I8, 1);
+                let metadata = self.load_constant(&mut builder, cont.meta);
+                let call = builder.ins().call(
+                    make_aot_code_block,
+                    &[ctx, entrypoint, arity, is_cont, metadata],
+                );
+                let code_block = builder.inst_results(call)[0];
+                let data_id = self.code_block_for_cont[&cont];
+                let gv = self.module.declare_data_in_func(data_id, &mut builder.func);
+                let addr = builder.ins().global_value(types::I64, gv);
+                builder
+                    .ins()
+                    .store(ir::MemFlags::trusted().with_can_move(), code_block, addr, 0);
+            }
+
+            let entry_code_block_data = self.code_block_for_func[&self.reify_info.entrypoint];
+            let entry_gv = self
+                .module
+                .declare_data_in_func(entry_code_block_data, &mut builder.func);
+            let entry_addr = builder.ins().global_value(types::I64, entry_gv);
+            let entry_code_block = builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                entry_addr,
+                0,
             );
+
+            let nfree = builder.ins().iconst(types::I64, 0);
+            let is_cont = builder.ins().iconst(types::I8, 0);
+            let call = builder
+                .ins()
+                .call(make_closure, &[ctx, entry_code_block, nfree, is_cont]);
             let clos = builder.inst_results(call)[0];
 
             builder.ins().return_(&[clos]);
@@ -330,7 +421,8 @@ impl<'gc> ModuleBuilder<'gc> {
             builder.finalize();
         }
 
-        self.module.define_function(init_fn_id, ctx)
+        self.module
+            .define_function(init_fn_id, ctx)
             .expect("failed to define capy_module_init function");
     }
 
@@ -359,7 +451,8 @@ impl<'gc> ModuleBuilder<'gc> {
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size_of::<Value>());
         desc.set_align(align_of::<usize>() as _);
-        self.module.define_data(data_id, &desc)
+        self.module
+            .define_data(data_id, &desc)
             .expect("failed to define constant data");
 
         self.constants.insert(ValueEqual(obj), data_id);
@@ -382,12 +475,55 @@ impl<'gc> ModuleBuilder<'gc> {
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size_of::<Value>());
         desc.set_align(align_of::<usize>() as _);
-        self.module.define_data(data_id, &desc)
+        self.module
+            .define_data(data_id, &desc)
             .expect("failed to define cache cell data");
 
         self.cache_cells.insert(ValueEqual(key), data_id);
 
         data_id
+    }
+
+    fn declare_code_block_slot(&mut self, name: &str) -> DataId {
+        let data_id = self
+            .module
+            .declare_data(name, Linkage::Local, true, false)
+            .expect("failed to declare code block data");
+        let mut desc = DataDescription::new();
+        desc.define_zeroinit(size_of::<Value>());
+        desc.set_align(align_of::<usize>() as _);
+        self.module
+            .define_data(data_id, &desc)
+            .expect("failed to define code block data");
+        data_id
+    }
+
+    fn load_constant(&mut self, builder: &mut FunctionBuilder<'_>, value: Value<'gc>) -> ir::Value {
+        if let Some(data_id) = self.intern_constant(value) {
+            let gv = self.module.declare_data_in_func(data_id, &mut builder.func);
+            let addr = builder.ins().global_value(types::I64, gv);
+            builder
+                .ins()
+                .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0)
+        } else {
+            builder.ins().iconst(types::I64, value.bits() as i64)
+        }
+    }
+
+    fn arity_for_func(func: FuncRef<'gc>) -> i32 {
+        if func.variadic.is_some() {
+            -((func.args.len() as i32) + 1)
+        } else {
+            func.args.len() as i32
+        }
+    }
+
+    fn arity_for_cont(cont: ContRef<'gc>) -> i32 {
+        if cont.variadic.is_some() {
+            -((cont.args.len() as i32) + 1)
+        } else {
+            cont.args.len() as i32
+        }
     }
 }
 

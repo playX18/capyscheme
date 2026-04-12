@@ -491,7 +491,14 @@ pub mod io_ops {
         match s {
             Either::Left(s) => {
                 let s_str = s.to_string();
-                nctx.return_(s_str.len() == 1 && s_str.chars().next().expect("non-empty string should have first char") == sep)
+                nctx.return_(
+                    s_str.len() == 1
+                        && s_str
+                            .chars()
+                            .next()
+                            .expect("non-empty string should have first char")
+                            == sep,
+                )
             }
             Either::Right(c) => nctx.return_(c == sep),
         }
@@ -524,8 +531,7 @@ pub mod io_ops {
         let path = path.to_string();
 
         unsafe {
-            let cpath = std::ffi::CString::new(path)
-                .expect("path should not contain null bytes");
+            let cpath = std::ffi::CString::new(path).expect("path should not contain null bytes");
             nctx.return_(libc::open(cpath.as_ptr(), oflag, pmode))
         }
     }
@@ -715,8 +721,8 @@ pub mod io_ops {
         }
 
         unsafe {
-            let cpath = CString::new(filename.to_string())
-                .expect("filename should not contain null bytes");
+            let cpath =
+                CString::new(filename.to_string()).expect("filename should not contain null bytes");
             let ret = libc::open(cpath.as_ptr(), newflags | libc::O_NONBLOCK, mode);
             nctx.return_(ret)
         }
@@ -821,8 +827,8 @@ pub mod io_ops {
 
     #[scheme(name = "syscall:unlink")]
     pub fn syscall_unlink(filename: Gc<'gc, Str<'gc>>) -> i32 {
-        let cpath = CString::new(filename.to_string())
-            .expect("filename should not contain null bytes");
+        let cpath =
+            CString::new(filename.to_string()).expect("filename should not contain null bytes");
         unsafe {
             let ret = libc::unlink(cpath.as_ptr());
             nctx.return_(ret)
@@ -847,8 +853,7 @@ pub mod io_ops {
 
         unsafe {
             let mut buf = std::mem::zeroed::<libc::stat>();
-            let cpath = CString::new(path)
-                .expect("path should not contain null bytes");
+            let cpath = CString::new(path).expect("path should not contain null bytes");
             let ret = libc::stat(cpath.as_ptr(), &mut buf);
             if ret != 0 {
                 return nctx.return_(-1);
@@ -890,8 +895,8 @@ pub mod io_ops {
             rmode |= libc::X_OK;
         }
 
-        let cpath = CString::new(filename.to_string())
-            .expect("filename should not contain null bytes");
+        let cpath =
+            CString::new(filename.to_string()).expect("filename should not contain null bytes");
         unsafe {
             let ret = libc::access(cpath.as_ptr(), rmode);
             nctx.return_(ret)
@@ -966,8 +971,8 @@ pub mod io_ops {
 
     #[scheme(name = "system")]
     pub fn system(command: Gc<'gc, Str<'gc>>) -> i32 {
-        let ccommand = CString::new(command.to_string())
-            .expect("command should not contain null bytes");
+        let ccommand =
+            CString::new(command.to_string()).expect("command should not contain null bytes");
         unsafe {
             let ret = libc::system(ccommand.as_ptr());
             if ret != -1 {
@@ -1089,12 +1094,21 @@ pub mod io_ops {
             }
         };
 
-        let ifd = child.stdin.as_ref()
-            .expect("child process stdin should be piped").as_raw_fd();
-        let ofd = child.stdout.as_ref()
-            .expect("child process stdout should be piped").as_raw_fd();
-        let efd = child.stderr.as_ref()
-            .expect("child process stderr should be piped").as_raw_fd();
+        let ifd = child
+            .stdin
+            .as_ref()
+            .expect("child process stdin should be piped")
+            .as_raw_fd();
+        let ofd = child
+            .stdout
+            .as_ref()
+            .expect("child process stdout should be piped")
+            .as_raw_fd();
+        let efd = child
+            .stderr
+            .as_ref()
+            .expect("child process stderr should be piped")
+            .as_raw_fd();
         let pid = child.id() as i32;
         std::mem::forget(child);
         let ctx = nctx.ctx;
@@ -1411,8 +1425,7 @@ pub mod io_ops {
 pub fn init_io<'gc>(ctx: Context<'gc>) {
     io_ops::register(ctx);
 
-    let module = ctx.module("capy")
-        .expect("'capy' module should exist");
+    let module = ctx.module("capy").expect("'capy' module should exist");
     let host_features_tab = HashTable::new(*ctx, HashTableType::Eq, 64, 0.80);
     module.define(ctx, ctx.intern("*host-features*"), host_features_tab.into());
 
