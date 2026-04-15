@@ -66,6 +66,16 @@ impl ThreadStats {
                 .set(self.blocking_time.get() + start.elapsed());
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn compilation_active(&self) -> bool {
+        self.comp_start.get().is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execution_active(&self) -> bool {
+        self.exec_start.get().is_some()
+    }
 }
 
 pub struct GlobalStats {
