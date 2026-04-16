@@ -40,10 +40,11 @@ impl<'gc, 'a> CompilerX64<'gc, 'a> {
         let spill_slots = self.regalloc.spill_slots as usize;
         let stack_size = spill_slots * 8;
         let aligned_stack_size = align_up(stack_size, 16);
-
+        let _ = aligned_stack_size;
         // Prologue
     }
 
+    #[allow(dead_code)]
     fn emit_jumptable_for_rest(&mut self) {
         /* jumptable = [&&args0, &&args1, &&args2, ...]
         if (RAX > max args in regs) {initialize with args in stack; goto argsN }
@@ -83,7 +84,7 @@ impl<'gc, 'a> CompilerX64<'gc, 'a> {
             .add_constant(ConstantData::Bytes(vec![0; reg_labels.len() * 8]));
         self.asm.lea(R11, label_ptr(jt, 0, 8));
 
-        for (i, &reg) in ARGUMENT_REGS.iter().enumerate().skip(variadic_pos).rev() {
+        for (i, _reg) in ARGUMENT_REGS.iter().enumerate().skip(variadic_pos).rev() {
             let label = reg_labels[i - variadic_pos];
             self.asm.bind_label(label);
             /* todo: cons(RAX, reg); fallthrough; */

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::compiler::{
-    CompilationOptions, DumpArtifactsOptions, LoweredProgram, compile_cps_to_shared_object,
+    CompilationOptions, DumpArtifactsOptions, LoweredProgram,
     dump_lowered_program_artifacts, lower_expanded_to_cps,
 };
 use crate::list;
@@ -16,7 +16,13 @@ use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::vm::thunks::make_lexical_violation;
 use capy_derive::scheme;
 
-use super::compile::{CompilationPhase, load_thunk_in_vicinity};
+use super::{
+    artifact::LoadArtifact,
+    compile::{
+        CompilationPhase, compile_cps_to_destination, destination_artifact_for_current_policy,
+        load_thunk_in_vicinity,
+    },
+};
 use super::paths::{fallback_file_name, find_path_to};
 
 #[scheme(path=capy)]
@@ -288,14 +294,15 @@ fn compile_expanded_to_destination<'gc>(
 ) -> Result<Value<'gc>, Value<'gc>> {
     let _phase = CompilationPhase::new(ctx);
     let lowered = lower_expanded_scheme(ctx, expanded, module)?;
-    dump_lowered_program_artifacts(destination, &lowered, dump_options);
-    compile_cps_to_shared_object(ctx, lowered.cps, options, destination)?;
+    let destination = destination_artifact_for_current_policy(destination);
+    dump_lowered_program_artifacts(&destination.path, &lowered, dump_options);
+    compile_cps_to_destination(ctx, lowered.cps, options, &destination)?;
 
     if !load_thunk {
-        return Ok(Str::new(*ctx, destination, true).into());
+        return Ok(Str::new(*ctx, destination.path.display().to_string(), true).into());
     }
 
-    load_compiled_library(ctx, destination)
+    load_compiled_library(ctx, &destination)
 }
 
 fn lower_expanded_scheme<'gc>(
@@ -310,16 +317,19 @@ fn lower_expanded_scheme<'gc>(
 
 fn load_compiled_library<'gc>(
     ctx: Context<'gc>,
-    compiled_path: &str,
+    compiled_artifact: &LoadArtifact,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let libs = LIBRARY_COLLECTION.fetch(*ctx);
-    libs.load(compiled_path, ctx).map_err(|err| {
+    libs.load(compiled_artifact, ctx).map_err(|err| {
         make_io_error(
             ctx,
             "load",
             Str::new(
                 *ctx,
-                format!("Failed to load compiled library: {err}"),
+                format!(
+                    "Failed to load compiled artifact {}: {err}",
+                    compiled_artifact.path.display()
+                ),
                 true,
             )
             .into(),

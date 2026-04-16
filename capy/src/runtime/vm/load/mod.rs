@@ -1,7 +1,9 @@
 use crate::runtime::Context;
 
+pub(crate) mod artifact;
 mod compile;
 mod paths;
+pub(crate) mod policy;
 mod scheme;
 
 pub use compile::load_thunk_in_vicinity;

@@ -1,8 +1,12 @@
 //! Collection of loaded shared libraries
 
-use crate::rsgc::{Global, Trace, mmtk::util::Address, sync::monitor::Monitor};
-use crate::runtime::{Context, value::Value};
-use std::{ffi::OsStr, mem::MaybeUninit, sync::LazyLock};
+use crate::rsgc::{Gc, Global, Trace, mmtk::util::Address, sync::monitor::Monitor};
+use crate::runtime::{
+    Context,
+    value::Value,
+    vm::load::artifact::{LoadArtifact, LoadArtifactKind},
+};
+use std::{ffi::OsStr, io::BufReader, mem::MaybeUninit, sync::LazyLock};
 
 pub struct SchemeLibrary<'gc> {
     pub library: *mut (),
@@ -145,8 +149,85 @@ impl<'gc> SchemeLibrary<'gc> {
     }
 }
 
+pub struct CpsSsaLibrary<'gc> {
+    pub path: std::path::PathBuf,
+    pub module: Gc<'gc, crate::cps_ssa::Module<'gc>>,
+}
+
+unsafe impl<'gc> Trace for CpsSsaLibrary<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        visitor.trace(&mut self.module);
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        let _ = weak_processor;
+    }
+}
+
+impl<'gc> CpsSsaLibrary<'gc> {
+    fn load(ctx: Context<'gc>, path: impl AsRef<OsStr>) -> std::io::Result<Self> {
+        let path = std::path::PathBuf::from(path.as_ref());
+        let file = std::fs::File::open(&path)?;
+        let reader = BufReader::new(file);
+        let module = crate::cps_ssa::Module::read_from_reader(ctx, reader).map_err(|err| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to deserialize CPS-SSA artifact {:?}: {}", path, err),
+            )
+        })?;
+        Ok(Self { path, module })
+    }
+}
+
+pub enum LoadedLibrary<'gc> {
+    SharedObject(SchemeLibrary<'gc>),
+    CpsSsa(CpsSsaLibrary<'gc>),
+}
+
+unsafe impl<'gc> Trace for LoadedLibrary<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        match self {
+            Self::SharedObject(lib) => unsafe { lib.trace(visitor) },
+            Self::CpsSsa(lib) => unsafe { lib.trace(visitor) },
+        }
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        match self {
+            Self::SharedObject(lib) => unsafe { lib.process_weak_refs(weak_processor) },
+            Self::CpsSsa(lib) => unsafe { lib.process_weak_refs(weak_processor) },
+        }
+    }
+}
+
+impl<'gc> LoadedLibrary<'gc> {
+    fn load(
+        ctx: Context<'gc>,
+        artifact: &LoadArtifact,
+        initialize: bool,
+    ) -> std::io::Result<(Self, Value<'gc>)> {
+        match artifact.kind {
+            LoadArtifactKind::SharedObject => {
+                let lib = SchemeLibrary::load(ctx, &artifact.path, initialize)?;
+                let entrypoint = lib.entrypoint;
+                Ok((Self::SharedObject(lib), entrypoint))
+            }
+            LoadArtifactKind::CpsSsa => {
+                let lib = CpsSsaLibrary::load(ctx, &artifact.path)?;
+                let entrypoint = materialize_cps_ssa_thunk(ctx, &lib);
+                Ok((Self::CpsSsa(lib), entrypoint))
+            }
+        }
+    }
+}
+
+fn materialize_cps_ssa_thunk<'gc>(_ctx: Context<'gc>, lib: &CpsSsaLibrary<'gc>) -> Value<'gc> {
+    let _ = lib;
+    todo!("CPS-SSA thunk materialization is not implemented yet")
+}
+
 pub struct LibraryCollection<'gc> {
-    pub libs: Monitor<Vec<SchemeLibrary<'gc>>>,
+    pub libs: Monitor<Vec<LoadedLibrary<'gc>>>,
 }
 
 unsafe impl<'gc> Trace for LibraryCollection<'gc> {
@@ -168,31 +249,45 @@ impl<'gc> LibraryCollection<'gc> {
         }
     }
 
-    pub fn load(&self, path: impl AsRef<OsStr>, ctx: Context<'gc>) -> std::io::Result<Value<'gc>> {
-        let path = path.as_ref();
-
-        let lib = SchemeLibrary::load(ctx, path, true)?;
-        let entrypoint = lib.entrypoint;
+    pub(crate) fn load(
+        &self,
+        artifact: &LoadArtifact,
+        ctx: Context<'gc>,
+    ) -> std::io::Result<Value<'gc>> {
+        let (lib, entrypoint) = LoadedLibrary::load(ctx, artifact, true)?;
         self.libs.lock().push(lib);
         Ok(entrypoint)
     }
 
-    pub fn load_and_get_fbase(
+    #[allow(dead_code)]
+    pub(crate) fn load_and_get_fbase(
         &self,
-        path: impl AsRef<OsStr>,
+        artifact: &LoadArtifact,
         ctx: Context<'gc>,
     ) -> std::io::Result<(Address, *mut (), Value<'gc>)> {
-        let lib = SchemeLibrary::load(ctx, path, false)?;
-        let fbase = lib.fbase;
-        let handle = lib.library;
-        let entrypoint = lib.entrypoint;
-        self.libs.lock().push(lib);
-        Ok((fbase, handle, entrypoint))
+        match artifact.kind {
+            LoadArtifactKind::SharedObject => {
+                let lib = SchemeLibrary::load(ctx, &artifact.path, false)?;
+                let fbase = lib.fbase;
+                let handle = lib.library;
+                let entrypoint = lib.entrypoint;
+                self.libs.lock().push(LoadedLibrary::SharedObject(lib));
+                Ok((fbase, handle, entrypoint))
+            }
+            LoadArtifactKind::CpsSsa => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "load_and_get_fbase is not supported for CPS-SSA artifact {}",
+                    artifact.path.display()
+                ),
+            )),
+        }
     }
 
-    pub fn for_each_library<F>(&self, mut f: F)
+    #[allow(dead_code)]
+    pub(crate) fn for_each_library<F>(&self, mut f: F)
     where
-        F: FnMut(&SchemeLibrary<'gc>),
+        F: FnMut(&LoadedLibrary<'gc>),
     {
         let libs = self.libs.lock();
         for lib in libs.iter() {
@@ -203,3 +298,129 @@ impl<'gc> LibraryCollection<'gc> {
 
 pub static LIBRARY_COLLECTION: LazyLock<Global<crate::Rootable!(LibraryCollection<'_>)>> =
     LazyLock::new(|| Global::new(LibraryCollection::new()));
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        compiler::{
+            CompilationOptions, compile_cps_to_cps_ssa_file, compile_cps_to_shared_object,
+            compile_file,
+        },
+        prelude::Closure,
+        runtime::{self, Context, Scheme},
+    };
+    use std::{env, fs, path::PathBuf, sync::Mutex};
+    use uuid::Uuid;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("capy-library-test-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(|ctx| {
+            if crate::runtime::global::VM_GLOBALS.get().is_none() {
+                runtime::init(ctx);
+            }
+            f(ctx);
+        });
+    }
+
+    fn compile_sample_source<'gc>(
+        ctx: Context<'gc>,
+        source_dir: &std::path::Path,
+    ) -> crate::cps::term::FuncRef<'gc> {
+        let source = source_dir.join("sample.scm");
+        fs::write(&source, "42\n").unwrap();
+        compile_file(ctx, &source, None).unwrap()
+    }
+
+    fn configure_capy_library_search_path() {
+        let release_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+            .join("release");
+        if release_dir.join("libcapy.so").exists() {
+            unsafe {
+                env::set_var("LIBRARY_PATH", &release_dir);
+                env::set_var("LD_LIBRARY_PATH", &release_dir);
+            }
+        }
+    }
+
+    #[test]
+    fn shared_object_loading_still_returns_a_closure() {
+        with_ctx(|ctx| {
+            configure_capy_library_search_path();
+            let temp = TempDir::new();
+            let cps = compile_sample_source(ctx, temp.path());
+            let output = temp
+                .path()
+                .join(format!("sample.{}", std::env::consts::DLL_EXTENSION));
+            compile_cps_to_shared_object(ctx, cps, CompilationOptions::default(), &output).unwrap();
+
+            let collection = LibraryCollection::new();
+            let artifact = LoadArtifact::new(LoadArtifactKind::SharedObject, &output);
+            let entrypoint = collection.load(&artifact, ctx).unwrap();
+
+            assert!(entrypoint.is::<Closure>());
+        });
+    }
+
+    #[test]
+    fn cps_ssa_backend_deserializes_module_before_thunk_materialization() {
+        with_ctx(|ctx| {
+            let temp = TempDir::new();
+            let cps = compile_sample_source(ctx, temp.path());
+            let output = temp.path().join("sample.cscm");
+            compile_cps_to_cps_ssa_file(ctx, cps, &output).unwrap();
+
+            let library = CpsSsaLibrary::load(ctx, &output).unwrap();
+
+            assert_eq!(library.path, output);
+            assert!(!library.module.procs.is_empty());
+        });
+    }
+
+    #[test]
+    fn cps_ssa_loading_panics_at_todo_thunk_materialization() {
+        with_ctx(|ctx| {
+            let temp = TempDir::new();
+            let cps = compile_sample_source(ctx, temp.path());
+            let output = temp.path().join("sample.cscm");
+            compile_cps_to_cps_ssa_file(ctx, cps, &output).unwrap();
+
+            let collection = LibraryCollection::new();
+            let artifact = LoadArtifact::new(LoadArtifactKind::CpsSsa, &output);
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = collection.load(&artifact, ctx);
+            }));
+
+            assert!(panic.is_err());
+        });
+    }
+}
