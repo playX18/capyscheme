@@ -1,13 +1,19 @@
 use std::path::Path;
 
-use crate::compiler::{CompilationOptions, compile_cps_to_shared_object, compile_file};
+use crate::compiler::{
+    CompilationOptions, compile_cps_to_cps_ssa_file, compile_cps_to_shared_object, compile_file,
+};
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::Context;
 
-use super::paths::{ResolvedLoadPath, fallback_file_name, resolve_load_path};
+use super::{
+    artifact::{LoadArtifact, LoadArtifactKind, artifact_extension, artifact_kind_for_policy},
+    paths::{ResolvedLoadPath, resolve_load_path},
+    policy::get_execution_policy,
+};
 
 enum LoadMode {
     DescribeIfCompileNeeded,
@@ -86,6 +92,11 @@ fn load_thunk<'gc>(
     };
 
     let libs = LIBRARY_COLLECTION.fetch(*ctx);
+    match &resolved {
+        ResolvedLoadPath::Artifact { artifact, .. } => return load_artifact(ctx, libs, artifact),
+        ResolvedLoadPath::Source { .. } => {}
+    }
+
     if let Some(thunk) = load_precompiled_thunk(ctx, libs, &resolved)? {
         return Ok(thunk);
     }
@@ -105,30 +116,39 @@ fn load_precompiled_thunk<'gc>(
     libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     resolved: &ResolvedLoadPath,
 ) -> Result<Option<Value<'gc>>, Value<'gc>> {
-    let fallback = fallback_file_name(ctx, &resolved.full_source_path);
-    let candidate = if resolved.compiled_path.is_none() && !fresh_auto_compile(ctx) {
-        if let Some(source_time) = resolved
-            .full_source_path
+    let ResolvedLoadPath::Source {
+        full_source_path,
+        compiled_artifact,
+        build_destination,
+        ..
+    } = resolved
+    else {
+        return Ok(None);
+    };
+
+    let candidate = if compiled_artifact.is_none() && !fresh_auto_compile(ctx) {
+        if let Some(source_time) = full_source_path
             .metadata()
             .ok()
             .and_then(|metadata| metadata.modified().ok())
-            && let Some(compiled_time) = fallback
+            && let Some(compiled_time) = build_destination
+                .path
                 .metadata()
                 .ok()
                 .and_then(|metadata| metadata.modified().ok())
             && super::paths::compiled_is_fresh(
-                &resolved.full_source_path,
-                &fallback,
+                full_source_path,
+                &build_destination.path,
                 source_time,
                 compiled_time,
             )
         {
-            Some(fallback)
+            Some(build_destination.clone())
         } else {
             None
         }
     } else {
-        resolved.compiled_path.clone()
+        compiled_artifact.clone()
     };
 
     let Some(candidate) = candidate else {
@@ -147,13 +167,26 @@ fn describe_uncompiled_source<'gc>(
     ctx: Context<'gc>,
     resolved: &ResolvedLoadPath,
 ) -> Result<Value<'gc>, Value<'gc>> {
-    let source = Str::new(*ctx, resolved.source_path.display().to_string(), true);
-    let full_source = Str::new(*ctx, resolved.full_source_path.display().to_string(), true);
-    let compiled = resolved
-        .compiled_path
+    let ResolvedLoadPath::Source {
+        source_path,
+        full_source_path,
+        compiled_artifact,
+        build_destination,
+    } = resolved
+    else {
+        return Err(make_io_error(
+            ctx,
+            "load",
+            Str::new(*ctx, "Cannot describe a direct artifact load", true).into(),
+            &[],
+        ));
+    };
+    let source = Str::new(*ctx, source_path.display().to_string(), true);
+    let full_source = Str::new(*ctx, full_source_path.display().to_string(), true);
+    let compiled = compiled_artifact
         .clone()
-        .unwrap_or_else(|| fallback_file_name(ctx, &resolved.full_source_path));
-    let compiled = Str::new(*ctx, compiled.display().to_string(), true);
+        .unwrap_or_else(|| build_destination.clone());
+    let compiled = Str::new(*ctx, compiled.path.display().to_string(), true);
     Ok(crate::list!(ctx, source, full_source, compiled))
 }
 
@@ -162,25 +195,70 @@ fn compile_and_load_source<'gc>(
     libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
     resolved: ResolvedLoadPath,
 ) -> Result<Value<'gc>, Value<'gc>> {
-    let fallback = fallback_file_name(ctx, &resolved.full_source_path);
+    let ResolvedLoadPath::Source {
+        source_path,
+        build_destination,
+        ..
+    } = resolved
+    else {
+        return Err(make_io_error(
+            ctx,
+            "load",
+            Str::new(*ctx, "Cannot compile a direct artifact load", true).into(),
+            &[],
+        ));
+    };
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
-    let cps = compile_file(ctx, &resolved.source_path, Some(module))?;
-    compile_cps_to_shared_object(ctx, cps, CompilationOptions::default(), &fallback)?;
+    let cps = compile_file(ctx, &source_path, Some(module))?;
+    compile_cps_to_destination(
+        ctx,
+        cps,
+        CompilationOptions::default(),
+        &build_destination,
+    )?;
 
-    libs.load(&fallback, ctx).map_err(|err| {
+    load_artifact(ctx, libs, &build_destination)
+}
+
+pub(super) fn compile_cps_to_destination<'gc>(
+    ctx: Context<'gc>,
+    cps: crate::cps::term::FuncRef<'gc>,
+    options: CompilationOptions,
+    destination: &LoadArtifact,
+) -> Result<(), Value<'gc>> {
+    match destination.kind {
+        LoadArtifactKind::SharedObject => {
+            compile_cps_to_shared_object(ctx, cps, options, &destination.path)
+        }
+        LoadArtifactKind::CpsSsa => compile_cps_to_cps_ssa_file(ctx, cps, &destination.path),
+    }
+}
+
+fn load_artifact<'gc>(
+    ctx: Context<'gc>,
+    libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
+    artifact: &LoadArtifact,
+) -> Result<Value<'gc>, Value<'gc>> {
+    libs.load(artifact, ctx).map_err(|err| {
         make_io_error(
             ctx,
             "load",
             Str::new(
                 *ctx,
-                format!("Failed to load compiled library: {err}"),
+                format!("Failed to load {}: {err}", artifact.path.display()),
                 true,
             )
             .into(),
             &[],
         )
     })
+}
+
+pub(super) fn destination_artifact_for_current_policy(path: impl AsRef<Path>) -> LoadArtifact {
+    let kind = artifact_kind_for_policy(get_execution_policy());
+    let path = path.as_ref().with_extension(artifact_extension(kind));
+    LoadArtifact::new(kind, path)
 }
 
 #[cfg(test)]

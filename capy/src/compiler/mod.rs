@@ -45,6 +45,7 @@ macro_rules! call_signature {
     }
 }
 
+mod artifact;
 pub mod bytecompiler;
 mod bootstrap;
 pub mod debuginfo;
@@ -57,6 +58,7 @@ pub use bootstrap::compile_file;
 pub use object::{CompilationOptions, compile_cps_to_object, link_object_product};
 pub use pipeline::lower_to_cps;
 
+pub(crate) use artifact::compile_cps_to_cps_ssa_file;
 pub(crate) use object::compile_cps_to_shared_object;
 pub(crate) use pipeline::{
     DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, lower_expanded_to_cps,
