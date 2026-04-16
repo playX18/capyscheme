@@ -2,11 +2,7 @@ use std::path::Path;
 
 use crate::cps::term::FuncRef;
 use crate::rsgc::Gc;
-use crate::runtime::{
-    Context,
-    modules::Module,
-    value::Value,
-};
+use crate::runtime::{Context, modules::Module, value::Value};
 
 #[cfg(feature = "bootstrap")]
 use crate::{
