@@ -46,8 +46,8 @@ macro_rules! call_signature {
 }
 
 mod artifact;
-pub mod bytecompiler;
 mod bootstrap;
+pub mod bytecompiler;
 pub mod debuginfo;
 pub mod linkutils;
 mod object;
@@ -269,6 +269,125 @@ mod tests {
                     .iter()
                     .any(|name| name.starts_with("codeblock_cont"))
             );
+        });
+    }
+
+    #[test]
+    fn inline_keeps_recursive_function_out_of_inline_env() {
+        with_ctx(|ctx| {
+            let loop_fn = lvar(ctx, "loop");
+            let loop_retk = lvar(ctx, "loop_retk");
+            let entry_retk = lvar(ctx, "entry_retk");
+            let tmp = lvar(ctx, "tmp");
+
+            let loop_body = term_let_prim(
+                ctx,
+                tmp,
+                "cons",
+                &[0.into(), 1.into()],
+                term_app(ctx, Atom::Local(loop_fn), loop_retk, &[]),
+            );
+            let loop_func = mk_func(ctx, "loop", loop_fn, loop_retk, &[], None, loop_body);
+            let term = term_fix(
+                ctx,
+                &[loop_func],
+                term_app(ctx, Atom::Local(loop_fn), entry_retk, &[]),
+            );
+
+            let (optimized, _) = crate::cps::optimizer::inline(ctx, term, usize::MAX);
+
+            match &*optimized {
+                Term::Fix(funcs, body) => {
+                    assert_eq!(funcs.len(), 1);
+                    assert!(matches!(
+                        &**body,
+                        Term::App(Atom::Local(fun), retk, args, _)
+                            if *fun == loop_fn && *retk == entry_retk && args.is_empty()
+                    ));
+                }
+                other => panic!("expected recursive function to remain as Fix/App, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn inline_keeps_recursive_continuation_out_of_inline_env() {
+        with_ctx(|ctx| {
+            let loop_k = lvar(ctx, "loop_k");
+            let tmp = lvar(ctx, "tmp");
+
+            let loop_body = term_let_prim(
+                ctx,
+                tmp,
+                "cons",
+                &[0.into(), 1.into()],
+                term_continue(ctx, loop_k, &[]),
+            );
+            let loop_cont = mk_cont(ctx, "loop_k", loop_k, &[], None, loop_body);
+            let term = term_letk(ctx, &[loop_cont], term_continue(ctx, loop_k, &[]));
+
+            let (optimized, _) = crate::cps::optimizer::inline(ctx, term, usize::MAX);
+
+            match &*optimized {
+                Term::Letk(conts, body) => {
+                    assert_eq!(conts.len(), 1);
+                    assert!(matches!(
+                        &**body,
+                        Term::Continue(k, args, _) if *k == loop_k && args.is_empty()
+                    ));
+                }
+                other => {
+                    panic!(
+                        "expected recursive continuation to remain as Letk/Continue, got {other:?}"
+                    )
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn rewrite_inlines_non_recursive_sibling_function() {
+        with_ctx(|ctx| {
+            let entry = lvar(ctx, "entry");
+            let entry_retk = lvar(ctx, "entry_retk");
+            let helper = lvar(ctx, "helper");
+            let helper_retk = lvar(ctx, "helper_retk");
+            let helper_tmp = lvar(ctx, "helper_tmp");
+            let loop_fn = lvar(ctx, "loop");
+            let loop_retk = lvar(ctx, "loop_retk");
+            let loop_tmp = lvar(ctx, "loop_tmp");
+
+            let helper_body = term_let_prim(
+                ctx,
+                helper_tmp,
+                "cons",
+                &[0.into(), 1.into()],
+                term_continue(ctx, helper_retk, &[]),
+            );
+            let helper_func = mk_func(ctx, "helper", helper, helper_retk, &[], None, helper_body);
+
+            let loop_body = term_let_prim(
+                ctx,
+                loop_tmp,
+                "cons",
+                &[0.into(), 1.into()],
+                term_app(ctx, Atom::Local(loop_fn), loop_retk, &[]),
+            );
+            let loop_func = mk_func(ctx, "loop", loop_fn, loop_retk, &[], None, loop_body);
+
+            let body = term_fix(
+                ctx,
+                &[loop_func, helper_func],
+                term_app(ctx, Atom::Local(helper), entry_retk, &[]),
+            );
+            let entry_func = mk_func(ctx, "entry", entry, entry_retk, &[], None, body);
+
+            let rewritten = crate::cps::rewrite_func(ctx, entry_func);
+
+            assert!(matches!(
+                &*rewritten.body(),
+                Term::Continue(k, args, _) if *k == entry_retk && args.is_empty()
+            ));
         });
     }
 }
