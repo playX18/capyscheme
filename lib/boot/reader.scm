@@ -220,16 +220,16 @@
         (cond ((and (not (eqv? c #\#)) (char-delimiter? p c))
                ;; TODO: some standard numbers are not supported
                ;; everywhere, should use a number lexer.
-               (let ((str (list->string (reverse chars))))
-                 (cond (#t
-                        (values 'value (string->number str)))
+               (let* ((str (list->string (reverse chars)))
+                      (num (string->number str)))
+                 (cond (num
+                        (values 'value num))
                    ((and (memq (reader-mode p) '(rnrs r7rs))
                        ;; TODO: This is incomplete.
                        (not (and (pair? initial-chars)
                              (char<=? #\0 (car initial-chars) #\9))))
                      (values 'identifier (string->symbol str)))
                    (else
-                     (reader-warning p "Invalid number syntax" str)
                      (values 'identifier (string->symbol str))))))
           (else
             (lp (cons (get-char p) chars)))))))
