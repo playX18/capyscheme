@@ -4,8 +4,13 @@
 
 - Graphical CPS - ([2f7a1fb](https://codeberg.org/playXE/capy/commit/2f7a1fb3135d10a65c4d25377c8308e6f53014e6))
 
+### 🐛 Bug Fixes
+
+- *(reader)* Less strict number parsing; fix cond match on string->number - ([c1f1bc4](https://codeberg.org/playXE/capy/commit/c1f1bc495181f59291fb3a1ace2784502f02f9e6))
+
 ### 🚜 Refactor
 
+- *(load)* Split load into multiple files - ([74669e4](https://codeberg.org/playXE/capy/commit/74669e4f2889c252dd28e860aee16d9ffe6ba447))
 - *(runtime)* Split load.rs into multiple files - ([a1b0848](https://codeberg.org/playXE/capy/commit/a1b08487de7fdc7cdc64a4cac8d587311d960576))
 - Cleanup Rust code - ([d24f5a9](https://codeberg.org/playXE/capy/commit/d24f5a9ed8feea9e1574aa61d1449c7c48c1290b))
 - Split number.rs into number/ module with bigint submodule - ([0dcb91a](https://codeberg.org/playXE/capy/commit/0dcb91a2a9f5376276a20b34cadf5f81b6713123))
