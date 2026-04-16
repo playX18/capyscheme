@@ -33,6 +33,14 @@ struct Count {
     as_value: u32,
 }
 
+#[derive(Clone, Copy)]
+struct RewriteResult<'gc> {
+    term: TermRef<'gc>,
+    changed: bool,
+    size: usize,
+    mentions_tracked_binding: bool,
+}
+
 #[derive(Clone)]
 struct State<'gc> {
     ctx: Context<'gc>,
@@ -881,7 +889,95 @@ fn copy_f<'gc>(
     )
 }
 
-fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (TermRef<'gc>, bool) {
+fn mentions_tracked_atom<'gc>(tracked_binding: Option<LVarRef<'gc>>, atom: Atom<'gc>) -> bool {
+    matches!(atom, Atom::Local(var) if Some(var) == tracked_binding)
+}
+
+fn mentions_tracked_var<'gc>(tracked_binding: Option<LVarRef<'gc>>, var: LVarRef<'gc>) -> bool {
+    Some(var) == tracked_binding
+}
+
+fn term_metadata<'gc>(term: TermRef<'gc>, tracked_binding: Option<LVarRef<'gc>>) -> (usize, bool) {
+    match *term {
+        Term::Let(_, Expression::PrimCall(_, args, _), body) => {
+            let (body_size, body_mentions) = term_metadata(body, tracked_binding);
+            let mentions = body_mentions
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg));
+            (1 + body_size, mentions)
+        }
+
+        Term::Letk(conts, body) => {
+            let (body_size, body_mentions) = term_metadata(body, tracked_binding);
+            let (conts_size, conts_mentions) = conts.iter().fold((0, false), |acc, cont| {
+                let (size, mentions) = term_metadata(cont.body(), tracked_binding);
+                (acc.0 + size, acc.1 || mentions)
+            });
+            (body_size + conts_size, body_mentions || conts_mentions)
+        }
+
+        Term::Fix(funcs, body) => {
+            let (body_size, body_mentions) = term_metadata(body, tracked_binding);
+            let (funcs_size, funcs_mentions) = funcs.iter().fold((0, false), |acc, func| {
+                let (size, mentions) = term_metadata(func.body(), tracked_binding);
+                (acc.0 + size, acc.1 || mentions)
+            });
+            (body_size + funcs_size, body_mentions || funcs_mentions)
+        }
+
+        Term::Continue(k, args, _) => (
+            1,
+            mentions_tracked_var(tracked_binding, k)
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
+        ),
+
+        Term::App(fun, retc, args, _) => (
+            1,
+            mentions_tracked_atom(tracked_binding, fun)
+                || mentions_tracked_var(tracked_binding, retc)
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
+        ),
+
+        Term::If {
+            test,
+            consequent,
+            consequent_args,
+            alternative,
+            alternative_args,
+            ..
+        } => (
+            1,
+            mentions_tracked_atom(tracked_binding, test)
+                || mentions_tracked_var(tracked_binding, consequent)
+                || mentions_tracked_var(tracked_binding, alternative)
+                || consequent_args.iter().any(|args| {
+                    args.iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg))
+                })
+                || alternative_args.iter().any(|args| {
+                    args.iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg))
+                }),
+        ),
+    }
+}
+
+fn inline_t<'gc>(
+    state: State<'gc>,
+    term: TermRef<'gc>,
+    cnt_limit: usize,
+    tracked_binding: Option<LVarRef<'gc>>,
+) -> RewriteResult<'gc> {
     let loop_limit = LOOP_UNROLL[cnt_limit];
     let fun_limit = FIBONACCI[cnt_limit];
 
@@ -904,33 +1000,53 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
             };
             let ctx = state.ctx;
             let exp_changed = exp != prev_exp;
-            let (body, body_changed) = inline_t(state, prev_body, cnt_limit);
-            if !exp_changed && !body_changed {
-                return (term, false);
+            let body = inline_t(state, prev_body, cnt_limit, tracked_binding);
+            let mentions = body.mentions_tracked_binding
+                || match exp {
+                    Expression::PrimCall(_, args, _) => args
+                        .iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
+                };
+            let size = 1 + body.size;
+            if !exp_changed && !body.changed {
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size,
+                    mentions_tracked_binding: mentions,
+                };
             }
-            (Gc::new(*ctx, Term::Let(name, exp, body)), true)
+            RewriteResult {
+                term: Gc::new(*ctx, Term::Let(name, exp, body.term)),
+                changed: true,
+                size,
+                mentions_tracked_binding: mentions,
+            }
         }
 
         Term::Letk(prev_conts, prev_body) => {
             let mut changed = false;
+            let mut size = 0;
+            let mut mentions = false;
             let conts = prev_conts
                 .iter()
                 .copied()
                 .map(|cnt| {
-                    let orig = cnt.body();
-
-                    let (body, body_changed) = inline_t(state.clone(), cnt.body(), cnt_limit);
-                    changed |= body_changed;
-                    let newk = if body_changed {
-                        cnt.with_body(state.ctx, body)
+                    let body = inline_t(state.clone(), cnt.body(), cnt_limit, Some(cnt.binding()));
+                    changed |= body.changed;
+                    size += body.size;
+                    mentions |= body.mentions_tracked_binding;
+                    let newk = if body.changed {
+                        cnt.with_body(state.ctx, body.term)
                     } else {
                         cnt
                     };
 
-                    let my_size = size(orig);
+                    let my_size = body.size;
                     let dont = cnt.noinline
                         || my_size > cnt_limit
-                        || (my_size > loop_limit && census(body).contains_key(&cnt.binding));
+                        || (my_size > loop_limit && body.mentions_tracked_binding);
                     (newk, if dont { None } else { Some(newk) })
                 })
                 .collect::<Vec<_>>();
@@ -939,38 +1055,53 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
             let ctx = state.ctx;
             let s =
                 state.with_continuations(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
-            let (body, body_changed) = inline_t(s, prev_body, cnt_limit);
-            changed |= body_changed;
+            let body = inline_t(s, prev_body, cnt_limit, tracked_binding);
+            changed |= body.changed;
+            size += body.size;
+            mentions |= body.mentions_tracked_binding;
             let ks_changed = !i_ks
                 .iter()
                 .zip(prev_conts.iter())
                 .all(|(a, b)| Gc::ptr_eq(*a, *b));
             changed |= ks_changed;
-            if !changed {
-                return (term, false);
-            }
             let i_ks = if ks_changed {
                 Array::from_slice(*ctx, i_ks)
             } else {
                 prev_conts
             };
-            (Gc::new(*ctx, Term::Letk(i_ks, body)), true)
+            if !changed {
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size,
+                    mentions_tracked_binding: mentions,
+                };
+            }
+            RewriteResult {
+                term: Gc::new(*ctx, Term::Letk(i_ks, body.term)),
+                changed: true,
+                size,
+                mentions_tracked_binding: mentions,
+            }
         }
 
         Term::Fix(prev_funcs, prev_body) => {
             let mut changed = false;
+            let mut size = 0;
+            let mut mentions = false;
             let funcs = prev_funcs
                 .iter()
                 .copied()
                 .map(|func| {
-                    let orig = func.body();
-                    let (nbody, body_changed) = inline_t(state.clone(), orig, cnt_limit);
-                    changed |= body_changed;
-                    let newf = func.with_body(state.ctx, nbody);
+                    let body = inline_t(state.clone(), func.body(), cnt_limit, Some(func.binding));
+                    changed |= body.changed;
+                    size += body.size;
+                    mentions |= body.mentions_tracked_binding;
+                    let newf = func.with_body(state.ctx, body.term);
 
-                    let my_size = size(orig);
+                    let my_size = body.size;
                     let dont = my_size > fun_limit
-                        || (my_size > loop_limit && census(nbody).contains_key(&func.binding));
+                        || (my_size > loop_limit && body.mentions_tracked_binding);
 
                     (newf, if dont { None } else { Some(newf) })
                 })
@@ -979,22 +1110,34 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
             let (i_fs, to_inline): (Vec<_>, Vec<_>) = funcs.into_iter().unzip();
             let ctx = state.ctx;
             let s = state.with_functions(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
-            let (body, body_changed) = inline_t(s, prev_body, cnt_limit);
-            changed |= body_changed;
+            let body = inline_t(s, prev_body, cnt_limit, tracked_binding);
+            changed |= body.changed;
+            size += body.size;
+            mentions |= body.mentions_tracked_binding;
             let fs_changed = !i_fs
                 .iter()
                 .zip(prev_funcs.iter())
                 .all(|(a, b)| Gc::ptr_eq(*a, *b));
             changed |= fs_changed;
-            if !changed {
-                return (term, false);
-            }
             let ifs = if fs_changed {
                 Array::from_slice(*ctx, i_fs)
             } else {
                 prev_funcs
             };
-            (Gc::new(*ctx, Term::Fix(ifs, body)), true)
+            if !changed {
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size,
+                    mentions_tracked_binding: mentions,
+                };
+            }
+            RewriteResult {
+                term: Gc::new(*ctx, Term::Fix(ifs, body.term)),
+                changed: true,
+                size,
+                mentions_tracked_binding: mentions,
+            }
         }
 
         Term::Continue(prev_cnt, prev_args, src) => {
@@ -1019,18 +1162,38 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
                             .map(|(arg, val)| (Atom::Local(*arg), *val))
                             .collect::<HashMap<_, _>>();
 
-                        return (
-                            copy_t(state.ctx, new_cnt.body(), &mut subst, &mut HashMap::new()),
-                            true,
-                        );
+                        let term =
+                            copy_t(state.ctx, new_cnt.body(), &mut subst, &mut HashMap::new());
+                        let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
+                        return RewriteResult {
+                            term,
+                            changed: true,
+                            size,
+                            mentions_tracked_binding,
+                        };
                     }
                 }
             }
 
+            let mentions = mentions_tracked_var(tracked_binding, cnt)
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg));
             if Gc::ptr_eq(cnt, prev_cnt) && !args_changed {
-                return (term, false);
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size: 1,
+                    mentions_tracked_binding: mentions,
+                };
             }
-            (Gc::new(*state.ctx, Term::Continue(cnt, args, src)), true)
+            RewriteResult {
+                term: Gc::new(*state.ctx, Term::Continue(cnt, args, src)),
+                changed: true,
+                size: 1,
+                mentions_tracked_binding: mentions,
+            }
         }
 
         Term::App(prev_fun, prev_retc, prev_args, src) => {
@@ -1060,15 +1223,38 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
                         let mut subc = HashMap::new();
                         subc.insert(func.return_cont, retc);
 
-                        return (copy_t(state.ctx, func.body(), &mut subv, &mut subc), true);
+                        let term = copy_t(state.ctx, func.body(), &mut subv, &mut subc);
+                        let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
+                        return RewriteResult {
+                            term,
+                            changed: true,
+                            size,
+                            mentions_tracked_binding,
+                        };
                     }
                 }
             }
 
+            let mentions = mentions_tracked_atom(tracked_binding, fun)
+                || mentions_tracked_var(tracked_binding, retc)
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg));
             if Gc::ptr_eq(retc, prev_retc) && !args_changed && fun == prev_fun {
-                return (term, false);
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size: 1,
+                    mentions_tracked_binding: mentions,
+                };
             }
-            (Gc::new(*state.ctx, Term::App(fun, retc, args, src)), true)
+            RewriteResult {
+                term: Gc::new(*state.ctx, Term::App(fun, retc, args, src)),
+                changed: true,
+                size: 1,
+                mentions_tracked_binding: mentions,
+            }
         }
 
         Term::If {
@@ -1107,11 +1293,29 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
                 || !Gc::ptr_eq(alternative, prev_alternative)
                 || consequent_args_changed
                 || alternative_args_changed;
+            let mentions = mentions_tracked_atom(tracked_binding, test)
+                || mentions_tracked_var(tracked_binding, consequent)
+                || mentions_tracked_var(tracked_binding, alternative)
+                || consequent_args.iter().any(|args| {
+                    args.iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg))
+                })
+                || alternative_args.iter().any(|args| {
+                    args.iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg))
+                });
             if !changed {
-                return (term, false);
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size: 1,
+                    mentions_tracked_binding: mentions,
+                };
             }
-            (
-                Gc::new(
+            RewriteResult {
+                term: Gc::new(
                     *state.ctx,
                     Term::If {
                         test,
@@ -1122,8 +1326,10 @@ fn inline_t<'gc>(state: State<'gc>, term: TermRef<'gc>, cnt_limit: usize) -> (Te
                         hints,
                     },
                 ),
-                true,
-            )
+                changed: true,
+                size: 1,
+                mentions_tracked_binding: mentions,
+            }
         }
     }
 }
@@ -1134,16 +1340,22 @@ pub fn inline<'gc>(
     max_size: usize,
 ) -> (TermRef<'gc>, bool) {
     let mut changed = false;
+    let mut term_size = size(term);
     for i in 0..FIBONACCI.len() {
-        if size(term) > max_size {
+        if term_size > max_size {
             return (term, changed);
         }
 
         let state = State::new(ctx, census(term));
-        let (next, pass_changed) = inline_t(state, term, i);
-        let (next, shrink_changed) = shrink(ctx, next);
-        changed |= pass_changed || shrink_changed;
-        term = next;
+        let next = inline_t(state, term, i, None);
+        let (next_term, shrink_changed) = shrink(ctx, next.term);
+        changed |= next.changed || shrink_changed;
+        term_size = if shrink_changed {
+            size(next_term)
+        } else {
+            next.size
+        };
+        term = next_term;
     }
 
     (term, changed)
