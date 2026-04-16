@@ -98,6 +98,10 @@ pub struct Func<'gc> {
 
 impl<'gc> Func<'gc> {
     pub fn with_body(self: FuncRef<'gc>, ctx: Context<'gc>, body: TermRef<'gc>) -> FuncRef<'gc> {
+        if Gc::ptr_eq(self.body.get(), body) {
+            return self;
+        }
+
         let wfunc = Gc::write(*ctx, self);
         barrier::field!(wfunc, Self, body).unlock().set(body);
         self

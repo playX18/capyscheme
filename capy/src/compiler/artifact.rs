@@ -48,7 +48,11 @@ pub(crate) fn compile_cps_to_cps_ssa_file<'gc>(
             "compile-cps-ssa",
             Str::new(
                 *ctx,
-                format!("Failed to lower CPS to CPS-SSA for '{}': {}", output.display(), err),
+                format!(
+                    "Failed to lower CPS to CPS-SSA for '{}': {}",
+                    output.display(),
+                    err
+                ),
                 true,
             )
             .into(),
@@ -150,8 +154,9 @@ mod tests {
             compile_cps_to_cps_ssa_file(ctx, cps, &output).unwrap();
 
             let file = fs::File::open(&output).unwrap();
-            let module = crate::cps_ssa::Module::read_from_reader(ctx, std::io::BufReader::new(file))
-                .unwrap();
+            let module =
+                crate::cps_ssa::Module::read_from_reader(ctx, std::io::BufReader::new(file))
+                    .unwrap();
 
             assert_eq!(module.format_version, crate::cps_ssa::FORMAT_VERSION);
             assert!(!module.procs.is_empty());

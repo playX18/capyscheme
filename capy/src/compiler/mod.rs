@@ -68,7 +68,7 @@ pub(crate) use pipeline::{
 mod tests {
     use super::*;
     use crate::{
-        cps::term::{Atom, Cont, Expression, Func, Term},
+        cps::term::{Atom, BranchHint, Cont, Expression, Func, Term},
         expander::core::{LVarRef, fresh_lvar},
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
@@ -206,6 +206,27 @@ mod tests {
         body: Gc<'gc, Term<'gc>>,
     ) -> Gc<'gc, Term<'gc>> {
         Gc::new(*ctx, Term::Fix(Array::from_slice(*ctx, funcs), body))
+    }
+
+    fn term_if<'gc>(
+        ctx: Context<'gc>,
+        test: Atom<'gc>,
+        consequent: LVarRef<'gc>,
+        consequent_args: Option<&[Atom<'gc>]>,
+        alternative: LVarRef<'gc>,
+        alternative_args: Option<&[Atom<'gc>]>,
+    ) -> Gc<'gc, Term<'gc>> {
+        Gc::new(
+            *ctx,
+            Term::If {
+                test,
+                consequent,
+                consequent_args: consequent_args.map(|args| atoms(ctx, args)),
+                alternative,
+                alternative_args: alternative_args.map(|args| atoms(ctx, args)),
+                hints: [BranchHint::Normal, BranchHint::Normal],
+            },
+        )
     }
 
     #[test]
@@ -388,6 +409,112 @@ mod tests {
                 &*rewritten.body(),
                 Term::Continue(k, args, _) if *k == entry_retk && args.is_empty()
             ));
+        });
+    }
+
+    #[test]
+    fn shrink_unused_variadic_continuation_skips_list_materialization() {
+        with_ctx(|ctx| {
+            let retk = lvar(ctx, "retk");
+            let restk = lvar(ctx, "restk");
+            let head = lvar(ctx, "head");
+            let rest = lvar(ctx, "rest");
+
+            let cont = mk_cont(
+                ctx,
+                "restk",
+                restk,
+                &[head],
+                Some(rest),
+                term_continue(ctx, retk, &[Atom::Local(head)]),
+            );
+            let term = term_letk(
+                ctx,
+                &[cont],
+                term_continue(ctx, restk, &[1.into(), 2.into(), 3.into()]),
+            );
+
+            let (shrunk, changed) = crate::cps::optimizer::shrink(ctx, term);
+
+            assert!(changed);
+            assert!(matches!(
+                &*shrunk,
+                Term::Continue(k, args, _)
+                    if *k == retk
+                        && args.len() == 1
+                        && matches!(args[0], Atom::Constant(v) if v == Value::new(1))
+            ));
+        });
+    }
+
+    #[test]
+    fn shrink_referenced_variadic_continuation_materializes_list() {
+        with_ctx(|ctx| {
+            let retk = lvar(ctx, "retk");
+            let restk = lvar(ctx, "restk");
+            let head = lvar(ctx, "head");
+            let rest = lvar(ctx, "rest");
+
+            let cont = mk_cont(
+                ctx,
+                "restk",
+                restk,
+                &[head],
+                Some(rest),
+                term_continue(ctx, retk, &[Atom::Local(rest)]),
+            );
+            let term = term_letk(
+                ctx,
+                &[cont],
+                term_continue(ctx, restk, &[1.into(), 2.into(), 3.into()]),
+            );
+
+            let (shrunk, changed) = crate::cps::optimizer::shrink(ctx, term);
+
+            fn cons_let_count<'gc>(term: Gc<'gc, Term<'gc>>) -> usize {
+                match &*term {
+                    Term::Let(_, Expression::PrimCall(_, _, _), body) => 1 + cons_let_count(*body),
+                    Term::Continue(..) => 0,
+                    other => panic!("expected cons materialization let-chain, got {other:?}"),
+                }
+            }
+
+            fn final_continue<'gc>(term: Gc<'gc, Term<'gc>>) -> Gc<'gc, Term<'gc>> {
+                match &*term {
+                    Term::Let(_, _, body) => final_continue(*body),
+                    Term::Continue(..) => term,
+                    other => panic!("expected final continue after materialization, got {other:?}"),
+                }
+            }
+
+            assert!(changed);
+            assert_eq!(cons_let_count(shrunk), 2);
+            assert!(matches!(
+                &*final_continue(shrunk),
+                Term::Continue(k, args, _)
+                    if *k == retk
+                        && args.len() == 1
+                        && matches!(args[0], Atom::Local(_))
+            ));
+        });
+    }
+
+    #[test]
+    fn shrink_reports_false_for_stable_if_without_branch_args() {
+        with_ctx(|ctx| {
+            let test = lvar(ctx, "test");
+            let conseq = lvar(ctx, "conseq");
+            let alt = lvar(ctx, "alt");
+            let term = term_if(ctx, Atom::Local(test), conseq, None, alt, None);
+
+            let (shrunk, changed) = crate::cps::optimizer::shrink(ctx, term);
+
+            assert!(!changed);
+            assert!(Gc::ptr_eq(shrunk, term));
+
+            let (shrunk_again, changed_again) = crate::cps::optimizer::shrink(ctx, shrunk);
+            assert!(!changed_again);
+            assert!(Gc::ptr_eq(shrunk_again, shrunk));
         });
     }
 }

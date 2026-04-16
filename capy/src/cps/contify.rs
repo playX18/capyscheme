@@ -44,7 +44,7 @@ use crate::{
     },
     expander::core::LVarRef,
     runtime::Context,
-    utils::fixedpoint,
+    utils::pass_profile::ProfileScope,
 };
 
 /// Return continuation used for contification.
@@ -53,7 +53,33 @@ type ContPair<'gc> = LVarRef<'gc>;
 /// Entry point: repeatedly applies `rec` until no further contifiable
 /// opportunities remain (idempotent fixed point).
 pub fn contify<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
-    fixedpoint(t, Some(2))(|t| rec(ctx, t))
+    let mut total_profile = ProfileScope::new("cps.contify.total");
+    let mut current = t;
+    let mut rounds = 0;
+
+    for round in 0..2 {
+        rounds = round + 1;
+        let mut round_profile = ProfileScope::new("cps.contify.round");
+        if round_profile.is_enabled() {
+            round_profile.field("round", rounds);
+        }
+
+        let (next, changed) = rec(ctx, current);
+        if round_profile.is_enabled() {
+            round_profile.field("changed", changed);
+        }
+
+        current = next;
+        if !changed {
+            break;
+        }
+    }
+
+    if total_profile.is_enabled() {
+        total_profile.field("rounds", rounds);
+    }
+
+    current
 }
 
 /// Recursive traversal that performs contification *inside* each `Fix`
@@ -121,18 +147,48 @@ fn rec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> (TermRef<'gc>, bool) {
                 t
             };
 
-            // (2) Identify contifiable SCCs (each yields (names, common_rc)).
-            let cf = fix1.contifiables();
+            let func_count = funs.len();
+
+            let (sccs, cf) = {
+                let mut analysis_profile = ProfileScope::new("cps.contify.fix.analysis");
+                analysis_profile.field("func_count", func_count);
+
+                let sccs = {
+                    let mut scc_profile = ProfileScope::new("cps.contify.fix.scc");
+                    scc_profile.field("func_count", func_count);
+                    let sccs = fix1.tailcall_sccs();
+                    scc_profile.field("scc_count", sccs.len());
+                    sccs
+                };
+                analysis_profile.field("scc_count", sccs.len());
+
+                let cf = {
+                    let mut eligibility_profile = ProfileScope::new("cps.contify.fix.eligibility");
+                    eligibility_profile.field("func_count", func_count);
+                    eligibility_profile.field("scc_count", sccs.len());
+                    let cf = fix1.eligible_contifiables(&sccs);
+                    eligibility_profile.field("eligible_scc_count", cf.len());
+                    cf
+                };
+                analysis_profile.field("eligible_scc_count", cf.len());
+
+                (sccs, cf)
+            };
             if cf.is_empty() {
                 return (fix1, changed);
             }
 
             // (3) Fold: successively contify each qualifying SCC.
-            (
+            let transformed = {
+                let mut transform_profile = ProfileScope::new("cps.contify.fix.transform");
+                transform_profile.field("func_count", func_count);
+                transform_profile.field("scc_count", sccs.len());
+                transform_profile.field("eligible_scc_count", cf.len());
                 cf.iter()
-                    .fold(fix1, |fix, (ns, rc)| fix.contify(ns, *rc, ctx)),
-                true,
-            )
+                    .fold(fix1, |fix, (ns, rc)| fix.contify(ns, *rc, ctx))
+            };
+
+            (transformed, true)
         }
 
         _ => (t, false),
@@ -261,7 +317,7 @@ impl<'gc> Term<'gc> {
     /// Returns a list of (function-name-set, common return continuation) for
     /// all SCCs in the tail-call graph that are eligible for contification.
     /// SCCs without a unique common continuation pair are discarded.
-    pub fn contifiables(&self) -> Vec<(Set<LVarRef<'gc>>, ContPair<'gc>)> {
+    fn tailcall_sccs(&self) -> Vec<Set<LVarRef<'gc>>> {
         let Term::Fix(funs, _) = self else {
             return vec![];
         };
@@ -291,21 +347,32 @@ impl<'gc> Term<'gc> {
         }
 
         // Run SCC algorithm; each SCC is a candidate group.
-        let sccs = petgraph::algo::kosaraju_scc(&graph);
-
-        sccs.into_iter()
-            .filter_map(|scc| {
-                let ns = scc
-                    .iter()
+        petgraph::algo::kosaraju_scc(&graph)
+            .into_iter()
+            .map(|scc| {
+                scc.iter()
                     .map(|&node| graph[node])
-                    .collect::<Set<LVarRef<'_>>>();
-
-                match self.common_return_cont(&ns, None) {
-                    SingleValueSet::Singleton(val) => Some((ns, val)),
-                    _ => None,
-                }
+                    .collect::<Set<LVarRef<'_>>>()
             })
             .collect()
+    }
+
+    fn eligible_contifiables(
+        &self,
+        sccs: &[Set<LVarRef<'gc>>],
+    ) -> Vec<(Set<LVarRef<'gc>>, ContPair<'gc>)> {
+        sccs.iter()
+            .cloned()
+            .filter_map(|ns| match self.common_return_cont(&ns, None) {
+                SingleValueSet::Singleton(val) => Some((ns, val)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn contifiables(&self) -> Vec<(Set<LVarRef<'gc>>, ContPair<'gc>)> {
+        let sccs = self.tailcall_sccs();
+        self.eligible_contifiables(&sccs)
     }
 
     /// Contifies the group `ns` (a set of mutually recursive function
@@ -331,6 +398,11 @@ impl<'gc> Term<'gc> {
         let Term::Fix(funs, body) = self else {
             unreachable!("contify should only be called on a Fix term");
         };
+        let mut profile = ProfileScope::new("cps.contify.fix.contify");
+        if profile.is_enabled() {
+            profile.field("fix_func_count", funs.len());
+            profile.field("contified_func_count", ns.len());
+        }
 
         let (to_contify, untouched): (Vec<_>, Vec<_>) = funs
             .iter()
@@ -370,16 +442,26 @@ impl<'gc> Term<'gc> {
         };
 
         // Insert Letk as deep as possible; then rewrite Apps to Continue.
-        transform_apps(
+        let pushed = {
+            let mut push_down_profile = ProfileScope::new("cps.contify.fix.push_down");
+            if push_down_profile.is_enabled() {
+                push_down_profile.field("contified_func_count", ns.len());
+            }
             push_down(
                 ctx,
                 &|body| TermRef::new(*ctx, Term::Letk(contified, body)),
                 fix,
                 ns,
-            ),
-            ns,
-            ctx,
-        )
+            )
+        };
+
+        {
+            let mut transform_profile = ProfileScope::new("cps.contify.fix.transform_apps");
+            if transform_profile.is_enabled() {
+                transform_profile.field("contified_func_count", ns.len());
+            }
+            transform_apps(pushed, ns, ctx)
+        }
     }
 }
 
