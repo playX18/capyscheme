@@ -1,4 +1,9 @@
-use crate::rsgc::{Trace, barrier, cell::Lock};
+use crate::rsgc::{
+    Trace, barrier,
+    cell::Lock,
+    object::{HeapTypeInfo, VTableOf},
+};
+use std::mem::offset_of;
 
 use crate::runtime::Context;
 
@@ -7,34 +12,41 @@ use super::*;
 #[collect(no_drop)]
 #[repr(C, align(8))]
 pub struct Pair<'gc> {
-    pub header: ScmHeader,
     pub car: Lock<Value<'gc>>,
     pub cdr: Lock<Value<'gc>>,
 }
 
+const _: () = {
+    assert!(offset_of!(Pair<'static>, car) == 0);
+};
+
+static PAIR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Pair<'static>>::VT,
+    TypeCode8::PAIR.bits() as u16,
+);
+pub static PAIR_INFO: &'static HeapTypeInfo = &PAIR_INFO_VALUE;
+
 impl<'gc> Pair<'gc> {
     #[inline(always)]
     pub fn new(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode8::PAIR.bits() as _);
-        let pair = Gc::new(
+        let pair = Gc::new_with_info(
             *mc,
             Self {
-                header: hdr,
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
             },
+            PAIR_INFO,
         );
         pair
     }
 
     pub fn new_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
-        mc.allocate(
+        mc.allocate_with_info(
             Self {
-                header: ScmHeader::with_type_bits(TypeCode8::PAIR.bits() as _),
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
             },
+            PAIR_INFO,
             crate::rsgc::mmtk::AllocationSemantics::NonMoving,
         )
     }

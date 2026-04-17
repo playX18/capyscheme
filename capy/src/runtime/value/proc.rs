@@ -5,9 +5,9 @@ use crate::{
     object::VTable,
     rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
 };
-use easy_bitfield::{BitField, BitFieldTrait};
 use mmtk::AllocationSemantics;
 
+use crate::rsgc::object::HeapTypeInfo;
 use crate::runtime::{
     Context,
     vm::trampolines::{get_cont_trampoline_from_scheme, get_trampoline_from_scheme},
@@ -34,29 +34,32 @@ pub type NativeContinuation<'gc> = extern "C-unwind" fn(
     num_rands: usize,
 ) -> NativeReturn<'gc>;
 
-pub type ClosureNativeFlag = BitField<u64, bool, { TypeBits::NEXT_BIT }, 1, false>;
-pub type ClosureContinuationFlag = BitField<u64, bool, { TypeBits::NEXT_BIT + 1 }, 1, false>;
 #[repr(C)]
 pub struct NativeProc {
-    pub header: ScmHeader,
     pub proc: Address,
 }
+
+static NATIVE_PROC_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, NativeProc>::VT,
+    TypeCode16::NATIVE_PROC.bits(),
+);
+pub static NATIVE_PROC_INFO: &'static HeapTypeInfo = &NATIVE_PROC_INFO_VALUE;
+
+static NATIVE_K_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, NativeProc>::VT,
+    TypeCode16::NATIVE_K.bits(),
+);
+pub static NATIVE_K_INFO: &'static HeapTypeInfo = &NATIVE_K_INFO_VALUE;
 
 impl NativeProc {
     pub fn new<'gc>(ctx: Context<'gc>, proc: Address, is_k: bool) -> Gc<'gc, Self> {
         let tc = if is_k {
-            TypeCode16::NATIVE_K
+            NATIVE_K_INFO
         } else {
-            TypeCode16::NATIVE_PROC
+            NATIVE_PROC_INFO
         };
 
-        Gc::new(
-            *ctx,
-            NativeProc {
-                header: ScmHeader::with_type_bits(tc.0),
-                proc,
-            },
-        )
+        Gc::new_with_info(*ctx, NativeProc { proc }, tc)
     }
 }
 
@@ -78,7 +81,6 @@ unsafe impl Trace for NativeProc {
 
 #[repr(C)]
 pub struct Closure<'gc> {
-    pub header: ScmHeader,
     pub code: Address,
     pub code_block: Gc<'gc, CodeBlock<'gc>>,
 
@@ -86,6 +88,22 @@ pub struct Closure<'gc> {
     pub nfree: usize,
     pub free: [Lock<Value<'gc>>; 0],
 }
+
+static CLOSURE_PROC_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_PROC.bits());
+pub static CLOSURE_PROC_INFO: &'static HeapTypeInfo = &CLOSURE_PROC_INFO_VALUE;
+
+static CLOSURE_K_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_K.bits());
+pub static CLOSURE_K_INFO: &'static HeapTypeInfo = &CLOSURE_K_INFO_VALUE;
+
+static CLOSURE_NATIVE_PROC_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_PROC.bits());
+pub static CLOSURE_NATIVE_PROC_INFO: &'static HeapTypeInfo = &CLOSURE_NATIVE_PROC_INFO_VALUE;
+
+static CLOSURE_NATIVE_K_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_K.bits());
+pub static CLOSURE_NATIVE_K_INFO: &'static HeapTypeInfo = &CLOSURE_NATIVE_K_INFO_VALUE;
 
 impl<'gc> Index<usize> for Closure<'gc> {
     type Output = Lock<Value<'gc>>;
@@ -173,16 +191,17 @@ impl<'gc> Closure<'gc> {
         is_native: bool,
     ) -> Gc<'gc, Self> {
         let meta = code_block.metadata.get();
-
-        let mut header = ScmHeader::with_type_bits(if is_cont {
-            TypeCode16::CLOSURE_K.0
+        let info = if is_native {
+            if is_cont {
+                CLOSURE_NATIVE_K_INFO
+            } else {
+                CLOSURE_NATIVE_PROC_INFO
+            }
+        } else if is_cont {
+            CLOSURE_K_INFO
         } else {
-            TypeCode16::CLOSURE_PROC.0
-        });
-
-        if is_native {
-            header.word |= ClosureNativeFlag::encode(true);
-        }
+            CLOSURE_PROC_INFO
+        };
 
         /*Gc::new(
             *ctx,
@@ -199,14 +218,13 @@ impl<'gc> Closure<'gc> {
         // SAFETY: We raw-allocate a `Closure` + trailing `free` array via the GC allocator.
         // The VTable ensures proper tracing. We initialize all fields before returning the Gc handle.
         unsafe {
-            let ptr = ctx.raw_allocate(
+            let ptr = ctx.raw_allocate_with_info(
                 size,
                 align_of::<Self>(),
-                CLOSURE_VTABLE,
+                info,
                 AllocationSemantics::Default,
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
-            this.header = header;
             this.code = code_block.entrypoint;
             this.code_block = code_block;
 
@@ -273,8 +291,7 @@ impl<'gc> Closure<'gc> {
     }
 }
 
-// SAFETY: Closure stores its TC8 in the ScmHeader. The header is initialized with
-// the correct type code at construction time in `Closure::new`.
+// SAFETY: Closure stores its type code in the heap header selected at construction time.
 unsafe impl<'gc> Tagged for Closure<'gc> {
     const TC8: TypeCode8 = TypeCode8::CLOSURE;
 
@@ -289,7 +306,7 @@ unsafe impl<'gc> Tagged for Closure<'gc> {
 
 impl<'gc> Closure<'gc> {
     pub fn is_continuation(&self) -> bool {
-        self.header.type_bits() == TypeCode16::CLOSURE_K.bits()
+        payload_type_bits(self) == TypeCode16::CLOSURE_K.bits()
     }
 
     /// Check if this closure is a continuation produced by `call/cc`.
@@ -316,7 +333,8 @@ impl<'gc> Closure<'gc> {
     }
 
     pub fn is_foreign(&self) -> bool {
-        self.header.type_bits() == TypeCode16::CLOSURE_FOREIGN.bits()
+        let info_id = payload_info_id(self);
+        info_id == CLOSURE_NATIVE_PROC_INFO.id() || info_id == CLOSURE_NATIVE_K_INFO.id()
     }
 }
 
@@ -524,13 +542,18 @@ pub struct SavedCall<'gc> {
 
 #[repr(C)]
 pub struct CodeBlock<'gc> {
-    pub header: ScmHeader,
     pub entrypoint: Address,
     pub kind: CodeBlockKind<'gc>,
     pub arity: CodeArity,
     pub flags: CodeBlockFlags,
     pub metadata: Lock<Value<'gc>>,
 }
+
+static CODE_BLOCK_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, CodeBlock<'static>>::VT,
+    TypeCode8::CODE_BLOCK.bits() as u16,
+);
+pub static CODE_BLOCK_INFO: &'static HeapTypeInfo = &CODE_BLOCK_INFO_VALUE;
 
 impl<'gc> CodeBlock<'gc> {
     fn normalize_metadata(metadata: Value<'gc>) -> Value<'gc> {
@@ -549,10 +572,9 @@ impl<'gc> CodeBlock<'gc> {
         is_cont: bool,
         metadata: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new(
+        Gc::new_with_info(
             *ctx,
             Self {
-                header: ScmHeader::with_type_bits(TypeCode8::CODE_BLOCK.bits() as _),
                 entrypoint,
                 kind,
                 arity,
@@ -563,6 +585,7 @@ impl<'gc> CodeBlock<'gc> {
                 },
                 metadata: Lock::new(Self::normalize_metadata(metadata)),
             },
+            CODE_BLOCK_INFO,
         )
     }
 

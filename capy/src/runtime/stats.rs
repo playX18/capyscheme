@@ -1,174 +1,755 @@
-use std::cell::Cell;
-use std::time::Duration;
-pub struct ThreadStats {
-    comp_time: Cell<Duration>,
-    exec_time: Cell<Duration>,
-    stw_time: Cell<Duration>,
-    blocking_time: Cell<Duration>,
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
-    comp_start: Cell<Option<std::time::Instant>>,
-    exec_start: Cell<Option<std::time::Instant>>,
-    stw_start: Cell<Option<std::time::Instant>>,
-    blocking_start: Cell<Option<std::time::Instant>>,
+use crate::runtime::GLOBAL_STATS;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RuntimeStatsSnapshot {
+    pub(crate) execution: Duration,
+    pub(crate) compilation: Duration,
+    pub(crate) stw: Duration,
+    pub(crate) blocking: Duration,
+    pub(crate) gc: Duration,
+    pub(crate) reader: Duration,
+    pub(crate) psyntax: Duration,
+    pub(crate) lowering: Duration,
+    pub(crate) cranelift: Duration,
+    pub(crate) object_emit: Duration,
+    pub(crate) link: Duration,
+    pub(crate) cps_ssa_emit: Duration,
+}
+
+impl RuntimeStatsSnapshot {
+    pub(crate) fn total(self) -> Duration {
+        self.execution + self.compilation + self.stw + self.blocking + self.gc
+    }
+
+    pub(crate) fn frontend_total(self) -> Duration {
+        self.compilation.saturating_sub(
+            self.lowering + self.cranelift + self.object_emit + self.link + self.cps_ssa_emit,
+        )
+    }
+
+    pub(crate) fn frontend_other(self) -> Duration {
+        self.frontend_total()
+            .saturating_sub(self.reader + self.psyntax)
+    }
+
+    fn percentage(self, value: Duration) -> f64 {
+        let total = self.total().as_secs_f64();
+        if total > 0.0 {
+            (value.as_secs_f64() / total) * 100.0
+        } else {
+            0.0
+        }
+    }
+}
+
+impl std::fmt::Display for RuntimeStatsSnapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            concat!(
+                "Runtime Statistics:\n",
+                "  Execution: {:.3}s ({:.1}%)\n",
+                "  Compilation: {:.3}s ({:.1}%)\n",
+                "  STW: {:.3}s ({:.1}%)\n",
+                "  Blocking: {:.3}s ({:.1}%)\n",
+                "  GC: {:.3}s ({:.1}%)\n",
+                "  Total: {:.3}s\n",
+                "  Compilation Breakdown:\n",
+                "    Frontend Total: {:.3}s\n",
+                "      Reader (reader.scm): {:.3}s\n",
+                "      Psyntax (psyntax.scm): {:.3}s\n",
+                "      Frontend Other: {:.3}s\n",
+                "    Lowering: {:.3}s\n",
+                "    Cranelift: {:.3}s\n",
+                "    Object Emit: {:.3}s\n",
+                "    Link: {:.3}s\n",
+                "    CPS-SSA Emit: {:.3}s"
+            ),
+            self.execution.as_secs_f64(),
+            self.percentage(self.execution),
+            self.compilation.as_secs_f64(),
+            self.percentage(self.compilation),
+            self.stw.as_secs_f64(),
+            self.percentage(self.stw),
+            self.blocking.as_secs_f64(),
+            self.percentage(self.blocking),
+            self.gc.as_secs_f64(),
+            self.percentage(self.gc),
+            self.total().as_secs_f64(),
+            self.frontend_total().as_secs_f64(),
+            self.reader.as_secs_f64(),
+            self.psyntax.as_secs_f64(),
+            self.frontend_other().as_secs_f64(),
+            self.lowering.as_secs_f64(),
+            self.cranelift.as_secs_f64(),
+            self.object_emit.as_secs_f64(),
+            self.link.as_secs_f64(),
+            self.cps_ssa_emit.as_secs_f64(),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TopLevelPhase {
+    Execution,
+    Compilation,
+    Stw,
+    Blocking,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum CompilationBreakdownPhase {
+    Reader,
+    Psyntax,
+    Lowering,
+    Cranelift,
+    ObjectEmit,
+    Link,
+    CpsSsaEmit,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveBreakdown {
+    token: u64,
+    phase: CompilationBreakdownPhase,
+    generation: u64,
+    start: Instant,
+}
+
+pub(crate) struct CompilationBreakdownScope {
+    token: u64,
+}
+
+impl CompilationBreakdownScope {
+    pub(crate) fn new(phase: CompilationBreakdownPhase) -> Self {
+        Self {
+            token: begin_compilation_breakdown(phase),
+        }
+    }
+}
+
+impl Drop for CompilationBreakdownScope {
+    fn drop(&mut self) {
+        end_compilation_breakdown(self.token);
+    }
+}
+
+pub(crate) fn begin_compilation_breakdown(phase: CompilationBreakdownPhase) -> u64 {
+    GLOBAL_STATS.lock().begin_breakdown(phase)
+}
+
+pub(crate) fn end_compilation_breakdown(token: u64) {
+    GLOBAL_STATS.lock().end_breakdown(token);
+}
+
+pub(crate) fn runtime_stats_enabled() -> bool {
+    GLOBAL_STATS.lock().enabled
+}
+
+pub(crate) fn set_runtime_stats_enabled(thread_stats: &ThreadStats, enabled: bool) {
+    if !enabled {
+        thread_stats.flush_active_durations();
+    }
+
+    GLOBAL_STATS.lock().set_enabled(enabled);
+    thread_stats.sync_session_state();
+}
+
+pub(crate) fn runtime_stats_snapshot(
+    current_thread: Option<&ThreadStats>,
+) -> Option<RuntimeStatsSnapshot> {
+    let mut snapshot = GLOBAL_STATS.lock().snapshot();
+    if !snapshot.0 {
+        return None;
+    }
+
+    if let Some(thread_stats) = current_thread {
+        let active = thread_stats.snapshot_active();
+        snapshot.1.execution += active.execution;
+        snapshot.1.compilation += active.compilation;
+        snapshot.1.stw += active.stw;
+        snapshot.1.blocking += active.blocking;
+    }
+
+    Some(snapshot.1)
+}
+
+pub struct ThreadStats {
+    execution_depth: Cell<u32>,
+    compilation_depth: Cell<u32>,
+    stw_depth: Cell<u32>,
+    blocking_depth: Cell<u32>,
+
+    execution_start: Cell<Option<Instant>>,
+    compilation_start: Cell<Option<Instant>>,
+    stw_start: Cell<Option<Instant>>,
+    blocking_start: Cell<Option<Instant>>,
+
+    generation: Cell<u64>,
 }
 
 impl ThreadStats {
     pub fn new() -> Self {
+        let generation = GLOBAL_STATS.lock().generation;
         Self {
-            comp_time: Cell::new(Duration::ZERO),
-            exec_time: Cell::new(Duration::ZERO),
-            stw_time: Cell::new(Duration::ZERO),
-            blocking_time: Cell::new(Duration::ZERO),
-            comp_start: Cell::new(None),
-            exec_start: Cell::new(None),
+            execution_depth: Cell::new(0),
+            compilation_depth: Cell::new(0),
+            stw_depth: Cell::new(0),
+            blocking_depth: Cell::new(0),
+            execution_start: Cell::new(None),
+            compilation_start: Cell::new(None),
             stw_start: Cell::new(None),
             blocking_start: Cell::new(None),
+            generation: Cell::new(generation),
         }
     }
 
     pub fn start_compilation(&self) {
-        self.comp_start.set(Some(std::time::Instant::now()));
+        self.sync_session_state();
+
+        let depth = self.compilation_depth.get();
+        self.compilation_depth.set(depth + 1);
+        if depth == 0 {
+            if self.execution_depth.get() > 0 {
+                self.end_interval(TopLevelPhase::Execution);
+            }
+            self.start_interval(TopLevelPhase::Compilation);
+        }
     }
 
     pub fn end_compilation(&self) {
-        if let Some(start) = self.comp_start.take() {
-            self.comp_time.set(self.comp_time.get() + start.elapsed());
+        self.sync_session_state();
+
+        let depth = self.compilation_depth.get();
+        if depth == 0 {
+            return;
+        }
+
+        self.compilation_depth.set(depth - 1);
+        if depth == 1 {
+            self.end_interval(TopLevelPhase::Compilation);
+
+            if self.execution_depth.get() > 0 {
+                self.start_interval(TopLevelPhase::Execution);
+            }
         }
     }
 
     pub fn start_execution(&self) {
-        self.exec_start.set(Some(std::time::Instant::now()));
+        self.sync_session_state();
+
+        let depth = self.execution_depth.get();
+        self.execution_depth.set(depth + 1);
+        if depth == 0 && self.compilation_depth.get() == 0 {
+            self.start_interval(TopLevelPhase::Execution);
+        }
     }
 
     pub fn end_execution(&self) {
-        if let Some(start) = self.exec_start.take() {
-            self.exec_time.set(self.exec_time.get() + start.elapsed());
+        self.sync_session_state();
+
+        let depth = self.execution_depth.get();
+        if depth == 0 {
+            return;
+        }
+
+        self.execution_depth.set(depth - 1);
+        if depth == 1 {
+            self.end_interval(TopLevelPhase::Execution);
         }
     }
 
     pub fn start_stw(&self) {
-        self.stw_start.set(Some(std::time::Instant::now()));
+        self.sync_session_state();
+
+        let depth = self.stw_depth.get();
+        self.stw_depth.set(depth + 1);
+        if depth == 0 {
+            self.start_interval(TopLevelPhase::Stw);
+        }
     }
 
     pub fn end_stw(&self) {
-        if let Some(start) = self.stw_start.take() {
-            self.stw_time.set(self.stw_time.get() + start.elapsed());
+        self.sync_session_state();
+
+        let depth = self.stw_depth.get();
+        if depth == 0 {
+            return;
+        }
+
+        self.stw_depth.set(depth - 1);
+        if depth == 1 {
+            self.end_interval(TopLevelPhase::Stw);
         }
     }
 
     pub fn start_blocking(&self) {
-        self.blocking_start.set(Some(std::time::Instant::now()));
+        self.sync_session_state();
+
+        let depth = self.blocking_depth.get();
+        self.blocking_depth.set(depth + 1);
+        if depth == 0 {
+            self.start_interval(TopLevelPhase::Blocking);
+        }
     }
 
     pub fn end_blocking(&self) {
-        if let Some(start) = self.blocking_start.take() {
-            self.blocking_time
-                .set(self.blocking_time.get() + start.elapsed());
+        self.sync_session_state();
+
+        let depth = self.blocking_depth.get();
+        if depth == 0 {
+            return;
+        }
+
+        self.blocking_depth.set(depth - 1);
+        if depth == 1 {
+            self.end_interval(TopLevelPhase::Blocking);
+        }
+    }
+
+    pub(crate) fn sync_session_state(&self) {
+        let global = GLOBAL_STATS.lock();
+        let enabled = global.enabled;
+        let generation = global.generation;
+        drop(global);
+
+        if self.generation.get() == generation {
+            return;
+        }
+
+        self.generation.set(generation);
+        let now = Instant::now();
+
+        self.rebase_interval(
+            &self.execution_start,
+            enabled && self.execution_depth.get() > 0 && self.compilation_depth.get() == 0,
+            now,
+        );
+        self.rebase_interval(
+            &self.compilation_start,
+            enabled && self.compilation_depth.get() > 0,
+            now,
+        );
+        self.rebase_interval(&self.stw_start, enabled && self.stw_depth.get() > 0, now);
+        self.rebase_interval(
+            &self.blocking_start,
+            enabled && self.blocking_depth.get() > 0,
+            now,
+        );
+    }
+
+    pub(crate) fn flush_active_durations(&self) {
+        self.sync_session_state();
+
+        let generation = self.generation.get();
+        let now = Instant::now();
+        self.flush_interval(
+            &self.execution_start,
+            TopLevelPhase::Execution,
+            generation,
+            now,
+        );
+        self.flush_interval(
+            &self.compilation_start,
+            TopLevelPhase::Compilation,
+            generation,
+            now,
+        );
+        self.flush_interval(&self.stw_start, TopLevelPhase::Stw, generation, now);
+        self.flush_interval(
+            &self.blocking_start,
+            TopLevelPhase::Blocking,
+            generation,
+            now,
+        );
+    }
+
+    fn snapshot_active(&self) -> RuntimeStatsSnapshot {
+        self.sync_session_state();
+
+        let now = Instant::now();
+        RuntimeStatsSnapshot {
+            execution: self
+                .execution_start
+                .get()
+                .map(|start| now.duration_since(start))
+                .unwrap_or(Duration::ZERO),
+            compilation: self
+                .compilation_start
+                .get()
+                .map(|start| now.duration_since(start))
+                .unwrap_or(Duration::ZERO),
+            stw: self
+                .stw_start
+                .get()
+                .map(|start| now.duration_since(start))
+                .unwrap_or(Duration::ZERO),
+            blocking: self
+                .blocking_start
+                .get()
+                .map(|start| now.duration_since(start))
+                .unwrap_or(Duration::ZERO),
+            ..RuntimeStatsSnapshot::default()
+        }
+    }
+
+    fn start_interval(&self, phase: TopLevelPhase) {
+        let start_cell = self.start_cell(phase);
+        if start_cell.get().is_none() && runtime_stats_enabled() {
+            start_cell.set(Some(Instant::now()));
+        }
+    }
+
+    fn end_interval(&self, phase: TopLevelPhase) {
+        let Some(start) = self.start_cell(phase).take() else {
+            return;
+        };
+
+        GLOBAL_STATS
+            .lock()
+            .add_top_level_elapsed(phase, start.elapsed(), self.generation.get());
+    }
+
+    fn flush_interval(
+        &self,
+        start_cell: &Cell<Option<Instant>>,
+        phase: TopLevelPhase,
+        generation: u64,
+        now: Instant,
+    ) {
+        let Some(start) = start_cell.get() else {
+            return;
+        };
+
+        GLOBAL_STATS
+            .lock()
+            .add_top_level_elapsed(phase, now.duration_since(start), generation);
+        start_cell.set(Some(now));
+    }
+
+    fn rebase_interval(&self, start_cell: &Cell<Option<Instant>>, active: bool, now: Instant) {
+        start_cell.set(active.then_some(now));
+    }
+
+    fn start_cell(&self, phase: TopLevelPhase) -> &Cell<Option<Instant>> {
+        match phase {
+            TopLevelPhase::Execution => &self.execution_start,
+            TopLevelPhase::Compilation => &self.compilation_start,
+            TopLevelPhase::Stw => &self.stw_start,
+            TopLevelPhase::Blocking => &self.blocking_start,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn compilation_active(&self) -> bool {
-        self.comp_start.get().is_some()
+        self.compilation_depth.get() > 0
     }
 
     #[cfg(test)]
     pub(crate) fn execution_active(&self) -> bool {
-        self.exec_start.get().is_some()
+        self.execution_depth.get() > 0 && self.compilation_depth.get() == 0
     }
 }
 
 pub struct GlobalStats {
-    total_comp_time: Duration,
-    total_exec_time: Duration,
-    total_stw_time: Duration,
-    total_blocking_time: Duration,
-    total_gc_time: Duration,
-    gc_start: Option<std::time::Instant>,
+    enabled: bool,
+    ever_enabled: bool,
+    generation: u64,
+    snapshot: RuntimeStatsSnapshot,
+    gc_start: Option<Instant>,
+    next_breakdown_token: u64,
+    active_breakdowns: Vec<ActiveBreakdown>,
 }
 
 impl GlobalStats {
     pub const fn new() -> Self {
         Self {
-            total_comp_time: Duration::ZERO,
-            total_exec_time: Duration::ZERO,
-            total_stw_time: Duration::ZERO,
-            total_blocking_time: Duration::ZERO,
-            total_gc_time: Duration::ZERO,
+            enabled: false,
+            ever_enabled: false,
+            generation: 0,
+            snapshot: RuntimeStatsSnapshot {
+                execution: Duration::ZERO,
+                compilation: Duration::ZERO,
+                stw: Duration::ZERO,
+                blocking: Duration::ZERO,
+                gc: Duration::ZERO,
+                reader: Duration::ZERO,
+                psyntax: Duration::ZERO,
+                lowering: Duration::ZERO,
+                cranelift: Duration::ZERO,
+                object_emit: Duration::ZERO,
+                link: Duration::ZERO,
+                cps_ssa_emit: Duration::ZERO,
+            },
             gc_start: None,
+            next_breakdown_token: 1,
+            active_breakdowns: Vec::new(),
         }
     }
 
     pub fn start_gc(&mut self) {
-        self.gc_start = Some(std::time::Instant::now());
+        self.gc_start = self.enabled.then(Instant::now);
     }
 
     pub fn end_gc(&mut self) {
-        if let Some(start) = self.gc_start.take() {
-            self.total_gc_time += start.elapsed();
+        let Some(start) = self.gc_start.take() else {
+            return;
+        };
+
+        if self.enabled {
+            self.snapshot.gc += start.elapsed();
         }
     }
 
-    pub fn add_thread_stats(&mut self, thread_stats: &ThreadStats) {
-        self.total_comp_time += thread_stats.comp_time.get();
-        self.total_exec_time += thread_stats.exec_time.get();
-        self.total_stw_time += thread_stats.stw_time.get();
-        self.total_blocking_time += thread_stats.blocking_time.get();
+    fn set_enabled(&mut self, enabled: bool) {
+        if enabled {
+            self.snapshot = RuntimeStatsSnapshot::default();
+            self.gc_start = None;
+            self.active_breakdowns.clear();
+            self.enabled = true;
+            self.ever_enabled = true;
+            self.generation = self.generation.wrapping_add(1);
+            return;
+        }
+
+        if self.enabled {
+            self.gc_start = None;
+            self.active_breakdowns.clear();
+            self.enabled = false;
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
+
+    fn begin_breakdown(&mut self, phase: CompilationBreakdownPhase) -> u64 {
+        if !self.enabled {
+            return 0;
+        }
+
+        let token = self.next_breakdown_token;
+        self.next_breakdown_token = self.next_breakdown_token.wrapping_add(1);
+        self.active_breakdowns.push(ActiveBreakdown {
+            token,
+            phase,
+            generation: self.generation,
+            start: Instant::now(),
+        });
+        token
+    }
+
+    fn end_breakdown(&mut self, token: u64) {
+        if token == 0 {
+            return;
+        }
+
+        let Some(index) = self
+            .active_breakdowns
+            .iter()
+            .position(|active| active.token == token)
+        else {
+            return;
+        };
+
+        let active = self.active_breakdowns.swap_remove(index);
+        if self.enabled && self.generation == active.generation {
+            self.add_breakdown_elapsed(active.phase, active.start.elapsed(), active.generation);
+        }
+    }
+
+    fn add_top_level_elapsed(&mut self, phase: TopLevelPhase, elapsed: Duration, generation: u64) {
+        if !self.enabled || self.generation != generation {
+            return;
+        }
+
+        match phase {
+            TopLevelPhase::Execution => self.snapshot.execution += elapsed,
+            TopLevelPhase::Compilation => self.snapshot.compilation += elapsed,
+            TopLevelPhase::Stw => self.snapshot.stw += elapsed,
+            TopLevelPhase::Blocking => self.snapshot.blocking += elapsed,
+        }
+    }
+
+    fn add_breakdown_elapsed(
+        &mut self,
+        phase: CompilationBreakdownPhase,
+        elapsed: Duration,
+        generation: u64,
+    ) {
+        if !self.enabled || self.generation != generation {
+            return;
+        }
+
+        match phase {
+            CompilationBreakdownPhase::Reader => self.snapshot.reader += elapsed,
+            CompilationBreakdownPhase::Psyntax => self.snapshot.psyntax += elapsed,
+            CompilationBreakdownPhase::Lowering => self.snapshot.lowering += elapsed,
+            CompilationBreakdownPhase::Cranelift => self.snapshot.cranelift += elapsed,
+            CompilationBreakdownPhase::ObjectEmit => self.snapshot.object_emit += elapsed,
+            CompilationBreakdownPhase::Link => self.snapshot.link += elapsed,
+            CompilationBreakdownPhase::CpsSsaEmit => self.snapshot.cps_ssa_emit += elapsed,
+        }
+    }
+
+    fn snapshot(&self) -> (bool, RuntimeStatsSnapshot) {
+        let mut snapshot = self.snapshot;
+        if self.enabled
+            && let Some(start) = self.gc_start
+        {
+            snapshot.gc += start.elapsed();
+        }
+
+        if self.enabled {
+            let now = Instant::now();
+            for active in &self.active_breakdowns {
+                if active.generation == self.generation {
+                    let elapsed = now.duration_since(active.start);
+                    match active.phase {
+                        CompilationBreakdownPhase::Reader => snapshot.reader += elapsed,
+                        CompilationBreakdownPhase::Psyntax => snapshot.psyntax += elapsed,
+                        CompilationBreakdownPhase::Lowering => snapshot.lowering += elapsed,
+                        CompilationBreakdownPhase::Cranelift => snapshot.cranelift += elapsed,
+                        CompilationBreakdownPhase::ObjectEmit => snapshot.object_emit += elapsed,
+                        CompilationBreakdownPhase::Link => snapshot.link += elapsed,
+                        CompilationBreakdownPhase::CpsSsaEmit => snapshot.cps_ssa_emit += elapsed,
+                    }
+                }
+            }
+        }
+
+        (self.ever_enabled, snapshot)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_for_test(&mut self) {
+        self.enabled = false;
+        self.ever_enabled = false;
+        self.generation = self.generation.wrapping_add(1);
+        self.snapshot = RuntimeStatsSnapshot::default();
+        self.gc_start = None;
+        self.active_breakdowns.clear();
     }
 }
 
-impl std::fmt::Display for GlobalStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let total_runtime = self.total_comp_time
-            + self.total_exec_time
-            + self.total_stw_time
-            + self.total_blocking_time
-            + self.total_gc_time;
+#[cfg(test)]
+pub(crate) static TEST_RUNTIME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-        let percentage_exec = if total_runtime.as_secs_f64() > 0.0 {
-            (self.total_exec_time.as_secs_f64() / total_runtime.as_secs_f64()) * 100.0
-        } else {
-            0.0
-        };
+#[cfg(test)]
+mod tests {
+    use super::{
+        CompilationBreakdownPhase, CompilationBreakdownScope, GlobalStats, TEST_RUNTIME_LOCK,
+        ThreadStats, begin_compilation_breakdown, end_compilation_breakdown,
+        runtime_stats_snapshot, set_runtime_stats_enabled,
+    };
+    use crate::runtime::GLOBAL_STATS;
+    use std::{thread::sleep, time::Duration};
 
-        let percentage_stw = if total_runtime.as_secs_f64() > 0.0 {
-            (self.total_stw_time.as_secs_f64() / total_runtime.as_secs_f64()) * 100.0
-        } else {
-            0.0
-        };
+    fn reset_stats() {
+        GLOBAL_STATS.lock().reset_for_test();
+    }
 
-        let percentage_comp = if total_runtime.as_secs_f64() > 0.0 {
-            (self.total_comp_time.as_secs_f64() / total_runtime.as_secs_f64()) * 100.0
-        } else {
-            0.0
-        };
+    #[test]
+    fn report_is_unavailable_before_enable() {
+        let _guard = TEST_RUNTIME_LOCK.lock().unwrap();
+        reset_stats();
 
-        let percentage_blocking = if total_runtime.as_secs_f64() > 0.0 {
-            (self.total_blocking_time.as_secs_f64() / total_runtime.as_secs_f64()) * 100.0
-        } else {
-            0.0
-        };
+        let thread = ThreadStats::new();
+        assert!(runtime_stats_snapshot(Some(&thread)).is_none());
+    }
 
-        let percentage_gc = if total_runtime.as_secs_f64() > 0.0 {
-            (self.total_gc_time.as_secs_f64() / total_runtime.as_secs_f64()) * 100.0
-        } else {
-            0.0
-        };
+    #[test]
+    fn enabling_resets_previous_totals() {
+        let _guard = TEST_RUNTIME_LOCK.lock().unwrap();
+        reset_stats();
 
-        write!(
-            f,
-            "Runtime Statistics:\n  Execution: {:.2}s ({:.1}%)\n  STW: {:.2}s ({:.1}%)\n  Compilation: {:.2}s ({:.1}%)\n  Blocking: {:.2}s ({:.1}%)\n  GC: {:.2}s ({:.1}%)\n  Total: {:.2}s",
-            self.total_exec_time.as_secs_f64(),
-            percentage_exec,
-            self.total_stw_time.as_secs_f64(),
-            percentage_stw,
-            self.total_comp_time.as_secs_f64(),
-            percentage_comp,
-            self.total_blocking_time.as_secs_f64(),
-            percentage_blocking,
-            self.total_gc_time.as_secs_f64(),
-            percentage_gc,
-            total_runtime.as_secs_f64(),
-        )
+        let thread = ThreadStats::new();
+        set_runtime_stats_enabled(&thread, true);
+        thread.start_execution();
+        sleep(Duration::from_millis(2));
+        thread.end_execution();
+
+        let first = runtime_stats_snapshot(Some(&thread)).unwrap();
+        assert!(first.execution > Duration::ZERO);
+
+        set_runtime_stats_enabled(&thread, true);
+        let reset = runtime_stats_snapshot(Some(&thread)).unwrap();
+        assert_eq!(reset.execution, Duration::ZERO);
+    }
+
+    #[test]
+    fn disabling_flushes_and_stops_future_accumulation() {
+        let _guard = TEST_RUNTIME_LOCK.lock().unwrap();
+        reset_stats();
+
+        let thread = ThreadStats::new();
+        set_runtime_stats_enabled(&thread, true);
+        thread.start_execution();
+        sleep(Duration::from_millis(2));
+        set_runtime_stats_enabled(&thread, false);
+
+        let snapshot = runtime_stats_snapshot(Some(&thread)).unwrap();
+        assert!(snapshot.execution > Duration::ZERO);
+
+        let frozen = snapshot.execution;
+        sleep(Duration::from_millis(2));
+        thread.end_execution();
+
+        let after = runtime_stats_snapshot(Some(&thread)).unwrap();
+        assert_eq!(after.execution, frozen);
+    }
+
+    #[test]
+    fn report_formats_breakdown_lines() {
+        let _guard = TEST_RUNTIME_LOCK.lock().unwrap();
+        reset_stats();
+
+        let thread = ThreadStats::new();
+        set_runtime_stats_enabled(&thread, true);
+        {
+            let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::Reader);
+            sleep(Duration::from_millis(1));
+        }
+
+        let report = runtime_stats_snapshot(Some(&thread)).unwrap().to_string();
+        assert!(report.contains("Compilation Breakdown"));
+        assert!(report.contains("Reader (reader.scm)"));
+        assert!(report.contains("Psyntax (psyntax.scm)"));
+    }
+
+    #[test]
+    fn explicit_breakdown_tokens_record_reader_and_psyntax() {
+        let _guard = TEST_RUNTIME_LOCK.lock().unwrap();
+        reset_stats();
+
+        let thread = ThreadStats::new();
+        set_runtime_stats_enabled(&thread, true);
+
+        let reader = begin_compilation_breakdown(CompilationBreakdownPhase::Reader);
+        sleep(Duration::from_millis(1));
+        end_compilation_breakdown(reader);
+
+        let psyntax = begin_compilation_breakdown(CompilationBreakdownPhase::Psyntax);
+        sleep(Duration::from_millis(1));
+        end_compilation_breakdown(psyntax);
+
+        let snapshot = runtime_stats_snapshot(Some(&thread)).unwrap();
+        assert!(snapshot.reader > Duration::ZERO);
+        assert!(snapshot.psyntax > Duration::ZERO);
+    }
+
+    #[test]
+    fn global_stats_gc_does_not_require_thread_merge() {
+        let _guard = TEST_RUNTIME_LOCK.lock().unwrap();
+        let mut stats = GlobalStats::new();
+        stats.set_enabled(true);
+        stats.start_gc();
+        sleep(Duration::from_millis(1));
+        stats.end_gc();
+
+        let (_, snapshot) = stats.snapshot();
+        assert!(snapshot.gc > Duration::ZERO);
     }
 }

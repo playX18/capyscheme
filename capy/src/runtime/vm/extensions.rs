@@ -2,12 +2,9 @@ use std::marker::PhantomData;
 
 use crate::rsgc::{Visitor, WeakProcessor};
 
-use crate::prelude::ScmHeader;
-
 #[repr(C)]
 pub struct NativeObject<'gc> {
     pd: PhantomData<&'gc ()>,
-    header: ScmHeader,
     vtab: &'static NativeVTable,
 }
 

@@ -1,4 +1,10 @@
-use crate::{frontend::error::LexicalError, rsgc::Trace};
+use crate::{
+    frontend::error::LexicalError,
+    rsgc::{
+        Trace,
+        object::{HeapTypeInfo, VTableOf},
+    },
+};
 use tree_sitter::Node;
 
 use crate::{
@@ -7,7 +13,7 @@ use crate::{
     global, list,
     runtime::{
         Context,
-        value::{ByteVector, IntoValue, ScmHeader, Str, Symbol, Tagged, TypeCode8, Value, Vector},
+        value::{ByteVector, IntoValue, Str, Symbol, Tagged, TypeCode8, Value, Vector},
         vm::syntax::Syntax,
     },
 };
@@ -16,13 +22,18 @@ use crate::{
 #[collect(no_drop)]
 #[repr(C, align(8))]
 pub struct Annotation<'gc> {
-    pub header: ScmHeader,
     pub expression: Value<'gc>,
     pub stripped: Value<'gc>,
     pub source: Value<'gc>,
     pub start_point: (u32, u32),
     pub end_point: (u32, u32),
 }
+
+static ANNOTATION_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Annotation<'static>>::VT,
+    TypeCode8::ANNOTATION.bits() as u16,
+);
+pub static ANNOTATION_INFO: &'static HeapTypeInfo = &ANNOTATION_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for Annotation<'gc> {
     const TC8: TypeCode8 = TypeCode8::ANNOTATION;

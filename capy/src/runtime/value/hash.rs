@@ -4,7 +4,12 @@ use std::{
 };
 
 use crate::rsgc::{
-    Gc, Mutation, Trace, alloc::array::Array, barrier, cell::Lock, collection::Visitor,
+    Gc, Mutation, Trace,
+    alloc::array::Array,
+    barrier,
+    cell::Lock,
+    collection::Visitor,
+    object::{HeapTypeInfo, VTableOf},
     sync::monitor::Monitor,
 };
 
@@ -83,10 +88,20 @@ impl<'gc> HashTableType<'gc> {
 
 #[repr(C, align(8))]
 pub struct HashTable<'gc> {
-    #[allow(dead_code)]
-    hdr: ScmHeader,
     pub(crate) inner: Monitor<InnerHashTable<'gc>>,
 }
+
+static HASHTABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, HashTable<'static>>::VT,
+    TypeCode8::HASHTABLE.bits() as u16,
+);
+pub static HASHTABLE_INFO: &'static HeapTypeInfo = &HASHTABLE_INFO_VALUE;
+
+static IMMUTABLE_HASHTABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, HashTable<'static>>::VT,
+    TypeCode16::IMMUTABLE_HASHTABLE.bits(),
+);
+pub static IMMUTABLE_HASHTABLE_INFO: &'static HeapTypeInfo = &IMMUTABLE_HASHTABLE_INFO_VALUE;
 
 pub type HashTableRef<'gc> = Gc<'gc, HashTable<'gc>>;
 
@@ -202,13 +217,7 @@ impl<'gc> HashTable<'gc> {
             };
 
             unsafe {
-                let hdr = obj
-                    .to_address()
-                    .to_mut_ptr::<ScmHeader>()
-                    .cast::<ScmHeader>()
-                    .read();
                 obj.to_address().to_mut_ptr::<Self>().write(HashTable {
-                    hdr,
                     inner: Monitor::new(inner),
                 });
             }
@@ -229,14 +238,7 @@ impl<'gc> HashTable<'gc> {
         };
 
         unsafe {
-            let hdr = obj
-                .to_address()
-                .to_mut_ptr::<ScmHeader>()
-                .cast::<ScmHeader>()
-                .read();
-
             obj.to_address().to_mut_ptr::<Self>().write(HashTable {
-                hdr,
                 inner: Monitor::new(inner),
             });
 
@@ -257,12 +259,9 @@ impl<'gc> HashTable<'gc> {
         if let HashTableType::Generic(_) = typ {
             // generic hashtable: no table, handled separately.
             let table = Array::with(mc, 0, |_, _| Lock::new(None));
-            let mut hdr = ScmHeader::new();
-            hdr.set_type_bits(TypeCode8::HASHTABLE.bits() as _);
-            return Gc::new(
+            return Gc::new_with_info(
                 mc,
                 Self {
-                    hdr,
                     inner: Monitor::new(InnerHashTable {
                         table: Lock::new(table),
                         count: Cell::new(0),
@@ -272,6 +271,7 @@ impl<'gc> HashTable<'gc> {
                         typ,
                     }),
                 },
+                HASHTABLE_INFO,
             );
         }
         let initial_capacity = initial_capacity.min(1);
@@ -286,13 +286,9 @@ impl<'gc> HashTable<'gc> {
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode8::HASHTABLE.bits() as _);
-
-        let this = Gc::new(
+        let this = Gc::new_with_info(
             mc,
             Self {
-                hdr,
                 inner: Monitor::new(InnerHashTable {
                     table: Lock::new(table),
                     count: Cell::new(0),
@@ -302,6 +298,7 @@ impl<'gc> HashTable<'gc> {
                     typ,
                 }),
             },
+            HASHTABLE_INFO,
         );
 
         this
@@ -316,12 +313,9 @@ impl<'gc> HashTable<'gc> {
         if let HashTableType::Generic(_) = typ {
             // generic hashtable: no table, handled separately.
             let table = Array::with(mc, 0, |_, _| Lock::new(None));
-            let mut hdr = ScmHeader::new();
-            hdr.set_type_bits(TypeCode8::HASHTABLE.bits() as _);
-            return Gc::new(
+            return Gc::new_with_info(
                 mc,
                 Self {
-                    hdr,
                     inner: Monitor::new(InnerHashTable {
                         table: Lock::new(table),
                         count: Cell::new(0),
@@ -331,6 +325,7 @@ impl<'gc> HashTable<'gc> {
                         typ,
                     }),
                 },
+                HASHTABLE_INFO,
             );
         }
         let initial_capacity = initial_capacity.min(1);
@@ -345,13 +340,9 @@ impl<'gc> HashTable<'gc> {
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode16::IMMUTABLE_HASHTABLE.bits() as _);
-
-        let this = Gc::new(
+        let this = Gc::new_with_info(
             mc,
             Self {
-                hdr,
                 inner: Monitor::new(InnerHashTable {
                     table: Lock::new(table),
                     count: Cell::new(0),
@@ -361,6 +352,7 @@ impl<'gc> HashTable<'gc> {
                     typ,
                 }),
             },
+            IMMUTABLE_HASHTABLE_INFO,
         );
 
         this
@@ -371,7 +363,7 @@ impl<'gc> HashTable<'gc> {
             HashTableType::Generic(_) => {
                 unreachable!()
             }
-            _ => self.hdr.type_bits() == TypeCode16::MUTABLE_HASHTABLE.bits(),
+            _ => payload_type_bits(self) == TypeCode16::MUTABLE_HASHTABLE.bits(),
         }
     }
 

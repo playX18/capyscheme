@@ -10,7 +10,7 @@ use crate::{
         Trace,
         finalizer::FinalizerQueue,
         mmtk::util::{Address, ObjectReference},
-        object::GCObject,
+        object::{GCObject, HeapTypeInfo, VTableOf},
     },
     runtime::BlockingOperationWithReturn,
 };
@@ -146,9 +146,14 @@ fn null_pointer_error<'a, 'gc, R: TryIntoValues<'gc>>(
 /// the ability to do unsafe things.
 #[repr(C)]
 pub struct Pointer {
-    header: ScmHeader,
     pub(crate) value: Address,
 }
+
+static POINTER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Pointer>::VT,
+    TypeCode8::POINTER.bits() as u16,
+);
+pub static POINTER_INFO: &'static HeapTypeInfo = &POINTER_INFO_VALUE;
 
 pub struct PointerWithFinalizers {
     queue: Mutex<VecDeque<ObjectReference>>,
@@ -212,7 +217,6 @@ unsafe impl Trace for Pointer {
 impl Pointer {
     pub fn new(value: *mut std::ffi::c_void) -> Self {
         Self {
-            header: ScmHeader::with_type_bits(TypeCode8::POINTER.bits() as _),
             value: Address::from_ptr(value as *mut u8),
         }
     }
@@ -237,7 +241,7 @@ pub mod ffi_ops {
     #[scheme(name = "make-pointer")]
     pub fn make_pointer(addr: usize) -> Value<'gc> {
         let ptr = Pointer::new(addr as *mut std::ffi::c_void);
-        let ptr = Gc::new(*nctx.ctx, ptr);
+        let ptr = Gc::new_with_info(*nctx.ctx, ptr, POINTER_INFO);
         nctx.return_(ptr.into())
     }
 
@@ -255,7 +259,7 @@ pub mod ffi_ops {
     #[scheme(name = "scm->pointer")]
     pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
-        let p = Gc::new(*nctx.ctx, p);
+        let p = Gc::new_with_info(*nctx.ctx, p, POINTER_INFO);
         nctx.return_(p)
     }
 
@@ -302,7 +306,7 @@ pub mod ffi_ops {
 
         let ptr = bv.contents() + offset;
         let p = Pointer::new(ptr.to_mut_ptr());
-        let p = Gc::new(*nctx.ctx, p);
+        let p = Gc::new_with_info(*nctx.ctx, p, POINTER_INFO);
         // TODO(Adel): pin bytevector in memory OR move contents to non-moving space.
 
         // create ephemeron to keep the bytevector alive if `p` is alive.
@@ -398,7 +402,7 @@ pub mod ffi_ops {
         }
         let ptr = unsafe { *(p.value() as *const *mut std::ffi::c_void) };
         let new_ptr = Pointer::new(ptr);
-        let new_ptr = Gc::new(*nctx.ctx, new_ptr);
+        let new_ptr = Gc::new_with_info(*nctx.ctx, new_ptr, POINTER_INFO);
         nctx.return_(new_ptr)
     }
 
@@ -699,7 +703,6 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
 
 #[repr(C)]
 pub struct CIF<'gc> {
-    pub(crate) header: ScmHeader,
     pub(crate) cif: libffi::middle::Cif,
     pub(crate) nargs: u32,
     pub(crate) variadic: bool,
@@ -712,6 +715,12 @@ pub struct CIF<'gc> {
     pub(crate) args: Value<'gc>,
     pub(crate) return_type: Value<'gc>,
 }
+
+static CIF_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, CIF<'static>>::VT,
+    TypeCode8::CIF.bits() as u16,
+);
+pub static CIF_INFO: &'static HeapTypeInfo = &CIF_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for CIF<'gc> {
     const TC8: TypeCode8 = TypeCode8::CIF;
@@ -771,7 +780,6 @@ pub(crate) fn make_cif_at<'gc>(
     };
 
     let cif = CIF {
-        header: unsafe { obj.to_address().to_mut_ptr::<ScmHeader>().read() },
         cif,
         nargs: arg_types.list_length() as u32,
         variadic,
@@ -827,7 +835,6 @@ fn make_cif<'gc>(
     };
 
     let cif = CIF {
-        header: ScmHeader::with_type_bits(TypeCode8::CIF.bits() as _),
         cif,
         blocking,
         nargs: arg_types.list_length() as u32,
@@ -836,7 +843,7 @@ fn make_cif<'gc>(
         return_type,
     };
 
-    Ok(Gc::new(*ctx, cif))
+    Ok(Gc::new_with_info(*ctx, cif, CIF_INFO))
 }
 
 unsafe fn foreign_call<'a, 'gc>(
@@ -1318,9 +1325,10 @@ unsafe fn pack<'gc>(
         }
 
         if t == types::pointer.type_ {
-            return Gc::new(
+            return Gc::new_with_info(
                 *ctx,
                 Pointer::new(loc.cast::<*mut std::ffi::c_void>().read()),
+                POINTER_INFO,
             )
             .into();
         }
@@ -1333,7 +1341,7 @@ unsafe fn pack<'gc>(
                 (*typ).size,
             );
             let ptr = Pointer::new(arr.contents().to_mut_ptr() as *mut std::ffi::c_void);
-            let ptr = Gc::new(*ctx, ptr);
+            let ptr = Gc::new_with_info(*ctx, ptr, POINTER_INFO);
             // keep bytevector alive as long as pointer is alive.
             ptrs(ctx).put(ctx, ptr, arr);
             return ptr.into();
@@ -1483,7 +1491,7 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
         define(ctx, "%ptrdiff_t", ForeignType::Int64);
     }
 
-    let nullp = Gc::new(*ctx, Pointer::new(std::ptr::null_mut()));
+    let nullp = Gc::new_with_info(*ctx, Pointer::new(std::ptr::null_mut()), POINTER_INFO);
 
     define(ctx, "%null-pointer", nullp);
 

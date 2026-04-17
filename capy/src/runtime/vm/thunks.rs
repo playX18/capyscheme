@@ -12,7 +12,10 @@ use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
     runtime::{
         value::{IntoValue, Number},
-        vm::{control::ContinuationMarks, syntax::Syntax},
+        vm::{
+            control::{CONTINUATION_MARKS_INFO, ContinuationMarks},
+            syntax::Syntax,
+        },
     },
 };
 use crate::{
@@ -22,8 +25,8 @@ use crate::{
         fasl::FASLReader,
         modules::{Module, Variable},
         value::{
-            Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, SavedCall, ScmHeader,
-            Str, Symbol, Tuple, TypeCode8, TypeCode16, Value, Vector,
+            Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, SavedCall, Str,
+            Symbol, Tuple, Value, Vector,
         },
         vm::{
             VMResult, call_scheme,
@@ -39,7 +42,7 @@ use crate::{
             AllocationSemantics, MutatorContext,
             util::{Address, ObjectReference},
         },
-        object::{VTable, VTableOf},
+        object::{HeapTypeInfo, VTable, VTableOf},
     },
     runtime::vm::syntax::props_to_sourcev,
 };
@@ -596,37 +599,16 @@ thunks! {
         Gc::new(*ctx, SavedCall { rands: arr, rator, from_procedure: true })
     }
 
-    pub fn alloc_tc8(
+    pub fn alloc_with_info(
         ctx: Context<'gc>,
-        vt: &'static VTable,
-        tc8: TypeCode8,
+        info: &'static HeapTypeInfo,
         size: usize
     ) -> Value<'gc> {
         unsafe {
             let layout = Layout::from_size_align_unchecked(size, 8);
             let val = ctx
                 .mc
-                .raw_allocate(size, 8, vt, AllocationSemantics::Default);
-            val.to_address()
-                .store(ScmHeader::with_type_bits(tc8.bits() as _));
-
-            Value::from_raw(val.to_address().as_usize() as u64)
-        }
-    }
-
-    pub fn alloc_tc16(
-        ctx: Context<'gc>,
-        vt: &'static VTable,
-        tc16: TypeCode16,
-        size: usize
-    ) -> Value<'gc> {
-        unsafe {
-            let layout = Layout::from_size_align_unchecked(size, 8);
-            let val = ctx
-                .mc
-                .raw_allocate(size, 8, vt, AllocationSemantics::Default);
-            val.to_address()
-                .store(ScmHeader::with_type_bits(tc16.bits() as _));
+                .raw_allocate_with_info(size, 8, info, AllocationSemantics::Default);
 
             Value::from_raw(val.to_address().as_usize() as u64)
         }
@@ -3882,10 +3864,7 @@ thunks! {
     ) -> Value<'gc> {
         let marks = ctx.state().current_marks();
 
-        let obj = Gc::new(*ctx, ContinuationMarks {
-            header: ScmHeader::with_type_bits(TypeCode8::CMARKS.bits() as _),
-            cmarks: marks,
-        });
+        let obj = Gc::new_with_info(*ctx, ContinuationMarks { cmarks: marks }, CONTINUATION_MARKS_INFO);
 
         obj.into()
     }
@@ -3963,9 +3942,10 @@ pub(crate) static BOX_VTABLE: &'static VTable = &VTableOf::<Boxed>::VT;
 #[unsafe(no_mangle)]
 pub(crate) static PAIR_VTABLE: &'static VTable = &VTableOf::<Pair>::VT;
 #[unsafe(no_mangle)]
-pub(crate) static VECTOR_VTABLE: &'static VTable = &Vector::VT;
+pub(crate) static MUTABLE_VECTOR_INFO_STATIC: &'static HeapTypeInfo =
+    crate::runtime::value::MUTABLE_VECTOR_INFO;
 #[unsafe(no_mangle)]
-pub(crate) static TUPLE_VTABLE: &'static VTable = &Tuple::VT;
+pub(crate) static TUPLE_INFO_STATIC: &'static HeapTypeInfo = crate::runtime::value::TUPLE_INFO;
 
 unsafe extern "C" {
     #[link_name = "llvm.returnaddress"]

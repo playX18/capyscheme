@@ -3,11 +3,11 @@ use std::path::Path;
 use crate::compiler::{
     CompilationOptions, compile_cps_to_cps_ssa_file, compile_cps_to_shared_object, compile_file,
 };
+use crate::runtime::Context;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
-use crate::runtime::Context;
 
 use super::{
     artifact::{LoadArtifact, LoadArtifactKind, artifact_extension, artifact_kind_for_policy},
@@ -27,7 +27,6 @@ pub(crate) struct CompilationPhase<'gc> {
 
 impl<'gc> CompilationPhase<'gc> {
     pub(crate) fn new(ctx: Context<'gc>) -> Self {
-        ctx.stats.end_execution();
         ctx.stats.start_compilation();
         Self {
             ctx,
@@ -38,7 +37,6 @@ impl<'gc> CompilationPhase<'gc> {
     fn restore(&mut self) {
         if !self.restored {
             self.ctx.stats.end_compilation();
-            self.ctx.stats.start_execution();
             self.restored = true;
         }
     }
@@ -211,12 +209,7 @@ fn compile_and_load_source<'gc>(
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
     let cps = compile_file(ctx, &source_path, Some(module))?;
-    compile_cps_to_destination(
-        ctx,
-        cps,
-        CompilationOptions::default(),
-        &build_destination,
-    )?;
+    compile_cps_to_destination(ctx, cps, CompilationOptions::default(), &build_destination)?;
 
     load_artifact(ctx, libs, &build_destination)
 }
@@ -304,6 +297,31 @@ mod tests {
                 let _phase = CompilationPhase::new(ctx);
                 Err(())
             })();
+
+            assert!(ctx.stats.execution_active());
+            assert!(!ctx.stats.compilation_active());
+        });
+    }
+
+    #[test]
+    fn nested_compilation_scope_preserves_outer_compilation_state() {
+        with_ctx(|ctx| {
+            ctx.stats.start_execution();
+            ctx.stats.start_compilation();
+
+            assert!(!ctx.stats.execution_active());
+            assert!(ctx.stats.compilation_active());
+
+            {
+                let _phase = CompilationPhase::new(ctx);
+                assert!(!ctx.stats.execution_active());
+                assert!(ctx.stats.compilation_active());
+            }
+
+            assert!(!ctx.stats.execution_active());
+            assert!(ctx.stats.compilation_active());
+
+            ctx.stats.end_compilation();
 
             assert!(ctx.stats.execution_active());
             assert!(!ctx.stats.compilation_active());

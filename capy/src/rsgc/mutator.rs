@@ -3,7 +3,10 @@ use crate::{
         ObjectSlot,
         finalizer::Finalizers,
         mm::MemoryManager,
-        object::{GCObject, HeapObjectHeader, OBJECT_REF_OFFSET, VTable, VTableOf},
+        object::{
+            GCObject, HeapObjectHeader, HeapTypeInfo, OBJECT_REF_OFFSET, VTable, VTableOf,
+            gc_only_type_info,
+        },
         ptr::Gc,
         sync::thread::{AllocFastPath, Thread, current_thread, is_current_thread_registed},
         traits::Trace,
@@ -334,7 +337,25 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             let size = size_of::<T>();
             let align = size_of::<usize>().max(align_of::<T>());
-            let obj = self.raw_allocate(size, align, VTableOf::<'gc, T>::VT, semantics);
+            let obj =
+                self.raw_allocate_with_info(size, align, VTableOf::<'gc, T>::gc_info(), semantics);
+            obj.to_address().store(value);
+
+            Gc::from_gcobj(obj)
+        }
+    }
+
+    #[inline(always)]
+    pub fn allocate_with_info<T: 'gc>(
+        &self,
+        value: T,
+        info: &'static HeapTypeInfo,
+        semantics: AllocationSemantics,
+    ) -> Gc<'gc, T> {
+        unsafe {
+            let size = size_of::<T>();
+            let align = size_of::<usize>().max(align_of::<T>());
+            let obj = self.raw_allocate_with_info(size, align, info, semantics);
             obj.to_address().store(value);
 
             Gc::from_gcobj(obj)
@@ -352,6 +373,23 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         vtable: &'static VTable,
+        semantics: AllocationSemantics,
+    ) -> GCObject {
+        unsafe {
+            self.raw_allocate_out_of_line_with_info(
+                size,
+                alignment,
+                gc_only_type_info(vtable),
+                semantics,
+            )
+        }
+    }
+
+    pub unsafe fn raw_allocate_out_of_line_with_info(
+        &self,
+        size: usize,
+        alignment: usize,
+        info: &'static HeapTypeInfo,
         mut semantics: AllocationSemantics,
     ) -> GCObject {
         if semantics == AllocationSemantics::Default
@@ -363,12 +401,12 @@ impl<'gc> Mutation<'gc> {
         let size = raw_align_up(size, alignment);
         unsafe {
             match semantics {
-                AllocationSemantics::Los => self.raw_allocate_los(size, alignment, vtable),
+                AllocationSemantics::Los => self.raw_allocate_los_with_info(size, alignment, info),
                 AllocationSemantics::Immortal => {
-                    self.raw_allocate_immortal(size, alignment, vtable)
+                    self.raw_allocate_immortal_with_info(size, alignment, info)
                 }
                 AllocationSemantics::NonMoving => {
-                    self.raw_allocate_nonmoving(size, alignment, vtable)
+                    self.raw_allocate_nonmoving_with_info(size, alignment, info)
                 }
                 _ => {
                     self.flush_tlab();
@@ -382,7 +420,7 @@ impl<'gc> Mutation<'gc> {
                     );
                     self.refill_tlab();
 
-                    object_start.store(HeapObjectHeader::new(vtable));
+                    object_start.store(HeapObjectHeader::new(info));
 
                     GCObject::from(object_start + OBJECT_REF_OFFSET)
                 }
@@ -484,6 +522,18 @@ impl<'gc> Mutation<'gc> {
         semantics: AllocationSemantics,
     ) -> GCObject {
         unsafe {
+            self.raw_allocate_slow_with_info(size, alignment, gc_only_type_info(vtable), semantics)
+        }
+    }
+
+    pub unsafe fn raw_allocate_slow_with_info(
+        &self,
+        size: usize,
+        alignment: usize,
+        info: &'static HeapTypeInfo,
+        semantics: AllocationSemantics,
+    ) -> GCObject {
+        unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
                 self.thread.mutator_unchecked(),
@@ -495,7 +545,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(vtable));
+            object_start.store(HeapObjectHeader::new(info));
             GCObject::from(object_start + OBJECT_REF_OFFSET)
         }
     }
@@ -511,6 +561,15 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         vtable: &'static VTable,
     ) -> GCObject {
+        unsafe { self.raw_allocate_immortal_with_info(size, alignment, gc_only_type_info(vtable)) }
+    }
+
+    pub unsafe fn raw_allocate_immortal_with_info(
+        &self,
+        size: usize,
+        alignment: usize,
+        info: &'static HeapTypeInfo,
+    ) -> GCObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -523,7 +582,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(vtable));
+            object_start.store(HeapObjectHeader::new(info));
             GCObject::from(object_start + OBJECT_REF_OFFSET)
         }
     }
@@ -539,6 +598,15 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         vtable: &'static VTable,
     ) -> GCObject {
+        unsafe { self.raw_allocate_nonmoving_with_info(size, alignment, gc_only_type_info(vtable)) }
+    }
+
+    pub unsafe fn raw_allocate_nonmoving_with_info(
+        &self,
+        size: usize,
+        alignment: usize,
+        info: &'static HeapTypeInfo,
+    ) -> GCObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -551,7 +619,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(vtable));
+            object_start.store(HeapObjectHeader::new(info));
             GCObject::from(object_start + OBJECT_REF_OFFSET)
         }
     }
@@ -567,6 +635,15 @@ impl<'gc> Mutation<'gc> {
         alignment: usize,
         vtable: &'static VTable,
     ) -> GCObject {
+        unsafe { self.raw_allocate_los_with_info(size, alignment, gc_only_type_info(vtable)) }
+    }
+
+    pub unsafe fn raw_allocate_los_with_info(
+        &self,
+        size: usize,
+        alignment: usize,
+        info: &'static HeapTypeInfo,
+    ) -> GCObject {
         unsafe {
             self.flush_tlab();
             let object_start = mmtk::memory_manager::alloc_slow_with_options(
@@ -579,7 +656,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(vtable));
+            object_start.store(HeapObjectHeader::new(info));
 
             let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
 
@@ -604,6 +681,21 @@ impl<'gc> Mutation<'gc> {
             let size = layout.size();
             let align = layout.align();
             let obj = self.raw_allocate(size, align, vtable, semantics);
+            obj.to_address().store(MaybeUninit::<T>::uninit());
+            Gc::from_gcobj(obj)
+        }
+    }
+
+    pub fn allocate_with_layout_info<T: 'gc + Trace>(
+        &self,
+        layout: Layout,
+        info: &'static HeapTypeInfo,
+        semantics: AllocationSemantics,
+    ) -> Gc<'gc, MaybeUninit<T>> {
+        unsafe {
+            let size = layout.size();
+            let align = layout.align();
+            let obj = self.raw_allocate_with_info(size, align, info, semantics);
             obj.to_address().store(MaybeUninit::<T>::uninit());
             Gc::from_gcobj(obj)
         }
@@ -635,6 +727,19 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         vtable: &'static VTable,
+        semantics: AllocationSemantics,
+    ) -> GCObject {
+        unsafe {
+            self.raw_allocate_with_info(size, alignment, gc_only_type_info(vtable), semantics)
+        }
+    }
+
+    #[inline(always)]
+    pub unsafe fn raw_allocate_with_info(
+        &self,
+        size: usize,
+        alignment: usize,
+        info: &'static HeapTypeInfo,
         mut semantics: AllocationSemantics,
     ) -> GCObject {
         unsafe {
@@ -657,14 +762,14 @@ impl<'gc> Mutation<'gc> {
                     OBJECT_REF_OFFSET as _,
                 );
                 if !object_start.is_zero() {
-                    object_start.store(HeapObjectHeader::new(vtable));
+                    object_start.store(HeapObjectHeader::new(info));
                     return GCObject::from(object_start + OBJECT_REF_OFFSET);
                 }
 
-                return self.raw_allocate_slow(size, alignment, vtable, semantics);
+                return self.raw_allocate_slow_with_info(size, alignment, info, semantics);
             }
 
-            self.raw_allocate_out_of_line(size, alignment, vtable, semantics)
+            self.raw_allocate_out_of_line_with_info(size, alignment, info, semantics)
         }
     }
 

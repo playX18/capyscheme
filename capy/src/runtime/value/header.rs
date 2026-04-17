@@ -1,33 +1,14 @@
-use crate::rsgc::Trace;
-use easy_bitfield::{BitField, BitFieldTrait};
+use crate::rsgc::mmtk::util::Address;
+use crate::rsgc::object::{GCObject, HeapObjectHeader};
 
-pub type TypeBits = BitField<u64, u16, 0, 16, false>;
-
-#[derive(Trace, Debug, Clone, Copy)]
-#[collect(no_drop)]
-#[repr(C, align(8))]
-pub struct ScmHeader {
-    pub word: u64,
+pub fn heap_header<T>(payload: &T) -> &HeapObjectHeader {
+    GCObject::from_address(Address::from_ref(payload)).header()
 }
 
-impl ScmHeader {
-    #[inline(always)]
-    pub const fn new() -> Self {
-        ScmHeader { word: 0 }
-    }
+pub fn payload_type_bits<T>(payload: &T) -> u16 {
+    heap_header(payload).type_bits()
+}
 
-    pub fn with_type_bits(bits: u16) -> Self {
-        ScmHeader {
-            word: TypeBits::encode(bits),
-        }
-    }
-
-    #[inline(always)]
-    pub fn set_type_bits(&mut self, bits: u16) {
-        self.word = TypeBits::update(bits, self.word);
-    }
-
-    pub fn type_bits(&self) -> u16 {
-        TypeBits::decode(self.word)
-    }
+pub fn payload_info_id<T>(payload: &T) -> u16 {
+    heap_header(payload).info_id()
 }

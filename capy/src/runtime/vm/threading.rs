@@ -3,14 +3,23 @@
 use std::ptr::NonNull;
 
 use crate::prelude::*;
-use crate::rsgc::{Mutation, mmtk::AllocationSemantics};
+use crate::rsgc::{
+    Mutation,
+    mmtk::AllocationSemantics,
+    object::{HeapTypeInfo, VTableOf},
+};
 use crate::runtime::{BlockingOperation, Scheme, YieldReason};
 
 #[repr(C)]
 pub struct Condition {
-    header: ScmHeader,
     pub(crate) cond: parking_lot::Condvar,
 }
+
+static CONDITION_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Condition>::VT,
+    TypeCode8::THREAD_CONDITION.bits() as u16,
+);
+pub static CONDITION_INFO: &'static HeapTypeInfo = &CONDITION_INFO_VALUE;
 
 unsafe impl Trace for Condition {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
@@ -24,9 +33,14 @@ unsafe impl Trace for Condition {
 
 #[repr(C)]
 pub struct Mutex {
-    header: ScmHeader,
     pub(crate) mutex: MutexKind,
 }
+
+static MUTEX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Mutex>::VT,
+    TypeCode8::THREAD_MUTEX.bits() as u16,
+);
+pub static MUTEX_INFO: &'static HeapTypeInfo = &MUTEX_INFO_VALUE;
 
 pub enum MutexKind {
     Reentrant(parking_lot::ReentrantMutex<()>),
@@ -58,18 +72,18 @@ unsafe impl Tagged for Condition {
 #[derive(Trace)]
 #[repr(C)]
 pub struct ThreadObject<'gc> {
-    header: ScmHeader,
     entrypoint: Option<Value<'gc>>,
 }
 
+static THREAD_OBJECT_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, ThreadObject<'static>>::VT,
+    TypeCode8::THREAD.bits() as u16,
+);
+pub static THREAD_OBJECT_INFO: &'static HeapTypeInfo = &THREAD_OBJECT_INFO_VALUE;
+
 impl<'gc> ThreadObject<'gc> {
     pub(crate) fn new(mc: Mutation<'gc>, entrypoint: Option<Value<'gc>>) -> Gc<'gc, Self> {
-        let obj = ThreadObject {
-            header: ScmHeader::with_type_bits(TypeCode8::THREAD.bits() as _),
-
-            entrypoint,
-        };
-        Gc::new(mc, obj)
+        Gc::new_with_info(mc, ThreadObject { entrypoint }, THREAD_OBJECT_INFO)
     }
 }
 
@@ -129,7 +143,6 @@ pub mod threading_ops {
     pub fn make_mutex(reentrant: Option<bool>) -> Value<'gc> {
         let reentrant = reentrant.unwrap_or(false);
         let mutex = Mutex {
-            header: ScmHeader::with_type_bits(TypeCode8::THREAD_MUTEX.bits() as _),
             mutex: if reentrant {
                 MutexKind::Reentrant(parking_lot::ReentrantMutex::new(()))
             } else {
@@ -137,7 +150,9 @@ pub mod threading_ops {
             },
         };
         // mutex has to be non-moving so that parking_lot can use its address as a key.
-        let gc_mutex = nctx.ctx.allocate(mutex, AllocationSemantics::NonMoving);
+        let gc_mutex =
+            nctx.ctx
+                .allocate_with_info(mutex, MUTEX_INFO, AllocationSemantics::NonMoving);
         nctx.return_(gc_mutex.into())
     }
     #[scheme(name = "mutex-acquire")]
@@ -220,10 +235,11 @@ pub mod threading_ops {
     #[scheme(name = "make-condition")]
     pub fn make_condition() -> Value<'gc> {
         let condition = Condition {
-            header: ScmHeader::with_type_bits(TypeCode8::THREAD_CONDITION.bits() as _),
             cond: parking_lot::Condvar::new(),
         };
-        let gc_condition = nctx.ctx.allocate(condition, AllocationSemantics::NonMoving);
+        let gc_condition =
+            nctx.ctx
+                .allocate_with_info(condition, CONDITION_INFO, AllocationSemantics::NonMoving);
         nctx.return_(gc_condition.into())
     }
 

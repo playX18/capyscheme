@@ -1,5 +1,6 @@
 use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 
+use crate::rsgc::object::{HeapTypeInfo, VTableOf};
 use crate::rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
 use crate::{
@@ -7,8 +8,7 @@ use crate::{
     runtime::{
         Context,
         value::{
-            Boxed, HashTable, HashTableType, IntoValue, ScmHeader, Str, Symbol, Tagged, TypeCode8,
-            Value,
+            Boxed, HashTable, HashTableType, IntoValue, Str, Symbol, Tagged, TypeCode8, Value,
         },
     },
 };
@@ -44,7 +44,6 @@ pub type ModuleRef<'gc> = Gc<'gc, Module<'gc>>;
 
 #[repr(C)]
 pub struct Module<'gc> {
-    pub header: ScmHeader,
     pub obarray: Lock<Gc<'gc, HashTable<'gc>>>,
     pub uses: Lock<Value<'gc>>,
     pub binder: Value<'gc>,
@@ -62,6 +61,12 @@ pub struct Module<'gc> {
     pub inlinable_exports: Lock<Value<'gc>>,
     pub environment: Lock<Value<'gc>>,
 }
+
+static MODULE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Module<'static>>::VT,
+    TypeCode8::MODULE.bits() as u16,
+);
+pub static MODULE_INFO: &'static HeapTypeInfo = &MODULE_INFO_VALUE;
 
 unsafe impl<'gc> Trace for Module<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
@@ -93,10 +98,9 @@ impl<'gc> Module<'gc> {
         uses: Value<'gc>,
         binder: impl IntoValue<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new(
+        Gc::new_with_info(
             *ctx,
             Self {
-                header: ScmHeader::with_type_bits(TypeCode8::MODULE.bits() as _),
                 obarray: Lock::new(HashTable::new(*ctx, HashTableType::Eq, size, 0.75)),
                 uses: Lock::new(uses),
                 version: Lock::new(Value::null()),
@@ -119,6 +123,7 @@ impl<'gc> Module<'gc> {
                 ))),
                 environment: Lock::new(Value::new(false)),
             },
+            MODULE_INFO,
         )
     }
 
@@ -690,9 +695,14 @@ unsafe impl<'gc> Tagged for Module<'gc> {
 #[collect(no_drop)]
 #[repr(C)]
 pub struct Variable<'gc> {
-    pub header: ScmHeader,
     pub value: Lock<Value<'gc>>,
 }
+
+static VARIABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Variable<'static>>::VT,
+    TypeCode8::VARIABLE.bits() as u16,
+);
+pub static VARIABLE_INFO: &'static HeapTypeInfo = &VARIABLE_INFO_VALUE;
 
 const _: () = {
     assert!(offset_of!(Variable, value) == offset_of!(Boxed, val));
@@ -700,12 +710,12 @@ const _: () = {
 
 impl<'gc> Variable<'gc> {
     pub fn new(ctx: Context<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new(
+        Gc::new_with_info(
             *ctx,
             Self {
-                header: ScmHeader::with_type_bits(TypeCode8::VARIABLE.bits() as _),
                 value: Lock::new(value),
             },
+            VARIABLE_INFO,
         )
     }
 

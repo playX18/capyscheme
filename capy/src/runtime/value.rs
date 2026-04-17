@@ -2,7 +2,7 @@ use crate::rsgc::{
     Gc, Mutation, ObjectSlot, Trace,
     barrier::Write,
     mmtk::{util::Address, vm::SlotVisitor},
-    object::GCObject,
+    object::{GCObject, HeapObjectHeader, HeapTypeInfo, VTableOf},
 };
 use std::{fmt, hash::Hash, marker::PhantomData};
 
@@ -11,10 +11,9 @@ use std::{fmt, hash::Hash, marker::PhantomData};
 /// Uses NaN boxing layout based on JavaScriptCore NaN boxing, we formally prove
 /// the correctness of this encoding in tests/z3_value_encoding_proof.py.
 ///
-/// Heap objects store their tags in the header provided by RSGC crate. Some objects
-/// such as vectors require first word to be an additional header to store the length
-/// or any other information. This header is always 64 bits in size and in case of
-/// vectors can be loaded as a valid fixnum value.
+/// Heap objects store their tags in the GC header that lives at `OBJECT_REF_OFFSET`
+/// bytes before the payload. Some objects still use their first payload word for
+/// per-instance metadata such as variable lengths.
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Value<'gc> {
@@ -578,17 +577,11 @@ impl From<TypeCode16> for u16 {
 }
 
 fn typ8(x: GCObject) -> TypeCode8 {
-    unsafe {
-        let hdr = x.to_address().as_ref::<ScmHeader>();
-        TypeCode8::from(hdr.type_bits() as u8)
-    }
+    TypeCode8::from(x.header().type_bits() as u8)
 }
 
 fn typ16(x: GCObject) -> TypeCode16 {
-    unsafe {
-        let hdr = x.to_address().as_ref::<ScmHeader>();
-        TypeCode16::from(hdr.type_bits())
-    }
+    TypeCode16::from(x.header().type_bits())
 }
 
 impl<'gc> Value<'gc> {
@@ -596,12 +589,10 @@ impl<'gc> Value<'gc> {
         x.into()
     }
 
-    pub fn header(&self) -> &'gc ScmHeader {
-        unsafe {
-            debug_assert!(self.is_cell(), "Value must be a cell to have a header");
-            let obj = self.as_cell_raw();
-            obj.to_address().as_ref::<ScmHeader>()
-        }
+    pub fn header(&self) -> &'gc HeapObjectHeader {
+        debug_assert!(self.is_cell(), "Value must be a cell to have a header");
+        let obj = self.as_cell_raw();
+        obj.header()
     }
 
     pub fn is_immediate(&self) -> bool {
@@ -840,19 +831,18 @@ impl<'gc> std::hash::Hash for ValueEqual<'gc> {
 #[derive(Trace)]
 #[collect(no_drop)]
 pub struct Boxed<'gc> {
-    pub header: ScmHeader,
     pub val: Value<'gc>,
 }
 
+static BOX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Boxed<'static>>::VT,
+    TypeCode8::BOX.bits() as u16,
+);
+pub static BOX_INFO: &'static HeapTypeInfo = &BOX_INFO_VALUE;
+
 impl<'gc> Boxed<'gc> {
     pub fn new(ctx: Context<'gc>, val: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new(
-            *ctx,
-            Self {
-                header: ScmHeader::with_type_bits(TypeCode8::BOX.bits() as _),
-                val,
-            },
-        )
+        Gc::new_with_info(*ctx, Self { val }, BOX_INFO)
     }
 }
 

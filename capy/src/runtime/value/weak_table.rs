@@ -13,6 +13,7 @@ use crate::rsgc::{
     finalizer::FinalizationNotify,
     global::Global,
     mutator::Mutation,
+    object::{HeapTypeInfo, VTableOf},
     sync::monitor::Monitor,
 };
 use simplehash::MurmurHasher64;
@@ -29,11 +30,15 @@ use super::{WeakValue, *};
 /// For more information read [`GcEphemeron`](crate::rsgc::weak::GcEphemeron) documentation.
 #[repr(C, align(8))]
 pub struct WeakMapping<'gc> {
-    #[allow(dead_code)]
-    header: ScmHeader,
     pub(crate) _key: Value<'gc>,
     pub(crate) _value: Value<'gc>,
 }
+
+static WEAK_MAPPING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, WeakMapping<'static>>::VT,
+    TypeCode8::WEAK_MAPPING.bits() as u16,
+);
+pub static WEAK_MAPPING_INFO: &'static HeapTypeInfo = &WEAK_MAPPING_INFO_VALUE;
 
 unsafe impl<'gc> Trace for WeakMapping<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {
@@ -64,15 +69,13 @@ unsafe impl<'gc> Tagged for WeakMapping<'gc> {
 impl<'gc> WeakMapping<'gc> {
     pub fn new(ctx: Context<'gc>, key: Value<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
         assert!(key.is_cell(), "weak-mappings can only have cells as keys");
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode8::WEAK_MAPPING.bits() as _);
-        let mapping = Gc::new(
+        let mapping = Gc::new_with_info(
             *ctx,
             Self {
-                header: hdr,
                 _key: key,
                 _value: value,
             },
+            WEAK_MAPPING_INFO,
         );
 
         mapping
@@ -156,10 +159,14 @@ type Entries<'gc> = Gc<'gc, Array<Lock<Option<Entry<'gc>>>>>;
 /// as ephemerons which is equal to [`WeakMapping`].
 #[repr(C, align(8))]
 pub struct WeakTable<'gc> {
-    #[allow(dead_code)]
-    header: ScmHeader,
     inner: Monitor<WeakTableInner<'gc>>,
 }
+
+static WEAK_TABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, WeakTable<'static>>::VT,
+    TypeCode8::WEAKTABLE.bits() as u16,
+);
+pub static WEAK_TABLE_INFO: &'static HeapTypeInfo = &WEAK_TABLE_INFO_VALUE;
 
 unsafe impl<'gc> Trace for WeakTable<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
@@ -213,15 +220,12 @@ impl<'gc> WeakTable<'gc> {
             mod_count: Cell::new(0),
         };
 
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode8::WEAKTABLE.bits() as _);
-
-        let table = Gc::new(
+        let table = Gc::new_with_info(
             ctx,
             Self {
-                header: hdr,
                 inner: Monitor::new(inner),
             },
+            WEAK_TABLE_INFO,
         );
 
         ALL_WEAK_TABLES
@@ -241,7 +245,6 @@ impl<'gc> WeakTable<'gc> {
         kvs: Vec<(Value<'gc>, Value<'gc>)>,
     ) {
         unsafe {
-            let hdr = obj.to_address().to_mut_ptr::<ScmHeader>().read();
             let entries = Array::with(*ctx, 8, |_, _| Lock::new(None));
             let inner = WeakTableInner {
                 entries: Lock::new(entries),
@@ -254,7 +257,6 @@ impl<'gc> WeakTable<'gc> {
             obj.to_address()
                 .to_mut_ptr::<WeakTable<'gc>>()
                 .write(WeakTable {
-                    header: hdr,
                     inner: Monitor::new(inner),
                 });
 

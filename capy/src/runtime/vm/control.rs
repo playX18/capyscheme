@@ -5,14 +5,22 @@
 
 use crate::prelude::*;
 use crate::prelude::{ClosureRef, Value};
-use crate::rsgc::{Gc, Trace};
+use crate::rsgc::{
+    Gc, Trace,
+    object::{HeapTypeInfo, VTableOf},
+};
 
 #[repr(C)]
 #[derive(Trace)]
 pub struct ContinuationMarks<'gc> {
-    pub header: ScmHeader,
     pub cmarks: Value<'gc>,
 }
+
+static CONTINUATION_MARKS_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, ContinuationMarks<'static>>::VT,
+    TypeCode8::CMARKS.bits() as u16,
+);
+pub static CONTINUATION_MARKS_INFO: &'static HeapTypeInfo = &CONTINUATION_MARKS_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for ContinuationMarks<'gc> {
     const TC8: TypeCode8 = TypeCode8::CMARKS;

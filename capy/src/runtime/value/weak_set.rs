@@ -14,12 +14,13 @@ use crate::rsgc::{
     mmtk::util::Address,
     mutator::Mutation,
     object::GCObject,
+    object::{HeapTypeInfo, VTableOf},
     sync::monitor::Monitor,
     weak::Weak,
 };
 
 use crate::runtime::{
-    value::{ScmHeader, Symbol},
+    value::Symbol,
     vmthread::{VM_THREAD, VMThreadTask},
 };
 
@@ -91,10 +92,14 @@ type Entries<'gc> = Gc<'gc, Array<Lock<WeakEntry<'gc>>>>;
 
 #[repr(C, align(8))]
 pub struct WeakSet<'gc> {
-    #[allow(dead_code)]
-    header: ScmHeader,
     pub(crate) inner: Monitor<WeakSetInner<'gc>>,
 }
+
+static WEAK_SET_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, WeakSet<'static>>::VT,
+    TypeCode8::WEAKSET.bits() as u16,
+);
+pub static WEAK_SET_INFO: &'static HeapTypeInfo = &WEAK_SET_INFO_VALUE;
 
 pub(crate) struct WeakSetInner<'gc> {
     pub(crate) entries: Lock<Entries<'gc>>,
@@ -513,13 +518,10 @@ impl<'gc> WeakSet<'gc> {
         n = HASHSET_SIZES[i];
 
         let entries = Array::with(mc, n, |_, _| Lock::new(WeakEntry::broken()));
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode8::WEAKSET.bits() as _);
 
-        let weak_set = Gc::new(
+        let weak_set = Gc::new_with_info(
             mc,
             Self {
-                header: hdr,
                 inner: Monitor::new(WeakSetInner {
                     entries: Lock::new(entries),
                     size: Cell::new(n),
@@ -530,6 +532,7 @@ impl<'gc> WeakSet<'gc> {
                     min_size_index: Cell::new(i),
                 }),
             },
+            WEAK_SET_INFO,
         );
 
         ALL_WEAK_SETS
@@ -542,39 +545,6 @@ impl<'gc> WeakSet<'gc> {
 
         weak_set
     }
-
-    /*pub(crate) unsafe fn at_object(ctx: Context<'gc>, obj: GCObject, keys: &[Value<'gc>]) {
-        let mut i = 0;
-        let mut n = keys.len().min(31);
-
-        while i + 1 < HASHSET_SIZES.len() && n > HASHSET_SIZES[i] {
-            i += 1;
-        }
-
-        n = HASHSET_SIZES[i];
-
-        let entries = Array::with(ctx, n, |_, _| Lock::new(WeakEntry::broken()));
-
-        unsafe {
-            let hdr = obj.to_address().to_mut_ptr::<ScmHeader>().read();
-            let inner = WeakSetInner {
-                entries: Lock::new(entries),
-                size: Cell::new(n),
-                n_items: Cell::new(0),
-                lower: Cell::new(0),
-                upper: Cell::new(9 * n / 10),
-                size_index: Cell::new(i),
-                min_size_index: Cell::new(i),
-            };
-
-            obj.to_address()
-                .to_mut_ptr::<WeakSet<'gc>>()
-                .write(WeakSet {
-                    header: hdr,
-                    inner: Monitor::new(inner),
-                });
-        }
-    }*/
 
     #[cold]
     #[inline(never)]

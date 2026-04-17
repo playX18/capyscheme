@@ -569,13 +569,15 @@ mod tests {
                 alloc.value_slots[&ValueId(1)],
                 alloc.value_slots[&ValueId(2)]
             );
-            assert!(alloc.edge_copies[&EdgeKey {
-                from: BlockId(0),
-                to: BlockId(1),
-                kind: EdgeKind::Jump,
-            }]
-                .ops
-                .is_empty());
+            assert!(
+                alloc.edge_copies[&EdgeKey {
+                    from: BlockId(0),
+                    to: BlockId(1),
+                    kind: EdgeKind::Jump,
+                }]
+                    .ops
+                    .is_empty()
+            );
         });
     }
 

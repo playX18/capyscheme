@@ -971,7 +971,6 @@ fn term_uses(term: &Terminator<'_>) -> Vec<ValueId> {
 mod tests {
     use super::*;
     use crate::{
-        cps::packed::Primitive,
         cps_ssa::{BlockParam, ConstRef, ImmediateConst, Inst, InstKind, ProcKind},
         rsgc::alloc::Array,
         runtime::{Context, Scheme},
@@ -1575,43 +1574,6 @@ mod tests {
                 }
                 assert!(*reg != crate::jit::x64::abi::CONTEXT_POINTER_REG);
             }
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "not yet implemented")]
-    fn x64_primcall_constraints_are_stubbed() {
-        with_ctx(|ctx| {
-            let proc = proc(
-                ctx,
-                ProcKind::Continuation,
-                BlockId(0),
-                ValueId(0),
-                None,
-                &[ValueId(1)],
-                None,
-                &[block(
-                    ctx,
-                    BlockId(0),
-                    &[ValueId(0), ValueId(1)],
-                    &[Inst {
-                        result: Some(ValueId(2)),
-                        source: None,
-                        kind: InstKind::PrimCall {
-                            prim: Primitive::Cons,
-                            args: Array::from_slice(*ctx, &[ValueId(1), ValueId(1)]),
-                        },
-                    }],
-                    Terminator::TailContinue {
-                        callee: TailTarget::Indirect {
-                            closure: ValueId(0),
-                        },
-                        args: Array::from_slice(*ctx, &[ValueId(1)]),
-                        source: None,
-                    },
-                )],
-            );
-            let _ = allocate_proc_x64(&proc);
         });
     }
 }
