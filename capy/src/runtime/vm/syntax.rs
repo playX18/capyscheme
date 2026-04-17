@@ -1,4 +1,7 @@
-use crate::rsgc::{Gc, Trace};
+use crate::rsgc::{
+    Gc, Trace,
+    object::{HeapTypeInfo, VTableOf},
+};
 
 use crate::{
     expander::{get_source_property, sym_column, sym_filename, sym_line},
@@ -8,7 +11,7 @@ use crate::{
         Context,
         fluids::Fluid,
         modules::Module,
-        value::{Closure, Pair, ScmHeader, Str, Tagged, Tuple, TypeCode8, Value, Vector},
+        value::{Closure, Pair, Str, Tagged, Tuple, TypeCode8, Value, Vector},
         vm::ffi::Pointer,
     },
 };
@@ -16,13 +19,18 @@ use crate::{
 #[derive(Trace)]
 #[collect(no_drop)]
 pub struct Syntax<'gc> {
-    header: ScmHeader,
     pub(crate) expr: Value<'gc>,
     pub(crate) wrap: Value<'gc>,
     pub(crate) module: Value<'gc>,
     pub(crate) source: Value<'gc>,
     pub(crate) properties: Value<'gc>,
 }
+
+static SYNTAX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Syntax<'static>>::VT,
+    TypeCode8::SYNTAX.bits() as u16,
+);
+pub static SYNTAX_INFO: &'static HeapTypeInfo = &SYNTAX_INFO_VALUE;
 
 impl<'gc> Syntax<'gc> {
     pub fn new(
@@ -33,16 +41,16 @@ impl<'gc> Syntax<'gc> {
         source: Value<'gc>,
         properties: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new(
+        Gc::new_with_info(
             *ctx,
             Self {
-                header: ScmHeader::with_type_bits(TypeCode8::SYNTAX.bits() as _),
                 expr,
                 wrap,
                 module,
                 source,
                 properties,
             },
+            SYNTAX_INFO,
         )
     }
 
@@ -350,11 +358,16 @@ pub fn sourcev_to_props<'gc>(ctx: Context<'gc>, sourcev: Value<'gc>) -> Value<'g
 #[derive(Trace)]
 #[collect(no_drop)]
 pub struct SyntaxTransformer<'gc> {
-    header: ScmHeader,
     pub(crate) name: Value<'gc>,
     pub(crate) typ: Value<'gc>,
     pub(crate) binding: Value<'gc>,
 }
+
+static SYNTAX_TRANSFORMER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, SyntaxTransformer<'static>>::VT,
+    TypeCode8::SYNCLO.bits() as u16,
+);
+pub static SYNTAX_TRANSFORMER_INFO: &'static HeapTypeInfo = &SYNTAX_TRANSFORMER_INFO_VALUE;
 
 impl<'gc> SyntaxTransformer<'gc> {
     pub fn new(
@@ -363,15 +376,7 @@ impl<'gc> SyntaxTransformer<'gc> {
         typ: Value<'gc>,
         binding: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new(
-            *ctx,
-            Self {
-                header: ScmHeader::with_type_bits(TypeCode8::SYNCLO.bits() as _),
-                name,
-                typ,
-                binding,
-            },
-        )
+        Gc::new_with_info(*ctx, Self { name, typ, binding }, SYNTAX_TRANSFORMER_INFO)
     }
 
     pub fn name(&self) -> Value<'gc> {

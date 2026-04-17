@@ -1657,18 +1657,12 @@ prim!(
 
         let size = size_of::<Vector>() as i64 + args.len() as i64 * size_of::<Value>() as i64;
         let size = ssa.builder.ins().iconst(types::I64, size);
-        let vt = ssa.import_static("VECTOR_VTABLE", types::I64);
+        let info = ssa.import_static("MUTABLE_VECTOR_INFO_STATIC", types::I64);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let tc16 = ssa.builder.ins().iconst(types::I16, TypeCode16::MUTABLE_VECTOR.bits() as i64);
-
-        let call = ssa.builder.ins().call(ssa.thunks.alloc_tc16, &[ctx, vt, tc16, size]);
+        let call = ssa.builder.ins().call(ssa.thunks.alloc_with_info, &[ctx, info, size]);
         let vec = ssa.builder.inst_results(call)[0];
-
-
-        let hdr = ScmHeader::with_type_bits(TypeCode16::MUTABLE_VECTOR.bits()).word;
-        let hdr = ssa.builder.ins().iconst(types::I64, hdr as i64);
-        ssa.builder.ins().store(ir::MemFlags::trusted(), hdr, vec, offset_of!(Vector, hdr) as i32);
-        ssa.builder.ins().store(ir::MemFlags::trusted(), size, vec, offset_of!(Vector, length) as i32);
+        let len = ssa.builder.ins().iconst(types::I64, args.len() as i64);
+        ssa.builder.ins().store(ir::MemFlags::trusted(), len, vec, offset_of!(Vector, length) as i32);
         for (i, &arg) in args.iter().enumerate() {
             let arg = ssa.atom(arg);
             ssa.builder.ins().store(ir::MemFlags::trusted(), arg, vec, offset_of!(Vector, data) as i32 + i as i32 * size_of::<Value>() as i32);
@@ -2479,29 +2473,6 @@ prim!(
         ssa.builder.ins().debugtrap();
         PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::new(true).bits() as i64))
     },
-
-   /*  "tuple" => tuple(ssa, args, _h) {
-        let mut hdr = ScmHeader::with_type_bits(TypeCode8::TUPLE.bits() as _);
-        hdr.word |= TupleLengthBits::encode(args.len() as _);
-
-        let size = size_of::<Tuple>() as i64 + args.len() as i64 * size_of::<Value>() as i64;
-
-        let size = ssa.builder.ins().iconst(types::I64, size);
-        let vt = ssa.import_static("TUPLE_VTABLE", types::I64);
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let tc8 = ssa.builder.ins().iconst(types::I8, TypeCode8::TUPLE.bits() as i64);
-        let call = ssa.builder.ins().call(ssa.thunks.alloc_tc8, &[ctx, vt, tc8, size]);
-        let tuple = ssa.builder.inst_results(call)[0];
-        let hdr = ssa.builder.ins().iconst(types::I64, hdr.word as i64);
-        ssa.builder.ins().store(ir::MemFlags::trusted(), hdr, tuple, offset_of!(Tuple, hdr) as i32);
-        for (i, arg) in args.iter().enumerate() {
-            let val = ssa.atom(*arg);
-            ssa.builder.ins().store(ir::MemFlags::trusted(), val, tuple, offset_of!(Tuple, data) as i32 + i as i32 * size_of::<Value>() as i32);
-        }
-        PrimValue::Value(tuple)
-    },
-*/
-
     "tuple-size" => tuple_size(ssa, args, _h) {
         let arg = ssa.atom(args[0]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);

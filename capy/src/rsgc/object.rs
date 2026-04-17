@@ -4,7 +4,14 @@ use core::fmt;
 use mmtk::util::{
     Address, ObjectReference, constants::LOG_BYTES_IN_ADDRESS, conversions::raw_align_up,
 };
-use std::marker::PhantomData;
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicPtr, AtomicU16, Ordering},
+    },
+};
 
 /// Offset from allocation to the actual object
 pub const OBJECT_REF_OFFSET: isize = 8;
@@ -15,6 +22,7 @@ pub const HASHCODE_BYTES: usize = size_of::<u64>();
 const HASH_UNHASHED: u8 = 0;
 const HASH_HASHED: u8 = 1;
 const HASH_HASHED_AND_MOVED: u8 = 2;
+pub const UNKNOWN_TYPE_BITS: u16 = u16::MAX;
 
 #[derive()]
 #[repr(C)]
@@ -28,25 +36,101 @@ pub struct VTable {
     pub type_name: &'static str,
 }
 
-#[cfg(target_pointer_width = "64")]
-const VTABLE_BITS: usize = 57;
-#[cfg(target_pointer_width = "32")]
-const VTABLE_BITS: usize = 32;
-
-type VTableBits = BitField<u64, usize, 0, VTABLE_BITS, false>;
-type HashBits = BitField<u64, u8, { VTableBits::NEXT_BIT }, 2, false>;
+pub type TypeBits = BitField<u64, u16, 0, 16, false>;
+type InfoIdBits = BitField<u64, u16, { TypeBits::NEXT_BIT }, 16, false>;
+type HashBits = BitField<u64, u8, 57, 2, false>;
 type FinalizationState = BitField<u64, bool, { HashBits::NEXT_BIT }, 1, false>;
 
 type LastBitfield = FinalizationState;
+
+static TYPE_INFO_REGISTRY_LOCK: OnceLock<Mutex<usize>> = OnceLock::new();
+static TYPE_INFO_TABLE: OnceLock<Box<[AtomicPtr<HeapTypeInfo>]>> = OnceLock::new();
+static GC_ONLY_INFO_MAP: OnceLock<Mutex<HashMap<usize, &'static HeapTypeInfo>>> = OnceLock::new();
+
+fn type_info_registry_lock() -> &'static Mutex<usize> {
+    TYPE_INFO_REGISTRY_LOCK.get_or_init(|| Mutex::new(0))
+}
+
+fn type_info_table() -> &'static [AtomicPtr<HeapTypeInfo>] {
+    TYPE_INFO_TABLE.get_or_init(|| {
+        (0..=(u16::MAX as usize))
+            .map(|_| AtomicPtr::new(std::ptr::null_mut()))
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
+    })
+}
+
+fn gc_only_info_map() -> &'static Mutex<HashMap<usize, &'static HeapTypeInfo>> {
+    GC_ONLY_INFO_MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub struct HeapTypeInfo {
+    pub vtable: &'static VTable,
+    pub type_bits: u16,
+    id: AtomicU16,
+}
+
+impl HeapTypeInfo {
+    pub const fn new(vtable: &'static VTable, type_bits: u16) -> Self {
+        Self {
+            vtable,
+            type_bits,
+            id: AtomicU16::new(0),
+        }
+    }
+
+    pub fn id(&'static self) -> u16 {
+        let existing = self.id.load(Ordering::Acquire);
+        if existing != 0 {
+            return existing;
+        }
+
+        let mut next = type_info_registry_lock().lock().unwrap();
+        let existing = self.id.load(Ordering::Relaxed);
+        if existing != 0 {
+            return existing;
+        }
+
+        *next += 1;
+        let id = u16::try_from(*next).expect("HeapTypeInfo registry exhausted u16::MAX ids");
+        type_info_table()[id as usize].store(self as *const _ as *mut _, Ordering::Release);
+        self.id.store(id, Ordering::Release);
+        id
+    }
+
+    pub fn lookup(id: u16) -> &'static Self {
+        assert_ne!(id, 0, "HeapTypeInfo id 0 is reserved");
+        let ptr = type_info_table()[id as usize].load(Ordering::Acquire);
+        assert!(
+            !ptr.is_null(),
+            "HeapTypeInfo id {id} is not registered in the global info table"
+        );
+        unsafe { &*ptr }
+    }
+}
+
+pub fn gc_only_type_info(vtable: &'static VTable) -> &'static HeapTypeInfo {
+    let key = vtable as *const VTable as usize;
+    let mut infos = gc_only_info_map().lock().unwrap();
+    if let Some(info) = infos.get(&key) {
+        return info;
+    }
+
+    let info = Box::leak(Box::new(HeapTypeInfo::new(vtable, UNKNOWN_TYPE_BITS)));
+    infos.insert(key, info);
+    info
+}
 
 pub struct HeapObjectHeader {
     word: AtomicBitfieldContainer<u64>,
 }
 
 impl HeapObjectHeader {
-    pub fn new(vt: &'static VTable) -> Self {
+    pub fn new(info: &'static HeapTypeInfo) -> Self {
         Self {
-            word: AtomicBitfieldContainer::new(VTableBits::encode(vt as *const VTable as usize)),
+            word: AtomicBitfieldContainer::new(
+                TypeBits::encode(info.type_bits) | InfoIdBits::encode(info.id()),
+            ),
         }
     }
 
@@ -58,23 +142,20 @@ impl HeapObjectHeader {
         self.word.update::<HashBits>(state);
     }
 
-    pub fn vtable(&self) -> &'static VTable {
-        unsafe {
-            let bits = self.word.read::<VTableBits>();
-            std::ptr::with_exposed_provenance::<VTable>(bits)
-                .as_ref()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "Invalid vtable pointer: {bits:#x} in object header {:p} for object {:p}",
-                        self,
-                        (self as *const Self as isize + OBJECT_REF_OFFSET) as *const ()
-                    )
-                })
-        }
+    pub fn type_bits(&self) -> u16 {
+        self.word.read::<TypeBits>()
     }
 
-    pub fn vtable_bits(&self) -> usize {
-        self.word.read::<VTableBits>()
+    pub fn info_id(&self) -> u16 {
+        self.word.read::<InfoIdBits>()
+    }
+
+    pub fn type_info(&self) -> &'static HeapTypeInfo {
+        HeapTypeInfo::lookup(self.info_id())
+    }
+
+    pub fn vtable(&self) -> &'static VTable {
+        self.type_info().vtable
     }
 
     pub fn finalization_state(&self) -> bool {
@@ -290,11 +371,8 @@ impl ObjectModel {
             to_obj.header().set_hash_state(HASH_HASHED_AND_MOVED);
         }
 
-        debug_assert!(to_obj.header().vtable_bits() != 0);
-        debug_assert_eq!(
-            to_obj.header().vtable_bits(),
-            from_obj.header().vtable_bits()
-        );
+        debug_assert!(to_obj.header().info_id() != 0);
+        debug_assert_eq!(to_obj.header().info_id(), from_obj.header().info_id());
 
         to_obj
     }
@@ -450,4 +528,71 @@ impl<'gc, T: 'gc + Trace> VTableOf<'gc, T> {
         compute_size: None,
         compute_alignment: None,
     };
+
+    pub fn gc_info() -> &'static HeapTypeInfo {
+        gc_only_type_info(Self::VT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Dummy;
+
+    unsafe impl Trace for Dummy {
+        unsafe fn trace(&mut self, _visitor: &mut Visitor) {}
+
+        unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
+    }
+
+    static DUMMY_INFO_VALUE: HeapTypeInfo =
+        HeapTypeInfo::new(VTableOf::<'static, Dummy>::VT, 0x1234);
+    static OTHER_DUMMY_INFO_VALUE: HeapTypeInfo =
+        HeapTypeInfo::new(VTableOf::<'static, Dummy>::VT, 0x5678);
+
+    #[test]
+    fn heap_header_layout_stays_single_word() {
+        assert_eq!(size_of::<HeapObjectHeader>(), 8);
+        assert_eq!(OBJECT_REF_OFFSET, 8);
+    }
+
+    #[test]
+    fn heap_header_roundtrips_type_bits_and_info() {
+        let header = HeapObjectHeader::new(&DUMMY_INFO_VALUE);
+
+        assert_eq!(header.type_bits(), 0x1234);
+        assert_eq!(header.info_id(), DUMMY_INFO_VALUE.id());
+        assert_eq!(
+            header.vtable().type_name,
+            VTableOf::<'static, Dummy>::VT.type_name
+        );
+        assert_eq!(header.hash_state(), HASH_UNHASHED);
+        assert!(!header.finalization_state());
+    }
+
+    #[test]
+    fn heap_type_info_ids_are_stable_and_distinct() {
+        let first = DUMMY_INFO_VALUE.id();
+        let second = DUMMY_INFO_VALUE.id();
+        let other = OTHER_DUMMY_INFO_VALUE.id();
+
+        assert_eq!(first, second);
+        assert_ne!(first, 0);
+        assert_ne!(first, other);
+    }
+
+    #[test]
+    fn heap_type_info_registration_is_thread_safe() {
+        static CONCURRENT_INFO_VALUE: HeapTypeInfo =
+            HeapTypeInfo::new(VTableOf::<'static, Dummy>::VT, 0x9abc);
+
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    assert_eq!(CONCURRENT_INFO_VALUE.id(), CONCURRENT_INFO_VALUE.id());
+                });
+            }
+        });
+    }
 }

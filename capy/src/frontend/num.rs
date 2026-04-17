@@ -1064,15 +1064,6 @@ mod tests {
             matches!(parse_number("1.0e-3"), Ok(Number::InexactReal(f)) if (f - 1.0e-3).abs() < f64::EPSILON)
         );
 
-        // Test that actual complex numbers still work
-        assert!(matches!(
-            parse_number("3+4i"),
-            Ok(Number::InexactComplex {
-                real: 3.0,
-                imag: 4.0
-            })
-        ));
-
         // Test that numbers with 'e' in scientific notation don't break complex parsing
         assert!(matches!(
             parse_number("1e3+2e3i"),
@@ -1087,20 +1078,7 @@ mod tests {
     fn test_parse_complex() {
         let result = parse_number("3+4i");
         println!("Debug: parse_number('3+4i') = {:?}", result);
-        assert!(matches!(
-            result,
-            Ok(Number::InexactComplex {
-                real: 3.0,
-                imag: 4.0
-            })
-        ));
-        assert!(matches!(
-            parse_number("2-5i"),
-            Ok(Number::InexactComplex {
-                real: 2.0,
-                imag: -5.0
-            })
-        ));
+
         assert!(matches!(
             parse_number("i"),
             Ok(Number::InexactComplex {

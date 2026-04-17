@@ -8,6 +8,7 @@ use crate::expander::{
     free_vars::resolve_free_vars, letrectify::letrectify, primitives,
 };
 use crate::rsgc::Gc;
+use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
 use crate::runtime::{Context, modules::Module, value::Value};
 use crate::utils::pass_profile::ProfileScope;
 
@@ -40,6 +41,7 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
     expand_primitives: bool,
 ) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let original_il = il;
+    let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Lowering);
 
     if expand_primitives && let Some(module) = module {
         il = primitives::resolve_primitives(ctx, il, module);

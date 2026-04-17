@@ -4,11 +4,20 @@
 
 ;; Self-hosted compiler which utilizes code written in Scheme
 ;; to compile & optimize Scheme.
+(define (%runtime-stats-timed-reader thunk)
+  (let ([token #f])
+    (dynamic-wind
+      (lambda ()
+        (set! token ((@@ (capy) %runtime-stats-begin-reader))))
+      thunk
+      (lambda ()
+        ((@@ (capy) %runtime-stats-end-reader) token)))))
+
 (%%file-compiler
   (lambda (filename compiled-path env load-thunk?)
     (define (read-all in)
       (let lp ([exps '()])
-        (let ([exp (read-syntax in)])
+        (let ([exp (%runtime-stats-timed-reader (lambda () (read-syntax in)))])
           (cond
             [(eof-object? exp) (reverse exps)]
             [else (lp (cons exp exps))]))))
@@ -20,13 +29,18 @@
       "Compiling file ~a to ~a"
       filename
       output-file)
-
-    (call-with-input-file filename
-      (lambda (in)
-        (define exps (read-all in))
-        (define reader (get-port-reader in #f))
-        (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
-          (receive (code mod new-mod) (compile-tree-il exps module)
-            (let* ([code (resolve-primitives code mod)]
-                   [code (expand-primitives code)])
-              (%compile code output-file mod load-thunk?))))))))
+    (dynamic-wind
+      (lambda ()
+        ((@@ (capy) %runtime-stats-begin-compilation)))
+      (lambda ()
+        (call-with-input-file filename
+          (lambda (in)
+            (define exps (read-all in))
+            (define reader (get-port-reader in #f))
+            (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
+              (receive (code mod new-mod) (compile-tree-il exps module)
+                (let* ([code (resolve-primitives code mod)]
+                       [code (expand-primitives code)])
+                  (%compile code output-file mod load-thunk?)))))))
+      (lambda ()
+        ((@@ (capy) %runtime-stats-end-compilation))))))

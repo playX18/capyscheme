@@ -2,12 +2,12 @@ use crate::rsgc::{
     Gc, Mutation, Trace,
     barrier::{IndexWrite, Unlock},
     cell::Lock,
+    object::{HeapTypeInfo, VTableOf},
 };
 use crate::runtime::{
     Context,
-    value::{HashTable, ScmHeader, Tagged, TypeBits, TypeCode8, Value, WeakTable},
+    value::{HashTable, Tagged, TypeCode8, Value, WeakTable, payload_info_id},
 };
-use easy_bitfield::{BitField, BitFieldTrait};
 use std::{cell::Cell, hash::Hash, ops::Index};
 
 /// A cache entry containing a key-value pair and usage tracking
@@ -249,9 +249,14 @@ unsafe impl<'gc> IndexWrite<usize> for Cache<'gc> {}
 #[derive(Trace)]
 #[repr(C)]
 pub struct DynamicStateObject<'gc> {
-    header: ScmHeader,
     pub(crate) saved: Value<'gc>,
 }
+
+static DYNAMIC_STATE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, DynamicStateObject<'static>>::VT,
+    TypeCode8::DYNAMIC_STATE.bits() as u16,
+);
+pub static DYNAMIC_STATE_INFO: &'static HeapTypeInfo = &DYNAMIC_STATE_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for DynamicStateObject<'gc> {
     const TC8: TypeCode8 = TypeCode8::DYNAMIC_STATE;
@@ -327,36 +332,43 @@ impl<'gc> DynamicState<'gc> {
     }
 }
 
-type FluidThreadLocal = BitField<u64, bool, { TypeBits::NEXT_BIT }, 1, false>;
-
 #[derive(Trace)]
 #[collect(no_drop)]
 #[repr(C)]
 pub struct Fluid<'gc> {
-    header: ScmHeader,
     pub(crate) value: Value<'gc>,
 }
 
+static FLUID_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Fluid<'static>>::VT,
+    TypeCode8::FLUID.bits() as u16,
+);
+pub static FLUID_INFO: &'static HeapTypeInfo = &FLUID_INFO_VALUE;
+
+static THREAD_LOCAL_FLUID_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Fluid<'static>>::VT,
+    TypeCode8::FLUID.bits() as u16,
+);
+pub static THREAD_LOCAL_FLUID_INFO: &'static HeapTypeInfo = &THREAD_LOCAL_FLUID_INFO_VALUE;
+
 impl<'gc> Fluid<'gc> {
     pub fn new(mc: Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new(
+        Gc::new_with_info(
             mc,
             Self {
-                header: ScmHeader::with_type_bits(TypeCode8::FLUID.bits() as _),
                 value: default_value,
             },
+            FLUID_INFO,
         )
     }
 
     pub fn new_thread_local(mc: Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
-        let mut hdr = ScmHeader::with_type_bits(TypeCode8::FLUID.bits() as _);
-        hdr.word |= FluidThreadLocal::encode(true);
-        Gc::new(
+        Gc::new_with_info(
             mc,
             Self {
-                header: hdr,
                 value: default_value,
             },
+            THREAD_LOCAL_FLUID_INFO,
         )
     }
 
@@ -421,7 +433,7 @@ impl<'gc> Fluid<'gc> {
     }
 
     pub fn is_thread_local(&self) -> bool {
-        FluidThreadLocal::decode(self.header.word)
+        payload_info_id(self) == THREAD_LOCAL_FLUID_INFO.id()
     }
 }
 
@@ -567,12 +579,12 @@ pub mod fluid_ops {
     #[scheme(name = "current-dynamic-state")]
     pub fn current_dynamic_state() -> Value<'gc> {
         let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
-        let val = Value::from(Gc::new(
+        let val = Value::from(Gc::new_with_info(
             *nctx.ctx,
             DynamicStateObject {
-                header: ScmHeader::with_type_bits(TypeCode8::DYNAMIC_STATE.bits() as _),
                 saved: dynamic_state,
             },
+            DYNAMIC_STATE_INFO,
         ));
         nctx.return_(val)
     }
@@ -585,12 +597,10 @@ pub mod fluid_ops {
     #[scheme(name = "set-current-dynamic-state!")]
     pub fn set_current_dynamic_state(state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
         let prev = nctx.ctx.state().dynamic_state.save(nctx.ctx);
-        let prev = Value::from(Gc::new(
+        let prev = Value::from(Gc::new_with_info(
             *nctx.ctx,
-            DynamicStateObject {
-                header: ScmHeader::with_type_bits(TypeCode8::DYNAMIC_STATE.bits() as _),
-                saved: prev,
-            },
+            DynamicStateObject { saved: prev },
+            DYNAMIC_STATE_INFO,
         ));
         nctx.ctx
             .state()

@@ -1,5 +1,23 @@
 (define *compile-backtrace-key* (list 'backtrace))
 
+(define (%runtime-stats-timed-reader thunk)
+  (let ([token #f])
+    (dynamic-wind
+      (lambda ()
+        (set! token ((@@ (capy) %runtime-stats-begin-reader))))
+      thunk
+      (lambda ()
+        ((@@ (capy) %runtime-stats-end-reader) token)))))
+
+(define (%runtime-stats-timed-psyntax thunk)
+  (let ([token #f])
+    (dynamic-wind
+      (lambda ()
+        (set! token ((@@ (capy) %runtime-stats-begin-psyntax))))
+      thunk
+      (lambda ()
+        ((@@ (capy) %runtime-stats-end-psyntax) token)))))
+
 (define (compile-tree-il x e)
   (define (join exps)
     (cond
@@ -16,7 +34,9 @@
         (cond
           [(null? exps) (values (join (reverse out)) (current-module) (current-module))]
           [else
-            (let ([exp (macroexpand (car exps) 'c '(compile load eval))])
+            (let ([exp (%runtime-stats-timed-psyntax
+                         (lambda ()
+                           (macroexpand (car exps) 'c '(compile load eval))))])
               (lp (cdr exps) (cons exp out)))])))))
 
 (define (compiled-file-name file)
@@ -47,7 +67,7 @@
   (lambda (filename compiled-path env load-thunk?)
     (define (read-all in)
       (let lp ([exps '()])
-        (let ([exp (read-syntax in)])
+        (let ([exp (%runtime-stats-timed-reader (lambda () (read-syntax in)))])
           (cond
             [(eof-object? exp) (reverse exps)]
             [else (lp (cons exp exps))]))))
@@ -59,13 +79,19 @@
       "Compiling file ~a to ~a"
       filename
       output-file)
-    (call-with-input-file filename
-      (lambda (in)
-        (define exps (read-all in))
-        (define reader (get-port-reader in #f))
-        (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
-          (receive (code mod new-mod) (compile-tree-il exps module)
-            (%compile code output-file mod load-thunk?)))))))
+    (dynamic-wind
+      (lambda ()
+        ((@@ (capy) %runtime-stats-begin-compilation)))
+      (lambda ()
+        (call-with-input-file filename
+          (lambda (in)
+            (define exps (read-all in))
+            (define reader (get-port-reader in #f))
+            (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
+              (receive (code mod new-mod) (compile-tree-il exps module)
+                (%compile code output-file mod load-thunk?))))))
+      (lambda ()
+        ((@@ (capy) %runtime-stats-end-compilation))))))
 
 ;; Compile `filename` and put output into `compiled-path`.
 ;; Env is a module where the file is being compiled.

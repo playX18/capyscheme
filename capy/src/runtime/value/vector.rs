@@ -6,9 +6,8 @@ use crate::rsgc::{
     cell::Lock,
     collection::Visitor,
     mmtk::AllocationSemantics,
-    object::VTable,
+    object::{HeapTypeInfo, VTable},
 };
-use easy_bitfield::{BitField, BitFieldTrait};
 use std::ops::{Deref, DerefMut, Index};
 use std::{mem::offset_of, ops::IndexMut};
 
@@ -16,10 +15,21 @@ use crate::runtime::{Context, value::*};
 
 #[repr(C, align(8))]
 pub struct Vector<'gc> {
-    pub(crate) hdr: ScmHeader,
     pub(crate) length: usize,
     pub(crate) data: [Lock<Value<'gc>>; 0],
 }
+
+const _: () = {
+    assert!(offset_of!(Vector<'static>, length) == 0);
+};
+
+static MUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(Vector::VT, TypeCode16::MUTABLE_VECTOR.bits());
+pub static MUTABLE_VECTOR_INFO: &'static HeapTypeInfo = &MUTABLE_VECTOR_INFO_VALUE;
+
+static IMMUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(Vector::VT, TypeCode16::IMMUTABLE_VECTOR.bits());
+pub static IMMUTABLE_VECTOR_INFO: &'static HeapTypeInfo = &IMMUTABLE_VECTOR_INFO_VALUE;
 
 #[inline(never)]
 extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
@@ -56,7 +66,7 @@ impl<'gc> Vector<'gc> {
     }
 
     pub fn is_immutable(&self) -> bool {
-        self.hdr.type_bits() == TypeCode16::IMMUTABLE_BYTEVECTOR.0
+        payload_type_bits(self) == TypeCode16::IMMUTABLE_VECTOR.bits()
     }
 
     pub fn new<const IMMUTABLE: bool>(
@@ -64,25 +74,22 @@ impl<'gc> Vector<'gc> {
         length: usize,
         fill: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        let mut hdr = ScmHeader::new();
-        let tc = if IMMUTABLE {
-            TypeCode16::IMMUTABLE_VECTOR
+        let info = if IMMUTABLE {
+            IMMUTABLE_VECTOR_INFO
         } else {
-            TypeCode16::MUTABLE_VECTOR
+            MUTABLE_VECTOR_INFO
         };
-        hdr.set_type_bits(tc.0 as _);
 
         unsafe {
-            let alloc = mc.raw_allocate(
+            let alloc = mc.raw_allocate_with_info(
                 size_of::<Self>() + size_of::<Value>() * length,
                 align_of::<Self>(),
-                &Self::VT,
+                info,
                 AllocationSemantics::Default,
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
             vec.length = length;
-            vec.hdr = hdr;
             for i in 0..length {
                 vec.data.as_mut_ptr().add(i).write(Lock::new(fill));
             }
@@ -202,33 +209,54 @@ macro_rules! vector {
         $crate::runtime::value::Vector::new(&$mc, 0, Value::null())
     };
 }
-type BytevectorMappingField = BitField<u64, bool, { TypeBits::NEXT_BIT }, 1, false>;
-
 #[repr(C, align(8))]
 pub struct ByteVector {
-    hdr: ScmHeader,
     pub(crate) len: usize,
     pub(crate) contents: Address,
 }
 
+static MUTABLE_BYTEVECTOR_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(ByteVector::VT, TypeCode16::MUTABLE_BYTEVECTOR.bits());
+pub static MUTABLE_BYTEVECTOR_INFO: &'static HeapTypeInfo = &MUTABLE_BYTEVECTOR_INFO_VALUE;
+
+static IMMUTABLE_BYTEVECTOR_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(ByteVector::VT, TypeCode16::IMMUTABLE_BYTEVECTOR.bits());
+pub static IMMUTABLE_BYTEVECTOR_INFO: &'static HeapTypeInfo = &IMMUTABLE_BYTEVECTOR_INFO_VALUE;
+
+static MAPPED_BYTEVECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    ByteVector::MAPPING_VT,
+    TypeCode16::MUTABLE_BYTEVECTOR.bits(),
+);
+pub static MAPPED_BYTEVECTOR_INFO: &'static HeapTypeInfo = &MAPPED_BYTEVECTOR_INFO_VALUE;
+
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
-extern "C" fn trace_byte_vector(vec: GCObject, vis: &mut Visitor) {
+extern "C" fn trace_byte_vector_mapping(vec: GCObject, vis: &mut Visitor) {
     unsafe {
         let bv = vec.to_address().as_mut_ref::<ByteVector>();
-
-        if bv.is_mapping() {
-            let orig = bv.contents.sub(size_of::<ByteVector>());
-            let mut orig_bv = Gc::from_ptr(orig.to_ptr::<ByteVector>());
-            orig_bv.trace(vis);
-            bv.contents = Address::from_ptr(orig_bv.as_ptr().add(1));
-        } else {
-            bv.contents = vec.to_address().add(size_of::<ByteVector>());
-        }
+        let orig = bv.contents.sub(size_of::<ByteVector>());
+        let mut orig_bv = Gc::from_ptr(orig.to_ptr::<ByteVector>());
+        orig_bv.trace(vis);
+        bv.contents = Address::from_ptr(orig_bv.as_ptr().add(1));
     }
 }
 
 extern "C" fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
+
+extern "C" fn trace_owned_byte_vector(vec: GCObject, _: &mut Visitor) {
+    unsafe {
+        let bv = vec.to_address().as_mut_ref::<ByteVector>();
+        bv.contents = vec.to_address().add(size_of::<ByteVector>());
+    }
+}
+
+extern "C" fn compute_owned_byte_vector_size(vec: GCObject) -> usize {
+    unsafe { vec.to_address().as_ref::<ByteVector>().len * size_of::<u8>() }
+}
+
+extern "C" fn compute_mapped_byte_vector_size(_: GCObject) -> usize {
+    0
+}
 
 impl ByteVector {
     pub const VT: &'static VTable = &VTable {
@@ -236,19 +264,18 @@ impl ByteVector {
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some({
-            extern "C" fn sz(vec: GCObject) -> usize {
-                unsafe {
-                    let bv = vec.to_address().as_ref::<ByteVector>();
-                    if bv.is_mapping() {
-                        return 0;
-                    }
-                    vec.to_address().as_ref::<ByteVector>().len * size_of::<u8>()
-                }
-            }
-            sz
-        }),
-        trace: trace_byte_vector,
+        compute_size: Some(compute_owned_byte_vector_size),
+        trace: trace_owned_byte_vector,
+        weak_proc: process_weak_byte_vector,
+    };
+
+    pub const MAPPING_VT: &'static VTable = &VTable {
+        type_name: "MappedByteVector",
+        instance_size: size_of::<Self>(),
+        alignment: align_of::<Self>(),
+        compute_alignment: None,
+        compute_size: Some(compute_mapped_byte_vector_size),
+        trace: trace_byte_vector_mapping,
         weak_proc: process_weak_byte_vector,
     };
 
@@ -257,7 +284,7 @@ impl ByteVector {
     }
 
     pub fn is_mapping(&self) -> bool {
-        BytevectorMappingField::decode(self.hdr.word)
+        payload_info_id(self) == MAPPED_BYTEVECTOR_INFO.id()
     }
 
     pub fn len(&self) -> usize {
@@ -265,7 +292,7 @@ impl ByteVector {
     }
 
     pub fn is_immutable(&self) -> bool {
-        self.hdr.type_bits() == TypeCode16::IMMUTABLE_BYTEVECTOR.0
+        payload_type_bits(self) == TypeCode16::IMMUTABLE_BYTEVECTOR.bits()
     }
 
     pub fn new<'gc, const IMMUTABLE: bool>(
@@ -277,11 +304,10 @@ impl ByteVector {
             length <= BYTE_VECTOR_MAX_LENGTH,
             "Byte vector length exceeds maximum allowed size"
         );
-        let mut hdr = ScmHeader::new();
-        let tc = if IMMUTABLE {
-            TypeCode16::IMMUTABLE_BYTEVECTOR
+        let info = if IMMUTABLE {
+            IMMUTABLE_BYTEVECTOR_INFO
         } else {
-            TypeCode16::MUTABLE_BYTEVECTOR
+            MUTABLE_BYTEVECTOR_INFO
         };
 
         let semantics = if movable {
@@ -290,17 +316,15 @@ impl ByteVector {
             AllocationSemantics::NonMoving
         };
 
-        hdr.set_type_bits(tc.0 as _);
         unsafe {
-            let alloc = mc.raw_allocate(
+            let alloc = mc.raw_allocate_with_info(
                 size_of::<Self>() + size_of::<u8>() * length,
                 align_of::<Self>(),
-                &Self::VT,
+                info,
                 semantics,
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
-            vec.hdr = hdr;
             vec.len = length;
             let contents = (vec as *mut Self).add(1);
             vec.contents = Address::from_ptr(contents as *mut u8);
@@ -312,20 +336,15 @@ impl ByteVector {
     /// Allocate a new memory-mapped bytevector. This can be used to represent
     /// memory from FFI calls or memory-mapped files.
     pub fn new_mapping<'gc>(mc: Mutation<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode8::BYTEVECTOR.0 as _);
-        hdr.word = BytevectorMappingField::update(true, hdr.word);
-
         unsafe {
-            let alloc = mc.raw_allocate(
+            let alloc = mc.raw_allocate_with_info(
                 size_of::<Self>(),
                 align_of::<Self>(),
-                &Self::VT,
+                MAPPED_BYTEVECTOR_INFO,
                 AllocationSemantics::Default,
             );
 
             let vec = alloc.to_address().as_mut_ref::<Self>();
-            vec.hdr = hdr;
             vec.len = length;
             vec.contents = addr;
 
@@ -445,8 +464,7 @@ impl<'gc> Index<core::ops::RangeFull> for ByteVector {
 
 unsafe impl<'gc> Tagged for Vector<'gc> {
     const ONLY_TC16: bool = false;
-    const TC16: &'static [TypeCode16] =
-        &[TypeCode16::IMMUTABLE_VECTOR, TypeCode16::MUTABLE_BYTEVECTOR];
+    const TC16: &'static [TypeCode16] = &[TypeCode16::IMMUTABLE_VECTOR, TypeCode16::MUTABLE_VECTOR];
     const TC8: TypeCode8 = TypeCode8::VECTOR;
     const TYPE_NAME: &'static str = "vector";
 }
@@ -461,13 +479,19 @@ unsafe impl<'gc> Tagged for ByteVector {
     const TYPE_NAME: &'static str = "bytevector";
 }
 
-pub(crate) type TupleLengthBits = BitField<u64, u32, { TypeBits::NEXT_BIT }, 32, false>;
-
 #[repr(C, align(8))]
 pub struct Tuple<'gc> {
-    pub(crate) hdr: ScmHeader,
+    pub(crate) length: usize,
     pub(crate) data: [Lock<Value<'gc>>; 0],
 }
+
+const _: () = {
+    assert!(offset_of!(Tuple<'static>, length) == 0);
+};
+
+static TUPLE_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(Tuple::VT, TypeCode8::TUPLE.bits() as u16);
+pub static TUPLE_INFO: &'static HeapTypeInfo = &TUPLE_INFO_VALUE;
 
 extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
     unsafe {
@@ -503,24 +527,20 @@ impl<'gc> Tuple<'gc> {
     };
 
     pub fn len(&self) -> usize {
-        TupleLengthBits::decode(self.hdr.word) as usize
+        self.length
     }
 
     pub fn new(mc: Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode8::TUPLE.0 as _);
-        hdr.word = TupleLengthBits::update(length as u32, hdr.word);
-
         unsafe {
-            let alloc = mc.raw_allocate(
+            let alloc = mc.raw_allocate_with_info(
                 size_of::<Self>() + size_of::<Value>() * length,
                 align_of::<Self>(),
-                &Self::VT,
+                TUPLE_INFO,
                 AllocationSemantics::Default,
             );
 
             let tuple = alloc.to_address().as_mut_ref::<Self>();
-            tuple.hdr = hdr;
+            tuple.length = length;
 
             for i in 0..length {
                 tuple.data.as_mut_ptr().add(i).write(Lock::new(init));

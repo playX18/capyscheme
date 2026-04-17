@@ -9,9 +9,8 @@ use crate::rsgc::{
         AllocationSemantics,
         util::{Address, conversions::raw_align_up},
     },
-    object::VTable,
+    object::{HeapTypeInfo, VTable},
 };
-use easy_bitfield::BitFieldTrait;
 use std::{
     cell::{Cell, UnsafeCell},
     sync::OnceLock,
@@ -19,7 +18,6 @@ use std::{
 
 #[repr(C, align(8))]
 pub(crate) struct Stringbuf {
-    hdr: ScmHeader,
     pub(crate) length: usize,
     pub(crate) mutable: Cell<bool>,
     pad: [u8; 7],
@@ -30,6 +28,14 @@ pub const STRINGBUF_TC16_WIDE: TypeCode16 =
     TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 1 * 256);
 pub const STRINGBUF_TC16_NARROW: TypeCode16 =
     TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 2 * 256);
+
+static STRINGBUF_WIDE_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(Stringbuf::VT, STRINGBUF_TC16_WIDE.bits());
+pub static STRINGBUF_WIDE_INFO: &'static HeapTypeInfo = &STRINGBUF_WIDE_INFO_VALUE;
+
+static STRINGBUF_NARROW_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(Stringbuf::VT, STRINGBUF_TC16_NARROW.bits());
+pub static STRINGBUF_NARROW_INFO: &'static HeapTypeInfo = &STRINGBUF_NARROW_INFO_VALUE;
 
 unsafe impl Tagged for Stringbuf {
     const TC16: &[TypeCode16] = &[STRINGBUF_TC16_WIDE, STRINGBUF_TC16_NARROW];
@@ -82,11 +88,11 @@ impl Stringbuf {
     }
 
     pub(crate) fn is_wide(&self) -> bool {
-        self.hdr.type_bits() == STRINGBUF_TC16_WIDE.0
+        payload_type_bits(self) == STRINGBUF_TC16_WIDE.bits()
     }
 
     pub(crate) fn is_narrow(&self) -> bool {
-        self.hdr.type_bits() == STRINGBUF_TC16_NARROW.0
+        payload_type_bits(self) == STRINGBUF_TC16_NARROW.bits()
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -118,22 +124,20 @@ impl Stringbuf {
             std::mem::size_of::<Self>() + length * if is_wide { size_of::<char>() } else { 1 };
         let bytesize_data = length * if is_wide { size_of::<char>() } else { 1 };
         unsafe {
-            let mut hdr = ScmHeader::new();
-            hdr.set_type_bits(if is_wide {
-                STRINGBUF_TC16_WIDE.0 as _
+            let info = if is_wide {
+                STRINGBUF_WIDE_INFO
             } else {
-                STRINGBUF_TC16_NARROW.0 as _
-            });
+                STRINGBUF_NARROW_INFO
+            };
 
-            let stringbuf_ = mc.raw_allocate(
+            let stringbuf_ = mc.raw_allocate_with_info(
                 size,
                 align_of::<Self>(),
-                &Self::VT,
+                info,
                 AllocationSemantics::Default,
             );
 
             stringbuf_.to_address().store(Stringbuf {
-                hdr,
                 length,
                 mutable: Cell::new(false),
                 pad: [0; 7],
@@ -208,11 +212,22 @@ fn null_stringbuf<'gc>(mc: Mutation<'gc>) -> Gc<'gc, Stringbuf> {
 #[derive(Trace)]
 #[collect(no_drop)]
 pub struct Str<'gc> {
-    hdr: ScmHeader,
     pub(crate) stringbuf: Lock<Gc<'gc, Stringbuf>>,
     pub(crate) start: Cell<usize>,
     pub(crate) length: usize,
 }
+
+static STRING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Str<'static>>::VT,
+    TypeCode16::STRING.bits(),
+);
+pub static STRING_INFO: &'static HeapTypeInfo = &STRING_INFO_VALUE;
+
+static IMMUTABLE_STRING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Str<'static>>::VT,
+    TypeCode16::IMMUTABLE_STRING.bits(),
+);
+pub static IMMUTABLE_STRING_INFO: &'static HeapTypeInfo = &IMMUTABLE_STRING_INFO_VALUE;
 
 impl<'gc> Str<'gc> {
     #[doc(hidden)]
@@ -251,21 +266,20 @@ impl<'gc> Str<'gc> {
                 chars[i] = c;
             }
         }
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(if read_only {
-            TypeCode16::IMMUTABLE_STRING.0
+        let info = if read_only {
+            IMMUTABLE_STRING_INFO
         } else {
-            TypeCode16::STRING.0
-        });
+            STRING_INFO
+        };
 
-        Gc::new(
+        Gc::new_with_info(
             mc,
             Self {
-                hdr,
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
                 length: len,
             },
+            info,
         )
     }
 
@@ -281,17 +295,14 @@ impl<'gc> Str<'gc> {
                 std::ptr::write_bytes(chars.as_mut_ptr(), c as u8, count);
             }
 
-            let mut hdr = ScmHeader::new();
-            hdr.set_type_bits(TypeCode16::STRING.0);
-
-            Gc::new(
+            Gc::new_with_info(
                 mc,
                 Self {
-                    hdr,
                     stringbuf: Lock::new(buf),
                     start: Cell::new(0),
                     length: count,
                 },
+                STRING_INFO,
             )
         } else {
             let buf = if count == 0 {
@@ -304,17 +315,14 @@ impl<'gc> Str<'gc> {
                 chars[i] = c;
             }
 
-            let mut hdr = ScmHeader::new();
-            hdr.set_type_bits(TypeCode16::STRING.0);
-
-            Gc::new(
+            Gc::new_with_info(
                 mc,
                 Self {
-                    hdr,
                     stringbuf: Lock::new(buf),
                     start: Cell::new(0),
                     length: count,
                 },
+                STRING_INFO,
             )
         }
     }
@@ -336,21 +344,20 @@ impl<'gc> Str<'gc> {
             chars[i] = c;
         }
 
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(if read_only {
-            TypeCode16::IMMUTABLE_STRING.0
+        let info = if read_only {
+            IMMUTABLE_STRING_INFO
         } else {
-            TypeCode16::STRING.0
-        });
+            STRING_INFO
+        };
 
-        Gc::new(
+        Gc::new_with_info(
             mc,
             Self {
-                hdr,
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
                 length: str.len(),
             },
+            info,
         )
     }
 
@@ -363,29 +370,26 @@ impl<'gc> Str<'gc> {
         read_only: bool,
     ) -> Gc<'gc, Self> {
         let buf = this.stringbuf.get();
-        let tag = if read_only {
-            TypeCode16::IMMUTABLE_STRING
-        } else {
-            TypeCode16::STRING
-        };
-
         let len = end - start;
         let start = this.start.get() + start;
 
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(tag.bits());
+        let info = if read_only {
+            IMMUTABLE_STRING_INFO
+        } else {
+            STRING_INFO
+        };
 
         if len == 0 {
             return Self::new(mc, "", read_only);
         } else if !force_copy && !buf.is_mutable() {
-            return Gc::new(
+            return Gc::new_with_info(
                 mc,
                 Self {
-                    hdr,
                     stringbuf: Lock::new(buf),
                     start: Cell::new(start),
                     length: len,
                 },
+                info,
             );
         } else {
             let (_new_buf, new_str) = if buf.is_wide() {
@@ -395,14 +399,14 @@ impl<'gc> Str<'gc> {
                     .copy_from_slice(&buf.wide_chars()[start..start + len]);
                 (
                     new_buf,
-                    Gc::new(
+                    Gc::new_with_info(
                         mc,
                         Self {
-                            hdr,
                             stringbuf: Lock::new(new_buf),
                             start: Cell::new(0),
                             length: len,
                         },
+                        info,
                     ),
                 )
             } else {
@@ -412,14 +416,14 @@ impl<'gc> Str<'gc> {
                     .copy_from_slice(&buf.chars()[start..start + len]);
                 (
                     new_buf,
-                    Gc::new(
+                    Gc::new_with_info(
                         mc,
                         Self {
-                            hdr,
                             stringbuf: Lock::new(new_buf),
                             start: Cell::new(0),
                             length: len,
                         },
+                        info,
                     ),
                 )
             };
@@ -486,7 +490,7 @@ impl<'gc> Str<'gc> {
     }
 
     pub fn is_mutable(&self) -> bool {
-        self.hdr.type_bits() == TypeCode16::STRING.0
+        payload_type_bits(self) == TypeCode16::STRING.bits()
     }
 
     pub fn data(&self) -> Address {
@@ -832,24 +836,20 @@ impl<'gc> Symbol<'gc> {
             buf = name.stringbuf.get();
         }
 
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(if INTERNED {
-            SYMBOL_TC16_INTERNED.bits()
+        let info = if INTERNED {
+            SYMBOL_INTERNED_INFO
         } else {
-            SYMBOL_TC16_UNINTERNED.bits()
-        });
+            SYMBOL_UNINTERNED_INFO
+        };
 
-        if let Some(offset) = prefix_offset {
-            hdr.word |= SymbolPrefixOffsetBits::encode(offset);
-        }
-
-        let symbol = Gc::new(
+        let symbol = Gc::new_with_info(
             mc,
             Self {
-                header: hdr,
                 stringbuf: buf,
                 hash: Cell::new(hash),
+                prefix_offset: prefix_offset.unwrap_or(0),
             },
+            info,
         );
 
         symbol
@@ -886,17 +886,14 @@ impl<'gc> Symbol<'gc> {
     pub fn substring(&self, mc: Mutation<'gc>, start: usize, end: usize) -> Gc<'gc, Str<'gc>> {
         let buf = self.stringbuf;
 
-        let mut hdr = ScmHeader::new();
-        hdr.set_type_bits(TypeCode16::IMMUTABLE_STRING.bits());
-
-        let string = Gc::new(
+        let string = Gc::new_with_info(
             mc,
             Str {
-                hdr,
                 stringbuf: Lock::new(buf),
                 start: Cell::new(start),
                 length: end - start,
             },
+            IMMUTABLE_STRING_INFO,
         );
 
         string

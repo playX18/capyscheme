@@ -9,6 +9,7 @@ use crate::{
     cps_ssa::lower_cps,
     runtime::{
         Context,
+        stats::{CompilationBreakdownPhase, CompilationBreakdownScope},
         value::{Str, Value},
         vm::thunks::make_io_error,
     },
@@ -19,6 +20,7 @@ pub(crate) fn compile_cps_to_cps_ssa_file<'gc>(
     cps: FuncRef<'gc>,
     output: impl AsRef<Path>,
 ) -> Result<(), Value<'gc>> {
+    let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::CpsSsaEmit);
     let output = output.as_ref();
     if let Some(parent) = output.parent()
         && !parent.exists()
@@ -101,11 +103,12 @@ pub(crate) fn compile_cps_to_cps_ssa_file<'gc>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{self, Context, Scheme};
-    use std::{fs, path::PathBuf, sync::Mutex};
+    use crate::runtime::{
+        self, Context, GLOBAL_STATS, Scheme,
+        stats::{TEST_RUNTIME_LOCK, runtime_stats_snapshot, set_runtime_stats_enabled},
+    };
+    use std::{fs, path::PathBuf};
     use uuid::Uuid;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     struct TempDir {
         path: PathBuf,
@@ -130,7 +133,7 @@ mod tests {
     }
 
     fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
-        let _guard = TEST_LOCK
+        let _guard = TEST_RUNTIME_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let scm = Scheme::new_uninit();
@@ -140,6 +143,10 @@ mod tests {
             }
             f(ctx);
         });
+    }
+
+    fn reset_stats() {
+        GLOBAL_STATS.lock().reset_for_test();
     }
 
     #[test]
@@ -160,6 +167,34 @@ mod tests {
 
             assert_eq!(module.format_version, crate::cps_ssa::FORMAT_VERSION);
             assert!(!module.procs.is_empty());
+        });
+    }
+
+    #[test]
+    fn runtime_stats_report_cps_ssa_emit_without_link_time() {
+        with_ctx(|ctx| {
+            reset_stats();
+
+            let temp = TempDir::new();
+            let source = temp.path().join("sample.scm");
+            let output = temp.path().join("sample.cscm");
+            fs::write(&source, "42\n").unwrap();
+
+            set_runtime_stats_enabled(&ctx.state().stats, true);
+            ctx.stats.start_compilation();
+
+            let cps = crate::compiler::compile_file(ctx, &source, None).unwrap();
+            compile_cps_to_cps_ssa_file(ctx, cps, &output).unwrap();
+
+            ctx.stats.end_compilation();
+
+            let snapshot = runtime_stats_snapshot(Some(&ctx.state().stats)).unwrap();
+            let report = snapshot.to_string();
+            assert!(snapshot.compilation > std::time::Duration::ZERO);
+            assert!(snapshot.cps_ssa_emit > std::time::Duration::ZERO);
+            assert_eq!(snapshot.link, std::time::Duration::ZERO);
+            assert!(report.contains("Compilation:"));
+            assert!(report.contains("CPS-SSA Emit:"));
         });
     }
 }

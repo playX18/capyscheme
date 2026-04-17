@@ -5,6 +5,7 @@ use crate::cps::{reify, term::FuncRef};
 use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::{
     Context,
+    stats::{CompilationBreakdownPhase, CompilationBreakdownScope},
     value::{Str, Value},
 };
 use cranelift::prelude::Configurable;
@@ -28,6 +29,7 @@ pub fn compile_cps_to_object<'gc>(
     cps: FuncRef<'gc>,
     opts: CompilationOptions,
 ) -> Result<ObjectProduct, Value<'gc>> {
+    let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
     let reify_info = reify(ctx, cps);
 
     let mut shared_builder = settings::builder();
@@ -104,19 +106,22 @@ pub fn link_object_product<'gc>(
             .set_macho_build_version(macho_object_build_version_for_target());
     }
 
-    let bytes = product.emit().map_err(|e| {
-        make_io_error(
-            ctx,
-            "link-object",
-            Str::new(
-                *ctx,
-                format!("Cannot emit object file '{}': {}", obj_output.display(), e),
-                true,
+    let bytes = {
+        let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::ObjectEmit);
+        product.emit().map_err(|e| {
+            make_io_error(
+                ctx,
+                "link-object",
+                Str::new(
+                    *ctx,
+                    format!("Cannot emit object file '{}': {}", obj_output.display(), e),
+                    true,
+                )
+                .into(),
+                &[],
             )
-            .into(),
-            &[],
-        )
-    })?;
+        })?
+    };
 
     file.write_all(&bytes).map_err(|e| {
         make_io_error(
@@ -141,24 +146,27 @@ pub fn link_object_product<'gc>(
         )
     })?;
 
-    linker.link(&obj_output, output).map_err(|e| {
-        make_io_error(
-            ctx,
-            "link-object",
-            Str::new(
-                *ctx,
-                format!(
-                    "Linking object file '{}' to output file '{}' failed: {}",
-                    obj_output.display(),
-                    output.display(),
-                    e
-                ),
-                true,
+    {
+        let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Link);
+        linker.link(&obj_output, output).map_err(|e| {
+            make_io_error(
+                ctx,
+                "link-object",
+                Str::new(
+                    *ctx,
+                    format!(
+                        "Linking object file '{}' to output file '{}' failed: {}",
+                        obj_output.display(),
+                        output.display(),
+                        e
+                    ),
+                    true,
+                )
+                .into(),
+                &[],
             )
-            .into(),
-            &[],
-        )
-    })?;
+        })?;
+    }
 
     std::fs::remove_file(&obj_output).map_err(|e| {
         make_io_error(
@@ -195,4 +203,102 @@ fn macho_object_build_version_for_target() -> object::write::MachOBuildVersion {
     build_version.minos = pack_version(min_os);
     build_version.sdk = pack_version(sdk);
     build_version
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{
+        self, Context, GLOBAL_STATS, Scheme,
+        stats::{TEST_RUNTIME_LOCK, runtime_stats_snapshot, set_runtime_stats_enabled},
+    };
+    use std::{fs, path::PathBuf, time::Duration};
+    use uuid::Uuid;
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("capy-object-test-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let _guard = TEST_RUNTIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(|ctx| {
+            if crate::runtime::global::VM_GLOBALS.get().is_none() {
+                runtime::init(ctx);
+            }
+            f(ctx);
+        });
+    }
+
+    fn reset_stats() {
+        GLOBAL_STATS.lock().reset_for_test();
+    }
+
+    fn configure_capy_library_search_path() {
+        let release_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../target")
+            .join(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+            .join("release");
+        if release_dir
+            .join(format!("libcapy.{}", std::env::consts::DLL_EXTENSION))
+            .exists()
+        {
+            unsafe {
+                std::env::set_var("LIBRARY_PATH", &release_dir);
+                std::env::set_var("LD_LIBRARY_PATH", &release_dir);
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_stats_report_shared_object_compile_and_link() {
+        with_ctx(|ctx| {
+            reset_stats();
+            configure_capy_library_search_path();
+
+            let temp = TempDir::new();
+            let source = temp.path().join("sample.scm");
+            let output = temp
+                .path()
+                .join(format!("sample.{}", std::env::consts::DLL_EXTENSION));
+            fs::write(&source, "42\n").unwrap();
+
+            set_runtime_stats_enabled(&ctx.state().stats, true);
+            ctx.stats.start_compilation();
+
+            let cps = crate::compiler::compile_file(ctx, &source, None).unwrap();
+            compile_cps_to_shared_object(ctx, cps, Default::default(), &output).unwrap();
+
+            ctx.stats.end_compilation();
+
+            let snapshot = runtime_stats_snapshot(Some(&ctx.state().stats)).unwrap();
+            let report = snapshot.to_string();
+            assert!(snapshot.compilation > Duration::ZERO);
+            assert!(snapshot.cranelift > Duration::ZERO);
+            assert!(snapshot.link > Duration::ZERO);
+            assert!(report.contains("Compilation:"));
+            assert!(report.contains("Cranelift:"));
+            assert!(report.contains("Link:"));
+        });
+    }
 }

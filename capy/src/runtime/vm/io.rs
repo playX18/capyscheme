@@ -1,5 +1,6 @@
 use crate::prelude::port::Socket;
 use crate::prelude::*;
+use crate::rsgc::object::{HeapTypeInfo, VTableOf};
 use crate::runtime::{AfterBlockingOperationCallback, BlockingOperationWithReturn};
 use crate::static_symbols;
 use mmtk::util::options::PlanSelector;
@@ -1163,13 +1164,7 @@ pub mod io_ops {
                 );
             }
         };
-        let poller = Gc::new(
-            *ctx,
-            Poller {
-                header: ScmHeader::with_type_bits(TypeCode8::POLLER.bits() as _),
-                inner,
-            },
-        );
+        let poller = Gc::new_with_info(*ctx, Poller { inner }, POLLER_INFO);
 
         nctx.return_(poller)
     }
@@ -1495,9 +1490,14 @@ pub fn init_io<'gc>(ctx: Context<'gc>) {
 
 #[repr(C)]
 pub struct Poller {
-    header: ScmHeader,
     inner: polling::Poller,
 }
+
+static POLLER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Poller>::VT,
+    TypeCode8::POLLER.bits() as u16,
+);
+pub static POLLER_INFO: &'static HeapTypeInfo = &POLLER_INFO_VALUE;
 
 unsafe impl Tagged for Poller {
     const TC8: TypeCode8 = TypeCode8::POLLER;

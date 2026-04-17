@@ -8,7 +8,6 @@ use std::{
     sync::OnceLock,
 };
 
-use easy_bitfield::{BitField, BitFieldTrait};
 #[cfg(feature = "bootstrap")]
 use num_bigint::{BigInt as NumBigInt, Sign as NumSign};
 
@@ -18,14 +17,11 @@ use crate::rsgc::{
     global::Global,
     mmtk::{AllocationSemantics, util::conversions::raw_align_up},
     mutator::Mutation,
-    object::{GCObject, VTable},
+    object::{GCObject, HeapTypeInfo, VTable},
 };
 use rand::Rng;
 
-use crate::runtime::{
-    Context,
-    value::{ScmHeader, TypeBits},
-};
+use crate::runtime::Context;
 
 use crate::runtime::value::{Tagged, TypeCode8, TypeCode16};
 
@@ -67,21 +63,11 @@ impl Sign {
         matches!(self, Sign::Negative)
     }
 }
-type BigIntCount = BitField<u64, u32, { TypeBits::NEXT_BIT }, 32, false>;
-type BigIntNegative = BitField<u64, bool, { BigIntCount::NEXT_BIT }, 1, false>;
-
-#[inline(always)]
-fn make_header(count: u32, negative: bool) -> ScmHeader {
-    let mut hdr = ScmHeader::new();
-    hdr.set_type_bits(TypeCode16::BIG.bits());
-    hdr.word = BigIntCount::update(count, hdr.word);
-    hdr.word = BigIntNegative::update(negative, hdr.word);
-    hdr
-}
-
 #[repr(C, align(8))]
 pub struct BigInt<'gc> {
-    header: ScmHeader,
+    count: u32,
+    negative: bool,
+    pad: [u8; 3],
     words: [Digit; 0],              // Flexible array member: data follows here
     _phantom: PhantomData<&'gc ()>, // To ensure 'gc is used
 }
@@ -168,12 +154,17 @@ impl<'gc> BigInt<'gc> {
                 std::mem::align_of::<Self>(),
             );
 
-            let bigint =
-                mc.allocate_with_layout::<Self>(layout, Self::VT, AllocationSemantics::Default);
+            let bigint = mc.allocate_with_layout_info::<Self>(
+                layout,
+                BIGINT_INFO,
+                AllocationSemantics::Default,
+            );
             //bigint.set_user_header(TypeCode16::BIG.into()); // Set the type code
 
             bigint.as_mut_ptr().write(BigInt {
-                header: make_header(words.len() as _, negative),
+                count: words.len() as u32,
+                negative,
+                pad: [0; 3],
                 words: [],
                 _phantom: PhantomData,
             });
@@ -187,7 +178,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn negative(&self) -> bool {
-        BigIntNegative::decode(self.header.word)
+        self.negative
     }
 
     #[inline]
@@ -206,11 +197,16 @@ impl<'gc> BigInt<'gc> {
                 std::mem::align_of::<Self>(),
             );
 
-            let bigint =
-                mc.allocate_with_layout::<Self>(layout, Self::VT, AllocationSemantics::Default);
+            let bigint = mc.allocate_with_layout_info::<Self>(
+                layout,
+                BIGINT_INFO,
+                AllocationSemantics::Default,
+            );
 
             bigint.as_mut_ptr().write(BigInt {
-                header: make_header(count as _, negative),
+                count: count as u32,
+                negative,
+                pad: [0; 3],
                 words: [],
                 _phantom: PhantomData,
             });
@@ -225,8 +221,7 @@ impl<'gc> BigInt<'gc> {
 
                 count -= 1;
             }
-            (*bigint.as_mut_ptr()).header.word =
-                BigIntCount::update(count as _, (*bigint.as_mut_ptr()).header.word);
+            (*bigint.as_mut_ptr()).count = count as u32;
 
             Ok(bigint.assume_init())
         }
@@ -249,7 +244,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn count(&self) -> usize {
-        BigIntCount::decode(self.header.word) as _
+        self.count as usize
     }
 
     pub fn flip2sc(&mut self) {
@@ -353,6 +348,10 @@ impl<'gc> BigInt<'gc> {
         },
     };
 }
+
+static BIGINT_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(BigInt::<'static>::VT, TypeCode16::BIG.bits());
+pub static BIGINT_INFO: &'static HeapTypeInfo = &BIGINT_INFO_VALUE;
 
 unsafe impl<'gc> Trace for BigInt<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {}
@@ -697,8 +696,8 @@ impl<'gc> BigInt<'gc> {
                 off += 1;
             }
 
-            result.header.word = BigIntNegative::update(this.negative(), result.header.word);
-            result.header.word = BigIntCount::update(off as u32, result.header.word);
+            result.negative = this.negative();
+            result.count = off as u32;
             Ok(())
         })
         .unwrap()
@@ -757,7 +756,7 @@ impl<'gc> BigInt<'gc> {
                 offset += 1;
             }
 
-            res.header.word = BigIntCount::update(offset as u32, res.header.word);
+            res.count = offset as u32;
 
             Result::<(), ()>::Ok(())
         })
@@ -819,7 +818,7 @@ impl<'gc> BigInt<'gc> {
                 res[i + b1.count()] = loword(sum);
             }
 
-            res.header.word = BigIntNegative::update(a.negative() != b.negative(), res.header.word);
+            res.negative = a.negative() != b.negative();
 
             Result::<(), ()>::Ok(())
         })
@@ -1347,10 +1346,10 @@ impl<'gc> BigInt<'gc> {
                 }
 
                 while let Some(&0) = res.last() {
-                    res.header.word = BigIntCount::update(res.len() as u32 - 1, res.header.word);
+                    res.count = res.len() as u32 - 1;
                 }
 
-                res.header.word = BigIntNegative::update(true, res.header.word);
+                res.negative = true;
                 Result::<(), ()>::Ok(())
             })
             .unwrap()
@@ -1601,7 +1600,7 @@ impl<'gc> BigInt<'gc> {
                 offset += 1;
             }
 
-            res.header.word = BigIntCount::update(offset as u32, res.header.word);
+            res.count = offset as u32;
 
             Result::<(), ()>::Ok(())
         })

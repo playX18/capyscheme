@@ -1,6 +1,7 @@
 use crate::rsgc::mmtk::{
     BarrierSelector, util::metadata::side_metadata::GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS,
 };
+use crate::rsgc::object::OBJECT_HEADER_OFFSET;
 use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
 
@@ -382,10 +383,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.branch_if_immediate(v, done, &[BlockArg::Value(false_)], check_object, &[]);
         self.builder.switch_to_block(check_object);
         {
-            let tc8 =
-                self.builder
-                    .ins()
-                    .load(types::I8, ir::MemFlags::trusted().with_can_move(), v, 0);
+            let tc8 = self.builder.ins().load(
+                types::I8,
+                ir::MemFlags::trusted().with_can_move(),
+                v,
+                OBJECT_HEADER_OFFSET as i32,
+            );
             let check = self.builder.ins().icmp_imm(IntCC::Equal, tc8, typ as i64);
             self.builder.ins().jump(done, &[BlockArg::Value(check)]);
         }
@@ -402,10 +405,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.branch_if_immediate(v, done, &[BlockArg::Value(false_)], check_object, &[]);
         self.builder.switch_to_block(check_object);
         {
-            let tc16 =
-                self.builder
-                    .ins()
-                    .load(types::I16, ir::MemFlags::trusted().with_can_move(), v, 0);
+            let tc16 = self.builder.ins().load(
+                types::I16,
+                ir::MemFlags::trusted().with_can_move(),
+                v,
+                OBJECT_HEADER_OFFSET as i32,
+            );
             let check = self.builder.ins().icmp_imm(IntCC::Equal, tc16, typ as i64);
             self.builder.ins().jump(done, &[BlockArg::Value(check)]);
         }
@@ -746,7 +751,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     );
                     self.builder.ins().jump(done, &[]);
                 }
-                self.builder.switch_to_block(done); /* 
+                self.builder.switch_to_block(done); /*
                 let ctx = self.builder.ins().get_pinned_reg(types::I64);
                 self.builder.ins().call(
                 self.thunks.pre_write_barrier_at_slot,

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::compiler::{
-    CompilationOptions, DumpArtifactsOptions, LoweredProgram,
-    dump_lowered_program_artifacts, lower_expanded_to_cps,
+    CompilationOptions, DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts,
+    lower_expanded_to_cps,
 };
 use crate::list;
 use crate::prelude::*;
@@ -16,6 +16,7 @@ use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::vm::thunks::make_lexical_violation;
 use capy_derive::scheme;
 
+use super::paths::{fallback_file_name, find_path_to};
 use super::{
     artifact::LoadArtifact,
     compile::{
@@ -23,7 +24,6 @@ use super::{
         load_thunk_in_vicinity,
     },
 };
-use super::paths::{fallback_file_name, find_path_to};
 
 #[scheme(path=capy)]
 pub(super) mod load_ops {
@@ -85,7 +85,8 @@ pub(super) mod load_ops {
         let ctx = nctx.ctx;
         let filename = PathBuf::from(filename.as_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
-        let result = load_thunk_in_vicinity::<false>(ctx, filename, in_vicinity, resolve_relative, None);
+        let result =
+            load_thunk_in_vicinity::<false>(ctx, filename, in_vicinity, resolve_relative, None);
         nctx.return_(result)
     }
 
@@ -98,7 +99,8 @@ pub(super) mod load_ops {
         let ctx = nctx.ctx;
         let filename = PathBuf::from(filename.as_ref().to_string());
         let in_vicinity = in_vicinity.map(|s| PathBuf::from(s.as_ref().to_string()));
-        let result = load_thunk_in_vicinity::<true>(ctx, filename, in_vicinity, resolve_relative, None);
+        let result =
+            load_thunk_in_vicinity::<true>(ctx, filename, in_vicinity, resolve_relative, None);
         nctx.return_(result)
     }
 
@@ -214,7 +216,8 @@ pub(super) mod load_ops {
     pub fn search_load_path(filename: StringRef<'gc>, arch: Option<StringRef<'gc>>) -> Value<'gc> {
         let filename = PathBuf::from(filename.as_ref().to_string());
         let arch = arch.map(|value| value.to_string());
-        let result = find_path_to_public(nctx.ctx, filename, true, None::<PathBuf>, arch.as_deref());
+        let result =
+            find_path_to_public(nctx.ctx, filename, true, None::<PathBuf>, arch.as_deref());
         match result {
             Ok(value) => nctx.return_(value),
             Err(_) => nctx.return_(Value::new(false)),
@@ -265,17 +268,17 @@ fn compile_backtraces_enabled<'gc>(ctx: Context<'gc>) -> bool {
     }
 }
 
-fn resolve_module_value<'gc>(ctx: Context<'gc>, module: Option<Value<'gc>>) -> Gc<'gc, Module<'gc>> {
+fn resolve_module_value<'gc>(
+    ctx: Context<'gc>,
+    module: Option<Value<'gc>>,
+) -> Gc<'gc, Module<'gc>> {
     match module {
         Some(module) if module.is::<Module>() => module.downcast(),
         _ => current_module(ctx).get(ctx).downcast(),
     }
 }
 
-fn resolve_continuation_module<'gc>(
-    ctx: Context<'gc>,
-    cenv: Value<'gc>,
-) -> Gc<'gc, Module<'gc>> {
+fn resolve_continuation_module<'gc>(ctx: Context<'gc>, cenv: Value<'gc>) -> Gc<'gc, Module<'gc>> {
     if cenv.is::<Module>() {
         cenv.downcast()
     } else {
@@ -345,13 +348,7 @@ fn find_path_to_public<'gc>(
     in_vicinity: Option<PathBuf>,
     arch: Option<&str>,
 ) -> Result<Value<'gc>, Value<'gc>> {
-    match find_path_to(
-        ctx,
-        filename,
-        in_vicinity,
-        resolve_relative,
-        arch,
-    )? {
+    match find_path_to(ctx, filename, in_vicinity, resolve_relative, arch)? {
         Some((source, full_source, compiled)) => {
             let compiled = compiled.unwrap_or_else(|| fallback_file_name(ctx, &full_source));
             Ok(list!(

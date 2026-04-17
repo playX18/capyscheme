@@ -4,7 +4,7 @@ use crate::rsgc::{
     Weak,
     barrier::{Unlock, Write},
     mutator::Mutation,
-    object::GCObject,
+    object::{GCObject, HeapTypeInfo},
     traits::Trace,
 };
 use mmtk::{
@@ -174,6 +174,11 @@ impl<'gc, T> Gc<'gc, T> {
         T: Trace,
     {
         mc.allocate(value, mmtk::AllocationSemantics::Default)
+    }
+
+    #[inline]
+    pub fn new_with_info(mc: Mutation<'gc>, value: T, info: &'static HeapTypeInfo) -> Gc<'gc, T> {
+        mc.allocate_with_info(value, info, mmtk::AllocationSemantics::Default)
     }
 
     pub fn to_object_reference(self) -> ObjectReference {

@@ -10,9 +10,7 @@ use crate::{
     runtime::stats::ThreadStats,
 };
 use crate::{
-    prelude::{
-        IntoValue, NativeContinuation, NativeFn, PROCEDURES, ScmHeader, TypeCode8, current_module,
-    },
+    prelude::{IntoValue, NativeContinuation, NativeFn, PROCEDURES, current_module},
     runtime::{
         fluids::DynamicState,
         global::{Globals, VM_GLOBALS},
@@ -91,12 +89,12 @@ impl<'gc> Context<'gc> {
     }
 
     pub fn current_continuation_marks(self) -> Gc<'gc, ContinuationMarks<'gc>> {
-        Gc::new(
+        Gc::new_with_info(
             *self,
             ContinuationMarks {
-                header: ScmHeader::with_type_bits(TypeCode8::CMARKS.bits() as _),
                 cmarks: self.state().current_marks(),
             },
+            crate::runtime::vm::control::CONTINUATION_MARKS_INFO,
         )
     }
 

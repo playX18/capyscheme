@@ -6,21 +6,30 @@ use std::{
     sync::{Once, OnceLock, atomic::AtomicU64},
 };
 
+use crate::rsgc::object::{HeapTypeInfo, VTableOf};
 use crate::rsgc::{Gc, Global, Mutation};
-use easy_bitfield::{BitField, BitFieldTrait};
-
 use crate::runtime::{Context, value::*};
-
-pub type SymbolPrefixOffsetBits = BitField<u64, u16, { TypeBits::NEXT_BIT }, 16, false>;
 
 #[derive(Trace)]
 #[collect(no_drop)]
 #[repr(C, align(8))]
 pub struct Symbol<'gc> {
-    pub(crate) header: ScmHeader,
     pub(crate) stringbuf: Gc<'gc, Stringbuf>,
     pub(crate) hash: Cell<u64>,
+    pub(crate) prefix_offset: u16,
 }
+
+static SYMBOL_UNINTERNED_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Symbol<'static>>::VT,
+    SYMBOL_TC16_UNINTERNED.bits(),
+);
+pub static SYMBOL_UNINTERNED_INFO: &'static HeapTypeInfo = &SYMBOL_UNINTERNED_INFO_VALUE;
+
+static SYMBOL_INTERNED_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Symbol<'static>>::VT,
+    SYMBOL_TC16_INTERNED.bits(),
+);
+pub static SYMBOL_INTERNED_INFO: &'static HeapTypeInfo = &SYMBOL_INTERNED_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for Symbol<'gc> {
     const TC16: &'static [super::TypeCode16] = &[SYMBOL_TC16_INTERNED, SYMBOL_TC16_UNINTERNED];
@@ -175,15 +184,15 @@ impl<'gc> Symbol<'gc> {
     }
 
     pub fn is_interned(&self) -> bool {
-        TypeBits::decode(self.header.word) == SYMBOL_TC16_INTERNED.bits()
+        payload_type_bits(self) == SYMBOL_TC16_INTERNED.bits()
     }
 
     pub fn is_uninterned(&self) -> bool {
-        TypeBits::decode(self.header.word) == SYMBOL_TC16_UNINTERNED.bits()
+        payload_type_bits(self) == SYMBOL_TC16_UNINTERNED.bits()
     }
 
     pub fn uninterned_suffix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
-        let offset = SymbolPrefixOffsetBits::decode(self.header.word);
+        let offset = self.prefix_offset;
         if offset == 0 {
             Str::new(*ctx, "", true)
         } else {
@@ -192,7 +201,7 @@ impl<'gc> Symbol<'gc> {
     }
 
     pub fn uninterned_prefix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
-        let offset = SymbolPrefixOffsetBits::decode(self.header.word);
+        let offset = self.prefix_offset;
         if offset == 0 {
             Str::new(*ctx, "", true)
         } else {
@@ -321,9 +330,14 @@ macro_rules! static_symbols {
 #[derive(Trace)]
 #[repr(C)]
 pub struct Keyword<'gc> {
-    pub hdr: ScmHeader,
     pub symbol: Gc<'gc, Symbol<'gc>>,
 }
+
+static KEYWORD_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Keyword<'static>>::VT,
+    TypeCode8::KEYWORD.bits() as u16,
+);
+pub static KEYWORD_INFO: &'static HeapTypeInfo = &KEYWORD_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for Keyword<'gc> {
     const TC8: TypeCode8 = TypeCode8::KEYWORD;
@@ -332,13 +346,7 @@ unsafe impl<'gc> Tagged for Keyword<'gc> {
 
 impl<'gc> Keyword<'gc> {
     pub fn from_symbol(mc: Mutation<'gc>, symbol: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Keyword<'gc>> {
-        Gc::new(
-            mc,
-            Keyword {
-                hdr: ScmHeader::with_type_bits(TypeCode8::KEYWORD.bits() as _),
-                symbol,
-            },
-        )
+        Gc::new_with_info(mc, Keyword { symbol }, KEYWORD_INFO)
     }
 
     pub fn to_symbol(&self) -> Gc<'gc, Symbol<'gc>> {

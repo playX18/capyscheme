@@ -18,10 +18,8 @@ use std::{
 
 use crate::rsgc::{Gc, Trace, collection::Visitor};
 
-use crate::runtime::{
-    Context,
-    value::{ConversionError, ScmHeader},
-};
+use crate::rsgc::object::{HeapTypeInfo, VTableOf};
+use crate::runtime::{Context, value::ConversionError};
 
 use crate::runtime::value::{FromValue, IntoValue, Tagged, TypeCode8, TypeCode16, Value};
 
@@ -32,19 +30,20 @@ const IEXPT_2N52: i64 = 0x10000000000000;
 #[collect(no_drop)]
 #[repr(C)]
 pub struct Complex<'gc> {
-    pub hdr: ScmHeader,
     pub real: Number<'gc>,
     pub imag: Number<'gc>,
 }
 
+static COMPLEX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Complex<'static>>::VT,
+    TypeCode16::COMPLEX.bits(),
+);
+pub static COMPLEX_INFO: &'static HeapTypeInfo = &COMPLEX_INFO_VALUE;
+
 impl<'gc> Complex<'gc> {
     pub fn new(ctx: Context<'gc>, real: Number<'gc>, imag: Number<'gc>) -> Gc<'gc, Self> {
-        let complex = Complex {
-            hdr: ScmHeader::with_type_bits(TypeCode16::COMPLEX.bits()),
-            real,
-            imag,
-        };
-        Gc::new(*ctx, complex)
+        let complex = Complex { real, imag };
+        Gc::new_with_info(*ctx, complex, COMPLEX_INFO)
     }
 }
 unsafe impl<'gc> Tagged for Complex<'gc> {
@@ -58,10 +57,15 @@ unsafe impl<'gc> Tagged for Complex<'gc> {
 #[collect(no_drop)]
 #[repr(C)]
 pub struct Rational<'gc> {
-    pub hdr: ScmHeader,
     pub numerator: Number<'gc>,
     pub denominator: Number<'gc>,
 }
+
+static RATIONAL_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    VTableOf::<'static, Rational<'static>>::VT,
+    TypeCode16::RATIONAL.bits(),
+);
+pub static RATIONAL_INFO: &'static HeapTypeInfo = &RATIONAL_INFO_VALUE;
 
 impl<'gc> Rational<'gc> {
     pub fn new(
@@ -70,11 +74,10 @@ impl<'gc> Rational<'gc> {
         denominator: Number<'gc>,
     ) -> Gc<'gc, Self> {
         let rational = Rational {
-            hdr: ScmHeader::with_type_bits(TypeCode16::RATIONAL.bits()),
             numerator,
             denominator,
         };
-        Gc::new(*ctx, rational)
+        Gc::new_with_info(*ctx, rational, RATIONAL_INFO)
     }
 }
 

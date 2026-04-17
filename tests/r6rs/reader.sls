@@ -99,6 +99,32 @@
       (integer->char #x20))
     (test (read (open-string-input-port "#\\delete"))
       (integer->char #x7F))
+    (test (read (open-string-input-port "#\\x41"))
+      #\A)
+
+    (test (read (open-string-input-port "hello-world"))
+      'hello-world)
+    (test (read (open-string-input-port "|Hello World|"))
+      (string->symbol "Hello World"))
+    (test (read (open-string-input-port "app\\x03BB;e"))
+      (string->symbol "appλe"))
+
+    (test (read (open-string-input-port "\"hello\\nworld\""))
+      "hello\nworld")
+    (test (read (open-string-input-port "\"A: \\x41;\""))
+      "A: A")
+
+    (test (read (open-string-input-port "; ignored\n42"))
+      42)
+    (test (read (open-string-input-port "#| outer #| inner |# |# 42"))
+      42)
+    (test (read (open-string-input-port "#;(1 2 3) 42"))
+      42)
+
+    (test (read (open-string-input-port "#(1 2 3)"))
+      '#(1 2 3))
+    (test (read (open-string-input-port "#vu8(1 2 3)"))
+      '#vu8(1 2 3))
 
     ;;
     ))

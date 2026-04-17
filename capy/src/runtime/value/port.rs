@@ -1,11 +1,10 @@
 use crate::{
     Trace,
-    prelude::{ScmHeader, Tagged, TypeCode8},
+    prelude::{Tagged, TypeCode8},
 };
 
 #[repr(C)]
 pub struct Socket {
-    pub(crate) header: ScmHeader,
     pub(crate) addr: libc::sockaddr_storage,
     pub(crate) fd: i32,
     pub(crate) mode: SocketMode,

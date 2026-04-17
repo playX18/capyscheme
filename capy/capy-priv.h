@@ -15,6 +15,8 @@
 
 #define OBJECT_HEADER_OFFSET -OBJECT_REF_OFFSET
 
+#define UNKNOWN_TYPE_BITS UINT16_MAX
+
 #define FASL_EOF 0
 
 #define FASL_TAG_LOOKUP 1
@@ -152,6 +154,8 @@
 
 #define RTD_FIELDS 6
 
+typedef struct HeapTypeInfo HeapTypeInfo;
+
 typedef struct Scm Scm;
 
 typedef struct Scm *ScmRef;
@@ -169,10 +173,9 @@ typedef union EncodedValueDescriptor {
  * Uses NaN boxing layout based on JavaScriptCore NaN boxing, we formally prove
  * the correctness of this encoding in tests/z3_value_encoding_proof.py.
  *
- * Heap objects store their tags in the header provided by RSGC crate. Some objects
- * such as vectors require first word to be an additional header to store the length
- * or any other information. This header is always 64 bits in size and in case of
- * vectors can be loaded as a valid fixnum value.
+ * Heap objects store their tags in the GC header that lives at `OBJECT_REF_OFFSET`
+ * bytes before the payload. Some objects still use their first payload word for
+ * per-instance metadata such as variable lengths.
  */
 typedef struct Value {
   union EncodedValueDescriptor desc;
@@ -226,6 +229,10 @@ typedef int (*FinishCallFn)(ContextRef ctx, bool success, struct Value result, v
 
 
 
+
+extern const struct HeapTypeInfo *MUTABLE_VECTOR_INFO_STATIC;
+
+extern const struct HeapTypeInfo *TUPLE_INFO_STATIC;
 
 /**
  * Create a new Scheme thread instance.
