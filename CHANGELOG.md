@@ -10,7 +10,10 @@
 
 ### 🚜 Refactor
 
+- *(cps)* Minor performance improvements - ([701f11f](https://codeberg.org/playXE/capy/commit/701f11fe78082cc72c88eab569e98509d2b97fc7))
+- *(cps)* Improve inlining performance slightly - ([1071731](https://codeberg.org/playXE/capy/commit/1071731e1a1d640ca4649591a54a5d8d288778fb))
 - *(load)* Split load into multiple files - ([74669e4](https://codeberg.org/playXE/capy/commit/74669e4f2889c252dd28e860aee16d9ffe6ba447))
+- *(runtime)* Switch to smaller headers - ([cd27f3d](https://codeberg.org/playXE/capy/commit/cd27f3d8f196e58edd8b2640ebfdd7f126b104a9))
 - *(runtime)* Split load.rs into multiple files - ([a1b0848](https://codeberg.org/playXE/capy/commit/a1b08487de7fdc7cdc64a4cac8d587311d960576))
 - Cleanup Rust code - ([d24f5a9](https://codeberg.org/playXE/capy/commit/d24f5a9ed8feea9e1574aa61d1449c7c48c1290b))
 - Split number.rs into number/ module with bigint submodule - ([0dcb91a](https://codeberg.org/playXE/capy/commit/0dcb91a2a9f5376276a20b34cadf5f81b6713123))
