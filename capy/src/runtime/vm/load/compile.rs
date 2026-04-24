@@ -1,8 +1,6 @@
 use std::path::Path;
 
-use crate::compiler::{
-    CompilationOptions, compile_cps_to_cps_ssa_file, compile_cps_to_shared_object, compile_file,
-};
+use crate::compiler::{CompilationOptions, compile_cps_to_shared_object, compile_file};
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
@@ -224,7 +222,6 @@ pub(super) fn compile_cps_to_destination<'gc>(
         LoadArtifactKind::SharedObject => {
             compile_cps_to_shared_object(ctx, cps, options, &destination.path)
         }
-        LoadArtifactKind::CpsSsa => compile_cps_to_cps_ssa_file(ctx, cps, &destination.path),
     }
 }
 

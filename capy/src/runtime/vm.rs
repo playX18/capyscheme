@@ -275,6 +275,10 @@ impl<'gc> FromResidual<Value<'gc>> for VMResult<'gc> {
     }
 }
 
+impl<'gc> std::ops::Residual<Value<'gc>> for Value<'gc> {
+    type TryType = VMResult<'gc>;
+}
+
 impl<'gc> Try for VMResult<'gc> {
     type Output = Value<'gc>;
     type Residual = Value<'gc>;

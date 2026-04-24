@@ -543,7 +543,7 @@ pub struct SavedCall<'gc> {
 #[repr(C)]
 pub struct CodeBlock<'gc> {
     pub entrypoint: Address,
-    pub kind: CodeBlockKind<'gc>,
+    pub kind: CodeBlockKind,
     pub arity: CodeArity,
     pub flags: CodeBlockFlags,
     pub metadata: Lock<Value<'gc>>,
@@ -567,7 +567,7 @@ impl<'gc> CodeBlock<'gc> {
     fn new_inner(
         ctx: Context<'gc>,
         entrypoint: Address,
-        kind: CodeBlockKind<'gc>,
+        kind: CodeBlockKind,
         arity: CodeArity,
         is_cont: bool,
         metadata: Value<'gc>,
@@ -634,10 +634,6 @@ unsafe impl<'gc> Trace for CodeBlock<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         visitor.trace(&mut self.metadata);
         match &mut self.kind {
-            CodeBlockKind::JIT { module, proc } => {
-                visitor.trace(module);
-                visitor.trace(proc);
-            }
             CodeBlockKind::AOT | CodeBlockKind::NativeProc => {}
         }
     }
@@ -677,11 +673,7 @@ bitflags::bitflags! {
     }
 }
 
-pub enum CodeBlockKind<'gc> {
-    JIT {
-        module: Gc<'gc, cps_ssa::Module<'gc>>,
-        proc: Gc<'gc, cps_ssa::Proc<'gc>>,
-    },
+pub enum CodeBlockKind {
     AOT,
     NativeProc,
 }

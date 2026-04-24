@@ -11,7 +11,8 @@
     try_trait_v2,
     link_llvm_intrinsics,
     min_specialization,
-    const_type_name
+    const_type_name,
+    try_trait_v2_residual
 )]
 
 //! CapyScheme: R6RS/R7RS Scheme compiler and runtime.
