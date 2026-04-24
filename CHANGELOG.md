@@ -2,6 +2,7 @@
 
 ### ⛰️  Features
 
+- *(boot)* Optimize reader - ([9e38523](https://codeberg.org/playXE/capy/commit/9e385230243717fdaeacac7020fa3ed544c43310))
 - Graphical CPS - ([2f7a1fb](https://codeberg.org/playXE/capy/commit/2f7a1fb3135d10a65c4d25377c8308e6f53014e6))
 
 ### 🐛 Bug Fixes
@@ -17,6 +18,12 @@
 - *(runtime)* Split load.rs into multiple files - ([a1b0848](https://codeberg.org/playXE/capy/commit/a1b08487de7fdc7cdc64a4cac8d587311d960576))
 - Cleanup Rust code - ([d24f5a9](https://codeberg.org/playXE/capy/commit/d24f5a9ed8feea9e1574aa61d1449c7c48c1290b))
 - Split number.rs into number/ module with bigint submodule - ([0dcb91a](https://codeberg.org/playXE/capy/commit/0dcb91a2a9f5376276a20b34cadf5f81b6713123))
+
+### ⚙️ Miscellaneous Tasks
+
+- Update to latest nightly - ([6699ac6](https://codeberg.org/playXE/capy/commit/6699ac6de4dc9f66fd3033c0adca87a968c23eb6))
+- Continued removal - ([e348c65](https://codeberg.org/playXE/capy/commit/e348c65b115bf6e48c4ce92c8e7b2a6620eafeae))
+- Remove CPSSSA and JIT; redesign - ([e2d2573](https://codeberg.org/playXE/capy/commit/e2d25733d4e1d634cee8204dcce4a401c07c9885))
 
 
 ## [1.2.0](https://codeberg.org/playXE/capy/compare/v1.1.0..v1.2.0) - 2026-02-26
