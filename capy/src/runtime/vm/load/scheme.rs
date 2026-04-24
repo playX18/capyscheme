@@ -278,6 +278,7 @@ fn resolve_module_value<'gc>(
     }
 }
 
+#[allow(dead_code)]
 fn resolve_continuation_module<'gc>(ctx: Context<'gc>, cenv: Value<'gc>) -> Gc<'gc, Module<'gc>> {
     if cenv.is::<Module>() {
         cenv.downcast()

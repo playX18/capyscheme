@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 use super::policy::ExecutionPolicy;
 
-pub(crate) const CPS_SSA_EXTENSION: &str = "cscm";
 pub(crate) const DYNLIB_EXTENSION: &str = std::env::consts::DLL_EXTENSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

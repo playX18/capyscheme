@@ -18,7 +18,6 @@ pub(crate) struct RuntimeStatsSnapshot {
     pub(crate) cranelift: Duration,
     pub(crate) object_emit: Duration,
     pub(crate) link: Duration,
-    pub(crate) cps_ssa_emit: Duration,
 }
 
 impl RuntimeStatsSnapshot {
@@ -27,9 +26,8 @@ impl RuntimeStatsSnapshot {
     }
 
     pub(crate) fn frontend_total(self) -> Duration {
-        self.compilation.saturating_sub(
-            self.lowering + self.cranelift + self.object_emit + self.link + self.cps_ssa_emit,
-        )
+        self.compilation
+            .saturating_sub(self.lowering + self.cranelift + self.object_emit + self.link)
     }
 
     pub(crate) fn frontend_other(self) -> Duration {
@@ -68,7 +66,6 @@ impl std::fmt::Display for RuntimeStatsSnapshot {
                 "    Cranelift: {:.3}s\n",
                 "    Object Emit: {:.3}s\n",
                 "    Link: {:.3}s\n",
-                "    CPS-SSA Emit: {:.3}s"
             ),
             self.execution.as_secs_f64(),
             self.percentage(self.execution),
@@ -89,7 +86,6 @@ impl std::fmt::Display for RuntimeStatsSnapshot {
             self.cranelift.as_secs_f64(),
             self.object_emit.as_secs_f64(),
             self.link.as_secs_f64(),
-            self.cps_ssa_emit.as_secs_f64(),
         )
     }
 }
@@ -110,7 +106,6 @@ pub(crate) enum CompilationBreakdownPhase {
     Cranelift,
     ObjectEmit,
     Link,
-    CpsSsaEmit,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -484,7 +479,6 @@ impl GlobalStats {
                 cranelift: Duration::ZERO,
                 object_emit: Duration::ZERO,
                 link: Duration::ZERO,
-                cps_ssa_emit: Duration::ZERO,
             },
             gc_start: None,
             next_breakdown_token: 1,
@@ -590,7 +584,6 @@ impl GlobalStats {
             CompilationBreakdownPhase::Cranelift => self.snapshot.cranelift += elapsed,
             CompilationBreakdownPhase::ObjectEmit => self.snapshot.object_emit += elapsed,
             CompilationBreakdownPhase::Link => self.snapshot.link += elapsed,
-            CompilationBreakdownPhase::CpsSsaEmit => self.snapshot.cps_ssa_emit += elapsed,
         }
     }
 
@@ -614,7 +607,6 @@ impl GlobalStats {
                         CompilationBreakdownPhase::Cranelift => snapshot.cranelift += elapsed,
                         CompilationBreakdownPhase::ObjectEmit => snapshot.object_emit += elapsed,
                         CompilationBreakdownPhase::Link => snapshot.link += elapsed,
-                        CompilationBreakdownPhase::CpsSsaEmit => snapshot.cps_ssa_emit += elapsed,
                     }
                 }
             }
