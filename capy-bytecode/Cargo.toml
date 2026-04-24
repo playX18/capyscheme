@@ -1,8 +1,0 @@
-[package]
-name = "capy-bytecode"
-version = "1.2.0"
-edition = "2024"
-
-[dependencies]
-bytecodegen.workspace = true
-paste.workspace = true

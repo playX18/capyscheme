@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["asmgen", "capy", "capy-bytecode", "capy-derive"]
+members = ["asmgen", "capy", "capy-derive"]
 default-members = ["capy"]
 
 
 [workspace.dependencies]
-capy-bytecode = { path = "capy-bytecode" }
+
 bytecodegen = { git = "https://codeberg.org/playxe/bytecodegen" }
 mmtk = { git = "https://github.com/mmtk/mmtk-core", default-features = false }
 cranelift-jit = { version = "0.127", features = ["selinux-fix"] }
