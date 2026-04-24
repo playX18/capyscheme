@@ -168,6 +168,15 @@
           (else
             (reader-warning p "Invalid inline hex escape" c)
             #\xFFFD)))))
+  (define (special-initial? c)
+    (case c
+      ((#\! #\$ #\% #\& #\* #\/ #\: #\< #\= #\> #\? #\^ #\_ #\~) #t)
+      (else #f)))
+  (define (special-subsequent? c)
+    (case c
+      ((#\! #\$ #\% #\& #\* #\/ #\: #\< #\= #\> #\? #\^ #\_ #\~
+        #\+ #\- #\. #\@) #t)
+      (else #f)))
   (define (get-identifier p initial-char pipe-quoted?)
     (let lp ((chars (if initial-char (list initial-char) '())))
       (let ((c (lookahead-char p)))
@@ -176,11 +185,7 @@
               (or (char<=? #\a c #\z)
                 (char<=? #\A c #\Z)
                 (char<=? #\0 c #\9)
-                (memv c '(#\! #\$ #\% #\& #\* #\/ #\: #\< #\= #\> #\? #\^ #\_ #\~
-                          #\+
-                          #\-
-                          #\.
-                          #\@))
+                (special-subsequent? c)
                 (and (> (char->integer c) 127)
                   (memq (char-general-category c) ;XXX: could be done faster
                     '(Lu Ll Lt Lm Lo Mn Nl No Pd Pc Po Sc Sm Sk So Co Nd Mc Me)))
@@ -214,6 +219,28 @@
             (get-char p)
             (lp chars))))))
   ;; Get a number from the reader.
+  (define (fast-decimal-integer str)
+    (let ([len (string-length str)])
+      (cond
+        [(= len 0) #f]
+        [else
+          (let* ([c0 (string-ref str 0)]
+                 [neg? (char=? c0 #\-)]
+                 [pos? (char=? c0 #\+)]
+                 [start (if (or neg? pos?) 1 0)]
+                 [digit-count (- len start)])
+            (if (or (= digit-count 0) (> digit-count 15))
+              #f
+              (let lp ([i start] [n 0])
+                (cond
+                  [(= i len) (if neg? (- n) n)]
+                  [else
+                    (let ([c (string-ref str i)])
+                      (if (char<=? #\0 c #\9)
+                        (lp (+ i 1)
+                          (+ (* n 10) (- (char->integer c) (char->integer #\0))))
+                        #f))]))))])))
+
   (define (get-number p initial-chars)
     (let lp ((chars initial-chars))
       (let ((c (lookahead-char p)))
@@ -221,7 +248,8 @@
                ;; TODO: some standard numbers are not supported
                ;; everywhere, should use a number lexer.
                (let* ((str (list->string (reverse chars)))
-                      (num (string->number str)))
+                      (num (or (fast-decimal-integer str)
+                             (string->number str))))
                  (cond (num
                         (values 'value num))
                    ((and (memq (reader-mode p) '(rnrs r7rs))
@@ -358,19 +386,45 @@
                                          (else
                                            (lp))))))))))
 
+  (define (skip-whitespace reader first)
+    (let lp ((char first))
+      (let ((char (lookahead-char reader)))
+        (if (and (char? char) (char-whitespace? char))
+          (lp (get-char reader))))))
+
+  (define (skip-comment reader)
+    (let lp ()
+      (let ((c (get-char reader)))
+        (if (not (eof-object? c))
+          (cond ((memv c '(#\linefeed #\x85 #\x2028 #\x2029)))
+            ((char=? c #\return)
+              (if (memv (lookahead-char reader) '(#\linefeed #\x85))
+                (get-char reader)))
+            (else
+              (lp)))))))
+
+  (define (skip-nested-comment reader)
+    ;; The reader is immediately after "#|".
+    (let lp ((levels 1) (c0 (get-char reader)))
+      (let ((c1 (get-char reader)))
+        (cond ((eof-object? c0)
+               (eof-warning reader))
+          ((and (eqv? c0 #\|) (eqv? c1 #\#))
+            (if (not (eqv? levels 1))
+              (lp (- levels 1) (get-char reader))))
+          ((and (eqv? c0 #\#) (eqv? c1 #\|))
+            (lp (+ levels 1) (get-char reader)))
+          (else
+            (lp levels c1))))))
+
   ;; Whitespace and comments can appear anywhere.
   (define (atmosphere? type)
     (memq type '(directive whitespace comment inline-comment nested-comment)))
 
   (define (get-lexeme p)
-    (call-with-values
-      (lambda () (get-token p))
-      (lambda (type lexeme)
-        (if (atmosphere? type)
-          (get-lexeme p)
-          (values type lexeme)))))
+    (reader:get-token* p #f))
 
-  (define (reader:get-token p)
+  (define (reader:get-token* p keep-atmosphere?)
     (assert (reader? p))
     (reader-mark p)
     (let ((c (get-char p)))
@@ -378,9 +432,17 @@
         ((eof-object? c)
           (values 'eof c))
         ((char-whitespace? c)
-          (values 'whitespace (get-whitespace p c)))
+          (if keep-atmosphere?
+            (values 'whitespace (get-whitespace p c))
+            (begin
+              (skip-whitespace p c)
+              (reader:get-token* p keep-atmosphere?))))
         ((char=? c #\;) ;a comment like this one
-          (values 'comment (get-comment p)))
+          (if keep-atmosphere?
+            (values 'comment (get-comment p))
+            (begin
+              (skip-comment p)
+              (reader:get-token* p keep-atmosphere?))))
         ((char=? c #\#) ;the mighty octothorpe
           (let ((c (get-char p)))
             (case c
@@ -420,14 +482,22 @@
                   (receive (type token) (get-token p)
                     (cond ((eq? type 'eof)
                            (eof-warning p)
-                           (values 'inline-comment (cons (reverse atmosphere) p)))
+                           (if keep-atmosphere?
+                             (values 'inline-comment (cons (reverse atmosphere) p))
+                             (reader:get-token* p keep-atmosphere?)))
                       ((atmosphere? type)
                         (lp (cons (cons type token) atmosphere)))
                       (else
                         (receive (d _) (handle-lexeme p type token #f #t)
-                          (values 'inline-comment (cons (reverse atmosphere) d))))))))
+                          (if keep-atmosphere?
+                            (values 'inline-comment (cons (reverse atmosphere) d))
+                            (reader:get-token* p keep-atmosphere?))))))))
               ((#\|) ;nested comment
-                (values 'nested-comment (get-nested-comment p)))
+                (if keep-atmosphere?
+                  (values 'nested-comment (get-nested-comment p))
+                  (begin
+                    (skip-nested-comment p)
+                    (reader:get-token* p keep-atmosphere?))))
               ((#\!) ;#!r6rs etc
                 (let ((next-char (lookahead-char p)))
                   (cond ((and (= (reader-saved-line p) 1) (memv next-char '(#\/ #\space)))
@@ -467,7 +537,9 @@
                                    =>
                                    (lambda (x) (values 'value (cdr x))))
                               (else
-                                (values 'directive id))))
+                                (if keep-atmosphere?
+                                  (values 'directive id)
+                                  (reader:get-token* p keep-atmosphere?)))))
                           (else
                             (reader-warning p "Expected an identifier after #!")
                             (get-token p)))))
@@ -607,7 +679,7 @@
             (else
               (get-number p (list c)))))
         ((or (char<=? #\a c #\z) (char<=? #\A c #\Z) ;<constituent> and <special initial>
-            (memv c '(#\! #\$ #\% #\& #\* #\/ #\: #\< #\= #\> #\? #\^ #\_ #\~))
+            (special-initial? c)
             (and (memv (reader-mode p) '(rnrs r7rs))
               (or (eqv? c #\@) (memv c '(#\x200C #\x200D))))
             (and (> (char->integer c) 127)
@@ -646,6 +718,9 @@
             (else
               (reader-warning p "Invalid leading character" c)
               (get-token p)))))))
+
+  (define (reader:get-token p)
+    (reader:get-token* p #t))
 
   (define (get-compound-datum p src terminator type labels)
     (define vec #f)
