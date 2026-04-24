@@ -216,25 +216,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bytecodegen"
-version = "0.1.0"
-source = "git+https://codeberg.org/playxe/bytecodegen#5e660e0c3b45e2f131dffba575f1282fe6f8d67e"
-dependencies = [
- "bytecodegen-macros",
- "paste",
-]
-
-[[package]]
-name = "bytecodegen-macros"
-version = "0.1.0"
-source = "git+https://codeberg.org/playxe/bytecodegen#5e660e0c3b45e2f131dffba575f1282fe6f8d67e"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.114",
-]
-
-[[package]]
 name = "bytemuck"
 version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -273,7 +254,6 @@ dependencies = [
  "backtrace",
  "bitflags 2.11.0",
  "bytemuck",
- "capy-bytecode",
  "capy-derive",
  "cbindgen",
  "cranelift",
@@ -323,14 +303,6 @@ dependencies = [
  "unicode-normalization",
  "uuid",
  "which",
-]
-
-[[package]]
-name = "capy-bytecode"
-version = "1.2.0"
-dependencies = [
- "bytecodegen",
- "paste",
 ]
 
 [[package]]

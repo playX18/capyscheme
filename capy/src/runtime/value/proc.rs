@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Index, sync::LazyLock};
 
 use crate::{
-    IndexWrite, cps_ssa,
+    IndexWrite,
     object::VTable,
     rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
 };

@@ -226,20 +226,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             state,
             offset_of!(State, runstack) as i32,
         );
-        let runstack_start = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack_start) as i32,
-        );
-
-        let is_eq = self
-            .builder
-            .ins()
-            .icmp(IntCC::NotEqual, rands, runstack_start);
-        self.builder
-            .ins()
-            .trapnz(is_eq, ir::TrapCode::HEAP_OUT_OF_BOUNDS);
 
         if let ContOrFunc::Func(func) = self.target {
             let retk = self.builder.ins().load(
@@ -585,32 +571,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             state,
             offset_of!(State, runstack) as i32,
         );
-        let runstack_start = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack_start) as i32,
-        );
-        let is_underflow =
-            self.builder
-                .ins()
-                .icmp(IntCC::UnsignedLessThan, new_runstack, runstack_start);
-        self.builder
-            .ins()
-            .trapnz(is_underflow, ir::TrapCode::HEAP_OUT_OF_BOUNDS);
-        let runstack_end = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack_end) as i32,
-        );
-        let is_overflow =
-            self.builder
-                .ins()
-                .icmp(IntCC::UnsignedGreaterThan, new_runstack, runstack_end);
-        self.builder
-            .ins()
-            .trapnz(is_overflow, ir::TrapCode::HEAP_OUT_OF_BOUNDS);
+
         for (i, arg) in args.iter().enumerate() {
             self.builder.ins().store(
                 ir::MemFlags::trusted().with_can_move(),
