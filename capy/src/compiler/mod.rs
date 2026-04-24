@@ -47,7 +47,6 @@ macro_rules! call_signature {
 
 mod artifact;
 mod bootstrap;
-pub mod bytecompiler;
 pub mod debuginfo;
 pub mod linkutils;
 mod object;
