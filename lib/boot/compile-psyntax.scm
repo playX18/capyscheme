@@ -167,7 +167,7 @@
           (translate-literal-syntax-objects
             (squeeze-tree-il
               (resolve-primitives (macroexpand x 'c '(compile load eval)) (current-module))))
-          '(use-case?))
+          '(use-case? denoise-lexicals?))
         out)
       (newline out)
       (loop (read in)))))
