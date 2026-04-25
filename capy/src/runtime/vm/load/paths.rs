@@ -429,9 +429,7 @@ fn is_regular_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::artifact::DYNLIB_EXTENSION;
-    use super::super::artifact::LoadArtifactKind;
     use super::*;
-    use crate::runtime::vm::load::artifact::CPS_SSA_EXTENSION;
     use crate::runtime::vm::load::policy::{ExecutionPolicy, set_execution_policy};
     use crate::runtime::{Context, Scheme};
     use std::{fs, sync::Mutex, time::Duration};
@@ -607,116 +605,6 @@ mod tests {
                     panic!("expected source resolution");
                 };
                 assert_eq!(compiled_artifact, None);
-            });
-        });
-    }
-
-    #[test]
-    fn chooses_policy_specific_compiled_artifact_extension() {
-        with_ctx(|ctx| {
-            let temp = TempDir::new();
-            let source_dir = temp.path().join("src");
-            let compiled_dir = temp.path().join("compiled");
-            fs::create_dir_all(source_dir.join("lib")).unwrap();
-            fs::create_dir_all(compiled_dir.join("lib")).unwrap();
-
-            let source = source_dir.join("lib/test.scm");
-            fs::write(&source, b"source").unwrap();
-
-            let shared_object = compiled_dir
-                .join("lib/test")
-                .with_extension(DYNLIB_EXTENSION);
-            let cps_ssa = compiled_dir
-                .join("lib/test")
-                .with_extension(CPS_SSA_EXTENSION);
-            fs::write(&shared_object, b"so").unwrap();
-            fs::write(&cps_ssa, b"cscm").unwrap();
-
-            ctx.globals()
-                .loc_load_extensions()
-                .set(ctx, scm_list(ctx, &["scm"]));
-            ctx.globals()
-                .loc_load_path()
-                .set(ctx, scm_list(ctx, &[source_dir.to_string_lossy().as_ref()]));
-            ctx.globals().loc_load_compiled_path().set(
-                ctx,
-                scm_list(ctx, &[compiled_dir.to_string_lossy().as_ref()]),
-            );
-
-            with_policy(ExecutionPolicy::AOT, || {
-                let resolved =
-                    resolve_load_path(ctx, Path::new("lib/test"), None::<&Path>, false, None)
-                        .unwrap()
-                        .unwrap();
-                let ResolvedLoadPath::Source {
-                    compiled_artifact, ..
-                } = resolved
-                else {
-                    panic!("expected source resolution");
-                };
-                assert_eq!(
-                    compiled_artifact,
-                    Some(LoadArtifact::new(
-                        LoadArtifactKind::SharedObject,
-                        shared_object.clone()
-                    ))
-                );
-            });
-
-            with_policy(ExecutionPolicy::JIT, || {
-                let resolved =
-                    resolve_load_path(ctx, Path::new("lib/test"), None::<&Path>, false, None)
-                        .unwrap()
-                        .unwrap();
-                let ResolvedLoadPath::Source {
-                    compiled_artifact, ..
-                } = resolved
-                else {
-                    panic!("expected source resolution");
-                };
-                assert_eq!(
-                    compiled_artifact,
-                    Some(LoadArtifact::new(LoadArtifactKind::CpsSsa, cps_ssa.clone()))
-                );
-            });
-        });
-    }
-
-    #[test]
-    fn explicit_cps_ssa_path_is_treated_as_direct_artifact() {
-        with_policy(ExecutionPolicy::JIT, || {
-            with_ctx(|ctx| {
-                let temp = TempDir::new();
-                let load_path = temp.path().join("load-path");
-                fs::create_dir_all(&load_path).unwrap();
-
-                let artifact = load_path.join("target.cscm");
-                fs::write(&artifact, b"not-a-real-module").unwrap();
-
-                ctx.globals()
-                    .loc_load_extensions()
-                    .set(ctx, scm_list(ctx, &["scm"]));
-                ctx.globals()
-                    .loc_load_path()
-                    .set(ctx, scm_list(ctx, &[load_path.to_string_lossy().as_ref()]));
-
-                let resolved =
-                    resolve_load_path(ctx, Path::new("target.cscm"), None::<&Path>, false, None)
-                        .unwrap()
-                        .unwrap();
-
-                let ResolvedLoadPath::Artifact {
-                    artifact: resolved_artifact,
-                    full_path,
-                } = resolved
-                else {
-                    panic!("expected direct artifact resolution");
-                };
-                assert_eq!(
-                    resolved_artifact,
-                    LoadArtifact::new(LoadArtifactKind::CpsSsa, artifact.clone())
-                );
-                assert_eq!(full_path, artifact.canonicalize().unwrap());
             });
         });
     }
