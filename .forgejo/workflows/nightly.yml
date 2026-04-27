@@ -17,18 +17,47 @@ jobs:
           fetch-depth: 0
       - name: Check recent commits 
         id: check_commits
+        shell: bash
         run: |
-          # git log command returns commits since "24 hours ago"
-          # We check if the output is empty
+          set -euo pipefail
+          # Count commits in the last 24h, excluding "changelog maintenance" commits:
+          # message has [skip ci] / [ci skip] (case-insensitive) and the commit only
+          # touches CHANGELOG.md — those should not keep the pipeline running.
           echo "date=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
           echo "short_sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          recent_count=$(git log --since='24 hours ago' --invert-grep --grep='\[skip ci\]' --pretty=format:%H | wc -l)
-          if [ "$recent_count" -gt 0 ]; then
+          meaningful=0
+          for commit in $(git log --since='24 hours ago' --pretty=format:%H); do
+            [ -z "$commit" ] && continue
+            msg=$(git log -1 --pretty=%B "$commit")
+            filelist=$(git diff-tree --no-commit-id --name-only -r "$commit" | sort -u)
+            if [ -z "$filelist" ]; then
+              meaningful=$((meaningful + 1))
+              continue
+            fi
+            if echo "$msg" | grep -qiE '\[skip[[:space:]]*ci\]|\[ci[[:space:]]*skip\]|\[no[[:space:]]*ci\]'; then
+              only_changelog=1
+              OLDIFS=$IFS
+              IFS=$'\n'
+              for f in $filelist; do
+                [ -z "$f" ] && continue
+                if [ "$f" != "CHANGELOG.md" ]; then
+                  only_changelog=0
+                  break
+                fi
+              done
+              IFS=$OLDIFS
+              if [ "$only_changelog" -eq 1 ]; then
+                continue
+              fi
+            fi
+            meaningful=$((meaningful + 1))
+          done
+          if [ "$meaningful" -gt 0 ]; then
             echo "recent_commits=true" >> $GITHUB_OUTPUT
-            echo "Found recent commits: $recent_count"
+            echo "Found meaningful recent commits: $meaningful"
           else
             echo "recent_commits=false" >> $GITHUB_OUTPUT
-            echo "No recent commits found. Skipping job."
+            echo "No recent commits (or only [skip ci] CHANGELOG). Skipping job."
           fi
           
   generate_changelog: 
