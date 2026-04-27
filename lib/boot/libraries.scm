@@ -1215,6 +1215,7 @@
     quasisyntax
     syntax-violation
     datum
+    define-property
     ;define-macro
     unsyntax
     unsyntax-splicing)

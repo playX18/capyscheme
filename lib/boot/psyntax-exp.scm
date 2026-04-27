@@ -22,6 +22,8 @@
 
 (define identifier-binding '#f)
 
+(define $sc-define-property! '#f)
+
 (define <variable-transformer>
   (let ((rtd (make-record-type-descriptor
                '<variable-transformer>
@@ -525,6 +527,59 @@
              (set-ribcage-labels!
                ribcage
                (cons label (ribcage-labels ribcage)))))))
+     (label/pl?
+       (lambda (x)
+         (if (vector? x)
+             (if (= (vector-length x) '3)
+                 (eq? (vector-ref x '0) 'label/pl)
+                 '#f)
+             '#f)))
+     (make-label/pl
+       (lambda (label pl)
+         (if (null? pl) label (vector 'label/pl label pl))))
+     (label/pl->label
+       (lambda (label/pl)
+         (if (label/pl? label/pl)
+             (vector-ref label/pl '1)
+             label/pl)))
+     (label/pl->pl
+       (lambda (label/pl)
+         (if (label/pl? label/pl)
+             (vector-ref label/pl '2)
+             '())))
+     (property-label=? (lambda (x y) (equal? x y)))
+     (property-assoc
+       (lambda (label pl)
+         (letrec ((lp (lambda (pl.1)
+                        (cond ((null? pl.1) '#f)
+                              ((property-label=? label (caar pl.1)) (car pl.1))
+                              (else (lp (cdr pl.1)))))))
+           (lp pl))))
+     (remove-property
+       (lambda (label pl)
+         (cond ((null? pl) '())
+               ((property-label=? label (caar pl))
+                (remove-property label (cdr pl)))
+               (else
+                (cons (car pl) (remove-property label (cdr pl)))))))
+     (label/pl-with-property
+       (lambda (label/pl key-label propval)
+         (make-label/pl
+           (label/pl->label label/pl)
+           (cons (cons key-label propval)
+                 (remove-property
+                   key-label
+                   (label/pl->pl label/pl))))))
+     (select-label/pl
+       (lambda (label/pl mod no-match)
+         (let ((label (label/pl->label label/pl))
+               (pl (label/pl->pl label/pl)))
+           (if (pair? label)
+               (let ((mod* (car label)) (lbl (cdr label)))
+                 (if (equal? mod* mod)
+                     (make-label/pl lbl pl)
+                     (no-match)))
+               label/pl))))
      (make-binding-wrap
        (lambda (ids labels w)
          (if (null? ids)
@@ -589,7 +644,7 @@
                            '#f)
                        '#f)
                    '#f)))))
-     (id-var-name
+     (id-var-name/pl
        (lambda (id w mod)
          (letrec*
            ((same-marks?.1 (lambda (m1 m2) (equal? m1 m2)))
@@ -604,14 +659,10 @@
                                                 marks
                                                 (vector-ref rmarks i))
                                               '#f)
-                                          (let ((label (vector-ref rlabels i)))
-                                            (if (pair? label)
-                                                (let ((mod* (car label))
-                                                      (lbl (cdr label)))
-                                                  (if (equal? mod* mod)
-                                                      lbl
-                                                      (loop (+ i '1))))
-                                                label)))
+                                          (select-label/pl
+                                            (vector-ref rlabels i)
+                                            mod
+                                            (lambda () (loop (+ i '1)))))
                                          (else (loop (+ i '1)))))))
                     (loop '0)))))
             (search-list-rib
@@ -621,16 +672,13 @@
                                        ((if (eq? sym (car rsyms))
                                             (same-marks?.1 marks (car rms))
                                             '#f)
-                                        (let ((label (car rlbls)))
-                                          (if (pair? label)
-                                              (let ((mod* (car label))
-                                                    (lbl (cdr label)))
-                                                (if (equal? mod* mod)
-                                                    lbl
-                                                    (loop (cdr rsyms)
-                                                          (cdr rms)
-                                                          (cdr rlbls))))
-                                              label)))
+                                        (select-label/pl
+                                          (car rlbls)
+                                          mod
+                                          (lambda ()
+                                            (loop (cdr rsyms)
+                                                  (cdr rms)
+                                                  (cdr rlbls)))))
                                        (else
                                         (loop (cdr rsyms)
                                               (cdr rms)
@@ -669,8 +717,7 @@
                        (search sym (cdr subst) (cdr marks)))
                       (else '#f)))))
            (cond ((symbol? id)
-                  (let ((tmp (search id (wrap-subst w) (wrap-marks w))))
-                    (or tmp id)))
+                  (search id (wrap-subst w) (wrap-marks w)))
                  ((syntax? id)
                   (let ((expr (syntax-expression id)))
                     (let ((w1 (syntax-wrap id)))
@@ -680,14 +727,91 @@
                                        (wrap-marks w)
                                        (wrap-marks w1))))
                           (let ((tmp (search expr (wrap-subst w) marks)))
-                            (or tmp
-                                (let ((tmp.1 (search
-                                               expr
-                                               (wrap-subst w1)
-                                               marks)))
-                                  (or tmp.1 expr)))))))))
+                            (or tmp (search expr (wrap-subst w1) marks))))))))
+                 (else
+                  (syntax-violation
+                    'id-var-name/pl
+                    '"invalid id"
+                    id))))))
+     (id-var-name
+       (lambda (id w mod)
+         (let ((label/pl (id-var-name/pl id w mod)))
+           (cond (label/pl (label/pl->label label/pl))
+                 ((symbol? id) id)
+                 ((syntax? id) (syntax-expression id))
                  (else
                   (syntax-violation 'id-var-name '"invalid id" id))))))
+     (primitive-module?
+       (lambda (mod)
+         (if (pair? mod) (eq? (car mod) 'primitive) '#f)))
+     (current-hygiene-module
+       (lambda ()
+         (cons 'hygiene (module-name (current-module)))))
+     (make-global-property-label
+       (lambda (mod sym)
+         (vector
+           'global-property-label
+           (let ((tmp mod))
+             (or tmp (current-hygiene-module)))
+           sym)))
+     (global-property-label?
+       (lambda (x)
+         (if (vector? x)
+             (if (= (vector-length x) '3)
+                 (eq? (vector-ref x '0) 'global-property-label)
+                 '#f)
+             '#f)))
+     (global-property-label-module
+       (lambda (label) (vector-ref label '1)))
+     (global-property-label-symbol
+       (lambda (label) (vector-ref label '2)))
+     (identifier-canonical-global-label
+       (lambda (id w mod)
+         (let ((id.1 (wrap id w mod)))
+           (let ((sym (id-sym-name id.1)))
+             (let ((mod.1 (let ((tmp (if (syntax? id.1)
+                                         (syntax-module id.1)
+                                         '#f)))
+                            (or tmp
+                                (let ((tmp.1 mod))
+                                  (or tmp.1 (current-hygiene-module)))))))
+               (if (not (primitive-module? mod.1))
+                   (make-global-property-label mod.1 sym)
+                   '#f))))))
+     (visible-property-label/pl
+       (lambda (id w mod)
+         (let ((label/pl (id-var-name/pl id w mod)))
+           (let ((tmp label/pl))
+             (or tmp
+                 (let ((label (identifier-canonical-global-label id w mod)))
+                   (if label (make-label/pl label '()) '#f)))))))
+     (visible-property-label
+       (lambda (id w mod)
+         (let ((label/pl (visible-property-label/pl id w mod)))
+           (if label/pl (label/pl->label label/pl) '#f))))
+     (top-level-properties '())
+     (top-level-property-ref
+       (lambda (id-label key-label)
+         (let ((a (property-assoc id-label top-level-properties)))
+           (if a
+               (let ((p (property-assoc key-label (cdr a))))
+                 (if p (cdr p) '#f))
+               '#f))))
+     (_ (begin
+          (set! $sc-define-property!
+            (lambda (id-label key-label propval)
+              (begin
+                (let ((a (property-assoc id-label top-level-properties)))
+                  (if a
+                      (set-cdr!
+                        a
+                        (cons (cons key-label propval)
+                              (remove-property key-label (cdr a))))
+                      (set! top-level-properties
+                        (cons (cons id-label (list (cons key-label propval)))
+                              top-level-properties))))
+                propval)))
+          (if #f #f)))
      (locally-bound-identifiers
        (lambda (w mod)
          (letrec*
@@ -803,7 +927,11 @@
                             (values type value mod.1)))
                       (values 'displaced-lexical '#f '#f))))))
            (let ((n (id-var-name id w mod)))
-             (cond ((syntax? n)
+             (cond ((global-property-label? n)
+                    (resolve-global
+                      (global-property-label-symbol n)
+                      (global-property-label-module n)))
+                   ((syntax? n)
                     (if (not (eq? n id))
                         (resolve-identifier
                           n
@@ -960,7 +1088,8 @@
                            (lambda (var.1)
                              (letrec ((lp (lambda (labels)
                                             (if (pair? labels)
-                                                (let ((entry (car labels)))
+                                                (let ((entry (label/pl->label
+                                                               (car labels))))
                                                   (let ((tmp (if (pair? entry)
                                                                  (eq? (syntax-expression
                                                                         (cdr entry))
@@ -1202,6 +1331,114 @@
                                      tmp
                                      '(_ each-any any . each-any))))
                                 e))
+                              ((define-property-form)
+                               (call-with-values
+                                 (lambda ()
+                                   (parse-define-property e w.3 s.2 mod.2))
+                                 (lambda (id key-id expr prop-w prop-mod)
+                                   (let ((wrapped-id
+                                           (wrap id prop-w prop-mod)))
+                                     (let ((wrapped-key-id
+                                             (wrap key-id prop-w prop-mod)))
+                                       (let ((id-label/pl
+                                               (visible-property-label/pl
+                                                 id
+                                                 prop-w
+                                                 prop-mod)))
+                                         (let ((key-label
+                                                 (visible-property-label
+                                                   key-id
+                                                   prop-w
+                                                   prop-mod)))
+                                           (begin
+                                             (if id-label/pl
+                                                 '#f
+                                                 (syntax-violation
+                                                   'define-property
+                                                   '"no visible binding for define-property id"
+                                                   wrapped-id))
+                                             (begin
+                                               (if key-label
+                                                   '#f
+                                                   (syntax-violation
+                                                     'define-property
+                                                     '"no visible binding for define-property key"
+                                                     wrapped-key-id))
+                                               (let ((id-label
+                                                       (label/pl->label
+                                                         id-label/pl)))
+                                                 (let ((global-id-label
+                                                         (let ((tmp (identifier-canonical-global-label
+                                                                      id
+                                                                      prop-w
+                                                                      prop-mod)))
+                                                           (or tmp id-label))))
+                                                   (let ((global-key-label
+                                                           (let ((tmp (identifier-canonical-global-label
+                                                                        key-id
+                                                                        prop-w
+                                                                        prop-mod)))
+                                                             (or tmp
+                                                                 key-label))))
+                                                     (let ((expanded
+                                                             (expand
+                                                               expr
+                                                               (macros-only-env
+                                                                 r.2)
+                                                               prop-w
+                                                               prop-mod)))
+                                                       (let ((install-exp
+                                                               (expand-install-property
+                                                                 global-id-label
+                                                                 global-key-label
+                                                                 expanded)))
+                                                         (letrec*
+                                                           ((record-property!
+                                                              (lambda (propval)
+                                                                (extend-ribcage!
+                                                                  ribcage
+                                                                  wrapped-id
+                                                                  (label/pl-with-property
+                                                                    id-label/pl
+                                                                    key-label
+                                                                    propval))))
+                                                            (install-now!
+                                                              (lambda ()
+                                                                (let ((propval
+                                                                        (top-level-eval
+                                                                          install-exp
+                                                                          prop-mod)))
+                                                                  (begin
+                                                                    (record-property!
+                                                                      propval)
+                                                                    propval)))))
+                                                           (let ((key m.1))
+                                                             (case key
+                                                               ((c)
+                                                                (cond ((memq 'compile
+                                                                             esew)
+                                                                       (install-now!)
+                                                                       (if (memq 'load
+                                                                                 esew)
+                                                                           (list (lambda ()
+                                                                                   install-exp))
+                                                                           '()))
+                                                                      ((memq 'load
+                                                                             esew)
+                                                                       (list (lambda ()
+                                                                               install-exp)))
+                                                                      (else
+                                                                       '())))
+                                                               ((c&e)
+                                                                (install-now!)
+                                                                (list (lambda ()
+                                                                        install-exp)))
+                                                               (else
+                                                                (cond ((memq 'eval
+                                                                             esew)
+                                                                       (install-now!))
+                                                                      (#f #f))
+                                                                '()))))))))))))))))))
                               ((define-syntax-form
                                  define-syntax-parameter-form)
                                (let ((id (wrap value w.3 mod.2)))
@@ -1390,9 +1627,84 @@
                          e
                          x))
                       (else (decorate-source x)))))
+            (make-property-lookup
+              (lambda ()
+                (lambda args
+                  (cond ((= (length args) '1) '#f)
+                        ((= (length args) '2)
+                         (let ((id (car args)) (key-id (cadr args)))
+                           (begin
+                             (if (id? id)
+                                 '#f
+                                 (syntax-violation
+                                   '#f
+                                   '"first argument to lookup procedure is not an identifier"
+                                   id))
+                             (begin
+                               (if (id? key-id)
+                                   '#f
+                                   (syntax-violation
+                                     '#f
+                                     '"second argument to lookup procedure is not an identifier"
+                                     key-id))
+                               (let ((id-label/pl
+                                       (visible-property-label/pl
+                                         id
+                                         empty-wrap
+                                         mod))
+                                     (key-label
+                                       (visible-property-label
+                                         key-id
+                                         empty-wrap
+                                         mod)))
+                                 (begin
+                                   (if id-label/pl
+                                       '#f
+                                       (syntax-violation
+                                         '#f
+                                         '"no visible binding for property id"
+                                         id))
+                                   (begin
+                                     (if key-label
+                                         '#f
+                                         (syntax-violation
+                                           '#f
+                                           '"no visible binding for property key"
+                                           key-id))
+                                     (let ((p.1 (property-assoc
+                                                  key-label
+                                                  (label/pl->pl id-label/pl))))
+                                       (if p.1
+                                           (cdr p.1)
+                                           (let ((id-label
+                                                   (label/pl->label
+                                                     id-label/pl)))
+                                             (if (global-property-label?
+                                                   id-label)
+                                                 (let ((global-key-label
+                                                         (identifier-canonical-global-label
+                                                           key-id
+                                                           empty-wrap
+                                                           mod)))
+                                                   (if global-key-label
+                                                       (top-level-property-ref
+                                                         id-label
+                                                         global-key-label)
+                                                       '#f))
+                                                 '#f)))))))))))
+                        (else
+                         (syntax-violation
+                           '#f
+                           '"lookup procedure expects one or two arguments"
+                           args))))))
             (apply-transformer
               (lambda (transform e.1)
-                (rebuild-macro-output (transform e.1) (new-mark)))))
+                (rebuild-macro-output
+                  (let ((out (transform e.1)))
+                    (if (procedure? out)
+                        (out (make-property-lookup))
+                        out))
+                  (new-mark)))))
            (let ((old (fluid-ref transformer-environment)))
              (dynamic-wind
                (lambda ()
@@ -1432,14 +1744,14 @@
                    (apply (lambda (id val body)
                             (let ((ids id))
                               (letrec*
-                                ((_ (begin
-                                      (if (valid-bound-ids? ids)
-                                          '#f
-                                          (syntax-violation
+                                ((_.1 (begin
+                                        (if (valid-bound-ids? ids)
                                             '#f
-                                            '"duplicate bound keyword"
-                                            e))
-                                      (if #f #f)))
+                                            (syntax-violation
+                                              '#f
+                                              '"duplicate bound keyword"
+                                              e))
+                                        (if #f #f)))
                                  (labels (gen-labels ids))
                                  (new-w (make-binding-wrap ids labels w)))
                                 (k body
@@ -1762,6 +2074,17 @@
                      '#f
                      'cons
                      (list e (make-constant '#f id))))))))
+     (expand-install-property
+       (lambda (id-label key-label e)
+         (build-call
+           '#f
+           (build-global-reference
+             '#f
+             '$sc-define-property!
+             '(hygiene capy))
+           (list (make-constant '#f id-label)
+                 (make-constant '#f key-label)
+                 e))))
      (expand
        (lambda (e r w mod)
          (call-with-values
@@ -2207,6 +2530,77 @@
                                                                   vals
                                                                   bindings
                                                                   '#f)))))
+                                                    ((eq? type
+                                                          'define-property-form)
+                                                     (call-with-values
+                                                       (lambda ()
+                                                         (parse-define-property
+                                                           e.1
+                                                           w.2
+                                                           s
+                                                           mod.1))
+                                                       (lambda (id
+                                                                key-id
+                                                                expr
+                                                                prop-w
+                                                                prop-mod)
+                                                         (let ((wrapped-id
+                                                                 (wrap id
+                                                                       prop-w
+                                                                       prop-mod)))
+                                                           (let ((wrapped-key-id
+                                                                   (wrap key-id
+                                                                         prop-w
+                                                                         prop-mod)))
+                                                             (let ((id-label/pl
+                                                                     (visible-property-label/pl
+                                                                       id
+                                                                       prop-w
+                                                                       prop-mod)))
+                                                               (let ((key-label
+                                                                       (visible-property-label
+                                                                         key-id
+                                                                         prop-w
+                                                                         prop-mod)))
+                                                                 (begin
+                                                                   (if id-label/pl
+                                                                       '#f
+                                                                       (syntax-violation
+                                                                         'define-property
+                                                                         '"no visible binding for define-property id"
+                                                                         wrapped-id))
+                                                                   (begin
+                                                                     (if key-label
+                                                                         '#f
+                                                                         (syntax-violation
+                                                                           'define-property
+                                                                           '"no visible binding for define-property key"
+                                                                           wrapped-key-id))
+                                                                     (let ((propval
+                                                                             (local-eval
+                                                                               (expand
+                                                                                 expr
+                                                                                 (macros-only-env
+                                                                                   er)
+                                                                                 prop-w
+                                                                                 prop-mod)
+                                                                               prop-mod)))
+                                                                       (begin
+                                                                         (extend-ribcage!
+                                                                           ribcage
+                                                                           wrapped-id
+                                                                           (label/pl-with-property
+                                                                             id-label/pl
+                                                                             key-label
+                                                                             propval))
+                                                                         (parse body.2
+                                                                                ids
+                                                                                labels
+                                                                                var-ids
+                                                                                vars
+                                                                                vals
+                                                                                bindings
+                                                                                '#f))))))))))))
                                                     ((eq? type
                                                           'local-syntax-form)
                                                      (expand-local-syntax
@@ -4414,6 +4808,9 @@
                                                                                               mod)))
                                                                                       (cond ((eq? result
                                                                                                   name)
+                                                                                             '#f)
+                                                                                            ((global-property-label?
+                                                                                               result)
                                                                                              '#f)
                                                                                             ((let ((tmp (pair? result)))
                                                                                                (or tmp
