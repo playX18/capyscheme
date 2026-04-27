@@ -1,7 +1,9 @@
+use bytecodegen::Operand;
 use capy_derive::Trace;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace, Serialize, Deserialize, Operand)]
+#[repr(u16)]
 pub enum Primitive {
     S8Eq,
     S8Gt,

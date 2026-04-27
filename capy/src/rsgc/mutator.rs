@@ -18,7 +18,7 @@ use mmtk::{
     util::{
         alloc::{AllocatorSelector, BumpAllocator, ImmixAllocator},
         conversions::raw_align_up,
-        metadata::side_metadata::global_side_metadata_base_address,
+        metadata::side_metadata::global_side_metadata_vm_base_address,
     },
 };
 use parking_lot::{Mutex, Once};
@@ -145,7 +145,7 @@ where
             );
 
             GLOBAL_SIDE_METADATA_BASE_ADDRESS.store(
-                global_side_metadata_base_address().as_usize(),
+                global_side_metadata_vm_base_address().as_usize(),
                 Ordering::Relaxed,
             );
         });
@@ -817,7 +817,7 @@ impl<'gc> Mutation<'gc> {
         match self.thread.barrier() {
             BarrierSelector::ObjectBarrier => unsafe {
                 let addr = src.to_address();
-                let meta_addr = global_side_metadata_base_address() + (addr >> 6);
+                let meta_addr = global_side_metadata_vm_base_address() + (addr >> 6);
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = meta_addr.load::<u8>();
 
@@ -835,7 +835,7 @@ impl<'gc> Mutation<'gc> {
 
             BarrierSelector::SATBBarrier => {
                 let addr = src.to_address();
-                let meta_addr = global_side_metadata_base_address() + (addr >> 6);
+                let meta_addr = global_side_metadata_vm_base_address() + (addr >> 6);
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = unsafe { meta_addr.load::<u8>() };
                 if (byte_val >> shift) & 1 == 1 {
