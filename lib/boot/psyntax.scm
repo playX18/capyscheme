@@ -414,6 +414,14 @@
     (set-ribcage-symnames! ribcage (cons (syntax-expression id) (ribcage-symnames ribcage)))
     (set-ribcage-marks! ribcage (cons (wrap-marks (syntax-wrap id)) (ribcage-marks ribcage)))
     (set-ribcage-labels! ribcage (cons label (ribcage-labels ribcage))))
+
+  ;; A ribcage entry normally maps an identifier to one label.  A
+  ;; define-property form needs to keep that binding identity unchanged
+  ;; while attaching compile-time metadata keyed by another visible
+  ;; binding.  label/pl is a tagged wrapper around the original label plus
+  ;; an alist of (key-label . property-value).  It is a vector, rather than
+  ;; Chez's pair representation, because Capy's top-level ribcage labels
+  ;; already use pairs to carry module-qualified labels.
   (define (label/pl? x)
     (and (vector? x)
       (= (vector-length x) 3)
@@ -442,11 +450,29 @@
       ((null? pl) '())
       ((property-label=? label (caar pl)) (remove-property label (cdr pl)))
       (else (cons (car pl) (remove-property label (cdr pl))))))
+  (define (make-property-entry origin value)
+    (vector 'property-entry origin value))
+  (define (property-entry? x)
+    (and (vector? x)
+      (= (vector-length x) 3)
+      (eq? (vector-ref x 0) 'property-entry)))
+  (define (property-entry-origin x)
+    (if (property-entry? x)
+      (vector-ref x 1)
+      #f))
+  (define (property-entry-value x)
+    (if (property-entry? x)
+      (vector-ref x 2)
+      x))
   (define (label/pl-with-property label/pl key-label propval)
     (make-label/pl
       (label/pl->label label/pl)
       (cons (cons key-label propval)
         (remove-property key-label (label/pl->pl label/pl)))))
+
+  ;; Top-level bindings in ribcages may be encoded as (module . label).
+  ;; When such a label carries properties, select the module-specific
+  ;; underlying label but preserve the property list attached to it.
   (define (select-label/pl label/pl mod no-match)
     (let ((label (label/pl->label label/pl))
           (pl (label/pl->pl label/pl)))
@@ -505,7 +531,6 @@
     ;; for an identifier given its wrap and module.
 
     (define (same-marks? m1 m2)
-      ;; Assuming this helper exists elsewhere
       (equal? m1 m2))
 
     (define (search-vector-rib sym marks rsymnames rmarks rlabels subst)
@@ -568,7 +593,6 @@
       ((syntax? id)
         (let* ((expr (syntax-expression id))
                (w1 (syntax-wrap id))
-               (mod1 (or (syntax-module id) mod))
                (marks (join-marks (wrap-marks w) (wrap-marks w1))))
           (or (search expr (wrap-subst w) marks)
             (search expr (wrap-subst w1) marks))))
@@ -605,31 +629,323 @@
            (mod (or (and (syntax? id) (syntax-module id)) mod (current-hygiene-module))))
       (and (not (primitive-module? mod))
         (make-global-property-label mod sym))))
+  (define (identifier-visible-global-variable id w mod)
+    (let* ((id (wrap id w mod))
+           (sym (id-sym-name id))
+           (mod (or (and (syntax? id) (syntax-module id)) mod (current-hygiene-module))))
+      (and (not (primitive-module? mod))
+        (let ((var (module-variable (resolve-module (cdr mod) #t #t) sym)))
+          var))))
+
+  ;; Capy treats unresolved identifiers as global references, so property
+  ;; lookup uses stable module+symbol labels for visible globals.  The
+  ;; /bound helpers below additionally require the global variable to
+  ;; exist, which is the SRFI-213 behavior for define-property operands and
+  ;; lookup keys.
   (define (visible-property-label/pl id w mod)
     (let ((label/pl (id-var-name/pl id w mod)))
       (or label/pl
         (let ((label (identifier-canonical-global-label id w mod)))
           (and label (make-label/pl label '()))))))
+  (define (visible-bound-property-label/pl id w mod)
+    (let ((label/pl (id-var-name/pl id w mod)))
+      (or label/pl
+        (let ((label (identifier-canonical-global-label id w mod)))
+          (and label
+            (identifier-visible-global-variable id w mod)
+            (make-label/pl label '()))))))
   (define (visible-property-label id w mod)
     (let ((label/pl (visible-property-label/pl id w mod)))
       (and label/pl (label/pl->label label/pl))))
+  (define (visible-bound-property-label id w mod)
+    (let ((label/pl (visible-bound-property-label/pl id w mod)))
+      (and label/pl (label/pl->label label/pl))))
+
+  (define (global-property-visible-label? label)
+    (or (global-property-label? label)
+      (syntax? label)
+      (symbol? label)))
+
+  (define (adjoin-property-label label labels)
+    (cond
+      ((not label) labels)
+      ((let lp ((labels labels))
+         (and (pair? labels)
+           (or (property-label=? label (car labels))
+             (lp (cdr labels)))))
+        labels)
+      (else (cons label labels))))
+  (define (append-property-labels a b)
+    (let lp ((a (reverse a)) (b b))
+      (if (null? a)
+        b
+        (lp (cdr a) (adjoin-property-label (car a) b)))))
+  (define (module-local-symbols-for-variable module var)
+    (let ((out '()))
+      (module-for-each
+        (lambda (sym var*)
+          (if (eq? var var*)
+            (set! out (cons sym out))))
+        module)
+      out))
+  (define (module-export-symbols-for-variable module var)
+    (let ((iface (module-public-interface module)))
+      (if iface
+        (module-local-symbols-for-variable iface var)
+        '())))
+  (define (module-hygiene-label module sym)
+    (make-global-property-label
+      (cons 'hygiene (module-name module))
+      sym))
+
+  ;; Top-level properties live outside lexical ribcages so they can be
+  ;; reinstalled by expanded code and found by later top-level expansions.
+  ;; Local properties stay on label/pl entries in the local ribcage.
   (define top-level-properties '())
-  (define (top-level-property-ref id-label key-label)
+  (define top-level-property-labels '())
+  (define (global-property-label->variable label)
+    (and (global-property-label? label)
+      (let ((mod (global-property-label-module label)))
+        (and (not (primitive-module? mod))
+          (let ((var (module-variable
+                       (resolve-module (cdr mod) #t #t)
+                       (global-property-label-symbol label))))
+            var)))))
+  (define (record-top-level-property-label! label)
+    (let ((var (global-property-label->variable label)))
+      (if var
+        (let ((a (assq var top-level-property-labels)))
+          (if a
+            (set-cdr! a (adjoin-property-label label (cdr a)))
+            (set! top-level-property-labels
+              (cons (cons var (list label)) top-level-property-labels)))))))
+  (define (top-level-property-labels-for-variable var)
+    (let ((a (assq var top-level-property-labels)))
+      (if a (cdr a) '())))
+  (define (source-module-for-interface iface)
+    (let ((name (module-name iface)))
+      (resolve-module name #t #f)))
+  (define (visible-interface-property-labels* iface var seen include-fallback?)
+    (let ((src (source-module-for-interface iface))
+          (fallback-syms (module-local-symbols-for-variable iface var)))
+      (if src
+        (let ((syms (module-export-symbols-for-variable src var)))
+          (if (null? syms)
+            (let lp ((syms fallback-syms) (labels '()))
+              (if (null? syms)
+                labels
+                (lp (cdr syms)
+                  (adjoin-property-label
+                    (module-hygiene-label iface (car syms))
+                    labels))))
+            (let lp ((syms syms) (labels '()))
+              (if (null? syms)
+                labels
+                (lp (cdr syms)
+                  (append-property-labels
+                    (visible-module-property-labels* src (car syms) var seen include-fallback?)
+                    labels))))))
+        (let lp ((syms fallback-syms) (labels '()))
+          (if (null? syms)
+            labels
+            (lp (cdr syms)
+              (adjoin-property-label
+                (module-hygiene-label iface (car syms))
+                labels)))))))
+  (define (visible-interface-property-labels iface var seen)
+    (visible-interface-property-labels* iface var seen #t))
+  (define (visible-import-property-labels* module var seen include-fallback?)
+    (let lp ((uses (module-uses module)) (labels '()))
+      (if (null? uses)
+        labels
+        (lp (cdr uses)
+          (append-property-labels
+            (visible-interface-property-labels* (car uses) var seen include-fallback?)
+            labels)))))
+  (define (visible-import-property-labels module var seen)
+    (visible-import-property-labels* module var seen #t))
+  (define (visible-direct-import-property-label-groups module sym var)
+    (let lp ((uses (module-uses module)) (groups '()))
+      (if (null? uses)
+        (reverse groups)
+        (let* ((iface (car uses))
+               (iface-var (module-local-variable iface sym)))
+          (lp (cdr uses)
+            (if (eq? iface-var var)
+              (let ((labels (visible-interface-property-labels* iface var (list module) #f)))
+                (if (null? labels) groups (cons labels groups)))
+              groups))))))
+  (define (visible-module-property-labels* module sym var seen include-fallback?)
+    (if (memq module seen)
+      '()
+      (let ((seen (cons module seen)))
+        (append-property-labels
+          (list (module-hygiene-label module sym))
+          (append-property-labels
+            (visible-import-property-labels* module var seen include-fallback?)
+            (if include-fallback?
+              (top-level-property-labels-for-variable var)
+              '()))))))
+  (define (visible-module-property-labels module sym var seen)
+    (visible-module-property-labels* module sym var seen #t))
+  (define (visible-global-property-labels id w mod)
+    (let* ((id (wrap id w mod))
+           (sym (id-sym-name id))
+           (mod (or (and (syntax? id) (syntax-module id)) mod (current-hygiene-module))))
+      (and (not (primitive-module? mod))
+        (let* ((module (resolve-module (cdr mod) #t #t))
+               (var (module-variable module sym)))
+          (and var (visible-module-property-labels module sym var '()))))))
+  (define (top-level-property-entry-ref id-label key-label)
     (let ((a (property-assoc id-label top-level-properties)))
       (and a
         (let ((p (property-assoc key-label (cdr a))))
           (and p (cdr p))))))
+  (define (top-level-property-ref id-label key-label)
+    (let ((entry (top-level-property-entry-ref id-label key-label)))
+      (and entry (property-entry-value entry))))
+  (define (top-level-property-entries id-labels key-labels)
+    (let lp-id ((id-labels id-labels) (entries '()))
+      (if (null? id-labels)
+        entries
+        (lp-id (cdr id-labels)
+          (let lp-key ((key-labels key-labels) (entries entries))
+            (if (null? key-labels)
+              entries
+              (let ((entry (top-level-property-entry-ref (car id-labels) (car key-labels))))
+                (lp-key (cdr key-labels)
+                  (if entry (cons entry entries) entries)))))))))
+  (define (top-level-property-entries-for-id id-label key-labels)
+    (let lp ((key-labels key-labels) (entries '()))
+      (if (null? key-labels)
+        entries
+        (let ((entry (top-level-property-entry-ref id-label (car key-labels))))
+          (lp (cdr key-labels)
+            (if entry (cons entry entries) entries))))))
+  (define (lookup-ordered-top-level-property-entry id-labels key-labels id key-id)
+    (let lp ((id-labels id-labels))
+      (cond
+        ((null? id-labels) #f)
+        (else
+          (let ((entries (top-level-property-entries-for-id (car id-labels) key-labels)))
+            (if (null? entries)
+              (lp (cdr id-labels))
+              (merge-top-level-property-entry entries id key-id)))))))
+  (define (lookup-ordered-top-level-property id-labels key-labels id key-id)
+    (let ((entry (lookup-ordered-top-level-property-entry id-labels key-labels id key-id)))
+      (and entry (property-entry-value entry))))
+  (define (merge-top-level-property-entry entries id key-id)
+    (cond
+      ((null? entries) #f)
+      (else
+        (let ((first (car entries)))
+          (let lp ((entries (cdr entries))
+                   (origin (property-entry-origin first))
+                   (value (property-entry-value first)))
+            (cond
+              ((null? entries) first)
+              ((equal? origin (property-entry-origin (car entries)))
+                (if (equal? value (property-entry-value (car entries)))
+                  (lp (cdr entries) origin value)
+                  (syntax-violation
+                    'define-property
+                    "conflicting imported identifier properties"
+                    id
+                    key-id)))
+              (else
+                (syntax-violation
+                  'define-property
+                  "conflicting imported identifier properties"
+                  id
+                  key-id))))))))
+  (define (merge-top-level-property-entries entries id key-id)
+    (let ((entry (merge-top-level-property-entry entries id key-id)))
+      (and entry (property-entry-value entry))))
+  (define (direct-import-property-entries id-module id-sym id-var key-module key-sym key-var id key-id)
+    (let ((id-groups (visible-direct-import-property-label-groups id-module id-sym id-var))
+          (key-groups (visible-direct-import-property-label-groups key-module key-sym key-var)))
+      (let lp-id ((id-groups id-groups) (entries '()))
+        (if (null? id-groups)
+          entries
+          (lp-id (cdr id-groups)
+            (let lp-key ((key-groups key-groups) (entries entries))
+              (if (null? key-groups)
+                entries
+                (let* ((id-labels (car id-groups))
+                       (key-labels (car key-groups))
+                       (entry
+                         (or (and (pair? id-labels)
+                               (pair? key-labels)
+                               (top-level-property-entry-ref (car id-labels) (car key-labels)))
+                           (lookup-ordered-top-level-property-entry
+                             id-labels
+                             key-labels
+                             id
+                             key-id))))
+                  (lp-key (cdr key-groups)
+                    (if entry (cons entry entries) entries))))))))))
+  (define (lookup-top-level-property id key-id mod)
+    (let* ((wrapped-id (wrap id empty-wrap mod))
+           (id-sym (id-sym-name wrapped-id))
+           (id-mod (or (and (syntax? wrapped-id) (syntax-module wrapped-id)) mod (current-hygiene-module)))
+           (id-module (and (not (primitive-module? id-mod)) (resolve-module (cdr id-mod) #t #t)))
+           (id-var (and id-module (module-variable id-module id-sym)))
+           (wrapped-key-id (wrap key-id empty-wrap mod))
+           (key-sym (id-sym-name wrapped-key-id))
+           (key-mod (or (and (syntax? wrapped-key-id) (syntax-module wrapped-key-id)) mod (current-hygiene-module)))
+           (key-module (and (not (primitive-module? key-mod)) (resolve-module (cdr key-mod) #t #t)))
+           (key-var (and key-module (module-variable key-module key-sym)))
+           (id-labels (and id-var (visible-module-property-labels id-module id-sym id-var '())))
+           (key-labels (and key-var (visible-module-property-labels key-module key-sym key-var '())))
+           (use-mod (or mod (current-hygiene-module)))
+           (use-module (and (not (primitive-module? use-mod)) (resolve-module (cdr use-mod) #t #t)))
+           (use-id-var (and use-module (module-variable use-module id-sym)))
+           (use-key-var (and use-module (module-variable use-module key-sym))))
+      (unless id-var
+        (syntax-violation #f "no visible binding for property id" id))
+      (unless key-var
+        (syntax-violation #f "no visible binding for property key" key-id))
+      (let ((direct-entry
+              (merge-top-level-property-entry
+                (if (and (eq? use-id-var id-var) (eq? use-key-var key-var))
+                  (direct-import-property-entries
+                    use-module
+                    id-sym
+                    id-var
+                    use-module
+                    key-sym
+                    key-var
+                    id
+                    key-id)
+                  '())
+                id
+                key-id)))
+        (if direct-entry
+          (property-entry-value direct-entry)
+          (lookup-ordered-top-level-property
+            id-labels
+            key-labels
+            id
+            key-id)))))
   (set! $sc-define-property!
-    (lambda (id-label key-label propval)
-      (let ((a (property-assoc id-label top-level-properties)))
-        (if a
-          (set-cdr! a
-            (cons (cons key-label propval)
-              (remove-property key-label (cdr a))))
-          (set! top-level-properties
-            (cons (cons id-label (list (cons key-label propval)))
-              top-level-properties))))
-      propval))
+    (lambda args
+      (let ((id-label (car args))
+            (key-label (cadr args))
+            (propval (caddr args))
+            (origin (if (null? (cdddr args))
+                      (list 'legacy id-label key-label)
+                      (cadddr args))))
+        (record-top-level-property-label! id-label)
+        (record-top-level-property-label! key-label)
+        (let ((a (property-assoc id-label top-level-properties)))
+          (if a
+            (set-cdr! a
+              (cons (cons key-label (make-property-entry origin propval))
+                (remove-property key-label (cdr a))))
+            (set! top-level-properties
+              (cons (cons id-label (list (cons key-label (make-property-entry origin propval))))
+                top-level-properties))))
+        propval)))
   (define (locally-bound-identifiers w mod)
     (define (scan subst results)
       (cond
@@ -801,6 +1117,14 @@
           (extend-ribcage! ribcage id
             (cons (or (syntax-module id) mod)
               (wrap var top-wrap mod)))))
+      (define (top-level-ribcage-has-var? var)
+        (let lp ((labels (ribcage-labels ribcage)))
+          (and (pair? labels)
+            (let ((entry (label/pl->label (car labels))))
+              (or (and (pair? entry)
+                   (syntax? (cdr entry))
+                   (eq? (syntax-expression (cdr entry)) var))
+                (lp (cdr labels)))))))
       (define (macro-introduced-identifier? id)
         (not (equal? (wrap-marks (syntax-wrap id)) top-mark)))
       (define (ensure-fresh-name var)
@@ -856,6 +1180,10 @@
                        (var (if (macro-introduced-identifier? id)
                              (fresh-derived-name id x)
                              (syntax-expression id))))
+                  (unless (primitive-module? mod)
+                    (module-ensure-local-variable!
+                      (resolve-module (cdr mod) #t #t)
+                      var))
                   (record-definition! id var)
                   (list (if (eq? m 'c&e)
                          (let ((x (build-global-definition s mod var (expand e r w mod))))
@@ -914,19 +1242,39 @@
                 (call-with-values
                   (lambda () (parse-define-property e w s mod))
                   (lambda (id key-id expr prop-w prop-mod)
+                    ;; At top level, the property value must be available
+                    ;; while later forms in the same expansion are being
+                    ;; expanded, and it must also be emitted so loading the
+                    ;; compiled file reinstalls the property.  install-now!
+                    ;; handles the expander-side store; install-exp is the
+                    ;; runtime/top-level expression preserved in the output
+                    ;; when the active eval-when mode requires it.
                     (let* ((wrapped-id (wrap id prop-w prop-mod))
                            (wrapped-key-id (wrap key-id prop-w prop-mod))
-                           (id-label/pl (visible-property-label/pl id prop-w prop-mod))
-                           (key-label (visible-property-label key-id prop-w prop-mod)))
+                           (id-label/pl
+                             (or (visible-bound-property-label/pl wrapped-id empty-wrap prop-mod)
+                               (and (top-level-ribcage-has-var? (id-sym-name wrapped-id))
+                                 (visible-property-label/pl wrapped-id empty-wrap prop-mod))))
+                           (key-label
+                             (or (visible-bound-property-label wrapped-key-id empty-wrap prop-mod)
+                               (and (top-level-ribcage-has-var? (id-sym-name wrapped-key-id))
+                                 (visible-property-label wrapped-key-id empty-wrap prop-mod)))))
                       (unless id-label/pl
                         (syntax-violation 'define-property "no visible binding for define-property id" wrapped-id))
                       (unless key-label
                         (syntax-violation 'define-property "no visible binding for define-property key" wrapped-key-id))
                       (let* ((id-label (label/pl->label id-label/pl))
-                             (global-id-label (or (identifier-canonical-global-label id prop-w prop-mod) id-label))
-                             (global-key-label (or (identifier-canonical-global-label key-id prop-w prop-mod) key-label))
+                             (global-id-label
+                               (or (and (not (primitive-module? prop-mod))
+                                     (make-global-property-label prop-mod (id-sym-name wrapped-id)))
+                                 id-label))
+                             (global-key-label
+                               (or (and (not (primitive-module? prop-mod))
+                                     (make-global-property-label prop-mod (id-sym-name wrapped-key-id)))
+                                 key-label))
+                             (property-origin (gen-unique))
                              (expanded (expand expr (macros-only-env r) prop-w prop-mod))
-                             (install-exp (expand-install-property global-id-label global-key-label expanded)))
+                             (install-exp (expand-install-property global-id-label global-key-label property-origin expanded)))
                         (define (record-property! propval)
                           (extend-ribcage! ribcage wrapped-id
                             (label/pl-with-property id-label/pl key-label propval)))
@@ -1044,14 +1392,18 @@
           ((= (length args) 1)
             #f)
           ((= (length args) 2)
+            ;; Chez-style property transformers return a procedure.  The
+            ;; expander calls that procedure with this lookup closure, which
+            ;; accepts (id key-id) and returns the compile-time property value
+            ;; for the visible binding pair, or #f if no property is present.
             (let ((id (car args))
                   (key-id (cadr args)))
               (unless (id? id)
                 (syntax-violation #f "first argument to lookup procedure is not an identifier" id))
               (unless (id? key-id)
                 (syntax-violation #f "second argument to lookup procedure is not an identifier" key-id))
-              (let ((id-label/pl (visible-property-label/pl id empty-wrap mod))
-                    (key-label (visible-property-label key-id empty-wrap mod)))
+              (let ((id-label/pl (visible-bound-property-label/pl id empty-wrap mod))
+                    (key-label (visible-bound-property-label key-id empty-wrap mod)))
                 (unless id-label/pl
                   (syntax-violation #f "no visible binding for property id" id))
                 (unless key-label
@@ -1060,11 +1412,13 @@
                   (if p
                     (cdr p)
                     (let ((id-label (label/pl->label id-label/pl)))
-                      (if (global-property-label? id-label)
-                        (let ((global-key-label (identifier-canonical-global-label key-id empty-wrap mod)))
-                          (if global-key-label
-                            (top-level-property-ref id-label global-key-label)
-                            #f))
+                      ;; Only global/top-level identifiers fall through to
+                      ;; the top-level store.  A lexical id or key with no
+                      ;; local property must not inherit a property from a
+                      ;; shadowed global with the same symbol.
+                      (if (and (global-property-visible-label? id-label)
+                            (global-property-visible-label? key-label))
+                        (lookup-top-level-property id key-id mod)
                         #f)))))))
           (else
             (syntax-violation #f "lookup procedure expects one or two arguments" args)))))
@@ -1232,37 +1586,21 @@
               ((define-property-form) 'property)
               (else 'macro)))
           (build-primcall #f 'cons (list e (make-constant #f id)))))))
-  (define (expand-install-property id-label key-label e)
+  (define (expand-install-property id-label key-label origin e)
     (build-call
       #f
       (build-global-reference #f '$sc-define-property! '(hygiene capy))
       (list
         (make-constant #f id-label)
         (make-constant #f key-label)
-        e)))
+        e
+        (make-constant #f origin))))
   (define (expand e r w mod)
-;    (cond 
-;      [(and (syntax-pair? e)
-;            (identifier? (syntax-car e)))
-;        (define id (syntax-car e))
-;        (receive (type* value* mod*) (resolve-identifier id w r mod #t)
-;          (case type* 
-;            [(macro)
-;              (expand (expand-macro value* e r w #f #f mod) r empty-wrap mod)]
-;            [(core core-form)
-;              (value* e r w #f mod)]
-;            [else 
-;              (expand-implicit app-sym value* e r w mod)]))]
-;      [else 
-;        (receive (type value form e w s mod)
-;          (expand-expr type value form e r w s mod))])
+
     (receive (type value form e w s mod)
       (syntax-type e r w (source-annotation e) #f mod #f)
       (expand-expr type value form e r w s mod)))
-;    (call-with-values
-;      (lambda () (syntax-type e r w (source-annotation e) #f mod #f))
-;      (lambda (type value form e w s mod)
-;        (expand-expr type value form e r w s mod))))
+
 
   (define (make-explicit sym e r w s mod)
     (define sym-s (source-wrap sym w s mod))
@@ -1456,10 +1794,14 @@
                       (call-with-values
                         (lambda () (parse-define-property e w s mod))
                         (lambda (id key-id expr prop-w prop-mod)
+                          ;; Internal define-property is purely compile-time:
+                          ;; evaluate the property expression now, attach it to
+                          ;; the current body's ribcage, and continue parsing
+                          ;; definitions without adding a run-time binding.
                           (let* ((wrapped-id (wrap id prop-w prop-mod))
                                  (wrapped-key-id (wrap key-id prop-w prop-mod))
-                                 (id-label/pl (visible-property-label/pl id prop-w prop-mod))
-                                 (key-label (visible-property-label key-id prop-w prop-mod)))
+                                 (id-label/pl (visible-bound-property-label/pl wrapped-id empty-wrap prop-mod))
+                                 (key-label (visible-bound-property-label wrapped-key-id empty-wrap prop-mod)))
                             (unless id-label/pl
                               (syntax-violation 'define-property "no visible binding for define-property id" wrapped-id))
                             (unless key-label

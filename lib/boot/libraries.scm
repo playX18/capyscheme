@@ -1214,12 +1214,18 @@
     generate-temporaries
     quasisyntax
     syntax-violation
+    capture-lookup
     datum
     define-property
     ;define-macro
     unsyntax
     unsyntax-splicing)
   (import (capy))
+
+  (define (capture-lookup proc)
+    (unless (procedure? proc)
+      (assertion-violation 'capture-lookup "expected a procedure" proc))
+    proc)
 
   (define-syntax datum
     (syntax-rules ()

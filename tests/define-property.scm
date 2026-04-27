@@ -49,8 +49,19 @@
   (check shadowed-target-has-no-outer-property (get-property target property-key) #f)
   (check shadowed-target-value target "inner-target"))
 
+(let ()
+  (define property-key "inner-key")
+  (check shadowed-key-has-no-outer-property (get-property target property-key) #f)
+  (check shadowed-key-value property-key "inner-key"))
+
 (define-property target property-key "replacement-property")
 (check replacement-property (get-property target property-key) "replacement-property")
+
+(let* ()
+  (define-property target property-key "internal-replacement")
+  (check internal-property-override (get-property target property-key) "internal-replacement"))
+
+(check replacement-property-restored (get-property target property-key) "replacement-property")
 
 (define expression-context-error?
   (guard (c [else #t])
@@ -58,6 +69,15 @@
     #f))
 
 (check expression-context expression-context-error? #t)
+
+(define unbound-define-property-error?
+  (guard (c [else #t])
+    (eval '(begin
+            (define unbound-property-key #f)
+            (define-property unbound-property-target unbound-property-key "bad")))
+    #f))
+
+(check unbound-define-property unbound-define-property-error? #t)
 
 (if (null? failures)
     (begin

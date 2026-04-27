@@ -562,6 +562,22 @@
                 (remove-property label (cdr pl)))
                (else
                 (cons (car pl) (remove-property label (cdr pl)))))))
+     (make-property-entry
+       (lambda (origin value)
+         (vector 'property-entry origin value)))
+     (property-entry?
+       (lambda (x)
+         (if (vector? x)
+             (if (= (vector-length x) '3)
+                 (eq? (vector-ref x '0) 'property-entry)
+                 '#f)
+             '#f)))
+     (property-entry-origin
+       (lambda (x)
+         (if (property-entry? x) (vector-ref x '1) '#f)))
+     (property-entry-value
+       (lambda (x)
+         (if (property-entry? x) (vector-ref x '2) x)))
      (label/pl-with-property
        (lambda (label/pl key-label propval)
          (make-label/pl
@@ -721,13 +737,11 @@
                  ((syntax? id)
                   (let ((expr (syntax-expression id)))
                     (let ((w1 (syntax-wrap id)))
-                      (let ((mod1 (let ((tmp (syntax-module id)))
-                                    (or tmp mod))))
-                        (let ((marks (join-marks
-                                       (wrap-marks w)
-                                       (wrap-marks w1))))
-                          (let ((tmp (search expr (wrap-subst w) marks)))
-                            (or tmp (search expr (wrap-subst w1) marks))))))))
+                      (let ((marks (join-marks
+                                     (wrap-marks w)
+                                     (wrap-marks w1))))
+                        (let ((tmp (search expr (wrap-subst w) marks)))
+                          (or tmp (search expr (wrap-subst w1) marks)))))))
                  (else
                   (syntax-violation
                     'id-var-name/pl
@@ -778,6 +792,22 @@
                (if (not (primitive-module? mod.1))
                    (make-global-property-label mod.1 sym)
                    '#f))))))
+     (identifier-visible-global-variable
+       (lambda (id w mod)
+         (let ((id.1 (wrap id w mod)))
+           (let ((sym (id-sym-name id.1)))
+             (let ((mod.1 (let ((tmp (if (syntax? id.1)
+                                         (syntax-module id.1)
+                                         '#f)))
+                            (or tmp
+                                (let ((tmp.1 mod))
+                                  (or tmp.1 (current-hygiene-module)))))))
+               (if (not (primitive-module? mod.1))
+                   (let ((var (module-variable
+                                (resolve-module (cdr mod.1) '#t '#t)
+                                sym)))
+                     var)
+                   '#f))))))
      (visible-property-label/pl
        (lambda (id w mod)
          (let ((label/pl (id-var-name/pl id w mod)))
@@ -785,32 +815,544 @@
              (or tmp
                  (let ((label (identifier-canonical-global-label id w mod)))
                    (if label (make-label/pl label '()) '#f)))))))
+     (visible-bound-property-label/pl
+       (lambda (id w mod)
+         (let ((label/pl (id-var-name/pl id w mod)))
+           (let ((tmp label/pl))
+             (or tmp
+                 (let ((label (identifier-canonical-global-label id w mod)))
+                   (if label
+                       (if (identifier-visible-global-variable id w mod)
+                           (make-label/pl label '())
+                           '#f)
+                       '#f)))))))
      (visible-property-label
        (lambda (id w mod)
          (let ((label/pl (visible-property-label/pl id w mod)))
            (if label/pl (label/pl->label label/pl) '#f))))
+     (visible-bound-property-label
+       (lambda (id w mod)
+         (let ((label/pl
+                 (visible-bound-property-label/pl id w mod)))
+           (if label/pl (label/pl->label label/pl) '#f))))
+     (global-property-visible-label?
+       (lambda (label)
+         (let ((tmp (global-property-label? label)))
+           (or tmp
+               (let ((tmp.1 (syntax? label)))
+                 (or tmp.1 (symbol? label)))))))
+     (adjoin-property-label
+       (lambda (label labels)
+         (cond ((not label) labels)
+               ((letrec ((lp (lambda (labels.1)
+                               (if (pair? labels.1)
+                                   (let ((tmp (property-label=?
+                                                label
+                                                (car labels.1))))
+                                     (or tmp (lp (cdr labels.1))))
+                                   '#f))))
+                  (lp labels))
+                labels)
+               (else (cons label labels)))))
+     (append-property-labels
+       (lambda (a b)
+         (letrec ((lp (lambda (a.1 b.1)
+                        (if (null? a.1)
+                            b.1
+                            (lp (cdr a.1)
+                                (adjoin-property-label (car a.1) b.1))))))
+           (lp (reverse a) b))))
+     (module-local-symbols-for-variable
+       (lambda (module var)
+         (let ((out '()))
+           (begin
+             (module-for-each
+               (lambda (sym var*)
+                 (cond ((eq? var var*) (set! out (cons sym out)))
+                       (#f #f)))
+               module)
+             out))))
+     (module-export-symbols-for-variable
+       (lambda (module var)
+         (let ((iface (module-public-interface module)))
+           (if iface
+               (module-local-symbols-for-variable iface var)
+               '()))))
+     (module-hygiene-label
+       (lambda (module sym)
+         (make-global-property-label
+           (cons 'hygiene (module-name module))
+           sym)))
      (top-level-properties '())
-     (top-level-property-ref
+     (top-level-property-labels '())
+     (global-property-label->variable
+       (lambda (label)
+         (if (global-property-label? label)
+             (let ((mod (global-property-label-module label)))
+               (if (not (primitive-module? mod))
+                   (let ((var (module-variable
+                                (resolve-module (cdr mod) '#t '#t)
+                                (global-property-label-symbol label))))
+                     var)
+                   '#f))
+             '#f)))
+     (record-top-level-property-label!
+       (lambda (label)
+         (let ((var (global-property-label->variable label)))
+           (cond (var
+                  (let ((a (assq var top-level-property-labels)))
+                    (if a
+                        (set-cdr!
+                          a
+                          (adjoin-property-label label (cdr a)))
+                        (set! top-level-property-labels
+                          (cons (cons var (list label))
+                                top-level-property-labels)))))
+                 (#f #f)))))
+     (top-level-property-labels-for-variable
+       (lambda (var)
+         (let ((a (assq var top-level-property-labels)))
+           (if a (cdr a) '()))))
+     (source-module-for-interface
+       (lambda (iface)
+         (let ((name (module-name iface)))
+           (resolve-module name '#t '#f))))
+     (visible-interface-property-labels*
+       (lambda (iface var seen include-fallback?)
+         (let ((src (source-module-for-interface iface))
+               (fallback-syms
+                 (module-local-symbols-for-variable iface var)))
+           (if src
+               (let ((syms (module-export-symbols-for-variable src var)))
+                 (if (null? syms)
+                     (letrec ((lp (lambda (syms.1 labels)
+                                    (if (null? syms.1)
+                                        labels
+                                        (lp (cdr syms.1)
+                                            (adjoin-property-label
+                                              (module-hygiene-label
+                                                iface
+                                                (car syms.1))
+                                              labels))))))
+                       (lp fallback-syms '()))
+                     (letrec ((lp (lambda (syms.1 labels)
+                                    (if (null? syms.1)
+                                        labels
+                                        (lp (cdr syms.1)
+                                            (append-property-labels
+                                              (visible-module-property-labels*
+                                                src
+                                                (car syms.1)
+                                                var
+                                                seen
+                                                include-fallback?)
+                                              labels))))))
+                       (lp syms '()))))
+               (letrec ((lp (lambda (syms labels)
+                              (if (null? syms)
+                                  labels
+                                  (lp (cdr syms)
+                                      (adjoin-property-label
+                                        (module-hygiene-label iface (car syms))
+                                        labels))))))
+                 (lp fallback-syms '()))))))
+     (visible-interface-property-labels
+       (lambda (iface var seen)
+         (visible-interface-property-labels*
+           iface
+           var
+           seen
+           '#t)))
+     (visible-import-property-labels*
+       (lambda (module var seen include-fallback?)
+         (letrec ((lp (lambda (uses labels)
+                        (if (null? uses)
+                            labels
+                            (lp (cdr uses)
+                                (append-property-labels
+                                  (visible-interface-property-labels*
+                                    (car uses)
+                                    var
+                                    seen
+                                    include-fallback?)
+                                  labels))))))
+           (lp (module-uses module) '()))))
+     (visible-import-property-labels
+       (lambda (module var seen)
+         (visible-import-property-labels*
+           module
+           var
+           seen
+           '#t)))
+     (visible-direct-import-property-label-groups
+       (lambda (module sym var)
+         (letrec ((lp (lambda (uses groups)
+                        (if (null? uses)
+                            (reverse groups)
+                            (let ((iface (car uses)))
+                              (let ((iface-var
+                                      (module-local-variable iface sym)))
+                                (lp (cdr uses)
+                                    (if (eq? iface-var var)
+                                        (let ((labels
+                                                (visible-interface-property-labels*
+                                                  iface
+                                                  var
+                                                  (list module)
+                                                  '#f)))
+                                          (if (null? labels)
+                                              groups
+                                              (cons labels groups)))
+                                        groups))))))))
+           (lp (module-uses module) '()))))
+     (visible-module-property-labels*
+       (lambda (module sym var seen include-fallback?)
+         (if (memq module seen)
+             '()
+             (let ((seen.1 (cons module seen)))
+               (append-property-labels
+                 (list (module-hygiene-label module sym))
+                 (append-property-labels
+                   (visible-import-property-labels*
+                     module
+                     var
+                     seen.1
+                     include-fallback?)
+                   (if include-fallback?
+                       (top-level-property-labels-for-variable var)
+                       '())))))))
+     (visible-module-property-labels
+       (lambda (module sym var seen)
+         (visible-module-property-labels*
+           module
+           sym
+           var
+           seen
+           '#t)))
+     (visible-global-property-labels
+       (lambda (id w mod)
+         (let ((id.1 (wrap id w mod)))
+           (let ((sym (id-sym-name id.1)))
+             (let ((mod.1 (let ((tmp (if (syntax? id.1)
+                                         (syntax-module id.1)
+                                         '#f)))
+                            (or tmp
+                                (let ((tmp.1 mod))
+                                  (or tmp.1 (current-hygiene-module)))))))
+               (if (not (primitive-module? mod.1))
+                   (let ((module (resolve-module (cdr mod.1) '#t '#t)))
+                     (let ((var (module-variable module sym)))
+                       (if var
+                           (visible-module-property-labels
+                             module
+                             sym
+                             var
+                             '())
+                           '#f)))
+                   '#f))))))
+     (top-level-property-entry-ref
        (lambda (id-label key-label)
          (let ((a (property-assoc id-label top-level-properties)))
            (if a
                (let ((p (property-assoc key-label (cdr a))))
                  (if p (cdr p) '#f))
                '#f))))
+     (top-level-property-ref
+       (lambda (id-label key-label)
+         (let ((entry (top-level-property-entry-ref id-label key-label)))
+           (if entry (property-entry-value entry) '#f))))
+     (top-level-property-entries
+       (lambda (id-labels key-labels)
+         (letrec ((lp-id (lambda (id-labels.1 entries)
+                           (if (null? id-labels.1)
+                               entries
+                               (lp-id (cdr id-labels.1)
+                                      (letrec ((lp-key
+                                                 (lambda (key-labels.1
+                                                          entries.1)
+                                                   (if (null? key-labels.1)
+                                                       entries.1
+                                                       (let ((entry (top-level-property-entry-ref
+                                                                      (car id-labels.1)
+                                                                      (car key-labels.1))))
+                                                         (lp-key
+                                                           (cdr key-labels.1)
+                                                           (if entry
+                                                               (cons entry
+                                                                     entries.1)
+                                                               entries.1)))))))
+                                        (lp-key key-labels entries)))))))
+           (lp-id id-labels '()))))
+     (top-level-property-entries-for-id
+       (lambda (id-label key-labels)
+         (letrec ((lp (lambda (key-labels.1 entries)
+                        (if (null? key-labels.1)
+                            entries
+                            (let ((entry (top-level-property-entry-ref
+                                           id-label
+                                           (car key-labels.1))))
+                              (lp (cdr key-labels.1)
+                                  (if entry (cons entry entries) entries)))))))
+           (lp key-labels '()))))
+     (lookup-ordered-top-level-property-entry
+       (lambda (id-labels key-labels id key-id)
+         (letrec ((lp (lambda (id-labels.1)
+                        (if (null? id-labels.1)
+                            '#f
+                            (let ((entries
+                                    (top-level-property-entries-for-id
+                                      (car id-labels.1)
+                                      key-labels)))
+                              (if (null? entries)
+                                  (lp (cdr id-labels.1))
+                                  (merge-top-level-property-entry
+                                    entries
+                                    id
+                                    key-id)))))))
+           (lp id-labels))))
+     (lookup-ordered-top-level-property
+       (lambda (id-labels key-labels id key-id)
+         (let ((entry (lookup-ordered-top-level-property-entry
+                        id-labels
+                        key-labels
+                        id
+                        key-id)))
+           (if entry (property-entry-value entry) '#f))))
+     (merge-top-level-property-entry
+       (lambda (entries id key-id)
+         (if (null? entries)
+             '#f
+             (let ((first (car entries)))
+               (letrec ((lp (lambda (entries.1 origin value)
+                              (cond ((null? entries.1) first)
+                                    ((equal?
+                                       origin
+                                       (property-entry-origin (car entries.1)))
+                                     (if (equal?
+                                           value
+                                           (property-entry-value
+                                             (car entries.1)))
+                                         (lp (cdr entries.1) origin value)
+                                         (syntax-violation
+                                           'define-property
+                                           '"conflicting imported identifier properties"
+                                           id
+                                           key-id)))
+                                    (else
+                                     (syntax-violation
+                                       'define-property
+                                       '"conflicting imported identifier properties"
+                                       id
+                                       key-id))))))
+                 (lp (cdr entries)
+                     (property-entry-origin first)
+                     (property-entry-value first)))))))
+     (merge-top-level-property-entries
+       (lambda (entries id key-id)
+         (let ((entry (merge-top-level-property-entry
+                        entries
+                        id
+                        key-id)))
+           (if entry (property-entry-value entry) '#f))))
+     (direct-import-property-entries
+       (lambda (id-module
+                id-sym
+                id-var
+                key-module
+                key-sym
+                key-var
+                id
+                key-id)
+         (let ((id-groups
+                 (visible-direct-import-property-label-groups
+                   id-module
+                   id-sym
+                   id-var))
+               (key-groups
+                 (visible-direct-import-property-label-groups
+                   key-module
+                   key-sym
+                   key-var)))
+           (letrec ((lp-id (lambda (id-groups.1 entries)
+                             (if (null? id-groups.1)
+                                 entries
+                                 (lp-id (cdr id-groups.1)
+                                        (letrec ((lp-key
+                                                   (lambda (key-groups.1
+                                                            entries.1)
+                                                     (if (null? key-groups.1)
+                                                         entries.1
+                                                         (let ((id-labels
+                                                                 (car id-groups.1)))
+                                                           (let ((key-labels
+                                                                   (car key-groups.1)))
+                                                             (let ((entry (let ((tmp (if (pair? id-labels)
+                                                                                         (if (pair? key-labels)
+                                                                                             (top-level-property-entry-ref
+                                                                                               (car id-labels)
+                                                                                               (car key-labels))
+                                                                                             '#f)
+                                                                                         '#f)))
+                                                                            (or tmp
+                                                                                (lookup-ordered-top-level-property-entry
+                                                                                  id-labels
+                                                                                  key-labels
+                                                                                  id
+                                                                                  key-id)))))
+                                                               (lp-key
+                                                                 (cdr key-groups.1)
+                                                                 (if entry
+                                                                     (cons entry
+                                                                           entries.1)
+                                                                     entries.1)))))))))
+                                          (lp-key key-groups entries)))))))
+             (lp-id id-groups '())))))
+     (lookup-top-level-property
+       (lambda (id key-id mod)
+         (let ((wrapped-id (wrap id empty-wrap mod)))
+           (let ((id-sym (id-sym-name wrapped-id)))
+             (let ((id-mod
+                     (let ((tmp (if (syntax? wrapped-id)
+                                    (syntax-module wrapped-id)
+                                    '#f)))
+                       (or tmp
+                           (let ((tmp.1 mod))
+                             (or tmp.1 (current-hygiene-module)))))))
+               (let ((id-module
+                       (if (not (primitive-module? id-mod))
+                           (resolve-module (cdr id-mod) '#t '#t)
+                           '#f)))
+                 (let ((id-var
+                         (if id-module
+                             (module-variable id-module id-sym)
+                             '#f)))
+                   (let ((wrapped-key-id (wrap key-id empty-wrap mod)))
+                     (let ((key-sym (id-sym-name wrapped-key-id)))
+                       (let ((key-mod
+                               (let ((tmp (if (syntax? wrapped-key-id)
+                                              (syntax-module wrapped-key-id)
+                                              '#f)))
+                                 (or tmp
+                                     (let ((tmp.1 mod))
+                                       (or tmp.1 (current-hygiene-module)))))))
+                         (let ((key-module
+                                 (if (not (primitive-module? key-mod))
+                                     (resolve-module (cdr key-mod) '#t '#t)
+                                     '#f)))
+                           (let ((key-var
+                                   (if key-module
+                                       (module-variable key-module key-sym)
+                                       '#f)))
+                             (let ((id-labels
+                                     (if id-var
+                                         (visible-module-property-labels
+                                           id-module
+                                           id-sym
+                                           id-var
+                                           '())
+                                         '#f)))
+                               (let ((key-labels
+                                       (if key-var
+                                           (visible-module-property-labels
+                                             key-module
+                                             key-sym
+                                             key-var
+                                             '())
+                                           '#f)))
+                                 (let ((use-mod
+                                         (let ((tmp mod))
+                                           (or tmp (current-hygiene-module)))))
+                                   (let ((use-module
+                                           (if (not (primitive-module?
+                                                      use-mod))
+                                               (resolve-module
+                                                 (cdr use-mod)
+                                                 '#t
+                                                 '#t)
+                                               '#f)))
+                                     (let ((use-id-var
+                                             (if use-module
+                                                 (module-variable
+                                                   use-module
+                                                   id-sym)
+                                                 '#f)))
+                                       (let ((use-key-var
+                                               (if use-module
+                                                   (module-variable
+                                                     use-module
+                                                     key-sym)
+                                                   '#f)))
+                                         (begin
+                                           (if id-var
+                                               '#f
+                                               (syntax-violation
+                                                 '#f
+                                                 '"no visible binding for property id"
+                                                 id))
+                                           (begin
+                                             (if key-var
+                                                 '#f
+                                                 (syntax-violation
+                                                   '#f
+                                                   '"no visible binding for property key"
+                                                   key-id))
+                                             (let ((direct-entry
+                                                     (merge-top-level-property-entry
+                                                       (if (if (eq? use-id-var
+                                                                    id-var)
+                                                               (eq? use-key-var
+                                                                    key-var)
+                                                               '#f)
+                                                           (direct-import-property-entries
+                                                             use-module
+                                                             id-sym
+                                                             id-var
+                                                             use-module
+                                                             key-sym
+                                                             key-var
+                                                             id
+                                                             key-id)
+                                                           '())
+                                                       id
+                                                       key-id)))
+                                               (if direct-entry
+                                                   (property-entry-value
+                                                     direct-entry)
+                                                   (lookup-ordered-top-level-property
+                                                     id-labels
+                                                     key-labels
+                                                     id
+                                                     key-id)))))))))))))))))))))))
      (_ (begin
           (set! $sc-define-property!
-            (lambda (id-label key-label propval)
-              (begin
-                (let ((a (property-assoc id-label top-level-properties)))
-                  (if a
-                      (set-cdr!
-                        a
-                        (cons (cons key-label propval)
-                              (remove-property key-label (cdr a))))
-                      (set! top-level-properties
-                        (cons (cons id-label (list (cons key-label propval)))
-                              top-level-properties))))
-                propval)))
+            (lambda args
+              (let ((id-label (car args))
+                    (key-label (cadr args))
+                    (propval (caddr args))
+                    (origin
+                      (if (null? (cdddr args))
+                          (list 'legacy id-label key-label)
+                          (cadddr args))))
+                (begin
+                  (record-top-level-property-label! id-label)
+                  (begin
+                    (record-top-level-property-label! key-label)
+                    (begin
+                      (let ((a (property-assoc id-label top-level-properties)))
+                        (if a
+                            (set-cdr!
+                              a
+                              (cons (cons key-label
+                                          (make-property-entry origin propval))
+                                    (remove-property key-label (cdr a))))
+                            (set! top-level-properties
+                              (cons (cons id-label
+                                          (list (cons key-label
+                                                      (make-property-entry
+                                                        origin
+                                                        propval))))
+                                    top-level-properties))))
+                      propval))))))
           (if #f #f)))
      (locally-bound-identifiers
        (lambda (w mod)
@@ -1078,6 +1620,23 @@
                           id
                           (cons (let ((tmp (syntax-module id))) (or tmp mod.1))
                                 (wrap var top-wrap mod.1))))))
+                  (top-level-ribcage-has-var?
+                    (lambda (var)
+                      (letrec ((lp (lambda (labels)
+                                     (if (pair? labels)
+                                         (let ((entry (label/pl->label
+                                                        (car labels))))
+                                           (let ((tmp (if (pair? entry)
+                                                          (if (syntax?
+                                                                (cdr entry))
+                                                              (eq? (syntax-expression
+                                                                     (cdr entry))
+                                                                   var)
+                                                              '#f)
+                                                          '#f)))
+                                             (or tmp (lp (cdr labels)))))
+                                         '#f))))
+                        (lp (ribcage-labels ribcage)))))
                   (macro-introduced-identifier?
                     (lambda (id)
                       (not (equal? (wrap-marks (syntax-wrap id)) top-mark))))
@@ -1165,50 +1724,57 @@
                                                 (fresh-derived-name id x)
                                                 (syntax-expression id))))
                                    (begin
-                                     (record-definition! id var)
-                                     (list (if (eq? m.1 'c&e)
-                                               (let ((x.1 (build-global-definition
-                                                            s.2
-                                                            mod.2
-                                                            var
-                                                            (expand
-                                                              e
-                                                              r.2
-                                                              w.3
-                                                              mod.2))))
-                                                 (begin
-                                                   (top-level-eval x.1 mod.2)
-                                                   (lambda () x.1)))
-                                               (call-with-values
-                                                 (lambda ()
-                                                   (resolve-identifier
-                                                     id
-                                                     empty-wrap
-                                                     r.2
-                                                     mod.2
-                                                     '#t))
-                                                 (lambda (type* value* mod*)
+                                     (if (primitive-module? mod.2)
+                                         '#f
+                                         (module-ensure-local-variable!
+                                           (resolve-module (cdr mod.2) '#t '#t)
+                                           var))
+                                     (begin
+                                       (record-definition! id var)
+                                       (list (if (eq? m.1 'c&e)
+                                                 (let ((x.1 (build-global-definition
+                                                              s.2
+                                                              mod.2
+                                                              var
+                                                              (expand
+                                                                e
+                                                                r.2
+                                                                w.3
+                                                                mod.2))))
                                                    (begin
-                                                     (cond ((eq? type* 'macro)
-                                                            (top-level-eval
-                                                              (build-global-definition
-                                                                s.2
-                                                                mod.2
-                                                                var
-                                                                (build-void
-                                                                  s.2))
-                                                              mod.2))
-                                                           (#f #f))
-                                                     (lambda ()
-                                                       (build-global-definition
-                                                         s.2
-                                                         mod.2
-                                                         var
-                                                         (expand
-                                                           e
-                                                           r.2
-                                                           w.3
-                                                           mod.2))))))))))))
+                                                     (top-level-eval x.1 mod.2)
+                                                     (lambda () x.1)))
+                                                 (call-with-values
+                                                   (lambda ()
+                                                     (resolve-identifier
+                                                       id
+                                                       empty-wrap
+                                                       r.2
+                                                       mod.2
+                                                       '#t))
+                                                   (lambda (type* value* mod*)
+                                                     (begin
+                                                       (cond ((eq? type*
+                                                                   'macro)
+                                                              (top-level-eval
+                                                                (build-global-definition
+                                                                  s.2
+                                                                  mod.2
+                                                                  var
+                                                                  (build-void
+                                                                    s.2))
+                                                                mod.2))
+                                                             (#f #f))
+                                                       (lambda ()
+                                                         (build-global-definition
+                                                           s.2
+                                                           mod.2
+                                                           var
+                                                           (expand
+                                                             e
+                                                             r.2
+                                                             w.3
+                                                             mod.2)))))))))))))
                               ((begin-form)
                                ((lambda (tmp)
                                   ((lambda (tmp.1)
@@ -1341,15 +1907,33 @@
                                      (let ((wrapped-key-id
                                              (wrap key-id prop-w prop-mod)))
                                        (let ((id-label/pl
-                                               (visible-property-label/pl
-                                                 id
-                                                 prop-w
-                                                 prop-mod)))
+                                               (let ((tmp (visible-bound-property-label/pl
+                                                            wrapped-id
+                                                            empty-wrap
+                                                            prop-mod)))
+                                                 (or tmp
+                                                     (if (top-level-ribcage-has-var?
+                                                           (id-sym-name
+                                                             wrapped-id))
+                                                         (visible-property-label/pl
+                                                           wrapped-id
+                                                           empty-wrap
+                                                           prop-mod)
+                                                         '#f)))))
                                          (let ((key-label
-                                                 (visible-property-label
-                                                   key-id
-                                                   prop-w
-                                                   prop-mod)))
+                                                 (let ((tmp (visible-bound-property-label
+                                                              wrapped-key-id
+                                                              empty-wrap
+                                                              prop-mod)))
+                                                   (or tmp
+                                                       (if (top-level-ribcage-has-var?
+                                                             (id-sym-name
+                                                               wrapped-key-id))
+                                                           (visible-property-label
+                                                             wrapped-key-id
+                                                             empty-wrap
+                                                             prop-mod)
+                                                           '#f)))))
                                            (begin
                                              (if id-label/pl
                                                  '#f
@@ -1368,77 +1952,87 @@
                                                        (label/pl->label
                                                          id-label/pl)))
                                                  (let ((global-id-label
-                                                         (let ((tmp (identifier-canonical-global-label
-                                                                      id
-                                                                      prop-w
-                                                                      prop-mod)))
+                                                         (let ((tmp (if (not (primitive-module?
+                                                                               prop-mod))
+                                                                        (make-global-property-label
+                                                                          prop-mod
+                                                                          (id-sym-name
+                                                                            wrapped-id))
+                                                                        '#f)))
                                                            (or tmp id-label))))
                                                    (let ((global-key-label
-                                                           (let ((tmp (identifier-canonical-global-label
-                                                                        key-id
-                                                                        prop-w
-                                                                        prop-mod)))
+                                                           (let ((tmp (if (not (primitive-module?
+                                                                                 prop-mod))
+                                                                          (make-global-property-label
+                                                                            prop-mod
+                                                                            (id-sym-name
+                                                                              wrapped-key-id))
+                                                                          '#f)))
                                                              (or tmp
                                                                  key-label))))
-                                                     (let ((expanded
-                                                             (expand
-                                                               expr
-                                                               (macros-only-env
-                                                                 r.2)
-                                                               prop-w
-                                                               prop-mod)))
-                                                       (let ((install-exp
-                                                               (expand-install-property
-                                                                 global-id-label
-                                                                 global-key-label
-                                                                 expanded)))
-                                                         (letrec*
-                                                           ((record-property!
-                                                              (lambda (propval)
-                                                                (extend-ribcage!
-                                                                  ribcage
-                                                                  wrapped-id
-                                                                  (label/pl-with-property
-                                                                    id-label/pl
-                                                                    key-label
-                                                                    propval))))
-                                                            (install-now!
-                                                              (lambda ()
-                                                                (let ((propval
-                                                                        (top-level-eval
-                                                                          install-exp
-                                                                          prop-mod)))
-                                                                  (begin
-                                                                    (record-property!
-                                                                      propval)
-                                                                    propval)))))
-                                                           (let ((key m.1))
-                                                             (case key
-                                                               ((c)
-                                                                (cond ((memq 'compile
-                                                                             esew)
-                                                                       (install-now!)
-                                                                       (if (memq 'load
-                                                                                 esew)
-                                                                           (list (lambda ()
-                                                                                   install-exp))
-                                                                           '()))
-                                                                      ((memq 'load
-                                                                             esew)
-                                                                       (list (lambda ()
-                                                                               install-exp)))
-                                                                      (else
-                                                                       '())))
-                                                               ((c&e)
-                                                                (install-now!)
-                                                                (list (lambda ()
-                                                                        install-exp)))
-                                                               (else
-                                                                (cond ((memq 'eval
-                                                                             esew)
-                                                                       (install-now!))
-                                                                      (#f #f))
-                                                                '()))))))))))))))))))
+                                                     (let ((property-origin
+                                                             (gen-unique)))
+                                                       (let ((expanded
+                                                               (expand
+                                                                 expr
+                                                                 (macros-only-env
+                                                                   r.2)
+                                                                 prop-w
+                                                                 prop-mod)))
+                                                         (let ((install-exp
+                                                                 (expand-install-property
+                                                                   global-id-label
+                                                                   global-key-label
+                                                                   property-origin
+                                                                   expanded)))
+                                                           (letrec*
+                                                             ((record-property!
+                                                                (lambda (propval)
+                                                                  (extend-ribcage!
+                                                                    ribcage
+                                                                    wrapped-id
+                                                                    (label/pl-with-property
+                                                                      id-label/pl
+                                                                      key-label
+                                                                      propval))))
+                                                              (install-now!
+                                                                (lambda ()
+                                                                  (let ((propval
+                                                                          (top-level-eval
+                                                                            install-exp
+                                                                            prop-mod)))
+                                                                    (begin
+                                                                      (record-property!
+                                                                        propval)
+                                                                      propval)))))
+                                                             (let ((key m.1))
+                                                               (case key
+                                                                 ((c)
+                                                                  (cond ((memq 'compile
+                                                                               esew)
+                                                                         (install-now!)
+                                                                         (if (memq 'load
+                                                                                   esew)
+                                                                             (list (lambda ()
+                                                                                     install-exp))
+                                                                             '()))
+                                                                        ((memq 'load
+                                                                               esew)
+                                                                         (list (lambda ()
+                                                                                 install-exp)))
+                                                                        (else
+                                                                         '())))
+                                                                 ((c&e)
+                                                                  (install-now!)
+                                                                  (list (lambda ()
+                                                                          install-exp)))
+                                                                 (else
+                                                                  (cond ((memq 'eval
+                                                                               esew)
+                                                                         (install-now!))
+                                                                        (#f
+                                                                         #f))
+                                                                  '())))))))))))))))))))
                               ((define-syntax-form
                                  define-syntax-parameter-form)
                                (let ((id (wrap value w.3 mod.2)))
@@ -1648,12 +2242,12 @@
                                      '"second argument to lookup procedure is not an identifier"
                                      key-id))
                                (let ((id-label/pl
-                                       (visible-property-label/pl
+                                       (visible-bound-property-label/pl
                                          id
                                          empty-wrap
                                          mod))
                                      (key-label
-                                       (visible-property-label
+                                       (visible-bound-property-label
                                          key-id
                                          empty-wrap
                                          mod)))
@@ -1679,18 +2273,15 @@
                                            (let ((id-label
                                                    (label/pl->label
                                                      id-label/pl)))
-                                             (if (global-property-label?
-                                                   id-label)
-                                                 (let ((global-key-label
-                                                         (identifier-canonical-global-label
-                                                           key-id
-                                                           empty-wrap
-                                                           mod)))
-                                                   (if global-key-label
-                                                       (top-level-property-ref
-                                                         id-label
-                                                         global-key-label)
-                                                       '#f))
+                                             (if (if (global-property-visible-label?
+                                                       id-label)
+                                                     (global-property-visible-label?
+                                                       key-label)
+                                                     '#f)
+                                                 (lookup-top-level-property
+                                                   id
+                                                   key-id
+                                                   mod)
                                                  '#f)))))))))))
                         (else
                          (syntax-violation
@@ -2075,7 +2666,7 @@
                      'cons
                      (list e (make-constant '#f id))))))))
      (expand-install-property
-       (lambda (id-label key-label e)
+       (lambda (id-label key-label origin e)
          (build-call
            '#f
            (build-global-reference
@@ -2084,7 +2675,8 @@
              '(hygiene capy))
            (list (make-constant '#f id-label)
                  (make-constant '#f key-label)
-                 e))))
+                 e
+                 (make-constant '#f origin)))))
      (expand
        (lambda (e r w mod)
          (call-with-values
@@ -2553,14 +3145,14 @@
                                                                          prop-w
                                                                          prop-mod)))
                                                              (let ((id-label/pl
-                                                                     (visible-property-label/pl
-                                                                       id
-                                                                       prop-w
+                                                                     (visible-bound-property-label/pl
+                                                                       wrapped-id
+                                                                       empty-wrap
                                                                        prop-mod)))
                                                                (let ((key-label
-                                                                       (visible-property-label
-                                                                         key-id
-                                                                         prop-w
+                                                                       (visible-bound-property-label
+                                                                         wrapped-key-id
+                                                                         empty-wrap
                                                                          prop-mod)))
                                                                  (begin
                                                                    (if id-label/pl
