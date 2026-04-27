@@ -1248,6 +1248,7 @@
     srfi-145 ;; assumptions
     srfi-157 ;; Continuation marks
     srfi-180 ;; JSON
+    srfi-213 ;; Identifier properties
     srfi-214 ;; Flexvectors
     ; srfi-226 ;; Control features (TODO: BROKEN!)
     srfi-257 ;; Simple extendable pattern matcher with backtracking

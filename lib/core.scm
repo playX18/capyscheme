@@ -820,6 +820,7 @@
     syntax-case
     syntax-rules
     syntax-violation
+    capture-lookup
     syntax-violation-form
     syntax-violation-subform
     syntax-violation?
