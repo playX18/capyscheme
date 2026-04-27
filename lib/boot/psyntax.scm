@@ -1500,11 +1500,8 @@
         (define first (car e))
         (receive (ftype fval fform fe fw fs fmod) (syntax-type first r w s rib mod #t)
           (case ftype
-            ((lexical) (values 'lexical-call fval e e w s mod))
-            ((global)
-              (if (equal? fmod '(primitive))
-                (values 'primitive-call fval e e w s mod)
-                (values 'global-call (make-syntax fval w fmod fs) e e w s mod)))
+            ((lexical) (values 'call #f e e w s mod))
+            ((global) (values 'call #f e e w s mod))
             ((macro)
               (syntax-type (expand-macro fval e r w s rib mod)
                 r
@@ -1603,9 +1600,21 @@
 
 
   (define (make-explicit sym e r w s mod)
-    (define sym-s (source-wrap sym w s mod))
-    (define new-s (make-syntax (cons sym e) w mod s))
-    new-s)
+    (make-syntax (cons sym e) w mod s))
+
+  (define (expand-implicit-app e r w s mod)
+    (receive (app-type app-value app-form app-e app-w app-s app-mod)
+      (syntax-type (source-wrap '|#%app| w s mod) r empty-wrap s #f mod #t)
+      (case app-type
+        ((macro core core-form)
+          (let ((explicit (make-explicit '|#%app| e r w s mod)))
+            (receive (type value form e* w* s* mod*)
+              (syntax-type explicit r empty-wrap s #f mod #f)
+              (expand-expr type value form e* r w* s* mod*))))
+        (else
+          (syntax-violation '|#%app|
+            "missing #%app binding for application"
+            (source-wrap e w s mod))))))
 
   (define (expand-expr type value form e r w s mod)
     (cond
@@ -1651,7 +1660,7 @@
           (map (lambda (e) (expand e r w mod)) (cdr e))))
       ((eq? type 'global) (build-global-reference s value mod))
       ((eq? type 'constant) (make-constant s (strip e)))
-      ((eq? type 'call) (expand-call (expand (car e) r w mod) e r w s mod))
+      ((eq? type 'call) (expand-implicit-app e r w s mod))
       ((eq? type 'eval-when-form)
         (syntax-case e () 
           [(_ (x ...) e1 e2 ...)
