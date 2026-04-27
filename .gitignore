@@ -14,3 +14,4 @@ bin/capyc-*
 stage-*
 dist
 .fmt-tmp
+.worktrees/
