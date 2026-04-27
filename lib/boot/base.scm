@@ -771,27 +771,33 @@
                 #'(ispec ...))
               #'(espec ...)))
           (lambda (exports re-exports replacements)
-            (with-syntax (((e ...) exports)
-                          ((r ...) re-exports)
-                          ((x ...) replacements))
-              ;; It would be nice to push the module that was current before the
-              ;; definition, and pop it after the library definition, but I
-              ;; actually can't see a way to do that. Helper procedures perhaps,
-              ;; around a fluid that is rebound in save-module-excursion? Patches
-              ;; welcome!
-              #'(begin
-                 (define-pure-module (name name* ...))
+            (let* ((library-name (syntax->datum #'(name name* ...)))
+                   (auto-prelims (if (equal? library-name '(capy prelims))
+                                   #'()
+                                   #'((capy prelims)))))
+              (with-syntax (((prelim-import ...) auto-prelims)
+                            ((e ...) exports)
+                            ((r ...) re-exports)
+                            ((x ...) replacements))
+                ;; It would be nice to push the module that was current before the
+                ;; definition, and pop it after the library definition, but I
+                ;; actually can't see a way to do that. Helper procedures perhaps,
+                ;; around a fluid that is rebound in save-module-excursion? Patches
+                ;; welcome!
+                #'(begin
+                   (define-pure-module (name name* ...))
 
-                 (import ispec)
-                 ...
-                 ;; (capy prelims) exports "plain" #%app form which must be imported
-                 ;; by any library in order to correctly run code.
+                   (import prelim-import ...)
+                   (import ispec)
+                   ...
+                   ;; (capy prelims) exports "plain" #%app form which must be imported
+                   ;; by any library in order to correctly run code.
 
-                 (export e ...)
-                 (re-export r ...)
-                 (export! x ...)
-                 (@@ @@ (name name* ...) body)
-                 ...))))))))
+                   (export e ...)
+                   (re-export r ...)
+                   (export! x ...)
+                   (@@ @@ (name name* ...) body)
+                   ...)))))))))
 
 (define-syntax import
   (lambda (stx)

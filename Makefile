@@ -171,6 +171,7 @@ RNRS_SRCS := \
 	lib/rnrs/enums.scm
 
 CAPY_SRCS_SLS := \
+	lib/capy/prelims.sls \
 	lib/capy/pretty-print.sls \
 	lib/capy/args/argparser.sls \
 	lib/capy/args/option.sls \
