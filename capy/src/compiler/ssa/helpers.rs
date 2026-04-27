@@ -1,6 +1,4 @@
-use crate::rsgc::mmtk::{
-    BarrierSelector, util::metadata::side_metadata::GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS,
-};
+use crate::rsgc::mmtk::BarrierSelector;
 use crate::rsgc::object::OBJECT_HEADER_OFFSET;
 use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
@@ -611,9 +609,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(check_wb);
                 {
-                    let meta_base_address = self.builder.ins().iconst(
+                    let global_side_metadata =
+                        self.import_data(self.module_builder.global_side_metadata_base_address);
+                    let meta_base_address = self
+                        .builder
+                        .ins()
+                        .global_value(types::I64, global_side_metadata);
+                    let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS.as_usize() as i64,
+                        ir::MemFlags::trusted().with_can_move(),
+                        meta_base_address,
+                        0,
                     );
                     let shifted_addr = self.builder.ins().ushr_imm(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
@@ -670,9 +676,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(check_wb);
                 {
-                    let meta_base_address = self.builder.ins().iconst(
+                    let global_side_metadata =
+                        self.import_data(self.module_builder.global_side_metadata_base_address);
+                    let meta_base_address = self
+                        .builder
+                        .ins()
+                        .global_value(types::I64, global_side_metadata);
+                    let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS.as_usize() as i64,
+                        ir::MemFlags::trusted().with_can_move(),
+                        meta_base_address,
+                        0,
                     );
                     let shifted_addr = self.builder.ins().ushr_imm(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
@@ -720,9 +734,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(check_wb);
                 {
-                    let meta_base_address = self.builder.ins().iconst(
+                    let global_side_metadata =
+                        self.import_data(self.module_builder.global_side_metadata_base_address);
+                    let meta_base_address = self
+                        .builder
+                        .ins()
+                        .global_value(types::I64, global_side_metadata);
+                    let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS.as_usize() as i64,
+                        ir::MemFlags::trusted().with_can_move(),
+                        meta_base_address,
+                        0,
                     );
                     let shifted_addr = self.builder.ins().ushr_imm(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
@@ -777,9 +799,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(check_wb);
                 {
-                    let meta_base_address = self.builder.ins().iconst(
+                    let global_side_metadata =
+                        self.import_data(self.module_builder.global_side_metadata_base_address);
+                    let meta_base_address = self
+                        .builder
+                        .ins()
+                        .global_value(types::I64, global_side_metadata);
+                    let meta_base_address = self.builder.ins().load(
                         types::I64,
-                        GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS.as_usize() as i64,
+                        ir::MemFlags::trusted().with_can_move(),
+                        meta_base_address,
+                        0,
                     );
                     let shifted_addr = self.builder.ins().ushr_imm(src, 6);
                     let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);

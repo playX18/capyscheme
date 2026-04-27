@@ -58,6 +58,7 @@ pub struct ModuleBuilder<'gc> {
     pub code_block_for_cont: HashMap<ContRef<'gc>, DataId>,
     pub code_block_for_func: HashMap<FuncRef<'gc>, DataId>,
     pub import_data: HashMap<&'static str, DataId>,
+    pub global_side_metadata_base_address: DataId,
 
     pub thunks: Thunks,
     pub stacktraces: bool,
@@ -68,6 +69,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let prims = PrimitiveLowerer::new(ctx);
         let thunks = Thunks::new(&mut module);
         let debug_context = DebugContext::new(&reify_info, module.isa());
+        let global_side_metadata_base_address = module.declare_anonymous_data(true, false).unwrap();
         Self {
             debug_context,
             ctx,
@@ -82,6 +84,7 @@ impl<'gc> ModuleBuilder<'gc> {
             func_for_func: HashMap::new(),
             code_block_for_cont: HashMap::new(),
             code_block_for_func: HashMap::new(),
+            global_side_metadata_base_address,
 
             thunks,
         }
@@ -291,7 +294,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let writer = FASLWriter::new(self.ctx, &mut buf);
         writer.write(vec.into()).expect("should not fail");
 
-        let sig = call_signature!(SystemV(I64) -> I64);
+        let sig = call_signature!(SystemV(I64, I64) -> I64);
         let init_fn_id = self
             .module
             .declare_function("capy_module_init", Linkage::Export, &sig)
@@ -318,6 +321,21 @@ impl<'gc> ModuleBuilder<'gc> {
             builder.switch_to_block(entry);
 
             let ctx = builder.block_params(entry)[0];
+            let global_side_metadata_base_address_val = builder.block_params(entry)[1];
+
+            let global_side_metadata_data = self
+                .module
+                .declare_data_in_func(self.global_side_metadata_base_address, &mut builder.func);
+            let global_side_metadata_base_address = builder
+                .ins()
+                .global_value(types::I64, global_side_metadata_data);
+            builder.ins().store(
+                ir::MemFlags::trusted().with_can_move(),
+                global_side_metadata_base_address_val,
+                global_side_metadata_base_address,
+                0,
+            );
+
             let fasl_data = self
                 .module
                 .declare_data_in_func(fasl_data, &mut builder.func);

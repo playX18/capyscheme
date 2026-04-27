@@ -18,7 +18,7 @@ use mmtk::{
     util::{
         alloc::{AllocatorSelector, BumpAllocator, ImmixAllocator},
         conversions::raw_align_up,
-        metadata::side_metadata::GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS,
+        metadata::side_metadata::global_side_metadata_base_address,
     },
 };
 use parking_lot::{Mutex, Once};
@@ -29,8 +29,13 @@ use std::{
     ops::Deref,
     panic::AssertUnwindSafe,
     ptr::NonNull,
-    sync::{Arc, atomic::Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+
+pub static GLOBAL_SIDE_METADATA_BASE_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 
 pub trait Rootable<'a> {
     type Root: ?Sized + 'a;
@@ -137,6 +142,11 @@ where
             mmtk::memory_manager::initialize_collection(
                 &super::GarbageCollector::get().mmtk,
                 thread.to_vmthread(),
+            );
+
+            GLOBAL_SIDE_METADATA_BASE_ADDRESS.store(
+                global_side_metadata_base_address().as_usize(),
+                Ordering::Relaxed,
             );
         });
 
@@ -807,7 +817,7 @@ impl<'gc> Mutation<'gc> {
         match self.thread.barrier() {
             BarrierSelector::ObjectBarrier => unsafe {
                 let addr = src.to_address();
-                let meta_addr = GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS + (addr >> 6);
+                let meta_addr = global_side_metadata_base_address() + (addr >> 6);
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = meta_addr.load::<u8>();
 
@@ -825,7 +835,7 @@ impl<'gc> Mutation<'gc> {
 
             BarrierSelector::SATBBarrier => {
                 let addr = src.to_address();
-                let meta_addr = GLOBAL_SIDE_METADATA_VM_BASE_ADDRESS + (addr >> 6);
+                let meta_addr = global_side_metadata_base_address() + (addr >> 6);
                 let shift = (addr >> 3) & 0b111;
                 let byte_val = unsafe { meta_addr.load::<u8>() };
                 if (byte_val >> shift) & 1 == 1 {
