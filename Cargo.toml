@@ -2,6 +2,8 @@
 resolver = "3"
 members = ["capy", "capy-derive"]
 default-members = ["capy"]
+
+[workspace.package]
 edition = "2024"
 version = "1.3.0"
 

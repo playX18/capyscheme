@@ -69,7 +69,20 @@ impl<'gc> ModuleBuilder<'gc> {
         let prims = PrimitiveLowerer::new(ctx);
         let thunks = Thunks::new(&mut module);
         let debug_context = DebugContext::new(&reify_info, module.isa());
-        let global_side_metadata_base_address = module.declare_anonymous_data(true, false).unwrap();
+        let global_side_metadata_base_address = module
+            .declare_data(
+                "__GLOBAL_SIDE_METADATA_VM_ADDRESS",
+                Linkage::Local,
+                true,
+                false,
+            )
+            .unwrap();
+
+        let mut desc = DataDescription::new();
+        desc.define_zeroinit(size_of::<usize>());
+        module
+            .define_data(global_side_metadata_base_address, &desc)
+            .unwrap();
         Self {
             debug_context,
             ctx,
@@ -329,6 +342,7 @@ impl<'gc> ModuleBuilder<'gc> {
             let global_side_metadata_base_address = builder
                 .ins()
                 .global_value(types::I64, global_side_metadata_data);
+
             builder.ins().store(
                 ir::MemFlags::trusted().with_can_move(),
                 global_side_metadata_base_address_val,

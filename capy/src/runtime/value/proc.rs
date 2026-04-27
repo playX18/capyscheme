@@ -1,7 +1,7 @@
 use std::{collections::HashMap, ops::Index, sync::LazyLock};
 
 use crate::{
-    IndexWrite,
+    IndexWrite, WeakProcessor,
     object::VTable,
     rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
 };
@@ -547,12 +547,59 @@ pub struct CodeBlock<'gc> {
     pub arity: CodeArity,
     pub flags: CodeBlockFlags,
     pub metadata: Lock<Value<'gc>>,
+    code_len: u32,
+    code: [u8; 0],
 }
 
 static CODE_BLOCK_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, CodeBlock<'static>>::VT,
     TypeCode8::CODE_BLOCK.bits() as u16,
 );
+
+static CODE_BLOCK_VTABLE_BYTECODE: &VTable = &VTable {
+    alignment: align_of::<CodeBlock>(),
+    compute_alignment: None,
+    instance_size: size_of::<CodeBlock>(),
+    compute_size: Some({
+        extern "C" fn compute_code_block_size(obj: GCObject) -> usize {
+            unsafe {
+                let obj = obj.to_address().as_ref::<CodeBlock<'static>>();
+                obj.code_len as usize
+            }
+        }
+
+        compute_code_block_size
+    }),
+    trace: {
+        extern "C" fn trace_code_block(obj: GCObject, vis: &mut Visitor) {
+            unsafe {
+                let obj = obj.to_address().as_mut_ref::<CodeBlock<'static>>();
+                obj.trace(vis);
+            }
+        }
+
+        trace_code_block
+    },
+    weak_proc: {
+        extern "C" fn process_weak_code_block(obj: GCObject, weak_processor: &mut WeakProcessor) {
+            unsafe {
+                let obj = obj.to_address().as_mut_ref::<CodeBlock<'static>>();
+                obj.process_weak_refs(weak_processor);
+            }
+        }
+
+        process_weak_code_block
+    },
+    type_name: "code-block-bytecode",
+};
+
+static CODE_BLOCK_BYTECODE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    CODE_BLOCK_VTABLE_BYTECODE,
+    TypeCode8::CODE_BLOCK.bits() as u16,
+);
+
+pub static CODE_BLOCK_BYTECODE_INFO: &'static HeapTypeInfo = &CODE_BLOCK_BYTECODE_INFO_VALUE;
+
 pub static CODE_BLOCK_INFO: &'static HeapTypeInfo = &CODE_BLOCK_INFO_VALUE;
 
 impl<'gc> CodeBlock<'gc> {
@@ -584,6 +631,8 @@ impl<'gc> CodeBlock<'gc> {
                     CodeBlockFlags::empty()
                 },
                 metadata: Lock::new(Self::normalize_metadata(metadata)),
+                code_len: 0,
+                code: [0; 0],
             },
             CODE_BLOCK_INFO,
         )
@@ -621,6 +670,37 @@ impl<'gc> CodeBlock<'gc> {
             is_cont,
             metadata,
         )
+    }
+
+    pub fn new_bytecode(
+        ctx: Context<'gc>,
+        entrypoint: Address,
+        arity: CodeArity,
+        is_cont: bool,
+        metadata: Value<'gc>,
+        code: &[u8],
+    ) -> Gc<'gc, Self> {
+        unsafe {
+            let size = size_of::<Self>() + code.len();
+            let alignment = align_of::<Self>();
+            let info = CODE_BLOCK_BYTECODE_INFO;
+            let semantics = AllocationSemantics::Default;
+            let alloc = ctx.raw_allocate_with_info(size, alignment, info, semantics);
+            let this = alloc.to_address().as_mut_ref::<Self>();
+            this.entrypoint = entrypoint;
+            this.arity = arity;
+            this.metadata = Lock::new(metadata);
+            std::ptr::copy_nonoverlapping(code.as_ptr(), this.code.as_mut_ptr(), code.len());
+            Gc::from_gcobj(alloc)
+        }
+    }
+
+    pub fn code(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.code.as_ptr(), self.code_len as usize) }
+    }
+
+    pub fn code_len(&self) -> usize {
+        self.code_len as usize
     }
 }
 
