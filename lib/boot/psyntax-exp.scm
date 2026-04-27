@@ -2466,19 +2466,8 @@
                     (lambda () (syntax-type first r w s rib mod '#t))
                     (lambda (ftype fval fform fe fw fs fmod)
                       (case ftype
-                        ((lexical)
-                         (values 'lexical-call fval e e w s mod))
-                        ((global)
-                         (if (equal? fmod '(primitive))
-                             (values 'primitive-call fval e e w s mod)
-                             (values
-                               'global-call
-                               (make-syntax fval w fmod fs)
-                               e
-                               e
-                               w
-                               s
-                               mod)))
+                        ((lexical) (values 'call '#f e e w s mod))
+                        ((global) (values 'call '#f e e w s mod))
                         ((macro)
                          (syntax-type
                            (expand-macro fval e r w s rib mod)
@@ -2693,10 +2682,37 @@
              (expand-expr type value form e.1 r w.1 s mod.1)))))
      (make-explicit
        (lambda (sym e r w s mod)
-         (letrec*
-           ((sym-s (source-wrap sym w s mod))
-            (new-s (make-syntax (cons sym e) w mod s)))
-           new-s)))
+         (make-syntax (cons sym e) w mod s)))
+     (expand-implicit-app
+       (lambda (e r w s mod)
+         (call-with-values
+           (lambda ()
+             (syntax-type
+               (source-wrap '|#%app| w s mod)
+               r
+               empty-wrap
+               s
+               '#f
+               mod
+               '#t))
+           (lambda (app-type
+                    app-value
+                    app-form
+                    app-e
+                    app-w
+                    app-s
+                    app-mod)
+             (if (memv app-type '(macro core core-form))
+                 (let ((explicit (make-explicit '|#%app| e r w s mod)))
+                   (call-with-values
+                     (lambda ()
+                       (syntax-type explicit r empty-wrap s '#f mod '#f))
+                     (lambda (type value form e* w* s* mod*)
+                       (expand-expr type value form e* r w* s* mod*))))
+                 (syntax-violation
+                   '|#%app|
+                   '"missing #%app binding for application"
+                   (source-wrap e w s mod)))))))
      (expand-expr
        (lambda (type value form e r w s mod)
          (cond ((eq? type 'define-property-form)
@@ -2752,13 +2768,7 @@
                ((eq? type 'constant)
                 (make-constant s (strip e)))
                ((eq? type 'call)
-                (expand-call
-                  (expand (car e) r w mod)
-                  e
-                  r
-                  w
-                  s
-                  mod))
+                (expand-implicit-app e r w s mod))
                ((eq? type 'eval-when-form)
                 ((lambda (tmp)
                    ((lambda (tmp.1)
@@ -2853,6 +2863,79 @@
                      tmp)))
              ($sc-dispatch tmp '(any . each-any))))
           e)))
+     (expand-application-operands
+       (lambda (rands r w mod)
+         (map (lambda (e) (expand e r w mod)) rands)))
+     (expand-default-application
+       (lambda (src rator rands r w mod)
+         (if (id? rator)
+             (call-with-values
+               (lambda ()
+                 (syntax-type
+                   rator
+                   r
+                   w
+                   (source-annotation rator)
+                   '#f
+                   mod
+                   '#t))
+               (lambda (type value form e w* s* mod*)
+                 (cond ((eq? type 'lexical)
+                        (build-call
+                          src
+                          (build-lexical-reference
+                            s*
+                            (if (syntax? e) (syntax->datum e) e)
+                            value)
+                          (expand-application-operands rands r w mod)))
+                       ((eq? type 'global)
+                        (if (equal? mod* '(primitive))
+                            (build-primcall
+                              src
+                              value
+                              (expand-application-operands rands r w mod))
+                            (build-call
+                              src
+                              (build-global-reference s* value mod*)
+                              (expand-application-operands rands r w mod))))
+                       ((let ((tmp (eq? type 'macro)))
+                          (or tmp
+                              (let ((tmp.1 (eq? type 'core)))
+                                (or tmp.1
+                                    (let ((tmp.2 (eq? type 'core-form)))
+                                      (or tmp.2
+                                          (let ((tmp.3 (eq? type 'begin-form)))
+                                            (or tmp.3
+                                                (let ((tmp.4 (eq? type
+                                                                  'eval-when-form)))
+                                                  (or tmp.4
+                                                      (let ((tmp.5 (eq? type
+                                                                        'define-form)))
+                                                        (or tmp.5
+                                                            (let ((tmp.6 (eq? type
+                                                                              'define-syntax-form)))
+                                                              (or tmp.6
+                                                                  (let ((tmp.7 (eq? type
+                                                                                    'define-syntax-parameter-form)))
+                                                                    (or tmp.7
+                                                                        (let ((tmp.8 (eq? type
+                                                                                          'define-property-form)))
+                                                                          (or tmp.8
+                                                                              (eq? type
+                                                                                   'local-syntax-form)))))))))))))))))))
+                        (syntax-violation
+                          '|#%app|
+                          '"syntactic keyword cannot be used as an expression"
+                          (source-wrap rator w s* mod)))
+                       (else
+                        (build-call
+                          src
+                          (expand rator r w mod)
+                          (expand-application-operands rands r w mod))))))
+             (build-call
+               src
+               (expand rator r w mod)
+               (expand-application-operands rands r w mod)))))
      (expand-body
        (lambda (body outer-form r w mod)
          (let ((r.1 (cons '("placeholder" placeholder) r)))
@@ -4749,325 +4832,294 @@
                                       (begin
                                         (global-extend
                                           'core
-                                          'lambda
+                                          '|#%app|
                                           (lambda (e r w s mod)
                                             ((lambda (tmp)
                                                ((lambda (tmp.1)
                                                   (if tmp.1
-                                                      (apply (lambda (args
-                                                                      e1
-                                                                      e2)
-                                                               (call-with-values
-                                                                 (lambda ()
-                                                                   (lambda-formals
-                                                                     args))
-                                                                 (lambda (req
-                                                                          opt
-                                                                          rest
-                                                                          kw)
-                                                                   (letrec ((lp (lambda (body
-                                                                                         meta)
-                                                                                  ((lambda (tmp.2)
-                                                                                     ((lambda (tmp.3)
-                                                                                        (if (if tmp.3
-                                                                                                (apply (lambda (docstring
-                                                                                                                e1.1
-                                                                                                                e2.1)
-                                                                                                         (string?
-                                                                                                           (syntax->datum
-                                                                                                             docstring)))
-                                                                                                       tmp.3)
-                                                                                                '#f)
-                                                                                            (apply (lambda (docstring
-                                                                                                            e1.1
-                                                                                                            e2.1)
-                                                                                                     (lp (cons e1.1
-                                                                                                               e2.1)
-                                                                                                         (append
-                                                                                                           meta
-                                                                                                           (cons (cons 'documentation
-                                                                                                                       (syntax->datum
-                                                                                                                         docstring))
-                                                                                                                 '()))))
-                                                                                                   tmp.3)
-                                                                                            ((lambda (tmp.4)
-                                                                                               (if tmp.4
-                                                                                                   (apply (lambda (k
-                                                                                                                   v
-                                                                                                                   e1.1
-                                                                                                                   e2.1)
-                                                                                                            (lp (cons e1.1
-                                                                                                                      e2.1)
-                                                                                                                (append
-                                                                                                                  meta
-                                                                                                                  (syntax->datum
-                                                                                                                    (map cons
-                                                                                                                         k
-                                                                                                                         v)))))
-                                                                                                          tmp.4)
-                                                                                                   (expand-simple-lambda
-                                                                                                     e
-                                                                                                     r
-                                                                                                     w
-                                                                                                     s
-                                                                                                     mod
-                                                                                                     req
-                                                                                                     rest
-                                                                                                     meta
-                                                                                                     body)))
-                                                                                             ($sc-dispatch
-                                                                                               tmp.2
-                                                                                               '(#(vector
-                                                                                                   #(each
-                                                                                                     (any .
-                                                                                                          any)))
-                                                                                                 any
-                                                                                                 .
-                                                                                                 each-any)))))
-                                                                                      ($sc-dispatch
-                                                                                        tmp.2
-                                                                                        '(any any
-                                                                                              .
-                                                                                              each-any))))
-                                                                                   body))))
-                                                                     (lp (cons e1
-                                                                               e2)
-                                                                         '())))))
+                                                      (apply (lambda (rator
+                                                                      rand)
+                                                               (expand-default-application
+                                                                 s
+                                                                 rator
+                                                                 rand
+                                                                 r
+                                                                 w
+                                                                 mod))
                                                              tmp.1)
-                                                      (syntax-violation
-                                                        '#f
-                                                        '"source expression failed to match any pattern"
-                                                        tmp)))
+                                                      ((lambda (tmp.2)
+                                                         (if tmp.2
+                                                             (apply (lambda ()
+                                                                      (syntax-violation
+                                                                        '|#%app|
+                                                                        '"bad application form: missing operator"
+                                                                        (source-wrap
+                                                                          e
+                                                                          w
+                                                                          s
+                                                                          mod)))
+                                                                    tmp.2)
+                                                             (syntax-violation
+                                                               '|#%app|
+                                                               '"bad application form"
+                                                               (source-wrap
+                                                                 e
+                                                                 w
+                                                                 s
+                                                                 mod))))
+                                                       ($sc-dispatch
+                                                         tmp
+                                                         '(_)))))
                                                 ($sc-dispatch
                                                   tmp
-                                                  '(_ any any . each-any))))
+                                                  '(_ any . each-any))))
                                              e)))
                                         (begin
                                           (global-extend
                                             'core
-                                            'with-ellipsis
-                                            expand-with-ellipsis)
+                                            'lambda
+                                            (lambda (e r w s mod)
+                                              ((lambda (tmp)
+                                                 ((lambda (tmp.1)
+                                                    (if tmp.1
+                                                        (apply (lambda (args
+                                                                        e1
+                                                                        e2)
+                                                                 (call-with-values
+                                                                   (lambda ()
+                                                                     (lambda-formals
+                                                                       args))
+                                                                   (lambda (req
+                                                                            opt
+                                                                            rest
+                                                                            kw)
+                                                                     (letrec ((lp (lambda (body
+                                                                                           meta)
+                                                                                    ((lambda (tmp.2)
+                                                                                       ((lambda (tmp.3)
+                                                                                          (if (if tmp.3
+                                                                                                  (apply (lambda (docstring
+                                                                                                                  e1.1
+                                                                                                                  e2.1)
+                                                                                                           (string?
+                                                                                                             (syntax->datum
+                                                                                                               docstring)))
+                                                                                                         tmp.3)
+                                                                                                  '#f)
+                                                                                              (apply (lambda (docstring
+                                                                                                              e1.1
+                                                                                                              e2.1)
+                                                                                                       (lp (cons e1.1
+                                                                                                                 e2.1)
+                                                                                                           (append
+                                                                                                             meta
+                                                                                                             (cons (cons 'documentation
+                                                                                                                         (syntax->datum
+                                                                                                                           docstring))
+                                                                                                                   '()))))
+                                                                                                     tmp.3)
+                                                                                              ((lambda (tmp.4)
+                                                                                                 (if tmp.4
+                                                                                                     (apply (lambda (k
+                                                                                                                     v
+                                                                                                                     e1.1
+                                                                                                                     e2.1)
+                                                                                                              (lp (cons e1.1
+                                                                                                                        e2.1)
+                                                                                                                  (append
+                                                                                                                    meta
+                                                                                                                    (syntax->datum
+                                                                                                                      (map cons
+                                                                                                                           k
+                                                                                                                           v)))))
+                                                                                                            tmp.4)
+                                                                                                     (expand-simple-lambda
+                                                                                                       e
+                                                                                                       r
+                                                                                                       w
+                                                                                                       s
+                                                                                                       mod
+                                                                                                       req
+                                                                                                       rest
+                                                                                                       meta
+                                                                                                       body)))
+                                                                                               ($sc-dispatch
+                                                                                                 tmp.2
+                                                                                                 '(#(vector
+                                                                                                     #(each
+                                                                                                       (any .
+                                                                                                            any)))
+                                                                                                   any
+                                                                                                   .
+                                                                                                   each-any)))))
+                                                                                        ($sc-dispatch
+                                                                                          tmp.2
+                                                                                          '(any any
+                                                                                                .
+                                                                                                each-any))))
+                                                                                     body))))
+                                                                       (lp (cons e1
+                                                                                 e2)
+                                                                           '())))))
+                                                               tmp.1)
+                                                        (syntax-violation
+                                                          '#f
+                                                          '"source expression failed to match any pattern"
+                                                          tmp)))
+                                                  ($sc-dispatch
+                                                    tmp
+                                                    '(_ any any . each-any))))
+                                               e)))
                                           (begin
                                             (global-extend
                                               'core
-                                              'let
-                                              (letrec*
-                                                ((expand-let
-                                                   (lambda (e
-                                                            r
-                                                            w
-                                                            s
-                                                            mod
-                                                            constructor
-                                                            ids
-                                                            vals
-                                                            exps)
-                                                     (if (not (valid-bound-ids?
-                                                                ids))
-                                                         (syntax-violation
-                                                           'let
-                                                           '"duplicate bound variable"
-                                                           e)
-                                                         (let ((labels
-                                                                 (gen-labels
-                                                                   ids))
-                                                               (new-vars
-                                                                 (map gen-var
-                                                                      ids)))
-                                                           (let ((nw (make-binding-wrap
-                                                                       ids
-                                                                       labels
-                                                                       w))
-                                                                 (nr (extend-var-env
-                                                                       labels
-                                                                       new-vars
-                                                                       r)))
-                                                             (constructor
-                                                               s
-                                                               (map syntax->datum
-                                                                    ids)
-                                                               new-vars
-                                                               (map (lambda (x)
-                                                                      (expand
-                                                                        x
-                                                                        r
-                                                                        w
-                                                                        mod))
-                                                                    vals)
-                                                               (expand-body
-                                                                 exps
-                                                                 (source-wrap
-                                                                   e
-                                                                   nw
-                                                                   s
-                                                                   mod)
-                                                                 nr
-                                                                 nw
-                                                                 mod))))))))
-                                                (lambda (e r w s mod)
-                                                  ((lambda (tmp)
-                                                     ((lambda (tmp.1)
-                                                        (if (if tmp.1
-                                                                (apply (lambda (id
-                                                                                val
-                                                                                e1
-                                                                                e2)
-                                                                         (and-map
-                                                                           id?
-                                                                           id))
-                                                                       tmp.1)
-                                                                '#f)
-                                                            (apply (lambda (id
-                                                                            val
-                                                                            e1
-                                                                            e2)
-                                                                     (expand-let
-                                                                       e
-                                                                       r
-                                                                       w
-                                                                       s
-                                                                       mod
-                                                                       build-let
-                                                                       id
-                                                                       val
-                                                                       (cons e1
-                                                                             e2)))
-                                                                   tmp.1)
-                                                            ((lambda (tmp.2)
-                                                               (if (if tmp.2
-                                                                       (apply (lambda (f
-                                                                                       id
-                                                                                       val
-                                                                                       e1
-                                                                                       e2)
-                                                                                (if (id? f)
-                                                                                    (and-map
-                                                                                      id?
-                                                                                      id)
-                                                                                    '#f))
-                                                                              tmp.2)
-                                                                       '#f)
-                                                                   (apply (lambda (f
-                                                                                   id
-                                                                                   val
-                                                                                   e1
-                                                                                   e2)
-                                                                            (expand-let
-                                                                              e
-                                                                              r
-                                                                              w
-                                                                              s
-                                                                              mod
-                                                                              build-named-let
-                                                                              (cons f
-                                                                                    id)
-                                                                              val
-                                                                              (cons e1
-                                                                                    e2)))
-                                                                          tmp.2)
-                                                                   (syntax-violation
-                                                                     'let
-                                                                     '"bad let"
-                                                                     (source-wrap
-                                                                       e
-                                                                       w
-                                                                       s
-                                                                       mod))))
-                                                             ($sc-dispatch
-                                                               tmp
-                                                               '(_ any
-                                                                   #(each
-                                                                     (any any))
-                                                                   any
-                                                                   .
-                                                                   each-any)))))
-                                                      ($sc-dispatch
-                                                        tmp
-                                                        '(_ #(each (any any))
-                                                            any
-                                                            .
-                                                            each-any))))
-                                                   e))))
+                                              'with-ellipsis
+                                              expand-with-ellipsis)
                                             (begin
                                               (global-extend
                                                 'core
-                                                'letrec
-                                                (lambda (e r w s mod)
-                                                  ((lambda (tmp)
-                                                     ((lambda (tmp.1)
-                                                        (if (if tmp.1
-                                                                (apply (lambda (id
+                                                'let
+                                                (letrec*
+                                                  ((expand-let
+                                                     (lambda (e
+                                                              r
+                                                              w
+                                                              s
+                                                              mod
+                                                              constructor
+                                                              ids
+                                                              vals
+                                                              exps)
+                                                       (if (not (valid-bound-ids?
+                                                                  ids))
+                                                           (syntax-violation
+                                                             'let
+                                                             '"duplicate bound variable"
+                                                             e)
+                                                           (let ((labels
+                                                                   (gen-labels
+                                                                     ids))
+                                                                 (new-vars
+                                                                   (map gen-var
+                                                                        ids)))
+                                                             (let ((nw (make-binding-wrap
+                                                                         ids
+                                                                         labels
+                                                                         w))
+                                                                   (nr (extend-var-env
+                                                                         labels
+                                                                         new-vars
+                                                                         r)))
+                                                               (constructor
+                                                                 s
+                                                                 (map syntax->datum
+                                                                      ids)
+                                                                 new-vars
+                                                                 (map (lambda (x)
+                                                                        (expand
+                                                                          x
+                                                                          r
+                                                                          w
+                                                                          mod))
+                                                                      vals)
+                                                                 (expand-body
+                                                                   exps
+                                                                   (source-wrap
+                                                                     e
+                                                                     nw
+                                                                     s
+                                                                     mod)
+                                                                   nr
+                                                                   nw
+                                                                   mod))))))))
+                                                  (lambda (e r w s mod)
+                                                    ((lambda (tmp)
+                                                       ((lambda (tmp.1)
+                                                          (if (if tmp.1
+                                                                  (apply (lambda (id
+                                                                                  val
+                                                                                  e1
+                                                                                  e2)
+                                                                           (and-map
+                                                                             id?
+                                                                             id))
+                                                                         tmp.1)
+                                                                  '#f)
+                                                              (apply (lambda (id
+                                                                              val
+                                                                              e1
+                                                                              e2)
+                                                                       (expand-let
+                                                                         e
+                                                                         r
+                                                                         w
+                                                                         s
+                                                                         mod
+                                                                         build-let
+                                                                         id
+                                                                         val
+                                                                         (cons e1
+                                                                               e2)))
+                                                                     tmp.1)
+                                                              ((lambda (tmp.2)
+                                                                 (if (if tmp.2
+                                                                         (apply (lambda (f
+                                                                                         id
+                                                                                         val
+                                                                                         e1
+                                                                                         e2)
+                                                                                  (if (id? f)
+                                                                                      (and-map
+                                                                                        id?
+                                                                                        id)
+                                                                                      '#f))
+                                                                                tmp.2)
+                                                                         '#f)
+                                                                     (apply (lambda (f
+                                                                                     id
+                                                                                     val
+                                                                                     e1
+                                                                                     e2)
+                                                                              (expand-let
+                                                                                e
+                                                                                r
+                                                                                w
+                                                                                s
+                                                                                mod
+                                                                                build-named-let
+                                                                                (cons f
+                                                                                      id)
                                                                                 val
-                                                                                e1
-                                                                                e2)
-                                                                         (and-map
-                                                                           id?
-                                                                           id))
-                                                                       tmp.1)
-                                                                '#f)
-                                                            (apply (lambda (id
-                                                                            val
-                                                                            e1
-                                                                            e2)
-                                                                     (if (not (valid-bound-ids?
-                                                                                id))
-                                                                         (syntax-violation
-                                                                           'letrec
-                                                                           '"duplicate bound variable"
-                                                                           e)
-                                                                         (let ((labels
-                                                                                 (gen-labels
-                                                                                   id)))
-                                                                           (let ((new-vars
-                                                                                   (map gen-var
-                                                                                        id)))
-                                                                             (let ((w.1 (make-binding-wrap
-                                                                                          id
-                                                                                          labels
-                                                                                          w)))
-                                                                               (let ((r.1 (extend-var-env
-                                                                                            labels
-                                                                                            new-vars
-                                                                                            r)))
-                                                                                 (build-letrec
-                                                                                   s
-                                                                                   (syntax->datum
-                                                                                     id)
-                                                                                   new-vars
-                                                                                   (map (lambda (x)
-                                                                                          (expand
-                                                                                            x
-                                                                                            r.1
-                                                                                            w.1
-                                                                                            mod))
-                                                                                        val)
-                                                                                   (expand-body
-                                                                                     (cons e1
-                                                                                           e2)
-                                                                                     (source-wrap
-                                                                                       e
-                                                                                       w.1
-                                                                                       s
-                                                                                       mod)
-                                                                                     r.1
-                                                                                     w.1
-                                                                                     mod))))))))
-                                                                   tmp.1)
-                                                            (syntax-violation
-                                                              '#f
-                                                              '"source expression failed to match any pattern"
-                                                              tmp)))
-                                                      ($sc-dispatch
-                                                        tmp
-                                                        '(_ #(each (any any))
-                                                            any
-                                                            .
-                                                            each-any))))
-                                                   e)))
+                                                                                (cons e1
+                                                                                      e2)))
+                                                                            tmp.2)
+                                                                     (syntax-violation
+                                                                       'let
+                                                                       '"bad let"
+                                                                       (source-wrap
+                                                                         e
+                                                                         w
+                                                                         s
+                                                                         mod))))
+                                                               ($sc-dispatch
+                                                                 tmp
+                                                                 '(_ any
+                                                                     #(each
+                                                                       (any any))
+                                                                     any
+                                                                     .
+                                                                     each-any)))))
+                                                        ($sc-dispatch
+                                                          tmp
+                                                          '(_ #(each (any any))
+                                                              any
+                                                              .
+                                                              each-any))))
+                                                     e))))
                                               (begin
                                                 (global-extend
                                                   'core
-                                                  'letrec*
+                                                  'letrec
                                                   (lambda (e r w s mod)
                                                     ((lambda (tmp)
                                                        ((lambda (tmp.1)
@@ -5088,7 +5140,7 @@
                                                                        (if (not (valid-bound-ids?
                                                                                   id))
                                                                            (syntax-violation
-                                                                             'letrec*
+                                                                             'letrec
                                                                              '"duplicate bound variable"
                                                                              e)
                                                                            (let ((labels
@@ -5105,7 +5157,7 @@
                                                                                               labels
                                                                                               new-vars
                                                                                               r)))
-                                                                                   (build-letrec*
+                                                                                   (build-letrec
                                                                                      s
                                                                                      (syntax->datum
                                                                                        id)
@@ -5143,365 +5195,442 @@
                                                 (begin
                                                   (global-extend
                                                     'core
-                                                    'set!
+                                                    'letrec*
                                                     (lambda (e r w s mod)
                                                       ((lambda (tmp)
                                                          ((lambda (tmp.1)
                                                             (if (if tmp.1
                                                                     (apply (lambda (id
-                                                                                    val)
-                                                                             (id? id))
+                                                                                    val
+                                                                                    e1
+                                                                                    e2)
+                                                                             (and-map
+                                                                               id?
+                                                                               id))
                                                                            tmp.1)
                                                                     '#f)
                                                                 (apply (lambda (id
-                                                                                val)
-                                                                         (call-with-values
-                                                                           (lambda ()
-                                                                             (resolve-identifier
-                                                                               id
-                                                                               w
-                                                                               r
-                                                                               mod
-                                                                               '#t))
-                                                                           (lambda (type
-                                                                                    value
-                                                                                    id-mod)
-                                                                             (case type
-                                                                               ((lexical)
-                                                                                (build-lexical-assignment
-                                                                                  s
-                                                                                  (syntax->datum
-                                                                                    id)
-                                                                                  value
-                                                                                  (expand
-                                                                                    val
-                                                                                    r
-                                                                                    w
-                                                                                    mod)))
-                                                                               ((global)
-                                                                                (build-global-assignment
-                                                                                  s
-                                                                                  value
-                                                                                  (expand
-                                                                                    val
-                                                                                    r
-                                                                                    w
-                                                                                    mod)
-                                                                                  id-mod))
-                                                                               ((macro)
-                                                                                (if (variable-transformer?
-                                                                                      (car value))
-                                                                                    (expand
-                                                                                      (expand-macro
-                                                                                        value
-                                                                                        e
-                                                                                        r
-                                                                                        w
-                                                                                        s
-                                                                                        '#f
-                                                                                        mod)
-                                                                                      r
-                                                                                      empty-wrap
-                                                                                      mod)
-                                                                                    (syntax-violation
-                                                                                      'set!
-                                                                                      '"not a variable transformer"
-                                                                                      (wrap e
-                                                                                            w
-                                                                                            mod)
-                                                                                      (wrap id
-                                                                                            w
-                                                                                            id-mod))))
-                                                                               ((displaced-lexical)
-                                                                                (syntax-violation
-                                                                                  'set!
-                                                                                  '"identifier out of context"
-                                                                                  (wrap id
-                                                                                        w
-                                                                                        mod)))
-                                                                               (else
-                                                                                (syntax-violation
-                                                                                  'set!
-                                                                                  '"bad set!"
-                                                                                  (source-wrap
-                                                                                    e
-                                                                                    w
-                                                                                    s
-                                                                                    mod)))))))
+                                                                                val
+                                                                                e1
+                                                                                e2)
+                                                                         (if (not (valid-bound-ids?
+                                                                                    id))
+                                                                             (syntax-violation
+                                                                               'letrec*
+                                                                               '"duplicate bound variable"
+                                                                               e)
+                                                                             (let ((labels
+                                                                                     (gen-labels
+                                                                                       id)))
+                                                                               (let ((new-vars
+                                                                                       (map gen-var
+                                                                                            id)))
+                                                                                 (let ((w.1 (make-binding-wrap
+                                                                                              id
+                                                                                              labels
+                                                                                              w)))
+                                                                                   (let ((r.1 (extend-var-env
+                                                                                                labels
+                                                                                                new-vars
+                                                                                                r)))
+                                                                                     (build-letrec*
+                                                                                       s
+                                                                                       (syntax->datum
+                                                                                         id)
+                                                                                       new-vars
+                                                                                       (map (lambda (x)
+                                                                                              (expand
+                                                                                                x
+                                                                                                r.1
+                                                                                                w.1
+                                                                                                mod))
+                                                                                            val)
+                                                                                       (expand-body
+                                                                                         (cons e1
+                                                                                               e2)
+                                                                                         (source-wrap
+                                                                                           e
+                                                                                           w.1
+                                                                                           s
+                                                                                           mod)
+                                                                                         r.1
+                                                                                         w.1
+                                                                                         mod))))))))
                                                                        tmp.1)
-                                                                ((lambda (tmp.2)
-                                                                   (if tmp.2
-                                                                       (apply (lambda (head
-                                                                                       tail
-                                                                                       val)
-                                                                                (call-with-values
-                                                                                  (lambda ()
-                                                                                    (syntax-type
-                                                                                      head
-                                                                                      r
-                                                                                      empty-wrap
-                                                                                      no-source
-                                                                                      '#f
-                                                                                      mod
-                                                                                      '#t))
-                                                                                  (lambda (type
-                                                                                           value
-                                                                                           ee*
-                                                                                           ee
-                                                                                           ww
-                                                                                           ss
-                                                                                           modmod)
-                                                                                    (if (memv type
-                                                                                              '(module-ref))
-                                                                                        (let ((val.1 (expand
-                                                                                                       val
-                                                                                                       r
-                                                                                                       w
-                                                                                                       mod)))
-                                                                                          (call-with-values
-                                                                                            (lambda ()
-                                                                                              (value (cons head
-                                                                                                           tail)
-                                                                                                     r
-                                                                                                     w
-                                                                                                     mod))
-                                                                                            (lambda (e.1
-                                                                                                     r.1
-                                                                                                     w.1
-                                                                                                     s*
-                                                                                                     mod.1)
-                                                                                              ((lambda (tmp.3)
-                                                                                                 ((lambda (tmp.4)
-                                                                                                    (if (if tmp.4
-                                                                                                            (apply (lambda (e.2)
-                                                                                                                     (id? e.2))
-                                                                                                                   tmp.4)
-                                                                                                            '#f)
-                                                                                                        (apply (lambda (e.2)
-                                                                                                                 (build-global-assignment
-                                                                                                                   s
-                                                                                                                   (syntax->datum
-                                                                                                                     e.2)
-                                                                                                                   val.1
-                                                                                                                   mod.1))
-                                                                                                               tmp.4)
-                                                                                                        (syntax-violation
-                                                                                                          '#f
-                                                                                                          '"source expression failed to match any pattern"
-                                                                                                          tmp.3)))
-                                                                                                  (list tmp.3)))
-                                                                                               e.1))))
-                                                                                        (build-call
-                                                                                          s
-                                                                                          (expand
-                                                                                            (list (make-syntax
-                                                                                                    'setter
-                                                                                                    '((top))
-                                                                                                    '(hygiene
-                                                                                                       capy))
-                                                                                                  head)
-                                                                                            r
-                                                                                            w
-                                                                                            mod)
-                                                                                          (map (lambda (e.1)
-                                                                                                 (expand
-                                                                                                   e.1
-                                                                                                   r
-                                                                                                   w
-                                                                                                   mod))
-                                                                                               (append
-                                                                                                 tail
-                                                                                                 (list val))))))))
-                                                                              tmp.2)
-                                                                       (syntax-violation
-                                                                         '#f
-                                                                         '"source expression failed to match any pattern"
-                                                                         tmp)))
-                                                                 ($sc-dispatch
-                                                                   tmp
-                                                                   '(_ (any .
-                                                                            each-any)
-                                                                       any)))))
+                                                                (syntax-violation
+                                                                  '#f
+                                                                  '"source expression failed to match any pattern"
+                                                                  tmp)))
                                                           ($sc-dispatch
                                                             tmp
-                                                            '(_ any any))))
+                                                            '(_ #(each
+                                                                  (any any))
+                                                                any
+                                                                .
+                                                                each-any))))
                                                        e)))
                                                   (begin
                                                     (global-extend
-                                                      'local-syntax
-                                                      'letrec-syntax
-                                                      '#t)
+                                                      'core
+                                                      'set!
+                                                      (lambda (e r w s mod)
+                                                        ((lambda (tmp)
+                                                           ((lambda (tmp.1)
+                                                              (if (if tmp.1
+                                                                      (apply (lambda (id
+                                                                                      val)
+                                                                               (id? id))
+                                                                             tmp.1)
+                                                                      '#f)
+                                                                  (apply (lambda (id
+                                                                                  val)
+                                                                           (call-with-values
+                                                                             (lambda ()
+                                                                               (resolve-identifier
+                                                                                 id
+                                                                                 w
+                                                                                 r
+                                                                                 mod
+                                                                                 '#t))
+                                                                             (lambda (type
+                                                                                      value
+                                                                                      id-mod)
+                                                                               (case type
+                                                                                 ((lexical)
+                                                                                  (build-lexical-assignment
+                                                                                    s
+                                                                                    (syntax->datum
+                                                                                      id)
+                                                                                    value
+                                                                                    (expand
+                                                                                      val
+                                                                                      r
+                                                                                      w
+                                                                                      mod)))
+                                                                                 ((global)
+                                                                                  (build-global-assignment
+                                                                                    s
+                                                                                    value
+                                                                                    (expand
+                                                                                      val
+                                                                                      r
+                                                                                      w
+                                                                                      mod)
+                                                                                    id-mod))
+                                                                                 ((macro)
+                                                                                  (if (variable-transformer?
+                                                                                        (car value))
+                                                                                      (expand
+                                                                                        (expand-macro
+                                                                                          value
+                                                                                          e
+                                                                                          r
+                                                                                          w
+                                                                                          s
+                                                                                          '#f
+                                                                                          mod)
+                                                                                        r
+                                                                                        empty-wrap
+                                                                                        mod)
+                                                                                      (syntax-violation
+                                                                                        'set!
+                                                                                        '"not a variable transformer"
+                                                                                        (wrap e
+                                                                                              w
+                                                                                              mod)
+                                                                                        (wrap id
+                                                                                              w
+                                                                                              id-mod))))
+                                                                                 ((displaced-lexical)
+                                                                                  (syntax-violation
+                                                                                    'set!
+                                                                                    '"identifier out of context"
+                                                                                    (wrap id
+                                                                                          w
+                                                                                          mod)))
+                                                                                 (else
+                                                                                  (syntax-violation
+                                                                                    'set!
+                                                                                    '"bad set!"
+                                                                                    (source-wrap
+                                                                                      e
+                                                                                      w
+                                                                                      s
+                                                                                      mod)))))))
+                                                                         tmp.1)
+                                                                  ((lambda (tmp.2)
+                                                                     (if tmp.2
+                                                                         (apply (lambda (head
+                                                                                         tail
+                                                                                         val)
+                                                                                  (call-with-values
+                                                                                    (lambda ()
+                                                                                      (syntax-type
+                                                                                        head
+                                                                                        r
+                                                                                        empty-wrap
+                                                                                        no-source
+                                                                                        '#f
+                                                                                        mod
+                                                                                        '#t))
+                                                                                    (lambda (type
+                                                                                             value
+                                                                                             ee*
+                                                                                             ee
+                                                                                             ww
+                                                                                             ss
+                                                                                             modmod)
+                                                                                      (if (memv type
+                                                                                                '(module-ref))
+                                                                                          (let ((val.1 (expand
+                                                                                                         val
+                                                                                                         r
+                                                                                                         w
+                                                                                                         mod)))
+                                                                                            (call-with-values
+                                                                                              (lambda ()
+                                                                                                (value (cons head
+                                                                                                             tail)
+                                                                                                       r
+                                                                                                       w
+                                                                                                       mod))
+                                                                                              (lambda (e.1
+                                                                                                       r.1
+                                                                                                       w.1
+                                                                                                       s*
+                                                                                                       mod.1)
+                                                                                                ((lambda (tmp.3)
+                                                                                                   ((lambda (tmp.4)
+                                                                                                      (if (if tmp.4
+                                                                                                              (apply (lambda (e.2)
+                                                                                                                       (id? e.2))
+                                                                                                                     tmp.4)
+                                                                                                              '#f)
+                                                                                                          (apply (lambda (e.2)
+                                                                                                                   (build-global-assignment
+                                                                                                                     s
+                                                                                                                     (syntax->datum
+                                                                                                                       e.2)
+                                                                                                                     val.1
+                                                                                                                     mod.1))
+                                                                                                                 tmp.4)
+                                                                                                          (syntax-violation
+                                                                                                            '#f
+                                                                                                            '"source expression failed to match any pattern"
+                                                                                                            tmp.3)))
+                                                                                                    (list tmp.3)))
+                                                                                                 e.1))))
+                                                                                          (build-call
+                                                                                            s
+                                                                                            (expand
+                                                                                              (list (make-syntax
+                                                                                                      'setter
+                                                                                                      '((top))
+                                                                                                      '(hygiene
+                                                                                                         capy))
+                                                                                                    head)
+                                                                                              r
+                                                                                              w
+                                                                                              mod)
+                                                                                            (map (lambda (e.1)
+                                                                                                   (expand
+                                                                                                     e.1
+                                                                                                     r
+                                                                                                     w
+                                                                                                     mod))
+                                                                                                 (append
+                                                                                                   tail
+                                                                                                   (list val))))))))
+                                                                                tmp.2)
+                                                                         (syntax-violation
+                                                                           '#f
+                                                                           '"source expression failed to match any pattern"
+                                                                           tmp)))
+                                                                   ($sc-dispatch
+                                                                     tmp
+                                                                     '(_ (any .
+                                                                              each-any)
+                                                                         any)))))
+                                                            ($sc-dispatch
+                                                              tmp
+                                                              '(_ any any))))
+                                                         e)))
                                                     (begin
                                                       (global-extend
                                                         'local-syntax
-                                                        'let-syntax
-                                                        '#f)
+                                                        'letrec-syntax
+                                                        '#t)
                                                       (begin
                                                         (global-extend
-                                                          'core
-                                                          'syntax-case
-                                                          expand-syntax-case)
+                                                          'local-syntax
+                                                          'let-syntax
+                                                          '#f)
                                                         (begin
                                                           (global-extend
                                                             'core
-                                                            'syntax
-                                                            expand-syntax)
+                                                            'syntax-case
+                                                            expand-syntax-case)
                                                           (begin
                                                             (global-extend
-                                                              'define-syntax
-                                                              'define-syntax
-                                                              '())
+                                                              'core
+                                                              'syntax
+                                                              expand-syntax)
                                                             (begin
                                                               (global-extend
-                                                                'define-syntax-parameter
-                                                                'define-syntax-parameter
+                                                                'define-syntax
+                                                                'define-syntax
                                                                 '())
                                                               (begin
                                                                 (global-extend
-                                                                  'define-property
-                                                                  'define-property
+                                                                  'define-syntax-parameter
+                                                                  'define-syntax-parameter
                                                                   '())
                                                                 (begin
                                                                   (global-extend
-                                                                    'module-ref
-                                                                    '@
-                                                                    expand-public-ref)
+                                                                    'define-property
+                                                                    'define-property
+                                                                    '())
                                                                   (begin
                                                                     (global-extend
                                                                       'module-ref
-                                                                      '@@
-                                                                      expand-private-ref)
+                                                                      '@
+                                                                      expand-public-ref)
                                                                     (begin
                                                                       (global-extend
-                                                                        'core
-                                                                        'syntax-parameterize
-                                                                        expand-syntax-parameterize)
+                                                                        'module-ref
+                                                                        '@@
+                                                                        expand-private-ref)
                                                                       (begin
-                                                                        (set! identifier-binding
-                                                                          (lambda (id)
-                                                                            (begin
-                                                                              (if (id? id)
-                                                                                  '#f
-                                                                                  (syntax-violation
-                                                                                    'identifier-binding
-                                                                                    '"not an identifier"
-                                                                                    id))
-                                                                              (let ((name (syntax-expression
+                                                                        (global-extend
+                                                                          'core
+                                                                          'syntax-parameterize
+                                                                          expand-syntax-parameterize)
+                                                                        (begin
+                                                                          (set! identifier-binding
+                                                                            (lambda (id)
+                                                                              (begin
+                                                                                (if (id? id)
+                                                                                    '#f
+                                                                                    (syntax-violation
+                                                                                      'identifier-binding
+                                                                                      '"not an identifier"
+                                                                                      id))
+                                                                                (let ((name (syntax-expression
+                                                                                              id)))
+                                                                                  (let ((wrap.1
+                                                                                          (syntax-wrap
                                                                                             id)))
-                                                                                (let ((wrap.1
-                                                                                        (syntax-wrap
-                                                                                          id)))
-                                                                                  (let ((mod (syntax-module
-                                                                                               id)))
-                                                                                    (let ((result
-                                                                                            (id-var-name
-                                                                                              name
-                                                                                              wrap.1
-                                                                                              mod)))
-                                                                                      (cond ((eq? result
-                                                                                                  name)
-                                                                                             '#f)
-                                                                                            ((global-property-label?
-                                                                                               result)
-                                                                                             '#f)
-                                                                                            ((let ((tmp (pair? result)))
-                                                                                               (or tmp
-                                                                                                   (vector?
-                                                                                                     result)))
-                                                                                             'lexical)
-                                                                                            (else
-                                                                                             '#f)))))))))
-                                                                        (set! syntax-error
-                                                                          (let ((make-syntax.1
-                                                                                  make-syntax))
-                                                                            (make-syntax-transformer
-                                                                              'syntax-error
-                                                                              'macro
-                                                                              (cons (lambda (x)
-                                                                                      (let ((tmp-1 x))
-                                                                                        (let ((tmp ($sc-dispatch
-                                                                                                     tmp-1
-                                                                                                     '(_ (any .
-                                                                                                              any)
-                                                                                                         any
-                                                                                                         .
-                                                                                                         each-any))))
-                                                                                          (if (if tmp
-                                                                                                  (apply (lambda (keyword
-                                                                                                                  operands
-                                                                                                                  message
-                                                                                                                  arg)
-                                                                                                           (string?
-                                                                                                             (syntax->datum
-                                                                                                               message)))
-                                                                                                         tmp)
-                                                                                                  '#f)
-                                                                                              (apply (lambda (keyword
-                                                                                                              operands
-                                                                                                              message
-                                                                                                              arg)
-                                                                                                       (syntax-violation
-                                                                                                         (syntax->datum
-                                                                                                           keyword)
-                                                                                                         (string-join
-                                                                                                           (cons (syntax->datum
-                                                                                                                   message)
-                                                                                                                 (map (lambda (x.1)
-                                                                                                                        (object->string
-                                                                                                                          (syntax->datum
-                                                                                                                            x.1)))
-                                                                                                                      arg)))
-                                                                                                         (if (syntax->datum
-                                                                                                               keyword)
-                                                                                                             (cons keyword
-                                                                                                                   operands)
-                                                                                                             '#f)))
-                                                                                                     tmp)
-                                                                                              (let ((tmp.1 ($sc-dispatch
-                                                                                                             tmp-1
-                                                                                                             '(_ any
-                                                                                                                 .
-                                                                                                                 each-any))))
-                                                                                                (if (if tmp.1
-                                                                                                        (apply (lambda (message
-                                                                                                                        arg)
-                                                                                                                 (string?
-                                                                                                                   (syntax->datum
-                                                                                                                     message)))
-                                                                                                               tmp.1)
-                                                                                                        '#f)
-                                                                                                    (apply (lambda (message
+                                                                                    (let ((mod (syntax-module
+                                                                                                 id)))
+                                                                                      (let ((result
+                                                                                              (id-var-name
+                                                                                                name
+                                                                                                wrap.1
+                                                                                                mod)))
+                                                                                        (cond ((eq? result
+                                                                                                    name)
+                                                                                               '#f)
+                                                                                              ((global-property-label?
+                                                                                                 result)
+                                                                                               '#f)
+                                                                                              ((let ((tmp (pair? result)))
+                                                                                                 (or tmp
+                                                                                                     (vector?
+                                                                                                       result)))
+                                                                                               'lexical)
+                                                                                              (else
+                                                                                               '#f)))))))))
+                                                                          (set! syntax-error
+                                                                            (let ((make-syntax.1
+                                                                                    make-syntax))
+                                                                              (make-syntax-transformer
+                                                                                'syntax-error
+                                                                                'macro
+                                                                                (cons (lambda (x)
+                                                                                        (let ((tmp-1 x))
+                                                                                          (let ((tmp ($sc-dispatch
+                                                                                                       tmp-1
+                                                                                                       '(_ (any .
+                                                                                                                any)
+                                                                                                           any
+                                                                                                           .
+                                                                                                           each-any))))
+                                                                                            (if (if tmp
+                                                                                                    (apply (lambda (keyword
+                                                                                                                    operands
+                                                                                                                    message
                                                                                                                     arg)
-                                                                                                             (cons (make-syntax.1
-                                                                                                                     'syntax-error
-                                                                                                                     (list top-mark
-                                                                                                                           (vector
-                                                                                                                             'ribcage
-                                                                                                                             '#(syntax-error)
-                                                                                                                             top-wrap-v
+                                                                                                             (string?
+                                                                                                               (syntax->datum
+                                                                                                                 message)))
+                                                                                                           tmp)
+                                                                                                    '#f)
+                                                                                                (apply (lambda (keyword
+                                                                                                                operands
+                                                                                                                message
+                                                                                                                arg)
+                                                                                                         (syntax-violation
+                                                                                                           (syntax->datum
+                                                                                                             keyword)
+                                                                                                           (string-join
+                                                                                                             (cons (syntax->datum
+                                                                                                                     message)
+                                                                                                                   (map (lambda (x.1)
+                                                                                                                          (object->string
+                                                                                                                            (syntax->datum
+                                                                                                                              x.1)))
+                                                                                                                        arg)))
+                                                                                                           (if (syntax->datum
+                                                                                                                 keyword)
+                                                                                                               (cons keyword
+                                                                                                                     operands)
+                                                                                                               '#f)))
+                                                                                                       tmp)
+                                                                                                (let ((tmp.1 ($sc-dispatch
+                                                                                                               tmp-1
+                                                                                                               '(_ any
+                                                                                                                   .
+                                                                                                                   each-any))))
+                                                                                                  (if (if tmp.1
+                                                                                                          (apply (lambda (message
+                                                                                                                          arg)
+                                                                                                                   (string?
+                                                                                                                     (syntax->datum
+                                                                                                                       message)))
+                                                                                                                 tmp.1)
+                                                                                                          '#f)
+                                                                                                      (apply (lambda (message
+                                                                                                                      arg)
+                                                                                                               (cons (make-syntax.1
+                                                                                                                       'syntax-error
+                                                                                                                       (list top-mark
                                                                                                                              (vector
-                                                                                                                               (cons '(hygiene
-                                                                                                                                        capy)
-                                                                                                                                     (make-syntax.1
-                                                                                                                                       'syntax-error
-                                                                                                                                       top-wrap
-                                                                                                                                       '(hygiene
-                                                                                                                                          capy))))))
-                                                                                                                     '(hygiene
-                                                                                                                        capy))
-                                                                                                                   (cons '(#f)
-                                                                                                                         (cons message
-                                                                                                                               arg))))
-                                                                                                           tmp.1)
-                                                                                                    (syntax-violation
-                                                                                                      '#f
-                                                                                                      '"source expression failed to match any pattern"
-                                                                                                      tmp-1)))))))
-                                                                                    (make-syntax.1
-                                                                                      '#f
-                                                                                      top-wrap
-                                                                                      '(hygiene
-                                                                                         capy))))))))))))))))))))))))))))))))))))))))))
+                                                                                                                               'ribcage
+                                                                                                                               '#(syntax-error)
+                                                                                                                               top-wrap-v
+                                                                                                                               (vector
+                                                                                                                                 (cons '(hygiene
+                                                                                                                                          capy)
+                                                                                                                                       (make-syntax.1
+                                                                                                                                         'syntax-error
+                                                                                                                                         top-wrap
+                                                                                                                                         '(hygiene
+                                                                                                                                            capy))))))
+                                                                                                                       '(hygiene
+                                                                                                                          capy))
+                                                                                                                     (cons '(#f)
+                                                                                                                           (cons message
+                                                                                                                                 arg))))
+                                                                                                             tmp.1)
+                                                                                                      (syntax-violation
+                                                                                                        '#f
+                                                                                                        '"source expression failed to match any pattern"
+                                                                                                        tmp-1)))))))
+                                                                                      (make-syntax.1
+                                                                                        '#f
+                                                                                        top-wrap
+                                                                                        '(hygiene
+                                                                                           capy)))))))))))))))))))))))))))))))))))))))))))
 
 (define with-syntax
   (let ((make-syntax make-syntax))
