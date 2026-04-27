@@ -48,7 +48,6 @@ jobs:
           cat "CHANGELOG.md" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
           
-        
 
   release:
     needs: [generate_changelog]
