@@ -3,6 +3,7 @@
 ### ⛰️  Features
 
 - *(boot)* Optimize reader - ([9e38523](https://codeberg.org/playXE/capy/commit/9e385230243717fdaeacac7020fa3ed544c43310))
+- *(tree-il)* Denoise tree-il->scheme; recompile psyntax - ([6079c8e](https://codeberg.org/playXE/capy/commit/6079c8e94facf63bf593643b117787c989f10830))
 - Graphical CPS - ([2f7a1fb](https://codeberg.org/playXE/capy/commit/2f7a1fb3135d10a65c4d25377c8308e6f53014e6))
 
 ### 🐛 Bug Fixes
@@ -21,6 +22,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Remove dead code - ([2c2375d](https://codeberg.org/playXE/capy/commit/2c2375df0bfe18754fcaf3e788716bcd9b2c915b))
 - Update to latest nightly - ([6699ac6](https://codeberg.org/playXE/capy/commit/6699ac6de4dc9f66fd3033c0adca87a968c23eb6))
 - Continued removal - ([e348c65](https://codeberg.org/playXE/capy/commit/e348c65b115bf6e48c4ce92c8e7b2a6620eafeae))
 - Remove CPSSSA and JIT; redesign - ([e2d2573](https://codeberg.org/playXE/capy/commit/e2d25733d4e1d634cee8204dcce4a401c07c9885))
