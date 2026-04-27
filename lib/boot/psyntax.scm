@@ -83,6 +83,7 @@
 (define macroexpand #f)
 (define :ellipsis? #f)
 (define identifier-binding #f)
+(define $sc-define-property! #f)
 (define <variable-transformer>
   (let* ((rtd (make-record-type-descriptor '<variable-transformer> #f #f #f #f '#((immutable proc))))
          (rcd (make-record-constructor-descriptor rtd #f #f)))
@@ -413,6 +414,49 @@
     (set-ribcage-symnames! ribcage (cons (syntax-expression id) (ribcage-symnames ribcage)))
     (set-ribcage-marks! ribcage (cons (wrap-marks (syntax-wrap id)) (ribcage-marks ribcage)))
     (set-ribcage-labels! ribcage (cons label (ribcage-labels ribcage))))
+  (define (label/pl? x)
+    (and (vector? x)
+      (= (vector-length x) 3)
+      (eq? (vector-ref x 0) 'label/pl)))
+  (define (make-label/pl label pl)
+    (if (null? pl)
+      label
+      (vector 'label/pl label pl)))
+  (define (label/pl->label label/pl)
+    (if (label/pl? label/pl)
+      (vector-ref label/pl 1)
+      label/pl))
+  (define (label/pl->pl label/pl)
+    (if (label/pl? label/pl)
+      (vector-ref label/pl 2)
+      '()))
+  (define (property-label=? x y) (equal? x y))
+  (define (property-assoc label pl)
+    (let lp ((pl pl))
+      (cond
+        ((null? pl) #f)
+        ((property-label=? label (caar pl)) (car pl))
+        (else (lp (cdr pl))))))
+  (define (remove-property label pl)
+    (cond
+      ((null? pl) '())
+      ((property-label=? label (caar pl)) (remove-property label (cdr pl)))
+      (else (cons (car pl) (remove-property label (cdr pl))))))
+  (define (label/pl-with-property label/pl key-label propval)
+    (make-label/pl
+      (label/pl->label label/pl)
+      (cons (cons key-label propval)
+        (remove-property key-label (label/pl->pl label/pl)))))
+  (define (select-label/pl label/pl mod no-match)
+    (let ((label (label/pl->label label/pl))
+          (pl (label/pl->pl label/pl)))
+      (if (pair? label)
+        (let ((mod* (car label))
+              (lbl (cdr label)))
+          (if (equal? mod* mod)
+            (make-label/pl lbl pl)
+            (no-match)))
+        label/pl)))
   (define (make-binding-wrap ids labels w)
     (cond
       ((null? ids) w)
@@ -456,9 +500,9 @@
         (eq? (car x) (car y))
         (same-marks? (cdr x) (cdr y)))))
 
-  (define (id-var-name id w mod)
-    ;; Returns the name/label for an identifier given its wrap and module.
-    ;; Returns:  symbol, syntax object, or string label
+  (define (id-var-name/pl id w mod)
+    ;; Returns the label, possibly with attached define-property metadata,
+    ;; for an identifier given its wrap and module.
 
     (define (same-marks? m1 m2)
       ;; Assuming this helper exists elsewhere
@@ -471,14 +515,10 @@
             ((= i n) (search sym subst marks))
             ((and (eq? (vector-ref rsymnames i) sym)
                 (same-marks? marks (vector-ref rmarks i)))
-              (let ((label (vector-ref rlabels i)))
-                (if (pair? label)
-                  (let ((mod* (car label))
-                        (lbl (cdr label)))
-                    (if (equal? mod* mod)
-                      lbl
-                      (loop (+ i 1))))
-                  label)))
+              (select-label/pl
+                (vector-ref rlabels i)
+                mod
+                (lambda () (loop (+ i 1)))))
             (else (loop (+ i 1)))))))
 
     (define (search-list-rib sym marks rsymnames rmarks rlabels subst)
@@ -489,14 +529,10 @@
           ((null? rsyms) (search sym subst marks))
           ((and (eq? sym (car rsyms))
               (same-marks? marks (car rms)))
-            (let ((label (car rlbls)))
-              (if (pair? label)
-                (let ((mod* (car label))
-                      (lbl (cdr label)))
-                  (if (equal? mod* mod)
-                    lbl
-                    (loop (cdr rsyms) (cdr rms) (cdr rlbls))))
-                label)))
+            (select-label/pl
+              (car rlbls)
+              mod
+              (lambda () (loop (cdr rsyms) (cdr rms) (cdr rlbls)))))
           (else (loop (cdr rsyms) (cdr rms) (cdr rlbls))))))
 
     (define (search sym subst marks)
@@ -527,7 +563,7 @@
 
     (cond
       ((symbol? id)
-        (or (search id (wrap-subst w) (wrap-marks w)) id))
+        (search id (wrap-subst w) (wrap-marks w)))
 
       ((syntax? id)
         (let* ((expr (syntax-expression id))
@@ -535,11 +571,65 @@
                (mod1 (or (syntax-module id) mod))
                (marks (join-marks (wrap-marks w) (wrap-marks w1))))
           (or (search expr (wrap-subst w) marks)
-            (search expr (wrap-subst w1) marks)
-            expr)))
+            (search expr (wrap-subst w1) marks))))
 
       (else
-        (syntax-violation 'id-var-name "invalid id" id))))
+        (syntax-violation 'id-var-name/pl "invalid id" id))))
+  (define (id-var-name id w mod)
+    ;; Returns the name/label for an identifier given its wrap and module.
+    ;; Returns: symbol, syntax object, or lexical label.
+    (let ((label/pl (id-var-name/pl id w mod)))
+      (if label/pl
+        (label/pl->label label/pl)
+        (cond
+          ((symbol? id) id)
+          ((syntax? id) (syntax-expression id))
+          (else (syntax-violation 'id-var-name "invalid id" id))))))
+  (define (primitive-module? mod)
+    (and (pair? mod) (eq? (car mod) 'primitive)))
+  (define (current-hygiene-module)
+    (cons 'hygiene (module-name (current-module))))
+  (define (make-global-property-label mod sym)
+    (vector 'global-property-label (or mod (current-hygiene-module)) sym))
+  (define (global-property-label? x)
+    (and (vector? x)
+      (= (vector-length x) 3)
+      (eq? (vector-ref x 0) 'global-property-label)))
+  (define (global-property-label-module label)
+    (vector-ref label 1))
+  (define (global-property-label-symbol label)
+    (vector-ref label 2))
+  (define (identifier-canonical-global-label id w mod)
+    (let* ((id (wrap id w mod))
+           (sym (id-sym-name id))
+           (mod (or (and (syntax? id) (syntax-module id)) mod (current-hygiene-module))))
+      (and (not (primitive-module? mod))
+        (make-global-property-label mod sym))))
+  (define (visible-property-label/pl id w mod)
+    (let ((label/pl (id-var-name/pl id w mod)))
+      (or label/pl
+        (let ((label (identifier-canonical-global-label id w mod)))
+          (and label (make-label/pl label '()))))))
+  (define (visible-property-label id w mod)
+    (let ((label/pl (visible-property-label/pl id w mod)))
+      (and label/pl (label/pl->label label/pl))))
+  (define top-level-properties '())
+  (define (top-level-property-ref id-label key-label)
+    (let ((a (property-assoc id-label top-level-properties)))
+      (and a
+        (let ((p (property-assoc key-label (cdr a))))
+          (and p (cdr p))))))
+  (set! $sc-define-property!
+    (lambda (id-label key-label propval)
+      (let ((a (property-assoc id-label top-level-properties)))
+        (if a
+          (set-cdr! a
+            (cons (cons key-label propval)
+              (remove-property key-label (cdr a))))
+          (set! top-level-properties
+            (cons (cons id-label (list (cons key-label propval)))
+              top-level-properties))))
+      propval))
   (define (locally-bound-identifiers w mod)
     (define (scan subst results)
       (cond
@@ -609,6 +699,10 @@
           (values 'displaced-lexical #f #f))))
     (let ((n (id-var-name id w mod)))
       (cond
+        ((global-property-label? n)
+          (resolve-global
+            (global-property-label-symbol n)
+            (global-property-label-module n)))
         ((syntax? n)
           (cond
             ((not (eq? n id))
@@ -716,7 +810,7 @@
           ;; with expression being the variable.
           (let lp ((labels (ribcage-labels ribcage)))
             (and (pair? labels)
-              (let ((entry (car labels)))
+              (let ((entry (label/pl->label (car labels))))
                 (or (and (pair? entry)
                      (eq? (syntax-expression (cdr entry)) var))
                   (lp (cdr labels)))))))
@@ -816,6 +910,47 @@
                           '())
                         (else '())))]))
 
+              ((define-property-form)
+                (call-with-values
+                  (lambda () (parse-define-property e w s mod))
+                  (lambda (id key-id expr prop-w prop-mod)
+                    (let* ((wrapped-id (wrap id prop-w prop-mod))
+                           (wrapped-key-id (wrap key-id prop-w prop-mod))
+                           (id-label/pl (visible-property-label/pl id prop-w prop-mod))
+                           (key-label (visible-property-label key-id prop-w prop-mod)))
+                      (unless id-label/pl
+                        (syntax-violation 'define-property "no visible binding for define-property id" wrapped-id))
+                      (unless key-label
+                        (syntax-violation 'define-property "no visible binding for define-property key" wrapped-key-id))
+                      (let* ((id-label (label/pl->label id-label/pl))
+                             (global-id-label (or (identifier-canonical-global-label id prop-w prop-mod) id-label))
+                             (global-key-label (or (identifier-canonical-global-label key-id prop-w prop-mod) key-label))
+                             (expanded (expand expr (macros-only-env r) prop-w prop-mod))
+                             (install-exp (expand-install-property global-id-label global-key-label expanded)))
+                        (define (record-property! propval)
+                          (extend-ribcage! ribcage wrapped-id
+                            (label/pl-with-property id-label/pl key-label propval)))
+                        (define (install-now!)
+                          (let ((propval (top-level-eval install-exp prop-mod)))
+                            (record-property! propval)
+                            propval))
+                        (let ((key m))
+                          (cond
+                            ((memv key '(c))
+                              (cond
+                                ((memq 'compile esew)
+                                  (install-now!)
+                                  (if (memq 'load esew) (list (lambda () install-exp)) '()))
+                                ((memq 'load esew)
+                                  (list (lambda () install-exp)))
+                                (else '())))
+                            ((memv key '(c&e))
+                              (install-now!)
+                              (list (lambda () install-exp)))
+                            (else
+                              (if (memq 'eval esew) (install-now!))
+                              '()))))))))
+
               ((define-syntax-form define-syntax-parameter-form)
                 (let* ((id (wrap value w mod))
                        (var (if (macro-introduced-identifier? id)
@@ -903,9 +1038,42 @@
             e
             x))
         (else (decorate-source x))))
+    (define (make-property-lookup)
+      (lambda args
+        (cond
+          ((= (length args) 1)
+            #f)
+          ((= (length args) 2)
+            (let ((id (car args))
+                  (key-id (cadr args)))
+              (unless (id? id)
+                (syntax-violation #f "first argument to lookup procedure is not an identifier" id))
+              (unless (id? key-id)
+                (syntax-violation #f "second argument to lookup procedure is not an identifier" key-id))
+              (let ((id-label/pl (visible-property-label/pl id empty-wrap mod))
+                    (key-label (visible-property-label key-id empty-wrap mod)))
+                (unless id-label/pl
+                  (syntax-violation #f "no visible binding for property id" id))
+                (unless key-label
+                  (syntax-violation #f "no visible binding for property key" key-id))
+                (let ((p (property-assoc key-label (label/pl->pl id-label/pl))))
+                  (if p
+                    (cdr p)
+                    (let ((id-label (label/pl->label id-label/pl)))
+                      (if (global-property-label? id-label)
+                        (let ((global-key-label (identifier-canonical-global-label key-id empty-wrap mod)))
+                          (if global-key-label
+                            (top-level-property-ref id-label global-key-label)
+                            #f))
+                        #f)))))))
+          (else
+            (syntax-violation #f "lookup procedure expects one or two arguments" args)))))
     (define (apply-transformer transform e)
       (rebuild-macro-output
-        (transform e)
+        (let ((out (transform e)))
+          (if (procedure? out)
+            (out (make-property-lookup))
+            out))
         (new-mark)))
 
     (let ((old (fluid-ref transformer-environment)))
@@ -1064,6 +1232,14 @@
               ((define-property-form) 'property)
               (else 'macro)))
           (build-primcall #f 'cons (list e (make-constant #f id)))))))
+  (define (expand-install-property id-label key-label e)
+    (build-call
+      #f
+      (build-global-reference #f '$sc-define-property! '(hygiene capy))
+      (list
+        (make-constant #f id-label)
+        (make-constant #f key-label)
+        e)))
   (define (expand e r w mod)
 ;    (cond 
 ;      [(and (syntax-pair? e)
@@ -1276,6 +1452,22 @@
                                  (eval-local-transformer (expand e trans-r w mod) mod)))
                           (cdr r)))
                       (parse body (cons id ids) labels var-ids vars vals bindings #f))
+                    ((eq? type 'define-property-form)
+                      (call-with-values
+                        (lambda () (parse-define-property e w s mod))
+                        (lambda (id key-id expr prop-w prop-mod)
+                          (let* ((wrapped-id (wrap id prop-w prop-mod))
+                                 (wrapped-key-id (wrap key-id prop-w prop-mod))
+                                 (id-label/pl (visible-property-label/pl id prop-w prop-mod))
+                                 (key-label (visible-property-label key-id prop-w prop-mod)))
+                            (unless id-label/pl
+                              (syntax-violation 'define-property "no visible binding for define-property id" wrapped-id))
+                            (unless key-label
+                              (syntax-violation 'define-property "no visible binding for define-property key" wrapped-key-id))
+                            (let ((propval (local-eval (expand expr (macros-only-env er) prop-w prop-mod) prop-mod)))
+                              (extend-ribcage! ribcage wrapped-id
+                                (label/pl-with-property id-label/pl key-label propval))
+                              (parse body ids labels var-ids vars vals bindings #f))))))
                     ((eq? type 'local-syntax-form)
                       (expand-local-syntax
                         value
@@ -2244,6 +2436,7 @@
              [result (id-var-name name wrap mod)])
         (cond 
           [(eq? result name) #f] ;; global
+          [(global-property-label? result) #f]
           [(or (pair? result) (vector? result)) 'lexical]
           [else #f]))))
       ;(id-var-name (syntax-expression id) (syntax-wrap id) (syntax-module id))))

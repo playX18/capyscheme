@@ -258,6 +258,7 @@
     decode-flonum
     decode-microsecond
     define
+    define-property
     define-values
     let-values
     let*-values
