@@ -115,6 +115,66 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         node.kind() == "symbol" && self.text_of(node) == symbol
     }
 
+    fn parse_symbol_text(
+        &self,
+        text: &str,
+        src: ((u32, u32), (u32, u32)),
+    ) -> Result<String, LexicalError<'gc>> {
+        if !(text.starts_with('|') && text.ends_with('|') && text.len() >= 2) {
+            return Ok(text.to_string());
+        }
+
+        let mut result = String::new();
+        let mut chars = text[1..text.len() - 1].chars();
+
+        while let Some(ch) = chars.next() {
+            if ch != '\\' {
+                result.push(ch);
+                continue;
+            }
+
+            match chars.next() {
+                Some('x') => {
+                    let mut hex_digits = String::new();
+                    let mut terminated = false;
+
+                    while let Some(hex_ch) = chars.next() {
+                        if hex_ch == ';' {
+                            terminated = true;
+                            break;
+                        }
+
+                        if !hex_ch.is_ascii_hexdigit() {
+                            return Err(LexicalError::InvalidSyntax { span: src.0 });
+                        }
+
+                        hex_digits.push(hex_ch);
+                    }
+
+                    if !terminated || hex_digits.is_empty() {
+                        return Err(LexicalError::InvalidSyntax { span: src.0 });
+                    }
+
+                    let code_point = u32::from_str_radix(&hex_digits, 16)
+                        .map_err(|_| LexicalError::InvalidSyntax { span: src.0 })?;
+                    let Some(escaped) = char::from_u32(code_point) else {
+                        return Err(LexicalError::InvalidSyntax { span: src.0 });
+                    };
+                    result.push(escaped);
+                }
+                Some('a') => result.push('\u{07}'),
+                Some('b') => result.push('\u{08}'),
+                Some('t') => result.push('\t'),
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some(escaped) => result.push(escaped),
+                None => return Err(LexicalError::InvalidSyntax { span: src.0 }),
+            }
+        }
+
+        Ok(result)
+    }
+
     pub fn read_program(&self) -> Result<Vec<Value<'gc>>, LexicalError<'gc>> {
         let root_node = self.tree.root_node();
         let start = root_node.start_position();
@@ -295,7 +355,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         match node.kind() {
             "comment" => Ok(Value::null()),
             "symbol" => {
-                let symbol = Symbol::from_str(self.ctx, text);
+                let text = self.parse_symbol_text(text, src)?;
+                let symbol = Symbol::from_str(self.ctx, &text);
 
                 Ok(self.wrap(node, symbol.into()))
             }
@@ -660,23 +721,13 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(self.wrap(node, kw.into()))
             }
 
-            _ => {
-                if self.text_of(node) == "#%app" {
-                    return Ok(self.ctx.intern("#%app"));
-                }
-                if self.text_of(node) == "'#%app" {
-                    let quote: Value<'gc> = Symbol::from_str(self.ctx, "quote").into();
-                    let app: Value<'gc> = self.ctx.intern("#%app");
-                    return Ok(self.wrap(node, list!(self.ctx, quote, app).into()));
-                }
-                todo!(
-                    "Unhandled node kind: {}: {} at {} in {}",
-                    node.kind(),
-                    self.text_of(node),
-                    node.start_position().row,
-                    self.source_file
-                )
-            }
+            _ => todo!(
+                "Unhandled node kind: {}: {} at {} in {}",
+                node.kind(),
+                self.text_of(node),
+                node.start_position().row,
+                self.source_file
+            ),
         }
     }
 

@@ -122,7 +122,10 @@
       (cond
         [(vanilla-symbol? x s)
           (printstr s p)]
-        [else (print-slashed-symbol-string s p #f)])))
+        [else
+          (write-char #\| p)
+          (print-slashed-symbol-string s p #t)
+          (write-char #\| p)])))
 
   ;; Prints the string as though it were enclosed within vertical bars.
   ;; If r7rs? is true, rely on R7RS lexical syntax for strings and symbols.
@@ -725,4 +728,3 @@
   (let ((p (if (pair? rest) (car rest) (current-output-port))))
     (write x p)
     (newline p)))
-
