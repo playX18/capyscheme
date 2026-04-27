@@ -983,10 +983,14 @@
                           (cons (wrap sym (anti-mark (make-wrap m subst)) mod) results))))))))
             (if (vector? symnames) (scan-vector-rib) (scan-list-rib))))))
     (scan (wrap-subst w) '()))
+  (define (resolve-global-variable mod var)
+    (and (not (equal? mod '(primitive)))
+      (module-variable
+        (if mod (resolve-module (cdr mod) #t #t) (current-module))
+        var)))
   (define (resolve-identifier id w r mod resolve-syntax-parameters?)
     (define (resolve-global var mod)
-      (let ((v (and (not (equal? mod '(primitive)))
-                (module-variable (if mod (resolve-module (cdr mod) #t #t) (current-module)) var))))
+      (let ((v (resolve-global-variable mod var)))
         (if (and v (variable-bound? v) (macro? (variable-ref v)))
           (let* ((m (variable-ref v))
                  (type (macro-type m))
@@ -1602,6 +1606,18 @@
   (define (make-explicit sym e r w s mod)
     (make-syntax (cons sym e) w mod s))
 
+  (define (expand-default-implicit-application e r w s mod)
+    (syntax-case e ()
+      [(rator rand ...)
+        (expand-default-application s #'rator #'(rand ...) r w mod)]
+      [()
+        (syntax-violation '|#%app|
+          "bad application form: missing operator"
+          (source-wrap e w s mod))]
+      [_ (syntax-violation '|#%app|
+           "bad application form"
+           (source-wrap e w s mod))]))
+
   (define (expand-implicit-app e r w s mod)
     (receive (app-type app-value app-form app-e app-w app-s app-mod)
       (syntax-type (source-wrap '|#%app| w s mod) r empty-wrap s #f mod #t)
@@ -1611,6 +1627,13 @@
             (receive (type value form e* w* s* mod*)
               (syntax-type explicit r empty-wrap s #f mod #f)
               (expand-expr type value form e* r w* s* mod*))))
+        ((global)
+          (let ((var (resolve-global-variable app-mod app-value)))
+            (if (and var (variable-bound? var))
+              (syntax-violation '|#%app|
+                "#%app binding for application is not syntax"
+                (source-wrap e w s mod))
+              (expand-default-implicit-application e r w s mod))))
         (else
           (syntax-violation '|#%app|
             "missing #%app binding for application"

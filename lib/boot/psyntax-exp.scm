@@ -1424,18 +1424,21 @@
                                            (scan-list-rib)))))))))
                           (#f #f)))))
            (scan (wrap-subst w) '()))))
+     (resolve-global-variable
+       (lambda (mod var)
+         (if (not (equal? mod '(primitive)))
+             (module-variable
+               (if mod
+                   (resolve-module (cdr mod) '#t '#t)
+                   (current-module))
+               var)
+             '#f)))
      (resolve-identifier
        (lambda (id w r mod resolve-syntax-parameters?)
          (letrec*
            ((resolve-global
               (lambda (var mod.1)
-                (let ((v (if (not (equal? mod.1 '(primitive)))
-                             (module-variable
-                               (if mod.1
-                                   (resolve-module (cdr mod.1) '#t '#t)
-                                   (current-module))
-                               var)
-                             '#f)))
+                (let ((v (resolve-global-variable mod.1 var)))
                   (if (if v
                           (if (variable-bound? v)
                               (macro? (variable-ref v))
@@ -2683,6 +2686,29 @@
      (make-explicit
        (lambda (sym e r w s mod)
          (make-syntax (cons sym e) w mod s)))
+     (expand-default-implicit-application
+       (lambda (e r w s mod)
+         ((lambda (tmp)
+            ((lambda (tmp.1)
+               (if tmp.1
+                   (apply (lambda (rator rand)
+                            (expand-default-application s rator rand r w mod))
+                          tmp.1)
+                   ((lambda (tmp.2)
+                      (if tmp.2
+                          (apply (lambda ()
+                                   (syntax-violation
+                                     '|#%app|
+                                     '"bad application form: missing operator"
+                                     (source-wrap e w s mod)))
+                                 tmp.2)
+                          (syntax-violation
+                            '|#%app|
+                            '"bad application form"
+                            (source-wrap e w s mod))))
+                    ($sc-dispatch tmp '()))))
+             ($sc-dispatch tmp '(any . each-any))))
+          e)))
      (expand-implicit-app
        (lambda (e r w s mod)
          (call-with-values
@@ -2702,17 +2728,27 @@
                     app-w
                     app-s
                     app-mod)
-             (if (memv app-type '(macro core core-form))
-                 (let ((explicit (make-explicit '|#%app| e r w s mod)))
-                   (call-with-values
-                     (lambda ()
-                       (syntax-type explicit r empty-wrap s '#f mod '#f))
-                     (lambda (type value form e* w* s* mod*)
-                       (expand-expr type value form e* r w* s* mod*))))
-                 (syntax-violation
-                   '|#%app|
-                   '"missing #%app binding for application"
-                   (source-wrap e w s mod)))))))
+             (case app-type
+               ((macro core core-form)
+                (let ((explicit (make-explicit '|#%app| e r w s mod)))
+                  (call-with-values
+                    (lambda ()
+                      (syntax-type explicit r empty-wrap s '#f mod '#f))
+                    (lambda (type value form e* w* s* mod*)
+                      (expand-expr type value form e* r w* s* mod*)))))
+               ((global)
+                (let ((var (resolve-global-variable app-mod app-value)))
+                  (if (if var (variable-bound? var) '#f)
+                      (syntax-violation
+                        '|#%app|
+                        '"#%app binding for application is not syntax"
+                        (source-wrap e w s mod))
+                      (expand-default-implicit-application e r w s mod))))
+               (else
+                (syntax-violation
+                  '|#%app|
+                  '"missing #%app binding for application"
+                  (source-wrap e w s mod))))))))
      (expand-expr
        (lambda (type value form e r w s mod)
          (cond ((eq? type 'define-property-form)

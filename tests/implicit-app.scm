@@ -15,12 +15,6 @@
        (unless (equal? actual want)
          (record-failure 'name actual want))))))
 
-(define-syntax local-app
-  (lambda (stx)
-    (syntax-case stx ()
-      [(_ rator rand ...)
-       #'(quote local-app-intercepted)])))
-
 (define-syntax emit-call
   (lambda (stx)
     (syntax-case stx ()
@@ -28,7 +22,11 @@
        #'((lambda (x) x) 99)])))
 
 (define local-result
-  (let-syntax ([|#%app| local-app])
+  (let-syntax ([|#%app|
+                (lambda (stx)
+                  (syntax-case stx ()
+                    [(_ rator rand ...)
+                     #'(quote local-app-intercepted)]))])
     (ignored-operator 1 2 3)))
 
 (define empty-app-error?
