@@ -1688,6 +1688,54 @@
       [(e0 e1 ...)
         (build-call s x (map (lambda (e) (expand e r w mod)) #'(e1 ...)))]))
 
+  (define (expand-application-operands rands r w mod)
+    (map (lambda (e) (expand e r w mod)) rands))
+
+  (define (expand-default-application src rator rands r w mod)
+    (if (id? rator)
+      (receive (type value form e w* s* mod*)
+        (syntax-type rator r w (source-annotation rator) #f mod #t)
+        (cond
+          ((eq? type 'lexical)
+            (build-call
+              src
+              (build-lexical-reference s*
+                (if (syntax? e) (syntax->datum e) e)
+                value)
+              (expand-application-operands rands r w mod)))
+          ((eq? type 'global)
+            (if (equal? mod* '(primitive))
+              (build-primcall
+                src
+                value
+                (expand-application-operands rands r w mod))
+              (build-call
+                src
+                (build-global-reference s* value mod*)
+                (expand-application-operands rands r w mod))))
+          ((or (eq? type 'macro)
+               (eq? type 'core)
+               (eq? type 'core-form)
+               (eq? type 'begin-form)
+               (eq? type 'eval-when-form)
+               (eq? type 'define-form)
+               (eq? type 'define-syntax-form)
+               (eq? type 'define-syntax-parameter-form)
+               (eq? type 'define-property-form)
+               (eq? type 'local-syntax-form))
+            (syntax-violation '|#%app|
+              "syntactic keyword cannot be used as an expression"
+              (source-wrap rator w s* mod)))
+          (else
+            (build-call
+              src
+              (expand rator r w mod)
+              (expand-application-operands rands r w mod)))))
+      (build-call
+        src
+        (expand rator r w mod)
+        (expand-application-operands rands r w mod))))
+
  
 
   (define (expand-body body outer-form r w mod)
@@ -2633,6 +2681,19 @@
       (syntax-case (source-wrap e w s mod) ()
         [(_ datum) (build-data s #'datum)]
         [_ (syntax-violation 'quote-syntax "bad quote form" (source-wrap e w s mod))])))
+
+  (global-extend 'core '|#%app|
+    (lambda (e r w s mod)
+      (syntax-case e ()
+        [(_ rator rand ...)
+          (expand-default-application s #'rator #'(rand ...) r w mod)]
+        [(_)
+          (syntax-violation '|#%app|
+            "bad application form: missing operator"
+            (source-wrap e w s mod))]
+        [_ (syntax-violation '|#%app|
+             "bad application form"
+             (source-wrap e w s mod))])))
 
   (global-extend 'core 'lambda
     (lambda (e r w s mod)
