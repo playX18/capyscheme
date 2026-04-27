@@ -2,11 +2,12 @@
 resolver = "3"
 members = ["capy", "capy-derive"]
 default-members = ["capy"]
-
+edition = "2024"
+version = "1.3.0"
 
 [workspace.dependencies]
 
-bytecodegen = { git = "https://codeberg.org/playxe/bytecodegen" }
+bytecodegen = { git = "https://github.com/playx18/bytecodegen" }
 mmtk = { git = "https://github.com/mmtk/mmtk-core", default-features = false }
 cranelift-jit = { version = "0.127", features = ["selinux-fix"] }
 cranelift = "0.127"
