@@ -794,9 +794,9 @@
         (module-name? #'(name name* ...))
         (let* ((library-name (syntax->datum #'(name name* ...)))
                (auto-prelims (if (or (equal? library-name '(capy prelims))
-                                     (equal? library-name '(core)))
-                               #'()
-                               #'((capy prelims)))))
+                                  (equal? library-name '(core)))
+                              #'()
+                              #'((capy prelims)))))
           (call-with-values
             (lambda ()
               (compute-exports
@@ -805,7 +805,8 @@
                         ((for import-set import-level ...)
                           (resolve-r6rs-interface #'import-set))
                         (import-set (resolve-r6rs-interface #'import-set))))
-                  (append auto-prelims #'(ispec ...)))
+                  #'(ispec ...))
+                ;(append auto-prelims #'(ispec ...)))
                 #'(espec ...)
                 (body-definition-names #'(body ...))))
             (lambda (exports re-exports replacements)
@@ -821,7 +822,7 @@
                 #'(begin
                    (define-pure-module (name name* ...))
 
-                   (import prelim-import ...)
+                   ;(import prelim-import ...)
                    (export e ...)
                    (export! x ...)
                    ;; (capy prelims) exports "plain" #%app form which must be imported

@@ -1,5 +1,6 @@
 (library (core intrinsics)
   (export
+    |#%app|
     library
     define-library
     define
@@ -200,6 +201,7 @@
 
 (library (core primitives)
   (export
+    |#%app|
     cond-expand
     when
     unless
