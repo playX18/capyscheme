@@ -1,0 +1,361 @@
+use crate::{
+    cps::linear::{
+        Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
+        LinearVar, Procedure, ProcedureKind, Terminator,
+    },
+    expander::core::LVarRef,
+    runtime::value::{Symbol, Value},
+};
+use std::fmt::Write;
+
+pub fn render_program<'gc>(program: &LinearProgram<'gc>) -> String {
+    let mut out = String::new();
+    writeln!(out, "(linear-program").unwrap();
+    writeln!(
+        out,
+        "  (entry {})",
+        render_code_id(&CodeId::Function(program.entry))
+    )
+    .unwrap();
+    for procedure in &program.procedures {
+        render_procedure(&mut out, procedure, 2);
+    }
+    writeln!(out, ")").unwrap();
+    out
+}
+
+fn render_procedure<'gc>(out: &mut String, procedure: &Procedure<'gc>, indent: usize) {
+    let pad = " ".repeat(indent);
+    writeln!(
+        out,
+        "{pad}(procedure {} {}",
+        render_procedure_kind(procedure.kind),
+        render_code_id(&procedure.code)
+    )
+    .unwrap();
+    writeln!(out, "{pad}  (binding {})", render_lvar(procedure.binding)).unwrap();
+    writeln!(out, "{pad}  (name {})", render_value(procedure.name)).unwrap();
+    writeln!(out, "{pad}  (entry block{})", procedure.entry.0).unwrap();
+    writeln!(
+        out,
+        "{pad}  (return-cont {})",
+        render_optional_lvar(procedure.return_cont)
+    )
+    .unwrap();
+    writeln!(out, "{pad}  (params{})", render_lvars(&procedure.params)).unwrap();
+    writeln!(
+        out,
+        "{pad}  (variadic {})",
+        render_optional_lvar(procedure.variadic)
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "{pad}  (free-vars{})",
+        render_lvars(&procedure.free_vars)
+    )
+    .unwrap();
+    for block in &procedure.blocks {
+        render_block(out, block, indent + 2);
+    }
+    writeln!(out, "{pad})").unwrap();
+}
+
+fn render_block<'gc>(out: &mut String, block: &Block<'gc>, indent: usize) {
+    let pad = " ".repeat(indent);
+    writeln!(
+        out,
+        "{pad}(block {} (params{}) (variadic {})",
+        render_block_id(block.id),
+        render_lvars(&block.params),
+        render_optional_lvar(block.variadic)
+    )
+    .unwrap();
+    for instruction in &block.instructions {
+        writeln!(out, "{pad}  {}", render_instruction(instruction)).unwrap();
+    }
+    writeln!(out, "{pad}  {}", render_terminator(&block.terminator)).unwrap();
+    writeln!(out, "{pad})").unwrap();
+}
+
+fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
+    match instruction {
+        Instruction::MakeClosure {
+            dst,
+            code,
+            kind,
+            free_count,
+        } => format!(
+            "(make-closure {} {} {} {})",
+            render_linear_var(*dst),
+            render_code_id(code),
+            render_closure_kind(*kind),
+            free_count
+        ),
+        Instruction::ClosureRef {
+            dst,
+            closure,
+            index,
+        } => format!(
+            "(closure-ref {} {} {})",
+            render_linear_var(*dst),
+            render_linear_atom(*closure),
+            index
+        ),
+        Instruction::ClosureSet {
+            closure,
+            index,
+            value,
+        } => format!(
+            "(closure-set {} {} {})",
+            render_linear_atom(*closure),
+            index,
+            render_linear_atom(*value)
+        ),
+        Instruction::PrimCall {
+            dst, prim, args, ..
+        } => format!(
+            "(prim-call {} {}{})",
+            render_linear_var(*dst),
+            render_value(*prim),
+            render_linear_atoms(args)
+        ),
+    }
+}
+
+fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
+    match terminator {
+        Terminator::Call {
+            callee, retk, args, ..
+        } => format!(
+            "(call {} {}{})",
+            render_linear_atom(*callee),
+            render_linear_atom(*retk),
+            render_linear_atoms(args)
+        ),
+        Terminator::TailCall { callee, args, .. } => format!(
+            "(tail-call {}{})",
+            render_linear_atom(*callee),
+            render_linear_atoms(args)
+        ),
+        Terminator::Jump { target, args } => {
+            format!(
+                "(jump {}{})",
+                render_block_id(*target),
+                render_linear_atoms(args)
+            )
+        }
+        Terminator::Branch {
+            test,
+            consequent,
+            alternative,
+            hints,
+        } => format!(
+            "(branch {} {} {} (hints {:?} {:?}))",
+            render_linear_atom(*test),
+            render_branch_target(consequent),
+            render_branch_target(alternative),
+            hints[0],
+            hints[1]
+        ),
+    }
+}
+
+fn render_branch_target<'gc>(target: &BranchTarget<'gc>) -> String {
+    match target {
+        BranchTarget::Local { block, args } => {
+            format!(
+                "(local {}{})",
+                render_block_id(*block),
+                render_linear_atoms(args)
+            )
+        }
+        BranchTarget::Reified { continuation, args } => format!(
+            "(reified {}{})",
+            render_linear_atom(*continuation),
+            render_linear_atoms(args)
+        ),
+    }
+}
+
+fn render_linear_atom<'gc>(atom: LinearAtom<'gc>) -> String {
+    match atom {
+        LinearAtom::Constant(value) => render_value(value),
+        LinearAtom::Local(var) => render_linear_var(var),
+    }
+}
+
+fn render_linear_atoms<'gc>(atoms: &[LinearAtom<'gc>]) -> String {
+    atoms
+        .iter()
+        .map(|atom| format!(" {}", render_linear_atom(*atom)))
+        .collect()
+}
+
+fn render_linear_var<'gc>(var: LinearVar<'gc>) -> String {
+    match var {
+        LinearVar::Source(var) => render_lvar(var),
+        LinearVar::Synthetic(id) => format!("%s{id}"),
+    }
+}
+
+fn render_lvar<'gc>(var: LVarRef<'gc>) -> String {
+    format!("%{}", render_value(var.name))
+}
+
+fn render_lvars<'gc>(vars: &[LVarRef<'gc>]) -> String {
+    vars.iter()
+        .map(|var| format!(" {}", render_lvar(*var)))
+        .collect()
+}
+
+fn render_optional_lvar<'gc>(var: Option<LVarRef<'gc>>) -> String {
+    var.map(render_lvar).unwrap_or_else(|| "#f".to_string())
+}
+
+fn render_code_id<'gc>(code: &CodeId<'gc>) -> String {
+    match code {
+        CodeId::Function(func) => format!("(function {})", render_lvar(func.binding)),
+        CodeId::Continuation(cont) => format!("(continuation {})", render_lvar(cont.binding)),
+    }
+}
+
+fn render_block_id(id: BlockId) -> String {
+    format!("block{}", id.0)
+}
+
+fn render_procedure_kind(kind: ProcedureKind) -> &'static str {
+    match kind {
+        ProcedureKind::Function => "function",
+        ProcedureKind::Continuation => "continuation",
+    }
+}
+
+fn render_closure_kind(kind: ClosureKind) -> &'static str {
+    match kind {
+        ClosureKind::Function => "function",
+        ClosureKind::Continuation => "continuation",
+    }
+}
+
+fn render_value<'gc>(value: Value<'gc>) -> String {
+    if value == Value::new(false) {
+        "#f".to_string()
+    } else if value == Value::new(true) {
+        "#t".to_string()
+    } else if value.is::<Symbol>() {
+        value.downcast::<Symbol>().to_string()
+    } else if let Some(number) = value.number() {
+        number.to_string()
+    } else {
+        format!("{value:?}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        cps::{
+            linear::{
+                Block, BlockId, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
+                LinearVar, Procedure, ProcedureKind, Terminator,
+            },
+            term::{Func, Term},
+        },
+        expander::core::{LVarRef, fresh_lvar},
+        rsgc::{Gc, alloc::Array, cell::Lock},
+        runtime::{
+            Context, Scheme,
+            value::{Symbol, Value},
+        },
+    };
+
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(f);
+    }
+
+    fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
+        fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
+    }
+
+    #[test]
+    fn pretty_mentions_closure_ops_and_blocks() {
+        with_ctx(|ctx| {
+            let binding = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let free = lvar(ctx, "free");
+            let closure = LinearVar::Synthetic(1);
+            let body = Gc::new(
+                *ctx,
+                Term::Continue(retk, Array::from_slice(*ctx, &[]), Value::new(false)),
+            );
+            let entry = Gc::new(
+                *ctx,
+                Func {
+                    name: Symbol::from_str(ctx, "entry").into(),
+                    source: Value::new(false),
+                    binding,
+                    return_cont: retk,
+                    args: Array::from_slice(*ctx, &[]),
+                    variadic: None,
+                    body: Lock::new(body),
+                    free_vars: Lock::new(Some(Array::from_slice(*ctx, &[]))),
+                    meta: Value::new(false),
+                },
+            );
+            let program = LinearProgram {
+                entry,
+                procedures: vec![Procedure {
+                    code: CodeId::Function(entry),
+                    kind: ProcedureKind::Function,
+                    binding,
+                    name: Symbol::from_str(ctx, "entry").into(),
+                    source: Value::new(false),
+                    meta: Value::new(false),
+                    return_cont: Some(retk),
+                    params: vec![],
+                    variadic: None,
+                    free_vars: vec![free],
+                    entry: BlockId(0),
+                    blocks: vec![Block {
+                        id: BlockId(0),
+                        params: vec![],
+                        variadic: None,
+                        instructions: vec![
+                            Instruction::MakeClosure {
+                                dst: closure,
+                                code: CodeId::Function(entry),
+                                kind: ClosureKind::Function,
+                                free_count: 1,
+                            },
+                            Instruction::ClosureSet {
+                                closure: LinearAtom::Local(closure),
+                                index: 0,
+                                value: LinearAtom::Local(LinearVar::Source(free)),
+                            },
+                        ],
+                        terminator: Terminator::Jump {
+                            target: BlockId(0),
+                            args: vec![],
+                        },
+                        source: Value::new(false),
+                    }],
+                }],
+            };
+
+            let rendered = super::render_program(&program);
+
+            assert!(rendered.contains("linear-program"));
+            assert!(rendered.contains("procedure"));
+            assert!(rendered.contains("block"));
+            assert!(rendered.contains("make-closure"));
+            assert!(rendered.contains("closure-set"));
+        });
+    }
+}

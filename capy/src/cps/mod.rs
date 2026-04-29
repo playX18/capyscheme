@@ -4,6 +4,8 @@ pub mod builder;
 pub mod contify;
 pub mod fold;
 pub mod free_vars;
+pub mod linear;
+pub mod linear_pretty;
 pub mod optimizer;
 pub mod packed;
 pub mod pretty;

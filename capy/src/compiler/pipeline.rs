@@ -81,7 +81,6 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
         let _profile = ProfileScope::new("compiler.lower.cps.contify");
         cps.with_body(ctx, contify(ctx, cps.body()))
     };
-
     Ok(LoweredProgram {
         original_il,
         optimized_il,
@@ -90,6 +89,7 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
 }
 
 pub(crate) fn dump_lowered_program_artifacts<'gc>(
+    ctx: Context<'gc>,
     destination: impl AsRef<Path>,
     lowered: &LoweredProgram<'gc>,
     options: DumpArtifactsOptions,
@@ -137,4 +137,13 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         .unwrap();
     println!(";; TRACE  (capy)@load: CPS -> {destination}.cps.scm");
     doc.1.render(80, &mut file).unwrap();
+
+    let linear_cps = {
+        let _profile = ProfileScope::new("compiler.lower.cps.linearize.dump");
+        let reify_info = crate::cps::reify(ctx, lowered.cps);
+        crate::cps::linear::linearize(&reify_info)
+    };
+    let rendered = crate::cps::linear_pretty::render_program(&linear_cps);
+    std::fs::write(format!("{destination}.lcps.scm"), rendered).unwrap();
+    println!(";; TRACE  (capy)@load: LCPS -> {destination}.lcps.scm");
 }

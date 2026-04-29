@@ -7,6 +7,7 @@ use crate::{
     },
     cps::{
         ReifyInfo,
+        linear::{BlockId, CodeId, LinearProgram, Procedure},
         term::{ContRef, FuncRef},
     },
     expander::core::LVarRef,
@@ -39,7 +40,6 @@ pub mod translate;
 pub enum VarDef {
     Value(ir::Value),
     Comparison(ir::Value),
-    Free(usize),
 }
 
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
@@ -47,6 +47,7 @@ pub struct ModuleBuilder<'gc> {
     pub ctx: Context<'gc>,
     pub(crate) debug_context: DebugContext<'gc>,
     pub reify_info: ReifyInfo<'gc>,
+    pub linear: LinearProgram<'gc>,
     pub constants: HashMap<ValueEqual<'gc>, DataId>,
     pub cache_cells: HashMap<ValueEqual<'gc>, DataId>,
 
@@ -65,7 +66,12 @@ pub struct ModuleBuilder<'gc> {
 }
 
 impl<'gc> ModuleBuilder<'gc> {
-    pub fn new(ctx: Context<'gc>, mut module: ObjectModule, reify_info: ReifyInfo<'gc>) -> Self {
+    pub fn new(
+        ctx: Context<'gc>,
+        mut module: ObjectModule,
+        reify_info: ReifyInfo<'gc>,
+        linear: LinearProgram<'gc>,
+    ) -> Self {
         let prims = PrimitiveLowerer::new(ctx);
         let thunks = Thunks::new(&mut module);
         let debug_context = DebugContext::new(&reify_info, module.isa());
@@ -88,6 +94,7 @@ impl<'gc> ModuleBuilder<'gc> {
             ctx,
             stacktraces: true,
             reify_info,
+            linear,
             constants: HashMap::new(),
             cache_cells: HashMap::new(),
             module,
@@ -103,110 +110,97 @@ impl<'gc> ModuleBuilder<'gc> {
         }
     }
     pub fn compile(&mut self) {
-        let funcs = self
-            .reify_info
-            .functions
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        let conts = self
-            .reify_info
-            .continuations
-            .iter()
-            .copied()
-            .filter(|c| c.reified.get())
-            .collect::<Vec<_>>();
+        let procedures = self.linear.procedures.clone();
 
         let sig = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
-        for (i, func) in funcs.iter().copied().enumerate() {
-            let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
-            let func_id = self
-                .module
-                .declare_function(&name, Linkage::Export, &sig)
-                .expect("failed to declare function in cranelift module");
+        let mut function_index = 0;
+        let mut continuation_index = 0;
+        for procedure in procedures.iter() {
+            match procedure.code {
+                CodeId::Function(func) => {
+                    let i = function_index;
+                    function_index += 1;
+                    let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
+                    let func_id = self
+                        .module
+                        .declare_function(&name, Linkage::Export, &sig)
+                        .expect("failed to declare function in cranelift module");
 
-            self.func_for_func.insert(func, func_id);
-            let code_block_data_id = self.declare_code_block_slot(&format!("codeblock_fn{}", i));
-            self.code_block_for_func.insert(func, code_block_data_id);
-        }
-
-        let sig = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
-
-        for (i, cont) in conts.iter().copied().enumerate() {
-            let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
-            let cont_id = self
-                .module
-                .declare_function(&name, Linkage::Local, &sig)
-                .expect("failed to declare continuation in cranelift module");
-            self.func_for_cont.insert(cont, cont_id);
-            let code_block_data_id = self.declare_code_block_slot(&format!("codeblock_cont{}", i));
-            self.code_block_for_cont.insert(cont, code_block_data_id);
+                    self.func_for_func.insert(func, func_id);
+                    let code_block_data_id =
+                        self.declare_code_block_slot(&format!("codeblock_fn{}", i));
+                    self.code_block_for_func.insert(func, code_block_data_id);
+                }
+                CodeId::Continuation(cont) => {
+                    let i = continuation_index;
+                    continuation_index += 1;
+                    let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
+                    let cont_id = self
+                        .module
+                        .declare_function(&name, Linkage::Local, &sig)
+                        .expect("failed to declare continuation in cranelift module");
+                    self.func_for_cont.insert(cont, cont_id);
+                    let code_block_data_id =
+                        self.declare_code_block_slot(&format!("codeblock_cont{}", i));
+                    self.code_block_for_cont.insert(cont, code_block_data_id);
+                }
+            }
         }
 
         let mut context = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
-        for (i, func) in funcs.iter().copied().enumerate() {
+        function_index = 0;
+        continuation_index = 0;
+        for procedure in procedures.iter() {
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
-            let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
-            let func_debug_cx = self.debug_context.define_function(func, &name);
-
-            let func_id = self
-                .func_for_func
-                .get(&func)
-                .copied()
-                .expect("function should have been declared before compilation");
-            let mut ssa =
-                SSABuilder::new(self, builder, ContOrFunc::Func(func), thunks, func_debug_cx);
-
-            ssa.term(func.body());
-            ssa.finalize();
-
-            ssa.builder.seal_all_blocks();
-            ssa.builder.finalize();
-            let func_debug_cx = ssa.func_debug_cx;
-            self.module
-                .define_function(func_id, &mut context)
-                .unwrap_or_else(|err| {
-                    panic!(
-                        "error when compiling function {} ({}): {} at {} (src: {})",
-                        func.binding.name, func.name, err, func.meta, func.source
-                    )
-                });
-            func_debug_cx.finalize(
-                &mut self.debug_context,
-                func_id,
-                &context,
-                self.module.isa(),
+            let (func_id, func_debug_cx) = match procedure.code {
+                CodeId::Function(func) => {
+                    let i = function_index;
+                    function_index += 1;
+                    let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
+                    let func_debug_cx = self.debug_context.define_function(func, &name);
+                    let func_id = self
+                        .func_for_func
+                        .get(&func)
+                        .copied()
+                        .expect("function should have been declared before compilation");
+                    (func_id, func_debug_cx)
+                }
+                CodeId::Continuation(cont) => {
+                    let i = continuation_index;
+                    continuation_index += 1;
+                    let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
+                    let func_debug_cx = self.debug_context.define_cont(cont, &name);
+                    let func_id = self
+                        .func_for_cont
+                        .get(&cont)
+                        .copied()
+                        .expect("continuation should have been declared before compilation");
+                    (func_id, func_debug_cx)
+                }
+            };
+            let mut ssa = SSABuilder::new(
+                self,
+                builder,
+                ContOrFunc::Procedure(procedure.clone()),
+                thunks,
+                func_debug_cx,
             );
-            self.module.clear_context(&mut context);
-        }
 
-        for (i, cont) in conts.iter().copied().enumerate() {
-            context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
-
-            let name = format!("cont_{}_{}_{}", i, cont.name, cont.binding.name);
-            let func_debug_cx = self.debug_context.define_cont(cont, &name);
-            let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-            let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
-            let func_id = self.func_for_cont[&cont];
-            let mut ssa =
-                SSABuilder::new(self, builder, ContOrFunc::Cont(cont), thunks, func_debug_cx);
-
-            ssa.term(cont.body());
+            ssa.linear_procedure(procedure);
             ssa.finalize();
 
             ssa.builder.seal_all_blocks();
             ssa.builder.finalize();
-
             let func_debug_cx = ssa.func_debug_cx;
             self.module
                 .define_function(func_id, &mut context)
                 .unwrap_or_else(|err| {
                     panic!(
-                        "error when compiling continuation {}: {}",
-                        cont.binding.name, err
+                        "error when compiling procedure {}: {}",
+                        procedure.binding.name, err
                     )
                 });
             func_debug_cx.finalize(
@@ -566,7 +560,10 @@ pub struct SSABuilder<'gc, 'a, 'f> {
 
     /// Map from non reified continuations to corresponding Cranelift block.
     pub blockmap: HashMap<ContRef<'gc>, ir::Block>,
+    pub linear_blockmap: HashMap<BlockId, ir::Block>,
     pub variables: HashMap<LVarRef<'gc>, VarDef>,
+    pub linear_variables: HashMap<crate::cps::linear::LinearVar<'gc>, VarDef>,
+    pub synthetic_aliases: HashMap<crate::cps::linear::LinearVar<'gc>, LVarRef<'gc>>,
 
     pub target: ContOrFunc<'gc>,
     pub exit_block: ir::Block,
@@ -591,10 +588,11 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub srcloc: Option<SourceLoc>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ContOrFunc<'gc> {
     Func(FuncRef<'gc>),
     Cont(ContRef<'gc>),
+    Procedure(Procedure<'gc>),
 }
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
@@ -640,6 +638,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             ],
         );
         builder.switch_to_block(entry_block);
+        let entry_rator = builder.block_params(entry_block)[0];
+        let entry_rands = builder.block_params(entry_block)[1];
+        let entry_num_rands = builder.block_params(entry_block)[2];
+        builder.set_val_label(entry_rator, func_debug_cx.internal_variable(0));
+        builder.set_val_label(entry_num_rands, func_debug_cx.internal_variable(1));
+        builder.set_val_label(entry_rands, func_debug_cx.internal_variable(2));
 
         let mut this = Self {
             module_builder,
@@ -647,11 +651,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             target,
             exit_block,
             app_block: None,
-            rator,
+            rator: entry_rator,
             func_debug_cx,
             entry_block,
             variables,
+            linear_variables: HashMap::new(),
+            synthetic_aliases: HashMap::new(),
             blockmap: HashMap::new(),
+            linear_blockmap: HashMap::new(),
             to_generate: Vec::new(),
             thunks,
 
@@ -661,8 +668,128 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             srcloc: None,
         };
 
-        this.entrypoint(rands, num_rands);
+        this.entrypoint(entry_rands, entry_num_rands);
 
         this
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        cps::{
+            linear::linearize,
+            reify,
+            term::{Atom, Func, Term},
+        },
+        expander::core::{LVarRef, fresh_lvar},
+        rsgc::{Gc, alloc::Array, cell::Lock},
+        runtime::{
+            Context, Scheme,
+            value::{Symbol, Value},
+        },
+    };
+    use cranelift::prelude::Configurable;
+    use cranelift_module::default_libcall_names;
+    use cranelift_object::ObjectBuilder;
+
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(f);
+    }
+
+    fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
+        fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
+    }
+
+    fn object_module() -> ObjectModule {
+        let mut shared_builder = cranelift_codegen::settings::builder();
+        shared_builder.set("enable_probestack", "false").unwrap();
+        shared_builder
+            .set("enable_heap_access_spectre_mitigation", "false")
+            .unwrap();
+        shared_builder.set("opt_level", "speed").unwrap();
+        shared_builder.enable("preserve_frame_pointers").unwrap();
+        shared_builder.enable("is_pic").unwrap();
+        shared_builder.enable("enable_pinned_reg").unwrap();
+        shared_builder.enable("enable_alias_analysis").unwrap();
+
+        let shared_flags = cranelift_codegen::settings::Flags::new(shared_builder);
+        let triple = target_lexicon::Triple::host();
+        let isa = cranelift_codegen::isa::lookup(triple)
+            .unwrap()
+            .finish(shared_flags)
+            .unwrap();
+        let objbuilder = ObjectBuilder::new(isa, "scheme-test", default_libcall_names()).unwrap();
+        ObjectModule::new(objbuilder)
+    }
+
+    #[test]
+    fn recursive_entry_block_uses_loop_params() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "f");
+            let retk = lvar(ctx, "retk");
+            let body = Gc::new(
+                *ctx,
+                Term::App(
+                    Atom::Local(f),
+                    retk,
+                    Array::from_slice(*ctx, &[]),
+                    Value::new(false),
+                ),
+            );
+            let func = Gc::new(
+                *ctx,
+                Func {
+                    name: Symbol::from_str(ctx, "loop").into(),
+                    source: Value::new(false),
+                    binding: f,
+                    return_cont: retk,
+                    args: Array::from_slice(*ctx, &[]),
+                    variadic: None,
+                    body: Lock::new(body),
+                    free_vars: Lock::new(None),
+                    meta: Value::new(false),
+                },
+            );
+
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let procedure = linear
+                .procedures
+                .iter()
+                .find(|procedure| procedure.code == CodeId::Function(func))
+                .expect("entry function should have a linear procedure")
+                .clone();
+            let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
+            let mut context = module_builder.module.make_context();
+            context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
+            let mut fctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
+            let thunks = ImportedThunks::new(
+                &module_builder.thunks,
+                &mut builder.func,
+                &mut module_builder.module,
+            );
+            let func_debug_cx = module_builder
+                .debug_context
+                .define_function(func, "fn0:loop:f");
+
+            let ssa = SSABuilder::new(
+                &mut module_builder,
+                builder,
+                ContOrFunc::Procedure(procedure),
+                thunks,
+                func_debug_cx,
+            );
+
+            assert_eq!(ssa.rator, ssa.builder.block_params(ssa.entry_block)[0]);
+        });
     }
 }
