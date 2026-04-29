@@ -13,8 +13,14 @@ use std::collections::HashMap;
 use std::mem::offset_of;
 macro_rules! prim {
     ($($sname: literal => $name: ident ($ssa: ident, $args: ident, $h: ident) $b: block),*) => {
+        #[allow(non_camel_case_types)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum Primitive {
+            $($name),*
+        }
+
         pub struct PrimitiveLowerer<'gc> {
-            pub map: HashMap<Value<'gc>, for <'a, 'f>fn(&mut SSABuilder<'gc, 'a, 'f>, &[Atom<'gc>]) -> PrimValue>,
+            pub map: HashMap<Value<'gc>, Primitive>,
         }
 
         $(
@@ -22,13 +28,48 @@ macro_rules! prim {
             pub fn $name<'gc_, 'a, 'f>($ssa: &mut SSABuilder<'gc_, 'a, 'f>, $args: &[Atom<'gc_>]) -> PrimValue $b
         )*
 
+        impl Primitive {
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($sname => Some(Self::$name),)*
+                    _ => None,
+                }
+            }
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Self::$name => $sname),*
+                }
+            }
+
+            pub fn lower<'gc_, 'a, 'f>(
+                self,
+                ssa: &mut SSABuilder<'gc_, 'a, 'f>,
+                args: &[Atom<'gc_>],
+            ) -> PrimValue {
+                match self {
+                    $(Self::$name => $name(ssa, args)),*
+                }
+            }
+        }
+
+        impl std::fmt::Display for Primitive {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.name())
+            }
+        }
+
         impl<'gc> PrimitiveLowerer<'gc> {
             pub fn new(ctx: Context<'gc>) -> Self {
                 let mut map = HashMap::new();
                 $(
-                    map.insert(Symbol::from_str(ctx, $sname).into(), $name as for <'a, 'f>fn(&mut SSABuilder<'gc, 'a, 'f>, &[Atom<'gc>]) -> PrimValue);
+                    map.insert(Symbol::from_str(ctx, $sname).into(), Primitive::$name);
                 )*
                 Self { map }
+            }
+
+            pub fn primitive(&self, value: Value<'gc>) -> Option<Primitive> {
+                self.map.get(&value).copied()
             }
         }
 

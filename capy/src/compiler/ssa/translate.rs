@@ -7,7 +7,7 @@ use crate::{
     cps::{
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
-            LinearVar, Procedure, ProcedureKind, Terminator,
+            Procedure, ProcedureKind, Terminator, ValueId,
         },
         term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     },
@@ -45,7 +45,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         match &self.target {
             ContOrFunc::Cont(c) => c.binding,
             ContOrFunc::Func(f) => f.binding,
-            ContOrFunc::Procedure(p) => p.binding,
+            ContOrFunc::Procedure(p) => p.sources[&p.binding],
         }
     }
 
@@ -69,14 +69,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         match &self.target {
             ContOrFunc::Cont(c) => (c.args().iter().copied().collect(), c.variadic()),
             ContOrFunc::Func(f) => (f.args.iter().copied().collect(), f.variadic),
-            ContOrFunc::Procedure(p) => (p.params.clone(), p.variadic),
+            ContOrFunc::Procedure(p) => (
+                p.params.iter().map(|param| p.sources[param]).collect(),
+                p.variadic.map(|variadic| p.sources[&variadic]),
+            ),
         }
     }
 
     fn target_return_cont(&self) -> Option<LVarRef<'gc>> {
         match &self.target {
             ContOrFunc::Func(f) => Some(f.return_cont),
-            ContOrFunc::Procedure(p) => p.return_cont,
+            ContOrFunc::Procedure(p) => p.return_cont.map(|return_cont| p.sources[&return_cont]),
             ContOrFunc::Cont(_) => None,
         }
     }
@@ -93,7 +96,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         match &self.target {
             ContOrFunc::Cont(c) => Gc::ptr_eq(c.binding, var),
             ContOrFunc::Func(f) => Gc::ptr_eq(f.binding, var),
-            ContOrFunc::Procedure(p) => Gc::ptr_eq(p.binding, var),
+            ContOrFunc::Procedure(p) => Gc::ptr_eq(p.sources[&p.binding], var),
         }
     }
 
@@ -919,11 +922,18 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         is_entry: bool,
     ) {
         self.set_debug_loc(block.source);
-        if !is_entry {
+        if is_entry {
+            self.bind_linear_var(procedure.binding, VarDef::Value(self.rator));
+            for (var, source) in procedure.sources.iter() {
+                if let Some(def) = self.variables.get(source).copied() {
+                    self.bind_linear_var(*var, def);
+                }
+            }
+        } else {
             let clif_block = self.linear_blockmap[&block.id];
             let params = self.builder.block_params(clif_block).to_vec();
-            for (var, value) in block.params.iter().copied().zip(params) {
-                self.bind_linear_var(LinearVar::Source(var), VarDef::Value(value));
+            for (var, value) in block.params.iter().copied().zip(params.iter().copied()) {
+                self.bind_linear_var(var, VarDef::Value(value));
             }
         }
 
@@ -934,13 +944,20 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.linear_terminator(procedure, &block.terminator);
     }
 
-    fn bind_linear_var(&mut self, var: LinearVar<'gc>, def: VarDef) {
+    fn bind_linear_var(&mut self, var: ValueId, def: VarDef) {
         self.linear_variables.insert(var, def);
-        if let LinearVar::Source(source) = var {
+        if let Some(source) = self.linear_source(var) {
             self.variables.insert(source, def);
             if let VarDef::Value(value) = def {
                 self.debug_local(source, value);
             }
+        }
+    }
+
+    fn linear_source(&self, var: ValueId) -> Option<LVarRef<'gc>> {
+        match &self.target {
+            ContOrFunc::Procedure(procedure) => procedure.sources.get(&var).copied(),
+            ContOrFunc::Func(_) | ContOrFunc::Cont(_) => None,
         }
     }
 
@@ -950,17 +967,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.ins().select(val, true_, false_)
     }
 
-    fn linear_var(&mut self, var: LinearVar<'gc>) -> ir::Value {
-        match var {
-            LinearVar::Source(source) => self.var(source),
-            LinearVar::Synthetic(_) => match *self
-                .linear_variables
-                .get(&var)
-                .unwrap_or_else(|| panic!("linear variable {var:?} not found"))
-            {
-                VarDef::Value(value) => value,
-                VarDef::Comparison(value) => self.comparison_to_value(value),
-            },
+    fn linear_var(&mut self, var: ValueId) -> ir::Value {
+        match *self
+            .linear_variables
+            .get(&var)
+            .unwrap_or_else(|| panic!("linear variable {var:?} not found"))
+        {
+            VarDef::Value(value) => value,
+            VarDef::Comparison(value) => self.comparison_to_value(value),
         }
     }
 
@@ -973,26 +987,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     fn linear_atom_for_cond(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
         match atom {
-            LinearAtom::Local(LinearVar::Source(var)) => match self.variables.get(&var).copied() {
+            LinearAtom::Local(var) => match self.linear_variables.get(&var).copied() {
                 Some(VarDef::Comparison(val)) => val,
                 _ => {
-                    let val = self.var(var);
+                    let val = self.linear_var(var);
                     self.builder
                         .ins()
                         .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
                 }
             },
-            LinearAtom::Local(var @ LinearVar::Synthetic(_)) => {
-                match self.linear_variables.get(&var).copied() {
-                    Some(VarDef::Comparison(val)) => val,
-                    _ => {
-                        let val = self.linear_var(var);
-                        self.builder
-                            .ins()
-                            .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
-                    }
-                }
-            }
             LinearAtom::Constant(_) => {
                 let val = self.linear_atom(atom);
                 self.builder
@@ -1005,16 +1008,18 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn linear_atom_as_term_atom(&mut self, atom: LinearAtom<'gc>) -> Atom<'gc> {
         match atom {
             LinearAtom::Constant(value) => Atom::Constant(value),
-            LinearAtom::Local(LinearVar::Source(var)) => Atom::Local(var),
-            LinearAtom::Local(var @ LinearVar::Synthetic(_)) => {
-                let alias = if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
-                    alias
-                } else {
-                    let name = Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into();
-                    let alias = fresh_lvar(self.module_builder.ctx, name);
-                    self.synthetic_aliases.insert(var, alias);
-                    alias
-                };
+            LinearAtom::Local(var) => {
+                let alias = self.linear_source(var).unwrap_or_else(|| {
+                    if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
+                        alias
+                    } else {
+                        let name =
+                            Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into();
+                        let alias = fresh_lvar(self.module_builder.ctx, name);
+                        self.synthetic_aliases.insert(var, alias);
+                        alias
+                    }
+                });
                 let def = *self
                     .linear_variables
                     .get(&var)
@@ -1093,15 +1098,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 source,
             } => {
                 self.set_debug_loc(*source);
-                let Some(lowerer) = self.module_builder.prims.map.get(prim).copied() else {
-                    panic!("undefined primitive: {prim}")
-                };
                 let args = args
                     .iter()
                     .copied()
                     .map(|arg| self.linear_atom_as_term_atom(arg))
                     .collect::<Vec<_>>();
-                let val = match lowerer(self, &args) {
+                let val = match prim.lower(self, &args) {
                     PrimValue::Value(val) => VarDef::Value(val),
                     PrimValue::Comparison(val) => VarDef::Comparison(val),
                 };
@@ -1111,7 +1113,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn get_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
-        if let LinearAtom::Local(LinearVar::Source(var)) = callee {
+        if let LinearAtom::Local(var_id) = callee
+            && let Some(var) = self.linear_source(var_id)
+        {
             if self.is_self_reference(var) {
                 return Callee::SelfRec(self.entry_block);
             }
@@ -1162,7 +1166,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
-        if let LinearAtom::Local(LinearVar::Source(var)) = callee
+        if let LinearAtom::Local(var_id) = callee
+            && let Some(var) = self.linear_source(var_id)
             && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
             && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
         {
@@ -1231,7 +1236,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        if let LinearAtom::Local(LinearVar::Source(k)) = callee
+        if let LinearAtom::Local(k_id) = callee
+            && let Some(k) = self.linear_source(k_id)
             && self
                 .module_builder
                 .reify_info
@@ -1322,7 +1328,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .collect::<Vec<_>>();
 
         if let Some(variadic) = block.variadic {
-            if variadic.is_referenced() {
+            let variadic_is_referenced = procedure
+                .sources
+                .get(&variadic)
+                .is_some_and(|source| source.is_referenced());
+            if variadic_is_referenced {
                 let mut ls = self
                     .builder
                     .ins()
@@ -1440,11 +1450,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             Term::Let(var, expr, next) => {
                 match expr {
                     Expression::PrimCall(prim, args, _) => {
-                        let Some(lowerer) = self.module_builder.prims.map.get(prim).copied() else {
+                        let Some(prim) = self.module_builder.prims.primitive(*prim) else {
                             panic!("undefined primitive: {prim}")
                         };
 
-                        let val = match lowerer(self, args) {
+                        let val = match prim.lower(self, args) {
                             PrimValue::Value(val) => VarDef::Value(val),
                             PrimValue::Comparison(val) => VarDef::Comparison(val),
                         };

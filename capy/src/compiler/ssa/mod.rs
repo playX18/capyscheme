@@ -200,7 +200,7 @@ impl<'gc> ModuleBuilder<'gc> {
                 .unwrap_or_else(|err| {
                     panic!(
                         "error when compiling procedure {}: {}",
-                        procedure.binding.name, err
+                        procedure.sources[&procedure.binding].name, err
                     )
                 });
             func_debug_cx.finalize(
@@ -562,8 +562,8 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub blockmap: HashMap<ContRef<'gc>, ir::Block>,
     pub linear_blockmap: HashMap<BlockId, ir::Block>,
     pub variables: HashMap<LVarRef<'gc>, VarDef>,
-    pub linear_variables: HashMap<crate::cps::linear::LinearVar<'gc>, VarDef>,
-    pub synthetic_aliases: HashMap<crate::cps::linear::LinearVar<'gc>, LVarRef<'gc>>,
+    pub linear_variables: HashMap<crate::cps::linear::ValueId, VarDef>,
+    pub synthetic_aliases: HashMap<crate::cps::linear::ValueId, LVarRef<'gc>>,
 
     pub target: ContOrFunc<'gc>,
     pub exit_block: ir::Block,

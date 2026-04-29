@@ -1,7 +1,7 @@
 use crate::{
     cps::linear::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
-        LinearVar, Procedure, ProcedureKind, Terminator,
+        Procedure, ProcedureKind, Terminator, ValueId,
     },
     expander::core::LVarRef,
     runtime::value::{Symbol, Value},
@@ -33,26 +33,36 @@ fn render_procedure<'gc>(out: &mut String, procedure: &Procedure<'gc>, indent: u
         render_code_id(&procedure.code)
     )
     .unwrap();
-    writeln!(out, "{pad}  (binding {})", render_lvar(procedure.binding)).unwrap();
+    writeln!(
+        out,
+        "{pad}  (binding {})",
+        render_value_id(procedure.binding)
+    )
+    .unwrap();
     writeln!(out, "{pad}  (name {})", render_value(procedure.name)).unwrap();
     writeln!(out, "{pad}  (entry block{})", procedure.entry.0).unwrap();
     writeln!(
         out,
         "{pad}  (return-cont {})",
-        render_optional_lvar(procedure.return_cont)
+        render_optional_value_id(procedure.return_cont)
     )
     .unwrap();
-    writeln!(out, "{pad}  (params{})", render_lvars(&procedure.params)).unwrap();
+    writeln!(
+        out,
+        "{pad}  (params{})",
+        render_value_ids(&procedure.params)
+    )
+    .unwrap();
     writeln!(
         out,
         "{pad}  (variadic {})",
-        render_optional_lvar(procedure.variadic)
+        render_optional_value_id(procedure.variadic)
     )
     .unwrap();
     writeln!(
         out,
         "{pad}  (free-vars{})",
-        render_lvars(&procedure.free_vars)
+        render_value_ids(&procedure.free_vars)
     )
     .unwrap();
     for block in &procedure.blocks {
@@ -67,8 +77,8 @@ fn render_block<'gc>(out: &mut String, block: &Block<'gc>, indent: usize) {
         out,
         "{pad}(block {} (params{}) (variadic {})",
         render_block_id(block.id),
-        render_lvars(&block.params),
-        render_optional_lvar(block.variadic)
+        render_value_ids(&block.params),
+        render_optional_value_id(block.variadic)
     )
     .unwrap();
     for instruction in &block.instructions {
@@ -87,7 +97,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             free_count,
         } => format!(
             "(make-closure {} {} {} {})",
-            render_linear_var(*dst),
+            render_value_id(*dst),
             render_code_id(code),
             render_closure_kind(*kind),
             free_count
@@ -98,7 +108,7 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             index,
         } => format!(
             "(closure-ref {} {} {})",
-            render_linear_var(*dst),
+            render_value_id(*dst),
             render_linear_atom(*closure),
             index
         ),
@@ -116,8 +126,8 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             dst, prim, args, ..
         } => format!(
             "(prim-call {} {}{})",
-            render_linear_var(*dst),
-            render_value(*prim),
+            render_value_id(*dst),
+            prim,
             render_linear_atoms(args)
         ),
     }
@@ -181,7 +191,7 @@ fn render_branch_target<'gc>(target: &BranchTarget<'gc>) -> String {
 fn render_linear_atom<'gc>(atom: LinearAtom<'gc>) -> String {
     match atom {
         LinearAtom::Constant(value) => render_value(value),
-        LinearAtom::Local(var) => render_linear_var(var),
+        LinearAtom::Local(var) => render_value_id(var),
     }
 }
 
@@ -192,25 +202,22 @@ fn render_linear_atoms<'gc>(atoms: &[LinearAtom<'gc>]) -> String {
         .collect()
 }
 
-fn render_linear_var<'gc>(var: LinearVar<'gc>) -> String {
-    match var {
-        LinearVar::Source(var) => render_lvar(var),
-        LinearVar::Synthetic(id) => format!("%s{id}"),
-    }
+fn render_value_id(id: ValueId) -> String {
+    format!("%v{}", id.0)
 }
 
 fn render_lvar<'gc>(var: LVarRef<'gc>) -> String {
     format!("%{}", render_value(var.name))
 }
 
-fn render_lvars<'gc>(vars: &[LVarRef<'gc>]) -> String {
+fn render_value_ids(vars: &[ValueId]) -> String {
     vars.iter()
-        .map(|var| format!(" {}", render_lvar(*var)))
+        .map(|var| format!(" {}", render_value_id(*var)))
         .collect()
 }
 
-fn render_optional_lvar<'gc>(var: Option<LVarRef<'gc>>) -> String {
-    var.map(render_lvar).unwrap_or_else(|| "#f".to_string())
+fn render_optional_value_id(var: Option<ValueId>) -> String {
+    var.map(render_value_id).unwrap_or_else(|| "#f".to_string())
 }
 
 fn render_code_id<'gc>(code: &CodeId<'gc>) -> String {
@@ -258,7 +265,7 @@ mod tests {
         cps::{
             linear::{
                 Block, BlockId, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
-                LinearVar, Procedure, ProcedureKind, Terminator,
+                Procedure, ProcedureKind, Terminator, ValueId,
             },
             term::{Func, Term},
         },
@@ -290,7 +297,7 @@ mod tests {
             let binding = lvar(ctx, "entry");
             let retk = lvar(ctx, "retk");
             let free = lvar(ctx, "free");
-            let closure = LinearVar::Synthetic(1);
+            let closure = ValueId(1);
             let body = Gc::new(
                 *ctx,
                 Term::Continue(retk, Array::from_slice(*ctx, &[]), Value::new(false)),
@@ -314,14 +321,21 @@ mod tests {
                 procedures: vec![Procedure {
                     code: CodeId::Function(entry),
                     kind: ProcedureKind::Function,
-                    binding,
+                    binding: ValueId(0),
                     name: Symbol::from_str(ctx, "entry").into(),
                     source: Value::new(false),
                     meta: Value::new(false),
-                    return_cont: Some(retk),
+                    return_cont: Some(ValueId(2)),
                     params: vec![],
                     variadic: None,
-                    free_vars: vec![free],
+                    free_vars: vec![ValueId(3)],
+                    sources: [
+                        (ValueId(0), binding),
+                        (ValueId(2), retk),
+                        (ValueId(3), free),
+                    ]
+                    .into_iter()
+                    .collect(),
                     entry: BlockId(0),
                     blocks: vec![Block {
                         id: BlockId(0),
@@ -337,7 +351,7 @@ mod tests {
                             Instruction::ClosureSet {
                                 closure: LinearAtom::Local(closure),
                                 index: 0,
-                                value: LinearAtom::Local(LinearVar::Source(free)),
+                                value: LinearAtom::Local(ValueId(3)),
                             },
                         ],
                         terminator: Terminator::Jump {
