@@ -3,11 +3,11 @@ use std::{io::Write, mem::offset_of};
 use crate::rsgc::{Gc, sync::thread::Thread};
 
 use crate::{
-    compiler::ssa::{ContOrFunc, SSABuilder, VarDef, primitive::PrimValue},
+    compiler::ssa::{ContOrFunc, LinearRestSource, SSABuilder, VarDef, primitive::PrimValue},
     cps::{
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
-            Procedure, ProcedureKind, Terminator, ValueId,
+            Procedure, ProcedureKind, RestPredicate, Terminator, ValueId,
         },
         term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     },
@@ -73,6 +73,20 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 p.params.iter().map(|param| p.sources[param]).collect(),
                 p.variadic.map(|variadic| p.sources[&variadic]),
             ),
+        }
+    }
+
+    fn target_linear_variadic(&self) -> Option<ValueId> {
+        match &self.target {
+            ContOrFunc::Procedure(p) => p.variadic,
+            ContOrFunc::Cont(_) | ContOrFunc::Func(_) => None,
+        }
+    }
+
+    fn should_materialize_entry_rest(&self, rest: LVarRef<'gc>) -> bool {
+        match &self.target {
+            ContOrFunc::Procedure(_) => false,
+            ContOrFunc::Cont(_) | ContOrFunc::Func(_) => rest.is_referenced(),
         }
     }
 
@@ -289,6 +303,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.variables.insert(return_cont, VarDef::Value(retk));
         }
 
+        if let Some(rest) = self.target_linear_variadic() {
+            self.linear_rest_sources.insert(
+                rest,
+                LinearRestSource {
+                    rands,
+                    num_rands,
+                    fixed_count: params.len(),
+                },
+            );
+        }
+
         if params.len() != 0 {
             if let Some(rest) = rest {
                 let not_enough = self.builder.ins().icmp_imm(
@@ -350,7 +375,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     );
                     self.builder.switch_to_block(cons_block);
                     {
-                        if rest.is_referenced() {
+                        if self.should_materialize_entry_rest(rest) {
                             let from = self.builder.ins().iconst(types::I64, params.len() as i64);
                             let cons = self
                                 .builder
@@ -429,7 +454,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     .brif(need_cons, cons_block, &[], succ, &[BlockArg::Value(null)]);
                 self.builder.switch_to_block(cons_block);
                 {
-                    if rest.is_referenced() {
+                    if self.should_materialize_entry_rest(rest) {
                         let from = self.builder.ins().iconst(types::I64, 0);
                         let cons = self
                             .builder
@@ -978,6 +1003,26 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
+    fn linear_rest_source(&self, rest: ValueId) -> LinearRestSource {
+        *self
+            .linear_rest_sources
+            .get(&rest)
+            .unwrap_or_else(|| panic!("linear rest source {rest:?} not found"))
+    }
+
+    fn linear_rest_suffix_len(&mut self, rest: ValueId, skip: usize) -> ir::Value {
+        let source = self.linear_rest_source(rest);
+        self.builder
+            .ins()
+            .iadd_imm(source.num_rands, -((source.fixed_count + skip) as i64))
+    }
+
+    fn linear_fixnum_from_usize_value(&mut self, value: ir::Value) -> ir::Value {
+        let value = self.ireduce(types::I32, value);
+        let value = self.zextend(types::I64, value);
+        self.builder.ins().bor_imm(value, Value::NUMBER_TAG as i64)
+    }
+
     fn linear_atom(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
         match atom {
             LinearAtom::Constant(value) => self.atom(Atom::Constant(value)),
@@ -1106,6 +1151,76 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let val = match prim.lower(self, &args) {
                     PrimValue::Value(val) => VarDef::Value(val),
                     PrimValue::Comparison(val) => VarDef::Comparison(val),
+                };
+                self.bind_linear_var(*dst, val);
+            }
+            Instruction::RestToList { dst, rest, source } => {
+                self.set_debug_loc(*source);
+                let rest_source = self.linear_rest_source(*rest);
+                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                let from = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, rest_source.fixed_count as i64);
+                let call = self.builder.ins().call(
+                    self.thunks.cons_rest,
+                    &[ctx, rest_source.rands, rest_source.num_rands, from],
+                );
+                let list = self.builder.inst_results(call)[0];
+                self.bind_linear_var(*dst, VarDef::Value(list));
+            }
+            Instruction::RestRef {
+                dst,
+                rest,
+                index,
+                source,
+            } => {
+                self.set_debug_loc(*source);
+                let rest_source = self.linear_rest_source(*rest);
+                let value = self.builder.ins().load(
+                    types::I64,
+                    ir::MemFlags::trusted().with_can_move(),
+                    rest_source.rands,
+                    ((rest_source.fixed_count + *index) * 8) as i32,
+                );
+                self.bind_linear_var(*dst, VarDef::Value(value));
+            }
+            Instruction::RestLength {
+                dst,
+                rest,
+                skip,
+                source,
+            } => {
+                self.set_debug_loc(*source);
+                let len = self.linear_rest_suffix_len(*rest, *skip);
+                let len = self.linear_fixnum_from_usize_value(len);
+                self.bind_linear_var(*dst, VarDef::Value(len));
+            }
+            Instruction::RestPredicate {
+                dst,
+                rest,
+                predicate,
+                skip,
+                source,
+            } => {
+                self.set_debug_loc(*source);
+                let rest_source = self.linear_rest_source(*rest);
+                let threshold = (rest_source.fixed_count + *skip) as i64;
+                let val = match predicate {
+                    RestPredicate::Null => VarDef::Comparison(self.builder.ins().icmp_imm(
+                        IntCC::Equal,
+                        rest_source.num_rands,
+                        threshold,
+                    )),
+                    RestPredicate::Pair => VarDef::Comparison(self.builder.ins().icmp_imm(
+                        IntCC::UnsignedGreaterThan,
+                        rest_source.num_rands,
+                        threshold,
+                    )),
+                    RestPredicate::List => {
+                        let true_ = self.builder.ins().iconst(types::I64, Value::VALUE_TRUE);
+                        VarDef::Value(true_)
+                    }
                 };
                 self.bind_linear_var(*dst, val);
             }

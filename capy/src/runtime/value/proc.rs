@@ -676,7 +676,7 @@ impl<'gc> CodeBlock<'gc> {
         ctx: Context<'gc>,
         entrypoint: Address,
         arity: CodeArity,
-        is_cont: bool,
+        _is_cont: bool,
         metadata: Value<'gc>,
         code: &[u8],
     ) -> Gc<'gc, Self> {

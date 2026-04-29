@@ -1,7 +1,7 @@
 use crate::{
     cps::linear::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
-        Procedure, ProcedureKind, Terminator, ValueId,
+        Procedure, ProcedureKind, RestPredicate, Terminator, ValueId,
     },
     expander::core::LVarRef,
     runtime::value::{Symbol, Value},
@@ -130,6 +130,48 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             prim,
             render_linear_atoms(args)
         ),
+        Instruction::RestToList { dst, rest, .. } => format!(
+            "(rest->list {} {})",
+            render_value_id(*dst),
+            render_value_id(*rest)
+        ),
+        Instruction::RestRef {
+            dst, rest, index, ..
+        } => format!(
+            "(rest-ref {} {} {})",
+            render_value_id(*dst),
+            render_value_id(*rest),
+            index
+        ),
+        Instruction::RestLength {
+            dst, rest, skip, ..
+        } => format!(
+            "(rest-length {} {} {})",
+            render_value_id(*dst),
+            render_value_id(*rest),
+            skip
+        ),
+        Instruction::RestPredicate {
+            dst,
+            rest,
+            predicate,
+            skip,
+            ..
+        } => format!(
+            "(rest-{} {} {} {})",
+            render_rest_predicate(*predicate),
+            render_value_id(*dst),
+            render_value_id(*rest),
+            skip
+        ),
+    }
+}
+
+fn render_rest_predicate(predicate: RestPredicate) -> &'static str {
+    match predicate {
+        RestPredicate::Null => "null?",
+        RestPredicate::Pair => "pair?",
+        RestPredicate::List => "list?",
     }
 }
 
