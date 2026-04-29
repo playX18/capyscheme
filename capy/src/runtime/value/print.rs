@@ -108,6 +108,8 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
     pub fn patom(&mut self, x: Value<'gc>, slashify: bool, level: usize) -> std::fmt::Result {
         if x.is_null() {
             write!(self.fmt, "()")
+        } else if x.is_char() {
+            write!(self.fmt, "#\\{}", x.char())
         } else if x == Value::new(false) {
             write!(self.fmt, "#f")
         } else if x == Value::new(true) {

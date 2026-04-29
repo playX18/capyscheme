@@ -5,7 +5,7 @@ use crate::{
         term::{Atom, BranchHint, ContRef, Expression, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
-    runtime::value::Value,
+    runtime::value::{Symbol, Value},
 };
 use std::collections::{HashMap, HashSet};
 
@@ -142,6 +142,28 @@ pub enum BranchTarget<'gc> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchCase<'gc> {
+    pub value: SwitchCaseValue<'gc>,
+    pub target: BranchTarget<'gc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SwitchCaseValue<'gc> {
+    Integer(i32),
+    Symbol { hash: u64, value: Value<'gc> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchKind {
+    Eq,
+    Fixnum,
+    Numeric,
+    Char,
+    CharEq,
+    SymbolEq,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Terminator<'gc> {
     Call {
         callee: LinearAtom<'gc>,
@@ -164,17 +186,27 @@ pub enum Terminator<'gc> {
         alternative: BranchTarget<'gc>,
         hints: [BranchHint; 2],
     },
+    Switch {
+        kind: SwitchKind,
+        scrutinee: LinearAtom<'gc>,
+        cases: Vec<SwitchCase<'gc>>,
+        default: BranchTarget<'gc>,
+    },
 }
 
 pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
     let mut procedures = Vec::new();
 
     for func in reify.functions.iter() {
-        procedures.push(lower_rest_arguments(linearize_function(*func)));
+        procedures.push(lower_rest_arguments(infer_switches(linearize_function(
+            *func,
+        ))));
     }
 
     for cont in reify.continuations.iter().filter(|cont| cont.reified.get()) {
-        procedures.push(lower_rest_arguments(linearize_continuation(*cont)));
+        procedures.push(lower_rest_arguments(infer_switches(
+            linearize_continuation(*cont),
+        )));
     }
 
     LinearProgram {
@@ -517,6 +549,533 @@ fn rewrite_rest_uses<'gc>(
         }
         block.instructions = lowered;
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitchCandidate<'gc> {
+    kind: SwitchKind,
+    scrutinee: LinearAtom<'gc>,
+    cases: Vec<SwitchCase<'gc>>,
+    default: BranchTarget<'gc>,
+    chain_blocks: Vec<BlockId>,
+    instruction_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwitchNode<'gc> {
+    kind: SwitchKind,
+    scrutinee: LinearAtom<'gc>,
+    value: SwitchCaseValue<'gc>,
+    target: BranchTarget<'gc>,
+    next: BranchTarget<'gc>,
+    instruction_count: usize,
+}
+
+fn infer_switches<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+    loop {
+        let predecessors = local_predecessor_counts(&procedure);
+        let Some(candidate) = procedure
+            .blocks
+            .iter()
+            .find_map(|block| infer_switch_candidate(&procedure, block.id, &predecessors))
+        else {
+            break;
+        };
+        apply_switch_candidate(&mut procedure, candidate);
+    }
+
+    procedure
+}
+
+fn local_predecessor_counts<'gc>(procedure: &Procedure<'gc>) -> HashMap<BlockId, usize> {
+    let mut predecessors = HashMap::new();
+    for block in &procedure.blocks {
+        for successor in block.terminator.successors() {
+            *predecessors.entry(successor).or_insert(0) += 1;
+        }
+    }
+    predecessors
+}
+
+fn infer_switch_candidate<'gc>(
+    procedure: &Procedure<'gc>,
+    start: BlockId,
+    predecessors: &HashMap<BlockId, usize>,
+) -> Option<SwitchCandidate<'gc>> {
+    let blocks = procedure
+        .blocks
+        .iter()
+        .map(|block| (block.id, block))
+        .collect::<HashMap<_, _>>();
+    let first = switch_node(blocks[&start])?;
+    let kind = first.kind;
+    let scrutinee = first.scrutinee;
+    let mut cases = vec![SwitchCase {
+        value: first.value,
+        target: first.target,
+    }];
+    let mut chain_blocks = vec![start];
+    let instruction_count = first.instruction_count;
+    let mut seen_values = HashSet::from([first.value]);
+    let mut next = first.next;
+
+    loop {
+        let Some((block, skipped_blocks)) = switch_chain_next_block(&blocks, &predecessors, &next)
+        else {
+            break;
+        };
+        let Some(node) = blocks.get(&block).and_then(|block| switch_node(block)) else {
+            break;
+        };
+        if node.kind != kind || node.scrutinee != scrutinee || !seen_values.insert(node.value) {
+            break;
+        }
+        chain_blocks.extend(skipped_blocks);
+        chain_blocks.push(block);
+        cases.push(SwitchCase {
+            value: node.value,
+            target: node.target,
+        });
+        next = node.next;
+    }
+
+    if cases.len() < 2 {
+        return None;
+    }
+
+    let removed = chain_blocks.iter().copied().skip(1).collect::<HashSet<_>>();
+    let removed_defs = switch_removed_defs(
+        &blocks,
+        start,
+        &chain_blocks,
+        instruction_count,
+    );
+    if cases
+        .iter()
+        .any(|case| branch_target_mentions_removed(&case.target, &removed))
+        || branch_target_mentions_removed(&next, &removed)
+        || cases
+            .iter()
+            .any(|case| branch_target_mentions_defs(&case.target, &removed_defs))
+        || branch_target_mentions_defs(&next, &removed_defs)
+        || surviving_blocks_mention_defs(&procedure.blocks, start, &removed, &removed_defs, instruction_count)
+    {
+        return None;
+    }
+
+    Some(SwitchCandidate {
+        kind,
+        scrutinee,
+        cases,
+        default: next,
+        chain_blocks,
+        instruction_count,
+    })
+}
+
+fn switch_chain_next_block<'gc>(
+    blocks: &HashMap<BlockId, &Block<'gc>>,
+    predecessors: &HashMap<BlockId, usize>,
+    next: &BranchTarget<'gc>,
+) -> Option<(BlockId, Vec<BlockId>)> {
+    let BranchTarget::Local { block, args } = next else {
+        return None;
+    };
+    if !args.is_empty() || predecessors.get(block).copied().unwrap_or(0) != 1 {
+        return None;
+    }
+
+    let mut block = *block;
+    let mut skipped_blocks = Vec::new();
+    loop {
+        let current = blocks[&block];
+        if switch_node(current).is_some() {
+            return Some((block, skipped_blocks));
+        }
+
+        let Terminator::Jump {
+            target,
+            args: jump_args,
+        } = &current.terminator
+        else {
+            return Some((block, skipped_blocks));
+        };
+        if !current.params.is_empty()
+            || current.variadic.is_some()
+            || !current.instructions.is_empty()
+            || !jump_args.is_empty()
+            || predecessors.get(target).copied().unwrap_or(0) != 1
+        {
+            return Some((block, skipped_blocks));
+        }
+
+        skipped_blocks.push(block);
+        block = *target;
+    }
+}
+
+fn switch_node<'gc>(block: &Block<'gc>) -> Option<SwitchNode<'gc>> {
+    let Terminator::Branch {
+        test: LinearAtom::Local(test),
+        consequent,
+        alternative,
+        hints: _,
+    } = &block.terminator
+    else {
+        return None;
+    };
+    let test = *test;
+    switch_fixnum_node(block, test, consequent, alternative)
+        .or_else(|| switch_eq_char_node(block, test, consequent, alternative))
+        .or_else(|| switch_eq_symbol_node(block, test, consequent, alternative))
+        .or_else(|| switch_char_node(block, test, consequent, alternative))
+}
+
+fn switch_fixnum_node<'gc>(
+    block: &Block<'gc>,
+    test: ValueId,
+    consequent: &BranchTarget<'gc>,
+    alternative: &BranchTarget<'gc>,
+) -> Option<SwitchNode<'gc>> {
+    if block.instructions.len() != 1 {
+        return None;
+    }
+    let Instruction::PrimCall { dst, prim, args, .. } = &block.instructions[0] else {
+        return None;
+    };
+    let kind = switch_kind_for_primitive(*prim)?;
+    if *dst != test || args.len() != 2 {
+        return None;
+    }
+    let (scrutinee, value) = fixnum_switch_test(args[0], args[1])?;
+    Some(SwitchNode {
+        kind,
+        scrutinee,
+        value: SwitchCaseValue::Integer(value),
+        target: consequent.clone(),
+        next: alternative.clone(),
+        instruction_count: 1,
+    })
+}
+
+fn switch_kind_for_primitive(prim: Primitive) -> Option<SwitchKind> {
+    match prim {
+        Primitive::is_eq | Primitive::is_eqv | Primitive::is_equal => Some(SwitchKind::Eq),
+        Primitive::fx_eq => Some(SwitchKind::Fixnum),
+        Primitive::numeric_equal => Some(SwitchKind::Numeric),
+        _ => None,
+    }
+}
+
+fn fixnum_switch_test<'gc>(
+    lhs: LinearAtom<'gc>,
+    rhs: LinearAtom<'gc>,
+) -> Option<(LinearAtom<'gc>, i32)> {
+    match (lhs, rhs) {
+        (scrutinee, LinearAtom::Constant(value)) if value.is_int32() => {
+            Some((scrutinee, value.as_int32()))
+        }
+        (LinearAtom::Constant(value), scrutinee) if value.is_int32() => {
+            Some((scrutinee, value.as_int32()))
+        }
+        _ => None,
+    }
+}
+
+fn switch_eq_char_node<'gc>(
+    block: &Block<'gc>,
+    test: ValueId,
+    consequent: &BranchTarget<'gc>,
+    alternative: &BranchTarget<'gc>,
+) -> Option<SwitchNode<'gc>> {
+    if block.instructions.len() != 1 {
+        return None;
+    }
+    let Instruction::PrimCall { dst, prim, args, .. } = &block.instructions[0] else {
+        return None;
+    };
+    if *dst != test || !is_eq_like_primitive(*prim) || args.len() != 2 {
+        return None;
+    }
+    let (scrutinee, value) = char_switch_test(args[0], args[1])?;
+    Some(SwitchNode {
+        kind: SwitchKind::CharEq,
+        scrutinee,
+        value: SwitchCaseValue::Integer(value),
+        target: consequent.clone(),
+        next: alternative.clone(),
+        instruction_count: 1,
+    })
+}
+
+fn char_switch_test<'gc>(
+    lhs: LinearAtom<'gc>,
+    rhs: LinearAtom<'gc>,
+) -> Option<(LinearAtom<'gc>, i32)> {
+    match (lhs, rhs) {
+        (scrutinee, LinearAtom::Constant(value)) if value.is_char() => {
+            Some((scrutinee, value.char() as i32))
+        }
+        (LinearAtom::Constant(value), scrutinee) if value.is_char() => {
+            Some((scrutinee, value.char() as i32))
+        }
+        _ => None,
+    }
+}
+
+fn switch_eq_symbol_node<'gc>(
+    block: &Block<'gc>,
+    test: ValueId,
+    consequent: &BranchTarget<'gc>,
+    alternative: &BranchTarget<'gc>,
+) -> Option<SwitchNode<'gc>> {
+    if block.instructions.len() != 1 {
+        return None;
+    }
+    let Instruction::PrimCall { dst, prim, args, .. } = &block.instructions[0] else {
+        return None;
+    };
+    if *dst != test || !is_eq_like_primitive(*prim) || args.len() != 2 {
+        return None;
+    }
+    let (scrutinee, value) = symbol_switch_test(args[0], args[1])?;
+    Some(SwitchNode {
+        kind: SwitchKind::SymbolEq,
+        scrutinee,
+        value,
+        target: consequent.clone(),
+        next: alternative.clone(),
+        instruction_count: 1,
+    })
+}
+
+fn is_eq_like_primitive(prim: Primitive) -> bool {
+    matches!(
+        prim,
+        Primitive::is_eq | Primitive::is_eqv | Primitive::is_equal
+    )
+}
+
+fn symbol_switch_test<'gc>(
+    lhs: LinearAtom<'gc>,
+    rhs: LinearAtom<'gc>,
+) -> Option<(LinearAtom<'gc>, SwitchCaseValue<'gc>)> {
+    match (lhs, rhs) {
+        (scrutinee, LinearAtom::Constant(value)) if value.is::<Symbol>() => {
+            let symbol = value.downcast::<Symbol<'_>>();
+            Some((
+                scrutinee,
+                SwitchCaseValue::Symbol {
+                    hash: symbol.hash.get(),
+                    value,
+                },
+            ))
+        }
+        (LinearAtom::Constant(value), scrutinee) if value.is::<Symbol>() => {
+            let symbol = value.downcast::<Symbol<'_>>();
+            Some((
+                scrutinee,
+                SwitchCaseValue::Symbol {
+                    hash: symbol.hash.get(),
+                    value,
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn switch_char_node<'gc>(
+    block: &Block<'gc>,
+    test: ValueId,
+    consequent: &BranchTarget<'gc>,
+    alternative: &BranchTarget<'gc>,
+) -> Option<SwitchNode<'gc>> {
+    if block.instructions.len() != 3 {
+        return None;
+    }
+
+    let Instruction::PrimCall {
+        dst: scrutinee_int,
+        prim: scrutinee_prim,
+        args: scrutinee_args,
+        ..
+    } = &block.instructions[0]
+    else {
+        return None;
+    };
+    let Instruction::PrimCall {
+        dst: case_int,
+        prim: case_prim,
+        args: case_args,
+        ..
+    } = &block.instructions[1]
+    else {
+        return None;
+    };
+    let Instruction::PrimCall {
+        dst: cmp,
+        prim: cmp_prim,
+        args: cmp_args,
+        ..
+    } = &block.instructions[2]
+    else {
+        return None;
+    };
+
+    if *scrutinee_prim != Primitive::char_to_integer
+        || *case_prim != Primitive::char_to_integer
+        || *cmp_prim != Primitive::numeric_equal
+        || scrutinee_args.len() != 1
+        || case_args.len() != 1
+        || *cmp != test
+        || cmp_args.len() != 2
+    {
+        return None;
+    }
+
+    let LinearAtom::Constant(case_char) = case_args[0] else {
+        return None;
+    };
+    if !case_char.is_char() {
+        return None;
+    }
+
+    let compares_ints = matches!(
+        (cmp_args[0], cmp_args[1]),
+        (LinearAtom::Local(lhs), LinearAtom::Local(rhs))
+            if lhs == *scrutinee_int && rhs == *case_int
+    ) || matches!(
+        (cmp_args[0], cmp_args[1]),
+        (LinearAtom::Local(lhs), LinearAtom::Local(rhs))
+            if lhs == *case_int && rhs == *scrutinee_int
+    );
+    if !compares_ints {
+        return None;
+    }
+
+    Some(SwitchNode {
+        kind: SwitchKind::Char,
+        scrutinee: scrutinee_args[0],
+        value: SwitchCaseValue::Integer(case_char.char() as i32),
+        target: consequent.clone(),
+        next: alternative.clone(),
+        instruction_count: 3,
+    })
+}
+
+fn branch_target_mentions_removed<'gc>(
+    target: &BranchTarget<'gc>,
+    removed: &HashSet<BlockId>,
+) -> bool {
+    matches!(target, BranchTarget::Local { block, .. } if removed.contains(block))
+}
+
+fn switch_removed_defs<'gc>(
+    blocks: &HashMap<BlockId, &Block<'gc>>,
+    start: BlockId,
+    chain_blocks: &[BlockId],
+    instruction_count: usize,
+) -> HashSet<ValueId> {
+    let mut defs = HashSet::new();
+
+    for block in chain_blocks.iter().copied().skip(1) {
+        if let Some(block) = blocks.get(&block) {
+            defs.extend(block.params.iter().copied());
+            defs.extend(block.instructions.iter().filter_map(Instruction::def));
+        }
+    }
+
+    if let Some(block) = blocks.get(&start) {
+        let consumed_start = block.instructions.len().saturating_sub(instruction_count);
+        defs.extend(
+            block.instructions[consumed_start..]
+                .iter()
+                .filter_map(Instruction::def),
+        );
+    }
+
+    defs
+}
+
+fn branch_target_mentions_defs<'gc>(
+    target: &BranchTarget<'gc>,
+    defs: &HashSet<ValueId>,
+) -> bool {
+    target
+        .uses()
+        .iter()
+        .any(|atom| matches!(atom, LinearAtom::Local(value) if defs.contains(value)))
+}
+
+fn surviving_blocks_mention_defs<'gc>(
+    blocks: &[Block<'gc>],
+    start: BlockId,
+    removed: &HashSet<BlockId>,
+    defs: &HashSet<ValueId>,
+    instruction_count: usize,
+) -> bool {
+    for block in blocks {
+        if removed.contains(&block.id) {
+            continue;
+        }
+
+        if block.id == start {
+            let keep = block.instructions.len().saturating_sub(instruction_count);
+            if block.instructions[..keep]
+                .iter()
+                .flat_map(Instruction::uses)
+                .any(|atom| matches!(atom, LinearAtom::Local(value) if defs.contains(&value)))
+            {
+                return true;
+            }
+            continue;
+        }
+
+        if block
+            .instructions
+            .iter()
+            .flat_map(Instruction::uses)
+            .chain(block.terminator.uses())
+            .any(|atom| matches!(atom, LinearAtom::Local(value) if defs.contains(&value)))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn apply_switch_candidate<'gc>(procedure: &mut Procedure<'gc>, candidate: SwitchCandidate<'gc>) {
+    let removed = candidate
+        .chain_blocks
+        .iter()
+        .copied()
+        .skip(1)
+        .collect::<HashSet<_>>();
+    let start = candidate.chain_blocks[0];
+
+    for block in &mut procedure.blocks {
+        if block.id == start {
+            let keep = block
+                .instructions
+                .len()
+                .checked_sub(candidate.instruction_count)
+                .expect("switch candidate consumes no more than the block instructions");
+            block.instructions.truncate(keep);
+            block.terminator = Terminator::Switch {
+                kind: candidate.kind,
+                scrutinee: candidate.scrutinee,
+                cases: candidate.cases,
+                default: candidate.default,
+            };
+            break;
+        }
+    }
+
+    procedure
+        .blocks
+        .retain(|block| !removed.contains(&block.id));
 }
 
 fn loop_blocks<'gc>(procedure: &Procedure<'gc>) -> HashSet<BlockId> {
@@ -906,6 +1465,26 @@ impl<'gc> Terminator<'gc> {
                 uses.extend(alternative.uses());
                 uses
             }
+            Self::Switch {
+                kind: _,
+                scrutinee,
+                cases,
+                default,
+            } => {
+                let mut uses = Vec::with_capacity(
+                    1 + default.uses().len()
+                        + cases
+                            .iter()
+                            .map(|case| case.target.uses().len())
+                            .sum::<usize>(),
+                );
+                uses.push(*scrutinee);
+                for case in cases {
+                    uses.extend(case.target.uses());
+                }
+                uses.extend(default.uses());
+                uses
+            }
         }
     }
 
@@ -920,6 +1499,11 @@ impl<'gc> Terminator<'gc> {
             } => [consequent.local_successor(), alternative.local_successor()]
                 .into_iter()
                 .flatten()
+                .collect(),
+            Self::Switch { cases, default, .. } => cases
+                .iter()
+                .filter_map(|case| case.target.local_successor())
+                .chain(default.local_successor())
                 .collect(),
         }
     }
@@ -1542,6 +2126,1466 @@ mod tests {
                     rest: ValueId(2),
                     source,
                 }) if *source == Value::new(false)
+            ));
+        });
+    }
+
+    #[test]
+    fn fixnum_equality_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(
+                ctx,
+                "k1",
+                k1,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(
+                        retk,
+                        atoms(ctx, &[Atom::Constant(Value::new(10i32))]),
+                        Value::new(false),
+                    ),
+                ),
+                &[],
+                false,
+            );
+            let cont2 = mk_cont(
+                ctx,
+                "k2",
+                k2,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(
+                        retk,
+                        atoms(ctx, &[Atom::Constant(Value::new(20i32))]),
+                        Value::new(false),
+                    ),
+                ),
+                &[],
+                false,
+            );
+            let cont_else = mk_cont(
+                ctx,
+                "kelse",
+                kelse,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(
+                        retk,
+                        atoms(ctx, &[Atom::Constant(Value::new(30i32))]),
+                        Value::new(false),
+                    ),
+                ),
+                &[],
+                false,
+            );
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "eq?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(2i32))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eq?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(1i32))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![SwitchCaseValue::Integer(1), SwitchCaseValue::Integer(2)]
+            ));
+        });
+    }
+
+    #[test]
+    fn char_equality_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let arg_int1 = lvar(ctx, "arg-int1");
+            let char_int1 = lvar(ctx, "char-int1");
+            let cmp1 = lvar(ctx, "cmp1");
+            let arg_int2 = lvar(ctx, "arg-int2");
+            let char_int2 = lvar(ctx, "char-int2");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    arg_int2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "char->integer").into(),
+                        atoms(ctx, &[Atom::Local(arg)]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            char_int2,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "char->integer").into(),
+                                atoms(ctx, &[Atom::Constant(Value::from_char('b'))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    cmp2,
+                                    Expression::PrimCall(
+                                        Symbol::from_str(ctx, "=").into(),
+                                        atoms(ctx, &[Atom::Local(arg_int2), Atom::Local(char_int2)]),
+                                        Value::new(false),
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::If {
+                                            test: Atom::Local(cmp2),
+                                            consequent: k2,
+                                            consequent_args: None,
+                                            alternative: kelse,
+                                            alternative_args: None,
+                                            hints: [BranchHint::Normal; 2],
+                                        },
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            arg_int1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "char->integer").into(),
+                                atoms(ctx, &[Atom::Local(arg)]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    char_int1,
+                                    Expression::PrimCall(
+                                        Symbol::from_str(ctx, "char->integer").into(),
+                                        atoms(ctx, &[Atom::Constant(Value::from_char('a'))]),
+                                        Value::new(false),
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::Let(
+                                            cmp1,
+                                            Expression::PrimCall(
+                                                Symbol::from_str(ctx, "=").into(),
+                                                atoms(
+                                                    ctx,
+                                                    &[
+                                                        Atom::Local(arg_int1),
+                                                        Atom::Local(char_int1),
+                                                    ],
+                                                ),
+                                                Value::new(false),
+                                            ),
+                                            Gc::new(
+                                                *ctx,
+                                                Term::If {
+                                                    test: Atom::Local(cmp1),
+                                                    consequent: k1,
+                                                    consequent_args: None,
+                                                    alternative: kcheck2,
+                                                    alternative_args: None,
+                                                    hints: [BranchHint::Normal; 2],
+                                                },
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::Char,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![
+                        SwitchCaseValue::Integer('a' as i32),
+                        SwitchCaseValue::Integer('b' as i32)
+                    ]
+            ));
+            assert!(entry_block.instructions.is_empty());
+        });
+    }
+
+    #[test]
+    fn switch_inference_rejects_targets_using_removed_defs() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let arg_int1 = lvar(ctx, "arg-int1");
+            let char_int1 = lvar(ctx, "char-int1");
+            let cmp1 = lvar(ctx, "cmp1");
+            let arg_int2 = lvar(ctx, "arg-int2");
+            let char_int2 = lvar(ctx, "char-int2");
+            let cmp2 = lvar(ctx, "cmp2");
+            let result = lvar(ctx, "result");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(
+                ctx,
+                "k2",
+                k2,
+                &[result],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(retk, atoms(ctx, &[Atom::Local(result)]), Value::new(false)),
+                ),
+                &[],
+                false,
+            );
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    arg_int2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "char->integer").into(),
+                        atoms(ctx, &[Atom::Local(arg)]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            char_int2,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "char->integer").into(),
+                                atoms(ctx, &[Atom::Constant(Value::from_char('b'))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    cmp2,
+                                    Expression::PrimCall(
+                                        Symbol::from_str(ctx, "=").into(),
+                                        atoms(ctx, &[Atom::Local(arg_int2), Atom::Local(char_int2)]),
+                                        Value::new(false),
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::If {
+                                            test: Atom::Local(cmp2),
+                                            consequent: k2,
+                                            consequent_args: Some(atoms(ctx, &[Atom::Local(arg_int2)])),
+                                            alternative: kelse,
+                                            alternative_args: None,
+                                            hints: [BranchHint::Normal; 2],
+                                        },
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            arg_int1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "char->integer").into(),
+                                atoms(ctx, &[Atom::Local(arg)]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    char_int1,
+                                    Expression::PrimCall(
+                                        Symbol::from_str(ctx, "char->integer").into(),
+                                        atoms(ctx, &[Atom::Constant(Value::from_char('a'))]),
+                                        Value::new(false),
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::Let(
+                                            cmp1,
+                                            Expression::PrimCall(
+                                                Symbol::from_str(ctx, "=").into(),
+                                                atoms(
+                                                    ctx,
+                                                    &[
+                                                        Atom::Local(arg_int1),
+                                                        Atom::Local(char_int1),
+                                                    ],
+                                                ),
+                                                Value::new(false),
+                                            ),
+                                            Gc::new(
+                                                *ctx,
+                                                Term::If {
+                                                    test: Atom::Local(cmp1),
+                                                    consequent: k1,
+                                                    consequent_args: None,
+                                                    alternative: kcheck2,
+                                                    alternative_args: None,
+                                                    hints: [BranchHint::Normal; 2],
+                                                },
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(entry_block.terminator, Terminator::Branch { .. }));
+        });
+    }
+
+    #[test]
+    fn eq_char_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "eq?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::from_char('b'))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eq?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::from_char('a'))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::CharEq,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![
+                        SwitchCaseValue::Integer('a' as i32),
+                        SwitchCaseValue::Integer('b' as i32)
+                    ]
+            ));
+        });
+    }
+
+    #[test]
+    fn eqv_char_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "eqv?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::from_char('b'))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eqv?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::from_char('a'))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::CharEq,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![
+                        SwitchCaseValue::Integer('a' as i32),
+                        SwitchCaseValue::Integer('b' as i32)
+                    ]
+            ));
+        });
+    }
+
+    #[test]
+    fn equal_char_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "equal?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::from_char('b'))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "equal?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::from_char('a'))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::CharEq,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![
+                        SwitchCaseValue::Integer('a' as i32),
+                        SwitchCaseValue::Integer('b' as i32)
+                    ]
+            ));
+        });
+    }
+
+    #[test]
+    fn eq_symbol_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+            let foo = Symbol::from_str(ctx, "foo");
+            let bar = Symbol::from_str(ctx, "bar");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "eq?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(bar.into())]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eq?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(foo.into())]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::SymbolEq,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![
+                        SwitchCaseValue::Symbol {
+                            hash: foo.hash.get(),
+                            value: foo.into(),
+                        },
+                        SwitchCaseValue::Symbol {
+                            hash: bar.hash.get(),
+                            value: bar.into(),
+                        }
+                    ]
+            ));
+        });
+    }
+
+    #[test]
+    fn equal_symbol_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+            let foo = Symbol::from_str(ctx, "foo");
+            let bar = Symbol::from_str(ctx, "bar");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "equal?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(bar.into())]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "equal?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(foo.into())]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::SymbolEq,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![
+                        SwitchCaseValue::Symbol {
+                            hash: foo.hash.get(),
+                            value: foo.into(),
+                        },
+                        SwitchCaseValue::Symbol {
+                            hash: bar.hash.get(),
+                            value: bar.into(),
+                        }
+                    ]
+            ));
+        });
+    }
+
+    #[test]
+    fn eqv_symbol_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+            let foo = Symbol::from_str(ctx, "foo");
+            let bar = Symbol::from_str(ctx, "bar");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "eqv?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(bar.into())]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eqv?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(foo.into())]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::SymbolEq,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![
+                        SwitchCaseValue::Symbol {
+                            hash: foo.hash.get(),
+                            value: foo.into(),
+                        },
+                        SwitchCaseValue::Symbol {
+                            hash: bar.hash.get(),
+                            value: bar.into(),
+                        }
+                    ]
+            ));
+        });
+    }
+
+    #[test]
+    fn switch_inference_rejects_mixed_scrutinees() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg1 = lvar(ctx, "arg1");
+            let arg2 = lvar(ctx, "arg2");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "eq?").into(),
+                        atoms(ctx, &[Atom::Local(arg2), Atom::Constant(Value::new(2i32))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eq?").into(),
+                                atoms(ctx, &[Atom::Local(arg1), Atom::Constant(Value::new(1i32))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg1, arg2], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(entry_block.terminator, Terminator::Branch { .. }));
+        });
+    }
+
+    #[test]
+    fn switch_inference_rejects_chain_blocks_with_extra_definitions() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let extra = lvar(ctx, "extra");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(
+                ctx,
+                "k2",
+                k2,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(retk, atoms(ctx, &[Atom::Local(extra)]), Value::new(false)),
+                ),
+                &[],
+                false,
+            );
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    extra,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "not").into(),
+                        atoms(ctx, &[Atom::Constant(Value::new(false))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp2,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eq?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(2i32))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp2),
+                                    consequent: k2,
+                                    consequent_args: None,
+                                    alternative: kelse,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "eq?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(1i32))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(entry_block.terminator, Terminator::Branch { .. }));
+        });
+    }
+
+    #[test]
+    fn numeric_fixnum_equality_branch_chain_lowers_to_switch() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "=").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(2i32))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "=").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(1i32))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kcheck2,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![SwitchCaseValue::Integer(1), SwitchCaseValue::Integer(2)]
+            ));
+        });
+    }
+
+    #[test]
+    fn switch_inference_skips_jump_trampolines() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let cmp1 = lvar(ctx, "cmp1");
+            let cmp2 = lvar(ctx, "cmp2");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let kelse = lvar(ctx, "kelse");
+            let kskip = lvar(ctx, "kskip");
+            let kcheck2 = lvar(ctx, "kcheck2");
+
+            let cont1 = mk_cont(ctx, "k1", k1, &[], empty_term(ctx, retk), &[], false);
+            let cont2 = mk_cont(ctx, "k2", k2, &[], empty_term(ctx, retk), &[], false);
+            let cont_else = mk_cont(ctx, "kelse", kelse, &[], empty_term(ctx, retk), &[], false);
+            let check2_body = Gc::new(
+                *ctx,
+                Term::Let(
+                    cmp2,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "equal?").into(),
+                        atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(2i32))]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(cmp2),
+                            consequent: k2,
+                            consequent_args: None,
+                            alternative: kelse,
+                            alternative_args: None,
+                            hints: [BranchHint::Normal; 2],
+                        },
+                    ),
+                ),
+            );
+            let cont_check2 = mk_cont(ctx, "kcheck2", kcheck2, &[], check2_body, &[], false);
+            let skip_body = Gc::new(
+                *ctx,
+                Term::Continue(kcheck2, atoms(ctx, &[]), Value::new(false)),
+            );
+            let cont_skip = mk_cont(ctx, "kskip", kskip, &[], skip_body, &[], false);
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[cont1, cont2, cont_else, cont_skip, cont_check2]),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cmp1,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "equal?").into(),
+                                atoms(ctx, &[Atom::Local(arg), Atom::Constant(Value::new(1i32))]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(cmp1),
+                                    consequent: k1,
+                                    consequent_args: None,
+                                    alternative: kskip,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal; 2],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(
+                ctx,
+                entry,
+                &[entry],
+                &[cont1, cont2, cont_else, cont_skip, cont_check2],
+            );
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                &entry_block.terminator,
+                Terminator::Switch {
+                    kind: SwitchKind::Eq,
+                    scrutinee: LinearAtom::Local(ValueId(2)),
+                    cases,
+                    ..
+                } if cases.iter().map(|case| case.value).collect::<Vec<_>>()
+                    == vec![SwitchCaseValue::Integer(1), SwitchCaseValue::Integer(2)]
             ));
         });
     }

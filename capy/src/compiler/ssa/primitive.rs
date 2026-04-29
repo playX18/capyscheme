@@ -1905,6 +1905,23 @@ prim!(
         PrimValue::Comparison(ssa.builder.ins().icmp(IntCC::Equal, x, y))
     },
 
+    "fx=?" => fx_eq(ssa, args, _h) {
+        if args.len() == 1 {
+            let _ = ssa.atom(args[0]);
+            return PrimValue::Comparison(ssa.builder.ins().iconst(types::I8, 1));
+        }
+
+        let mut lhs = ssa.atom(args[0]);
+        let mut result = ssa.builder.ins().iconst(types::I8, 1);
+        for arg in &args[1..] {
+            let rhs = ssa.atom(*arg);
+            let eq = emit_fx_eq(ssa, lhs, rhs);
+            result = ssa.builder.ins().band(result, eq);
+            lhs = rhs;
+        }
+        PrimValue::Comparison(result)
+    },
+
     "eqv?" => is_eqv(ssa, args, _h) {
         let x = ssa.atom(args[0]);
         let y = ssa.atom(args[1]);
@@ -2814,6 +2831,25 @@ fn emit_icmp<'gc, 'a, 'f>(
             };
 
             let result = ssa.handle_thunk_call_result(thunk, &[ctx, a, b]);
+            ssa.to_boolean(result)
+        },
+    );
+    assert_eq!(ssa.builder.func.dfg.value_type(result), types::I8);
+    result
+}
+
+fn emit_fx_eq<'gc, 'a, 'f>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+    a: ir::Value,
+    b: ir::Value,
+) -> ir::Value {
+    let result = ssa.inline_cmp_op(
+        a,
+        b,
+        |ssa, lhs, rhs, _slow| ssa.builder.ins().icmp(IntCC::Equal, lhs, rhs),
+        |ssa, a, b| {
+            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let result = ssa.handle_thunk_call_result(ssa.thunks.fxeq, &[ctx, a, b]);
             ssa.to_boolean(result)
         },
     );

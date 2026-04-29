@@ -1,4 +1,4 @@
-use std::{io::Write, mem::offset_of};
+use std::{collections::HashMap, io::Write, mem::offset_of};
 
 use crate::rsgc::{Gc, sync::thread::Thread};
 
@@ -7,16 +7,18 @@ use crate::{
     cps::{
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
-            Procedure, ProcedureKind, RestPredicate, Terminator, ValueId,
+            Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
+            ValueId,
         },
         term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     },
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
         Context, State,
-        value::{Closure, ReturnCode, Symbol, Tagged, Value},
+        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, Value},
     },
 };
+use cranelift::frontend::Switch;
 use cranelift::prelude::{InstBuilder, IntCC, types};
 use cranelift_codegen::ir::{self, BlockArg};
 use cranelift_module::{DataId, Linkage, Module};
@@ -1523,7 +1525,213 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.switch_to_block(kcons);
                 self.linear_branch_target(procedure, consequent);
             }
+            Terminator::Switch {
+                kind,
+                scrutinee,
+                cases,
+                default,
+            } => self.linear_switch(procedure, *kind, *scrutinee, cases, default),
         }
+    }
+
+    fn linear_switch(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        kind: SwitchKind,
+        scrutinee: LinearAtom<'gc>,
+        cases: &[crate::cps::linear::SwitchCase<'gc>],
+        default: &BranchTarget<'gc>,
+    ) {
+        let value = self.linear_atom(scrutinee);
+        let switch_block = self.builder.create_block();
+        let switch_default_block = self.builder.create_block();
+        let type_miss_block = if matches!(
+            kind,
+            SwitchKind::Eq | SwitchKind::CharEq | SwitchKind::SymbolEq
+        ) {
+            switch_default_block
+        } else {
+            self.builder.create_block()
+        };
+        let mut case_blocks: Vec<(
+            ir::Block,
+            Vec<&crate::cps::linear::SwitchCase<'gc>>,
+        )> = Vec::with_capacity(cases.len());
+        let mut case_block_by_key: HashMap<u128, usize> = HashMap::new();
+        let mut switch = Switch::new();
+
+        let switch_value = match kind {
+            SwitchKind::Char | SwitchKind::CharEq => {
+                let mask = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, Value::CHAR_MASK as i64);
+                let tag = self.builder.ins().iconst(types::I64, Value::CHAR_TAG);
+                let masked = self.builder.ins().band(value, mask);
+                let is_char = self.builder.ins().icmp(IntCC::Equal, masked, tag);
+                self.builder
+                    .ins()
+                    .brif(is_char, switch_block, &[], type_miss_block, &[]);
+                self.builder.switch_to_block(switch_block);
+                let value = self.builder.ins().ushr_imm(value, 16);
+                self.builder.ins().ireduce(types::I32, value)
+            }
+            SwitchKind::Eq | SwitchKind::Fixnum | SwitchKind::Numeric => {
+                let is_fixnum = self.is_int32(value);
+                self.builder
+                    .ins()
+                    .brif(is_fixnum, switch_block, &[], type_miss_block, &[]);
+                self.builder.switch_to_block(switch_block);
+                self.builder.ins().ireduce(types::I32, value)
+            }
+            SwitchKind::SymbolEq => {
+                let is_symbol = self.has_typ8(value, TypeCode8::SYMBOL.bits());
+                self.builder
+                    .ins()
+                    .brif(is_symbol, switch_block, &[], type_miss_block, &[]);
+                self.builder.switch_to_block(switch_block);
+                self.builder.ins().load(
+                    types::I64,
+                    ir::MemFlags::trusted().with_can_move(),
+                    value,
+                    offset_of!(Symbol, hash) as i32,
+                )
+            }
+        };
+
+        for case in cases {
+            let key = switch_case_key(case.value);
+            if let Some(index) = case_block_by_key.get(&key).copied() {
+                case_blocks[index].1.push(case);
+            } else {
+                let block = self.builder.create_block();
+                switch.set_entry(key, block);
+                case_block_by_key.insert(key, case_blocks.len());
+                case_blocks.push((block, vec![case]));
+            }
+        }
+
+        switch.emit(&mut self.builder, switch_value, switch_default_block);
+
+        self.builder.switch_to_block(switch_default_block);
+        self.linear_branch_target(procedure, default);
+
+        if type_miss_block != switch_default_block {
+            self.builder.switch_to_block(type_miss_block);
+        }
+        match kind {
+            SwitchKind::Eq | SwitchKind::CharEq | SwitchKind::SymbolEq => {}
+            SwitchKind::Fixnum => {
+                let scrutinee = self.linear_atom(scrutinee);
+                self.linear_fixnum_switch_error_or_default(scrutinee, cases, procedure, default)
+            }
+            SwitchKind::Numeric => {
+                let scrutinee = self.linear_atom(scrutinee);
+                self.linear_numeric_switch_fallback(procedure, scrutinee, cases, default)
+            }
+            SwitchKind::Char => {
+                let scrutinee = self.linear_atom(scrutinee);
+                self.linear_char_switch_error_or_default(procedure, scrutinee, default)
+            }
+        }
+
+        for (block, cases) in case_blocks {
+            self.builder.switch_to_block(block);
+            if kind == SwitchKind::SymbolEq {
+                for (index, case) in cases.iter().enumerate() {
+                    let matched_block = self.builder.create_block();
+                    let next_block = if index + 1 == cases.len() {
+                        switch_default_block
+                    } else {
+                        self.builder.create_block()
+                    };
+                    let SwitchCaseValue::Symbol {
+                        value: symbol_value, ..
+                    } = case.value
+                    else {
+                        continue;
+                    };
+                    let symbol = self.atom(Atom::Constant(symbol_value));
+                    let matched = self.builder.ins().icmp(IntCC::Equal, value, symbol);
+                    self.builder.ins().brif(
+                        matched,
+                        matched_block,
+                        &[],
+                        next_block,
+                        &[],
+                    );
+                    self.builder.switch_to_block(matched_block);
+                    self.linear_branch_target(procedure, &case.target);
+                    if index + 1 != cases.len() {
+                        self.builder.switch_to_block(next_block);
+                    }
+                }
+            } else {
+                let Some(case) = cases.first() else {
+                    self.linear_branch_target(procedure, default);
+                    continue;
+                };
+                self.linear_branch_target(procedure, &case.target);
+            }
+        }
+    }
+
+    fn linear_fixnum_switch_error_or_default(
+        &mut self,
+        scrutinee: ir::Value,
+        cases: &[crate::cps::linear::SwitchCase<'gc>],
+        procedure: &Procedure<'gc>,
+        default: &BranchTarget<'gc>,
+    ) {
+        let Some(case) = cases.first() else {
+            self.linear_branch_target(procedure, default);
+            return;
+        };
+        let SwitchCaseValue::Integer(value) = case.value else {
+            self.linear_branch_target(procedure, default);
+            return;
+        };
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let constant = self.atom(Atom::Constant(Value::new(value)));
+        let _ = self.handle_thunk_call_result(self.thunks.fxeq, &[ctx, scrutinee, constant]);
+        self.linear_branch_target(procedure, default);
+    }
+
+    fn linear_char_switch_error_or_default(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        scrutinee: ir::Value,
+        default: &BranchTarget<'gc>,
+    ) {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let _ = self.handle_thunk_call_result(self.thunks.char_to_integer, &[ctx, scrutinee]);
+        self.linear_branch_target(procedure, default);
+    }
+
+    fn linear_numeric_switch_fallback(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        scrutinee: ir::Value,
+        cases: &[crate::cps::linear::SwitchCase<'gc>],
+        default: &BranchTarget<'gc>,
+    ) {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        for case in cases {
+            let SwitchCaseValue::Integer(value) = case.value else {
+                continue;
+            };
+            let next = self.builder.create_block();
+            let matched = self.builder.create_block();
+            let constant = self.atom(Atom::Constant(Value::new(value)));
+            let result =
+                self.handle_thunk_call_result(self.thunks.number_eq, &[ctx, scrutinee, constant]);
+            let truthy = self.to_boolean(result);
+            self.builder.ins().brif(truthy, matched, &[], next, &[]);
+            self.builder.switch_to_block(matched);
+            self.linear_branch_target(procedure, &case.target);
+            self.builder.switch_to_block(next);
+        }
+        self.linear_branch_target(procedure, default);
     }
 
     pub fn finalize(&mut self) {
@@ -1757,5 +1965,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.builder.ins().return_(&[code, val]);
         }
         self.builder.switch_to_block(on_no_yieldpoint);
+    }
+}
+
+fn switch_case_key(value: SwitchCaseValue<'_>) -> u128 {
+    match value {
+        SwitchCaseValue::Integer(value) => value as u32 as u128,
+        SwitchCaseValue::Symbol { hash, .. } => hash as u128,
     }
 }
