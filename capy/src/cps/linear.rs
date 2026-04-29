@@ -1,4 +1,5 @@
 use crate::{
+    compiler::ssa::primitive::Primitive,
     cps::{
         ReifyInfo,
         term::{Atom, BranchHint, ContRef, Expression, FuncRef, Term, TermRef},
@@ -12,15 +13,12 @@ use std::collections::HashMap;
 pub struct BlockId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LinearVar<'gc> {
-    Source(LVarRef<'gc>),
-    Synthetic(u32),
-}
+pub struct ValueId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LinearAtom<'gc> {
     Constant(Value<'gc>),
-    Local(LinearVar<'gc>),
+    Local(ValueId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,14 +49,15 @@ pub struct LinearProgram<'gc> {
 pub struct Procedure<'gc> {
     pub code: CodeId<'gc>,
     pub kind: ProcedureKind,
-    pub binding: LVarRef<'gc>,
+    pub binding: ValueId,
     pub name: Value<'gc>,
     pub source: Value<'gc>,
     pub meta: Value<'gc>,
-    pub return_cont: Option<LVarRef<'gc>>,
-    pub params: Vec<LVarRef<'gc>>,
-    pub variadic: Option<LVarRef<'gc>>,
-    pub free_vars: Vec<LVarRef<'gc>>,
+    pub return_cont: Option<ValueId>,
+    pub params: Vec<ValueId>,
+    pub variadic: Option<ValueId>,
+    pub free_vars: Vec<ValueId>,
+    pub sources: HashMap<ValueId, LVarRef<'gc>>,
     pub entry: BlockId,
     pub blocks: Vec<Block<'gc>>,
 }
@@ -66,8 +65,8 @@ pub struct Procedure<'gc> {
 #[derive(Debug, Clone)]
 pub struct Block<'gc> {
     pub id: BlockId,
-    pub params: Vec<LVarRef<'gc>>,
-    pub variadic: Option<LVarRef<'gc>>,
+    pub params: Vec<ValueId>,
+    pub variadic: Option<ValueId>,
     pub instructions: Vec<Instruction<'gc>>,
     pub terminator: Terminator<'gc>,
     pub source: Value<'gc>,
@@ -76,13 +75,13 @@ pub struct Block<'gc> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<'gc> {
     MakeClosure {
-        dst: LinearVar<'gc>,
+        dst: ValueId,
         code: CodeId<'gc>,
         kind: ClosureKind,
         free_count: usize,
     },
     ClosureRef {
-        dst: LinearVar<'gc>,
+        dst: ValueId,
         closure: LinearAtom<'gc>,
         index: usize,
     },
@@ -92,8 +91,8 @@ pub enum Instruction<'gc> {
         value: LinearAtom<'gc>,
     },
     PrimCall {
-        dst: LinearVar<'gc>,
-        prim: Value<'gc>,
+        dst: ValueId,
+        prim: Primitive,
         args: Vec<LinearAtom<'gc>>,
         source: Value<'gc>,
     },
@@ -136,15 +135,6 @@ pub enum Terminator<'gc> {
     },
 }
 
-impl<'gc> From<Atom<'gc>> for LinearAtom<'gc> {
-    fn from(value: Atom<'gc>) -> Self {
-        match value {
-            Atom::Constant(value) => Self::Constant(value),
-            Atom::Local(var) => Self::Local(LinearVar::Source(var)),
-        }
-    }
-}
-
 pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
     let mut procedures = Vec::new();
 
@@ -163,68 +153,81 @@ pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
 }
 
 fn linearize_function<'gc>(func: FuncRef<'gc>) -> Procedure<'gc> {
-    let free_vars = vars_to_vec(
+    let source_free_vars = vars_to_vec(
         func.free_vars
             .get()
             .expect("function free vars are reified"),
     );
     let mut builder = ProcedureBuilder::new();
+    let binding = builder.value(func.binding);
+    let return_cont = builder.value(func.return_cont);
+    let params = builder.values(func.args);
+    let variadic = func.variadic.map(|var| builder.value(var));
+    let free_vars = builder.value_slice(&source_free_vars);
     let entry = BlockId(0);
-    let instructions = closure_refs(func.binding, &free_vars);
+    let instructions = closure_refs(&mut builder, binding, &source_free_vars);
     builder.convert_block(
         entry,
-        params_with_variadic(func.args, func.variadic),
-        func.variadic,
+        params_with_variadic(params.clone(), variadic),
+        variadic,
         instructions,
         func.body(),
     );
+    let (blocks, sources) = builder.finish();
 
     Procedure {
         code: CodeId::Function(func),
         kind: ProcedureKind::Function,
-        binding: func.binding,
+        binding,
         name: func.name,
         source: func.source,
         meta: func.meta,
-        return_cont: Some(func.return_cont),
-        params: func.args.iter().copied().collect(),
-        variadic: func.variadic,
+        return_cont: Some(return_cont),
+        params,
+        variadic,
         free_vars,
         entry,
-        blocks: builder.finish(),
+        sources,
+        blocks,
     }
 }
 
 fn linearize_continuation<'gc>(cont: ContRef<'gc>) -> Procedure<'gc> {
-    let free_vars = vars_to_vec(
+    let source_free_vars = vars_to_vec(
         cont.free_vars
             .get()
             .expect("continuation free vars are reified"),
     );
     let mut builder = ProcedureBuilder::new();
+    let binding = builder.value(cont.binding);
+    let params = builder.values(cont.args);
+    let variadic = cont.variadic.map(|var| builder.value(var));
+    let free_vars = builder.value_slice(&source_free_vars);
     let entry = BlockId(0);
-    let instructions = closure_refs(cont.binding, &free_vars);
+    let instructions = closure_refs(&mut builder, binding, &source_free_vars);
     builder.convert_block(
         entry,
-        params_with_variadic(cont.args, cont.variadic),
-        cont.variadic,
+        params_with_variadic(params.clone(), variadic),
+        variadic,
         instructions,
         cont.body(),
     );
+    let (blocks, sources) = builder.finish();
 
     Procedure {
         code: CodeId::Continuation(cont),
         kind: ProcedureKind::Continuation,
-        binding: cont.binding,
+        binding,
         name: cont.name,
         source: cont.source,
         meta: cont.meta,
         return_cont: None,
-        params: cont.args.iter().copied().collect(),
-        variadic: cont.variadic,
+        params,
+        variadic,
         free_vars,
         entry,
-        blocks: builder.finish(),
+        sources,
+        blocks,
     }
 }
 
@@ -232,20 +235,29 @@ fn vars_to_vec<'gc>(vars: crate::cps::term::Vars<'gc>) -> Vec<LVarRef<'gc>> {
     vars.iter().copied().collect()
 }
 
-fn params_with_variadic<'gc>(
-    args: crate::cps::term::Vars<'gc>,
-    variadic: Option<LVarRef<'gc>>,
-) -> Vec<LVarRef<'gc>> {
-    args.iter().copied().chain(variadic).collect()
+fn primitive_from_value<'gc>(value: Value<'gc>) -> Primitive {
+    let name = value
+        .downcast::<crate::runtime::value::Symbol>()
+        .to_string();
+    Primitive::from_name(&name).unwrap_or_else(|| panic!("undefined primitive: {value}"))
 }
 
-fn closure_refs<'gc>(binding: LVarRef<'gc>, free_vars: &[LVarRef<'gc>]) -> Vec<Instruction<'gc>> {
+fn params_with_variadic(mut args: Vec<ValueId>, variadic: Option<ValueId>) -> Vec<ValueId> {
+    args.extend(variadic);
+    args
+}
+
+fn closure_refs<'gc>(
+    builder: &mut ProcedureBuilder<'gc>,
+    binding: ValueId,
+    free_vars: &[LVarRef<'gc>],
+) -> Vec<Instruction<'gc>> {
     free_vars
         .iter()
         .enumerate()
         .map(|(index, free_var)| Instruction::ClosureRef {
-            dst: LinearVar::Source(*free_var),
-            closure: LinearAtom::Local(LinearVar::Source(binding)),
+            dst: builder.value(*free_var),
+            closure: LinearAtom::Local(binding),
             index,
         })
         .collect()
@@ -254,6 +266,9 @@ fn closure_refs<'gc>(binding: LVarRef<'gc>, free_vars: &[LVarRef<'gc>]) -> Vec<I
 struct ProcedureBuilder<'gc> {
     blocks: Vec<Block<'gc>>,
     local_blocks: HashMap<LVarRef<'gc>, BlockId>,
+    values: HashMap<LVarRef<'gc>, ValueId>,
+    sources: HashMap<ValueId, LVarRef<'gc>>,
+    next_value: u32,
     next_block: usize,
 }
 
@@ -262,13 +277,46 @@ impl<'gc> ProcedureBuilder<'gc> {
         Self {
             blocks: Vec::new(),
             local_blocks: HashMap::new(),
+            values: HashMap::new(),
+            sources: HashMap::new(),
+            next_value: 0,
             next_block: 1,
         }
     }
 
-    fn finish(mut self) -> Vec<Block<'gc>> {
+    fn finish(mut self) -> (Vec<Block<'gc>>, HashMap<ValueId, LVarRef<'gc>>) {
         self.blocks.sort_by_key(|block| block.id.0);
-        self.blocks
+        (self.blocks, self.sources)
+    }
+
+    fn value(&mut self, var: LVarRef<'gc>) -> ValueId {
+        if let Some(id) = self.values.get(&var).copied() {
+            return id;
+        }
+        let id = ValueId(self.next_value);
+        self.next_value += 1;
+        self.values.insert(var, id);
+        self.sources.insert(id, var);
+        id
+    }
+
+    fn values(&mut self, vars: crate::cps::term::Vars<'gc>) -> Vec<ValueId> {
+        vars.iter().copied().map(|var| self.value(var)).collect()
+    }
+
+    fn value_slice(&mut self, vars: &[LVarRef<'gc>]) -> Vec<ValueId> {
+        vars.iter().copied().map(|var| self.value(var)).collect()
+    }
+
+    fn atom(&mut self, atom: Atom<'gc>) -> LinearAtom<'gc> {
+        match atom {
+            Atom::Constant(value) => LinearAtom::Constant(value),
+            Atom::Local(var) => LinearAtom::Local(self.value(var)),
+        }
+    }
+
+    fn atoms(&mut self, args: crate::cps::term::Atoms<'gc>) -> Vec<LinearAtom<'gc>> {
+        args.iter().copied().map(|atom| self.atom(atom)).collect()
     }
 
     fn alloc_block(&mut self) -> BlockId {
@@ -280,8 +328,8 @@ impl<'gc> ProcedureBuilder<'gc> {
     fn convert_block(
         &mut self,
         id: BlockId,
-        params: Vec<LVarRef<'gc>>,
-        variadic: Option<LVarRef<'gc>>,
+        params: Vec<ValueId>,
+        variadic: Option<ValueId>,
         mut instructions: Vec<Instruction<'gc>>,
         term: TermRef<'gc>,
     ) {
@@ -304,10 +352,13 @@ impl<'gc> ProcedureBuilder<'gc> {
     ) -> Terminator<'gc> {
         match *term {
             Term::Let(var, Expression::PrimCall(prim, args, source), next) => {
+                let prim = primitive_from_value(prim);
+                let args = self.atoms(args);
+                let dst = self.value(var);
                 instructions.push(Instruction::PrimCall {
-                    dst: LinearVar::Source(var),
+                    dst,
                     prim,
-                    args: linear_atoms(args),
+                    args,
                     source,
                 });
                 self.convert_term(next, instructions)
@@ -321,7 +372,7 @@ impl<'gc> ProcedureBuilder<'gc> {
                             .expect("function free vars are reified"),
                     );
                     instructions.push(Instruction::MakeClosure {
-                        dst: LinearVar::Source(func.binding),
+                        dst: self.value(func.binding),
                         code: CodeId::Function(*func),
                         kind: ClosureKind::Function,
                         free_count: free_vars.len(),
@@ -329,15 +380,13 @@ impl<'gc> ProcedureBuilder<'gc> {
                 }
 
                 for func in funcs.iter() {
-                    emit_closure_sets(
-                        instructions,
-                        LinearVar::Source(func.binding),
-                        &vars_to_vec(
-                            func.free_vars
-                                .get()
-                                .expect("function free vars are reified"),
-                        ),
+                    let closure = self.value(func.binding);
+                    let free_vars = vars_to_vec(
+                        func.free_vars
+                            .get()
+                            .expect("function free vars are reified"),
                     );
+                    emit_closure_sets(self, instructions, closure, &free_vars);
                 }
 
                 self.convert_term(next, instructions)
@@ -357,7 +406,7 @@ impl<'gc> ProcedureBuilder<'gc> {
                             .expect("continuation free vars are reified"),
                     );
                     instructions.push(Instruction::MakeClosure {
-                        dst: LinearVar::Source(cont.binding),
+                        dst: self.value(cont.binding),
                         code: CodeId::Continuation(*cont),
                         kind: ClosureKind::Continuation,
                         free_count: free_vars.len(),
@@ -365,15 +414,13 @@ impl<'gc> ProcedureBuilder<'gc> {
                 }
 
                 for cont in conts.iter().filter(|cont| cont.reified.get()) {
-                    emit_closure_sets(
-                        instructions,
-                        LinearVar::Source(cont.binding),
-                        &vars_to_vec(
-                            cont.free_vars
-                                .get()
-                                .expect("continuation free vars are reified"),
-                        ),
+                    let closure = self.value(cont.binding);
+                    let free_vars = vars_to_vec(
+                        cont.free_vars
+                            .get()
+                            .expect("continuation free vars are reified"),
                     );
+                    emit_closure_sets(self, instructions, closure, &free_vars);
                 }
 
                 for cont in &local_conts {
@@ -383,10 +430,12 @@ impl<'gc> ProcedureBuilder<'gc> {
 
                 for cont in local_conts {
                     let id = self.local_blocks[&cont.binding];
+                    let params = self.values(cont.args);
+                    let variadic = cont.variadic.map(|var| self.value(var));
                     self.convert_block(
                         id,
-                        params_with_variadic(cont.args, cont.variadic),
-                        cont.variadic,
+                        params_with_variadic(params, variadic),
+                        variadic,
                         vec![],
                         cont.body(),
                     );
@@ -399,21 +448,21 @@ impl<'gc> ProcedureBuilder<'gc> {
                 if let Some(target) = self.local_blocks.get(&k) {
                     Terminator::Jump {
                         target: *target,
-                        args: linear_atoms(args),
+                        args: self.atoms(args),
                     }
                 } else {
                     Terminator::TailCall {
-                        callee: LinearAtom::Local(LinearVar::Source(k)),
-                        args: linear_atoms(args),
+                        callee: LinearAtom::Local(self.value(k)),
+                        args: self.atoms(args),
                         source,
                     }
                 }
             }
 
             Term::App(callee, retk, args, source) => Terminator::Call {
-                callee: callee.into(),
-                retk: LinearAtom::Local(LinearVar::Source(retk)),
-                args: linear_atoms(args),
+                callee: self.atom(callee),
+                retk: LinearAtom::Local(self.value(retk)),
+                args: self.atoms(args),
                 source,
             },
 
@@ -425,7 +474,7 @@ impl<'gc> ProcedureBuilder<'gc> {
                 alternative_args,
                 hints,
             } => Terminator::Branch {
-                test: test.into(),
+                test: self.atom(test),
                 consequent: self.branch_target(consequent, consequent_args),
                 alternative: self.branch_target(alternative, alternative_args),
                 hints,
@@ -434,11 +483,11 @@ impl<'gc> ProcedureBuilder<'gc> {
     }
 
     fn branch_target(
-        &self,
+        &mut self,
         continuation: LVarRef<'gc>,
         args: Option<crate::cps::term::Atoms<'gc>>,
     ) -> BranchTarget<'gc> {
-        let args = args.map(linear_atoms).unwrap_or_default();
+        let args = args.map(|args| self.atoms(args)).unwrap_or_default();
         if let Some(block) = self.local_blocks.get(&continuation) {
             BranchTarget::Local {
                 block: *block,
@@ -446,33 +495,30 @@ impl<'gc> ProcedureBuilder<'gc> {
             }
         } else {
             BranchTarget::Reified {
-                continuation: LinearAtom::Local(LinearVar::Source(continuation)),
+                continuation: LinearAtom::Local(self.value(continuation)),
                 args,
             }
         }
     }
 }
 
-fn linear_atoms<'gc>(args: crate::cps::term::Atoms<'gc>) -> Vec<LinearAtom<'gc>> {
-    args.iter().copied().map(LinearAtom::from).collect()
-}
-
 fn emit_closure_sets<'gc>(
+    builder: &mut ProcedureBuilder<'gc>,
     instructions: &mut Vec<Instruction<'gc>>,
-    closure: LinearVar<'gc>,
+    closure: ValueId,
     free_vars: &[LVarRef<'gc>],
 ) {
     for (index, free_var) in free_vars.iter().enumerate() {
         instructions.push(Instruction::ClosureSet {
             closure: LinearAtom::Local(closure),
             index,
-            value: LinearAtom::Local(LinearVar::Source(*free_var)),
+            value: LinearAtom::Local(builder.value(*free_var)),
         });
     }
 }
 
 impl<'gc> Instruction<'gc> {
-    pub fn def(&self) -> Option<LinearVar<'gc>> {
+    pub fn def(&self) -> Option<ValueId> {
         match self {
             Self::MakeClosure { dst, .. }
             | Self::ClosureRef { dst, .. }
@@ -567,6 +613,7 @@ impl<'gc> Terminator<'gc> {
 mod tests {
     use super::*;
     use crate::{
+        compiler::ssa::primitive::Primitive,
         cps::{
             ReifyInfo,
             free_vars::FreeVars,
@@ -726,9 +773,9 @@ mod tests {
 
     #[test]
     fn instruction_defs_and_uses_are_explicit() {
-        let dst = LinearVar::Synthetic(1);
-        let closure = LinearVar::Synthetic(2);
-        let value = LinearAtom::Local(LinearVar::Synthetic(3));
+        let dst = ValueId(1);
+        let closure = ValueId(2);
+        let value = LinearAtom::Local(ValueId(3));
         let instr = Instruction::ClosureSet {
             closure: LinearAtom::Local(closure),
             index: 0,
@@ -738,10 +785,7 @@ mod tests {
         assert_eq!(instr.def(), None);
         assert_eq!(
             instr.uses(),
-            vec![
-                LinearAtom::Local(closure),
-                LinearAtom::Local(LinearVar::Synthetic(3))
-            ]
+            vec![LinearAtom::Local(closure), LinearAtom::Local(ValueId(3))]
         );
 
         let instr = Instruction::ClosureRef {
@@ -758,7 +802,7 @@ mod tests {
         let then_block = BlockId(1);
         let else_block = BlockId(2);
         let term = Terminator::Branch {
-            test: LinearAtom::Local(LinearVar::Synthetic(9)),
+            test: LinearAtom::Local(ValueId(9)),
             consequent: BranchTarget::Local {
                 block: then_block,
                 args: vec![],
@@ -771,6 +815,90 @@ mod tests {
         };
 
         assert_eq!(term.successors(), vec![then_block, else_block]);
+    }
+
+    #[test]
+    fn linear_values_are_ids_not_source_lvars() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let value = lvar(ctx, "value");
+            let entry = mk_func(
+                ctx,
+                "entry",
+                f,
+                retk,
+                &[value],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(retk, atoms(ctx, &[Atom::Local(value)]), Value::new(false)),
+                ),
+                &[],
+            );
+            let reify = reify_info(ctx, entry, &[entry], &[]);
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert_eq!(entry_proc.binding, ValueId(0));
+            assert_eq!(entry_proc.return_cont, Some(ValueId(1)));
+            assert_eq!(entry_block.params, vec![ValueId(2)]);
+            assert_eq!(
+                entry_block.terminator,
+                Terminator::TailCall {
+                    callee: LinearAtom::Local(ValueId(1)),
+                    args: vec![LinearAtom::Local(ValueId(2))],
+                    source: Value::new(false),
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn linear_primcalls_use_primitive_enum() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let arg = lvar(ctx, "arg");
+            let out = lvar(ctx, "out");
+            let prim = Symbol::from_str(ctx, "not").into();
+            let body = Gc::new(
+                *ctx,
+                Term::Let(
+                    out,
+                    Expression::PrimCall(prim, atoms(ctx, &[Atom::Local(arg)]), Value::new(false)),
+                    Gc::new(
+                        *ctx,
+                        Term::Continue(retk, atoms(ctx, &[Atom::Local(out)]), Value::new(false)),
+                    ),
+                ),
+            );
+            let entry = mk_func(ctx, "entry", f, retk, &[arg], body, &[]);
+            let reify = reify_info(ctx, entry, &[entry], &[]);
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert_eq!(
+                entry_block.instructions,
+                vec![Instruction::PrimCall {
+                    dst: ValueId(3),
+                    prim: Primitive::not,
+                    args: vec![LinearAtom::Local(ValueId(2))],
+                    source: Value::new(false),
+                }]
+            );
+        });
     }
 
     #[test]
@@ -821,8 +949,8 @@ mod tests {
                 .find(|block| block.id == entry_proc.entry)
                 .expect("entry block");
 
-            assert_eq!(entry_block.params, vec![arg, rest]);
-            assert_eq!(entry_block.variadic, Some(rest));
+            assert_eq!(entry_block.params, vec![ValueId(2), ValueId(3)]);
+            assert_eq!(entry_block.variadic, Some(ValueId(3)));
         });
     }
 
@@ -863,7 +991,7 @@ mod tests {
                 .iter()
                 .find(|block| block.id != entry_proc.entry)
                 .expect("local continuation block");
-            assert_eq!(local_block.params, vec![cont_arg]);
+            assert_eq!(local_block.params, vec![ValueId(2)]);
 
             let entry_block = entry_proc
                 .blocks
@@ -874,7 +1002,7 @@ mod tests {
                 entry_block.terminator,
                 Terminator::Jump {
                     target: local_block.id,
-                    args: vec![LinearAtom::Local(LinearVar::Source(value))]
+                    args: vec![LinearAtom::Local(ValueId(3))]
                 }
             );
         });
@@ -916,8 +1044,8 @@ mod tests {
                 .find(|block| block.id != entry_proc.entry)
                 .expect("local continuation block");
 
-            assert_eq!(local_block.params, vec![cont_arg, rest]);
-            assert_eq!(local_block.variadic, Some(rest));
+            assert_eq!(local_block.params, vec![ValueId(2), ValueId(3)]);
+            assert_eq!(local_block.variadic, Some(ValueId(3)));
         });
     }
 
@@ -948,16 +1076,16 @@ mod tests {
                 entry_block
                     .instructions
                     .contains(&Instruction::MakeClosure {
-                        dst: LinearVar::Source(k),
+                        dst: ValueId(2),
                         code: CodeId::Continuation(cont),
                         kind: ClosureKind::Continuation,
                         free_count: 1,
                     })
             );
             assert!(entry_block.instructions.contains(&Instruction::ClosureSet {
-                closure: LinearAtom::Local(LinearVar::Source(k)),
+                closure: LinearAtom::Local(ValueId(2)),
                 index: 0,
-                value: LinearAtom::Local(LinearVar::Source(captured)),
+                value: LinearAtom::Local(ValueId(3)),
             }));
         });
     }
@@ -998,16 +1126,16 @@ mod tests {
                 entry_block
                     .instructions
                     .contains(&Instruction::MakeClosure {
-                        dst: LinearVar::Source(child_binding),
+                        dst: ValueId(2),
                         code: CodeId::Function(child),
                         kind: ClosureKind::Function,
                         free_count: 1,
                     })
             );
             assert!(entry_block.instructions.contains(&Instruction::ClosureSet {
-                closure: LinearAtom::Local(LinearVar::Source(child_binding)),
+                closure: LinearAtom::Local(ValueId(2)),
                 index: 0,
-                value: LinearAtom::Local(LinearVar::Source(captured)),
+                value: LinearAtom::Local(ValueId(3)),
             }));
         });
     }
