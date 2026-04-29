@@ -7,7 +7,7 @@ use crate::{
     },
     cps::{
         ReifyInfo,
-        linear::{BlockId, CodeId, LinearProgram, Procedure},
+        linear::{BlockId, CodeId, LinearProgram, Procedure, ValueId},
         term::{ContRef, FuncRef},
     },
     expander::core::LVarRef,
@@ -40,6 +40,13 @@ pub mod translate;
 pub enum VarDef {
     Value(ir::Value),
     Comparison(ir::Value),
+}
+
+#[derive(Clone, Copy)]
+pub struct LinearRestSource {
+    pub rands: ir::Value,
+    pub num_rands: ir::Value,
+    pub fixed_count: usize,
 }
 
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
@@ -562,8 +569,9 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub blockmap: HashMap<ContRef<'gc>, ir::Block>,
     pub linear_blockmap: HashMap<BlockId, ir::Block>,
     pub variables: HashMap<LVarRef<'gc>, VarDef>,
-    pub linear_variables: HashMap<crate::cps::linear::ValueId, VarDef>,
-    pub synthetic_aliases: HashMap<crate::cps::linear::ValueId, LVarRef<'gc>>,
+    pub linear_variables: HashMap<ValueId, VarDef>,
+    pub linear_rest_sources: HashMap<ValueId, LinearRestSource>,
+    pub synthetic_aliases: HashMap<ValueId, LVarRef<'gc>>,
 
     pub target: ContOrFunc<'gc>,
     pub exit_block: ir::Block,
@@ -656,6 +664,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             entry_block,
             variables,
             linear_variables: HashMap::new(),
+            linear_rest_sources: HashMap::new(),
             synthetic_aliases: HashMap::new(),
             blockmap: HashMap::new(),
             linear_blockmap: HashMap::new(),

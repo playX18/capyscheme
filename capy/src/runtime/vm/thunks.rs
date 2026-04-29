@@ -3935,6 +3935,22 @@ thunks! {
         let clos = procs.register_static_cont_closure(ctx, vm_default_retk as _, Value::new(false));
         clos.into()
     }
+
+    pub fn car_not_pair(ctx: Context<'gc>, val: Value<'gc>) -> Value<'gc> {
+        make_assertion_violation(ctx,
+            Symbol::from_str(ctx, "car").into(),
+            Str::new(*ctx, "not a pair", true).into(),
+            &[val],
+        )
+    }
+
+    pub fn cdr_not_pair(ctx: Context<'gc>, val: Value<'gc>) -> Value<'gc> {
+        make_assertion_violation(ctx,
+            Symbol::from_str(ctx, "cdr").into(),
+            Str::new(*ctx, "not a pair", true).into(),
+            &[val],
+        )
+    }
 }
 
 #[unsafe(no_mangle)]

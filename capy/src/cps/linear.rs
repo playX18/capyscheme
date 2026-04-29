@@ -7,7 +7,7 @@ use crate::{
     expander::core::LVarRef,
     runtime::value::Value,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub usize);
@@ -72,6 +72,13 @@ pub struct Block<'gc> {
     pub source: Value<'gc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestPredicate {
+    Null,
+    Pair,
+    List,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<'gc> {
     MakeClosure {
@@ -94,6 +101,30 @@ pub enum Instruction<'gc> {
         dst: ValueId,
         prim: Primitive,
         args: Vec<LinearAtom<'gc>>,
+        source: Value<'gc>,
+    },
+    RestToList {
+        dst: ValueId,
+        rest: ValueId,
+        source: Value<'gc>,
+    },
+    RestRef {
+        dst: ValueId,
+        rest: ValueId,
+        index: usize,
+        source: Value<'gc>,
+    },
+    RestLength {
+        dst: ValueId,
+        rest: ValueId,
+        skip: usize,
+        source: Value<'gc>,
+    },
+    RestPredicate {
+        dst: ValueId,
+        rest: ValueId,
+        predicate: RestPredicate,
+        skip: usize,
         source: Value<'gc>,
     },
 }
@@ -139,11 +170,11 @@ pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
     let mut procedures = Vec::new();
 
     for func in reify.functions.iter() {
-        procedures.push(linearize_function(*func));
+        procedures.push(lower_rest_arguments(linearize_function(*func)));
     }
 
     for cont in reify.continuations.iter().filter(|cont| cont.reified.get()) {
-        procedures.push(linearize_continuation(*cont));
+        procedures.push(lower_rest_arguments(linearize_continuation(*cont)));
     }
 
     LinearProgram {
@@ -261,6 +292,283 @@ fn closure_refs<'gc>(
             index,
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RestAlias {
+    rest: ValueId,
+    skip: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestRewrite {
+    Cdr,
+    Ref(RestAlias),
+    Length(RestAlias),
+    Predicate(RestAlias, RestPredicate),
+}
+
+fn lower_rest_arguments<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+    let Some(rest) = procedure.variadic else {
+        return procedure;
+    };
+
+    let aliases = collect_rest_aliases(&procedure, rest);
+    let loop_blocks = loop_blocks(&procedure);
+    if has_incompatible_rest_use(&procedure, rest, &aliases, &loop_blocks) {
+        insert_rest_to_list(&mut procedure, rest);
+    } else {
+        rewrite_rest_uses(&mut procedure, rest, &aliases);
+    }
+
+    procedure
+}
+
+fn collect_rest_aliases<'gc>(
+    procedure: &Procedure<'gc>,
+    rest: ValueId,
+) -> HashMap<ValueId, RestAlias> {
+    let mut aliases = HashMap::new();
+    let mut changed = true;
+
+    while changed {
+        changed = false;
+        for block in &procedure.blocks {
+            for instruction in &block.instructions {
+                let Instruction::PrimCall {
+                    dst, prim, args, ..
+                } = instruction
+                else {
+                    continue;
+                };
+                if *prim != Primitive::cdr || args.len() != 1 {
+                    continue;
+                }
+                if let Some(alias) = rest_alias_for_atom(args[0], rest, &aliases) {
+                    let next_alias = RestAlias {
+                        rest: alias.rest,
+                        skip: alias.skip + 1,
+                    };
+                    if aliases.insert(*dst, next_alias) != Some(next_alias) {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    aliases
+}
+
+fn rest_alias_for_atom<'gc>(
+    atom: LinearAtom<'gc>,
+    rest: ValueId,
+    aliases: &HashMap<ValueId, RestAlias>,
+) -> Option<RestAlias> {
+    let LinearAtom::Local(var) = atom else {
+        return None;
+    };
+    if var == rest {
+        return Some(RestAlias { rest, skip: 0 });
+    }
+    aliases.get(&var).copied()
+}
+
+fn rest_rewrite_for_prim<'gc>(
+    prim: Primitive,
+    args: &[LinearAtom<'gc>],
+    rest: ValueId,
+    aliases: &HashMap<ValueId, RestAlias>,
+) -> Option<RestRewrite> {
+    if args.len() != 1 {
+        return None;
+    }
+    let alias = rest_alias_for_atom(args[0], rest, aliases)?;
+    match prim {
+        Primitive::cdr => Some(RestRewrite::Cdr),
+        Primitive::car => Some(RestRewrite::Ref(alias)),
+        Primitive::length => Some(RestRewrite::Length(alias)),
+        Primitive::is_null => Some(RestRewrite::Predicate(alias, RestPredicate::Null)),
+        Primitive::is_pair => Some(RestRewrite::Predicate(alias, RestPredicate::Pair)),
+        Primitive::is_list => Some(RestRewrite::Predicate(alias, RestPredicate::List)),
+        _ => None,
+    }
+}
+
+fn instruction_mentions_rest<'gc>(
+    instruction: &Instruction<'gc>,
+    rest: ValueId,
+    aliases: &HashMap<ValueId, RestAlias>,
+) -> bool {
+    instruction
+        .uses()
+        .iter()
+        .any(|atom| rest_alias_for_atom(*atom, rest, aliases).is_some())
+}
+
+fn terminator_mentions_rest<'gc>(
+    terminator: &Terminator<'gc>,
+    rest: ValueId,
+    aliases: &HashMap<ValueId, RestAlias>,
+) -> bool {
+    terminator
+        .uses()
+        .iter()
+        .any(|atom| rest_alias_for_atom(*atom, rest, aliases).is_some())
+}
+
+fn has_incompatible_rest_use<'gc>(
+    procedure: &Procedure<'gc>,
+    rest: ValueId,
+    aliases: &HashMap<ValueId, RestAlias>,
+    loop_blocks: &HashSet<BlockId>,
+) -> bool {
+    for block in &procedure.blocks {
+        let is_loop_block = loop_blocks.contains(&block.id);
+        for instruction in &block.instructions {
+            let mentions_rest = instruction_mentions_rest(instruction, rest, aliases);
+            if !mentions_rest {
+                continue;
+            }
+            if is_loop_block {
+                return true;
+            }
+            let compatible = match instruction {
+                Instruction::PrimCall { prim, args, .. } => {
+                    rest_rewrite_for_prim(*prim, args, rest, aliases).is_some()
+                }
+                _ => false,
+            };
+            if !compatible {
+                return true;
+            }
+        }
+
+        if terminator_mentions_rest(&block.terminator, rest, aliases) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn insert_rest_to_list<'gc>(procedure: &mut Procedure<'gc>, rest: ValueId) {
+    let entry = procedure
+        .blocks
+        .iter_mut()
+        .find(|block| block.id == procedure.entry)
+        .expect("procedure should contain entry block");
+    entry.instructions.insert(
+        0,
+        Instruction::RestToList {
+            dst: rest,
+            rest,
+            source: entry.source,
+        },
+    );
+}
+
+fn rewrite_rest_uses<'gc>(
+    procedure: &mut Procedure<'gc>,
+    rest: ValueId,
+    aliases: &HashMap<ValueId, RestAlias>,
+) {
+    for block in &mut procedure.blocks {
+        let mut lowered = Vec::with_capacity(block.instructions.len());
+        for instruction in block.instructions.drain(..) {
+            match instruction {
+                Instruction::PrimCall {
+                    dst,
+                    prim,
+                    args,
+                    source,
+                } => match rest_rewrite_for_prim(prim, &args, rest, aliases) {
+                    Some(RestRewrite::Cdr) => {}
+                    Some(RestRewrite::Ref(alias)) => lowered.push(Instruction::RestRef {
+                        dst,
+                        rest: alias.rest,
+                        index: alias.skip,
+                        source,
+                    }),
+                    Some(RestRewrite::Length(alias)) => lowered.push(Instruction::RestLength {
+                        dst,
+                        rest: alias.rest,
+                        skip: alias.skip,
+                        source,
+                    }),
+                    Some(RestRewrite::Predicate(alias, predicate)) => {
+                        lowered.push(Instruction::RestPredicate {
+                            dst,
+                            rest: alias.rest,
+                            predicate,
+                            skip: alias.skip,
+                            source,
+                        })
+                    }
+                    None => lowered.push(Instruction::PrimCall {
+                        dst,
+                        prim,
+                        args,
+                        source,
+                    }),
+                },
+                other => lowered.push(other),
+            }
+        }
+        block.instructions = lowered;
+    }
+}
+
+fn loop_blocks<'gc>(procedure: &Procedure<'gc>) -> HashSet<BlockId> {
+    let successors = procedure
+        .blocks
+        .iter()
+        .map(|block| (block.id, block_successors(procedure, block)))
+        .collect::<HashMap<_, _>>();
+    procedure
+        .blocks
+        .iter()
+        .filter_map(|block| {
+            successors
+                .get(&block.id)
+                .into_iter()
+                .flatten()
+                .any(|successor| can_reach(*successor, block.id, &successors))
+                .then_some(block.id)
+        })
+        .collect()
+}
+
+fn block_successors<'gc>(procedure: &Procedure<'gc>, block: &Block<'gc>) -> Vec<BlockId> {
+    let mut successors = block.terminator.successors();
+    if let Terminator::TailCall {
+        callee: LinearAtom::Local(callee),
+        ..
+    } = block.terminator
+        && callee == procedure.binding
+    {
+        successors.push(procedure.entry);
+    }
+    successors
+}
+
+fn can_reach(start: BlockId, target: BlockId, successors: &HashMap<BlockId, Vec<BlockId>>) -> bool {
+    let mut seen = HashSet::new();
+    let mut stack = vec![start];
+
+    while let Some(block) = stack.pop() {
+        if block == target {
+            return true;
+        }
+        if !seen.insert(block) {
+            continue;
+        }
+        if let Some(next) = successors.get(&block) {
+            stack.extend(next.iter().copied());
+        }
+    }
+
+    false
 }
 
 struct ProcedureBuilder<'gc> {
@@ -522,7 +830,11 @@ impl<'gc> Instruction<'gc> {
         match self {
             Self::MakeClosure { dst, .. }
             | Self::ClosureRef { dst, .. }
-            | Self::PrimCall { dst, .. } => Some(*dst),
+            | Self::PrimCall { dst, .. }
+            | Self::RestToList { dst, .. }
+            | Self::RestRef { dst, .. }
+            | Self::RestLength { dst, .. }
+            | Self::RestPredicate { dst, .. } => Some(*dst),
             Self::ClosureSet { .. } => None,
         }
     }
@@ -533,6 +845,10 @@ impl<'gc> Instruction<'gc> {
             Self::ClosureRef { closure, .. } => vec![*closure],
             Self::ClosureSet { closure, value, .. } => vec![*closure, *value],
             Self::PrimCall { args, .. } => args.clone(),
+            Self::RestToList { .. } => vec![],
+            Self::RestRef { rest, .. }
+            | Self::RestLength { rest, .. }
+            | Self::RestPredicate { rest, .. } => vec![LinearAtom::Local(*rest)],
         }
     }
 }
@@ -898,6 +1214,335 @@ mod tests {
                     source: Value::new(false),
                 }]
             );
+        });
+    }
+
+    #[test]
+    fn variadic_car_lowers_to_rest_ref() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let rest = lvar(ctx, "rest");
+            let out = lvar(ctx, "out");
+            let body = Gc::new(
+                *ctx,
+                Term::Let(
+                    out,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "car").into(),
+                        atoms(ctx, &[Atom::Local(rest)]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::Continue(retk, atoms(ctx, &[Atom::Local(out)]), Value::new(false)),
+                    ),
+                ),
+            );
+            let entry =
+                mk_func_with_variadic(ctx, "entry", f, retk, &[], Some(rest), body, Some(&[]));
+            let reify = reify_info(ctx, entry, &[entry], &[]);
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert_eq!(
+                entry_block.instructions,
+                vec![Instruction::RestRef {
+                    dst: ValueId(3),
+                    rest: ValueId(2),
+                    index: 0,
+                    source: Value::new(false),
+                }]
+            );
+        });
+    }
+
+    #[test]
+    fn variadic_cadr_lowers_to_rest_ref_offset() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let rest = lvar(ctx, "rest");
+            let tail = lvar(ctx, "tail");
+            let out = lvar(ctx, "out");
+            let body = Gc::new(
+                *ctx,
+                Term::Let(
+                    tail,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "cdr").into(),
+                        atoms(ctx, &[Atom::Local(rest)]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            out,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "car").into(),
+                                atoms(ctx, &[Atom::Local(tail)]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Continue(
+                                    retk,
+                                    atoms(ctx, &[Atom::Local(out)]),
+                                    Value::new(false),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry =
+                mk_func_with_variadic(ctx, "entry", f, retk, &[], Some(rest), body, Some(&[]));
+            let reify = reify_info(ctx, entry, &[entry], &[]);
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert_eq!(
+                entry_block.instructions,
+                vec![Instruction::RestRef {
+                    dst: ValueId(4),
+                    rest: ValueId(2),
+                    index: 1,
+                    source: Value::new(false),
+                }]
+            );
+        });
+    }
+
+    #[test]
+    fn variadic_length_and_predicates_lower_to_rest_ops() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let rest = lvar(ctx, "rest");
+            let len = lvar(ctx, "len");
+            let empty = lvar(ctx, "empty");
+            let pair = lvar(ctx, "pair");
+            let list = lvar(ctx, "list");
+            let body = Gc::new(
+                *ctx,
+                Term::Let(
+                    len,
+                    Expression::PrimCall(
+                        Symbol::from_str(ctx, "length").into(),
+                        atoms(ctx, &[Atom::Local(rest)]),
+                        Value::new(false),
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            empty,
+                            Expression::PrimCall(
+                                Symbol::from_str(ctx, "null?").into(),
+                                atoms(ctx, &[Atom::Local(rest)]),
+                                Value::new(false),
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    pair,
+                                    Expression::PrimCall(
+                                        Symbol::from_str(ctx, "pair?").into(),
+                                        atoms(ctx, &[Atom::Local(rest)]),
+                                        Value::new(false),
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::Let(
+                                            list,
+                                            Expression::PrimCall(
+                                                Symbol::from_str(ctx, "list?").into(),
+                                                atoms(ctx, &[Atom::Local(rest)]),
+                                                Value::new(false),
+                                            ),
+                                            Gc::new(
+                                                *ctx,
+                                                Term::Continue(
+                                                    retk,
+                                                    atoms(
+                                                        ctx,
+                                                        &[
+                                                            Atom::Local(len),
+                                                            Atom::Local(empty),
+                                                            Atom::Local(pair),
+                                                            Atom::Local(list),
+                                                        ],
+                                                    ),
+                                                    Value::new(false),
+                                                ),
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let entry =
+                mk_func_with_variadic(ctx, "entry", f, retk, &[], Some(rest), body, Some(&[]));
+            let reify = reify_info(ctx, entry, &[entry], &[]);
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert_eq!(
+                entry_block.instructions,
+                vec![
+                    Instruction::RestLength {
+                        dst: ValueId(3),
+                        rest: ValueId(2),
+                        skip: 0,
+                        source: Value::new(false),
+                    },
+                    Instruction::RestPredicate {
+                        dst: ValueId(4),
+                        rest: ValueId(2),
+                        predicate: RestPredicate::Null,
+                        skip: 0,
+                        source: Value::new(false),
+                    },
+                    Instruction::RestPredicate {
+                        dst: ValueId(5),
+                        rest: ValueId(2),
+                        predicate: RestPredicate::Pair,
+                        skip: 0,
+                        source: Value::new(false),
+                    },
+                    Instruction::RestPredicate {
+                        dst: ValueId(6),
+                        rest: ValueId(2),
+                        predicate: RestPredicate::List,
+                        skip: 0,
+                        source: Value::new(false),
+                    },
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn incompatible_variadic_use_emits_rest_to_list() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let rest = lvar(ctx, "rest");
+            let entry = mk_func_with_variadic(
+                ctx,
+                "entry",
+                f,
+                retk,
+                &[],
+                Some(rest),
+                Gc::new(
+                    *ctx,
+                    Term::Continue(retk, atoms(ctx, &[Atom::Local(rest)]), Value::new(false)),
+                ),
+                Some(&[]),
+            );
+            let reify = reify_info(ctx, entry, &[entry], &[]);
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                entry_block.instructions.first(),
+                Some(Instruction::RestToList {
+                    dst: ValueId(2),
+                    rest: ValueId(2),
+                    source,
+                }) if *source == Value::new(false)
+            ));
+        });
+    }
+
+    #[test]
+    fn variadic_use_in_loop_emits_rest_to_list() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let rest = lvar(ctx, "rest");
+            let loop_k = lvar(ctx, "loop");
+            let len = lvar(ctx, "len");
+            let loop_cont = mk_cont(
+                ctx,
+                "loop",
+                loop_k,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::Let(
+                        len,
+                        Expression::PrimCall(
+                            Symbol::from_str(ctx, "length").into(),
+                            atoms(ctx, &[Atom::Local(rest)]),
+                            Value::new(false),
+                        ),
+                        Gc::new(
+                            *ctx,
+                            Term::Continue(loop_k, atoms(ctx, &[]), Value::new(false)),
+                        ),
+                    ),
+                ),
+                &[],
+                false,
+            );
+            let body = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[loop_cont]),
+                    Gc::new(
+                        *ctx,
+                        Term::Continue(loop_k, atoms(ctx, &[]), Value::new(false)),
+                    ),
+                ),
+            );
+            let entry =
+                mk_func_with_variadic(ctx, "entry", f, retk, &[], Some(rest), body, Some(&[]));
+            let reify = reify_info(ctx, entry, &[entry], &[loop_cont]);
+
+            let program = linearize(&reify);
+            let entry_proc = procedure(&program, CodeId::Function(entry));
+            let entry_block = entry_proc
+                .blocks
+                .iter()
+                .find(|block| block.id == entry_proc.entry)
+                .expect("entry block");
+
+            assert!(matches!(
+                entry_block.instructions.first(),
+                Some(Instruction::RestToList {
+                    dst: ValueId(2),
+                    rest: ValueId(2),
+                    source,
+                }) if *source == Value::new(false)
+            ));
         });
     }
 

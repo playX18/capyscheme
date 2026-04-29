@@ -365,12 +365,12 @@ primitive_transformers!(
             return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
 
-        Some(ensure_pair(cps, src, op, x, |cps, pair| {
+        Some(
             with_cps!(cps;
-                let car = #% "car" (pair) @ src;
+                let car = #% "car" (args[0]) @ src;
                 continue k (car)
             )
-        }))
+        )
     }
 
     "cdr" => cdr(cps, src, op, args, k) {
@@ -378,12 +378,12 @@ primitive_transformers!(
             return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
         };
 
-        Some(ensure_pair(cps, src, op, x, |cps, pair| {
+        Some(
             with_cps!(cps;
-                let cdr = #% "cdr" (pair) @ src;
+                let cdr = #% "cdr" (args[0]) @ src;
                 continue k (cdr) @ src
             )
-        }))
+        )
     }
 
     "set-car!" => set_car(cps, src, op, args, k) {

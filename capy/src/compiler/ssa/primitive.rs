@@ -2501,11 +2501,42 @@ prim!(
 
     "car" => car(ssa, args, _h) {
         let pair = ssa.atom(args[0]);
+        let is_pair = ssa.builder.create_block();
+        let not_pair = ssa.builder.create_block();
+        ssa.builder.func.layout.set_cold(not_pair);
+
+        ssa.branch_if_has_typ8(pair, TypeCode8::PAIR.bits(), is_pair, &[], not_pair, &[]);
+        ssa.builder.switch_to_block(is_pair);
+
+        ssa.builder.switch_to_block(not_pair);
+        {
+            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let res = ssa.builder.ins().call(ssa.thunks.car_not_pair, &[ctx, pair]);
+            let res = ssa.builder.inst_results(res)[0];
+            ssa.raise_to_exception_handler(res);
+        }
+        ssa.builder.switch_to_block(is_pair);
 
         PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), pair, offset_of!(Pair, car) as i32))
     },
     "cdr" => cdr(ssa, args, _h) {
         let pair = ssa.atom(args[0]);
+        let is_pair = ssa.builder.create_block();
+        let not_pair = ssa.builder.create_block();
+        ssa.builder.func.layout.set_cold(not_pair);
+
+        ssa.branch_if_has_typ8(pair, TypeCode8::PAIR.bits(), is_pair, &[], not_pair, &[]);
+        ssa.builder.switch_to_block(is_pair);
+
+        ssa.builder.switch_to_block(not_pair);
+        {
+
+            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
+            let res = ssa.builder.ins().call(ssa.thunks.cdr_not_pair, &[ctx, pair]);
+            let res = ssa.builder.inst_results(res)[0];
+            ssa.raise_to_exception_handler(res);
+        }
+        ssa.builder.switch_to_block(is_pair);
 
         PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), pair, offset_of!(Pair, cdr) as i32))
     },
