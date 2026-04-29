@@ -4,11 +4,17 @@ use crate::rsgc::{Gc, sync::thread::Thread};
 
 use crate::{
     compiler::ssa::{ContOrFunc, SSABuilder, VarDef, primitive::PrimValue},
-    cps::term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
-    expander::core::LVarRef,
+    cps::{
+        linear::{
+            Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
+            LinearVar, Procedure, ProcedureKind, Terminator,
+        },
+        term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
+    },
+    expander::core::{LVarRef, fresh_lvar},
     runtime::{
         Context, State,
-        value::{Closure, ReturnCode, Tagged, Value},
+        value::{Closure, ReturnCode, Symbol, Tagged, Value},
     },
 };
 use cranelift::prelude::{InstBuilder, IntCC, types};
@@ -35,10 +41,59 @@ pub enum Callee {
 }
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+    fn target_binding(&self) -> LVarRef<'gc> {
+        match &self.target {
+            ContOrFunc::Cont(c) => c.binding,
+            ContOrFunc::Func(f) => f.binding,
+            ContOrFunc::Procedure(p) => p.binding,
+        }
+    }
+
+    fn target_name(&self) -> Value<'gc> {
+        match &self.target {
+            ContOrFunc::Cont(c) => c.name,
+            ContOrFunc::Func(f) => f.name,
+            ContOrFunc::Procedure(p) => p.name,
+        }
+    }
+
+    fn target_source(&self) -> Value<'gc> {
+        match &self.target {
+            ContOrFunc::Cont(c) => c.source(),
+            ContOrFunc::Func(f) => f.source,
+            ContOrFunc::Procedure(p) => p.source,
+        }
+    }
+
+    fn target_params(&self) -> (Vec<LVarRef<'gc>>, Option<LVarRef<'gc>>) {
+        match &self.target {
+            ContOrFunc::Cont(c) => (c.args().iter().copied().collect(), c.variadic()),
+            ContOrFunc::Func(f) => (f.args.iter().copied().collect(), f.variadic),
+            ContOrFunc::Procedure(p) => (p.params.clone(), p.variadic),
+        }
+    }
+
+    fn target_return_cont(&self) -> Option<LVarRef<'gc>> {
+        match &self.target {
+            ContOrFunc::Func(f) => Some(f.return_cont),
+            ContOrFunc::Procedure(p) => p.return_cont,
+            ContOrFunc::Cont(_) => None,
+        }
+    }
+
+    fn target_is_function(&self) -> bool {
+        match &self.target {
+            ContOrFunc::Func(_) => true,
+            ContOrFunc::Procedure(p) => p.kind == ProcedureKind::Function,
+            ContOrFunc::Cont(_) => false,
+        }
+    }
+
     pub fn is_self_reference(&mut self, var: LVarRef<'gc>) -> bool {
-        match self.target {
+        match &self.target {
             ContOrFunc::Cont(c) => Gc::ptr_eq(c.binding, var),
             ContOrFunc::Func(f) => Gc::ptr_eq(f.binding, var),
+            ContOrFunc::Procedure(p) => Gc::ptr_eq(p.binding, var),
         }
     }
 
@@ -93,9 +148,18 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
         match *self.variables.get(&var).unwrap_or_else(|| {
             let alloc = ::pretty::BoxAllocator;
-            let pretty = match self.target {
+            let pretty = match &self.target {
                 ContOrFunc::Func(f) => f.pretty::<_, &BoxAllocator>(&alloc),
                 ContOrFunc::Cont(c) => c.pretty::<_, &BoxAllocator>(&alloc),
+                ContOrFunc::Procedure(_) => {
+                    panic!(
+                        "{}@{:p} var not found when compiling {}({})",
+                        var.name,
+                        var,
+                        self.target_binding().name,
+                        self.target_name()
+                    )
+                }
             };
 
             let _ = pretty.1.render(80, &mut std::io::stdout());
@@ -105,14 +169,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 "{}@{:p} var not found when compiling {}({})",
                 var.name,
                 var,
-                match self.target {
-                    ContOrFunc::Func(f) => f.binding.name,
-                    ContOrFunc::Cont(c) => c.binding.name,
-                },
-                match self.target {
-                    ContOrFunc::Func(f) => f.name,
-                    ContOrFunc::Cont(c) => c.name,
-                }
+                self.target_binding().name,
+                self.target_name()
             )
         }) {
             VarDef::Comparison(val) => {
@@ -123,41 +181,29 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.debug_local(var, val);
                 val
             }
-            VarDef::Free(ix) => {
-                let value: ir::Value = self.builder.ins().load(
-                    types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
-                    self.rator,
-                    Closure::DATA_OFFSET as i32 + (ix * 8) as i32,
-                );
-
-                value
-            }
 
             VarDef::Value(val) => val,
         }
     }
 
     pub fn entrypoint(&mut self, rands: ir::Value, num_rands: ir::Value) {
-        match self.target {
-            ContOrFunc::Func(func) => {
-                self.set_debug_loc(func.source);
-                self.check_yield(self.rator, rands, num_rands);
-            }
-
-            ContOrFunc::Cont(cont) => {
-                self.set_debug_loc(cont.source());
-            }
+        let source = self.target_source();
+        let is_function = self.target_is_function();
+        self.set_debug_loc(source);
+        if is_function {
+            self.check_yield(self.rator, rands, num_rands);
         }
 
-        self.load_free_vars();
+        if !matches!(&self.target, ContOrFunc::Procedure(_)) {
+            self.load_free_vars();
+        }
         self.load_arguments(rands, num_rands);
     }
 
     pub(crate) fn current_retk_value(&mut self) -> ir::Value {
-        match self.target {
-            ContOrFunc::Func(func) => self.var(func.return_cont),
-            ContOrFunc::Cont(_) => {
+        match self.target_return_cont() {
+            Some(return_cont) => self.var(return_cont),
+            None => {
                 let ctx = self.builder.ins().get_pinned_reg(types::I64);
                 let call = self.builder.ins().call(self.thunks.default_retk, &[ctx]);
                 self.builder.inst_results(call)[0]
@@ -208,10 +254,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn load_arguments(&mut self, mut rands: ir::Value, mut num_rands: ir::Value) {
-        let (params, rest) = match self.target {
-            ContOrFunc::Func(func) => (func.args, func.variadic),
-            ContOrFunc::Cont(cont) => (cont.args(), cont.variadic()),
-        };
+        let (params, rest) = self.target_params();
 
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
@@ -227,7 +270,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             offset_of!(State, runstack) as i32,
         );
 
-        if let ContOrFunc::Func(func) = self.target {
+        if let Some(return_cont) = self.target_return_cont() {
             let retk = self.builder.ins().load(
                 types::I64,
                 ir::MemFlags::trusted().with_can_move(),
@@ -238,9 +281,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             rands = self.builder.ins().iadd_imm(rands, 8);
             num_rands = self.builder.ins().iadd_imm(num_rands, -1);
 
-            self.debug_local(func.return_cont, retk);
+            self.debug_local(return_cont, retk);
 
-            self.variables.insert(func.return_cont, VarDef::Value(retk));
+            self.variables.insert(return_cont, VarDef::Value(retk));
         }
 
         if params.len() != 0 {
@@ -673,9 +716,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn load_free_vars(&mut self) {
-        let Some(fvs) = (match self.target {
+        let Some(fvs) = (match &self.target {
             ContOrFunc::Func(func) => func.free_vars.get(),
             ContOrFunc::Cont(cont) => cont.free_vars.get(),
+            ContOrFunc::Procedure(_) => None,
         }) else {
             return;
         };
@@ -686,7 +730,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
            as all variables are immutable, mutable variables should've been boxed by optimizing compiler.
         */
         for (i, var) in fvs.iter().copied().enumerate() {
-            self.variables.insert(var, VarDef::Free(i));
+            let value = self.builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                self.rator,
+                Closure::DATA_OFFSET as i32 + (i * 8) as i32,
+            );
+            self.variables.insert(var, VarDef::Value(value));
         }
     }
 
@@ -827,6 +877,527 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         for &cont in conts.iter().filter(|k| !k.reified.get()) {
             let _block = self.block_for_cont(cont);
             self.to_generate.push(cont);
+        }
+    }
+
+    pub fn linear_procedure(&mut self, procedure: &Procedure<'gc>) {
+        for block in &procedure.blocks {
+            if block.id == procedure.entry {
+                self.linear_blockmap.insert(block.id, self.entry_block);
+                continue;
+            }
+
+            let clif_block = self.builder.create_block();
+            for _ in &block.params {
+                self.builder.append_block_param(clif_block, types::I64);
+            }
+            self.linear_blockmap.insert(block.id, clif_block);
+        }
+
+        let entry = procedure
+            .blocks
+            .iter()
+            .find(|block| block.id == procedure.entry)
+            .expect("linear procedure should contain its entry block");
+        self.lower_linear_block(procedure, entry, true);
+
+        for block in &procedure.blocks {
+            if block.id == procedure.entry {
+                continue;
+            }
+
+            let clif_block = self.linear_blockmap[&block.id];
+            self.builder.switch_to_block(clif_block);
+            self.lower_linear_block(procedure, block, false);
+        }
+    }
+
+    fn lower_linear_block(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        block: &LinearBlock<'gc>,
+        is_entry: bool,
+    ) {
+        self.set_debug_loc(block.source);
+        if !is_entry {
+            let clif_block = self.linear_blockmap[&block.id];
+            let params = self.builder.block_params(clif_block).to_vec();
+            for (var, value) in block.params.iter().copied().zip(params) {
+                self.bind_linear_var(LinearVar::Source(var), VarDef::Value(value));
+            }
+        }
+
+        for instruction in &block.instructions {
+            self.linear_instruction(instruction);
+        }
+
+        self.linear_terminator(procedure, &block.terminator);
+    }
+
+    fn bind_linear_var(&mut self, var: LinearVar<'gc>, def: VarDef) {
+        self.linear_variables.insert(var, def);
+        if let LinearVar::Source(source) = var {
+            self.variables.insert(source, def);
+            if let VarDef::Value(value) = def {
+                self.debug_local(source, value);
+            }
+        }
+    }
+
+    fn comparison_to_value(&mut self, val: ir::Value) -> ir::Value {
+        let true_ = self.builder.ins().iconst(types::I64, Value::VALUE_TRUE);
+        let false_ = self.builder.ins().iconst(types::I64, Value::VALUE_FALSE);
+        self.builder.ins().select(val, true_, false_)
+    }
+
+    fn linear_var(&mut self, var: LinearVar<'gc>) -> ir::Value {
+        match var {
+            LinearVar::Source(source) => self.var(source),
+            LinearVar::Synthetic(_) => match *self
+                .linear_variables
+                .get(&var)
+                .unwrap_or_else(|| panic!("linear variable {var:?} not found"))
+            {
+                VarDef::Value(value) => value,
+                VarDef::Comparison(value) => self.comparison_to_value(value),
+            },
+        }
+    }
+
+    fn linear_atom(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
+        match atom {
+            LinearAtom::Constant(value) => self.atom(Atom::Constant(value)),
+            LinearAtom::Local(var) => self.linear_var(var),
+        }
+    }
+
+    fn linear_atom_for_cond(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
+        match atom {
+            LinearAtom::Local(LinearVar::Source(var)) => match self.variables.get(&var).copied() {
+                Some(VarDef::Comparison(val)) => val,
+                _ => {
+                    let val = self.var(var);
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
+                }
+            },
+            LinearAtom::Local(var @ LinearVar::Synthetic(_)) => {
+                match self.linear_variables.get(&var).copied() {
+                    Some(VarDef::Comparison(val)) => val,
+                    _ => {
+                        let val = self.linear_var(var);
+                        self.builder
+                            .ins()
+                            .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
+                    }
+                }
+            }
+            LinearAtom::Constant(_) => {
+                let val = self.linear_atom(atom);
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
+            }
+        }
+    }
+
+    fn linear_atom_as_term_atom(&mut self, atom: LinearAtom<'gc>) -> Atom<'gc> {
+        match atom {
+            LinearAtom::Constant(value) => Atom::Constant(value),
+            LinearAtom::Local(LinearVar::Source(var)) => Atom::Local(var),
+            LinearAtom::Local(var @ LinearVar::Synthetic(_)) => {
+                let alias = if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
+                    alias
+                } else {
+                    let name = Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into();
+                    let alias = fresh_lvar(self.module_builder.ctx, name);
+                    self.synthetic_aliases.insert(var, alias);
+                    alias
+                };
+                let def = *self
+                    .linear_variables
+                    .get(&var)
+                    .unwrap_or_else(|| panic!("linear variable {var:?} not found"));
+                self.variables.insert(alias, def);
+                Atom::Local(alias)
+            }
+        }
+    }
+
+    fn code_block_data(&self, code: CodeId<'gc>) -> DataId {
+        match code {
+            CodeId::Function(func) => self.module_builder.code_block_for_func[&func],
+            CodeId::Continuation(cont) => self.module_builder.code_block_for_cont[&cont],
+        }
+    }
+
+    fn linear_instruction(&mut self, instruction: &Instruction<'gc>) {
+        match instruction {
+            Instruction::MakeClosure {
+                dst,
+                code,
+                kind,
+                free_count,
+            } => {
+                let nfree = self.builder.ins().iconst(types::I64, *free_count as i64);
+                let is_cont = self.builder.ins().iconst(
+                    types::I8,
+                    match kind {
+                        ClosureKind::Function => 0,
+                        ClosureKind::Continuation => 1,
+                    },
+                );
+                let code_block = self.load_data_value(self.code_block_data(*code));
+                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+
+                let clos = self
+                    .builder
+                    .ins()
+                    .call(self.thunks.make_closure, &[ctx, code_block, nfree, is_cont]);
+                let clos = self.builder.inst_results(clos)[0];
+                self.bind_linear_var(*dst, VarDef::Value(clos));
+            }
+            Instruction::ClosureRef {
+                dst,
+                closure,
+                index,
+            } => {
+                let closure = self.linear_atom(*closure);
+                let value = self.builder.ins().load(
+                    types::I64,
+                    ir::MemFlags::trusted().with_can_move(),
+                    closure,
+                    Closure::DATA_OFFSET as i32 + (*index * 8) as i32,
+                );
+                self.bind_linear_var(*dst, VarDef::Value(value));
+            }
+            Instruction::ClosureSet {
+                closure,
+                index,
+                value,
+            } => {
+                let closure = self.linear_atom(*closure);
+                let value = self.linear_atom(*value);
+                self.builder.ins().store(
+                    ir::MemFlags::trusted().with_can_move(),
+                    value,
+                    closure,
+                    Closure::DATA_OFFSET as i32 + (*index * 8) as i32,
+                );
+            }
+            Instruction::PrimCall {
+                dst,
+                prim,
+                args,
+                source,
+            } => {
+                self.set_debug_loc(*source);
+                let Some(lowerer) = self.module_builder.prims.map.get(prim).copied() else {
+                    panic!("undefined primitive: {prim}")
+                };
+                let args = args
+                    .iter()
+                    .copied()
+                    .map(|arg| self.linear_atom_as_term_atom(arg))
+                    .collect::<Vec<_>>();
+                let val = match lowerer(self, &args) {
+                    PrimValue::Value(val) => VarDef::Value(val),
+                    PrimValue::Comparison(val) => VarDef::Comparison(val),
+                };
+                self.bind_linear_var(*dst, val);
+            }
+        }
+    }
+
+    fn get_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
+        if let LinearAtom::Local(LinearVar::Source(var)) = callee {
+            if self.is_self_reference(var) {
+                return Callee::SelfRec(self.entry_block);
+            }
+
+            if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
+                && let Some(func_id) = self.module_builder.func_for_func.get(func)
+            {
+                let func_id = *func_id;
+                let closure = self.linear_atom(callee);
+                let func_ref = self
+                    .module_builder
+                    .module
+                    .declare_func_in_func(func_id, &mut self.builder.func);
+                return Callee::Direct {
+                    target: func_ref,
+                    closure,
+                };
+            }
+        }
+
+        let callee = self.linear_atom(callee);
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let get_clos_code = self.builder.create_block();
+        let error = self.builder.create_block();
+        self.builder.func.layout.set_cold(error);
+        self.branch_if_has_typ8(callee, Closure::TC8.bits(), get_clos_code, &[], error, &[]);
+        self.builder.switch_to_block(error);
+        {
+            let err = self
+                .builder
+                .ins()
+                .call(self.thunks.non_applicable, &[ctx, callee]);
+            let err = self.builder.inst_results(err)[0];
+            self.raise_to_exception_handler(err);
+        }
+
+        self.builder.switch_to_block(get_clos_code);
+        let code = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            callee,
+            offset_of!(Closure, code) as i32,
+        );
+        Callee::Indirect {
+            target: code,
+            closure: callee,
+        }
+    }
+
+    fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
+        if let LinearAtom::Local(LinearVar::Source(var)) = callee
+            && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
+            && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
+        {
+            let func_id = *func_id;
+            let closure = self.linear_atom(callee);
+            let func_ref = self
+                .module_builder
+                .module
+                .declare_func_in_func(func_id, &mut self.builder.func);
+            return Callee::Direct {
+                target: func_ref,
+                closure,
+            };
+        }
+
+        let closure = self.linear_atom(callee);
+        let code = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            closure,
+            offset_of!(Closure, code) as i32,
+        );
+        Callee::Indirect {
+            target: code,
+            closure,
+        }
+    }
+
+    fn linear_call(
+        &mut self,
+        callee: LinearAtom<'gc>,
+        retk: LinearAtom<'gc>,
+        args: &[LinearAtom<'gc>],
+        source: Value<'gc>,
+    ) {
+        self.set_debug_loc(source);
+        let num_rands = self
+            .builder
+            .ins()
+            .iconst(types::I64, (args.len() + 1) as i64);
+        let callee = self.get_callee_linear(callee);
+        let retk = self.linear_atom(retk);
+        let rands = std::iter::once(retk)
+            .chain(args.iter().copied().map(|arg| self.linear_atom(arg)))
+            .collect::<Vec<_>>();
+        let rands = self.push_args(&rands);
+
+        if self.module_builder.stacktraces {
+            let ctx = self.builder.ins().get_pinned_reg(types::I64);
+            let src_info = self.atom(Atom::Constant(source));
+            let rator = self.closure_from_callee(callee);
+
+            self.builder.ins().call(
+                self.thunks.push_dframe,
+                &[ctx, src_info, rator, num_rands, rands],
+            );
+        }
+
+        self.emit_callee_jump(callee, rands, num_rands);
+    }
+
+    fn linear_tail_call(
+        &mut self,
+        callee: LinearAtom<'gc>,
+        args: &[LinearAtom<'gc>],
+        source: Value<'gc>,
+    ) {
+        self.set_debug_loc(source);
+        if let LinearAtom::Local(LinearVar::Source(k)) = callee
+            && self
+                .module_builder
+                .reify_info
+                .free_vars
+                .conts
+                .contains_key(&k)
+        {
+            let args = args
+                .iter()
+                .copied()
+                .map(|arg| self.linear_atom(arg))
+                .collect::<Vec<_>>();
+            self.continue_to(k, &args);
+            return;
+        }
+
+        let callee = self.get_tail_callee_linear(callee);
+        let args = args
+            .iter()
+            .copied()
+            .map(|arg| self.linear_atom(arg))
+            .collect::<Vec<_>>();
+        let rands = self.push_args(&args);
+        let num_rands = self.builder.ins().iconst(types::I64, args.len() as i64);
+        self.emit_callee_jump(callee, rands, num_rands);
+    }
+
+    fn emit_callee_jump(&mut self, callee: Callee, rands: ir::Value, num_rands: ir::Value) {
+        match callee {
+            Callee::Indirect { target, closure } => {
+                self.builder.ins().jump(
+                    self.exit_block,
+                    &[
+                        BlockArg::Value(target),
+                        BlockArg::Value(closure),
+                        BlockArg::Value(rands),
+                        BlockArg::Value(num_rands),
+                    ],
+                );
+            }
+            Callee::Direct { target, closure } => {
+                self.builder
+                    .ins()
+                    .return_call(target, &[closure, rands, num_rands]);
+            }
+            Callee::SelfRec(block) => {
+                self.builder.ins().jump(
+                    block,
+                    &[
+                        BlockArg::Value(self.rator),
+                        BlockArg::Value(rands),
+                        BlockArg::Value(num_rands),
+                    ],
+                );
+            }
+        }
+    }
+
+    fn jump_to_linear_block(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        target: crate::cps::linear::BlockId,
+        args: &[LinearAtom<'gc>],
+    ) {
+        let block = procedure
+            .blocks
+            .iter()
+            .find(|block| block.id == target)
+            .expect("linear jump target should exist");
+        let fixed_count = if block.variadic.is_some() {
+            block.params.len() - 1
+        } else {
+            block.params.len()
+        };
+        if args.len() < fixed_count {
+            panic!(
+                "not enough args when jumping to linear block {:?}, expected at least {}, got {}",
+                target,
+                fixed_count,
+                args.len()
+            );
+        }
+
+        let mut block_args = args[..fixed_count]
+            .iter()
+            .copied()
+            .map(|arg| BlockArg::Value(self.linear_atom(arg)))
+            .collect::<Vec<_>>();
+
+        if let Some(variadic) = block.variadic {
+            if variadic.is_referenced() {
+                let mut ls = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, Value::null().bits() as i64);
+                let ctx = self.builder.ins().get_pinned_reg(types::I64);
+                for arg in args[fixed_count..].iter().rev().copied() {
+                    let arg = self.linear_atom(arg);
+                    let call = self.builder.ins().call(self.thunks.cons, &[ctx, arg, ls]);
+                    ls = self.builder.inst_results(call)[0];
+                }
+                block_args.push(BlockArg::Value(ls));
+            } else {
+                let null = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, Value::null().bits() as i64);
+                block_args.push(BlockArg::Value(null));
+            }
+        } else if args.len() != fixed_count {
+            panic!(
+                "wrong number of args when jumping to linear block {:?}, expected {}, got {}",
+                target,
+                fixed_count,
+                args.len()
+            );
+        }
+
+        let clif_block = self.linear_blockmap[&target];
+        self.builder.ins().jump(clif_block, &block_args);
+    }
+
+    fn linear_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
+        match target {
+            BranchTarget::Local { block, args } => {
+                self.jump_to_linear_block(procedure, *block, args)
+            }
+            BranchTarget::Reified { continuation, args } => {
+                self.linear_tail_call(*continuation, args, Value::new(false));
+            }
+        }
+    }
+
+    fn linear_terminator(&mut self, procedure: &Procedure<'gc>, terminator: &Terminator<'gc>) {
+        match terminator {
+            Terminator::Call {
+                callee,
+                retk,
+                args,
+                source,
+            } => self.linear_call(*callee, *retk, args, *source),
+            Terminator::TailCall {
+                callee,
+                args,
+                source,
+            } => self.linear_tail_call(*callee, args, *source),
+            Terminator::Jump { target, args } => {
+                self.jump_to_linear_block(procedure, *target, args);
+            }
+            Terminator::Branch {
+                test,
+                consequent,
+                alternative,
+                hints: _,
+            } => {
+                let truthy = self.linear_atom_for_cond(*test);
+                let kcons = self.builder.create_block();
+                let kalt = self.builder.create_block();
+
+                self.builder.ins().brif(truthy, kcons, &[], kalt, &[]);
+                self.builder.switch_to_block(kalt);
+                self.linear_branch_target(procedure, alternative);
+
+                self.builder.switch_to_block(kcons);
+                self.linear_branch_target(procedure, consequent);
+            }
         }
     }
 

@@ -299,7 +299,7 @@ fn compile_expanded_to_destination<'gc>(
     let _phase = CompilationPhase::new(ctx);
     let lowered = lower_expanded_scheme(ctx, expanded, module)?;
     let destination = destination_artifact_for_current_policy(destination);
-    dump_lowered_program_artifacts(&destination.path, &lowered, dump_options);
+    dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
     compile_cps_to_destination(ctx, lowered.cps, options, &destination)?;
 
     if !load_thunk {

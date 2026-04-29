@@ -1,7 +1,7 @@
 use std::{io::Write, path::Path};
 
 use crate::compiler::{linkutils::Linker, ssa::ModuleBuilder};
-use crate::cps::{reify, term::FuncRef};
+use crate::cps::{linear::linearize, reify, term::FuncRef};
 use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::{
     Context,
@@ -31,6 +31,7 @@ pub fn compile_cps_to_object<'gc>(
 ) -> Result<ObjectProduct, Value<'gc>> {
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
     let reify_info = reify(ctx, cps);
+    let linear = linearize(&reify_info);
 
     let mut shared_builder = settings::builder();
     shared_builder.set("enable_probestack", "false").unwrap();
@@ -53,7 +54,7 @@ pub fn compile_cps_to_object<'gc>(
         cranelift_object::ObjectBuilder::new(isa, "scheme", default_libcall_names()).unwrap();
     let objmodule = ObjectModule::new(objbuilder);
 
-    let mut module_builder = ModuleBuilder::new(ctx, objmodule, reify_info);
+    let mut module_builder = ModuleBuilder::new(ctx, objmodule, reify_info, linear);
     module_builder.stacktraces = opts.backtraces;
     module_builder.compile();
 
