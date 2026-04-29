@@ -1,7 +1,7 @@
 use crate::{
     cps::linear::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
-        Procedure, ProcedureKind, RestPredicate, Terminator, ValueId,
+        Procedure, ProcedureKind, RestPredicate, SwitchKind, Terminator, ValueId,
     },
     expander::core::LVarRef,
     runtime::value::{Symbol, Value},
@@ -210,6 +210,48 @@ fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
             hints[0],
             hints[1]
         ),
+        Terminator::Switch {
+            kind,
+            scrutinee,
+            cases,
+            default,
+        } => {
+            let rendered_cases = cases
+                .iter()
+                .map(|case| {
+                    format!(
+                        " ({} {})",
+                        render_switch_case_value(case.value),
+                        render_branch_target(&case.target)
+                    )
+                })
+                .collect::<String>();
+            format!(
+                "(switch {} {}{} (else {}))",
+                render_switch_kind(*kind),
+                render_linear_atom(*scrutinee),
+                rendered_cases,
+                render_branch_target(default)
+            )
+        }
+    }
+}
+
+fn render_switch_kind(kind: SwitchKind) -> &'static str {
+    match kind {
+        SwitchKind::Eq => "eq?",
+        SwitchKind::Fixnum => "fx=?",
+        SwitchKind::Numeric => "=",
+        SwitchKind::Char => "char=?",
+        SwitchKind::CharEq => "eq?",
+        SwitchKind::SymbolEq => "eq?",
+    }
+}
+
+fn render_switch_case_value<'gc>(value: crate::cps::linear::SwitchCaseValue<'gc>) -> String {
+    match value {
+        crate::cps::linear::SwitchCaseValue::Integer(value) => value.to_string(),
+        crate::cps::linear::SwitchCaseValue::Symbol { value, .. } => render_value(value),
     }
 }
 
