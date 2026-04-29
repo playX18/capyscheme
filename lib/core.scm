@@ -1,6 +1,5 @@
 (library (core)
   (export
-
     |#%app|
     cond-expand
     %native-extension
@@ -908,9 +907,4 @@
     (core records)
     (core conditions)
     (core bytevector-transcoders)
-    (core hashtables))
-
-  (define |#%app|
-    ((@@ (capy) module-ref)
-     ((@@ (capy) resolve-module) '(capy) #f #f)
-     '|#%app|)))
+    (core hashtables)))

@@ -1,5 +1,6 @@
 (library (rnrs (6))
   (export
+    |#%app|
     #;(rnrs base (6))
     define
     define-syntax
@@ -745,8 +746,11 @@
     equal-hash
     string-hash
     string-ci-hash
-    symbol-hash)
-  (import (rnrs base (6))
+    symbol-hash
+    |#%app|)
+  (import
+    (only (core) |#%app|)
+    (rnrs base (6))
     (rnrs unicode (6))
     (rnrs bytevectors (6))
     (rnrs lists (6))

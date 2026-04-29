@@ -10,6 +10,7 @@
            (letrec-syntax r6rs:letrec-syntax)))
 
   (export
+    |#%app|
     *
     +
     -
