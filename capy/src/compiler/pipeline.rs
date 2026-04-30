@@ -143,7 +143,131 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         let reify_info = crate::cps::reify(ctx, lowered.cps);
         crate::cps::linear::linearize(&reify_info)
     };
-    let rendered = crate::cps::linear_pretty::render_program(&linear_cps);
+    let rendered = render_lcps_dump(&linear_cps);
     std::fs::write(format!("{destination}.lcps.scm"), rendered).unwrap();
     println!(";; TRACE  (capy)@load: LCPS -> {destination}.lcps.scm");
+}
+
+fn render_lcps_dump<'gc>(linear_cps: &crate::cps::linear::LinearProgram<'gc>) -> String {
+    let mut rendered = crate::cps::linear_pretty::render_program(linear_cps);
+    rendered.push('\n');
+    rendered.push_str(
+        &crate::compiler::bytecode::greedy_slotalloc::render_program_allocations(linear_cps),
+    );
+    rendered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_lcps_dump;
+    use crate::{
+        compiler::ssa::primitive::Primitive,
+        cps::{
+            linear::{
+                Block, BlockId, CodeId, LinearAtom, LinearProgram, Procedure, ProcedureKind,
+                Terminator, ValueId,
+            },
+            term::{Func, Term},
+        },
+        expander::core::{LVarRef, fresh_lvar},
+        rsgc::{Gc, alloc::Array, cell::Lock},
+        runtime::{
+            Context, Scheme,
+            value::{Symbol, Value},
+        },
+    };
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let scm = Scheme::new_uninit();
+        scm.enter(f);
+    }
+
+    fn vars<'gc>(ctx: Context<'gc>, vars: &[LVarRef<'gc>]) -> crate::cps::term::Vars<'gc> {
+        Array::from_slice(*ctx, vars)
+    }
+
+    fn atoms<'gc>(
+        ctx: Context<'gc>,
+        atoms: &[crate::cps::term::Atom<'gc>],
+    ) -> crate::cps::term::Atoms<'gc> {
+        Array::from_slice(*ctx, atoms)
+    }
+
+    fn dummy_func<'gc>(ctx: Context<'gc>) -> Gc<'gc, Func<'gc>> {
+        let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "lcps-dump-test").into());
+        let retk = fresh_lvar(ctx, Symbol::from_str(ctx, "lcps-dump-retk").into());
+        let body = Gc::new(
+            *ctx,
+            Term::Continue(retk, atoms(ctx, &[]), Value::new(false)),
+        );
+
+        Gc::new(
+            *ctx,
+            Func {
+                name: Symbol::from_str(ctx, "lcps-dump-test").into(),
+                source: Value::new(false),
+                binding,
+                return_cont: retk,
+                args: vars(ctx, &[]),
+                variadic: None,
+                body: Lock::new(body),
+                free_vars: Lock::new(Some(vars(ctx, &[]))),
+                meta: Value::new(false),
+            },
+        )
+    }
+
+    #[test]
+    fn lcps_dump_includes_slot_allocation() {
+        with_ctx(|ctx| {
+            let entry = dummy_func(ctx);
+            let p0 = ValueId(0);
+            let tmp = ValueId(1);
+            let procedure = Procedure {
+                code: CodeId::Function(entry),
+                kind: ProcedureKind::Function,
+                binding: ValueId(10_000),
+                name: Value::new(false),
+                source: Value::new(false),
+                meta: Value::new(false),
+                return_cont: None,
+                params: vec![p0],
+                variadic: None,
+                free_vars: vec![],
+                sources: Default::default(),
+                entry: BlockId(0),
+                blocks: vec![Block {
+                    id: BlockId(0),
+                    params: vec![p0],
+                    variadic: None,
+                    instructions: vec![crate::cps::linear::Instruction::PrimCall {
+                        dst: tmp,
+                        prim: Primitive::car,
+                        args: vec![LinearAtom::Local(p0)],
+                        source: Value::new(false),
+                    }],
+                    terminator: Terminator::TailCall {
+                        callee: LinearAtom::Local(tmp),
+                        args: vec![LinearAtom::Local(p0)],
+                        source: Value::new(false),
+                    },
+                    source: Value::new(false),
+                }],
+            };
+            let linear = LinearProgram {
+                entry,
+                procedures: vec![procedure],
+            };
+
+            let rendered = render_lcps_dump(&linear);
+
+            assert!(rendered.contains("(linear-program"));
+            assert!(rendered.contains("(slot-allocations"));
+            assert!(rendered.contains("(nlocals 2)"));
+            assert!(rendered.contains("(%v0 arg0"));
+            assert!(rendered.contains("(%v1 local0"));
+            assert!(rendered.contains("(block0 terminator tail-call local1 1)"));
+            assert!(rendered.contains("(parallel-copy-tmps"));
+        });
+    }
 }

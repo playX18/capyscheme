@@ -1086,6 +1086,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     fn linear_instruction(&mut self, instruction: &Instruction<'gc>) {
         match instruction {
+            Instruction::Const { dst, value } => {
+                let value = self.atom(Atom::Constant(*value));
+                self.bind_linear_var(*dst, VarDef::Value(value));
+            }
             Instruction::MakeClosure {
                 dst,
                 code,
@@ -1137,6 +1141,47 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     closure,
                     Closure::DATA_OFFSET as i32 + (*index * 8) as i32,
                 );
+            }
+            Instruction::CacheRef {
+                dst,
+                cache_key,
+                source,
+            } => {
+                self.set_debug_loc(*source);
+                let LinearAtom::Constant(cache_key) = cache_key else {
+                    panic!("invalid cache-ref: expected constant cache key, got {cache_key:?}");
+                };
+                let cell = self.module_builder.intern_cache_cell(*cache_key);
+                let cell = self.import_data(cell);
+                let addr = self.builder.ins().global_value(types::I64, cell);
+                let value = self
+                    .builder
+                    .ins()
+                    .load(types::I64, ir::MemFlags::new(), addr, 0);
+                self.bind_linear_var(*dst, VarDef::Value(value));
+            }
+            Instruction::CacheSet {
+                dst,
+                cache_key,
+                value,
+                source,
+            } => {
+                self.set_debug_loc(*source);
+                let LinearAtom::Constant(cache_key) = cache_key else {
+                    panic!("invalid cache-set!: expected constant cache key, got {cache_key:?}");
+                };
+                let value = self.linear_atom(*value);
+                let cell = self.module_builder.intern_cache_cell(*cache_key);
+                let cell = self.import_data(cell);
+                let addr = self.builder.ins().global_value(types::I64, cell);
+                self.builder
+                    .ins()
+                    .store(ir::MemFlags::new(), value, addr, 0);
+                let undefined = self
+                    .builder
+                    .ins()
+                    .iconst(types::I64, Value::undefined().bits() as i64);
+                self.bind_linear_var(*dst, VarDef::Value(undefined));
             }
             Instruction::PrimCall {
                 dst,
@@ -1547,16 +1592,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let switch_default_block = self.builder.create_block();
         let type_miss_block = if matches!(
             kind,
-            SwitchKind::Eq | SwitchKind::CharEq | SwitchKind::SymbolEq
+            SwitchKind::Eq | SwitchKind::CharEq | SwitchKind::SymbolEq { .. }
         ) {
             switch_default_block
         } else {
             self.builder.create_block()
         };
-        let mut case_blocks: Vec<(
-            ir::Block,
-            Vec<&crate::cps::linear::SwitchCase<'gc>>,
-        )> = Vec::with_capacity(cases.len());
+        let mut case_blocks: Vec<(ir::Block, Vec<&crate::cps::linear::SwitchCase<'gc>>)> =
+            Vec::with_capacity(cases.len());
         let mut case_block_by_key: HashMap<u128, usize> = HashMap::new();
         let mut switch = Switch::new();
 
@@ -1584,18 +1627,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.switch_to_block(switch_block);
                 self.builder.ins().ireduce(types::I32, value)
             }
-            SwitchKind::SymbolEq => {
+            SwitchKind::SymbolEq { mask } => {
                 let is_symbol = self.has_typ8(value, TypeCode8::SYMBOL.bits());
                 self.builder
                     .ins()
                     .brif(is_symbol, switch_block, &[], type_miss_block, &[]);
                 self.builder.switch_to_block(switch_block);
-                self.builder.ins().load(
+                let hash = self.builder.ins().load(
                     types::I64,
                     ir::MemFlags::trusted().with_can_move(),
                     value,
                     offset_of!(Symbol, hash) as i32,
-                )
+                );
+                if mask == u64::MAX {
+                    hash
+                } else {
+                    self.builder.ins().band_imm(hash, mask as i64)
+                }
             }
         };
 
@@ -1620,7 +1668,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.builder.switch_to_block(type_miss_block);
         }
         match kind {
-            SwitchKind::Eq | SwitchKind::CharEq | SwitchKind::SymbolEq => {}
+            SwitchKind::Eq | SwitchKind::CharEq | SwitchKind::SymbolEq { .. } => {}
             SwitchKind::Fixnum => {
                 let scrutinee = self.linear_atom(scrutinee);
                 self.linear_fixnum_switch_error_or_default(scrutinee, cases, procedure, default)
@@ -1637,7 +1685,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         for (block, cases) in case_blocks {
             self.builder.switch_to_block(block);
-            if kind == SwitchKind::SymbolEq {
+            if matches!(kind, SwitchKind::SymbolEq { .. }) {
                 for (index, case) in cases.iter().enumerate() {
                     let matched_block = self.builder.create_block();
                     let next_block = if index + 1 == cases.len() {
@@ -1646,20 +1694,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         self.builder.create_block()
                     };
                     let SwitchCaseValue::Symbol {
-                        value: symbol_value, ..
+                        value: symbol_value,
+                        ..
                     } = case.value
                     else {
                         continue;
                     };
                     let symbol = self.atom(Atom::Constant(symbol_value));
                     let matched = self.builder.ins().icmp(IntCC::Equal, value, symbol);
-                    self.builder.ins().brif(
-                        matched,
-                        matched_block,
-                        &[],
-                        next_block,
-                        &[],
-                    );
+                    self.builder
+                        .ins()
+                        .brif(matched, matched_block, &[], next_block, &[]);
                     self.builder.switch_to_block(matched_block);
                     self.linear_branch_target(procedure, &case.target);
                     if index + 1 != cases.len() {
