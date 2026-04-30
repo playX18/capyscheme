@@ -181,7 +181,7 @@ mod logging_tests {
                 11_796_480,
                 4_194_304,
             ),
-            ";; INFO(capy::gc): GC #12: pause=3.42ms, heap=18874368 bytes (18.00 MiB) -> 11796480 bytes (11.25 MiB), freed=7077888 bytes (6.75 MiB), free=4194304 bytes (4.00 MiB), total=15990784 bytes (15.25 MiB)"
+            ";; INFO(capy::gc): GC #12: pause=3.42ms, heap=18.00MiB -> 11.25MiB, freed=6.75MiB, free=4.00MiB, total=15.25MiB"
         );
     }
 }

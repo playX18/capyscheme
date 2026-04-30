@@ -11,7 +11,10 @@ use std::{
 
 use mmtk::{MMTKBuilder, util::options::GCTriggerSelector};
 
-use crate::rsgc::{MMTK, mm::MemoryManager};
+use crate::{
+    rsgc::{MMTK, mm::MemoryManager},
+    utils::FormattedSize,
+};
 
 const GC_LOG_FILTER: &str = "mmtk=trace,capy::gc=trace";
 
@@ -159,19 +162,14 @@ pub(crate) fn format_gc_summary_line(
         log::Level::Info,
         "capy::gc",
         format_args!(
-            "GC #{}: pause={}, heap={} bytes ({:.2} MiB) -> {} bytes ({:.2} MiB), freed={} bytes ({:.2} MiB), free={} bytes ({:.2} MiB), total={} bytes ({:.2} MiB)",
+            "GC #{}: pause={}, heap={} -> {}, freed={}, free={}, total={}",
             collection,
             format_duration(pause),
-            used_before,
-            bytes_to_mib(used_before),
-            used_after,
-            bytes_to_mib(used_after),
-            freed,
-            bytes_to_mib(freed),
-            free,
-            bytes_to_mib(free),
-            total,
-            bytes_to_mib(total),
+            FormattedSize(used_before),
+            FormattedSize(used_after),
+            FormattedSize(freed),
+            FormattedSize(free),
+            FormattedSize(total),
         ),
     )
 }
@@ -187,14 +185,14 @@ fn format_gc_space_line(space_name: &str, stats: mmtk::LiveBytesStats) -> String
         log::Level::Info,
         "capy::gc",
         format_args!(
-            "GC space {}: live={} bytes, used={} bytes ({} pages, {:.1}% live)",
-            space_name, stats.live_bytes, stats.used_bytes, stats.used_pages, live_percent,
+            "GC space {}: live={}, used={} ({} pages, {:.1}% live)",
+            space_name,
+            FormattedSize(stats.live_bytes),
+            FormattedSize(stats.used_bytes),
+            stats.used_pages,
+            live_percent,
         ),
     )
-}
-
-fn bytes_to_mib(bytes: usize) -> f64 {
-    bytes as f64 / (1024.0 * 1024.0)
 }
 
 fn format_duration(duration: Duration) -> String {
