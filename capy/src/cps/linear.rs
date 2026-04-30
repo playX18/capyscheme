@@ -81,6 +81,10 @@ pub enum RestPredicate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<'gc> {
+    Const {
+        dst: ValueId,
+        value: Value<'gc>,
+    },
     MakeClosure {
         dst: ValueId,
         code: CodeId<'gc>,
@@ -96,6 +100,17 @@ pub enum Instruction<'gc> {
         closure: LinearAtom<'gc>,
         index: usize,
         value: LinearAtom<'gc>,
+    },
+    CacheRef {
+        dst: ValueId,
+        cache_key: LinearAtom<'gc>,
+        source: Value<'gc>,
+    },
+    CacheSet {
+        dst: ValueId,
+        cache_key: LinearAtom<'gc>,
+        value: LinearAtom<'gc>,
+        source: Value<'gc>,
     },
     PrimCall {
         dst: ValueId,
@@ -160,8 +175,10 @@ pub enum SwitchKind {
     Numeric,
     Char,
     CharEq,
-    SymbolEq,
+    SymbolEq { mask: u64 },
 }
+
+const SYMBOL_HASH_DISPATCH_MIN_LENGTH: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Terminator<'gc> {
@@ -198,14 +215,14 @@ pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
     let mut procedures = Vec::new();
 
     for func in reify.functions.iter() {
-        procedures.push(lower_rest_arguments(infer_switches(linearize_function(
-            *func,
-        ))));
+        procedures.push(hoist_constants(lower_cache_operations(
+            lower_rest_arguments(infer_switches(linearize_function(*func))),
+        )));
     }
 
     for cont in reify.continuations.iter().filter(|cont| cont.reified.get()) {
-        procedures.push(lower_rest_arguments(infer_switches(
-            linearize_continuation(*cont),
+        procedures.push(hoist_constants(lower_cache_operations(
+            lower_rest_arguments(infer_switches(linearize_continuation(*cont))),
         )));
     }
 
@@ -608,7 +625,7 @@ fn infer_switch_candidate<'gc>(
         .map(|block| (block.id, block))
         .collect::<HashMap<_, _>>();
     let first = switch_node(blocks[&start], true)?;
-    let kind = first.kind;
+    let mut kind = first.kind;
     let scrutinee = first.scrutinee;
     let mut cases = vec![SwitchCase {
         value: first.value,
@@ -642,8 +659,16 @@ fn infer_switch_candidate<'gc>(
         next = node.next;
     }
 
-    if cases.len() < 2 {
+    if cases.len() < 2
+        || (is_symbol_switch_kind(kind) && cases.len() <= SYMBOL_HASH_DISPATCH_MIN_LENGTH)
+    {
         return None;
+    }
+
+    if is_symbol_switch_kind(kind) {
+        let mask = symbol_hash_dispatch_mask(cases.len());
+        bucket_symbol_switch_cases(&mut cases, mask);
+        kind = SwitchKind::SymbolEq { mask };
     }
 
     let removed = chain_blocks.iter().copied().skip(1).collect::<HashSet<_>>();
@@ -856,7 +881,7 @@ fn switch_eq_symbol_node<'gc>(
     }
     let (scrutinee, value) = symbol_switch_test(args[0], args[1])?;
     Some(SwitchNode {
-        kind: SwitchKind::SymbolEq,
+        kind: SwitchKind::SymbolEq { mask: 0 },
         scrutinee,
         value,
         target: consequent.clone(),
@@ -898,6 +923,32 @@ fn symbol_switch_test<'gc>(
             ))
         }
         _ => None,
+    }
+}
+
+fn is_symbol_switch_kind(kind: SwitchKind) -> bool {
+    matches!(kind, SwitchKind::SymbolEq { .. })
+}
+
+fn symbol_hash_dispatch_mask(ntargets: usize) -> u64 {
+    let ntargets = ntargets as u128;
+    let mut nbits = 2;
+    while nbits < u64::BITS && ntargets > (1u128 << nbits) {
+        nbits += 1;
+    }
+
+    if nbits == u64::BITS {
+        u64::MAX
+    } else {
+        (1u64 << nbits) - 1
+    }
+}
+
+fn bucket_symbol_switch_cases<'gc>(cases: &mut [SwitchCase<'gc>], mask: u64) {
+    for case in cases {
+        if let SwitchCaseValue::Symbol { hash, .. } = &mut case.value {
+            *hash &= mask;
+        }
     }
 }
 
@@ -1091,6 +1142,268 @@ fn apply_switch_candidate<'gc>(procedure: &mut Procedure<'gc>, candidate: Switch
     procedure
         .blocks
         .retain(|block| !removed.contains(&block.id));
+}
+
+fn hoist_constants<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+    let mut hoister = ConstantHoister::new(&procedure);
+    for block in &mut procedure.blocks {
+        let mut instructions = Vec::with_capacity(block.instructions.len());
+        for instruction in block.instructions.drain(..) {
+            let instruction = hoister.instruction(instruction, &mut instructions);
+            instructions.push(instruction);
+        }
+        block.terminator = hoister.terminator(block.terminator.clone(), &mut instructions);
+        block.instructions = instructions;
+    }
+    procedure
+}
+
+fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+    for block in &mut procedure.blocks {
+        let mut lowered = Vec::with_capacity(block.instructions.len());
+        for instruction in block.instructions.drain(..) {
+            match instruction {
+                Instruction::PrimCall {
+                    dst,
+                    prim: Primitive::cache_ref,
+                    args,
+                    source,
+                } => {
+                    let [cache_key] = args.as_slice() else {
+                        panic!("cache-ref expects 1 argument, got {}", args.len());
+                    };
+                    lowered.push(Instruction::CacheRef {
+                        dst,
+                        cache_key: *cache_key,
+                        source,
+                    });
+                }
+                Instruction::PrimCall {
+                    dst,
+                    prim: Primitive::cache_set,
+                    args,
+                    source,
+                } => {
+                    let [cache_key, value] = args.as_slice() else {
+                        panic!("cache-set! expects 2 arguments, got {}", args.len());
+                    };
+                    lowered.push(Instruction::CacheSet {
+                        dst,
+                        cache_key: *cache_key,
+                        value: *value,
+                        source,
+                    });
+                }
+                other => lowered.push(other),
+            }
+        }
+        block.instructions = lowered;
+    }
+    procedure
+}
+
+struct ConstantHoister {
+    next_value: u32,
+}
+
+impl ConstantHoister {
+    fn new<'gc>(procedure: &Procedure<'gc>) -> Self {
+        let mut max_value = procedure.binding.0;
+        if let Some(return_cont) = procedure.return_cont {
+            max_value = max_value.max(return_cont.0);
+        }
+        for value in procedure
+            .params
+            .iter()
+            .chain(procedure.variadic.iter())
+            .chain(procedure.free_vars.iter())
+            .copied()
+        {
+            max_value = max_value.max(value.0);
+        }
+        for block in &procedure.blocks {
+            for value in block.params.iter().chain(block.variadic.iter()).copied() {
+                max_value = max_value.max(value.0);
+            }
+            for instruction in &block.instructions {
+                if let Some(def) = instruction.def() {
+                    max_value = max_value.max(def.0);
+                }
+                for value in local_values(instruction.uses()) {
+                    max_value = max_value.max(value.0);
+                }
+            }
+            for value in local_values(block.terminator.uses()) {
+                max_value = max_value.max(value.0);
+            }
+        }
+        Self {
+            next_value: max_value + 1,
+        }
+    }
+
+    fn fresh_value(&mut self) -> ValueId {
+        let value = ValueId(self.next_value);
+        self.next_value += 1;
+        value
+    }
+
+    fn atom<'gc>(
+        &mut self,
+        atom: LinearAtom<'gc>,
+        instructions: &mut Vec<Instruction<'gc>>,
+    ) -> LinearAtom<'gc> {
+        match atom {
+            LinearAtom::Local(_) => atom,
+            LinearAtom::Constant(value) => {
+                let dst = self.fresh_value();
+                instructions.push(Instruction::Const { dst, value });
+                LinearAtom::Local(dst)
+            }
+        }
+    }
+
+    fn atoms<'gc>(
+        &mut self,
+        atoms: Vec<LinearAtom<'gc>>,
+        instructions: &mut Vec<Instruction<'gc>>,
+    ) -> Vec<LinearAtom<'gc>> {
+        atoms
+            .into_iter()
+            .map(|atom| self.atom(atom, instructions))
+            .collect()
+    }
+
+    fn instruction<'gc>(
+        &mut self,
+        instruction: Instruction<'gc>,
+        instructions: &mut Vec<Instruction<'gc>>,
+    ) -> Instruction<'gc> {
+        match instruction {
+            Instruction::Const { .. }
+            | Instruction::MakeClosure { .. }
+            | Instruction::CacheRef { .. }
+            | Instruction::CacheSet { .. }
+            | Instruction::RestToList { .. }
+            | Instruction::RestRef { .. }
+            | Instruction::RestLength { .. }
+            | Instruction::RestPredicate { .. } => instruction,
+            Instruction::ClosureRef {
+                dst,
+                closure,
+                index,
+            } => Instruction::ClosureRef {
+                dst,
+                closure: self.atom(closure, instructions),
+                index,
+            },
+            Instruction::ClosureSet {
+                closure,
+                index,
+                value,
+            } => Instruction::ClosureSet {
+                closure: self.atom(closure, instructions),
+                index,
+                value: self.atom(value, instructions),
+            },
+            Instruction::PrimCall {
+                dst,
+                prim,
+                args,
+                source,
+            } => Instruction::PrimCall {
+                dst,
+                prim,
+                args: self.atoms(args, instructions),
+                source,
+            },
+        }
+    }
+
+    fn branch_target<'gc>(
+        &mut self,
+        target: BranchTarget<'gc>,
+        instructions: &mut Vec<Instruction<'gc>>,
+    ) -> BranchTarget<'gc> {
+        match target {
+            BranchTarget::Local { block, args } => BranchTarget::Local {
+                block,
+                args: self.atoms(args, instructions),
+            },
+            BranchTarget::Reified { continuation, args } => BranchTarget::Reified {
+                continuation: self.atom(continuation, instructions),
+                args: self.atoms(args, instructions),
+            },
+        }
+    }
+
+    fn terminator<'gc>(
+        &mut self,
+        terminator: Terminator<'gc>,
+        instructions: &mut Vec<Instruction<'gc>>,
+    ) -> Terminator<'gc> {
+        match terminator {
+            Terminator::Call {
+                callee,
+                retk,
+                args,
+                source,
+            } => Terminator::Call {
+                callee: self.atom(callee, instructions),
+                retk: self.atom(retk, instructions),
+                args: self.atoms(args, instructions),
+                source,
+            },
+            Terminator::TailCall {
+                callee,
+                args,
+                source,
+            } => Terminator::TailCall {
+                callee: self.atom(callee, instructions),
+                args: self.atoms(args, instructions),
+                source,
+            },
+            Terminator::Jump { target, args } => Terminator::Jump {
+                target,
+                args: self.atoms(args, instructions),
+            },
+            Terminator::Branch {
+                test,
+                consequent,
+                alternative,
+                hints,
+            } => Terminator::Branch {
+                test: self.atom(test, instructions),
+                consequent: self.branch_target(consequent, instructions),
+                alternative: self.branch_target(alternative, instructions),
+                hints,
+            },
+            Terminator::Switch {
+                kind,
+                scrutinee,
+                cases,
+                default,
+            } => Terminator::Switch {
+                kind,
+                scrutinee: self.atom(scrutinee, instructions),
+                cases: cases
+                    .into_iter()
+                    .map(|case| SwitchCase {
+                        value: case.value,
+                        target: self.branch_target(case.target, instructions),
+                    })
+                    .collect(),
+                default: self.branch_target(default, instructions),
+            },
+        }
+    }
+}
+
+fn local_values<'gc>(uses: Vec<LinearAtom<'gc>>) -> impl Iterator<Item = ValueId> {
+    uses.into_iter().filter_map(|atom| match atom {
+        LinearAtom::Local(value) => Some(value),
+        LinearAtom::Constant(_) => None,
+    })
 }
 
 fn loop_blocks<'gc>(procedure: &Procedure<'gc>) -> HashSet<BlockId> {
@@ -1402,8 +1715,11 @@ fn emit_closure_sets<'gc>(
 impl<'gc> Instruction<'gc> {
     pub fn def(&self) -> Option<ValueId> {
         match self {
-            Self::MakeClosure { dst, .. }
+            Self::Const { dst, .. }
+            | Self::MakeClosure { dst, .. }
             | Self::ClosureRef { dst, .. }
+            | Self::CacheRef { dst, .. }
+            | Self::CacheSet { dst, .. }
             | Self::PrimCall { dst, .. }
             | Self::RestToList { dst, .. }
             | Self::RestRef { dst, .. }
@@ -1415,9 +1731,14 @@ impl<'gc> Instruction<'gc> {
 
     pub fn uses(&self) -> Vec<LinearAtom<'gc>> {
         match self {
+            Self::Const { .. } => vec![],
             Self::MakeClosure { .. } => vec![],
             Self::ClosureRef { closure, .. } => vec![*closure],
             Self::ClosureSet { closure, value, .. } => vec![*closure, *value],
+            Self::CacheRef { cache_key, .. } => vec![*cache_key],
+            Self::CacheSet {
+                cache_key, value, ..
+            } => vec![*cache_key, *value],
             Self::PrimCall { args, .. } => args.clone(),
             Self::RestToList { .. } => vec![],
             Self::RestRef { rest, .. }
