@@ -3,15 +3,15 @@ use std::{
     fmt,
     io::Write,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
 
-use mmtk::{util::options::GCTriggerSelector, MMTKBuilder};
+use mmtk::{MMTKBuilder, util::options::GCTriggerSelector};
 
-use crate::rsgc::{mm::MemoryManager, MMTK};
+use crate::rsgc::{MMTK, mm::MemoryManager};
 
 const GC_LOG_FILTER: &str = "mmtk=trace,capy::gc=trace";
 
