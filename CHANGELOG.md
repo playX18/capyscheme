@@ -2,12 +2,41 @@
 
 ### ⛰️  Features
 
+- *(capy)* Infer switches - ([d18b552](https://codeberg.org/playXE/capy/commit/d18b55228851263d81329b01357b14f849afb270))
+- *(capy)* Linear CPS - ([7d6e43b](https://codeberg.org/playXE/capy/commit/7d6e43ba8f58aaed568c5b04645ef6d2b88231df))
+- *(compiler)* Optimize rest arguments to direct access - ([76e7a05](https://codeberg.org/playXE/capy/commit/76e7a056cf0b938fd37a38e2bdd3e24503cb7f81))
+- *(library)* Auto-import capy prelims - ([3116a3f](https://codeberg.org/playXE/capy/commit/3116a3f471f7f1bf229a60216029ef0b2b09bc38))
+- *(psyntax)* Add default core #%app - ([0c8d46c](https://codeberg.org/playXE/capy/commit/0c8d46c48f3fdf275acdc2a0dad6a034f6416dd7))
+- *(psyntax)* Route calls through implicit #%app - ([4192658](https://codeberg.org/playXE/capy/commit/419265893227c2a8f56a7ecebdce8fee1fcee9a1))
 - *(psyntax)* Define-property - ([1dd6932](https://codeberg.org/playXE/capy/commit/1dd69323e87e691da282e613fb03ed5b8c0cd50c))
 - *(srfi)* SRFI-213 full implementation - ([db8ebc7](https://codeberg.org/playXE/capy/commit/db8ebc7df8a292b6d1a9a30c692a265cb36cb9d8))
+
+### 🐛 Bug Fixes
+
+- *(lib)* Fix #%app imports - ([23d5085](https://codeberg.org/playXE/capy/commit/23d50859053535873404050e35ccee128280173d))
+- *(psyntax)* Stabilize implicit #%app bootstrap - ([5df6bc0](https://codeberg.org/playXE/capy/commit/5df6bc03e6114e320377034c9bf6496c2f03d325))
+- Remove cached repo - ([cae021d](https://codeberg.org/playXE/capy/commit/cae021dbeacba2e891cc9d38cd0b1e4033e0044c))
+
+### 🚜 Refactor
+
+- *(capy)* Infer switches even if block has more than 2 opcodes - ([14040be](https://codeberg.org/playXE/capy/commit/14040be4c9394ffff7242763a8380080196f4e34))
+- *(compiler)* Use ValueId in linear CPS - ([e6b26bd](https://codeberg.org/playXE/capy/commit/e6b26bd224ad526b505e4ddb76ecd41c9fa6d0ed))
+
+### 📚 Documentation
+
+- Design cps block macro - ([95ac1d4](https://codeberg.org/playXE/capy/commit/95ac1d40fdc36b4a014b6d0d517184935aa12919))
+
+### 🧪 Testing
+
+- Cover implicit #%app expansion - ([b6f2633](https://codeberg.org/playXE/capy/commit/b6f263318e24bedb7556b847e6e0dcde8422b13d))
 
 ### ⚙️ Miscellaneous Tasks
 
 - Ignore worktree directory - ([e9d3214](https://codeberg.org/playXE/capy/commit/e9d3214f42b9da9dbb23c18536d37c50febbef26))
+
+### Build
+
+- Regenerate psyntax for implicit #%app - ([72523ed](https://codeberg.org/playXE/capy/commit/72523edc300ce198e81f0ad32420398622fc4c3d))
 
 
 ## [1.3.0](https://codeberg.org/playXE/capy/compare/v1.2.0..v1.3.0) - 2026-04-27
