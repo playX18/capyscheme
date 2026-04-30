@@ -8,13 +8,13 @@
 use crate::cps::builder::CPSBuilder;
 use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef};
 use crate::expander::core::{
-    seq_from_slice, LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef,
+    LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, seq_from_slice,
 };
 use crate::rsgc::alloc::array::Array;
 use crate::rsgc::cell::Lock;
-use crate::rsgc::{barrier, Gc};
-use crate::runtime::value::Value;
+use crate::rsgc::{Gc, barrier};
 use crate::runtime::Context;
+use crate::runtime::value::Value;
 use crate::{list, with_cps};
 use std::cell::Cell;
 

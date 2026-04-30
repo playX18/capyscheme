@@ -796,35 +796,7 @@ impl<'gc> Eq for ValueEqual<'gc> {}
 
 impl<'gc> std::hash::Hash for ValueEqual<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let val = self.0;
-        if val.is_pair() {
-            ValueEqual(val.car()).hash(state);
-            ValueEqual(val.cdr()).hash(state);
-        } else if val.is::<Vector>() {
-            for val in val.downcast::<Vector>().iter() {
-                ValueEqual(val.get()).hash(state);
-            }
-        } else if val.is::<Str>() {
-            let v = val.downcast::<Str>();
-
-            v.hash(state);
-        } else if val.is::<ByteVector>() {
-            let v = val.downcast::<ByteVector>();
-
-            v.hash(state);
-        } else if val.is::<Boxed>() {
-            ValueEqual(val.downcast::<Boxed>().val).hash(state);
-        } else if val.is::<Tuple>() {
-            let v = val.downcast::<Tuple>();
-
-            for val in v.iter() {
-                ValueEqual(val.get()).hash(state);
-            }
-        } else if let Some(n) = val.number() {
-            n.hash(state);
-        } else {
-            val.hash(state);
-        }
+        EqualHash(self.0).hash(state);
     }
 }
 

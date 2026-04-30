@@ -139,6 +139,12 @@ pub mod gc {
         nctx.return_(Value::undefined())
     }
 
+    #[scheme(name = "gc-logging-enable!")]
+    pub fn gc_logging_enable(enabled: bool) -> Value<'gc> {
+        crate::rsgc::logging::set_gc_logging_enabled(enabled);
+        nctx.return_(Value::undefined())
+    }
+
     #[scheme(name = "runtime-stats-enable!")]
     pub fn runtime_stats_enable(enabled: bool) -> Value<'gc> {
         set_runtime_stats_enabled(&ctx.state().stats, enabled);

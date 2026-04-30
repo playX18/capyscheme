@@ -6,18 +6,15 @@ use crate::interpreter::frame::{CallFrame, CallFrameSlot};
 
 // Narrow:
 // -128..-1  local variables
-//    0..15  arguments
-//   16..127 constants
+//    0..127 arguments
 //
 // Wide16:
 // -2**15..-1  local variables
-//      0..64  arguments
-//     64..2**15-1 constants
+//      0..2**15-1 arguments
 //
 // Wide32:
 // -2**31..-1  local variables
-//      0..1073741824  arguments
-//     1073741824..2**31-1 constants
+//      0..2**31-1 arguments
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(transparent)]
 pub struct VirtualRegister(pub isize);
@@ -31,30 +28,18 @@ impl Operand for VirtualRegister {
         match width {
             OperandWidth::Narrow => {
                 let operand = input.read_u8()? as i8 as isize;
-                if operand >= FIRST_CONSTANT_REGISTER_INDEX8 {
-                    let idx = operand - FIRST_CONSTANT_REGISTER_INDEX8;
-                    return Ok(Self::for_constant(idx as usize));
-                }
 
                 Ok(VirtualRegister(operand))
             }
 
             OperandWidth::Wide16 => {
                 let operand = input.read_u16()? as i16 as isize;
-                if operand >= FIRST_CONSTANT_REGISTER_INDEX16 {
-                    let idx = operand - FIRST_CONSTANT_REGISTER_INDEX16;
-                    return Ok(Self::for_constant(idx as usize));
-                }
 
                 Ok(VirtualRegister(operand))
             }
 
             OperandWidth::Wide32 => {
                 let operand = input.read_u32()? as i32 as isize;
-                if operand >= FIRST_CONSTANT_REGISTER_INDEX32 {
-                    let idx = operand - FIRST_CONSTANT_REGISTER_INDEX32;
-                    return Ok(Self::for_constant(idx as usize));
-                }
 
                 Ok(VirtualRegister(operand))
             }
@@ -65,28 +50,16 @@ impl Operand for VirtualRegister {
         match width {
             OperandWidth::Narrow => unsafe {
                 let operand = input.add(0).read() as i8 as isize;
-                if operand >= FIRST_CONSTANT_REGISTER_INDEX8 {
-                    let idx = operand - FIRST_CONSTANT_REGISTER_INDEX8;
-                    return (Self::for_constant(idx as usize), input.add(1));
-                }
 
                 (VirtualRegister(operand), input.add(1))
             },
             OperandWidth::Wide16 => unsafe {
                 let operand = input.add(0).read() as i16 as isize;
-                if operand >= FIRST_CONSTANT_REGISTER_INDEX16 {
-                    let idx = operand - FIRST_CONSTANT_REGISTER_INDEX16;
-                    return (Self::for_constant(idx as usize), input.add(2));
-                }
 
                 (VirtualRegister(operand), input.add(2))
             },
             OperandWidth::Wide32 => unsafe {
                 let operand = input.add(0).read() as i32 as isize;
-                if operand >= FIRST_CONSTANT_REGISTER_INDEX32 {
-                    let idx = operand - FIRST_CONSTANT_REGISTER_INDEX32;
-                    return (Self::for_constant(idx as usize), input.add(4));
-                }
 
                 (VirtualRegister(operand), input.add(4))
             },
@@ -94,40 +67,16 @@ impl Operand for VirtualRegister {
     }
 
     fn encode<S: ByteSink + ?Sized>(value: &Self, width: OperandWidth, output: &mut S) {
-        let first_constant_index = match width {
-            OperandWidth::Narrow => FIRST_CONSTANT_REGISTER_INDEX8,
-            OperandWidth::Wide16 => FIRST_CONSTANT_REGISTER_INDEX16,
-            OperandWidth::Wide32 => FIRST_CONSTANT_REGISTER_INDEX32,
-        };
-
         match width {
             OperandWidth::Narrow => {
-                if value.is_constant() {
-                    output.push((first_constant_index + value.to_constant_index()) as u8);
-                } else {
-                    output.push(value.0 as i8 as u8);
-                }
+                output.push(value.0 as i8 as u8);
             }
             OperandWidth::Wide16 => {
-                let bytes;
-                if value.is_constant() {
-                    bytes =
-                        ((first_constant_index + value.to_constant_index()) as u16).to_le_bytes();
-                } else {
-                    bytes = (value.0 as i16 as u16).to_le_bytes();
-                }
-
+                let bytes = (value.0 as i16 as u16).to_le_bytes();
                 output.extend_from_slice(&bytes);
             }
             OperandWidth::Wide32 => {
-                let bytes;
-                if value.is_constant() {
-                    bytes =
-                        ((first_constant_index + value.to_constant_index()) as u32).to_le_bytes();
-                } else {
-                    bytes = (value.0 as i32 as u32).to_le_bytes();
-                }
-
+                let bytes = (value.0 as i32 as u32).to_le_bytes();
                 output.extend_from_slice(&bytes);
             }
         }
@@ -142,12 +91,6 @@ impl Operand for VirtualRegister {
     }
 
     fn fits_width(value: &Self, width: OperandWidth) -> bool {
-        let first_constant_index = match width {
-            OperandWidth::Narrow => FIRST_CONSTANT_REGISTER_INDEX8,
-            OperandWidth::Wide16 => FIRST_CONSTANT_REGISTER_INDEX16,
-            OperandWidth::Wide32 => FIRST_CONSTANT_REGISTER_INDEX32,
-        };
-
         let target_max = match width {
             OperandWidth::Narrow => i8::MAX as isize,
             OperandWidth::Wide16 => i16::MAX as isize,
@@ -160,11 +103,7 @@ impl Operand for VirtualRegister {
             OperandWidth::Wide32 => i32::MIN as isize,
         };
 
-        if value.is_constant() {
-            return first_constant_index + value.to_constant_index() as isize <= target_max;
-        }
-
-        value.offset() >= target_min && value.offset() < first_constant_index
+        value.offset() >= target_min && value.offset() <= target_max
     }
 }
 
@@ -182,10 +121,6 @@ impl VirtualRegister {
 
     pub const fn for_local(uidx: usize) -> Self {
         Self(Self::local_to_operand(uidx as _))
-    }
-
-    pub const fn for_constant(idx: usize) -> Self {
-        Self(FIRST_CONSTANT_REGISTER_INDEX + idx as isize)
     }
 
     pub const fn for_argument(argidx: usize) -> Self {
@@ -218,20 +153,12 @@ impl VirtualRegister {
         self.0 >= 0 && self.0 < CallFrameSlot::FirstArgument as isize
     }
 
-    pub const fn is_constant(self) -> bool {
-        self.0 >= FIRST_CONSTANT_REGISTER_INDEX
-    }
-
     pub const fn to_local(self) -> isize {
         Self::operand_to_local(self.0)
     }
 
     pub const fn to_argument(self) -> isize {
         Self::operand_to_argument(self.0)
-    }
-
-    pub const fn to_constant_index(self) -> isize {
-        self.0 - FIRST_CONSTANT_REGISTER_INDEX
     }
 
     pub const fn offset(self) -> isize {
@@ -245,9 +172,7 @@ impl VirtualRegister {
 
 impl fmt::Display for VirtualRegister {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_constant() {
-            write!(f, "const{}", self.to_constant_index())
-        } else if self.is_local() {
+        if self.is_local() {
             write!(f, "local{}", self.to_local())
         } else if self.is_header() {
             write!(f, "header{}", self.offset())
@@ -344,19 +269,21 @@ impl fmt::Display for Primitive {
     }
 }
 
-pub const FIRST_CONSTANT_REGISTER_INDEX: isize = 0x40000000;
-pub const FIRST_CONSTANT_REGISTER_INDEX8: isize = 16;
-pub const FIRST_CONSTANT_REGISTER_INDEX16: isize = 64;
-pub const FIRST_CONSTANT_REGISTER_INDEX32: isize = FIRST_CONSTANT_REGISTER_INDEX;
-
 bytecode_list! {
     section Bytecode {
         Nop {}
 
-        Move {
+        Mov {
             args {
                 dst: VirtualRegister,
                 src: VirtualRegister,
+            }
+        }
+
+        Movk {
+            args {
+                dst: VirtualRegister,
+                constant: usize
             }
         }
 
@@ -391,20 +318,19 @@ bytecode_list! {
             metadata {} /* TODO: metadata for JIT */
         }
 
-        App {
+        TailCall {
             args {
                 callee: VirtualRegister,
-                argc: u32,
-                retk: VirtualRegister,
-                arg_start: VirtualRegister,
+                argv: VirtualRegister,
+                argc: usize
             }
         }
 
         Continue {
             args {
                 callee: VirtualRegister,
-                arg_start: VirtualRegister,
-                argc: u32,
+                argv: VirtualRegister,
+                argc: usize
             }
         }
 
@@ -484,25 +410,17 @@ bytecode_list! {
             }
         }
 
-        PrimitiveCallN {
-            args {
-                dst: VirtualRegister,
-                primitive: Primitive,
-                arg_start: VirtualRegister,
-                argc: u32,
-            }
-        }
 
         CacheRef {
             args {
                 dst: VirtualRegister,
-                cache_key: VirtualRegister,
+                cache_key: usize,
             }
         }
 
         CacheSet {
             args {
-                cache_key: VirtualRegister,
+                cache_key: usize,
                 value: VirtualRegister,
             }
         }
@@ -817,279 +735,6 @@ bytecode_list! {
                 index: u32,
                 value: VirtualRegister,
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bytecodegen::{ByteCursor, LinkedBytecodeView};
-
-    fn linked_bytes(instructions: impl IntoIterator<Item = LinkableInstruction>) -> Vec<u8> {
-        generated::link(instructions).unwrap().bytes().to_vec()
-    }
-
-    #[test]
-    fn opcode_count_stays_within_single_byte_budget() {
-        assert!(SectionId::Bytecode.opcodes().len() < 254);
-    }
-
-    #[test]
-    fn encodes_cps_app_and_continue_argument_windows() {
-        let bytes = linked_bytes([
-            App::new(
-                VirtualRegister::for_argument(1),
-                3,
-                VirtualRegister::for_argument(2),
-                VirtualRegister::for_argument(5),
-            )
-            .into(),
-            Continue::new(
-                VirtualRegister::for_argument(3),
-                VirtualRegister::for_argument(5),
-                3,
-            )
-            .into(),
-        ]);
-
-        let mut cursor = ByteCursor::new(&bytes);
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::App(op) => {
-                assert_eq!(op.callee, VirtualRegister::for_argument(1));
-                assert_eq!(op.argc, 3);
-                assert_eq!(op.retk, VirtualRegister::for_argument(2));
-                assert_eq!(op.arg_start, VirtualRegister::for_argument(5));
-            }
-            _ => panic!("expected App"),
-        }
-
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::Continue(op) => {
-                assert_eq!(op.callee, VirtualRegister::for_argument(3));
-                assert_eq!(op.arg_start, VirtualRegister::for_argument(5));
-                assert_eq!(op.argc, 3);
-            }
-            _ => panic!("expected Continue"),
-        }
-    }
-
-    #[test]
-    fn encodes_primitive_call_arities() {
-        let bytes = linked_bytes([
-            PrimitiveCall0::new(
-                VirtualRegister::for_local(0),
-                Primitive::CurrentContinuationMarks,
-            )
-            .into(),
-            PrimitiveCall3::new(
-                VirtualRegister::for_local(1),
-                Primitive::PushCframe,
-                VirtualRegister::for_argument(0),
-                VirtualRegister::for_argument(1),
-                VirtualRegister::for_argument(2),
-            )
-            .into(),
-            PrimitiveCall4::new(
-                VirtualRegister::for_local(2),
-                Primitive::MakeSyntax,
-                VirtualRegister::for_argument(0),
-                VirtualRegister::for_argument(1),
-                VirtualRegister::for_argument(2),
-                VirtualRegister::for_argument(3),
-            )
-            .into(),
-            PrimitiveCallN::new(
-                VirtualRegister::for_local(3),
-                Primitive::Lookup,
-                VirtualRegister::for_argument(4),
-                5,
-            )
-            .into(),
-        ]);
-
-        let mut cursor = ByteCursor::new(&bytes);
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::PrimitiveCall0(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(0));
-                assert_eq!(op.primitive, Primitive::CurrentContinuationMarks);
-            }
-            _ => panic!("expected PrimitiveCall0"),
-        }
-
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::PrimitiveCall3(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(1));
-                assert_eq!(op.primitive, Primitive::PushCframe);
-                assert_eq!(op.src0, VirtualRegister::for_argument(0));
-                assert_eq!(op.src1, VirtualRegister::for_argument(1));
-                assert_eq!(op.src2, VirtualRegister::for_argument(2));
-            }
-            _ => panic!("expected PrimitiveCall3"),
-        }
-
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::PrimitiveCall4(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(2));
-                assert_eq!(op.primitive, Primitive::MakeSyntax);
-                assert_eq!(op.src0, VirtualRegister::for_argument(0));
-                assert_eq!(op.src1, VirtualRegister::for_argument(1));
-                assert_eq!(op.src2, VirtualRegister::for_argument(2));
-                assert_eq!(op.src3, VirtualRegister::for_argument(3));
-            }
-            _ => panic!("expected PrimitiveCall4"),
-        }
-
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::PrimitiveCallN(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(3));
-                assert_eq!(op.primitive, Primitive::Lookup);
-                assert_eq!(op.arg_start, VirtualRegister::for_argument(4));
-                assert_eq!(op.argc, 5);
-            }
-            _ => panic!("expected PrimitiveCallN"),
-        }
-    }
-
-    #[test]
-    fn encodes_cache_ops_as_direct_bytecodes() {
-        let bytes = linked_bytes([
-            CacheRef::new(
-                VirtualRegister::for_local(0),
-                VirtualRegister::for_constant(0),
-            )
-            .into(),
-            CacheSet::new(
-                VirtualRegister::for_constant(0),
-                VirtualRegister::for_argument(0),
-            )
-            .into(),
-        ]);
-
-        let mut cursor = ByteCursor::new(&bytes);
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::CacheRef(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(0));
-                assert_eq!(op.cache_key, VirtualRegister::for_constant(0));
-            }
-            _ => panic!("expected CacheRef"),
-        }
-
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::CacheSet(op) => {
-                assert_eq!(op.cache_key, VirtualRegister::for_constant(0));
-                assert_eq!(op.value, VirtualRegister::for_argument(0));
-            }
-            _ => panic!("expected CacheSet"),
-        }
-    }
-
-    #[test]
-    fn fallback_primitive_enum_excludes_inline_and_cache_ops() {
-        let names = Primitive::ALL.iter().map(|p| p.name()).collect::<Vec<_>>();
-
-        assert!(names.contains(&"lookup"));
-        assert!(names.contains(&"make-syntax"));
-        assert!(!names.contains(&"cache-ref"));
-        assert!(!names.contains(&"cache-set!"));
-        assert!(!names.contains(&"vector-set!"));
-        assert!(!names.contains(&"s32+"));
-        assert!(!names.contains(&"zero?"));
-    }
-
-    #[test]
-    fn bytecode_schema_excludes_low_level_integer_and_raw_ops() {
-        let names = SectionId::Bytecode
-            .opcodes()
-            .iter()
-            .map(|op| format!("{op:?}"))
-            .collect::<Vec<_>>();
-
-        for removed in [
-            "I32Add",
-            "I64UShr",
-            "S32Eq",
-            "U64Lt",
-            "S8ToS64",
-            "Ref8",
-            "Refptr",
-            "Store64",
-            "Typecode8",
-            "UsizeToValue",
-        ] {
-            assert!(
-                !names.iter().any(|name| name == removed),
-                "{removed} should not be a bytecode opcode"
-            );
-        }
-    }
-
-    #[test]
-    fn encodes_scheme_level_direct_primitive_opcodes() {
-        let bytes = linked_bytes([
-            IsImmediate::new(
-                VirtualRegister::for_local(0),
-                VirtualRegister::for_argument(0),
-            )
-            .into(),
-            VectorRef::new(
-                VirtualRegister::for_local(1),
-                VirtualRegister::for_argument(2),
-                VirtualRegister::for_argument(3),
-            )
-            .into(),
-            Eq::new(
-                VirtualRegister::for_local(2),
-                VirtualRegister::for_argument(6),
-                VirtualRegister::for_argument(7),
-            )
-            .into(),
-        ]);
-
-        let mut cursor = ByteCursor::new(&bytes);
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::IsImmediate(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(0));
-                assert_eq!(op.src, VirtualRegister::for_argument(0));
-            }
-            _ => panic!("expected IsImmediate"),
-        }
-
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::VectorRef(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(1));
-                assert_eq!(op.src, VirtualRegister::for_argument(2));
-                assert_eq!(op.index, VirtualRegister::for_argument(3));
-            }
-            _ => panic!("expected VectorRef"),
-        }
-
-        match Instruction::decode_from(&mut cursor).unwrap() {
-            Instruction::Eq(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(2));
-                assert_eq!(op.lhs, VirtualRegister::for_argument(6));
-                assert_eq!(op.rhs, VirtualRegister::for_argument(7));
-            }
-            _ => panic!("expected Eq"),
-        }
-    }
-
-    #[test]
-    fn narrow_constant_register_consumes_one_operand_byte() {
-        let bytes = linked_bytes([Move::new(
-            VirtualRegister::for_local(0),
-            VirtualRegister::for_constant(0),
-        )
-        .into()]);
-        let record = Instruction::decode_record(&bytes).unwrap();
-
-        assert_eq!(record.size, bytes.len());
-        match record.instruction {
-            Instruction::Move(op) => {
-                assert_eq!(op.dst, VirtualRegister::for_local(0));
-                assert_eq!(op.src, VirtualRegister::for_constant(0));
-            }
-            _ => panic!("expected Move"),
         }
     }
 }

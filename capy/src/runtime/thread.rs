@@ -3,7 +3,7 @@
 use crate::{
     prelude::{HashTable, Keyword},
     rsgc::{
-        GarbageCollector, Gc, MMTKBuilder, Mutation, Mutator, Trace,
+        GarbageCollector, Gc, Mutation, Mutator, Trace,
         barrier::{self},
         mmtk::util::Address,
     },
@@ -799,8 +799,8 @@ impl Scheme {
         // if VM is not initialized yet, we need to run init code
         SCM_INITIALIZED.call_once(|| {
             should_init = true;
-            env_logger::init();
-            let mmtk_builder = MMTKBuilder::new();
+            crate::rsgc::logging::init_rust_logger();
+            let mmtk_builder = crate::rsgc::logging::mmtk_builder();
             /*match *mmtk_builder.options.plan {
                 PlanSelector::GenImmix | PlanSelector::StickyImmix | PlanSelector::GenCopy => {
                     let _ = ALLOWED_GC.set(AllowedGC::Generational).unwrap();
@@ -849,7 +849,8 @@ impl Scheme {
         SCM_INITIALIZED.call_once(|| {
             should_init = true;
 
-            let mmtk_builder = MMTKBuilder::new();
+            crate::rsgc::logging::init_rust_logger();
+            let mmtk_builder = crate::rsgc::logging::mmtk_builder();
             GarbageCollector::init(mmtk_builder);
         });
 
