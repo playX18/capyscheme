@@ -90,6 +90,9 @@ fn render_block<'gc>(out: &mut String, block: &Block<'gc>, indent: usize) {
 
 fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
     match instruction {
+        Instruction::Const { dst, value } => {
+            format!("(const {} {})", render_value_id(*dst), render_value(*value))
+        }
         Instruction::MakeClosure {
             dst,
             code,
@@ -120,6 +123,22 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             "(closure-set {} {} {})",
             render_linear_atom(*closure),
             index,
+            render_linear_atom(*value)
+        ),
+        Instruction::CacheRef { dst, cache_key, .. } => format!(
+            "(cache-ref {} {})",
+            render_value_id(*dst),
+            render_linear_atom(*cache_key)
+        ),
+        Instruction::CacheSet {
+            dst,
+            cache_key,
+            value,
+            ..
+        } => format!(
+            "(cache-set! {} {} {})",
+            render_value_id(*dst),
+            render_linear_atom(*cache_key),
             render_linear_atom(*value)
         ),
         Instruction::PrimCall {
@@ -244,7 +263,7 @@ fn render_switch_kind(kind: SwitchKind) -> &'static str {
         SwitchKind::Numeric => "=",
         SwitchKind::Char => "char=?",
         SwitchKind::CharEq => "eq?",
-        SwitchKind::SymbolEq => "eq?",
+        SwitchKind::SymbolEq { .. } => "eq?",
     }
 }
 
