@@ -1,3 +1,10 @@
+//! Capy GC trigger policy and shared heuristic state.
+//!
+//! The MMTk trigger callback enters this module with plan-level heap accounting.
+//! Shared code builds a small heap snapshot, records allocation/GC history, and
+//! dispatches to the selected heuristic mode.  Mode-specific behavior lives in
+//! sibling modules when it has enough logic to stand alone.
+
 use std::{
     env, fmt,
     sync::{
@@ -19,6 +26,10 @@ use mmtk::{
 
 use crate::{rsgc::mm::MemoryManager, utils::FormattedSize};
 
+mod adaptive;
+mod aggressive;
+mod compact;
+
 const DEFAULT_MAX_HEAP_BYTES: usize = 2 * 1024 * 1024 * 1024;
 const DEFAULT_MIN_FREE_THRESHOLD_PERCENT: usize = 10;
 const DEFAULT_INIT_FREE_THRESHOLD_PERCENT: usize = 70;
@@ -26,10 +37,7 @@ const DEFAULT_ALLOCATION_THRESHOLD_PERCENT: usize = 0;
 const DEFAULT_ALLOC_SPIKE_FACTOR_PERCENT: usize = 5;
 const DEFAULT_LEARNING_STEPS: usize = 5;
 const DEFAULT_ADAPTIVE_DECAY_FACTOR: f64 = 0.5;
-const DEFAULT_ADAPTIVE_CONFIDENCE: f64 = 1.8;
 const DEFAULT_GUARANTEED_GC_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const COMPACT_ALLOCATION_THRESHOLD_PERCENT: usize = 10;
-const COMPACT_GUARANTEED_GC_INTERVAL: Duration = Duration::from_secs(30);
 
 static DEFAULT_MAX_HEAP_OVERRIDE: AtomicUsize = AtomicUsize::new(0);
 
@@ -37,10 +45,15 @@ const GC_LOG_TARGET: &str = "capy::gc";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum HeuristicMode {
+    /// Shenandoah-style predictor using GC-time and allocation-rate history.
     Adaptive,
+    /// Minimum-free plus guaranteed-interval trigger only.
     Static,
+    /// Small-heap mode with a fixed allocation-since-GC threshold.
     Compact,
+    /// Trigger at every opportunity.
     Aggressive,
+    /// Never trigger proactively; only MMTk plan fallbacks can require GC.
     Passive,
 }
 
@@ -96,6 +109,10 @@ pub(crate) struct HeuristicConfig {
     pub(crate) learning_steps: usize,
     pub(crate) adaptive_decay_factor: f64,
     pub(crate) adaptive_confidence: f64,
+    pub(crate) adaptive_spike_threshold: f64,
+    pub(crate) acceleration_sample_period: Duration,
+    pub(crate) acceleration_sample_count: usize,
+    pub(crate) momentary_spike_sample_count: usize,
     pub(crate) guaranteed_gc_interval: Option<Duration>,
 }
 
@@ -110,13 +127,17 @@ impl HeuristicConfig {
             alloc_spike_factor_percent: DEFAULT_ALLOC_SPIKE_FACTOR_PERCENT,
             learning_steps: DEFAULT_LEARNING_STEPS,
             adaptive_decay_factor: DEFAULT_ADAPTIVE_DECAY_FACTOR,
-            adaptive_confidence: DEFAULT_ADAPTIVE_CONFIDENCE,
+            adaptive_confidence: adaptive::DEFAULT_CONFIDENCE,
+            adaptive_spike_threshold: adaptive::DEFAULT_SPIKE_THRESHOLD,
+            acceleration_sample_period: adaptive::DEFAULT_ACCELERATION_SAMPLE_PERIOD,
+            acceleration_sample_count: adaptive::DEFAULT_ACCELERATION_SAMPLE_COUNT,
+            momentary_spike_sample_count: adaptive::DEFAULT_MOMENTARY_SPIKE_SAMPLE_COUNT,
             guaranteed_gc_interval: Some(DEFAULT_GUARANTEED_GC_INTERVAL),
         };
 
         if mode == HeuristicMode::Compact {
-            config.allocation_threshold_percent = COMPACT_ALLOCATION_THRESHOLD_PERCENT;
-            config.guaranteed_gc_interval = Some(COMPACT_GUARANTEED_GC_INTERVAL);
+            config.allocation_threshold_percent = compact::ALLOCATION_THRESHOLD_PERCENT;
+            config.guaranteed_gc_interval = Some(compact::GUARANTEED_GC_INTERVAL);
         }
 
         config
@@ -148,6 +169,16 @@ impl HeuristicConfig {
         );
         config.learning_steps =
             env_usize("CAPY_GC_LEARNING_STEPS").unwrap_or(config.learning_steps);
+        config.adaptive_confidence =
+            env_f64("CAPY_GC_ADAPTIVE_CONFIDENCE").unwrap_or(config.adaptive_confidence);
+        config.adaptive_spike_threshold =
+            env_f64("CAPY_GC_ADAPTIVE_SPIKE_THRESHOLD").unwrap_or(config.adaptive_spike_threshold);
+        config.acceleration_sample_count = env_usize("CAPY_GC_ACCELERATION_SAMPLE_COUNT")
+            .filter(|samples| *samples > 0)
+            .unwrap_or(config.acceleration_sample_count);
+        config.momentary_spike_sample_count = env_usize("CAPY_GC_MOMENTARY_SPIKE_SAMPLE_COUNT")
+            .filter(|samples| *samples > 0)
+            .unwrap_or(config.momentary_spike_sample_count);
 
         if let Some(ms) = env_usize("CAPY_GC_GUARANTEED_INTERVAL_MS") {
             config.guaranteed_gc_interval = if ms == 0 {
@@ -155,6 +186,9 @@ impl HeuristicConfig {
             } else {
                 Some(Duration::from_millis(ms as u64))
             };
+        }
+        if let Some(ms) = env_usize("CAPY_GC_ACCELERATION_SAMPLE_PERIOD_MS") {
+            config.acceleration_sample_period = Duration::from_millis(ms as u64);
         }
 
         config
@@ -170,7 +204,11 @@ pub(crate) struct HeapSnapshot {
 }
 
 impl HeapSnapshot {
-    fn effective_free_bytes(self) -> usize {
+    pub(super) fn effective_free_bytes(self) -> usize {
+        // MMTk exposes both free and available pages.  Available includes
+        // collection reserves for copying plans, while free is closer to raw
+        // unused capacity.  Use the larger value so a plan-specific accounting
+        // choice does not make the heuristic trigger earlier than intended.
         self.free_bytes.max(self.available_bytes)
     }
 }
@@ -221,7 +259,7 @@ fn log_trigger_decision(
     }
 }
 
-fn format_allocation_pressure_reason(
+pub(super) fn format_allocation_pressure_reason(
     free: usize,
     expected_consumption: usize,
     headroom: usize,
@@ -236,7 +274,7 @@ fn format_allocation_pressure_reason(
     )
 }
 
-fn rate_to_size(rate: f64) -> usize {
+pub(super) fn rate_to_size(rate: f64) -> usize {
     if !rate.is_finite() || rate <= 0.0 {
         0
     } else if rate >= usize::MAX as f64 {
@@ -247,7 +285,7 @@ fn rate_to_size(rate: f64) -> usize {
 }
 
 #[derive(Clone, Debug)]
-struct DecayingSequence {
+pub(super) struct DecayingSequence {
     samples: usize,
     average: f64,
     variance: f64,
@@ -255,7 +293,7 @@ struct DecayingSequence {
 }
 
 impl DecayingSequence {
-    fn new(alpha: f64) -> Self {
+    pub(super) fn new(alpha: f64) -> Self {
         Self {
             samples: 0,
             average: 0.0,
@@ -264,7 +302,7 @@ impl DecayingSequence {
         }
     }
 
-    fn add(&mut self, value: f64) {
+    pub(super) fn add(&mut self, value: f64) {
         if self.samples == 0 {
             self.average = value;
             self.variance = 0.0;
@@ -274,17 +312,28 @@ impl DecayingSequence {
 
         let old_average = self.average;
         let delta = value - old_average;
+        // Exponential moving average plus a matching decayed variance.  This is
+        // cheap enough to update on every trigger evaluation and gives adaptive
+        // mode both a central estimate and a safety margin.
         self.average = self.alpha * value + (1.0 - self.alpha) * old_average;
         self.variance = (1.0 - self.alpha) * (self.variance + self.alpha * delta * delta);
         self.samples += 1;
     }
 
-    fn upper_bound(&self, confidence: f64) -> f64 {
+    pub(super) fn upper_bound(&self, confidence: f64) -> f64 {
         if self.samples == 0 {
             0.0
         } else {
-            self.average + confidence * self.variance.sqrt()
+            self.average + confidence * self.standard_deviation()
         }
+    }
+
+    pub(super) fn average(&self) -> f64 {
+        self.average
+    }
+
+    pub(super) fn standard_deviation(&self) -> f64 {
+        self.variance.sqrt()
     }
 }
 
@@ -300,29 +349,49 @@ pub(crate) struct HeuristicState {
     start_gc_is_pending: bool,
     declined_trigger_count: usize,
     most_recent_declined_trigger_count: usize,
+    last_trigger_type: adaptive::TriggerType,
     last_cycle_end: Option<Instant>,
     active_cycle: Option<ActiveCycle>,
+    time_origin: Instant,
     gc_times_learned: usize,
     gc_time_penalties: usize,
+    adaptive_confidence: f64,
+    adaptive_spike_threshold: f64,
+    free_at_end_history: DecayingSequence,
     gc_cycle_time_history: DecayingSequence,
+    gc_cycle_time_predictor: adaptive::LinearPredictor,
     allocation_rate_history: DecayingSequence,
+    acceleration_rate_history: adaptive::RateSampleHistory,
     last_allocation_sample: Option<(Instant, usize)>,
+    last_acceleration_sample: Option<Instant>,
 }
 
 impl HeuristicState {
     pub(crate) fn new(config: HeuristicConfig) -> Self {
+        let now = Instant::now();
+        let acceleration_capacity = config
+            .acceleration_sample_count
+            .max(config.momentary_spike_sample_count.saturating_add(1));
         Self {
             gc_cycle_time_history: DecayingSequence::new(config.adaptive_decay_factor),
+            gc_cycle_time_predictor: adaptive::LinearPredictor::new(3),
             allocation_rate_history: DecayingSequence::new(config.adaptive_decay_factor),
+            acceleration_rate_history: adaptive::RateSampleHistory::new(acceleration_capacity),
+            free_at_end_history: DecayingSequence::new(config.adaptive_decay_factor),
+            adaptive_confidence: config.adaptive_confidence,
+            adaptive_spike_threshold: config.adaptive_spike_threshold,
             config,
             start_gc_is_pending: false,
             declined_trigger_count: 0,
             most_recent_declined_trigger_count: 0,
+            last_trigger_type: adaptive::TriggerType::Other,
             last_cycle_end: None,
             active_cycle: None,
+            time_origin: now,
             gc_times_learned: 0,
             gc_time_penalties: 0,
             last_allocation_sample: None,
+            last_acceleration_sample: None,
         }
     }
 
@@ -341,6 +410,8 @@ impl HeuristicState {
             return false;
         }
 
+        // Allocation samples are collected before mode dispatch so all
+        // heuristics can share the same history if the mode changes at startup.
         self.record_allocation_sample(now, snapshot.allocated_since_gc);
 
         if self.start_gc_is_pending {
@@ -348,11 +419,11 @@ impl HeuristicState {
         }
 
         match self.config.mode {
-            HeuristicMode::Aggressive => {
-                self.accept_trigger(format_args!("aggressive mode"), Some(snapshot));
-                true
-            }
+            HeuristicMode::Aggressive => self.aggressive_should_start(snapshot),
             HeuristicMode::Passive => {
+                // Passive mode intentionally declines proactive triggers.  The
+                // MMTk plan fallback at the call site can still force GC for
+                // allocation failure or other plan-specific requirements.
                 self.decline_trigger();
                 false
             }
@@ -376,20 +447,11 @@ impl HeuristicState {
         }
     }
 
-    fn record_cycle_end(&mut self, now: Instant) -> Option<Duration> {
-        let cycle_time = self
-            .active_cycle
-            .as_ref()
-            .map(|cycle| now.saturating_duration_since(cycle.started_at))
-            .unwrap_or_default();
-
-        self.record_cycle_end_with_duration(now, cycle_time)
-    }
-
     fn record_cycle_end_with_duration(
         &mut self,
         now: Instant,
         cycle_time: Duration,
+        snapshot: Option<HeapSnapshot>,
     ) -> Option<Duration> {
         self.last_cycle_end = Some(now);
         let active_cycle = self.active_cycle.as_mut()?;
@@ -397,11 +459,25 @@ impl HeuristicState {
             active_cycle.depth -= 1;
             return None;
         }
+        let cycle_started_at = active_cycle.started_at;
 
         self.active_cycle = None;
-        self.gc_cycle_time_history.add(cycle_time.as_secs_f64());
+        let cycle_time_seconds = cycle_time.as_secs_f64();
+        // Successful cycles feed both the average and the trend predictor used
+        // by adaptive mode.  The timestamp is the cycle start, matching the
+        // question "how long would a cycle starting at future time T take?".
+        self.gc_cycle_time_history.add(cycle_time_seconds);
+        self.gc_cycle_time_predictor.add(
+            elapsed_seconds(self.time_origin, cycle_started_at),
+            cycle_time_seconds,
+        );
         self.gc_times_learned = self.gc_times_learned.saturating_add(1);
         self.adjust_penalty(-1);
+        if let Some(snapshot) = snapshot {
+            // Post-GC free memory tells adaptive mode whether the previous
+            // trigger was too early or too late.
+            self.adjust_adaptive_trigger_parameters(snapshot.effective_free_bytes() as f64);
+        }
         Some(cycle_time)
     }
 
@@ -419,10 +495,20 @@ impl HeuristicState {
         let allocated = allocated_since_gc.saturating_sub(last_allocated);
         let rate = allocated as f64 / elapsed.as_secs_f64();
         self.allocation_rate_history.add(rate);
+        // The acceleration detector intentionally samples less often than
+        // trigger evaluation; tiny intervals produce noisy rates and poor slopes.
+        if self.last_acceleration_sample.is_none_or(|last_sample| {
+            now.saturating_duration_since(last_sample) >= self.config.acceleration_sample_period
+        }) {
+            self.acceleration_rate_history.add(now, rate);
+            self.last_acceleration_sample = Some(now);
+        }
         self.last_allocation_sample = Some((now, allocated_since_gc));
     }
 
     fn static_should_start(&mut self, snapshot: HeapSnapshot, now: Instant) -> bool {
+        // Static mode is the baseline: trigger only when free memory crosses the
+        // configured floor, otherwise rely on shared interval and plan fallback.
         if self.trigger_if_below_min_free(snapshot) {
             return true;
         }
@@ -430,93 +516,10 @@ impl HeuristicState {
         self.base_should_start(snapshot, now)
     }
 
-    fn compact_should_start(&mut self, snapshot: HeapSnapshot, now: Instant) -> bool {
-        if self.trigger_if_below_min_free(snapshot) {
-            return true;
-        }
-
-        let threshold = percent_of(
-            snapshot.total_bytes,
-            self.config.allocation_threshold_percent,
-        );
-        if threshold > 0 && snapshot.allocated_since_gc > threshold {
-            self.accept_trigger(
-                format_args!(
-                    "allocated since last GC above threshold (allocated={}, threshold={})",
-                    FormattedSize(snapshot.allocated_since_gc),
-                    FormattedSize(threshold),
-                ),
-                Some(snapshot),
-            );
-            return true;
-        }
-
-        self.base_should_start(snapshot, now)
-    }
-
-    fn adaptive_should_start(
-        &mut self,
-        snapshot: HeapSnapshot,
-        now: Instant,
-        planned_sleep_interval: Duration,
-    ) -> bool {
-        if self.trigger_if_below_min_free(snapshot) {
-            return true;
-        }
-
-        if self.gc_times_learned < self.config.learning_steps {
-            let init_threshold = percent_of(
-                snapshot.total_bytes,
-                self.config.init_free_threshold_percent,
-            );
-            if snapshot.effective_free_bytes() < init_threshold {
-                let learned_cycles = self.gc_times_learned;
-                let learning_steps = self.config.learning_steps;
-                self.accept_trigger(
-                    format_args!(
-                        "learning threshold crossed (learned_cycles={}, learning_steps={}, free={}, threshold={})",
-                        learned_cycles,
-                        learning_steps,
-                        FormattedSize(snapshot.effective_free_bytes()),
-                        FormattedSize(init_threshold),
-                    ),
-                    Some(snapshot),
-                );
-                return true;
-            }
-        }
-
-        if snapshot.allocated_since_gc.saturating_mul(3) <= snapshot.effective_free_bytes() {
-            return self.base_should_start(snapshot, now);
-        }
-
-        let cycle_time = self
-            .gc_cycle_time_history
-            .upper_bound(self.config.adaptive_confidence)
-            + planned_sleep_interval.as_secs_f64();
-        let allocation_rate = self
-            .allocation_rate_history
-            .upper_bound(self.config.adaptive_confidence);
-        let headroom = self.headroom_adjustment(snapshot.total_bytes);
-        let expected_consumption = (cycle_time * allocation_rate) as usize;
-
-        if snapshot.effective_free_bytes() <= expected_consumption.saturating_add(headroom) {
-            self.accept_trigger(
-                format_allocation_pressure_reason(
-                    snapshot.effective_free_bytes(),
-                    expected_consumption,
-                    headroom,
-                    allocation_rate,
-                ),
-                Some(snapshot),
-            );
-            return true;
-        }
-
-        self.base_should_start(snapshot, now)
-    }
-
-    fn base_should_start(&mut self, snapshot: HeapSnapshot, now: Instant) -> bool {
+    pub(super) fn base_should_start(&mut self, snapshot: HeapSnapshot, now: Instant) -> bool {
+        // Shared low-frequency trigger.  This prevents indefinitely idle heaps
+        // from avoiding GC forever, which matters for finalizers/weak processing
+        // and for returning memory in compact mode.
         if let (Some(interval), Some(last_cycle_end)) =
             (self.config.guaranteed_gc_interval, self.last_cycle_end)
         {
@@ -540,7 +543,7 @@ impl HeuristicState {
         percent_of(snapshot.total_bytes, self.config.min_free_threshold_percent)
     }
 
-    fn trigger_if_below_min_free(&mut self, snapshot: HeapSnapshot) -> bool {
+    pub(super) fn trigger_if_below_min_free(&mut self, snapshot: HeapSnapshot) -> bool {
         let min_threshold = self.min_free_threshold(snapshot);
         let free_bytes = snapshot.effective_free_bytes();
         if free_bytes >= min_threshold {
@@ -558,12 +561,20 @@ impl HeuristicState {
         true
     }
 
-    fn headroom_adjustment(&self, capacity: usize) -> usize {
+    pub(super) fn headroom_adjustment(&self, capacity: usize) -> usize {
         percent_of(capacity, self.config.alloc_spike_factor_percent)
             .saturating_add(percent_of(capacity, self.gc_time_penalties))
     }
 
-    fn accept_trigger(&mut self, reason: impl fmt::Display, snapshot: Option<HeapSnapshot>) {
+    pub(super) fn accept_trigger(
+        &mut self,
+        reason: impl fmt::Display,
+        snapshot: Option<HeapSnapshot>,
+    ) {
+        // Non-adaptive reasons reset the adaptive trigger classification.  That
+        // prevents later feedback from tuning rate/spike knobs for a min-free or
+        // guaranteed-interval cycle.
+        self.last_trigger_type = adaptive::TriggerType::Other;
         self.most_recent_declined_trigger_count = self.declined_trigger_count;
         self.declined_trigger_count = 0;
         self.start_gc_is_pending = true;
@@ -574,7 +585,7 @@ impl HeuristicState {
         self.declined_trigger_count = self.declined_trigger_count.saturating_add(1);
     }
 
-    fn log_decision(
+    pub(super) fn log_decision(
         &self,
         decision: TriggerDecision,
         reason: impl fmt::Display,
@@ -583,7 +594,7 @@ impl HeuristicState {
         log_trigger_decision(decision, self.config.mode, reason, snapshot);
     }
 
-    fn adjust_penalty(&mut self, step: isize) {
+    pub(super) fn adjust_penalty(&mut self, step: isize) {
         self.gc_time_penalties = self.gc_time_penalties.saturating_add_signed(step).min(100);
     }
 }
@@ -629,13 +640,27 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
 
     fn on_gc_end(&self, mmtk: &'static MMTK<MemoryManager>) {
         let now = Instant::now();
-        let used_bytes = pages_to_bytes(mmtk.get_plan().get_used_pages());
+        let plan = mmtk.get_plan();
+        let used_bytes = pages_to_bytes(plan.get_used_pages());
         self.used_at_last_gc_end
             .store(used_bytes, Ordering::Relaxed);
+        let snapshot = HeapSnapshot {
+            total_bytes: pages_to_bytes(self.max_heap_pages),
+            available_bytes: pages_to_bytes(plan.get_available_pages()),
+            free_bytes: pages_to_bytes(plan.get_free_pages()),
+            allocated_since_gc: 0,
+        };
 
+        // Feed post-GC plan accounting back into the heuristic.  Adaptive mode
+        // uses this to adjust how early rate/spike triggers should fire.
         let cycle_time = {
             let mut state = self.lock_state();
-            state.record_cycle_end(now)
+            let cycle_time = state
+                .active_cycle
+                .as_ref()
+                .map(|cycle| now.saturating_duration_since(cycle.started_at))
+                .unwrap_or_default();
+            state.record_cycle_end_with_duration(now, cycle_time, Some(snapshot))
         };
 
         if let Some(cycle_time) = cycle_time {
@@ -653,6 +678,8 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
         space: Option<SpaceStats<MemoryManager>>,
         plan: &dyn Plan<VM = MemoryManager>,
     ) -> bool {
+        // Include failed/pending allocation pages in the snapshot.  MMTk has not
+        // reserved them yet, but the trigger decision must make room for them.
         let pending_bytes = pages_to_bytes(self.pending_pages.load(Ordering::Relaxed));
         let used_bytes = pages_to_bytes(plan.get_used_pages()).saturating_add(pending_bytes);
         let total_bytes = pages_to_bytes(self.max_heap_pages);
@@ -737,8 +764,16 @@ fn env_usize(name: &str) -> Option<usize> {
     env::var(name).ok()?.parse().ok()
 }
 
+fn env_f64(name: &str) -> Option<f64> {
+    env::var(name).ok()?.parse().ok()
+}
+
 fn env_size(name: &str) -> Option<usize> {
     parse_size(&env::var(name).ok()?)
+}
+
+fn elapsed_seconds(start: Instant, end: Instant) -> f64 {
+    end.saturating_duration_since(start).as_secs_f64()
 }
 
 fn parse_size(value: &str) -> Option<usize> {
