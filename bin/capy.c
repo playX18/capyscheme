@@ -1,4 +1,5 @@
 #include "../c/capy.h"
+#include "gc_args.h"
 #include <libgen.h>
 #include <limits.h>
 #include <stdio.h>
@@ -131,6 +132,11 @@ int finish_resume(ContextRef ctx, bool success, Value result, void *data)
 
 int main(int argc, char **argv)
 {
+  if (!capy_apply_gc_args(&argc, argv))
+  {
+    return 1;
+  }
+
   /*char *heap = find_heap(&argc, &argv);
   if (heap) {
     FILE *file = fopen(heap, "r");

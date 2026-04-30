@@ -3,36 +3,29 @@
 use mmtk::util::Address;
 use std::mem::MaybeUninit;
 
-pub struct FormattedSize {
-    size: usize,
-}
+pub struct FormattedSize(pub usize);
 
 impl std::fmt::Display for FormattedSize {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let ksize = (self.size as f64) / 1024f64;
+        const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
-        if ksize < 1f64 {
-            return write!(f, "{}B", self.size);
+        if self.0 < 1024 {
+            return write!(f, "{} B", self.0);
         }
 
-        let msize = ksize / 1024f64;
-
-        if msize < 1f64 {
-            return write!(f, "{:.1}K", ksize);
+        let mut size = self.0 as f64;
+        let mut unit = 0;
+        while size >= 1024.0 && unit + 1 < UNITS.len() {
+            size /= 1024.0;
+            unit += 1;
         }
 
-        let gsize = msize / 1024f64;
-
-        if gsize < 1f64 {
-            write!(f, "{:.1}M", msize)
-        } else {
-            write!(f, "{:.1}G", gsize)
-        }
+        write!(f, "{size:.2}{}", UNITS[unit])
     }
 }
 
 pub fn formatted_size(size: usize) -> FormattedSize {
-    FormattedSize { size }
+    FormattedSize(size)
 }
 
 /// Fixedpoint function to find a fixed point of a function `f` applied to an initial value `start`.
