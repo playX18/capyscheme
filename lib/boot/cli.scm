@@ -67,7 +67,9 @@
           (if (arg-results-ref res "log-debug")
             (log:set-max-level! log:debug))
           (if (arg-results-ref res "log-trace")
-            (log:set-max-level! log:trace))
+            (begin
+              (log:set-max-level! log:trace)
+              ((@@ (capy) gc-logging-enable!) #t)))
           (if (not (zero? (log:max-level)))
             (log:set-logger! *simple-logger*))
           (when (arg-results-ref res "help")
@@ -162,6 +164,57 @@
       "runtime-stats"
       (defaults-to #f)
       (help "Enable runtime timing/counter statistics"))
+    (argparser-add-separator! parser "Garbage collection options:")
+    (add-option! parser
+      "gc-plan"
+      (defaults-to '("GenImmix"))
+      (value-help "PLAN")
+      (help "Select the MMTK GC plan"))
+    (add-option! parser
+      "gc-trigger"
+      (defaults-to '("Delegated"))
+      (value-help "TRIGGER")
+      (help "Set the MMTK GC trigger policy"))
+    (add-option! parser
+      "gc-max-heap"
+      (defaults-to '("2G"))
+      (value-help "SIZE")
+      (help "Set the maximum heap size"))
+    (add-option! parser
+      "gc-heuristic"
+      (defaults-to '("adaptive"))
+      (value-help "MODE")
+      (help "Select the Capy GC heuristic"))
+    (add-option! parser
+      "gc-min-free-percent"
+      (defaults-to '("10"))
+      (value-help "PERCENT")
+      (help "Set the minimum free heap threshold"))
+    (add-option! parser
+      "gc-init-free-percent"
+      (defaults-to '("70"))
+      (value-help "PERCENT")
+      (help "Set the initial free heap threshold"))
+    (add-option! parser
+      "gc-allocation-threshold-percent"
+      (defaults-to '("0"))
+      (value-help "PERCENT")
+      (help "Set the allocation threshold for GC heuristics"))
+    (add-option! parser
+      "gc-alloc-spike-percent"
+      (defaults-to '("5"))
+      (value-help "PERCENT")
+      (help "Set the allocation spike threshold for GC heuristics"))
+    (add-option! parser
+      "gc-learning-steps"
+      (defaults-to '("5"))
+      (value-help "STEPS")
+      (help "Set the GC heuristic learning window"))
+    (add-option! parser
+      "gc-guaranteed-interval-ms"
+      (defaults-to '("300000"))
+      (value-help "MILLISECONDS")
+      (help "Set the guaranteed GC interval"))
     (argparser-add-separator! parser "Logging options:")
     (add-flag! parser
       "log-trace"
@@ -296,6 +349,58 @@
     "runtime-stats"
     (defaults-to #f)
     (help "Enable runtime timing/counter statistics"))
+
+  (argparser-add-separator! parser "Garbage collection options:")
+  (add-option! parser
+    "gc-plan"
+    (defaults-to "GenImmix")
+    (value-help "PLAN")
+    (help "Select the MMTK GC plan"))
+  (add-option! parser
+    "gc-trigger"
+    (defaults-to "Delegated")
+    (value-help "TRIGGER")
+    (help "Set the MMTK GC trigger policy"))
+  (add-option! parser
+    "gc-max-heap"
+    (defaults-to "2G")
+    (value-help "SIZE")
+    (help "Set the maximum heap size"))
+  (add-option! parser
+    "gc-heuristic"
+    (defaults-to "adaptive")
+    (value-help "MODE")
+    (help "Select the Capy GC heuristic"))
+  (add-option! parser
+    "gc-min-free-percent"
+    (defaults-to "10")
+    (value-help "PERCENT")
+    (help "Set the minimum free heap threshold"))
+  (add-option! parser
+    "gc-init-free-percent"
+    (defaults-to "70")
+    (value-help "PERCENT")
+    (help "Set the initial free heap threshold"))
+  (add-option! parser
+    "gc-allocation-threshold-percent"
+    (defaults-to "0")
+    (value-help "PERCENT")
+    (help "Set the allocation threshold for GC heuristics"))
+  (add-option! parser
+    "gc-alloc-spike-percent"
+    (defaults-to "5")
+    (value-help "PERCENT")
+    (help "Set the allocation spike threshold for GC heuristics"))
+  (add-option! parser
+    "gc-learning-steps"
+    (defaults-to "5")
+    (value-help "STEPS")
+    (help "Set the GC heuristic learning window"))
+  (add-option! parser
+    "gc-guaranteed-interval-ms"
+    (defaults-to "300000")
+    (value-help "MILLISECONDS")
+    (help "Set the guaranteed GC interval"))
 
   (add-multi-option! parser
     "load-path"

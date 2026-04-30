@@ -97,14 +97,14 @@
             (define level-str
               (cond
                 [(= level log:error) "ERROR"]
-                [(= level log:warn) "WARN "]
-                [(= level log:info) "INFO "]
+                [(= level log:warn) "WARN"]
+                [(= level log:info) "INFO"]
                 [(= level log:debug) "DEBUG"]
                 [(= level log:trace) "TRACE"]
                 [else (format #f "LVL~a" level)]))
+            (define source (or target module))
             (format (current-output-port) ";; ~a" level-str)
-            (if target (format (current-output-port) " ~a" target))
-            (if module (format (current-output-port) "~a@~a" (if target "" " ") module))
+            (if source (format (current-output-port) "(~a)" source))
             (format (current-output-port) ": ")
             (apply format (current-output-port) fmt args)
             (newline (current-output-port))

@@ -20,6 +20,7 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
     where
         F: FnMut(&'static mut mmtk::Mutator<MemoryManager>),
     {
+        super::logging::gc_pause_started(&super::GarbageCollector::get().mmtk);
         {
             let mut global_stats = crate::runtime::GLOBAL_STATS.lock();
             global_stats.start_gc();
@@ -34,8 +35,9 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
     }
 
     fn resume_mutators(_tls: mmtk::util::VMWorkerThread) {
-        let threads = &super::GarbageCollector::get().threads;
-        threads.resume_all_mutators_from_gc();
+        let gc = super::GarbageCollector::get();
+        gc.threads.resume_all_mutators_from_gc();
+        super::logging::log_gc_completed(&gc.mmtk);
 
         let mut global_stats = crate::runtime::GLOBAL_STATS.lock();
         global_stats.end_gc();
@@ -87,7 +89,7 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
     }
 
     fn create_gc_trigger() -> Box<dyn mmtk::util::heap::GCTriggerPolicy<MemoryManager>> {
-        todo!()
+        super::heuristics::create_gc_trigger()
     }
 }
 

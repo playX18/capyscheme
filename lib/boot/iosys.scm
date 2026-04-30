@@ -292,8 +292,10 @@
           ((set-position!) (set! set-position? #t))
           ((none) (tuple-set! v port.bufmode 'none))
           ((line) (tuple-set! v port.bufmode 'line))
-          ((datum flush) (tuple-set! v port.bufmode 'datum)
+          ((datum)
+            (tuple-set! v port.bufmode 'datum)
             (tuple-set! v port.wr-flush? #t))
+          ((flush) (tuple-set! v port.wr-flush? #t))
           ((block) (tuple-set! v port.bufmode 'block))
           (else
             (assertion-violation 'io/make-port "bad attribute" (car rest))
