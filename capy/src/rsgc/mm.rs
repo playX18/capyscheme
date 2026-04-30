@@ -1,6 +1,6 @@
 use mmtk::{
     MMTKBuilder,
-    util::{ObjectReference, heap::vm_layout::VMLayout},
+    util::{ObjectReference, heap::vm_layout::VMLayout, options::GCTriggerSelector},
     vm::{VMBinding, slot::UnimplementedMemorySlice},
 };
 #[cfg(feature = "aslr")]
@@ -91,7 +91,10 @@ pub fn vm_layout(builder: &mut MMTKBuilder) {
     //return;
     let mut vm_layout = VMLayout::default();
 
-    let size = builder.options.gc_trigger.max_heap_size();
+    let size = match *builder.options.gc_trigger {
+        GCTriggerSelector::Delegated => super::heuristics::configured_max_heap_bytes(),
+        _ => builder.options.gc_trigger.max_heap_size(),
+    };
 
     #[cfg(feature = "aslr")]
     {
