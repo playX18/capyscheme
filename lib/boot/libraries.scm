@@ -1173,6 +1173,7 @@
     condition-broadcast
 
     make-mutex
+    mutex-reentrant?
     mutex-acquire
     mutex-release
     make-thread-parameter
