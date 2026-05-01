@@ -41,20 +41,6 @@ struct RewriteResult<'gc> {
     mentions_tracked_binding: bool,
 }
 
-#[derive(Clone, Copy)]
-struct ShrinkResult<'gc> {
-    term: TermRef<'gc>,
-    changed: bool,
-    size: usize,
-}
-
-#[derive(Clone, Copy)]
-struct CopyResult<'gc> {
-    term: TermRef<'gc>,
-    size: usize,
-    mentions_tracked_binding: bool,
-}
-
 #[derive(Clone)]
 struct State<'gc> {
     ctx: Context<'gc>,
@@ -189,62 +175,14 @@ impl<'gc> State<'gc> {
     }
 }
 
-fn substitute_atoms_array<'gc>(state: &State<'gc>, prev_args: Atoms<'gc>) -> (Atoms<'gc>, bool) {
-    let mut args: Option<Vec<Atom<'gc>>> = None;
-
-    for (index, prev_arg) in prev_args.iter().copied().enumerate() {
-        let arg = state.atom_subst(prev_arg);
-        match &mut args {
-            Some(args) => args.push(arg),
-            None if arg != prev_arg => {
-                let mut changed_args = Vec::with_capacity(prev_args.len());
-                changed_args.extend(prev_args[..index].iter().copied());
-                changed_args.push(arg);
-                args = Some(changed_args);
-            }
-            None => {}
-        }
-    }
-
-    match args {
-        Some(args) => (Array::from_slice(*state.ctx, args), true),
-        None => (prev_args, false),
-    }
-}
-
-fn substitute_atoms_vec<'gc>(state: &State<'gc>, prev_args: Atoms<'gc>) -> (Vec<Atom<'gc>>, bool) {
-    let mut changed = false;
-    let args = prev_args
-        .iter()
-        .copied()
-        .map(|prev_arg| {
-            let arg = state.atom_subst(prev_arg);
-            changed |= arg != prev_arg;
-            arg
-        })
-        .collect::<Vec<_>>();
-    (args, changed)
-}
-
-fn atoms_mention_tracked_binding<'gc>(
-    tracked_binding: Option<LVarRef<'gc>>,
-    args: Atoms<'gc>,
-) -> bool {
-    args.iter()
-        .copied()
-        .any(|arg| mentions_tracked_atom(tracked_binding, arg))
-}
-
 fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
     let mut census = HashMap::default();
     let mut rhs = HashMap::default();
-    let mut worklist = vec![term];
 
     fn inc_app_use_n<'gc>(
         name: LVarRef<'gc>,
         census: &mut HashMap<LVarRef<'gc>, Count>,
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
-        worklist: &mut Vec<TermRef<'gc>>,
     ) {
         let curr_count = census.get(&name).copied().unwrap_or_default();
         census.insert(
@@ -256,7 +194,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
         );
 
         if let Some(tree) = rhs.remove(&name) {
-            worklist.push(tree);
+            add_to_census(tree, census, rhs);
         }
     }
 
@@ -264,10 +202,9 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
         atom: Atom<'gc>,
         census: &mut HashMap<LVarRef<'gc>, Count>,
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
-        worklist: &mut Vec<TermRef<'gc>>,
     ) {
         if let Atom::Local(name) = atom {
-            inc_app_use_n(name, census, rhs, worklist);
+            inc_app_use_n(name, census, rhs);
         }
     }
 
@@ -275,7 +212,6 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
         name: LVarRef<'gc>,
         census: &mut HashMap<LVarRef<'gc>, Count>,
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
-        worklist: &mut Vec<TermRef<'gc>>,
     ) {
         let curr_count = census.get(&name).copied().unwrap_or_default();
 
@@ -288,7 +224,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
         );
 
         if let Some(tree) = rhs.remove(&name) {
-            worklist.push(tree);
+            add_to_census(tree, census, rhs);
         }
     }
 
@@ -296,307 +232,250 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
         atom: Atom<'gc>,
         census: &mut HashMap<LVarRef<'gc>, Count>,
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
-        worklist: &mut Vec<TermRef<'gc>>,
     ) {
         if let Atom::Local(name) = atom {
-            inc_val_use_n(name, census, rhs, worklist);
+            inc_val_use_n(name, census, rhs);
         }
     }
 
-    while let Some(mut term) = worklist.pop() {
-        loop {
-            match *term {
-                Term::Let(_, expr, body) => {
-                    match expr {
-                        Expression::PrimCall(_, args, _) => {
-                            for arg in args.iter() {
-                                inc_val_use_a(*arg, &mut census, &mut rhs, &mut worklist);
-                            }
-                        }
-                    }
-
-                    term = body;
-                }
-
-                Term::Letk(ks, body) => {
-                    for k in ks.iter() {
-                        rhs.insert(k.binding(), k.body());
-                    }
-
-                    term = body;
-                }
-
-                Term::Fix(funcs, body) => {
-                    for fun in funcs.iter() {
-                        rhs.insert(fun.binding, fun.body());
-                    }
-
-                    term = body;
-                }
-
-                Term::App(fun, ret_c, args, _) => {
-                    inc_app_use_a(fun, &mut census, &mut rhs, &mut worklist);
-                    inc_val_use_n(ret_c, &mut census, &mut rhs, &mut worklist);
-
-                    for arg in args.iter() {
-                        inc_val_use_a(*arg, &mut census, &mut rhs, &mut worklist);
-                    }
-                    break;
-                }
-
-                Term::Continue(k, args, _) => {
-                    inc_app_use_n(k, &mut census, &mut rhs, &mut worklist);
-                    for arg in args.iter() {
-                        inc_val_use_a(*arg, &mut census, &mut rhs, &mut worklist);
-                    }
-                    break;
-                }
-
-                Term::If {
-                    test,
-                    consequent,
-                    consequent_args,
-                    alternative,
-                    alternative_args,
-                    ..
-                } => {
-                    inc_val_use_a(test, &mut census, &mut rhs, &mut worklist);
-                    inc_val_use_n(consequent, &mut census, &mut rhs, &mut worklist);
-                    inc_val_use_n(alternative, &mut census, &mut rhs, &mut worklist);
-                    if let Some(args) = consequent_args {
+    fn add_to_census<'gc>(
+        term: TermRef<'gc>,
+        census: &mut HashMap<LVarRef<'gc>, Count>,
+        rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
+    ) {
+        match *term {
+            Term::Let(_, expr, body) => {
+                match expr {
+                    Expression::PrimCall(_, args, _) => {
                         for arg in args.iter() {
-                            inc_val_use_a(*arg, &mut census, &mut rhs, &mut worklist);
+                            inc_val_use_a(*arg, census, rhs);
                         }
                     }
+                }
 
-                    if let Some(args) = alternative_args {
-                        for arg in args.iter() {
-                            inc_val_use_a(*arg, &mut census, &mut rhs, &mut worklist);
-                        }
+                add_to_census(body, census, rhs);
+            }
+
+            Term::Letk(ks, body) => {
+                for k in ks.iter() {
+                    rhs.insert(k.binding(), k.body());
+                }
+
+                add_to_census(body, census, rhs);
+            }
+
+            Term::Fix(funcs, body) => {
+                for fun in funcs.iter() {
+                    rhs.insert(fun.binding, fun.body());
+                }
+
+                add_to_census(body, census, rhs);
+            }
+
+            Term::App(fun, ret_c, args, _) => {
+                inc_app_use_a(fun, census, rhs);
+                inc_val_use_n(ret_c, census, rhs);
+
+                for arg in args.iter() {
+                    inc_val_use_a(*arg, census, rhs);
+                }
+            }
+
+            Term::Continue(k, args, _) => {
+                inc_app_use_n(k, census, rhs);
+                for arg in args.iter() {
+                    inc_val_use_a(*arg, census, rhs);
+                }
+            }
+
+            Term::If {
+                test,
+                consequent,
+                consequent_args,
+                alternative,
+                alternative_args,
+                ..
+            } => {
+                inc_val_use_a(test, census, rhs);
+                inc_val_use_n(consequent, census, rhs);
+                inc_val_use_n(alternative, census, rhs);
+                if let Some(args) = consequent_args {
+                    for arg in args.iter() {
+                        inc_val_use_a(*arg, census, rhs);
                     }
-                    break;
+                }
+
+                if let Some(args) = alternative_args {
+                    for arg in args.iter() {
+                        inc_val_use_a(*arg, census, rhs);
+                    }
                 }
             }
         }
     }
+
+    add_to_census(term, &mut census, &mut rhs);
 
     census.into_iter().collect()
 }
 
-struct PendingShrinkLet<'gc> {
-    original: TermRef<'gc>,
-    binding: LVarRef<'gc>,
-    expr: Expression<'gc>,
-}
-
-fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResult<'gc> {
-    stacker::maybe_grow(4 * 1024 * 1024, 1 * 1024 * 1024, || {
-        shrink_tree_inner(term, state)
-    })
-}
-
-fn shrink_tree_inner<'gc>(mut term: TermRef<'gc>, mut state: State<'gc>) -> ShrinkResult<'gc> {
-    let mut lets = Vec::new();
-    let mut changed = false;
-
-    loop {
-        match *term {
-            Term::Let(binding, Expression::PrimCall(prim, prev_args, source), prev_body) => {
+fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, bool) {
+    stacker::maybe_grow(4 * 1024 * 1024, 1 * 1024 * 1024, || match *term {
+        Term::Let(binding, expr, prev_body) => match expr {
+            Expression::PrimCall(prim, prev_args, source) => {
                 /*if state.is_dead(binding)
                     && SIDE_EFFECT_FREE_OPS.contains(&*prim.downcast::<Symbol>().as_str())
                 {
-                    changed = true;
-                    term = prev_body;
-                    continue;
+                    return shrink_tree(prev_body, state);
                 }*/
 
-                let (args, args_changed) = substitute_atoms_vec(&state, prev_args);
+                let args = state
+                    .substitute_atoms(prev_args.iter().copied())
+                    .collect::<Vec<_>>();
 
                 if args.iter().all(|arg| matches!(arg, Atom::Constant(_))) {
                     if let Some(atom) = folding_table(state.ctx).try_fold(state.ctx, prim, &args) {
-                        state = state.with_atom_subst(Atom::Local(binding), Atom::Constant(atom));
-                        changed = true;
-                        term = prev_body;
-                        continue;
+                        let state =
+                            state.with_atom_subst(Atom::Local(binding), Atom::Constant(atom));
+                        let (body, _) = shrink_tree(prev_body, state);
+                        return (body, true);
                     }
                 }
-
-                let atoms = if args_changed {
-                    changed = true;
-                    Array::from_slice(*state.ctx, args)
-                } else {
-                    prev_args
-                };
-                lets.push(PendingShrinkLet {
-                    original: term,
-                    binding,
-                    expr: Expression::PrimCall(prim, atoms, source),
-                });
-                term = prev_body;
-            }
-
-            _ => {
                 let ctx = state.ctx;
-                let mut result = shrink_tree_non_let(term, state);
-                result.changed |= changed;
-                result.size += lets.len();
+                let args_changed = !args.iter().zip(prev_args.iter()).all(|(a, b)| a == b);
+                let atoms = if !args_changed {
+                    prev_args
+                } else {
+                    Array::from_slice(*state.ctx, args)
+                };
 
-                if !result.changed {
-                    if let Some(first) = lets.first() {
-                        result.term = first.original;
-                    }
-                    return result;
+                let (body, body_changed) = shrink_tree(prev_body, state);
+
+                if !body_changed && !args_changed {
+                    return (term, false);
                 }
 
-                let mut body = result.term;
-                for pending in lets.into_iter().rev() {
-                    body = Gc::new(*ctx, Term::Let(pending.binding, pending.expr, body));
-                }
-                result.term = body;
-                return result;
+                (
+                    Gc::new(
+                        *ctx,
+                        Term::Let(binding, Expression::PrimCall(prim, atoms, source), body),
+                    ),
+                    true,
+                )
             }
-        }
-    }
-}
-
-fn shrink_tree_non_let<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResult<'gc> {
-    match *term {
-        Term::Let(..) => shrink_tree(term, state),
+        },
 
         Term::Letk(prev_conts, prev_body) => {
-            let mut inlined = Vec::new();
-            let mut not_inlined = Vec::new();
-            let mut not_inlined_size = 0;
+            let (inlined, not_inlined) = prev_conts
+                .iter()
+                .filter_map(|cont| {
+                    if state.is_dead(cont.binding()) {
+                        return None;
+                    }
+                    let (body, body_changed) = shrink_tree(cont.body(), state.clone());
+                    Some(if body_changed {
+                        cont.with_body(state.ctx, body)
+                    } else {
+                        *cont
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .partition::<Vec<_>, _>(|&cont| {
+                    !cont.noinline && state.applied_once(cont.binding())
+                });
 
-            for cont in prev_conts.iter().copied() {
-                if state.is_dead(cont.binding()) {
-                    continue;
-                }
-
-                let body = shrink_tree(cont.body(), state.clone());
-                let cont = if body.changed {
-                    cont.with_body(state.ctx, body.term)
-                } else {
-                    cont
-                };
-
-                if !cont.noinline && state.applied_once(cont.binding()) {
-                    inlined.push(cont);
-                } else {
-                    not_inlined_size += body.size;
-                    not_inlined.push(cont);
-                }
-            }
-
-            let ctx = state.ctx;
             let state = state.with_continuations(&inlined);
-            let body = shrink_tree(prev_body, state);
+            let ctx = state.ctx;
+            let (body, body_changed) = shrink_tree(prev_body, state);
             let conts_changed = prev_conts.len() != not_inlined.len()
                 || not_inlined
                     .iter()
                     .zip(prev_conts.iter())
                     .any(|(a, b)| !Gc::ptr_eq(*a, *b));
-            let size = body.size + not_inlined_size;
-
             if not_inlined.is_empty() {
-                return ShrinkResult {
-                    term: if conts_changed || body.changed {
-                        body.term
-                    } else {
-                        term
-                    },
-                    changed: conts_changed || body.changed,
-                    size,
+                return if conts_changed || body_changed {
+                    (body, true)
+                } else {
+                    (term, false)
                 };
             }
 
-            if !conts_changed && !body.changed {
-                return ShrinkResult {
-                    term,
-                    changed: false,
-                    size,
-                };
+            let conts = if !conts_changed {
+                prev_conts
+            } else {
+                Array::from_slice(*ctx, not_inlined)
+            };
+            if !conts_changed && !body_changed {
+                return (term, false);
             }
-
-            ShrinkResult {
-                term: Gc::new(
-                    *ctx,
-                    Term::Letk(Array::from_slice(*ctx, not_inlined), body.term),
-                ),
-                changed: true,
-                size,
-            }
+            (Gc::new(*ctx, Term::Letk(conts, body)), true)
         }
 
         Term::Fix(prev_funcs, prev_body) => {
-            let mut funcs = Vec::new();
-            let mut funcs_size = 0;
-            let mut func_bodies_changed = false;
+            let funcs = prev_funcs
+                .iter()
+                .copied()
+                .filter_map(|func| {
+                    if state.is_dead(func.binding) {
+                        return None;
+                    }
 
-            for func in prev_funcs.iter().copied() {
-                if state.is_dead(func.binding) {
-                    continue;
-                }
-
-                let body = shrink_tree(func.body(), state.clone());
-                funcs_size += body.size;
-                func_bodies_changed |= body.changed;
-                funcs.push(if body.changed {
-                    func.with_body(state.ctx, body.term)
-                } else {
-                    func
-                });
-            }
-
-            let funcs_changed = func_bodies_changed
-                || prev_funcs.len() != funcs.len()
+                    let (body, body_changed) = shrink_tree(func.body(), state.clone());
+                    Some(if body_changed {
+                        func.with_body(state.ctx, body)
+                    } else {
+                        func
+                    })
+                })
+                .collect::<Vec<_>>();
+            let funcs_changed = prev_funcs.len() != funcs.len()
                 || funcs
                     .iter()
                     .zip(prev_funcs.iter())
                     .any(|(a, b)| !Gc::ptr_eq(*a, *b));
-            let ctx = state.ctx;
-            let body = shrink_tree(prev_body, state);
-            let size = body.size + funcs_size;
 
             if funcs.is_empty() {
-                return ShrinkResult {
-                    term: if funcs_changed || body.changed {
-                        body.term
-                    } else {
-                        term
-                    },
-                    changed: funcs_changed || body.changed,
-                    size,
+                let (body, body_changed) = shrink_tree(prev_body, state);
+                return if funcs_changed || body_changed {
+                    (body, true)
+                } else {
+                    (term, false)
                 };
             }
-
-            if !funcs_changed && !body.changed {
-                return ShrinkResult {
-                    term,
-                    changed: false,
-                    size,
-                };
+            let ctx = state.ctx;
+            let funcs = if !funcs_changed {
+                prev_funcs
+            } else {
+                Array::from_slice(*state.ctx, funcs)
+            };
+            let (body, body_changed) = shrink_tree(prev_body, state);
+            if !funcs_changed && !body_changed {
+                return (term, false);
             }
-
-            ShrinkResult {
-                term: Gc::new(*ctx, Term::Fix(Array::from_slice(*ctx, funcs), body.term)),
-                changed: true,
-                size,
-            }
+            (Gc::new(*ctx, Term::Fix(funcs, body)), true)
         }
 
         Term::Continue(k_prev, args_prev, src) => {
             let k = state.cont_subst(k_prev);
-            let (args, args_changed) = substitute_atoms_array(&state, args_prev);
+            let args = state
+                .substitute_atoms(args_prev.iter().copied())
+                .collect::<Vec<_>>();
 
+            let args_changed = !args.iter().zip(args_prev.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
+                args_prev
+            } else {
+                Array::from_slice(*state.ctx, args)
+            };
             if let Some(k) = state.cenv.get(&k).copied()
                 && !k.noinline
                 && k.arity_matches(args.len())
             {
-                let result = if let Some(variadic) = k.variadic() {
+                let body = if let Some(variadic) = k.variadic() {
                     let fixed_args = &args[0..k.args.len()];
                     if state.is_referenced(variadic) {
-                        let body = materialize_list(
+                        materialize_list(
                             state,
                             &args[k.args.len()..],
                             Box::new(move |state, rest| {
@@ -610,104 +489,87 @@ fn shrink_tree_non_let<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResu
                                     state = state.with_var_to_atom_subst(var, arg);
                                 }
 
-                                shrink_tree(k.body(), state).term
+                                shrink_tree(k.body(), state).0
                             }),
-                        );
-                        ShrinkResult {
-                            term: body,
-                            changed: true,
-                            size: size(body),
-                        }
+                        )
                     } else {
+                        // if variadic is never referenced we don't need to materialize the list
                         let mut state = state.with_vars_to_atoms(&k.args(), fixed_args);
                         state =
                             state.with_var_to_atom_subst(variadic, Atom::Constant(Value::null()));
-                        shrink_tree(k.body(), state)
+                        shrink_tree(k.body(), state).0
                     }
                 } else {
                     let state = state.with_vars_to_atoms(&k.args(), &args);
-                    shrink_tree(k.body(), state)
+                    shrink_tree(k.body(), state).0
                 };
-
-                return ShrinkResult {
-                    changed: true,
-                    ..result
-                };
-            }
-
-            if Gc::ptr_eq(k, k_prev) && !args_changed {
-                return ShrinkResult {
-                    term,
-                    changed: false,
-                    size: 1,
-                };
-            }
-
-            ShrinkResult {
-                term: Gc::new(*state.ctx, Term::Continue(k, args, src)),
-                changed: true,
-                size: 1,
+                (body, true)
+            } else {
+                if Gc::ptr_eq(k, k_prev) && !args_changed {
+                    return (term, false);
+                }
+                (Gc::new(*state.ctx, Term::Continue(k, args, src)), true)
             }
         }
 
         Term::App(fun_prev, retc_prev, args_prev, span) => {
             let retc = state.cont_subst(retc_prev);
-            let (args, args_changed) = substitute_atoms_array(&state, args_prev);
+
+            let args = state
+                .substitute_atoms(args_prev.iter().copied())
+                .collect::<Vec<_>>();
+            let args_changed = !args.iter().zip(args_prev.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
+                args_prev
+            } else {
+                Array::from_slice(*state.ctx, args)
+            };
+
             let fun = state.atom_subst(fun_prev);
 
-            if let Atom::Local(fun_name) = fun
-                && let Some(fun) = state.fenv.get(&fun_name).copied()
-                && fun.arity_matches(args.len())
-            {
-                let mut state = state.with_c_subst(fun.return_cont, retc);
-                let result = if let Some(variadic) = fun.variadic {
-                    let body = materialize_list(
-                        state,
-                        &args[fun.args.len()..],
-                        Box::new(|state, rest| {
-                            let mut state = state;
-                            for (arg, &var) in args
-                                .iter()
-                                .copied()
-                                .take(fun.args.len())
-                                .chain(std::iter::once(rest))
-                                .zip(fun.args.iter().chain(std::iter::once(&variadic)))
-                            {
-                                state = state.with_var_to_atom_subst(var, arg);
-                            }
+            match fun {
+                Atom::Local(fun) if state.fenv.contains_key(&fun) => {
+                    let fun = state.fenv[&fun];
+                    if fun.arity_matches(args.len()) {
+                        let mut state = state.with_c_subst(fun.return_cont, retc);
+                        if let Some(variadic) = fun.variadic {
+                            let body = materialize_list(
+                                state,
+                                &args[fun.args.len()..],
+                                Box::new(|state, rest| {
+                                    let mut state = state;
+                                    for (arg, &var) in args
+                                        .iter()
+                                        .copied()
+                                        .take(fun.args.len())
+                                        .chain(std::iter::once(rest))
+                                        .zip(fun.args.iter().chain(std::iter::once(&variadic)))
+                                    {
+                                        state = state.with_var_to_atom_subst(var, arg);
+                                    }
 
-                            shrink_tree(fun.body(), state).term
-                        }),
-                    );
-                    ShrinkResult {
-                        term: body,
-                        changed: true,
-                        size: size(body),
+                                    shrink_tree(fun.body(), state).0
+                                }),
+                            );
+                            return (body, true);
+                        } else {
+                            state = state.with_vars_to_atoms(&fun.args, &args);
+                            return {
+                                let (body, _) = shrink_tree(fun.body(), state);
+                                (body, true)
+                            };
+                        }
                     }
-                } else {
-                    state = state.with_vars_to_atoms(&fun.args, &args);
-                    shrink_tree(fun.body(), state)
-                };
+                }
 
-                return ShrinkResult {
-                    changed: true,
-                    ..result
-                };
+                _ => {}
             }
 
             if Gc::ptr_eq(retc, retc_prev) && !args_changed && fun == fun_prev {
-                return ShrinkResult {
-                    term,
-                    changed: false,
-                    size: 1,
-                };
+                return (term, false);
             }
 
-            ShrinkResult {
-                term: Gc::new(*state.ctx, Term::App(fun, retc, args, span)),
-                changed: true,
-                size: 1,
-            }
+            return (Gc::new(*state.ctx, Term::App(fun, retc, args, span)), true);
         }
 
         Term::If {
@@ -719,21 +581,40 @@ fn shrink_tree_non_let<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResu
             hints,
         } => {
             let test = state.atom_subst(test_prev);
+
             let consequent = state.cont_subst(consequent_prev);
             let alternative = state.cont_subst(alternative_prev);
-            let (consequent_args, consequent_args_changed) = match consequent_args_prev {
-                Some(args) => {
-                    let (args, changed) = substitute_atoms_array(&state, args);
-                    (Some(args), changed)
+            let consequent_args = consequent_args_prev.map(|prev_args| {
+                let args = prev_args
+                    .iter()
+                    .map(|&arg| state.atom_subst(arg))
+                    .collect::<Vec<_>>();
+                if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                    prev_args
+                } else {
+                    Array::from_slice(*state.ctx, args)
                 }
-                None => (None, false),
+            });
+            let alternative_args = alternative_args_prev.map(|prev_args| {
+                let args = prev_args
+                    .iter()
+                    .map(|&arg| state.atom_subst(arg))
+                    .collect::<Vec<_>>();
+                if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                    prev_args
+                } else {
+                    Array::from_slice(*state.ctx, args)
+                }
+            });
+            let consequent_args_changed = match (consequent_args, consequent_args_prev) {
+                (Some(a), Some(b)) => !Gc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
             };
-            let (alternative_args, alternative_args_changed) = match alternative_args_prev {
-                Some(args) => {
-                    let (args, changed) = substitute_atoms_array(&state, args);
-                    (Some(args), changed)
-                }
-                None => (None, false),
+            let alternative_args_changed = match (alternative_args, alternative_args_prev) {
+                (Some(a), Some(b)) => !Gc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
             };
 
             if let Atom::Constant(test) = test {
@@ -743,8 +624,8 @@ fn shrink_tree_non_let<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResu
                     (alternative, alternative_args)
                 };
 
-                return ShrinkResult {
-                    term: Gc::new(
+                return (
+                    Gc::new(
                         *state.ctx,
                         Term::Continue(
                             k,
@@ -752,9 +633,8 @@ fn shrink_tree_non_let<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResu
                             Value::new(false),
                         ),
                     ),
-                    changed: true,
-                    size: 1,
-                };
+                    true,
+                );
             }
 
             if Gc::ptr_eq(consequent, consequent_prev)
@@ -763,15 +643,11 @@ fn shrink_tree_non_let<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResu
                 && !alternative_args_changed
                 && test == test_prev
             {
-                return ShrinkResult {
-                    term,
-                    changed: false,
-                    size: 1,
-                };
+                return (term, false);
             }
 
-            ShrinkResult {
-                term: Gc::new(
+            (
+                Gc::new(
                     *state.ctx,
                     Term::If {
                         test,
@@ -782,19 +658,13 @@ fn shrink_tree_non_let<'gc>(term: TermRef<'gc>, state: State<'gc>) -> ShrinkResu
                         hints,
                     },
                 ),
-                changed: true,
-                size: 1,
-            }
+                true,
+            )
         }
-    }
+    })
 }
 
 pub fn shrink<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> (TermRef<'gc>, bool) {
-    let result = shrink_with_size(ctx, term);
-    (result.term, result.changed)
-}
-
-fn shrink_with_size<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> ShrinkResult<'gc> {
     let census = census(term);
     let state = State::new(ctx, census);
     shrink_tree(term, state)
@@ -807,29 +677,27 @@ pub fn rewrite<'gc>(ctx: Context<'gc>, term: TermRef<'gc>) -> TermRef<'gc> {
     }
 
     let mut simplified_tree = term;
-    let mut simplified_size = size(simplified_tree);
     for round in 0..3 {
         let mut round_profile = ProfileScope::new("cps.rewrite.shrink");
         if round_profile.is_enabled() {
             round_profile.field("round", round + 1);
-            round_profile.field("term_size_before", simplified_size);
+            round_profile.field("term_size_before", size(simplified_tree));
         }
 
-        let next = shrink_with_size(ctx, simplified_tree);
-        simplified_tree = next.term;
-        simplified_size = next.size;
+        let (next, changed) = shrink(ctx, simplified_tree);
+        simplified_tree = next;
 
         if round_profile.is_enabled() {
-            round_profile.field("term_size_after", simplified_size);
-            round_profile.field("changed", next.changed);
+            round_profile.field("term_size_after", size(simplified_tree));
+            round_profile.field("changed", changed);
         }
 
-        if !next.changed {
+        if !changed {
             break;
         }
     }
 
-    let max_size = simplified_size * 3 / 2;
+    let max_size = size(simplified_tree) * 3 / 2;
     let mut rewritten = simplified_tree;
     for _ in 0..2 {
         let (next, changed) = inline(ctx, rewritten, max_size);
@@ -863,68 +731,23 @@ fn copy_t<'gc>(
     term: TermRef<'gc>,
     subv: &mut HashMap<Atom<'gc>, Atom<'gc>>,
     subc: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
-) -> CopyResult<'gc> {
-    copy_t_with_metadata(ctx, term, subv, subc, None)
-}
-
-struct PendingCopyLet<'gc> {
-    binding: LVarRef<'gc>,
-    expr: Expression<'gc>,
-}
-
-fn copy_t_with_metadata<'gc>(
-    ctx: Context<'gc>,
-    mut term: TermRef<'gc>,
-    subv: &mut HashMap<Atom<'gc>, Atom<'gc>>,
-    subc: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
-    tracked_binding: Option<LVarRef<'gc>>,
-) -> CopyResult<'gc> {
-    let mut lets = Vec::new();
-
-    loop {
-        match *term {
-            Term::Let(binding, expr, body) => {
-                let binding1 = binding.copy(ctx);
-                subv.insert(Atom::Local(binding), Atom::Local(binding1));
-                lets.push(PendingCopyLet {
-                    binding: binding1,
-                    expr,
-                });
-                term = body;
-            }
-
-            _ => {
-                let mut result = copy_non_let(ctx, term, subv, subc, tracked_binding);
-                for pending in lets.into_iter().rev() {
-                    let expr = match pending.expr {
-                        Expression::PrimCall(prim, args, source) => {
-                            let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
-                            let mentions = args
-                                .iter()
-                                .copied()
-                                .any(|arg| mentions_tracked_atom(tracked_binding, arg));
-                            result.mentions_tracked_binding |= mentions;
-                            Expression::PrimCall(prim, Array::from_slice(*ctx, args), source)
-                        }
-                    };
-                    result.term = Gc::new(*ctx, Term::Let(pending.binding, expr, result.term));
-                    result.size += 1;
-                }
-                return result;
-            }
-        }
-    }
-}
-
-fn copy_non_let<'gc>(
-    ctx: Context<'gc>,
-    term: TermRef<'gc>,
-    subv: &mut HashMap<Atom<'gc>, Atom<'gc>>,
-    subc: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
-    tracked_binding: Option<LVarRef<'gc>>,
-) -> CopyResult<'gc> {
+) -> TermRef<'gc> {
     match *term {
-        Term::Let(..) => copy_t_with_metadata(ctx, term, subv, subc, tracked_binding),
+        Term::Let(binding, expr, body) => {
+            let binding1 = binding.copy(ctx);
+            subv.insert(Atom::Local(binding), Atom::Local(binding1));
+            let body1 = copy_t(ctx, body, subv, subc);
+            let expr = match expr {
+                Expression::PrimCall(prim, args, source) => {
+                    let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
+                    let atoms = Array::from_slice(*ctx, args);
+
+                    Expression::PrimCall(prim, atoms, source)
+                }
+            };
+
+            Gc::new(*ctx, Term::Let(binding1, expr, body1))
+        }
 
         Term::Letk(conts, body) => {
             let names = conts.iter().map(|c| c.binding()).collect::<Vec<_>>();
@@ -932,34 +755,22 @@ fn copy_non_let<'gc>(
                 .iter()
                 .map(|c| c.binding().copy(ctx))
                 .collect::<Vec<_>>();
+            let mut subc1 = subc;
 
             for (old, new) in names.iter().zip(names1.iter()) {
-                subc.insert(*old, *new);
+                subc1.insert(*old, *new);
             }
 
-            let mut size = 0;
-            let mut mentions = false;
             let conts = conts
                 .iter()
-                .map(|cont| {
-                    let (cont, body) = copy_c(ctx, *cont, subv, subc, tracked_binding);
-                    size += body.size;
-                    mentions |= body.mentions_tracked_binding;
-                    cont
-                })
+                .map(|cont| copy_c(ctx, *cont, subv, &mut subc1))
                 .collect::<Vec<_>>();
 
             let conts = Array::from_slice(*ctx, conts);
 
-            let body = copy_t_with_metadata(ctx, body, subv, subc, tracked_binding);
-            size += body.size;
-            mentions |= body.mentions_tracked_binding;
+            let body = copy_t(ctx, body, subv, &mut subc1);
 
-            CopyResult {
-                term: Gc::new(*ctx, Term::Letk(conts, body.term)),
-                size,
-                mentions_tracked_binding: mentions,
-            }
+            Gc::new(*ctx, Term::Letk(conts, body))
         }
 
         Term::Fix(funcs, body) => {
@@ -975,45 +786,24 @@ fn copy_non_let<'gc>(
                 subv1.insert(Atom::Local(*old), Atom::Local(*new));
             }
 
-            let mut size = 0;
-            let mut mentions = false;
             let funcs = funcs
                 .iter()
-                .map(|func| {
-                    let (func, body) = copy_f(ctx, *func, &mut subv1, subc, tracked_binding);
-                    size += body.size;
-                    mentions |= body.mentions_tracked_binding;
-                    func
-                })
+                .map(|func| copy_f(ctx, *func, &mut subv1, subc))
                 .collect::<Vec<_>>();
             let funcs = Array::from_slice(*ctx, funcs);
 
-            let body = copy_t_with_metadata(ctx, body, &mut subv1, subc, tracked_binding);
-            size += body.size;
-            mentions |= body.mentions_tracked_binding;
+            let body = copy_t(ctx, body, &mut subv1, subc);
 
-            CopyResult {
-                term: Gc::new(*ctx, Term::Fix(funcs, body.term)),
-                size,
-                mentions_tracked_binding: mentions,
-            }
+            Gc::new(*ctx, Term::Fix(funcs, body))
         }
 
         Term::Continue(cont, args, src) => {
             let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
-            let cont = subc.subst(cont);
-            let mentions = mentions_tracked_var(tracked_binding, cont)
-                || args
-                    .iter()
-                    .copied()
-                    .any(|arg| mentions_tracked_atom(tracked_binding, arg));
             let args = Array::from_slice(*ctx, args);
 
-            CopyResult {
-                term: Gc::new(*ctx, Term::Continue(cont, args, src)),
-                size: 1,
-                mentions_tracked_binding: mentions,
-            }
+            let cont = subc.subst(cont);
+
+            Gc::new(*ctx, Term::Continue(cont, args, src))
         }
 
         Term::App(fun, retc, args, src) => {
@@ -1022,19 +812,9 @@ fn copy_non_let<'gc>(
             let retc = subc.subst(retc);
 
             let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
-            let mentions = mentions_tracked_atom(tracked_binding, fun)
-                || mentions_tracked_var(tracked_binding, retc)
-                || args
-                    .iter()
-                    .copied()
-                    .any(|arg| mentions_tracked_atom(tracked_binding, arg));
             let args = Array::from_slice(*ctx, args);
 
-            CopyResult {
-                term: Gc::new(*ctx, Term::App(fun, retc, args, src)),
-                size: 1,
-                mentions_tracked_binding: mentions,
-            }
+            Gc::new(*ctx, Term::App(fun, retc, args, src))
         }
 
         Term::If {
@@ -1052,31 +832,18 @@ fn copy_non_let<'gc>(
                 consequent_args.map(|args| args.iter().map(|&a| subv.subst(a)).collect_gc(*ctx));
             let alternative_args =
                 alternative_args.map(|args| args.iter().map(|&a| subv.subst(a)).collect_gc(*ctx));
-            let mentions = mentions_tracked_atom(tracked_binding, test)
-                || mentions_tracked_var(tracked_binding, consequent)
-                || mentions_tracked_var(tracked_binding, alternative)
-                || consequent_args
-                    .iter()
-                    .any(|args| atoms_mention_tracked_binding(tracked_binding, *args))
-                || alternative_args
-                    .iter()
-                    .any(|args| atoms_mention_tracked_binding(tracked_binding, *args));
 
-            CopyResult {
-                term: Gc::new(
-                    *ctx,
-                    Term::If {
-                        test,
-                        consequent,
-                        consequent_args,
-                        alternative,
-                        alternative_args,
-                        hints,
-                    },
-                ),
-                size: 1,
-                mentions_tracked_binding: mentions,
-            }
+            Gc::new(
+                *ctx,
+                Term::If {
+                    test,
+                    consequent,
+                    consequent_args,
+                    alternative,
+                    alternative_args,
+                    hints,
+                },
+            )
         }
     }
 }
@@ -1086,8 +853,7 @@ fn copy_c<'gc>(
     cont: ContRef<'gc>,
     subv: &mut HashMap<Atom<'gc>, Atom<'gc>>,
     subc: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
-    tracked_binding: Option<LVarRef<'gc>>,
-) -> (ContRef<'gc>, CopyResult<'gc>) {
+) -> ContRef<'gc> {
     let args1 = cont.args().iter().map(|a| a.copy(ctx)).collect::<Vec<_>>();
     let var1 = cont.variadic().map(|v| v.copy(ctx));
 
@@ -1102,14 +868,14 @@ fn copy_c<'gc>(
 
     let binding = subc.subst(cont.binding());
     let args1 = Array::from_slice(*ctx, args1);
-    let body = copy_t_with_metadata(ctx, cont.body(), subv1, subc, tracked_binding);
-    let cont = Gc::new(
+    let body = copy_t(ctx, cont.body(), subv1, subc);
+    Gc::new(
         *ctx,
         Cont {
             name: cont.name(),
             binding,
 
-            body: Lock::new(body.term),
+            body: Lock::new(body),
             args: args1,
             variadic: var1,
             source: cont.source(),
@@ -1119,8 +885,7 @@ fn copy_c<'gc>(
             cold: cont.cold,
             meta: cont.meta,
         },
-    );
-    (cont, body)
+    )
 }
 
 fn copy_f<'gc>(
@@ -1128,11 +893,11 @@ fn copy_f<'gc>(
     fun: FuncRef<'gc>,
     subv: &mut HashMap<Atom<'gc>, Atom<'gc>>,
     subc: &mut HashMap<LVarRef<'gc>, LVarRef<'gc>>,
-    tracked_binding: Option<LVarRef<'gc>>,
-) -> (FuncRef<'gc>, CopyResult<'gc>) {
+) -> FuncRef<'gc> {
     let retc1 = fun.return_cont.copy(ctx);
 
-    subc.insert(fun.return_cont, retc1);
+    let subc1 = subc;
+    subc1.insert(fun.return_cont, retc1);
 
     let args1 = fun.args.iter().map(|a| a.copy(ctx)).collect::<Vec<_>>();
     let var1 = fun.variadic.map(|v| v.copy(ctx));
@@ -1149,9 +914,9 @@ fn copy_f<'gc>(
         panic!("BUG: expected local binding for function");
     };
 
-    let body = copy_t_with_metadata(ctx, fun.body(), subv1, subc, tracked_binding);
+    let body = copy_t(ctx, fun.body(), subv1, subc1);
 
-    let func = Gc::new(
+    Gc::new(
         *ctx,
         Func {
             meta: fun.meta,
@@ -1162,12 +927,11 @@ fn copy_f<'gc>(
 
             args: Array::from_slice(*ctx, args1),
             variadic: var1,
-            body: Lock::new(body.term),
+            body: Lock::new(body),
             source: fun.source,
             free_vars: Lock::new(fun.free_vars.get()),
         },
-    );
-    (func, body)
+    )
 }
 
 fn mentions_tracked_atom<'gc>(tracked_binding: Option<LVarRef<'gc>>, atom: Atom<'gc>) -> bool {
@@ -1179,151 +943,81 @@ fn mentions_tracked_var<'gc>(tracked_binding: Option<LVarRef<'gc>>, var: LVarRef
 }
 
 fn term_metadata<'gc>(term: TermRef<'gc>, tracked_binding: Option<LVarRef<'gc>>) -> (usize, bool) {
-    let mut size = 0;
-    let mut mentions = false;
-    let mut stack = vec![term];
-
-    while let Some(mut term) = stack.pop() {
-        loop {
-            match *term {
-                Term::Let(_, Expression::PrimCall(_, args, _), body) => {
-                    size += 1;
-                    mentions |= atoms_mention_tracked_binding(tracked_binding, args);
-                    term = body;
-                }
-
-                Term::Letk(conts, body) => {
-                    for cont in conts.iter() {
-                        stack.push(cont.body());
-                    }
-                    term = body;
-                }
-
-                Term::Fix(funcs, body) => {
-                    for func in funcs.iter() {
-                        stack.push(func.body());
-                    }
-                    term = body;
-                }
-
-                Term::Continue(k, args, _) => {
-                    size += 1;
-                    mentions |= mentions_tracked_var(tracked_binding, k)
-                        || atoms_mention_tracked_binding(tracked_binding, args);
-                    break;
-                }
-
-                Term::App(fun, retc, args, _) => {
-                    size += 1;
-                    mentions |= mentions_tracked_atom(tracked_binding, fun)
-                        || mentions_tracked_var(tracked_binding, retc)
-                        || atoms_mention_tracked_binding(tracked_binding, args);
-                    break;
-                }
-
-                Term::If {
-                    test,
-                    consequent,
-                    consequent_args,
-                    alternative,
-                    alternative_args,
-                    ..
-                } => {
-                    size += 1;
-                    mentions |= mentions_tracked_atom(tracked_binding, test)
-                        || mentions_tracked_var(tracked_binding, consequent)
-                        || mentions_tracked_var(tracked_binding, alternative)
-                        || consequent_args
-                            .iter()
-                            .any(|args| atoms_mention_tracked_binding(tracked_binding, *args))
-                        || alternative_args
-                            .iter()
-                            .any(|args| atoms_mention_tracked_binding(tracked_binding, *args));
-                    break;
-                }
-            }
+    match *term {
+        Term::Let(_, Expression::PrimCall(_, args, _), body) => {
+            let (body_size, body_mentions) = term_metadata(body, tracked_binding);
+            let mentions = body_mentions
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg));
+            (1 + body_size, mentions)
         }
-    }
 
-    (size, mentions)
+        Term::Letk(conts, body) => {
+            let (body_size, body_mentions) = term_metadata(body, tracked_binding);
+            let (conts_size, conts_mentions) = conts.iter().fold((0, false), |acc, cont| {
+                let (size, mentions) = term_metadata(cont.body(), tracked_binding);
+                (acc.0 + size, acc.1 || mentions)
+            });
+            (body_size + conts_size, body_mentions || conts_mentions)
+        }
+
+        Term::Fix(funcs, body) => {
+            let (body_size, body_mentions) = term_metadata(body, tracked_binding);
+            let (funcs_size, funcs_mentions) = funcs.iter().fold((0, false), |acc, func| {
+                let (size, mentions) = term_metadata(func.body(), tracked_binding);
+                (acc.0 + size, acc.1 || mentions)
+            });
+            (body_size + funcs_size, body_mentions || funcs_mentions)
+        }
+
+        Term::Continue(k, args, _) => (
+            1,
+            mentions_tracked_var(tracked_binding, k)
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
+        ),
+
+        Term::App(fun, retc, args, _) => (
+            1,
+            mentions_tracked_atom(tracked_binding, fun)
+                || mentions_tracked_var(tracked_binding, retc)
+                || args
+                    .iter()
+                    .copied()
+                    .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
+        ),
+
+        Term::If {
+            test,
+            consequent,
+            consequent_args,
+            alternative,
+            alternative_args,
+            ..
+        } => (
+            1,
+            mentions_tracked_atom(tracked_binding, test)
+                || mentions_tracked_var(tracked_binding, consequent)
+                || mentions_tracked_var(tracked_binding, alternative)
+                || consequent_args.iter().any(|args| {
+                    args.iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg))
+                })
+                || alternative_args.iter().any(|args| {
+                    args.iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg))
+                }),
+        ),
+    }
 }
 
 fn inline_t<'gc>(
-    state: State<'gc>,
-    term: TermRef<'gc>,
-    cnt_limit: usize,
-    tracked_binding: Option<LVarRef<'gc>>,
-) -> RewriteResult<'gc> {
-    inline_t_inner(state, term, cnt_limit, tracked_binding)
-}
-
-struct PendingInlineLet<'gc> {
-    original: TermRef<'gc>,
-    name: LVarRef<'gc>,
-    exp: Expression<'gc>,
-    mentions_tracked_binding: bool,
-}
-
-fn inline_t_inner<'gc>(
-    state: State<'gc>,
-    mut term: TermRef<'gc>,
-    cnt_limit: usize,
-    tracked_binding: Option<LVarRef<'gc>>,
-) -> RewriteResult<'gc> {
-    let mut lets = Vec::new();
-    let mut changed = false;
-
-    loop {
-        match *term {
-            Term::Let(name, prev_exp, prev_body) => {
-                let exp = match prev_exp {
-                    Expression::PrimCall(prim, prev_args, src) => {
-                        let (args, args_changed) = substitute_atoms_array(&state, prev_args);
-                        changed |= args_changed;
-                        Expression::PrimCall(prim, args, src)
-                    }
-                };
-                lets.push(PendingInlineLet {
-                    original: term,
-                    name,
-                    mentions_tracked_binding: match exp {
-                        Expression::PrimCall(_, args, _) => {
-                            atoms_mention_tracked_binding(tracked_binding, args)
-                        }
-                    },
-                    exp,
-                });
-                term = prev_body;
-            }
-
-            _ => {
-                let ctx = state.ctx;
-                let mut result = inline_non_let(state, term, cnt_limit, tracked_binding);
-                result.changed |= changed;
-                result.size += lets.len();
-                for pending in lets.iter() {
-                    result.mentions_tracked_binding |= pending.mentions_tracked_binding;
-                }
-
-                if !result.changed {
-                    if let Some(first) = lets.first() {
-                        result.term = first.original;
-                    }
-                    return result;
-                }
-
-                let mut body = result.term;
-                for pending in lets.into_iter().rev() {
-                    body = Gc::new(*ctx, Term::Let(pending.name, pending.exp, body));
-                }
-                result.term = body;
-                return result;
-            }
-        }
-    }
-}
-
-fn inline_non_let<'gc>(
     state: State<'gc>,
     term: TermRef<'gc>,
     cnt_limit: usize,
@@ -1333,38 +1027,79 @@ fn inline_non_let<'gc>(
     let fun_limit = FIBONACCI[cnt_limit];
 
     match *term {
-        Term::Let(..) => inline_t(state, term, cnt_limit, tracked_binding),
+        Term::Let(name, prev_exp, prev_body) => {
+            let exp = match prev_exp {
+                Expression::PrimCall(prim, prev_args, src) => {
+                    let args = prev_args
+                        .iter()
+                        .map(|&arg| state.atom_subst(arg))
+                        .collect::<Vec<_>>();
+                    let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                        prev_args
+                    } else {
+                        Array::from_slice(*state.ctx, args)
+                    };
+
+                    Expression::PrimCall(prim, args, src)
+                }
+            };
+            let ctx = state.ctx;
+            let exp_changed = exp != prev_exp;
+            let body = inline_t(state, prev_body, cnt_limit, tracked_binding);
+            let mentions = body.mentions_tracked_binding
+                || match exp {
+                    Expression::PrimCall(_, args, _) => args
+                        .iter()
+                        .copied()
+                        .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
+                };
+            let size = 1 + body.size;
+            if !exp_changed && !body.changed {
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size,
+                    mentions_tracked_binding: mentions,
+                };
+            }
+            RewriteResult {
+                term: Gc::new(*ctx, Term::Let(name, exp, body.term)),
+                changed: true,
+                size,
+                mentions_tracked_binding: mentions,
+            }
+        }
 
         Term::Letk(prev_conts, prev_body) => {
             let mut changed = false;
             let mut size = 0;
             let mut mentions = false;
-            let mut i_ks = Vec::with_capacity(prev_conts.len());
-            let mut to_inline = Vec::new();
+            let conts = prev_conts
+                .iter()
+                .copied()
+                .map(|cnt| {
+                    let body = inline_t(state.clone(), cnt.body(), cnt_limit, Some(cnt.binding()));
+                    changed |= body.changed;
+                    size += body.size;
+                    mentions |= body.mentions_tracked_binding;
+                    let newk = if body.changed {
+                        cnt.with_body(state.ctx, body.term)
+                    } else {
+                        cnt
+                    };
 
-            for cnt in prev_conts.iter().copied() {
-                let body = inline_t(state.clone(), cnt.body(), cnt_limit, Some(cnt.binding()));
-                changed |= body.changed;
-                size += body.size;
-                mentions |= body.mentions_tracked_binding;
-                let newk = if body.changed {
-                    cnt.with_body(state.ctx, body.term)
-                } else {
-                    cnt
-                };
+                    let my_size = body.size;
+                    let dont = cnt.noinline
+                        || my_size > cnt_limit
+                        || (my_size > loop_limit && body.mentions_tracked_binding);
+                    (newk, if dont { None } else { Some(newk) })
+                })
+                .collect::<Vec<_>>();
 
-                let my_size = body.size;
-                let dont = cnt.noinline
-                    || my_size > cnt_limit
-                    || (my_size > loop_limit && body.mentions_tracked_binding);
-                if !dont {
-                    to_inline.push(newk);
-                }
-                i_ks.push(newk);
-            }
-
+            let (i_ks, to_inline): (Vec<_>, Vec<_>) = conts.into_iter().unzip();
             let ctx = state.ctx;
-            let s = state.with_continuations(&to_inline);
+            let s =
+                state.with_continuations(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
             let body = inline_t(s, prev_body, cnt_limit, tracked_binding);
             changed |= body.changed;
             size += body.size;
@@ -1399,32 +1134,27 @@ fn inline_non_let<'gc>(
             let mut changed = false;
             let mut size = 0;
             let mut mentions = false;
-            let mut i_fs = Vec::with_capacity(prev_funcs.len());
-            let mut to_inline = Vec::new();
+            let funcs = prev_funcs
+                .iter()
+                .copied()
+                .map(|func| {
+                    let body = inline_t(state.clone(), func.body(), cnt_limit, Some(func.binding));
+                    changed |= body.changed;
+                    size += body.size;
+                    mentions |= body.mentions_tracked_binding;
+                    let newf = func.with_body(state.ctx, body.term);
 
-            for func in prev_funcs.iter().copied() {
-                let body = inline_t(state.clone(), func.body(), cnt_limit, Some(func.binding));
-                changed |= body.changed;
-                size += body.size;
-                mentions |= body.mentions_tracked_binding;
-                let newf = if body.changed {
-                    func.with_body(state.ctx, body.term)
-                } else {
-                    func
-                };
+                    let my_size = body.size;
+                    let dont = my_size > fun_limit
+                        || (my_size > loop_limit && body.mentions_tracked_binding);
 
-                let my_size = body.size;
-                let dont =
-                    my_size > fun_limit || (my_size > loop_limit && body.mentions_tracked_binding);
+                    (newf, if dont { None } else { Some(newf) })
+                })
+                .collect::<Vec<_>>();
 
-                if !dont {
-                    to_inline.push(newf);
-                }
-                i_fs.push(newf);
-            }
-
+            let (i_fs, to_inline): (Vec<_>, Vec<_>) = funcs.into_iter().unzip();
             let ctx = state.ctx;
-            let s = state.with_functions(&to_inline);
+            let s = state.with_functions(&to_inline.iter().copied().flatten().collect::<Vec<_>>());
             let body = inline_t(s, prev_body, cnt_limit, tracked_binding);
             changed |= body.changed;
             size += body.size;
@@ -1456,7 +1186,15 @@ fn inline_non_let<'gc>(
         }
 
         Term::Continue(prev_cnt, prev_args, src) => {
-            let (args, args_changed) = substitute_atoms_array(&state, prev_args);
+            let args = state
+                .substitute_atoms(prev_args.iter().copied())
+                .collect::<Vec<_>>();
+            let args_changed = !prev_args.iter().zip(args.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
+                prev_args
+            } else {
+                Array::from_slice(*state.ctx, args)
+            };
             let cnt = state.var_subst(prev_cnt);
 
             if let Atom::Local(cnt) = state.atom_subst(Atom::Local(cnt)) {
@@ -1469,18 +1207,18 @@ fn inline_non_let<'gc>(
                             .map(|(arg, val)| (Atom::Local(*arg), *val))
                             .collect::<HashMap<_, _>>();
 
-                        let copy = copy_t_with_metadata(
+                        let term = copy_t(
                             state.ctx,
                             new_cnt.body(),
                             &mut subst,
                             &mut HashMap::default(),
-                            tracked_binding,
                         );
+                        let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
                         return RewriteResult {
-                            term: copy.term,
+                            term,
                             changed: true,
-                            size: copy.size,
-                            mentions_tracked_binding: copy.mentions_tracked_binding,
+                            size,
+                            mentions_tracked_binding,
                         };
                     }
                 }
@@ -1510,7 +1248,15 @@ fn inline_non_let<'gc>(
         Term::App(prev_fun, prev_retc, prev_args, src) => {
             let retc = state.var_subst(prev_retc);
 
-            let (args, args_changed) = substitute_atoms_array(&state, prev_args);
+            let args = state
+                .substitute_atoms(prev_args.iter().copied())
+                .collect::<Vec<_>>();
+            let args_changed = !args.iter().zip(prev_args.iter()).all(|(a, b)| a == b);
+            let args = if !args_changed {
+                prev_args
+            } else {
+                Array::from_slice(*state.ctx, args)
+            };
 
             let fun = state.atom_subst(prev_fun);
             if let Atom::Local(new_fun) = fun {
@@ -1526,18 +1272,13 @@ fn inline_non_let<'gc>(
                         let mut subc = HashMap::default();
                         subc.insert(func.return_cont, retc);
 
-                        let copy = copy_t_with_metadata(
-                            state.ctx,
-                            func.body(),
-                            &mut subv,
-                            &mut subc,
-                            tracked_binding,
-                        );
+                        let term = copy_t(state.ctx, func.body(), &mut subv, &mut subc);
+                        let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
                         return RewriteResult {
-                            term: copy.term,
+                            term,
                             changed: true,
-                            size: copy.size,
-                            mentions_tracked_binding: copy.mentions_tracked_binding,
+                            size,
+                            mentions_tracked_binding,
                         };
                     }
                 }
@@ -1576,19 +1317,25 @@ fn inline_non_let<'gc>(
             let test = state.atom_subst(prev_test);
             let consequent = state.var_subst(prev_consequent);
             let alternative = state.var_subst(prev_alternative);
-            let (consequent_args, consequent_args_changed) = match prev_consequent_args {
-                Some(args) => {
-                    let (args, changed) = substitute_atoms_array(&state, args);
-                    (Some(args), changed)
-                }
-                None => (None, false),
+            let consequent_args = prev_consequent_args.map(|args| {
+                args.iter()
+                    .map(|&a| state.atom_subst(a))
+                    .collect_gc(*state.ctx)
+            });
+            let alternative_args = prev_alternative_args.map(|args| {
+                args.iter()
+                    .map(|&a| state.atom_subst(a))
+                    .collect_gc(*state.ctx)
+            });
+            let consequent_args_changed = match (consequent_args, prev_consequent_args) {
+                (Some(a), Some(b)) => !Gc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
             };
-            let (alternative_args, alternative_args_changed) = match prev_alternative_args {
-                Some(args) => {
-                    let (args, changed) = substitute_atoms_array(&state, args);
-                    (Some(args), changed)
-                }
-                None => (None, false),
+            let alternative_args_changed = match (alternative_args, prev_alternative_args) {
+                (Some(a), Some(b)) => !Gc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
             };
             let changed = test != prev_test
                 || !Gc::ptr_eq(consequent, prev_consequent)
@@ -1664,13 +1411,11 @@ pub fn inline<'gc>(
 
         let state = State::new(ctx, census(term));
         let next = inline_t(state, term, i, None);
-        let shrink = shrink_with_size(ctx, next.term);
-        let next_term = shrink.term;
-        let shrink_changed = shrink.changed;
+        let (next_term, shrink_changed) = shrink(ctx, next.term);
         let inline_changed = next.changed;
         changed |= inline_changed || shrink_changed;
         term_size = if shrink_changed {
-            shrink.size
+            size(next_term)
         } else {
             next.size
         };
@@ -1688,40 +1433,14 @@ pub fn inline<'gc>(
 
 /// Given a term, returns the size of it.
 pub fn size<'gc>(term: TermRef<'gc>) -> usize {
-    let mut size = 0;
-    let mut stack = vec![term];
+    match *term {
+        Term::Let(_, _, body) => 1 + size(body),
+        Term::Letk(conts, body) => conts.iter().map(|c| size(c.body())).sum::<usize>() + size(body),
 
-    while let Some(mut term) = stack.pop() {
-        loop {
-            match *term {
-                Term::Let(_, _, body) => {
-                    size += 1;
-                    term = body;
-                }
+        Term::Fix(funcs, body) => funcs.iter().map(|f| size(f.body())).sum::<usize>() + size(body),
 
-                Term::Letk(conts, body) => {
-                    for cont in conts.iter() {
-                        stack.push(cont.body());
-                    }
-                    term = body;
-                }
-
-                Term::Fix(funcs, body) => {
-                    for func in funcs.iter() {
-                        stack.push(func.body());
-                    }
-                    term = body;
-                }
-
-                _ => {
-                    size += 1;
-                    break;
-                }
-            }
-        }
+        _ => 1,
     }
-
-    size
 }
 
 /// Given a list of elements, emit a CPS list construction.
@@ -1730,52 +1449,33 @@ fn materialize_list<'gc, 'a>(
     elements: &[Atom<'gc>],
     fk: Box<dyn FnOnce(State<'gc>, Atom<'gc>) -> TermRef<'gc> + 'a>,
 ) -> TermRef<'gc> {
+    // empty list: just return null directly
     if elements.is_empty() {
         return fk(state, Atom::Constant(Value::null()));
     }
 
-    let ctx = state.ctx;
-    let vars = (0..elements.len())
-        .map(|_| fresh_lvar(ctx, ctx.intern("&ls")))
-        .collect::<Vec<_>>();
-    let mut body = fk(state, Atom::Local(vars[0]));
-
-    for (index, (&element, &var)) in elements.iter().zip(vars.iter()).enumerate() {
-        let tail = vars
-            .get(index + 1)
-            .copied()
-            .map(Atom::Local)
-            .unwrap_or_else(|| Atom::Constant(Value::null()));
-        body = Gc::new(
-            *ctx,
-            Term::Let(
-                var,
-                Expression::PrimCall(
-                    sym_cons(ctx).into(),
-                    Array::from_slice(*ctx, [element, tail]),
-                    Value::new(false),
+    let head = elements[0];
+    materialize_list(
+        state,
+        &elements[1..],
+        Box::new(move |state, tail| {
+            let var = fresh_lvar(state.ctx, state.ctx.intern("&ls"));
+            let ctx = state.ctx;
+            let f = fk(state, Atom::Local(var));
+            Gc::new(
+                *ctx,
+                Term::Let(
+                    var,
+                    Expression::PrimCall(
+                        sym_cons(ctx).into(),
+                        Array::from_slice(*ctx, [head, tail]),
+                        Value::new(false),
+                    ),
+                    f,
                 ),
-                body,
-            ),
-        );
-    }
-
-    body
-}
-
-#[cfg(test)]
-pub(crate) fn copy_for_stress_test<'gc>(
-    ctx: Context<'gc>,
-    term: TermRef<'gc>,
-) -> (TermRef<'gc>, usize, bool) {
-    let copy = copy_t_with_metadata(
-        ctx,
-        term,
-        &mut HashMap::default(),
-        &mut HashMap::default(),
-        None,
-    );
-    (copy.term, copy.size, copy.mentions_tracked_binding)
+            )
+        }),
+    )
 }
 
 static SIDE_EFFECT_FREE_OPS: LazyLock<std::collections::HashSet<&'static str>> =
