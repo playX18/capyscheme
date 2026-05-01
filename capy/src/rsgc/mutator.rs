@@ -148,6 +148,11 @@ where
                 global_side_metadata_vm_base_address().as_usize(),
                 Ordering::Relaxed,
             );
+
+            #[cfg(feature = "bootstrap")]
+            {
+                crate::rsgc::logging::set_gc_logging_enabled(true);
+            }
         });
 
         let mutation = unsafe { Mutation::new() };
@@ -758,7 +763,7 @@ impl<'gc> Mutation<'gc> {
                 semantics = AllocationSemantics::Los;
             }
 
-            let alignment = alignment.min(8);
+            let alignment = alignment.max(std::mem::size_of::<usize>());
             let size = raw_align_up(size, alignment);
             debug_assert!(size % alignment == 0);
             if semantics == AllocationSemantics::Default
