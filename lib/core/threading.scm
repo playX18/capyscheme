@@ -2,6 +2,8 @@
   (export
     make-thread-parameter
     with-mutex
+    current-thread
+    thread?
     make-condition
     thread-condition?
     condition-wait
@@ -9,6 +11,7 @@
     condition-broadcast
     make-mutex
     mutex?
+    mutex-reentrant?
     mutex-acquire
     mutex-release
     call-with-new-thread
@@ -19,18 +22,20 @@
     &terminated-thread-exception
     terminated-thread-exception?
     terminated-thread-exception-thread)
-  (import (core primitives)
-    (core hashtables)
+  (import
+    (rename (core primitives)
+      (fork-thread %fork-thread)
+      (thread? %native-thread?)
+      (current-thread %native-current-thread))
     (core conditions)
-    (core records)
-    (only (capy) printf))
+    (core records))
 
   (define-condition-type &uncaught-exception &error
     make-uncaught-exception
     uncaught-exception?
     (reason uncaught-exception-reason))
 
-  (define-condition-type terminated-thread-exception &error
+  (define-condition-type &terminated-thread-exception &error
     make-terminated-thread-exception
     terminated-thread-exception?
     (thread terminated-thread-exception-thread))
@@ -39,67 +44,68 @@
     (fields
       reason))
 
-  (define %thread-data-mutex (make-mutex))
-  ;; weak hashtable which keeps thread data until thread object is alive
-  (define %thread-results (make-weak-hashtable))
-  (define %thread-join-data (make-weak-hashtable))
+  (define-record-type (<thread> make-thread-record thread?)
+    (fields
+      (mutable native thread-native thread-native-set!)
+      (immutable mutex thread-mutex)
+      (immutable condition thread-condition)
+      (mutable done? thread-done? thread-done?-set!)
+      (mutable result thread-result thread-result-set!)))
+
+  (define %current-thread
+    (make-thread-parameter
+      (make-thread-record (%native-current-thread) #f #f #f #f)
+      thread?))
+
+  (define (current-thread)
+    (%current-thread))
 
   (define (call-with-new-thread thunk)
     (define cv (make-condition))
     (define mutex (make-mutex))
-    (define thread #f)
+    (define thread (make-thread-record #f mutex cv #f #f))
 
-    (let ([t (fork-thread
-              (lambda ()
-                (call/cc
-                  (lambda (return)
-                    (call-with-values
-                      (lambda ()
-
-                        (with-mutex mutex
-                          (set! thread (current-thread))
-                          (with-mutex %thread-data-mutex
-                            (hashtable-set! %thread-join-data thread (cons cv mutex)))
-                          (condition-signal cv))
-                        (with-exception-handler
-                          (lambda (exn)
-                            (define obj (make-uncaught exn))
-                            (with-mutex mutex
-                              (with-mutex %thread-data-mutex
-                                (hashtable-set! %thread-results cv obj))
-                              (condition-broadcast cv))
-                            (return #f))
-                          thunk))
-                      (lambda vals
-                        (with-mutex mutex
-                          (with-mutex %thread-data-mutex
-                            (hashtable-set! %thread-results cv vals))
-                          (condition-broadcast cv))))))))])
-
+    (define (publish-result! res)
       (with-mutex mutex
-        (let loop ()
-          (cond
-            [(hashtable-ref %thread-join-data t #f) =>
-              (lambda (_) thread)]
-            [else
-              (condition-wait cv mutex)
-              (loop)])))))
+        (thread-result-set! thread res)
+        (thread-done?-set! thread #t)
+        (condition-broadcast cv)))
+
+    (define (run-thread!)
+      (%current-thread thread)
+      (call/cc
+        (lambda (return)
+          (with-exception-handler
+            (lambda (exn)
+              (publish-result! (make-uncaught exn))
+              (return #f))
+            (lambda ()
+              (call-with-values
+                thunk
+                (lambda vals
+                  (publish-result! vals)
+                  (return #f))))))))
+
+    (thread-native-set! thread (%fork-thread run-thread!))
+    thread)
 
   (define (join-thread thread)
     "Wait for thread to terminate and return its values. If exception
     was raised in the thread, this function will raise &uncaught-exception
     with the original exception as reason."
-    (define data (hashtable-ref %thread-join-data thread #f))
-
-    (unless data
+    (unless (thread? thread)
+      (assertion-violation 'join-thread "expected a thread" thread))
+    (when (eq? thread (current-thread))
+      (raise (make-terminated-thread-exception thread)))
+    (unless (thread-mutex thread)
       (error 'join-thread "thread is not joinable" thread))
-    (let ([cv (car data)]
-          [mutex (cdr data)])
+    (let ([cv (thread-condition thread)]
+          [mutex (thread-mutex thread)])
       (with-mutex mutex
         (let loop ()
           (cond
-            [(hashtable-ref %thread-results cv #f) =>
-              (lambda (res)
+            [(thread-done? thread)
+              (let ([res (thread-result thread)])
                 (if (uncaught? res)
                   (raise (make-uncaught-exception (uncaught-reason res))))
                 (apply values res))]
