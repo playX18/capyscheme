@@ -379,11 +379,11 @@
       (assertion-violation 'make-thread-parameter "expected a procedure as filter" conv))
     (lambda args
       (if (null? args)
-        (thread-fluid-ref f)
-        (let ([old (thread-fluid-ref f)])
+        (fluid-ref f)
+        (let ([old (fluid-ref f)])
           (if (not (conv (car args)))
             (assertion-violation 'thread-parameter "bad value for parameter" (car args)))
-          (thread-fluid-set! f (car args))
+          (fluid-set! f (car args))
           old)))))
 
 (define tuple-printer (make-parameter #f))
