@@ -516,4 +516,98 @@ mod tests {
             assert!(Gc::ptr_eq(shrunk_again, shrunk));
         });
     }
+
+    #[test]
+    fn optimizer_handles_deep_let_spines_without_stack_growth() {
+        with_ctx(|ctx| {
+            const DEPTH: usize = 10_000;
+
+            let retk = lvar(ctx, "retk");
+            let seed = lvar(ctx, "seed");
+            let mut term = term_continue(ctx, retk, &[]);
+
+            for index in 0..DEPTH {
+                let binding = lvar(ctx, &format!("deep_{index}"));
+                term = term_let_prim(ctx, binding, "opaque", &[Atom::Local(seed)], term);
+            }
+
+            assert_eq!(crate::cps::optimizer::size(term), DEPTH + 1);
+
+            let (shrunk, _) = crate::cps::optimizer::shrink(ctx, term);
+            assert_eq!(crate::cps::optimizer::size(shrunk), DEPTH + 1);
+
+            let (inlined, _) = crate::cps::optimizer::inline(ctx, shrunk, usize::MAX);
+            assert_eq!(crate::cps::optimizer::size(inlined), DEPTH + 1);
+        });
+    }
+
+    #[test]
+    fn optimizer_copy_handles_deep_let_spines_without_stack_growth() {
+        with_ctx(|ctx| {
+            const DEPTH: usize = 10_000;
+
+            let retk = lvar(ctx, "retk");
+            let seed = lvar(ctx, "seed");
+            let mut term = term_continue(ctx, retk, &[]);
+
+            for index in 0..DEPTH {
+                let binding = lvar(ctx, &format!("copy_{index}"));
+                term = term_let_prim(ctx, binding, "opaque", &[Atom::Local(seed)], term);
+            }
+
+            let (copied, copied_size, mentions) =
+                crate::cps::optimizer::copy_for_stress_test(ctx, term);
+
+            assert_eq!(copied_size, DEPTH + 1);
+            assert_eq!(crate::cps::optimizer::size(copied), DEPTH + 1);
+            assert!(!mentions);
+        });
+    }
+
+    #[test]
+    fn shrink_materializes_large_variadic_rest_without_recursive_closures() {
+        with_ctx(|ctx| {
+            const REST_LEN: usize = 4_096;
+
+            let retk = lvar(ctx, "retk");
+            let restk = lvar(ctx, "restk");
+            let rest = lvar(ctx, "rest");
+            let cont = mk_cont(
+                ctx,
+                "restk",
+                restk,
+                &[],
+                Some(rest),
+                term_continue(ctx, retk, &[Atom::Local(rest)]),
+            );
+            let args = (0..REST_LEN)
+                .map(|index| Atom::Constant(Value::new(index as i32)))
+                .collect::<Vec<_>>();
+            let term = term_letk(ctx, &[cont], term_continue(ctx, restk, &args));
+
+            let (shrunk, changed) = crate::cps::optimizer::shrink(ctx, term);
+
+            let mut count = 0;
+            let mut cursor = shrunk;
+            loop {
+                match &*cursor {
+                    Term::Let(_, Expression::PrimCall(_, _, _), body) => {
+                        count += 1;
+                        cursor = *body;
+                    }
+                    Term::Continue(k, args, _) => {
+                        assert_eq!(*k, retk);
+                        assert_eq!(args.len(), 1);
+                        assert!(matches!(args[0], Atom::Local(_)));
+                        break;
+                    }
+                    other => panic!("expected materialized rest list, got {other:?}"),
+                }
+            }
+
+            assert!(changed);
+            assert_eq!(count, REST_LEN);
+            assert_eq!(crate::cps::optimizer::size(shrunk), REST_LEN + 1);
+        });
+    }
 }

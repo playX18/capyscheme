@@ -539,6 +539,64 @@ impl<'gc> State<'gc> {
     }
 }
 
+fn pending_from_current_yield<'gc>(ctx: Context<'gc>) -> Yield {
+    let reason_slot = unsafe { &mut *ctx.state().yield_reason.get() };
+
+    match reason_slot {
+        Some(YieldReason::Yieldpoint) => {
+            reason_slot.take();
+            Yield::None
+        }
+
+        Some(YieldReason::Operation(operation)) => {
+            ctx.stats.start_blocking();
+            Yield::Operation(operation.prepare(ctx))
+        }
+
+        Some(YieldReason::OperationWithReturn(operation)) => {
+            ctx.stats.start_blocking();
+            Yield::OperationWithReturn(operation.prepare(ctx))
+        }
+
+        Some(YieldReason::LockMutex(mutex_obj)) => {
+            ctx.stats.start_blocking();
+            let mutex = (*mutex_obj).downcast::<Mutex>();
+            Yield::Lock(PendingLock {
+                mtx: NonNull::from(&*mutex),
+            })
+        }
+
+        Some(YieldReason::WaitCondition { condition, mutex }) => {
+            ctx.stats.start_blocking();
+            let mutex = (*mutex).downcast::<Mutex>();
+            let condition = (*condition).downcast::<Condition>();
+            Yield::Wait(PendingWait {
+                mtx: NonNull::from(&*mutex),
+                condition: NonNull::from(&condition.cond),
+            })
+        }
+
+        Some(YieldReason::CollectGarbage) => {
+            reason_slot.take();
+            Yield::GC
+        }
+
+        Some(YieldReason::PollRead(fd)) => {
+            let fd = *fd;
+            reason_slot.take();
+            Yield::PollRead(fd)
+        }
+
+        Some(YieldReason::PollWrite(fd)) => {
+            let fd = *fd;
+            reason_slot.take();
+            Yield::PollWrite(fd)
+        }
+
+        None => Yield::None,
+    }
+}
+
 pub struct Scheme {
     pub mutator: Mutator<crate::Rootable!(())>,
 }
@@ -578,45 +636,7 @@ impl Scheme {
             match run {
                 VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
                 VMResult::Err(err) => Ok(finish(ctx, Err(err))),
-                VMResult::Yield => match ctx.state().take_yield_reason() {
-                    Some(YieldReason::Yieldpoint) => Err(Yield::None),
-                    Some(YieldReason::Operation(operation)) => {
-                        ctx.stats.start_blocking();
-                        let callback = operation.prepare(ctx);
-                        ctx.stats.end_blocking();
-                        Err(Yield::Operation(callback))
-                    }
-
-                    Some(YieldReason::OperationWithReturn(operation)) => {
-                        ctx.stats.start_blocking();
-                        let callback = operation.prepare(ctx);
-                        ctx.stats.end_blocking();
-                        Err(Yield::OperationWithReturn(callback))
-                    }
-
-                    Some(YieldReason::LockMutex(mutex_obj)) => {
-                        let mutex = mutex_obj.downcast::<Mutex>();
-                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
-                        Err(Yield::Lock(PendingLock {
-                            mtx: NonNull::from(&mutex.mutex),
-                        }))
-                    }
-
-                    Some(YieldReason::WaitCondition { condition, mutex }) => {
-                        let mutex = mutex.downcast::<Mutex>();
-                        let condition = condition.downcast::<Condition>();
-                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
-                        Err(Yield::Wait(PendingWait {
-                            mtx: NonNull::from(&mutex.mutex),
-                            condition: NonNull::from(&condition.cond),
-                        }))
-                    }
-
-                    Some(YieldReason::CollectGarbage) => Err(Yield::GC),
-
-                    None => Err(Yield::None),
-                    _ => todo!(),
-                },
+                VMResult::Yield => Err(pending_from_current_yield(ctx)),
             }
         });
         let mut next: Option<Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>> = None;
@@ -630,6 +650,7 @@ impl Scheme {
             match pending {
                 Yield::None => {
                     result = self.enter(|ctx| {
+                        let _ = ctx.state().take_yield_reason();
                         ctx.stats.end_blocking();
                         if ctx.has_suspended_call() {
                             ctx.state().stats.start_execution();
@@ -647,42 +668,7 @@ impl Scheme {
                             match result {
                                 VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
                                 VMResult::Err(err) => Ok(finish(ctx, Err(err))),
-                                VMResult::Yield => match ctx.state().take_yield_reason() {
-                                    Some(YieldReason::Yieldpoint) => Err(Yield::None),
-                                    Some(YieldReason::LockMutex(mutex_obj)) => {
-                                        ctx.stats.start_blocking();
-                                        let mutex = mutex_obj.downcast::<Mutex>();
-                                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
-                                        Err(Yield::Lock(PendingLock {
-                                            mtx: NonNull::from(&mutex.mutex),
-                                        }))
-                                    }
-
-                                    Some(YieldReason::WaitCondition { condition, mutex }) => {
-                                        ctx.stats.start_blocking();
-                                        let mutex = mutex.downcast::<Mutex>();
-                                        let condition = condition.downcast::<Condition>();
-                                        // SAFETY: mutexes are in non-moving space and `mutex_obj` is saved as root.
-                                        Err(Yield::Wait(PendingWait {
-                                            mtx: NonNull::from(&mutex.mutex),
-                                            condition: NonNull::from(&condition.cond),
-                                        }))
-                                    }
-
-                                    Some(YieldReason::CollectGarbage) => Err(Yield::GC),
-                                    Some(YieldReason::Operation(operation)) => {
-                                        ctx.stats.start_blocking();
-                                        let callback = operation.prepare(ctx);
-                                        Err(Yield::Operation(callback))
-                                    }
-                                    Some(YieldReason::OperationWithReturn(operation)) => {
-                                        ctx.stats.start_blocking();
-                                        let callback = operation.prepare(ctx);
-                                        Err(Yield::OperationWithReturn(callback))
-                                    }
-                                    None => Err(Yield::None),
-                                    _ => todo!(),
-                                },
+                                VMResult::Yield => Err(pending_from_current_yield(ctx)),
                             }
                         } else {
                             ctx.state().stats.end_blocking();
@@ -1059,29 +1045,47 @@ unsafe impl<'gc> Trace for YieldReason<'gc> {
             YieldReason::Operation(op) => {
                 visitor.trace(op.as_mut());
             }
+            YieldReason::OperationWithReturn(op) => {
+                visitor.trace(op.as_mut());
+            }
             _ => {}
         }
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
-        let _ = weak_processor;
+        match self {
+            YieldReason::Operation(op) => {
+                unsafe {
+                    op.process_weak_refs(weak_processor);
+                }
+            }
+            YieldReason::OperationWithReturn(op) => {
+                unsafe {
+                    op.process_weak_refs(weak_processor);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
 pub struct PendingLock {
-    mtx: NonNull<MutexKind>,
+    mtx: NonNull<Mutex>,
 }
 
 impl PendingLock {
     pub fn lock(&self) {
         unsafe {
-            match self.mtx.as_ref() {
+            let mutex_obj = self.mtx.as_ref();
+            match &mutex_obj.mutex {
                 MutexKind::Reentrant(mutex) => {
                     let guard = mutex.lock();
+                    mutex_obj.mark_acquired();
                     std::mem::forget(guard);
                 }
                 MutexKind::Regular(mutex) => {
                     let guard = mutex.lock();
+                    mutex_obj.mark_acquired();
                     std::mem::forget(guard);
                 }
             }
@@ -1090,20 +1094,23 @@ impl PendingLock {
 }
 
 pub struct PendingWait {
-    mtx: NonNull<MutexKind>,
+    mtx: NonNull<Mutex>,
     condition: NonNull<parking_lot::Condvar>,
 }
 
 impl PendingWait {
     pub fn wait(&self) {
         unsafe {
-            match self.mtx.as_ref() {
+            let mutex_obj = self.mtx.as_ref();
+            match &mutex_obj.mutex {
                 MutexKind::Reentrant(_) => {
                     unreachable!("Reentrant mutexes cannot be used with condition variables");
                 }
                 MutexKind::Regular(mutex) => {
+                    assert!(mutex_obj.begin_condition_wait());
                     let mut guard = mutex.make_guard_unchecked();
                     self.condition.as_ref().wait(&mut guard);
+                    mutex_obj.finish_condition_wait();
                     std::mem::forget(guard);
                 }
             }

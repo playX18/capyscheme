@@ -5,8 +5,11 @@ use std::ptr::NonNull;
 use crate::prelude::*;
 use crate::rsgc::{
     Mutation,
+    barrier::{self},
+    cell::Lock,
     mmtk::AllocationSemantics,
     object::{HeapTypeInfo, VTableOf},
+    sync::thread::current_thread as current_runtime_thread,
 };
 use crate::runtime::{BlockingOperation, Scheme, YieldReason};
 
@@ -34,6 +37,7 @@ unsafe impl Trace for Condition {
 #[repr(C)]
 pub struct Mutex {
     pub(crate) mutex: MutexKind,
+    owner: MutexOwnerLock,
 }
 
 static MUTEX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
@@ -45,6 +49,86 @@ pub static MUTEX_INFO: &'static HeapTypeInfo = &MUTEX_INFO_VALUE;
 pub enum MutexKind {
     Reentrant(parking_lot::ReentrantMutex<()>),
     Regular(parking_lot::Mutex<()>),
+}
+
+#[derive(Default)]
+struct MutexOwner {
+    thread_id: Option<u64>,
+    count: usize,
+}
+
+struct MutexOwnerLock(parking_lot::Mutex<MutexOwner>);
+
+impl MutexOwnerLock {
+    fn new() -> Self {
+        Self(parking_lot::Mutex::new(MutexOwner::default()))
+    }
+
+    fn lock(&self) -> parking_lot::MutexGuard<'_, MutexOwner> {
+        self.0.lock()
+    }
+}
+
+impl Mutex {
+    pub(crate) fn mark_acquired(&self) {
+        let thread_id = current_runtime_thread().id();
+        let mut owner = self.owner.lock();
+
+        match owner.thread_id {
+            Some(id) if id == thread_id => {
+                owner.count += 1;
+            }
+            None => {
+                owner.thread_id = Some(thread_id);
+                owner.count = 1;
+            }
+            Some(_) => unreachable!("mutex acquired while marked as owned by another thread"),
+        }
+    }
+
+    fn mark_released(&self) -> bool {
+        let thread_id = current_runtime_thread().id();
+        let mut owner = self.owner.lock();
+
+        if owner.thread_id != Some(thread_id) || owner.count == 0 {
+            return false;
+        }
+
+        owner.count -= 1;
+        if owner.count == 0 {
+            owner.thread_id = None;
+        }
+
+        true
+    }
+
+    pub(crate) fn begin_condition_wait(&self) -> bool {
+        let thread_id = current_runtime_thread().id();
+        let mut owner = self.owner.lock();
+
+        if owner.thread_id != Some(thread_id) || owner.count != 1 {
+            return false;
+        }
+
+        owner.thread_id = None;
+        owner.count = 0;
+        true
+    }
+
+    pub(crate) fn finish_condition_wait(&self) {
+        let thread_id = current_runtime_thread().id();
+        let mut owner = self.owner.lock();
+        debug_assert!(owner.thread_id.is_none());
+        debug_assert_eq!(owner.count, 0);
+        owner.thread_id = Some(thread_id);
+        owner.count = 1;
+    }
+
+    fn is_owned_by_current_thread(&self) -> bool {
+        let thread_id = current_runtime_thread().id();
+        let owner = self.owner.lock();
+        owner.thread_id == Some(thread_id) && owner.count > 0
+    }
 }
 
 unsafe impl Trace for Mutex {
@@ -72,7 +156,7 @@ unsafe impl Tagged for Condition {
 #[derive(Trace)]
 #[repr(C)]
 pub struct ThreadObject<'gc> {
-    entrypoint: Option<Value<'gc>>,
+    entrypoint: Lock<Option<Value<'gc>>>,
 }
 
 static THREAD_OBJECT_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
@@ -83,7 +167,13 @@ pub static THREAD_OBJECT_INFO: &'static HeapTypeInfo = &THREAD_OBJECT_INFO_VALUE
 
 impl<'gc> ThreadObject<'gc> {
     pub(crate) fn new(mc: Mutation<'gc>, entrypoint: Option<Value<'gc>>) -> Gc<'gc, Self> {
-        Gc::new_with_info(mc, ThreadObject { entrypoint }, THREAD_OBJECT_INFO)
+        Gc::new_with_info(
+            mc,
+            ThreadObject {
+                entrypoint: Lock::new(entrypoint),
+            },
+            THREAD_OBJECT_INFO,
+        )
     }
 }
 
@@ -103,27 +193,43 @@ pub mod threading_ops {
         let bits = val.bits();
         let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
         let dynamic_state_bits = dynamic_state.bits();
-        let thread_started = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let thread_started_clone = thread_started.clone();
+        let (thread_started, thread_started_rx) = std::sync::mpsc::channel();
 
         let _handle = std::thread::spawn(move || {
-            let scm = Scheme::forked(bits, dynamic_state_bits);
-            thread_started_clone.wait();
+            let mut reported_start = false;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let scm = Scheme::forked(bits, dynamic_state_bits);
+                reported_start = true;
+                let _ = thread_started.send(true);
 
-            scm.call_value(
-                |ctx, _args| {
-                    let thunk = ctx.state().thread_object.entrypoint.unwrap();
-                    thunk
-                },
-                |ctx, result| {
-                    let _ = ctx;
-                    let _ = result;
-                    ()
-                },
-            )
+                scm.call_value(
+                    |ctx, _args| {
+                        let thread_obj = ctx.state().thread_object;
+                        let thunk = thread_obj.entrypoint.get().unwrap();
+                        barrier::field!(Gc::write(*ctx, thread_obj), ThreadObject, entrypoint)
+                            .unlock()
+                            .set(None);
+                        thunk
+                    },
+                    |ctx, result| {
+                        let _ = ctx;
+                        let _ = result;
+                        ()
+                    },
+                )
+            }));
+
+            if let Err(err) = result {
+                if !reported_start {
+                    let _ = thread_started.send(false);
+                }
+                std::panic::resume_unwind(err);
+            }
         });
 
-        thread_started.wait();
+        if !thread_started_rx.recv().unwrap_or(false) {
+            return nctx.raise_error("fork-thread", "failed to start thread", &[]);
+        }
 
         nctx.return_(val)
     }
@@ -148,6 +254,7 @@ pub mod threading_ops {
             } else {
                 MutexKind::Regular(parking_lot::Mutex::new(()))
             },
+            owner: MutexOwnerLock::new(),
         };
         // mutex has to be non-moving so that parking_lot can use its address as a key.
         let gc_mutex =
@@ -163,12 +270,14 @@ pub mod threading_ops {
         match &mutex_obj.mutex {
             MutexKind::Reentrant(mutex) => {
                 if let Some(_guard) = mutex.try_lock() {
+                    mutex_obj.mark_acquired();
                     std::mem::forget(_guard);
                     return nctx.return_(true);
                 }
             }
             MutexKind::Regular(mutex) => {
                 if let Some(_guard) = mutex.try_lock() {
+                    mutex_obj.mark_acquired();
                     std::mem::forget(_guard);
                     return nctx.return_(true);
                 }
@@ -184,12 +293,14 @@ pub mod threading_ops {
             match &mutex_obj.mutex {
                 MutexKind::Reentrant(mutex) => {
                     if let Some(_guard) = mutex.try_lock() {
+                        mutex_obj.mark_acquired();
                         std::mem::forget(_guard);
                         return nctx.return_(true);
                     }
                 }
                 MutexKind::Regular(mutex) => {
                     if let Some(_guard) = mutex.try_lock() {
+                        mutex_obj.mark_acquired();
                         std::mem::forget(_guard);
                         return nctx.return_(true);
                     }
@@ -201,6 +312,17 @@ pub mod threading_ops {
 
     #[scheme(name = "mutex-release")]
     pub fn mutex_release(mutex_obj: Gc<'gc, Mutex>) -> Value<'gc> {
+        if !mutex_obj.mark_released() {
+            return nctx.wrong_argument_violation(
+                "mutex-release",
+                "mutex is not owned by the current thread",
+                Some(mutex_obj.into()),
+                Some(0),
+                1,
+                &[mutex_obj.into()],
+            );
+        }
+
         match &mutex_obj.mutex {
             MutexKind::Reentrant(mutex) => unsafe {
                 let guard = mutex.make_guard_unchecked();
@@ -270,6 +392,16 @@ pub mod threading_ops {
                 &[condition_obj.into(), mutex_obj.into()],
             );
         }
+        if !mutex_obj.is_owned_by_current_thread() {
+            return nctx.wrong_argument_violation(
+                "condition-wait",
+                "mutex is not owned by the current thread",
+                Some(mutex_obj.into()),
+                Some(1),
+                2,
+                &[condition_obj.into(), mutex_obj.into()],
+            );
+        }
         nctx.yield_and_return(
             YieldReason::Operation(Box::new(ConditionWaitOperation {
                 condition: condition_obj,
@@ -291,16 +423,21 @@ pub struct MutexAcquireOperation<'gc> {
 
 impl<'gc> BlockingOperation<'gc> for MutexAcquireOperation<'gc> {
     fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
-        let mutex = NonNull::from(&self.mutex.mutex);
+        let mutex_obj = NonNull::from(&*self.mutex);
 
-        Box::new(move || match unsafe { mutex.as_ref() } {
-            MutexKind::Reentrant(mutex) => {
-                let _guard = mutex.lock();
-                std::mem::forget(_guard);
-            }
-            MutexKind::Regular(mutex) => {
-                let _guard = mutex.lock();
-                std::mem::forget(_guard);
+        Box::new(move || {
+            let mutex_obj = unsafe { mutex_obj.as_ref() };
+            match &mutex_obj.mutex {
+                MutexKind::Reentrant(mutex) => {
+                    let _guard = mutex.lock();
+                    mutex_obj.mark_acquired();
+                    std::mem::forget(_guard);
+                }
+                MutexKind::Regular(mutex) => {
+                    let _guard = mutex.lock();
+                    mutex_obj.mark_acquired();
+                    std::mem::forget(_guard);
+                }
             }
         })
     }
@@ -315,15 +452,20 @@ pub struct ConditionWaitOperation<'gc> {
 impl<'gc> BlockingOperation<'gc> for ConditionWaitOperation<'gc> {
     fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
         let condition = NonNull::from(&self.condition.cond);
-        let mutex = NonNull::from(&self.mutex.mutex);
+        let mutex_obj = NonNull::from(&*self.mutex);
 
-        Box::new(move || match unsafe { mutex.as_ref() } {
-            MutexKind::Regular(mutex) => unsafe {
-                let mut guard = mutex.make_guard_unchecked();
-                condition.as_ref().wait(&mut guard);
-                std::mem::forget(guard);
-            },
-            _ => panic!("Only regular mutex can be used with condition waiting"),
+        Box::new(move || {
+            let mutex_obj = unsafe { mutex_obj.as_ref() };
+            match &mutex_obj.mutex {
+                MutexKind::Regular(mutex) => unsafe {
+                    assert!(mutex_obj.begin_condition_wait());
+                    let mut guard = mutex.make_guard_unchecked();
+                    condition.as_ref().wait(&mut guard);
+                    mutex_obj.finish_condition_wait();
+                    std::mem::forget(guard);
+                },
+                _ => panic!("Only regular mutex can be used with condition waiting"),
+            }
         })
     }
 }

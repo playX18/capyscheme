@@ -21,6 +21,9 @@
   (define (canonicalize-paths paths)
     (map canonicalize-path-string paths))
 
+  (define (parse-entrypoint str)
+    (read (open-input-string str)))
+
   (define (enter args)
     "Main entrypoint of CapyScheme CLI."
     (define arg0 "capy")
@@ -76,7 +79,8 @@
             (format #t "CapyScheme ~a~%" (implementation-version))
             (format #t "Usage:~%~a~%" (argparser-usage parser))
             (exit 0))
-          (set! entrypoint (arg-results-ref res "entrypoint"))
+          (when (arg-results-ref res "entrypoint")
+            (set! entrypoint (parse-entrypoint (arg-results-ref res "entrypoint"))))
           (set! %load-path (append (canonicalize-paths (reverse (arg-results-ref res "load-path"))) %load-path))
           (set! %load-path (append %load-path (canonicalize-paths (reverse (arg-results-ref res "append-load-path")))))
           (set! %load-compiled-path (append (canonicalize-paths (reverse (arg-results-ref res "compiled-load-path"))) %load-compiled-path))
@@ -88,6 +92,8 @@
           (when (arg-results-ref res "runtime-stats")
             (set! out (cons `((@@ (capy) runtime-stats-enable!) #t) out)))
 
+          (when (arg-results-ref res "load")
+            (set! out (cons `((@@ (capy) load) ,(arg-results-ref res "load")) out)))
           (when (arg-results-ref res "script")
             (set! arg0 (arg-results-ref res "script"))
             (set! interactive? #f)
@@ -95,6 +101,9 @@
           (when (arg-results-ref res "command")
             (set! interactive? #f)
             (set! out (cons `((@@ (boot cli) eval-string) ,(arg-results-ref res "command")) out)))
+          (when entrypoint
+            (set! interactive? #f)
+            (set! out (cons `(,entrypoint) out)))
           (when (and (arg-results-ref res "runtime-stats") (not interactive?))
             (set! out (cons `((@@ (capy) format) #t "~a~%" ((@@ (capy) runtime-stats-report))) out)))
           (finish (arg-results-rest res) out))))
@@ -155,6 +164,7 @@
       "entrypoint"
       (abbreviation "e")
       (defaults-to #f)
+      (value-help "EXPR")
       (help "Specify the entrypoint function to call"))
     (add-flag! parser
       "fresh-auto-compile"
