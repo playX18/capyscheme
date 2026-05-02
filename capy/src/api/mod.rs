@@ -247,6 +247,96 @@ pub extern "C" fn scm_string<'gc>(ctx: ContextRef<'gc>, data: *const c_char) -> 
     ctx.ctx().str(data)
 }
 
+/// Return whether `value` is a Scheme string.
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_is_string<'gc>(_ctx: ContextRef<'gc>, value: Value<'gc>) -> bool {
+    value.is::<Str>()
+}
+
+/// Return the number of UTF-8 bytes needed to represent a Scheme string.
+///
+/// Returns 0 when `value` is not a Scheme string.
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_string_utf8_length<'gc>(_ctx: ContextRef<'gc>, value: Value<'gc>) -> usize {
+    match value.try_as::<Str>() {
+        Some(string) => string.to_string().len(),
+        None => 0,
+    }
+}
+
+/// Copy a Scheme string to a UTF-8 buffer.
+///
+/// `written`, when non-null, receives the required byte length excluding the
+/// trailing NUL. Returns false if `value` is not a string, `buf` is null, or
+/// `capacity` is too small for the UTF-8 bytes plus a trailing NUL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scm_string_to_utf8<'gc>(
+    _ctx: ContextRef<'gc>,
+    value: Value<'gc>,
+    buf: *mut c_char,
+    capacity: usize,
+    written: *mut usize,
+) -> bool {
+    let Some(string) = value.try_as::<Str>() else {
+        if !written.is_null() {
+            unsafe { *written = 0 };
+        }
+        return false;
+    };
+
+    let text = string.to_string();
+    let bytes = text.as_bytes();
+
+    if !written.is_null() {
+        unsafe { *written = bytes.len() };
+    }
+
+    if buf.is_null() || capacity <= bytes.len() {
+        return false;
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), bytes.len());
+        *buf.add(bytes.len()) = 0;
+    }
+
+    true
+}
+
+/// Return the number of UTF-8 bytes needed to print a Scheme value.
+#[unsafe(no_mangle)]
+pub extern "C" fn scm_value_utf8_length<'gc>(_ctx: ContextRef<'gc>, value: Value<'gc>) -> usize {
+    value.to_string().len()
+}
+
+/// Copy the printed representation of any Scheme value to a UTF-8 buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn scm_value_to_utf8<'gc>(
+    _ctx: ContextRef<'gc>,
+    value: Value<'gc>,
+    buf: *mut c_char,
+    capacity: usize,
+    written: *mut usize,
+) -> bool {
+    let text = value.to_string();
+    let bytes = text.as_bytes();
+
+    if !written.is_null() {
+        unsafe { *written = bytes.len() };
+    }
+
+    if buf.is_null() || capacity <= bytes.len() {
+        return false;
+    }
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), bytes.len());
+        *buf.add(bytes.len()) = 0;
+    }
+
+    true
+}
+
 /// Create a Scheme number from the given native numeric type.
 ///
 /// Generated functions: `scm_uint32`, `scm_uint64`, `scm_int64`.
