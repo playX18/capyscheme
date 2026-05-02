@@ -18,13 +18,16 @@
 
 ### 🐛 Bug Fixes
 
+- *(capy/gc)* Mutator always used 8 bytes alignment, use max(alignment, 8) - ([577c283](https://codeberg.org/playXE/capy/commit/577c283c91b61dcb7b7e930437838aa359542f7d))
 - *(lib)* Fix #%app imports - ([23d5085](https://codeberg.org/playXE/capy/commit/23d50859053535873404050e35ccee128280173d))
+- *(lib/capy)* Better threading - ([712093f](https://codeberg.org/playXE/capy/commit/712093f4a25348acec0393f9325d51d6814b046b))
 - *(lib/core)* Mutex protect data - ([e551a91](https://codeberg.org/playXE/capy/commit/e551a911a1704e6744ff456c2491a27dfa2d1742))
 - *(psyntax)* Stabilize implicit #%app bootstrap - ([5df6bc0](https://codeberg.org/playXE/capy/commit/5df6bc03e6114e320377034c9bf6496c2f03d325))
 - Remove cached repo - ([cae021d](https://codeberg.org/playXE/capy/commit/cae021dbeacba2e891cc9d38cd0b1e4033e0044c))
 
 ### 🚜 Refactor
 
+- *(capy)* Better CPS memory usage - ([3f3b0ff](https://codeberg.org/playXE/capy/commit/3f3b0ff99fafa622814e7df026d44f9a0ac8c8ee))
 - *(capy)* Infer switches even if block has more than 2 opcodes - ([14040be](https://codeberg.org/playXE/capy/commit/14040be4c9394ffff7242763a8380080196f4e34))
 - *(capy/gc)* Split heuristics into files; better adaptive heuristic - ([ffdfdac](https://codeberg.org/playXE/capy/commit/ffdfdacf19be683c978d0ab50b8ddaa365e51c0d))
 - *(compiler)* Use ValueId in linear CPS - ([e6b26bd](https://codeberg.org/playXE/capy/commit/e6b26bd224ad526b505e4ddb76ecd41c9fa6d0ed))
@@ -40,6 +43,10 @@
 ### ⚙️ Miscellaneous Tasks
 
 - Ignore worktree directory - ([e9d3214](https://codeberg.org/playXE/capy/commit/e9d3214f42b9da9dbb23c18536d37c50febbef26))
+
+### ◀️ Revert
+
+- *(capy/cps)* Optimization caused bugs in bootstrap - ([19e16cf](https://codeberg.org/playXE/capy/commit/19e16cf0a3e320bdbfac8904f8131f977daf08de))
 
 ### Build
 
