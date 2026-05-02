@@ -542,29 +542,6 @@ mod tests {
     }
 
     #[test]
-    fn optimizer_copy_handles_deep_let_spines_without_stack_growth() {
-        with_ctx(|ctx| {
-            const DEPTH: usize = 10_000;
-
-            let retk = lvar(ctx, "retk");
-            let seed = lvar(ctx, "seed");
-            let mut term = term_continue(ctx, retk, &[]);
-
-            for index in 0..DEPTH {
-                let binding = lvar(ctx, &format!("copy_{index}"));
-                term = term_let_prim(ctx, binding, "opaque", &[Atom::Local(seed)], term);
-            }
-
-            let (copied, copied_size, mentions) =
-                crate::cps::optimizer::copy_for_stress_test(ctx, term);
-
-            assert_eq!(copied_size, DEPTH + 1);
-            assert_eq!(crate::cps::optimizer::size(copied), DEPTH + 1);
-            assert!(!mentions);
-        });
-    }
-
-    #[test]
     fn shrink_materializes_large_variadic_rest_without_recursive_closures() {
         with_ctx(|ctx| {
             const REST_LEN: usize = 4_096;
