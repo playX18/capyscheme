@@ -487,16 +487,24 @@ impl GlobalStats {
     }
 
     pub fn start_gc(&mut self) {
-        self.gc_start = self.enabled.then(Instant::now);
+        self.start_gc_at(Instant::now());
     }
 
     pub fn end_gc(&mut self) {
+        self.end_gc_at(Instant::now());
+    }
+
+    pub(crate) fn start_gc_at(&mut self, start: Instant) {
+        self.gc_start = self.enabled.then_some(start);
+    }
+
+    pub(crate) fn end_gc_at(&mut self, end: Instant) {
         let Some(start) = self.gc_start.take() else {
             return;
         };
 
         if self.enabled {
-            self.snapshot.gc += start.elapsed();
+            self.snapshot.gc += end.saturating_duration_since(start);
         }
     }
 
@@ -613,5 +621,24 @@ impl GlobalStats {
         }
 
         (self.ever_enabled, snapshot)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_gc_duration_from_explicit_cycle_bounds() {
+        let mut stats = GlobalStats::new();
+        stats.set_enabled(true);
+
+        let start = Instant::now();
+        let end = start + Duration::from_millis(25);
+        stats.start_gc_at(start);
+        stats.end_gc_at(end);
+
+        let (_, snapshot) = stats.snapshot();
+        assert_eq!(snapshot.gc, Duration::from_millis(25));
     }
 }

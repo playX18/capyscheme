@@ -634,12 +634,21 @@ impl GCTriggerPolicy<MemoryManager> for CapyTriggerPolicy {
     }
 
     fn on_gc_start(&self, _mmtk: &'static MMTK<MemoryManager>) {
+        let now = Instant::now();
         self.pending_pages.store(0, Ordering::Relaxed);
-        self.lock_state().record_cycle_start(Instant::now());
+        {
+            let mut global_stats = crate::runtime::GLOBAL_STATS.lock();
+            global_stats.start_gc_at(now);
+        }
+        self.lock_state().record_cycle_start(now);
     }
 
     fn on_gc_end(&self, mmtk: &'static MMTK<MemoryManager>) {
         let now = Instant::now();
+        {
+            let mut global_stats = crate::runtime::GLOBAL_STATS.lock();
+            global_stats.end_gc_at(now);
+        }
         let plan = mmtk.get_plan();
         let used_bytes = pages_to_bytes(plan.get_used_pages());
         self.used_at_last_gc_end

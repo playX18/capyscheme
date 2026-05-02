@@ -21,11 +21,6 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
         F: FnMut(&'static mut mmtk::Mutator<MemoryManager>),
     {
         super::logging::gc_pause_started(&super::GarbageCollector::get().mmtk);
-        {
-            let mut global_stats = crate::runtime::GLOBAL_STATS.lock();
-            global_stats.start_gc();
-            drop(global_stats);
-        }
         let threads = &super::GarbageCollector::get().threads;
         threads.block_all_mutators_for_gc();
         unsafe { threads.flush_tlabs() };
@@ -38,9 +33,6 @@ impl mmtk::vm::Collection<MemoryManager> for Collection {
         let gc = super::GarbageCollector::get();
         gc.threads.resume_all_mutators_from_gc();
         super::logging::log_gc_completed(&gc.mmtk);
-
-        let mut global_stats = crate::runtime::GLOBAL_STATS.lock();
-        global_stats.end_gc();
     }
 
     fn block_for_gc(tls: mmtk::util::VMMutatorThread) {
