@@ -1,0 +1,83 @@
+{
+  "name": "Capy Scheme",
+  "scopeName": "source.capy-scheme",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#symbols"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.capy-scheme",
+          "match": ";.*$"
+        },
+        {
+          "name": "comment.block.capy-scheme",
+          "begin": "#\\|",
+          "end": "\\|#"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.capy-scheme",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.capy-scheme",
+              "match": "\\\\(?:[abtnvfr\"\\\\]|x[0-9A-Fa-f]+;)"
+            }
+          ]
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.capy-scheme",
+          "match": "#(?:t|f|true|false)\\b"
+        },
+        {
+          "name": "constant.character.capy-scheme",
+          "match": "#\\\\(?:space|newline|tab|return|.)"
+        },
+        {
+          "name": "constant.numeric.capy-scheme",
+          "match": "(?<![^\\s(])(?:[-+]?\\d+(?:\\.\\d+)?|#x[0-9A-Fa-f]+|#o[0-7]+|#b[01]+)(?![^\\s)])"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.capy-scheme",
+          "match": "\\b(?:and|begin|case|case-lambda|cond|define|define-library|define-record-type|define-syntax|do|else|export|guard|if|import|lambda|let|let\\*|let-syntax|let-values|letrec|letrec\\*|letrec-syntax|library|or|quasiquote|quote|receive|set!|syntax|syntax-case|syntax-rules|unless|unquote|unquote-splicing|when)\\b"
+        }
+      ]
+    },
+    "symbols": {
+      "patterns": [
+        {
+          "name": "entity.name.function.capy-scheme",
+          "match": "(?<=\\()(?:[A-Za-z_!$%&*/:<=>?~^.+-][A-Za-z0-9_!$%&*/:<=>?~^.+-]*)(?=\\s|\\)|$)"
+        }
+      ]
+    }
+  }
+}
