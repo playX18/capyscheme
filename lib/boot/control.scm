@@ -86,28 +86,29 @@
 
 (define (call-in-continuation c proc . args)
   (define (cont-attachments c)
-    (tuple-ref (cdr (procedure-property c 'continuation)) 1))
+    (tuple-ref (procedure-property c 'continuation) 1))
   (unless (continuation? c)
     (error 'call-in-continuation "not a continuation" c))
 
   (cond
     [(null? args)
+      (unless (procedure? proc)
+        (error 'call-in-continuation "not a procedure" proc))
       ($set-attachments! (cont-attachments c))
       (receive vals (proc)
         (apply c vals))]
     [else
       (let ([set proc]
             [proc (car args)])
+        (unless (null? (cdr args))
+          (error 'call-in-continuation "wrong number of arguments" (cons c (cons set args))))
+        (unless (procedure? proc)
+          (error 'call-in-continuation "not a procedure" proc))
         (unless (continuation-marks? set)
           (error 'call-in-continuation
             "expected continuation-marks object"
             set))
-        (let* ([markss ($continuation-marks-markss set)]
-               [c-marks (cont-attachments c)])
-          (unless (or (eq? markss c-marks)
-                   (and (pair? markss) (eq? (cdr markss) c-markss)))
-            (error 'call-in-continuation "mark set is not an extension of current marks" set c)))
-        ($set-attachments! markss)
+        ($set-attachments! set)
         (receive vals (proc)
           (apply c vals)))]))
 
