@@ -1,0 +1,146 @@
+{
+  "name": "capy-scheme-lsp",
+  "displayName": "Capy Scheme LSP",
+  "description": "VS Code client for the Capy Scheme language server.",
+  "version": "0.0.1",
+  "publisher": "capy-scheme",
+  "license": "LGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/playXE/capy.git"
+  },
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "capy",
+    "scheme",
+    "lsp"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:capy-scheme",
+    "onLanguage:scheme",
+    "workspaceContains:lsp-config.scm",
+    "onCommand:capyLsp.start",
+    "onCommand:capyLsp.restart",
+    "onCommand:capyLsp.showOutput",
+    "onCommand:capyLsp.runAction",
+    "onCommand:capyLsp.stop",
+    "onCommand:capyLsp.enable",
+    "onCommand:capyLsp.disable"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "capyLsp.start",
+        "title": "Capy LSP: Start"
+      },
+      {
+        "command": "capyLsp.restart",
+        "title": "Capy LSP: Restart"
+      },
+      {
+        "command": "capyLsp.stop",
+        "title": "Capy LSP: Stop"
+      },
+      {
+        "command": "capyLsp.enable",
+        "title": "Capy LSP: Enable"
+      },
+      {
+        "command": "capyLsp.disable",
+        "title": "Capy LSP: Disable"
+      },
+      {
+        "command": "capyLsp.showOutput",
+        "title": "Capy LSP: Show Output"
+      },
+      {
+        "command": "capyLsp.runAction",
+        "title": "Capy LSP: Expand"
+      }
+    ],
+    "configuration": {
+      "title": "Capy LSP",
+      "properties": {
+        "capyLsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Capy LSP client for this workspace. When disabled, the extension will not start or restart capy-lsp."
+        },
+        "capyLsp.serverPath": {
+          "type": "string",
+          "default": "capy-lsp",
+          "description": "Path to the capy-lsp server executable. Bare names are resolved through PATH. Supports ${workspaceFolder}, ${extensionPath}, and ~."
+        },
+        "capyLsp.serverArgs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional arguments passed to capy-lsp."
+        },
+        "capyLsp.vmPath": {
+          "type": "string",
+          "default": "capy-lsp-vm",
+          "description": "Path to the isolated capy-lsp-vm worker executable. Set to an empty string to let capy-lsp resolve the worker itself. Supports ${workspaceFolder}, ${extensionPath}, and ~."
+        },
+        "capyLsp.extraEnv": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Extra environment variables for the capy-lsp process. String values support ${workspaceFolder}, ${extensionPath}, and ~."
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "capy-scheme",
+        "aliases": [
+          "Capy Scheme",
+          "Capy",
+          "Scheme"
+        ],
+        "extensions": [
+          ".scm",
+          ".sls",
+          ".sld",
+          ".sps"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "capy-scheme",
+        "scopeName": "source.capy-scheme",
+        "path": "./syntaxes/capy-scheme.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "npm run typecheck && npm run bundle",
+    "typecheck": "tsc -p ./ --noEmit",
+    "bundle": "esbuild src/extension.ts --bundle --platform=node --format=cjs --outfile=out/extension.js --external:vscode --sourcemap",
+    "watch": "esbuild src/extension.ts --bundle --platform=node --format=cjs --outfile=out/extension.js --external:vscode --sourcemap --watch",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/vscode": "^1.105.0",
+    "@vscode/vsce": "^3.9.1",
+    "esbuild": "^0.28.0",
+    "typescript": "^6.0.3"
+  }
+}
