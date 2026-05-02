@@ -194,6 +194,7 @@
     apply
     call-with-current-continuation
     call/cc
+    call-in-continuation
     values
     call-with-values
     dynamic-wind)
@@ -412,6 +413,7 @@
     apply
     call-with-current-continuation
     call/cc
+    call-in-continuation
     values
     call-with-values
     dynamic-wind
