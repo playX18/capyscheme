@@ -310,6 +310,11 @@ bytecode_list! {
             }
         }
 
+        /// Enter a new call-frame.
+        ///
+        /// This opcode is a prelude and can trigger a JIT or GC.
+        ///
+        /// `nlocals` is the number of local values to allocate in a frame.
         Enter {
             args {
                 nlocals: usize
@@ -318,18 +323,28 @@ bytecode_list! {
             metadata {} /* TODO: metadata for JIT */
         }
 
+        /// Tail call the procedure in the given register.
+        ///
+        /// Calling convention is as follows:
+        /// ```
+        /// for i in 0..argc {
+        ///     fp.argument(i) = arg[argv+i];
+        /// }
+        /// fp.callee = callee;
+        /// fp.code_block = callee.as_::<Closure>().code_block;
+        /// pc = 0;
+        /// cb = fp.code_block;
+        ///
+        /// ```
         TailCall {
             args {
                 callee: VirtualRegister,
+                /// First register containing argument[0]. This register
+                /// must be local, not an argument.
                 argv: VirtualRegister,
-                argc: usize
-            }
-        }
-
-        Continue {
-            args {
-                callee: VirtualRegister,
-                argv: VirtualRegister,
+                /// Number of arguments.
+                ///
+                /// VM accesses arguments using `fp[argv..argv+argc]`.
                 argc: usize
             }
         }
