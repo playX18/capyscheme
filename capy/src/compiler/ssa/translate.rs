@@ -1475,12 +1475,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             block.params.len()
         };
         if args.len() < fixed_count {
-            panic!(
-                "not enough args when jumping to linear block {:?}, expected at least {}, got {}",
-                target,
-                fixed_count,
-                args.len()
-            );
+            self.raise_wrong_linear_block_arity(args, -(fixed_count as isize));
+            return;
         }
 
         let mut block_args = args[..fixed_count]
@@ -1514,16 +1510,30 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 block_args.push(BlockArg::Value(null));
             }
         } else if args.len() != fixed_count {
-            panic!(
-                "wrong number of args when jumping to linear block {:?}, expected {}, got {}",
-                target,
-                fixed_count,
-                args.len()
-            );
+            self.raise_wrong_linear_block_arity(args, fixed_count as isize);
+            return;
         }
 
         let clif_block = self.linear_blockmap[&target];
         self.builder.ins().jump(clif_block, &block_args);
+    }
+
+    fn raise_wrong_linear_block_arity(&mut self, args: &[LinearAtom<'gc>], expected: isize) {
+        let args = args
+            .iter()
+            .copied()
+            .map(|arg| self.linear_atom(arg))
+            .collect::<Vec<_>>();
+        let rands = self.push_args(&args);
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let got = self.builder.ins().iconst(types::I64, args.len() as i64);
+        let expected = self.builder.ins().iconst(types::I64, expected as i64);
+        let err = self.builder.ins().call(
+            self.thunks.wrong_number_of_args,
+            &[ctx, self.rator, got, expected, rands],
+        );
+        let err = self.builder.inst_results(err)[0];
+        self.raise_to_exception_handler(err);
     }
 
     fn linear_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
