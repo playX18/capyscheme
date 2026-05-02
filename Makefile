@@ -3,6 +3,8 @@
 # Usage examples:
 #   make build                 # build runtime + bootstrap stages 0/1/2
 #   make build-runtime         # build capy + capy/capyc C launchers
+#   make build-lsp-server      # build Rust capy-lsp server
+#   make build-lsp-vm          # build runtime + capy-lsp-vm worker
 #   make stage-0
 #   make stage-1
 #   make stage-2
@@ -184,6 +186,8 @@ CAPY_SRCS_SLS := \
 	lib/capy/generator.sls \
 	lib/capy/future.sls \
 	lib/capy/binary-heap.sls \
+	lib/capy/lsp/analysis.sls \
+	lib/capy/lsp/worker.sls \
 	lib/capy/intrusive/dlist.sls \
 	lib/capy/intrusive/slist.sls \
 
@@ -269,14 +273,14 @@ CAPY_OUTS  = $(patsubst lib/capy/%.sls,$(OUT)/capy/%.$(DYNLIB_EXT),$(CAPY_SRCS_S
 SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(DYNLIB_EXT),$(SRFI_SRCS))
 R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(DYNLIB_EXT),$(R7RS_SRCS))
 
-.PHONY: all help build build-runtime build-runtime-fhs install-scm stage-0 stage-1 stage-2 \
+.PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable build-lsp-server build-lsp-vm install-scm stage-0 stage-1 stage-2 \
 	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-srfi compile-r7rs \
 	install-portable dist-portable install install-cross dist-deb dist-rpm
 
 all: build
 
 help:
-	@echo "Targets: build build-runtime build-runtime-fhs stage-0 stage-1 stage-2 install-portable dist-portable install"
+	@echo "Targets: build build-runtime build-runtime-fhs build-lsp-server build-lsp-vm stage-0 stage-1 stage-2 install-portable dist-portable install"
 	@echo "Packaging: dist-deb dist-rpm"
 	@echo "Vars: PROFILE=release|debug TARGET=<triple> PORTABLE=1|0 PREFIX=<path> VERSION=<ver>"
 
@@ -310,15 +314,23 @@ build:
 build-runtime:
 	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
 
+build-lsp-server:
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy-lsp
+
+build-lsp-vm: build-runtime
+	$(CC) bin/capy-lsp-vm.c -L$(TARGET_PATH) -o bin/capy-lsp-vm -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
+
 build-runtime-fhs: 
 	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full  -lcapy -Wl,-rpath,$(RPATH_FHS)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_FHS)
+	$(CC) bin/capy-lsp-vm.c -L$(TARGET_PATH) -o bin/capy-lsp-vm-full -lcapy -Wl,-rpath,$(RPATH_FHS)
 
 build-runtime-portable: 
 	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
+	$(CC) bin/capy-lsp-vm.c -L$(TARGET_PATH) -o bin/capy-lsp-vm-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 
 install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
@@ -485,12 +497,14 @@ compile-r7rs:
 # Install / dist
 # -------------------------
 
-install-portable: build build-runtime-portable
+install-portable: build build-runtime-portable build-lsp-server
 	@echo "Installing CapyScheme to $(PREFIX)/capy/$(VERSION)"
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
 	cp bin/capy-full $(PREFIX)/capy/$(VERSION)/capy 
 	cp bin/capyc-full $(PREFIX)/capy/$(VERSION)/capyc
+	cp $(TARGET_PATH)/capy-lsp $(PREFIX)/capy/$(VERSION)/capy-lsp
+	cp bin/capy-lsp-vm-full $(PREFIX)/capy/$(VERSION)/capy-lsp-vm
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
 	cp $(TARGET_PATH)/libcapy.* $(PREFIX)/capy/$(VERSION)/
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
@@ -499,7 +513,7 @@ install-portable: build build-runtime-portable
 
 # Produces a portable tar.gz archive without installing.
 # Mirrors install-portable.
-dist-portable: build build-runtime-portable
+dist-portable: build build-runtime-portable build-lsp-server
 	set -euxo pipefail; \
 	outdir=$${OUTDIR:-dist}; \
 	stagedir=$${STAGEDIR:-stage-dist}; \
@@ -515,6 +529,8 @@ dist-portable: build build-runtime-portable
 	rsync --checksum -r lib "$$stage_install_dir"; \
 	cp bin/capy-full "$$stage_install_dir/capy"; \
 	cp bin/capyc-full "$$stage_install_dir/capyc"; \
+	cp $(TARGET_PATH)/capy-lsp "$$stage_install_dir/capy-lsp"; \
+	cp bin/capy-lsp-vm-full "$$stage_install_dir/capy-lsp-vm"; \
 	cp $(TARGET_PATH)/libcapy.* "$$stage_install_dir/"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
 	cp LICENSE "$$stage_install_dir/"; \
@@ -523,7 +539,7 @@ dist-portable: build build-runtime-portable
 	tar -C "$$stage_prefix" -czf "$$outdir/$$archive_name" "capy/$(VERSION)"; \
 	echo "Wrote $$outdir/$$archive_name"
 
-install: build 
+install: build build-lsp-server
 	$(MAKE) PREFIX=$(PREFIX) build-runtime-fhs 
 	@echo "Installing CapyScheme (FHS) to $(PREFIX)"
 	mkdir -p "$(PREFIX)/bin"; \
@@ -533,6 +549,8 @@ install: build
 	cp -r lib "$(PREFIX)/share/capy/"; \
 	cp bin/capy-full "$(PREFIX)/bin/capy"; \
 	cp bin/capyc-full "$(PREFIX)/bin/capyc"; \
+	cp $(TARGET_PATH)/capy-lsp "$(PREFIX)/bin/capy-lsp"; \
+	cp bin/capy-lsp-vm-full "$(PREFIX)/bin/capy-lsp-vm"; \
 	cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
 	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
 	echo "Installation complete."

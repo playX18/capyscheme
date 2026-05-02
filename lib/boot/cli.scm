@@ -1,22 +1,24 @@
 (library (boot cli)
-  (export enter eval-string enter-compiler)
+  (export enter eval-string eval-string/value enter-compiler)
   (import (capy)
     (core control)
     (core repl)
     (capy args)
     (capy args argparser))
 
-  (define (eval-string str)
+  (define (eval-string/value str)
     (call-with-input-string
       str
       (lambda (in)
         (define reader (make-reader in "stdin"))
-        (let lp ()
+        (let lp ([result (if #f #f)])
           (let ([exp (read-datum reader)])
             (if (not (eof-object? exp))
-              (begin
-                (eval exp (current-module))
-                (lp))))))))
+              (lp (eval exp (current-module)))
+              result))))))
+
+  (define (eval-string str)
+    (eval-string/value str))
 
   (define (canonicalize-paths paths)
     (map canonicalize-path-string paths))

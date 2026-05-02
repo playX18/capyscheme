@@ -311,6 +311,45 @@ struct Value scm_intern_symbol(ContextRef ctx, const char *name);
 struct Value scm_string(ContextRef ctx, const char *data);
 
 /**
+ * Return whether `value` is a Scheme string.
+ */
+bool scm_is_string(ContextRef _ctx, struct Value value);
+
+/**
+ * Return the number of UTF-8 bytes needed to represent a Scheme string.
+ *
+ * Returns 0 when `value` is not a Scheme string.
+ */
+uintptr_t scm_string_utf8_length(ContextRef _ctx, struct Value value);
+
+/**
+ * Copy a Scheme string to a UTF-8 buffer.
+ *
+ * `written`, when non-null, receives the required byte length excluding the
+ * trailing NUL. Returns false if `value` is not a string, `buf` is null, or
+ * `capacity` is too small for the UTF-8 bytes plus a trailing NUL.
+ */
+bool scm_string_to_utf8(ContextRef _ctx,
+                        struct Value value,
+                        char *buf,
+                        uintptr_t capacity,
+                        uintptr_t *written);
+
+/**
+ * Return the number of UTF-8 bytes needed to print a Scheme value.
+ */
+uintptr_t scm_value_utf8_length(ContextRef _ctx, struct Value value);
+
+/**
+ * Copy the printed representation of any Scheme value to a UTF-8 buffer.
+ */
+bool scm_value_to_utf8(ContextRef _ctx,
+                       struct Value value,
+                       char *buf,
+                       uintptr_t capacity,
+                       uintptr_t *written);
+
+/**
  * Convert a Scheme real number to an `f64`. Writes the result into `res` and
  * returns `true` on success, or `false` if `value` is not a number.
  */
