@@ -47,6 +47,7 @@
     test-match-name
     test-skip
     test-expect-fail
+    test-compare
     test-read-eval-string
     test-runner-group-path
     test-group
@@ -113,6 +114,7 @@
     (scheme file)
     (scheme char)
     (scheme write)
+    (scheme complex)
     (rnrs syntax-case)
     (only (capy) syntax-sourcev)
     (srfi 39)
@@ -736,6 +738,24 @@
                 (test-result-actual-value! r res)
                 (%test-on-test-end r (comp exp res)))))
           (%test-report-result)))))
+
+  ;; Non-standard helper for tests that need a custom comparator and have
+  ;; already evaluated their actual value.
+  (define (test-compare test-name comparator expected actual . line-info)
+    (let* ((r (test-runner-get))
+           (line (if (or (null? line-info) (not (car line-info)))
+                   '()
+                   (car line-info))))
+      (test-result-alist! r
+        (if test-name
+          (cons (cons 'test-name test-name) line)
+          line))
+      (if (%test-on-test-begin r)
+        (begin
+          (test-result-expected-value! r expected)
+          (test-result-actual-value! r actual)
+          (%test-on-test-end r (comparator expected actual))))
+      (%test-report-result)))
 
   (define (%test-approximate= error)
     (lambda (value expected)
