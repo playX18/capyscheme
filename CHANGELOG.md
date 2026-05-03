@@ -2,6 +2,8 @@
 
 ### ⛰️  Features
 
+- *(api)* Expose UTF-8 value helpers - ([a3ffbc5](https://codeberg.org/playXE/capy/commit/a3ffbc5d009768703f80c0dedc63f816c3f84cff))
+- *(build)* Install and package Capy LSP - ([00dba66](https://codeberg.org/playXE/capy/commit/00dba66403e286b42cfae16b6171ad564a265623))
 - *(capy)* Infer switches - ([d18b552](https://codeberg.org/playXE/capy/commit/d18b55228851263d81329b01357b14f849afb270))
 - *(capy)* Linear CPS - ([7d6e43b](https://codeberg.org/playXE/capy/commit/7d6e43ba8f58aaed568c5b04645ef6d2b88231df))
 - *(capy/compiler)* Greedy slotalloc - ([c2c7025](https://codeberg.org/playXE/capy/commit/c2c7025c141c81b6c5845755e817ece52f507fa6))
@@ -10,19 +12,29 @@
 - *(capy/gc)* Add CLI options for GC - ([c1f6323](https://codeberg.org/playXE/capy/commit/c1f6323469495d1d8b3ce80fe0894dcaca46e01d))
 - *(capy/gc)* Custom trigger policy - ([084f3ed](https://codeberg.org/playXE/capy/commit/084f3ed0c07a6549e0c857c0fc5174d05959369d))
 - *(compiler)* Optimize rest arguments to direct access - ([76e7a05](https://codeberg.org/playXE/capy/commit/76e7a056cf0b938fd37a38e2bdd3e24503cb7f81))
+- *(control)* Implement call-in-continuation and add tests for its behavior - ([7fce732](https://codeberg.org/playXE/capy/commit/7fce732bfd1228654c1899cf1c8c0424be0882f8))
 - *(library)* Auto-import capy prelims - ([3116a3f](https://codeberg.org/playXE/capy/commit/3116a3f471f7f1bf229a60216029ef0b2b09bc38))
+- *(lsp)* Add refactored Rust language server - ([12382c8](https://codeberg.org/playXE/capy/commit/12382c8d29247d2409d7ce9dfd9a097a27fdfed5))
+- *(lsp)* Add Scheme worker analysis - ([689d7aa](https://codeberg.org/playXE/capy/commit/689d7aa581242527135bd060d1343be4f4c59b3b))
+- *(lsp)* Add isolated VM worker launcher - ([36d267b](https://codeberg.org/playXE/capy/commit/36d267b735921bae7da68db6644565f45427b7c8))
 - *(psyntax)* Add default core #%app - ([0c8d46c](https://codeberg.org/playXE/capy/commit/0c8d46c48f3fdf275acdc2a0dad6a034f6416dd7))
 - *(psyntax)* Route calls through implicit #%app - ([4192658](https://codeberg.org/playXE/capy/commit/419265893227c2a8f56a7ecebdce8fee1fcee9a1))
 - *(psyntax)* Define-property - ([1dd6932](https://codeberg.org/playXE/capy/commit/1dd69323e87e691da282e613fb03ed5b8c0cd50c))
+- *(srfi)* Add custom comparator to SRFI-64 - ([1ea56e3](https://codeberg.org/playXE/capy/commit/1ea56e3278a80df9eb397fb3f02b50d0ea1f6a36))
 - *(srfi)* SRFI-213 full implementation - ([db8ebc7](https://codeberg.org/playXE/capy/commit/db8ebc7df8a292b6d1a9a30c692a265cb36cb9d8))
+- *(tests)* Use srfi-64 test runner for racket/r6rs test suite - ([0ca56c9](https://codeberg.org/playXE/capy/commit/0ca56c9ed305d6528c9c56be31d37a483dd74fba))
+- *(vscode)* Add Capy Scheme LSP extension - ([180ec16](https://codeberg.org/playXE/capy/commit/180ec160da7aa46f8b6c981d6a59961ef96e036f))
 
 ### 🐛 Bug Fixes
 
 - *(capy/gc)* Mutator always used 8 bytes alignment, use max(alignment, 8) - ([577c283](https://codeberg.org/playXE/capy/commit/577c283c91b61dcb7b7e930437838aa359542f7d))
+- *(cps)* Lower to wrong arity condition instead of panicking in compiler - ([4ecdeca](https://codeberg.org/playXE/capy/commit/4ecdecaa0f4c1a929fe339b4aa8ea12d756d7c6e))
 - *(lib)* Fix #%app imports - ([23d5085](https://codeberg.org/playXE/capy/commit/23d50859053535873404050e35ccee128280173d))
 - *(lib/capy)* Better threading - ([712093f](https://codeberg.org/playXE/capy/commit/712093f4a25348acec0393f9325d51d6814b046b))
 - *(lib/core)* Mutex protect data - ([e551a91](https://codeberg.org/playXE/capy/commit/e551a911a1704e6744ff456c2491a27dfa2d1742))
 - *(psyntax)* Stabilize implicit #%app bootstrap - ([5df6bc0](https://codeberg.org/playXE/capy/commit/5df6bc03e6114e320377034c9bf6496c2f03d325))
+- Remove redundant/outdated tests - ([47c0fd4](https://codeberg.org/playXE/capy/commit/47c0fd495b645fe08a0d1476eb860ad0d982cffc))
+- Remove outdated/redundant tests - ([0bac374](https://codeberg.org/playXE/capy/commit/0bac374af19e7daf60fab38a3538fcb01b04bc0e))
 - Remove cached repo - ([cae021d](https://codeberg.org/playXE/capy/commit/cae021dbeacba2e891cc9d38cd0b1e4033e0044c))
 
 ### 🚜 Refactor
@@ -51,6 +63,10 @@
 ### Build
 
 - Regenerate psyntax for implicit #%app - ([72523ed](https://codeberg.org/playXE/capy/commit/72523edc300ce198e81f0ad32420398622fc4c3d))
+
+### Refator
+
+- *(capy/gc)* Measure GC start/end using GCTriggerPolicy - ([90f48b5](https://codeberg.org/playXE/capy/commit/90f48b5fd7d7ebbd12464a8f891b37d672b33113))
 
 
 ## [1.3.0](https://codeberg.org/playXE/capy/compare/v1.2.0..v1.3.0) - 2026-04-27
