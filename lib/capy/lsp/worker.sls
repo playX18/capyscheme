@@ -19,6 +19,7 @@
   (define key-workspace-root (string->symbol "workspaceRoot"))
   (define key-load-path (string->symbol "loadPath"))
   (define key-text-document (string->symbol "textDocument"))
+  (define key-open-documents (string->symbol "openDocuments"))
 
   (define (write-to-string obj)
     (let ((port (open-output-string)))
@@ -71,6 +72,24 @@
                (loop (+ i 1)
                      (if (string? item) (cons item out) out)))))]
       [(string? value) (list value)]
+      [else '()]))
+
+  (define (json-open-documents->overrides value)
+    (cond
+      [(vector? value)
+       (let loop ((i 0) (out '()))
+         (if (= i (vector-length value))
+             (reverse out)
+             (let* ((item (vector-ref value i))
+                    (path (and (json-object? item)
+                               (first-string (json-ref item 'path #f))))
+                    (text (and (json-object? item)
+                               (first-string (json-ref item 'text #f)
+                                             (json-ref item 'source #f)))))
+               (loop (+ i 1)
+                     (if (and path text)
+                         (cons (cons path text) out)
+                         out)))))]
       [else '()]))
 
   (define (first-string . values)
@@ -227,6 +246,19 @@
            "run-action"
            (run-document-action uri text version path action range))])))
 
+  (define (invalidate-files-request id params request)
+    (let* ((paths (json-vector->string-list
+                    (json-ref params 'paths
+                              (json-ref params 'files
+                                        (json-ref request 'paths #())))))
+           (overrides (json-open-documents->overrides
+                        (json-ref params key-open-documents
+                                  (json-ref params 'documents #())))))
+      (success-response
+        id
+        "invalidate-files"
+        (invalidate-files paths overrides))))
+
   (define (shutdown id)
     (set! shutdown-requested? #t)
     (success-response
@@ -251,6 +283,8 @@
              (analyze-document-request id (if (json-object? params) params '()) request)]
             [(string=? method "run-action")
              (run-action-request id (if (json-object? params) params '()) request)]
+            [(string=? method "invalidate-files")
+             (invalidate-files-request id (if (json-object? params) params '()) request)]
             [(string=? method "shutdown")
              (shutdown id)]
             [else
