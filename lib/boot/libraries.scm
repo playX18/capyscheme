@@ -969,6 +969,7 @@
     nested-ref
     nested-set!
     nested-remove!
+    nested-remove-module!
     nested-ref-module
     nested-define-module!
     local-ref
@@ -981,6 +982,7 @@
     make-modules-in
     beautify-user-module!
     make-fresh-user-module
+    invalidate-module!
     resolve-module
     resolve-interface
     define-module*

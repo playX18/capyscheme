@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{
     config::LspConfig,
-    protocol::{ActionOutput, DocumentFacts, WorkerRequest, WorkerResponse},
+    protocol::{ActionOutput, DocumentFacts, InvalidateFilesResult, WorkerRequest, WorkerResponse},
 };
 
 const WORKER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -93,6 +93,28 @@ impl WorkerPool {
         }
     }
 
+    pub async fn invalidate_files(
+        &self,
+        config: &LspConfig,
+        paths: &[PathBuf],
+        open_documents: Vec<OpenDocumentOverride>,
+    ) -> io::Result<InvalidateFilesResult> {
+        let worker = self.worker_for(config).await?;
+        let request = json!({
+            "paths": paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+            "openDocuments": open_documents,
+        });
+
+        let mut guard = worker.lock().await;
+        match guard.request("invalidate-files", request).await {
+            Ok(value) => serde_json::from_value(value).map_err(invalid_data),
+            Err(err) => {
+                self.workers.lock().await.remove(&config.root);
+                Err(err)
+            }
+        }
+    }
+
     pub async fn shutdown_all(&self) {
         let workers = std::mem::take(&mut *self.workers.lock().await);
         for worker in workers.into_values() {
@@ -130,6 +152,12 @@ impl WorkerPool {
         workers.insert(config.root.clone(), worker.clone());
         Ok(worker)
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenDocumentOverride {
+    pub path: String,
+    pub text: String,
 }
 
 #[derive(Debug)]
