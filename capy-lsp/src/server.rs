@@ -41,7 +41,7 @@ use crate::{
     config::LspConfig,
     document::{Document, word_at_position},
     protocol::{DiagnosticSeverityFact, DocumentFacts},
-    worker::WorkerPool,
+    worker::{OpenDocumentOverride, WorkerPool},
 };
 
 use actions::{ActionCommandArgs, action_definitions, known_action};
@@ -376,7 +376,11 @@ impl LanguageService {
 
     fn did_change_watched_files(self: &Arc<Self>, params: lsp_types::DidChangeWatchedFilesParams) {
         let mut config_roots = Vec::new();
-        let mut dirty_uris = Vec::new();
+        let mut dirty_uris = HashSet::new();
+        let mut invalidation_groups: HashMap<PathBuf, (LspConfig, Vec<PathBuf>)> = HashMap::new();
+        let mut open_documents_by_root: HashMap<PathBuf, Vec<OpenDocumentOverride>> =
+            HashMap::new();
+        let workspace_root = lock(&self.workspace_root).clone();
         {
             let mut documents = lock(&self.documents);
             for event in &params.changes {
@@ -395,24 +399,85 @@ impl LanguageService {
                     dirty_uris.extend(documents.keys().cloned());
                 } else if let Some(document) = documents.get_mut(&event.uri) {
                     document.dirty = true;
-                    dirty_uris.push(event.uri.clone());
+                    dirty_uris.insert(event.uri.clone());
                 }
+
+                if file_name(&event.uri).as_deref() == Some("lsp-config.scm") {
+                    continue;
+                }
+
+                let Ok(path) = event.uri.to_file_path() else {
+                    continue;
+                };
+                let Ok(config) = LspConfig::discover(Some(&path), &workspace_root) else {
+                    continue;
+                };
+                invalidation_groups
+                    .entry(config.root.clone())
+                    .or_insert_with(|| (config.clone(), Vec::new()))
+                    .1
+                    .push(path);
+
+                let mut open_documents = Vec::new();
+                for (uri, document) in documents.iter_mut() {
+                    let Ok(document_path) = uri.to_file_path() else {
+                        continue;
+                    };
+                    if document_path.starts_with(&config.root) {
+                        document.dirty = true;
+                        dirty_uris.insert(uri.clone());
+                        open_documents.push(OpenDocumentOverride {
+                            path: document_path.to_string_lossy().into_owned(),
+                            text: document.text.clone(),
+                        });
+                    }
+                }
+                open_documents_by_root
+                    .entry(config.root.clone())
+                    .or_default()
+                    .extend(open_documents);
             }
         }
 
         let pool = self.worker_pool.clone();
+        let service = self.clone();
         tokio::spawn(async move {
-            if config_roots.is_empty() {
-                return;
-            }
             for root in config_roots {
                 pool.restart_root(&root).await;
             }
-        });
+            for (root, (config, paths)) in invalidation_groups {
+                let open_documents = open_documents_by_root.remove(&root).unwrap_or_default();
+                match pool.invalidate_files(&config, &paths, open_documents).await {
+                    Ok(result) if result.restart_required => {
+                        tracing::debug!(
+                            root = %root.display(),
+                            modules = ?result.invalidated_modules,
+                            "capy-lsp-vm requires restart after file invalidation",
+                        );
+                        pool.restart_root(&root).await;
+                    }
+                    Ok(result) => {
+                        tracing::debug!(
+                            root = %root.display(),
+                            modules = ?result.invalidated_modules,
+                            "invalidated capy-lsp-vm modules",
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            root = %root.display(),
+                            error = %err,
+                            "capy-lsp-vm invalidation failed; restarting worker",
+                        );
+                        pool.restart_root(&root).await;
+                    }
+                }
+            }
 
-        for uri in dirty_uris {
-            self.schedule_publish_diagnostics(uri);
-        }
+            for uri in dirty_uris {
+                service.schedule_publish_diagnostics(uri);
+            }
+        });
     }
 
     fn mark_all_dirty(&self) {

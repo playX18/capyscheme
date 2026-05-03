@@ -138,6 +138,17 @@
           (assertion-violation 'nested-remove! "failed to resolve module" names)
           (loop cur (car tail) (cdr tail)))))))
 
+(define (nested-remove-module! root names)
+  (let loop ((cur root)
+             (head (car names))
+             (tail (cdr names)))
+    (if (null? tail)
+      (core-hash-remove! (module-submodules cur) head)
+      (let ((cur (module-ref-submodule cur head)))
+        (if (not cur)
+          (assertion-violation 'nested-remove-module! "failed to resolve module" names)
+          (loop cur (car tail) (cdr tail)))))))
+
 (define (nested-ref-module root names)
   (let loop ((cur root)
              (names names))
@@ -265,6 +276,32 @@
     (let ((n (cons p m)))
       (set! autoloads-done (delete! n autoloads-done))
       (set! autoloads-in-progress (delete! n autoloads-in-progress)))))
+
+(define (clear-module-autoload! module-name)
+  (let* ([reverse-name (reverse module-name)]
+         [name (symbol->string (car reverse-name))]
+         [dir-hint-module-name (reverse (cdr reverse-name))]
+         [dir-hint (apply string-append
+                    (map (lambda (elt)
+                          (string-append (symbol->string elt) "/"))
+                      dir-hint-module-name))]
+         [autoload-key (cons dir-hint name)])
+    (set! autoloads-done (delete! autoload-key autoloads-done))
+    (set! autoloads-in-progress (delete! autoload-key autoloads-in-progress))))
+
+(define (invalidate-module! module-name)
+  (let* ([root *resolve-module-root*]
+         [module (nested-ref-module root module-name)])
+    (when module
+      (core-hash-clear! (module-import-obarray module))
+      (let ([interface (module-public-interface module)])
+        (when interface
+          (core-hash-clear! (module-obarray interface))
+          (core-hash-clear! (module-import-obarray interface)))))
+    (clear-module-autoload! module-name)
+    (when (and module (pair? module-name))
+      (nested-remove-module! root module-name))
+    (not (not module))))
 
 (define (try-module-autoload module-name)
   (let* ([reverse-name (reverse module-name)]
