@@ -166,6 +166,7 @@ struct Worker {
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
     next_id: u64,
+    #[allow(dead_code)]
     broken: bool,
 }
 
