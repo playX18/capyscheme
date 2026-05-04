@@ -40,6 +40,34 @@
                                   (string=? (cdr label-entry) label)))))
                     (loop (+ i 1))))))))
 
+(define (diagnostic-code? facts code)
+  (let ((diagnostics (alist-ref 'diagnostics facts)))
+    (and (vector? diagnostics)
+         (let loop ((i 0))
+           (and (< i (vector-length diagnostics))
+                (or (let ((entry (vector-ref diagnostics i)))
+                      (and (list? entry)
+                           (let ((code-entry (assq 'code entry)))
+                             (and code-entry
+                                  (string=? (cdr code-entry) code)))))
+                    (loop (+ i 1))))))))
+
+(define (call-graph-edge? facts caller callee)
+  (let* ((call-graph (alist-ref 'callGraph facts))
+         (edges (and (list? call-graph) (alist-ref 'edges call-graph))))
+    (and (vector? edges)
+         (let loop ((i 0))
+           (and (< i (vector-length edges))
+                (or (let ((edge (vector-ref edges i)))
+                      (and (list? edge)
+                           (let ((caller-entry (assq 'caller edge))
+                                 (callee-entry (assq 'callee edge)))
+                             (and caller-entry
+                                  callee-entry
+                                  (string=? (cdr caller-entry) caller)
+                                  (string=? (cdr callee-entry) callee)))))
+                    (loop (+ i 1))))))))
+
 (define (check condition message)
   (unless condition
     (assertion-violation 'incremental-refresh message)))
@@ -70,6 +98,19 @@
   (check (completion-label? initial "dep-a") "selected imported export missing")
   (check (not (completion-label? initial "dep-b"))
          "unselected imported export was visible"))
+
+(let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/calls.scm"
+                               "(define (foo x) (bar x))\n(define (bar y) (+ y 1))\n"
+                               1
+                               "/tmp/capy-lsp-refresh-test/calls.scm")))
+  (check (call-graph-edge? facts "foo" "bar") "call graph edge foo -> bar missing")
+  (check (call-graph-edge? facts "bar" "+") "call graph primitive edge bar -> + missing"))
+
+(let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/bad.scm"
+                               "(define x 1\n"
+                               1
+                               "/tmp/capy-lsp-refresh-test/bad.scm")))
+  (check (diagnostic-code? facts "syntax") "syntax diagnostic missing"))
 
 (let* ((response
          (dispatch-response
