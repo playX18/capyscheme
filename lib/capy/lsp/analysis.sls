@@ -1,7 +1,7 @@
 #!r6rs
 
 (library (capy lsp analysis)
-  (export analyze-document run-document-action invalidate-files)
+  (export analyze-document run-document-action)
   (import
     (capy)
     (rnrs)
@@ -15,10 +15,6 @@
   (define current-analysis-path #f)
   (define current-analysis-text "")
   (define expand-action "capy.lsp.action.expand")
-  (define file->modules '())
-  (define module->imports '())
-  (define module->file '())
-  (define module-name-cache '())
 
   (define (write-to-string obj)
     (let ((port (open-output-string)))
@@ -493,261 +489,6 @@
       (if (symbol-list? name)
           (module-name->filename name)
           #f)))
-
-  (define (assoc-delete-all key alist)
-    (let loop ((alist alist) (out '()))
-      (cond
-        [(null? alist) (reverse out)]
-        [(equal? (caar alist) key) (loop (cdr alist) out)]
-        [else (loop (cdr alist) (cons (car alist) out))])))
-
-  (define (module-name-key name)
-    (module-name-string name))
-
-  (define (remember-module-name! name)
-    (let ((key (module-name-key name)))
-      (set! module-name-cache
-            (cons (cons key name) (assoc-delete-all key module-name-cache)))
-      key))
-
-  (define (current-file-modules path)
-    (cond
-      [(assoc path file->modules) => cdr]
-      [else '()]))
-
-  (define (remember-module-file! path name)
-    (let ((key (remember-module-name! name)))
-      (set! module->file
-            (cons (cons key path) (assoc-delete-all key module->file)))))
-
-  (define (remember-file-modules! path modules)
-    (when (string? path)
-      (set! file->modules
-            (cons (cons path modules) (assoc-delete-all path file->modules)))
-      (for-each
-        (lambda (name)
-          (remember-module-file! path name))
-        modules)))
-
-  (define (remember-file-module! path name)
-    (when (string? path)
-      (let ((modules (current-file-modules path)))
-        (remember-file-modules!
-          path
-          (if (member name modules) modules (cons name modules))))))
-
-  (define (remember-import-files! imports)
-    (for-each
-      (lambda (name)
-        (let ((path (safe-module-filename name)))
-          (when path
-            (remember-file-module! path name))))
-      imports))
-
-  (define (remember-module-imports! modules imports)
-    (let ((import-keys (map remember-module-name! imports)))
-      (for-each
-        (lambda (name)
-          (let ((key (remember-module-name! name)))
-            (set! module->imports
-                  (cons (cons key import-keys)
-                        (assoc-delete-all key module->imports)))))
-        modules)))
-
-  (define (forget-module! key)
-    (set! module->imports (assoc-delete-all key module->imports))
-    (set! module->file (assoc-delete-all key module->file))
-    (set! module-name-cache (assoc-delete-all key module-name-cache)))
-
-  (define (forget-file! path)
-    (set! file->modules (assoc-delete-all path file->modules)))
-
-  (define (dedupe-equal values)
-    (let loop ((values values) (out '()))
-      (cond
-        [(null? values) (reverse out)]
-        [(member (car values) out) (loop (cdr values) out)]
-        [else (loop (cdr values) (cons (car values) out))])))
-
-  (define (declared-module-name form)
-    (cond
-      [(and (pair? form)
-            (or (eq? (car form) 'library)
-                (eq? (car form) 'define-library))
-            (pair? (cdr form))
-            (module-name? (cadr form)))
-       (normalize-module-name (cadr form))]
-      [else #f]))
-
-  (define (collect-declared-modules forms)
-    (dedupe-equal
-      (let loop ((forms forms) (out '()))
-        (cond
-          [(null? forms) out]
-          [else
-           (let ((name (declared-module-name (car forms))))
-             (loop (cdr forms) (if name (cons name out) out)))]))))
-
-  (define (collect-import-module-names forms)
-    (dedupe-equal
-      (letrec ((define-library-imports
-                 (lambda (clauses)
-                   (let loop ((clauses clauses) (out '()))
-                     (cond
-                       [(null? clauses) out]
-                       [(and (pair? (car clauses)) (eq? (caar clauses) 'import))
-                        (loop (cdr clauses)
-                              (append (form-imports (car clauses)) out))]
-                       [(and (pair? (car clauses)) (eq? (caar clauses) 'begin))
-                        (loop (cdr clauses)
-                              (append (collect (cdar clauses)) out))]
-                       [else (loop (cdr clauses) out)]))))
-               (form-imports
-                 (lambda (form)
-                   (cond
-                     [(and (pair? form) (eq? (car form) 'import))
-                      (let loop ((specs (cdr form)) (out '()))
-                        (cond
-                          [(null? specs) out]
-                          [else
-                           (let ((name (import-spec-module-name (car specs))))
-                             (loop (cdr specs)
-                                   (if name (cons name out) out)))]))]
-                     [(and (pair? form) (eq? (car form) 'library))
-                      (collect (cddr form))]
-                     [(and (pair? form) (eq? (car form) 'define-library))
-                      (define-library-imports (cddr form))]
-                     [(and (pair? form) (eq? (car form) 'begin))
-                      (collect (cdr form))]
-                     [else '()])))
-               (collect
-                 (lambda (forms)
-                   (let loop ((forms forms) (out '()))
-                     (if (null? forms)
-                         out
-                         (loop (cdr forms)
-                               (append (form-imports (car forms)) out)))))))
-        (collect forms))))
-
-  (define (record-analysis! path datums)
-    (when (string? path)
-      (let ((modules (collect-declared-modules datums))
-            (imports (collect-import-module-names datums)))
-        (remember-file-modules! path modules)
-        (remember-import-files! imports)
-        (remember-module-imports! modules imports))))
-
-  (define (read-file-string path)
-    (guard (exn [else #f])
-      (call-with-input-file path
-        (lambda (port)
-          (get-string-all port)))))
-
-  (define (override-text path overrides)
-    (cond
-      [(assoc path overrides) => cdr]
-      [else #f]))
-
-  (define (changed-file-modules path overrides)
-    (let ((text (or (override-text path overrides)
-                    (read-file-string path))))
-      (if (string? text)
-          (call-with-values
-            (lambda () (read-forms text))
-            (lambda (forms read-diagnostics)
-              (if (null? read-diagnostics)
-                  (let* ((datums (normalize-forms forms))
-                         (modules (collect-declared-modules datums))
-                         (imports (collect-import-module-names datums)))
-                    (values modules imports #t))
-                  (values '() '() #f))))
-          (values '() '() #f))))
-
-  (define (known-file-modules path)
-    (current-file-modules path))
-
-  (define (module-key->name key)
-    (cond
-      [(assoc key module-name-cache) => cdr]
-      [else #f]))
-
-  (define (module-imports-key? module-key imported-key)
-    (cond
-      [(assoc module-key module->imports)
-       => (lambda (entry) (member imported-key (cdr entry)))]
-      [else #f]))
-
-  (define (direct-dependents keys)
-    (let loop ((entries module->imports) (out '()))
-      (cond
-        [(null? entries) (dedupe-equal out)]
-        [(let scan ((keys keys))
-           (and (pair? keys)
-                (or (module-imports-key? (caar entries) (car keys))
-                    (scan (cdr keys)))))
-         (loop (cdr entries) (cons (caar entries) out))]
-        [else (loop (cdr entries) out)])))
-
-  (define (dependent-closure initial-keys)
-    (let loop ((pending initial-keys) (seen initial-keys))
-      (if (null? pending)
-          seen
-          (let ((next (direct-dependents (list (car pending)))))
-            (let add ((items next) (pending (cdr pending)) (seen seen))
-              (cond
-                [(null? items) (loop pending seen)]
-                [(member (car items) seen) (add (cdr items) pending seen)]
-                [else (add (cdr items)
-                           (cons (car items) pending)
-                           (cons (car items) seen))]))))))
-
-  (define (invalidate-module-key! key)
-    (let ((name (module-key->name key)))
-      (values name (and name (invalidate-module! name)))))
-
-  (define (invalidate-files paths overrides)
-    (let loop ((paths paths) (direct-names '()) (new-records '()))
-      (if (null? paths)
-          (let* ((direct-keys (dedupe-equal (map remember-module-name! direct-names)))
-                 (all-keys (dependent-closure direct-keys))
-                 (invalidation
-                   (let invalidate ((keys all-keys) (out '()) (restart? #f))
-                     (cond
-                       [(null? keys) (cons out restart?)]
-                       [else
-                        (call-with-values
-                          (lambda () (invalidate-module-key! (car keys)))
-                          (lambda (name loaded?)
-                            (forget-module! (car keys))
-                            (invalidate (cdr keys)
-                                        (if name (cons name out) out)
-                                        (or restart? loaded?))))])))
-                 (invalidated-names (car invalidation))
-                 (restart-required? (cdr invalidation)))
-            (for-each
-              (lambda (record)
-                (let ((path (car record))
-                      (modules (cadr record))
-                      (imports (caddr record)))
-                  (forget-file! path)
-                  (remember-file-modules! path modules)
-                  (remember-import-files! imports)
-                  (remember-module-imports! modules imports)))
-              new-records)
-            `((invalidatedModules
-                . ,(list->vector (map module-name-string
-                                      (dedupe-equal invalidated-names))))
-              (restartRequired . ,restart-required?)))
-          (let* ((path (car paths))
-                 (old-modules (known-file-modules path)))
-            (call-with-values
-              (lambda () (changed-file-modules path overrides))
-              (lambda (new-modules new-imports parsed?)
-                (let ((all-direct (append old-modules new-modules direct-names))
-                      (records (if parsed?
-                                   (cons (list path new-modules new-imports) new-records)
-                                   new-records)))
-                  (loop (cdr paths) all-direct records))))))))
 
   (define (syntax-list stx)
     (syntax-case stx ()
@@ -1472,12 +1213,20 @@
          (rename-source-name (cddr import-spec) name))]
       [else name]))
 
+  (define (resolved-import-interface import-spec)
+    (resolve-r6rs-interface import-spec))
+
+  (define (resolved-interface-module-name iface)
+    (let ((name (module-name iface)))
+      (and (module-name? name)
+           (normalize-module-name name))))
+
   (define (import-interface-completions import-spec)
     (guard (exn [else '()])
-      (let* ((module-name (import-spec-module-name import-spec))
+      (let* ((iface (resolved-import-interface import-spec))
+             (module-name (resolved-interface-module-name iface))
              (module-label (and module-name (module-name-string module-name)))
-             (file (and module-name (safe-module-filename module-name)))
-             (iface (resolve-r6rs-interface import-spec)))
+             (file (and module-name (safe-module-filename module-name))))
         (module-map
           (lambda (entry)
             (let ((name (car entry))
@@ -1652,6 +1401,10 @@
       `((name . ,(module-name-string name))
         (file . ,(json-nullable-string file)))))
 
+  (define (import-spec-resolved-module-name spec)
+    (guard (exn [else (import-spec-module-name spec)])
+      (resolved-interface-module-name (resolved-import-interface spec))))
+
   (define (form-imports form)
     (cond
       [(and (pair? form) (eq? (car form) 'import))
@@ -1659,7 +1412,8 @@
          (cond
            [(null? specs) (reverse out)]
            [else
-            (let ((name (import-spec-module-name (car specs))))
+            (let ((name (import-spec-resolved-module-name
+                          (completion-import-spec (car specs)))))
               (loop (cdr specs)
                     (if name (cons (make-import name) out) out)))]))]
       [(and (pair? form) (eq? (car form) 'library))
@@ -1725,12 +1479,12 @@
             `((title . ,(action-title action))
               (language . "scheme")
               (content . ,(string-append "read failed: "
-                                         (let ((diagnostic (car read-diagnostics)))
-                                           (cond
-                                             [(and (list? diagnostic)
-                                                   (assq 'message diagnostic))
-                                              => cdr]
-                                             [else "invalid syntax"])))))
+                                           (let ((diagnostic (car read-diagnostics)))
+                                             (cond
+                                               [(and (list? diagnostic)
+                                                     (assq 'message diagnostic))
+                                                => cdr]
+                                               [else "invalid syntax"])))))
             (let ((selected (selected-action-forms forms range)))
               (if (null? selected)
                   `((title . ,(action-title action))
@@ -1770,7 +1524,6 @@
       (lambda () (read-forms text))
       (lambda (forms read-diagnostics)
         (let ((datums (normalize-forms forms)))
-          (record-analysis! current-analysis-path datums)
           (call-with-values
             (lambda ()
               (if (null? read-diagnostics)

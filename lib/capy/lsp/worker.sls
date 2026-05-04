@@ -7,19 +7,11 @@
     (rnrs)
     (rnrs io ports)
     (srfi 180)
-    (capy session)
     (capy lsp analysis))
 
-  (define current-root #f)
-  (define current-load-path '())
   (define shutdown-requested? #f)
 
-  (define key-root-uri (string->symbol "rootUri"))
-  (define key-root-path (string->symbol "rootPath"))
-  (define key-workspace-root (string->symbol "workspaceRoot"))
-  (define key-load-path (string->symbol "loadPath"))
   (define key-text-document (string->symbol "textDocument"))
-  (define key-open-documents (string->symbol "openDocuments"))
 
   (define (write-to-string obj)
     (let ((port (open-output-string)))
@@ -48,9 +40,6 @@
           [else default])
         default))
 
-  (define (json-string-or-null value)
-    (if (string? value) value 'null))
-
   (define (json-id value)
     (cond
       [(or (string? value) (number? value) (boolean? value)) value]
@@ -62,46 +51,12 @@
       [(or (string? value) (number? value)) value]
       [else 'null]))
 
-  (define (json-vector->string-list value)
-    (cond
-      [(vector? value)
-       (let loop ((i 0) (out '()))
-         (if (= i (vector-length value))
-             (reverse out)
-             (let ((item (vector-ref value i)))
-               (loop (+ i 1)
-                     (if (string? item) (cons item out) out)))))]
-      [(string? value) (list value)]
-      [else '()]))
-
-  (define (json-open-documents->overrides value)
-    (cond
-      [(vector? value)
-       (let loop ((i 0) (out '()))
-         (if (= i (vector-length value))
-             (reverse out)
-             (let* ((item (vector-ref value i))
-                    (path (and (json-object? item)
-                               (first-string (json-ref item 'path #f))))
-                    (text (and (json-object? item)
-                               (first-string (json-ref item 'text #f)
-                                             (json-ref item 'source #f)))))
-               (loop (+ i 1)
-                     (if (and path text)
-                         (cons (cons path text) out)
-                         out)))))]
-      [else '()]))
-
   (define (first-string . values)
     (let loop ((values values))
       (cond
         [(null? values) #f]
         [(string? (car values)) (car values)]
         [else (loop (cdr values))])))
-
-  (define (safe-module-filename name)
-    (guard (exn [else #f])
-      (module-name->filename name)))
 
   (define (json->string obj)
     (let ((port (open-output-string)))
@@ -149,33 +104,6 @@
 
   (define (invalid-params id message)
     (error-response id "invalid-params" message))
-
-  (define (current-session-info)
-    `((root . ,(json-string-or-null current-root))
-      (loadPath . ,(list->vector current-load-path))
-      (sessionLibrary . ,(json-string-or-null (safe-module-filename '(capy session))))))
-
-  (define (initialize-root id params request)
-    (let* ((root (first-string
-                   (json-ref params 'root #f)
-                   (json-ref params key-root-uri #f)
-                   (json-ref params key-root-path #f)
-                   (json-ref params key-workspace-root #f)
-                   (json-ref request 'root #f)
-                   (json-ref request key-root-uri #f)))
-           (load-path (json-vector->string-list
-                        (json-ref params key-load-path
-                                  (json-ref params 'load-path #f)))))
-      (when root
-        (set! current-root root))
-      (set! current-load-path load-path)
-      (success-response
-        id
-        "initialize-root"
-        `((ready . #t)
-          (analysisEngine . "syntax")
-          (treeIlExpansion . #f)
-          (session . ,(current-session-info))))))
 
   (define (document-params params request)
     (let ((document (json-ref params 'document
@@ -246,19 +174,6 @@
            "run-action"
            (run-document-action uri text version path action range))])))
 
-  (define (invalidate-files-request id params request)
-    (let* ((paths (json-vector->string-list
-                    (json-ref params 'paths
-                              (json-ref params 'files
-                                        (json-ref request 'paths #())))))
-           (overrides (json-open-documents->overrides
-                        (json-ref params key-open-documents
-                                  (json-ref params 'documents #())))))
-      (success-response
-        id
-        "invalidate-files"
-        (invalidate-files paths overrides))))
-
   (define (shutdown id)
     (set! shutdown-requested? #t)
     (success-response
@@ -277,14 +192,10 @@
              (error-response id "invalid-request" "request method must be a string")]
             [(and (not (json-object? params)) (not (eq? params 'null)))
              (invalid-params id "request params must be an object when provided")]
-            [(string=? method "initialize-root")
-             (initialize-root id (if (json-object? params) params '()) request)]
             [(string=? method "analyze-document")
              (analyze-document-request id (if (json-object? params) params '()) request)]
             [(string=? method "run-action")
              (run-action-request id (if (json-object? params) params '()) request)]
-            [(string=? method "invalidate-files")
-             (invalidate-files-request id (if (json-object? params) params '()) request)]
             [(string=? method "shutdown")
              (shutdown id)]
             [else

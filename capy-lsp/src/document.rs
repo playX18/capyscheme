@@ -6,7 +6,6 @@ use crate::protocol::DocumentFacts;
 pub struct Document {
     pub version: i32,
     pub text: String,
-    pub dirty: bool,
     pub facts: Option<DocumentFacts>,
 }
 
@@ -15,7 +14,6 @@ impl Document {
         Self {
             version,
             text,
-            dirty: true,
             facts: None,
         }
     }
@@ -29,7 +27,7 @@ impl Document {
                 self.text = change.text;
             }
         }
-        self.dirty = true;
+        self.facts = None;
     }
 }
 
