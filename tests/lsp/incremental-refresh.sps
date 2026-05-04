@@ -9,11 +9,8 @@
         (srfi 180))
 
 (define root "/tmp/capy-lsp-refresh-test")
-(define bar-path "/tmp/capy-lsp-refresh-test/bar.sls")
-(define baz-path "/tmp/capy-lsp-refresh-test/baz.sls")
 (define dep-path "/tmp/capy-lsp-refresh-test/dep.sls")
 (define consumer-path "/tmp/capy-lsp-refresh-test/consumer.sls")
-(define foo-path "/tmp/capy-lsp-refresh-test/foo.sls")
 
 (define (ensure-directory path)
   (guard (_ [else (unspecified)])
@@ -43,14 +40,6 @@
                                   (string=? (cdr label-entry) label)))))
                     (loop (+ i 1))))))))
 
-(define (module-invalidated? result name)
-  (let ((modules (alist-ref 'invalidatedModules result)))
-    (and (vector? modules)
-         (let loop ((i 0))
-           (and (< i (vector-length modules))
-                (or (string=? (vector-ref modules i) name)
-                    (loop (+ i 1))))))))
-
 (define (check condition message)
   (unless condition
     (assertion-violation 'incremental-refresh message)))
@@ -60,69 +49,39 @@
     (json-write obj port)
     (get-output-string port)))
 
-(define (dispatch-result request)
-  (let ((response (json-read (open-input-string (dispatch-json (json->string request))))))
-    (check (alist-ref 'ok response) "worker request failed")
-    (alist-ref 'result response)))
+(define (dispatch-response request)
+  (json-read (open-input-string (dispatch-json (json->string request)))))
+
+(define (analyze-consumer version)
+  (analyze-document "file:///tmp/capy-lsp-refresh-test/consumer"
+                    (call-with-input-file consumer-path get-string-all)
+                    version
+                    consumer-path))
 
 (ensure-directory root)
 (set! %load-path (cons root %load-path))
-(write-file bar-path
-            "(library (bar) (export old) (import (rnrs)) (define old 1))\n")
-(write-file foo-path
-            "(library (foo) (export probe) (import (rnrs) (bar)) (define probe old))\n")
-
-(let ((initial (analyze-document "file:///tmp/capy-lsp-refresh-test/foo"
-                                 (call-with-input-file foo-path get-string-all)
-                                 1
-                                 foo-path)))
-  (check (completion-label? initial "old") "initial import export missing")
-  (check (not (completion-label? initial "new")) "new export visible before invalidation"))
-
-(write-file bar-path
-            "(library (bar) (export new) (import (rnrs)) (define new 2))\n")
-
-(let ((invalidation (invalidate-files (list bar-path) '())))
-  (check (module-invalidated? invalidation "bar") "bar was not invalidated")
-  (check (module-invalidated? invalidation "foo") "dependent foo was not invalidated")
-  (check (not (resolve-module '(bar) #f #f)) "bar module remained loaded after invalidation")
-  (check (not (resolve-module '(foo) #f #f)) "foo module remained loaded after invalidation")
-  (check (alist-ref 'restartRequired invalidation)
-         "loaded module invalidation did not request restart"))
-
-(let ((worker-invalidation
-        (dispatch-result
-          `((id . 10)
-            (method . "invalidate-files")
-            (params . ((paths . ,(list->vector (list baz-path)))
-                       (openDocuments
-                         . ,(list->vector
-                              (list `((path . ,baz-path)
-                                      (text . "(library (baz) (export baz-value) (import (rnrs)) (define baz-value 3))\n")))))))))))
-  (check (module-invalidated? worker-invalidation "baz")
-         "worker openDocuments invalidation override was not used")
-  (check (not (alist-ref 'restartRequired worker-invalidation))
-         "unloaded override invalidation requested restart"))
 
 (write-file dep-path
-            "(library (dep) (export dep-old) (import (rnrs)) (define dep-old 1))\n")
+            "(library (dep) (export dep-a dep-b) (import (rnrs)) (define dep-a 1) (define dep-b 2))\n")
 (write-file consumer-path
-            "(library (consumer) (export dep-use) (import (rnrs) (dep)) (define dep-use dep-old))\n")
-(let ((consumer (analyze-document "file:///tmp/capy-lsp-refresh-test/consumer"
-                                  (call-with-input-file consumer-path get-string-all)
-                                  1
-                                  consumer-path)))
-  (check (completion-label? consumer "dep-old") "imported dependency completion missing"))
-(write-file dep-path "(library (dep)\n")
-(let ((invalidation (invalidate-files (list dep-path) '())))
-  (check (module-invalidated? invalidation "dep")
-         "unparsed imported dependency file did not invalidate module")
-  (check (module-invalidated? invalidation "consumer")
-         "unparsed imported dependency file did not invalidate dependent")
-  (check (alist-ref 'restartRequired invalidation)
-         "unparsed loaded dependency invalidation did not request restart"))
+            "(library (consumer) (export dep-use) (import (rnrs) (only (dep) dep-a)) (define dep-use 1))\n")
 
-(write-file bar-path "(library (bar)\n")
-(invalidate-files (list bar-path) '())
+(let ((initial (analyze-consumer 1)))
+  (check (completion-label? initial "dep-a") "selected imported export missing")
+  (check (not (completion-label? initial "dep-b"))
+         "unselected imported export was visible"))
 
-(display "incremental refresh ok\n")
+(let* ((response
+         (dispatch-response
+           `((id . 10)
+             (method . "invalidate-files")
+             (params . ((paths . ,(list->vector (list dep-path))))))))
+       (error (alist-ref 'error response)))
+  (check (not (alist-ref 'ok response)) "invalidate-files unexpectedly succeeded")
+  (check (and (list? error)
+              (let ((code (alist-ref 'code error)))
+                (and (string? code)
+                     (string=? code "unknown-method"))))
+         "invalidate-files did not report unknown method"))
+
+(display "lsp module resolution ok\n")

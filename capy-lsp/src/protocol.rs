@@ -124,14 +124,6 @@ pub struct ImportFact {
     pub file: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct InvalidateFilesResult {
-    #[serde(default, rename = "invalidatedModules", alias = "invalidated_modules")]
-    pub invalidated_modules: Vec<String>,
-    #[serde(default, rename = "restartRequired", alias = "restart_required")]
-    pub restart_required: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionOutput {
     pub title: String,
