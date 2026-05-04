@@ -1,30 +1,25 @@
 use std::{
-    collections::HashMap,
     env, io,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
 };
 
 use serde_json::json;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::Mutex,
     time::{Duration, timeout},
 };
 
 use crate::{
     config::LspConfig,
-    protocol::{ActionOutput, DocumentFacts, InvalidateFilesResult, WorkerRequest, WorkerResponse},
+    protocol::{ActionOutput, DocumentFacts, WorkerRequest, WorkerResponse},
 };
 
 const WORKER_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Default)]
-pub struct WorkerPool {
-    workers: Mutex<HashMap<PathBuf, Arc<Mutex<Worker>>>>,
-}
+pub struct WorkerPool;
 
 impl WorkerPool {
     pub async fn analyze(
@@ -35,7 +30,7 @@ impl WorkerPool {
         version: i32,
         text: &str,
     ) -> io::Result<DocumentFacts> {
-        let worker = self.worker_for(config).await?;
+        let mut worker = Worker::spawn(config).await?;
         let request = json!({
             "uri": uri,
             "path": path.map(|path| path.to_string_lossy().into_owned()),
@@ -48,14 +43,12 @@ impl WorkerPool {
             "defaultModule": config.default_module,
         });
 
-        let mut guard = worker.lock().await;
-        match guard.request("analyze-document", request).await {
-            Ok(value) => serde_json::from_value(value).map_err(invalid_data),
-            Err(err) => {
-                self.workers.lock().await.remove(&config.root);
-                Err(err)
-            }
-        }
+        let result = worker
+            .request("analyze-document", request)
+            .await
+            .and_then(|value| serde_json::from_value(value).map_err(invalid_data));
+        worker.shutdown().await;
+        result
     }
 
     pub async fn run_action(
@@ -68,7 +61,7 @@ impl WorkerPool {
         action: &str,
         range: Option<lsp_types::Range>,
     ) -> io::Result<ActionOutput> {
-        let worker = self.worker_for(config).await?;
+        let mut worker = Worker::spawn(config).await?;
         let request = json!({
             "uri": uri,
             "path": path.map(|path| path.to_string_lossy().into_owned()),
@@ -83,81 +76,13 @@ impl WorkerPool {
             "defaultModule": config.default_module,
         });
 
-        let mut guard = worker.lock().await;
-        match guard.request("run-action", request).await {
-            Ok(value) => serde_json::from_value(value).map_err(invalid_data),
-            Err(err) => {
-                self.workers.lock().await.remove(&config.root);
-                Err(err)
-            }
-        }
+        let result = worker
+            .request("run-action", request)
+            .await
+            .and_then(|value| serde_json::from_value(value).map_err(invalid_data));
+        worker.shutdown().await;
+        result
     }
-
-    pub async fn invalidate_files(
-        &self,
-        config: &LspConfig,
-        paths: &[PathBuf],
-        open_documents: Vec<OpenDocumentOverride>,
-    ) -> io::Result<InvalidateFilesResult> {
-        let worker = self.worker_for(config).await?;
-        let request = json!({
-            "paths": paths.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
-            "openDocuments": open_documents,
-        });
-
-        let mut guard = worker.lock().await;
-        match guard.request("invalidate-files", request).await {
-            Ok(value) => serde_json::from_value(value).map_err(invalid_data),
-            Err(err) => {
-                self.workers.lock().await.remove(&config.root);
-                Err(err)
-            }
-        }
-    }
-
-    pub async fn shutdown_all(&self) {
-        let workers = std::mem::take(&mut *self.workers.lock().await);
-        for worker in workers.into_values() {
-            let mut worker = worker.lock().await;
-            let _ = worker.request("shutdown", json!({})).await;
-            let _ = worker.child.kill().await;
-        }
-    }
-
-    pub async fn restart_root(&self, root: &Path) {
-        let worker = self.workers.lock().await.remove(root);
-        if let Some(worker) = worker {
-            let mut worker = worker.lock().await;
-            let _ = worker.request("shutdown", json!({})).await;
-            let _ = worker.child.kill().await;
-        }
-    }
-
-    pub async fn restart_all(&self) {
-        let workers = std::mem::take(&mut *self.workers.lock().await);
-        for (root, worker) in workers {
-            let mut worker = worker.lock().await;
-            let _ = worker.request("shutdown", json!({})).await;
-            let _ = worker.child.kill().await;
-            tracing::debug!(root = %root.display(), "restarted capy-lsp-vm worker");
-        }
-    }
-
-    async fn worker_for(&self, config: &LspConfig) -> io::Result<Arc<Mutex<Worker>>> {
-        let mut workers = self.workers.lock().await;
-        if let Some(worker) = workers.get(&config.root) {
-            return Ok(worker.clone());
-        }
-        let worker = Arc::new(Mutex::new(Worker::spawn(config).await?));
-        workers.insert(config.root.clone(), worker.clone());
-        Ok(worker)
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct OpenDocumentOverride {
-    pub path: String,
-    pub text: String,
 }
 
 #[derive(Debug)]
@@ -198,26 +123,20 @@ impl Worker {
         let stdout = child.stdout.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "worker stdout unavailable")
         })?;
-        let mut worker = Self {
+        Ok(Self {
             child,
             stdin,
             stdout: BufReader::new(stdout).lines(),
             next_id: 1,
             broken: false,
-        };
-        let _ = worker
-            .request(
-                "initialize-root",
-                json!({
-                    "root": config.root,
-                    "loadPath": config.effective_load_path(),
-                    "compiledLoadPath": config.compiled_load_path,
-                    "extensions": config.extensions,
-                    "defaultModule": config.default_module,
-                }),
-            )
-            .await?;
-        Ok(worker)
+        })
+    }
+
+    async fn shutdown(&mut self) {
+        if !self.broken {
+            let _ = self.request("shutdown", json!({})).await;
+        }
+        let _ = self.child.kill().await;
     }
 
     async fn request(

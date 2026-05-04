@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
     ops::ControlFlow,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -41,7 +41,7 @@ use crate::{
     config::LspConfig,
     document::{Document, word_at_position},
     protocol::{DiagnosticSeverityFact, DocumentFacts},
-    worker::{OpenDocumentOverride, WorkerPool},
+    worker::WorkerPool,
 };
 
 use actions::{ActionCommandArgs, action_definitions, known_action};
@@ -191,11 +191,8 @@ pub async fn run() -> async_lsp::Result<()> {
                 ControlFlow::Continue(())
             })
             .notification::<notification::DidChangeConfiguration>(|state, _| {
-                state.service.mark_all_dirty();
                 let service = state.service.clone();
-                tokio::spawn(async move {
-                    service.worker_pool.restart_all().await;
-                });
+                service.refresh_open_documents();
                 ControlFlow::Continue(())
             })
             .notification::<notification::DidChangeWatchedFiles>(|state, params| {
@@ -321,7 +318,6 @@ impl LanguageService {
     }
 
     async fn shutdown(&self) {
-        self.worker_pool.shutdown_all().await;
         let _ = self.client.clone();
     }
 
@@ -362,7 +358,7 @@ impl LanguageService {
         if let Some(text) = params.text {
             if let Some(document) = lock(&self.documents).get_mut(&params.text_document.uri) {
                 document.text = text;
-                document.dirty = true;
+                document.facts = None;
             }
         }
         self.schedule_publish_diagnostics(uri);
@@ -375,114 +371,28 @@ impl LanguageService {
     }
 
     fn did_change_watched_files(self: &Arc<Self>, params: lsp_types::DidChangeWatchedFilesParams) {
-        let mut config_roots = Vec::new();
-        let mut dirty_uris = HashSet::new();
-        let mut invalidation_groups: HashMap<PathBuf, (LspConfig, Vec<PathBuf>)> = HashMap::new();
-        let mut open_documents_by_root: HashMap<PathBuf, Vec<OpenDocumentOverride>> =
-            HashMap::new();
-        let workspace_root = lock(&self.workspace_root).clone();
-        {
-            let mut documents = lock(&self.documents);
-            for event in &params.changes {
-                if file_name(&event.uri).as_deref() == Some("lsp-config.scm") {
-                    if let Some(root) = event
-                        .uri
-                        .to_file_path()
-                        .ok()
-                        .and_then(|path| path.parent().map(Path::to_path_buf))
-                    {
-                        config_roots.push(root);
-                    }
-                    for document in documents.values_mut() {
-                        document.dirty = true;
-                    }
-                    dirty_uris.extend(documents.keys().cloned());
-                } else if let Some(document) = documents.get_mut(&event.uri) {
-                    document.dirty = true;
-                    dirty_uris.insert(event.uri.clone());
-                }
-
-                if file_name(&event.uri).as_deref() == Some("lsp-config.scm") {
-                    continue;
-                }
-
-                let Ok(path) = event.uri.to_file_path() else {
-                    continue;
-                };
-                let Ok(config) = LspConfig::discover(Some(&path), &workspace_root) else {
-                    continue;
-                };
-                invalidation_groups
-                    .entry(config.root.clone())
-                    .or_insert_with(|| (config.clone(), Vec::new()))
-                    .1
-                    .push(path);
-
-                let mut open_documents = Vec::new();
-                for (uri, document) in documents.iter_mut() {
-                    let Ok(document_path) = uri.to_file_path() else {
-                        continue;
-                    };
-                    if document_path.starts_with(&config.root) {
-                        document.dirty = true;
-                        dirty_uris.insert(uri.clone());
-                        open_documents.push(OpenDocumentOverride {
-                            path: document_path.to_string_lossy().into_owned(),
-                            text: document.text.clone(),
-                        });
-                    }
-                }
-                open_documents_by_root
-                    .entry(config.root.clone())
-                    .or_default()
-                    .extend(open_documents);
+        for event in &params.changes {
+            if file_name(&event.uri).as_deref() == Some("lsp-config.scm") {
+                self.refresh_open_documents();
+                return;
             }
         }
 
-        let pool = self.worker_pool.clone();
-        let service = self.clone();
-        tokio::spawn(async move {
-            for root in config_roots {
-                pool.restart_root(&root).await;
-            }
-            for (root, (config, paths)) in invalidation_groups {
-                let open_documents = open_documents_by_root.remove(&root).unwrap_or_default();
-                match pool.invalidate_files(&config, &paths, open_documents).await {
-                    Ok(result) if result.restart_required => {
-                        tracing::debug!(
-                            root = %root.display(),
-                            modules = ?result.invalidated_modules,
-                            "capy-lsp-vm requires restart after file invalidation",
-                        );
-                        pool.restart_root(&root).await;
-                    }
-                    Ok(result) => {
-                        tracing::debug!(
-                            root = %root.display(),
-                            modules = ?result.invalidated_modules,
-                            "invalidated capy-lsp-vm modules",
-                        );
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            root = %root.display(),
-                            error = %err,
-                            "capy-lsp-vm invalidation failed; restarting worker",
-                        );
-                        pool.restart_root(&root).await;
-                    }
-                }
-            }
-
-            for uri in dirty_uris {
-                service.schedule_publish_diagnostics(uri);
-            }
-        });
+        if !params.changes.is_empty() {
+            self.refresh_open_documents();
+        }
     }
 
-    fn mark_all_dirty(&self) {
-        for document in lock(&self.documents).values_mut() {
-            document.dirty = true;
+    fn refresh_open_documents(self: &Arc<Self>) {
+        let uris = {
+            let mut documents = lock(&self.documents);
+            for document in documents.values_mut() {
+                document.facts = None;
+            }
+            documents.keys().cloned().collect::<Vec<_>>()
+        };
+        for uri in uris {
+            self.schedule_publish_diagnostics(uri);
         }
     }
 
@@ -873,25 +783,22 @@ impl LanguageService {
     }
 
     async fn facts_for(&self, uri: &Url) -> Option<DocumentFacts> {
-        let (text, version, cached, dirty) = {
+        let (text, version, cached) = {
             let documents = lock(&self.documents);
             if let Some(document) = documents.get(uri) {
                 (
                     document.text.clone(),
                     document.version,
                     document.facts.clone(),
-                    document.dirty,
                 )
             } else {
                 let path = uri.to_file_path().ok()?;
-                (fs::read_to_string(path).ok()?, 0, None, true)
+                (fs::read_to_string(path).ok()?, 0, None)
             }
         };
 
-        if !dirty {
-            if let Some(facts) = cached {
-                return Some(facts);
-            }
+        if let Some(facts) = cached {
+            return Some(facts);
         }
 
         let workspace_root = lock(&self.workspace_root).clone();
@@ -924,7 +831,6 @@ impl LanguageService {
         if let Some(document) = lock(&self.documents).get_mut(uri) {
             if document.version == version {
                 document.facts = Some(facts.clone());
-                document.dirty = false;
             }
         }
         Some(facts)
