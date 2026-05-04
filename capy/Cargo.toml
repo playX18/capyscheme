@@ -29,6 +29,7 @@ cranelift.workspace = true
 cranelift-codegen.workspace = true
 cranelift-module.workspace = true
 cranelift-object.workspace = true
+crossbeam-channel = "0.5.15"
 log.workspace = true
 gimli.workspace = true
 target-lexicon.workspace = true

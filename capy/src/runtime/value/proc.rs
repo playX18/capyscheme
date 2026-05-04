@@ -702,12 +702,12 @@ impl<'gc> CodeBlock<'gc> {
         arity: CodeArity,
         is_cont: bool,
         metadata: Value<'gc>,
-        state: *const (),
+        handle: LazyJitHandle,
     ) -> Gc<'gc, Self> {
         Self::new_inner(
             ctx,
             stub_entrypoint,
-            CodeBlockKind::LazyJit { state },
+            CodeBlockKind::LazyJit { handle },
             arity,
             is_cont,
             metadata,
@@ -756,9 +756,25 @@ impl<'gc> CodeBlock<'gc> {
         }
     }
 
-    pub fn lazy_jit_state(&self) -> Option<*const ()> {
+    pub fn patch_lazy_jit_handle(
+        ctx: Context<'gc>,
+        code_block: Gc<'gc, CodeBlock<'gc>>,
+        handle: LazyJitHandle,
+    ) {
+        let code_block = Gc::write(*ctx, code_block) as *const _ as *mut CodeBlock<'gc>;
+        unsafe {
+            match &mut (*code_block).kind {
+                CodeBlockKind::LazyJit { handle: existing } => *existing = handle,
+                CodeBlockKind::AOT | CodeBlockKind::NativeProc => {
+                    panic!("cannot patch lazy JIT handle on non-lazy code block")
+                }
+            }
+        }
+    }
+
+    pub fn lazy_jit_handle(&self) -> Option<LazyJitHandle> {
         match self.kind {
-            CodeBlockKind::LazyJit { state } => Some(state),
+            CodeBlockKind::LazyJit { handle } => Some(handle),
             CodeBlockKind::AOT | CodeBlockKind::NativeProc => None,
         }
     }
@@ -814,10 +830,17 @@ bitflags::bitflags! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct LazyJitHandle {
+    pub program: *const (),
+    pub procedure: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeBlockKind {
     AOT,
     NativeProc,
-    LazyJit { state: *const () },
+    LazyJit { handle: LazyJitHandle },
 }
 
 #[cfg(test)]
@@ -928,22 +951,22 @@ mod tests {
     fn lazy_jit_code_block_uses_resolver_entrypoint() {
         with_ctx(|ctx| {
             let resolver = Address::from_ptr(test_native_proc as *const ());
+            let handle = LazyJitHandle {
+                program: std::ptr::null(),
+                procedure: 0,
+            };
             let code_block = CodeBlock::new_lazy_jit(
                 ctx,
                 resolver,
                 CodeArity::new(2),
                 false,
                 Value::new(false),
-                std::ptr::null(),
+                handle,
             );
             let closure = Closure::new(ctx, code_block, &[], false);
 
-            assert_eq!(
-                code_block.kind,
-                CodeBlockKind::LazyJit {
-                    state: std::ptr::null()
-                }
-            );
+            assert_eq!(code_block.kind, CodeBlockKind::LazyJit { handle });
+            assert_eq!(code_block.lazy_jit_handle(), Some(handle));
             assert_eq!(code_block.entrypoint, resolver);
             assert_eq!(closure.code, resolver);
             assert!(code_block.metadata.get().is_null());
@@ -955,13 +978,17 @@ mod tests {
         with_ctx(|ctx| {
             let resolver = Address::from_ptr(test_native_proc as *const ());
             let compiled = Address::from_ptr(test_compiled_proc as *const ());
+            let handle = LazyJitHandle {
+                program: std::ptr::null(),
+                procedure: 0,
+            };
             let code_block = CodeBlock::new_lazy_jit(
                 ctx,
                 resolver,
                 CodeArity::new(0),
                 false,
                 Value::null(),
-                std::ptr::null(),
+                handle,
             );
             let closure = Closure::new(ctx, code_block, &[], false);
 

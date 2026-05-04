@@ -80,6 +80,30 @@ impl<'gc> Context<'gc> {
         self.mc.state()
     }
 
+    pub fn push_runstack_root(self, value: Value<'gc>) -> RunstackRoot<'gc> {
+        let state = self.state();
+        let old_top = state.runstack.get();
+        let new_top = old_top.add(std::mem::size_of::<Value>());
+
+        assert!(
+            new_top <= state.runstack_end,
+            "runstack overflow while pushing scoped root"
+        );
+
+        unsafe {
+            // SAFETY: `old_top` is within the runstack allocation and `new_top` has been
+            // checked against the one-past-the-end address above.
+            *old_top.to_mut_ptr::<Value>() = value;
+        }
+        state.runstack.set(new_top);
+
+        RunstackRoot {
+            ctx: self,
+            old_top,
+            slot: old_top,
+        }
+    }
+
     pub fn dynamic_state(self) -> Value<'gc> {
         self.state().dynamic_state.save(self)
     }
@@ -355,6 +379,36 @@ impl<'gc> std::ops::Deref for Context<'gc> {
 
     fn deref(&self) -> &Self::Target {
         &self.mc
+    }
+}
+
+#[must_use = "runstack root is restored when the guard is dropped"]
+pub struct RunstackRoot<'gc> {
+    ctx: Context<'gc>,
+    old_top: Address,
+    slot: Address,
+}
+
+impl<'gc> RunstackRoot<'gc> {
+    pub fn get(&self) -> Value<'gc> {
+        unsafe {
+            // SAFETY: `slot` is a Value slot reserved by `push_runstack_root` and remains
+            // valid until this guard is dropped.
+            *self.slot.to_mut_ptr::<Value>()
+        }
+    }
+
+    pub fn set(&self, value: Value<'gc>) {
+        unsafe {
+            // SAFETY: Same as `get`; the slot is owned by this scoped root.
+            *self.slot.to_mut_ptr::<Value>() = value;
+        }
+    }
+}
+
+impl<'gc> Drop for RunstackRoot<'gc> {
+    fn drop(&mut self) {
+        self.ctx.state().runstack.set(self.old_top);
     }
 }
 
@@ -1054,16 +1108,12 @@ unsafe impl<'gc> Trace for YieldReason<'gc> {
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         match self {
-            YieldReason::Operation(op) => {
-                unsafe {
-                    op.process_weak_refs(weak_processor);
-                }
-            }
-            YieldReason::OperationWithReturn(op) => {
-                unsafe {
-                    op.process_weak_refs(weak_processor);
-                }
-            }
+            YieldReason::Operation(op) => unsafe {
+                op.process_weak_refs(weak_processor);
+            },
+            YieldReason::OperationWithReturn(op) => unsafe {
+                op.process_weak_refs(weak_processor);
+            },
             _ => {}
         }
     }

@@ -311,6 +311,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-object",
+ "crossbeam-channel",
  "easy-bitfield",
  "env_logger",
  "errno",

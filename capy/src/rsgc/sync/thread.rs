@@ -66,6 +66,15 @@ impl ThreadState {
     }
 }
 
+#[must_use = "native section is left when the guard is dropped"]
+pub struct NativeSection;
+
+impl Drop for NativeSection {
+    fn drop(&mut self) {
+        Thread::leave_native();
+    }
+}
+
 impl ToBitfield<u64> for ThreadState {
     fn to_bitfield(self) -> u64 {
         self as u8 as u64
@@ -326,6 +335,11 @@ impl Thread {
             thread.get_exec_status()
         );
         // TODO: CAS loop
+    }
+
+    pub fn enter_native_scope() -> NativeSection {
+        Self::enter_native();
+        NativeSection
     }
 
     fn attempt_leave_native_no_block() -> bool {
