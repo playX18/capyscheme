@@ -9,6 +9,7 @@ use cranelift::prelude::IntCC;
 use cranelift::prelude::types;
 use cranelift_codegen::ir;
 use cranelift_codegen::ir::BlockArg;
+use cranelift_module::Module;
 use std::collections::HashMap;
 use std::mem::offset_of;
 macro_rules! prim {
@@ -25,7 +26,7 @@ macro_rules! prim {
 
         $(
 
-            pub fn $name<'gc_, 'a, 'f>($ssa: &mut SSABuilder<'gc_, 'a, 'f>, $args: &[Atom<'gc_>]) -> PrimValue $b
+            pub fn $name<'gc_, 'a, 'f, M: Module>($ssa: &mut SSABuilder<'gc_, 'a, 'f, M>, $args: &[Atom<'gc_>]) -> PrimValue $b
         )*
 
         impl Primitive {
@@ -42,9 +43,9 @@ macro_rules! prim {
                 }
             }
 
-            pub fn lower<'gc_, 'a, 'f>(
+            pub fn lower<'gc_, 'a, 'f, M: Module>(
                 self,
-                ssa: &mut SSABuilder<'gc_, 'a, 'f>,
+                ssa: &mut SSABuilder<'gc_, 'a, 'f, M>,
                 args: &[Atom<'gc_>],
             ) -> PrimValue {
                 match self {
@@ -2708,8 +2709,8 @@ prim!(
     }
 );
 
-fn emit_plus<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+fn emit_plus<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2733,8 +2734,8 @@ fn emit_plus<'gc, 'a, 'f>(
     )
 }
 
-fn emit_minus<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+fn emit_minus<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2759,7 +2760,10 @@ fn emit_minus<'gc, 'a, 'f>(
     )
 }
 
-fn emit_negate<'gc, 'a, 'f>(ssa: &mut SSABuilder<'gc, 'a, 'f>, a: ir::Value) -> ir::Value {
+fn emit_negate<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    a: ir::Value,
+) -> ir::Value {
     ssa.inline_unary_op(
         a,
         |ssa, val| {
@@ -2781,8 +2785,8 @@ fn emit_negate<'gc, 'a, 'f>(ssa: &mut SSABuilder<'gc, 'a, 'f>, a: ir::Value) -> 
     )
 }
 
-fn emit_times<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+fn emit_times<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2806,8 +2810,8 @@ fn emit_times<'gc, 'a, 'f>(
     )
 }
 
-fn emit_icmp<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+fn emit_icmp<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
     cond: IntCC,
@@ -2838,8 +2842,8 @@ fn emit_icmp<'gc, 'a, 'f>(
     result
 }
 
-fn emit_fx_eq<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+fn emit_fx_eq<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2857,11 +2861,11 @@ fn emit_fx_eq<'gc, 'a, 'f>(
     result
 }
 
-fn ensure_vector<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+fn ensure_vector<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
     val: ir::Value,
-    on_vector: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f>, ir::Value, ir::Block),
-    slowpath: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f>, ir::Value),
+    on_vector: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value, ir::Block),
+    slowpath: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value),
 ) {
     let bb_vector = ssa.builder.create_block();
     let bb_slow = ssa.builder.create_block();
@@ -2885,12 +2889,12 @@ fn ensure_vector<'gc, 'a, 'f>(
     }
 }
 
-fn fixnum_in_bounds_usize<'gc, 'a, 'f>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f>,
+fn fixnum_in_bounds_usize<'gc, 'a, 'f, M: Module>(
+    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
     ix: ir::Value,
     len: ir::Value,
-    on_in_bounds: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f>, ir::Value, ir::Block),
-    slowpath: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f>, ir::Value),
+    on_in_bounds: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value, ir::Block),
+    slowpath: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value),
 ) {
     let fixnum_ix_block = ssa.builder.create_block();
     let bb_slowpath = ssa.builder.create_block();

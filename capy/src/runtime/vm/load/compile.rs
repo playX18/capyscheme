@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use crate::compiler::{CompilationOptions, compile_cps_to_shared_object, compile_file};
+use crate::compiler::{
+    CompilationOptions, compile_cps_to_jit_thunk, compile_cps_to_shared_object, compile_file,
+};
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
@@ -97,9 +99,14 @@ fn load_thunk<'gc>(
         return Ok(thunk);
     }
 
-    match mode {
-        LoadMode::DescribeIfCompileNeeded => describe_uncompiled_source(ctx, &resolved),
-        LoadMode::ForceCompile => compile_and_load_source(ctx, libs, resolved),
+    match (mode, get_execution_policy()) {
+        (_, super::policy::ExecutionPolicy::JIT) => compile_and_load_source(ctx, libs, resolved),
+        (LoadMode::DescribeIfCompileNeeded, super::policy::ExecutionPolicy::AOT) => {
+            describe_uncompiled_source(ctx, &resolved)
+        }
+        (LoadMode::ForceCompile, super::policy::ExecutionPolicy::AOT) => {
+            compile_and_load_source(ctx, libs, resolved)
+        }
     }
 }
 
@@ -123,10 +130,11 @@ fn load_precompiled_thunk<'gc>(
     };
 
     let candidate = if compiled_artifact.is_none() && !fresh_auto_compile(ctx) {
-        if let Some(source_time) = full_source_path
-            .metadata()
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
+        if let Some(build_destination) = build_destination.as_ref()
+            && let Some(source_time) = full_source_path
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
             && let Some(compiled_time) = build_destination
                 .path
                 .metadata()
@@ -181,8 +189,10 @@ fn describe_uncompiled_source<'gc>(
     let full_source = Str::new(*ctx, full_source_path.display().to_string(), true);
     let compiled = compiled_artifact
         .clone()
-        .unwrap_or_else(|| build_destination.clone());
-    let compiled = Str::new(*ctx, compiled.path.display().to_string(), true);
+        .or_else(|| build_destination.clone());
+    let compiled = compiled
+        .map(|compiled| Str::new(*ctx, compiled.path.display().to_string(), true).into())
+        .unwrap_or(Value::new(false));
     Ok(crate::list!(ctx, source, full_source, compiled))
 }
 
@@ -207,9 +217,42 @@ fn compile_and_load_source<'gc>(
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
     let cps = compile_file(ctx, &source_path, Some(module))?;
-    compile_cps_to_destination(ctx, cps, CompilationOptions::default(), &build_destination)?;
+    compile_cps_for_current_policy(
+        ctx,
+        cps,
+        CompilationOptions::default(),
+        build_destination.as_ref(),
+        |artifact| load_artifact(ctx, libs, artifact),
+    )
+}
 
-    load_artifact(ctx, libs, &build_destination)
+pub(super) fn compile_cps_for_current_policy<'gc>(
+    ctx: Context<'gc>,
+    cps: crate::cps::term::FuncRef<'gc>,
+    options: CompilationOptions,
+    destination: Option<&LoadArtifact>,
+    load_artifact: impl FnOnce(&LoadArtifact) -> Result<Value<'gc>, Value<'gc>>,
+) -> Result<Value<'gc>, Value<'gc>> {
+    match get_execution_policy() {
+        super::policy::ExecutionPolicy::AOT => {
+            let Some(destination) = destination else {
+                return Err(make_io_error(
+                    ctx,
+                    "load",
+                    Str::new(
+                        *ctx,
+                        "AOT compilation requires a destination artifact",
+                        true,
+                    )
+                    .into(),
+                    &[],
+                ));
+            };
+            compile_cps_to_destination(ctx, cps, options, destination)?;
+            load_artifact(destination)
+        }
+        super::policy::ExecutionPolicy::JIT => compile_cps_to_jit_thunk(ctx, cps, options),
+    }
 }
 
 pub(super) fn compile_cps_to_destination<'gc>(
@@ -245,10 +288,12 @@ fn load_artifact<'gc>(
     })
 }
 
-pub(super) fn destination_artifact_for_current_policy(path: impl AsRef<Path>) -> LoadArtifact {
-    let kind = artifact_kind_for_policy(get_execution_policy());
+pub(super) fn destination_artifact_for_current_policy(
+    path: impl AsRef<Path>,
+) -> Option<LoadArtifact> {
+    let kind = artifact_kind_for_policy(get_execution_policy())?;
     let path = path.as_ref().with_extension(artifact_extension(kind));
-    LoadArtifact::new(kind, path)
+    Some(LoadArtifact::new(kind, path))
 }
 
 #[cfg(test)]

@@ -289,6 +289,30 @@ impl<'gc> Closure<'gc> {
         let name = meta.assq(Symbol::from_str(ctx, "name").into());
         name.map(|n| n.cdr())
     }
+
+    pub fn patch_entrypoint(
+        ctx: Context<'gc>,
+        closure: Gc<'gc, Closure<'gc>>,
+        entrypoint: Address,
+    ) {
+        let closure = Gc::write(*ctx, closure) as *const _ as *mut Closure<'gc>;
+        unsafe {
+            (*closure).code = entrypoint;
+        }
+    }
+
+    pub fn patch_code_entrypoint(
+        ctx: Context<'gc>,
+        closure: Gc<'gc, Closure<'gc>>,
+        entrypoint: Address,
+    ) {
+        CodeBlock::patch_entrypoint(ctx, closure.code_block, entrypoint);
+        Self::patch_entrypoint(ctx, closure, entrypoint);
+    }
+
+    pub fn sync_entrypoint_from_code_block(ctx: Context<'gc>, closure: Gc<'gc, Closure<'gc>>) {
+        Self::patch_entrypoint(ctx, closure, closure.code_block.entrypoint);
+    }
 }
 
 // SAFETY: Closure stores its type code in the heap header selected at construction time.
@@ -672,6 +696,24 @@ impl<'gc> CodeBlock<'gc> {
         )
     }
 
+    pub fn new_lazy_jit(
+        ctx: Context<'gc>,
+        stub_entrypoint: Address,
+        arity: CodeArity,
+        is_cont: bool,
+        metadata: Value<'gc>,
+        state: *const (),
+    ) -> Gc<'gc, Self> {
+        Self::new_inner(
+            ctx,
+            stub_entrypoint,
+            CodeBlockKind::LazyJit { state },
+            arity,
+            is_cont,
+            metadata,
+        )
+    }
+
     pub fn new_bytecode(
         ctx: Context<'gc>,
         entrypoint: Address,
@@ -702,6 +744,24 @@ impl<'gc> CodeBlock<'gc> {
     pub fn code_len(&self) -> usize {
         self.code_len as usize
     }
+
+    pub fn patch_entrypoint(
+        ctx: Context<'gc>,
+        code_block: Gc<'gc, CodeBlock<'gc>>,
+        entrypoint: Address,
+    ) {
+        let code_block = Gc::write(*ctx, code_block) as *const _ as *mut CodeBlock<'gc>;
+        unsafe {
+            (*code_block).entrypoint = entrypoint;
+        }
+    }
+
+    pub fn lazy_jit_state(&self) -> Option<*const ()> {
+        match self.kind {
+            CodeBlockKind::LazyJit { state } => Some(state),
+            CodeBlockKind::AOT | CodeBlockKind::NativeProc => None,
+        }
+    }
 }
 
 unsafe impl<'gc> Tagged for CodeBlock<'gc> {
@@ -714,7 +774,7 @@ unsafe impl<'gc> Trace for CodeBlock<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         visitor.trace(&mut self.metadata);
         match &mut self.kind {
-            CodeBlockKind::AOT | CodeBlockKind::NativeProc => {}
+            CodeBlockKind::AOT | CodeBlockKind::NativeProc | CodeBlockKind::LazyJit { .. } => {}
         }
     }
 
@@ -753,9 +813,11 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeBlockKind {
     AOT,
     NativeProc,
+    LazyJit { state: *const () },
 }
 
 #[cfg(test)]
@@ -766,6 +828,19 @@ mod tests {
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     extern "C-unwind" fn test_native_proc<'gc>(
+        _ctx: Context<'gc>,
+        _rator: Value<'gc>,
+        _rands: *const Value<'gc>,
+        _num_rands: usize,
+        _retk: Value<'gc>,
+    ) -> NativeReturn<'gc> {
+        NativeReturn {
+            code: ReturnCode::ReturnOk,
+            value: Value::undefined(),
+        }
+    }
+
+    extern "C-unwind" fn test_compiled_proc<'gc>(
         _ctx: Context<'gc>,
         _rator: Value<'gc>,
         _rands: *const Value<'gc>,
@@ -846,6 +921,54 @@ mod tests {
             assert!(closure.code_block.metadata.get().is_null());
             assert!(closure[0].get().is::<NativeProc>());
             assert_eq!(closure[1].get(), Value::new(true));
+        });
+    }
+
+    #[test]
+    fn lazy_jit_code_block_uses_resolver_entrypoint() {
+        with_ctx(|ctx| {
+            let resolver = Address::from_ptr(test_native_proc as *const ());
+            let code_block = CodeBlock::new_lazy_jit(
+                ctx,
+                resolver,
+                CodeArity::new(2),
+                false,
+                Value::new(false),
+                std::ptr::null(),
+            );
+            let closure = Closure::new(ctx, code_block, &[], false);
+
+            assert_eq!(
+                code_block.kind,
+                CodeBlockKind::LazyJit {
+                    state: std::ptr::null()
+                }
+            );
+            assert_eq!(code_block.entrypoint, resolver);
+            assert_eq!(closure.code, resolver);
+            assert!(code_block.metadata.get().is_null());
+        });
+    }
+
+    #[test]
+    fn closure_and_code_block_entrypoints_can_be_patched_together() {
+        with_ctx(|ctx| {
+            let resolver = Address::from_ptr(test_native_proc as *const ());
+            let compiled = Address::from_ptr(test_compiled_proc as *const ());
+            let code_block = CodeBlock::new_lazy_jit(
+                ctx,
+                resolver,
+                CodeArity::new(0),
+                false,
+                Value::null(),
+                std::ptr::null(),
+            );
+            let closure = Closure::new(ctx, code_block, &[], false);
+
+            Closure::patch_code_entrypoint(ctx, closure, compiled);
+
+            assert_eq!(code_block.entrypoint, compiled);
+            assert_eq!(closure.code, compiled);
         });
     }
 }

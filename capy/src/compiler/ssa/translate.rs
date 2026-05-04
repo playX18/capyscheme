@@ -42,7 +42,7 @@ pub enum Callee {
     SelfRec(ir::Block),
 }
 
-impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
     fn target_binding(&self) -> LVarRef<'gc> {
         match &self.target {
             ContOrFunc::Cont(c) => c.binding,
@@ -1282,7 +1282,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 return Callee::SelfRec(self.entry_block);
             }
 
-            if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
+            if self.module_builder.direct_calls
+                && let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
                 && let Some(func_id) = self.module_builder.func_for_func.get(func)
             {
                 let func_id = *func_id;
@@ -1330,6 +1331,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
         if let LinearAtom::Local(var_id) = callee
             && let Some(var) = self.linear_source(var_id)
+            && self.module_builder.direct_calls
             && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
             && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
         {
@@ -1398,7 +1400,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        if let LinearAtom::Local(k_id) = callee
+        if self.module_builder.direct_calls
+            && let LinearAtom::Local(k_id) = callee
             && let Some(k) = self.linear_source(k_id)
             && self
                 .module_builder
@@ -1950,6 +1953,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn maybe_known_function(&mut self, rator: Atom<'gc>) -> Option<ir::FuncRef> {
+        if !self.module_builder.direct_calls {
+            return None;
+        }
+
         let Atom::Local(var) = rator else {
             return None;
         };

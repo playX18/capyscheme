@@ -43,7 +43,7 @@ pub(super) enum ResolvedLoadPath {
         source_path: PathBuf,
         full_source_path: PathBuf,
         compiled_artifact: Option<LoadArtifact>,
-        build_destination: LoadArtifact,
+        build_destination: Option<LoadArtifact>,
     },
 }
 
@@ -59,11 +59,12 @@ impl ResolvedLoadPath {
                 full_source_path,
                 compiled_artifact,
                 build_destination,
-            } => (
-                source_path,
-                full_source_path,
-                Some(compiled_artifact.unwrap_or(build_destination).path),
-            ),
+            } => {
+                let compiled = compiled_artifact
+                    .or(build_destination)
+                    .map(|artifact| artifact.path);
+                (source_path, full_source_path, compiled)
+            }
         }
     }
 }
@@ -270,11 +271,15 @@ pub(super) fn resolve_load_path<'gc>(
     }))
 }
 
-pub(super) fn fallback_file_name<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> PathBuf {
-    fallback_artifact(ctx, path).path
+pub(super) fn fallback_file_name<'gc>(
+    ctx: Context<'gc>,
+    path: impl AsRef<Path>,
+) -> Option<PathBuf> {
+    fallback_artifact(ctx, path).map(|artifact| artifact.path)
 }
 
-fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> LoadArtifact {
+fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> Option<LoadArtifact> {
+    let kind = artifact_kind_for_policy(get_execution_policy())?;
     let path = path.as_ref();
     let fallback = ctx
         .globals()
@@ -284,7 +289,6 @@ fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> LoadArti
         .to_string();
     let fallback = Path::new(&fallback).join(std::env::consts::ARCH);
     let relative_source = path.strip_prefix("/").unwrap_or(path);
-    let kind = artifact_kind_for_policy(get_execution_policy());
     let full_path = fallback
         .join(relative_source)
         .with_extension(artifact_extension(kind));
@@ -295,7 +299,7 @@ fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> LoadArti
         std::fs::create_dir_all(parent).expect("Failed to create fallback directory");
     }
 
-    LoadArtifact::new(kind, full_path)
+    Some(LoadArtifact::new(kind, full_path))
 }
 
 pub fn compiled_is_fresh(
@@ -394,7 +398,7 @@ fn freshest_compiled_candidate<'gc>(
         .metadata()
         .ok()
         .and_then(|metadata| metadata.modified().ok())?;
-    let kind = artifact_kind_for_policy(get_execution_policy());
+    let kind = artifact_kind_for_policy(get_execution_policy())?;
 
     let mut compiled_path = ctx.globals().loc_load_compiled_path().get();
     while compiled_path.is_pair() {
@@ -436,6 +440,7 @@ mod tests {
     use uuid::Uuid;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static POLICY_LOCK: Mutex<()> = Mutex::new(());
 
     struct TempDir {
         path: PathBuf,
@@ -489,6 +494,9 @@ mod tests {
             }
         }
 
+        let _policy_guard = POLICY_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = get_execution_policy();
         set_execution_policy(policy);
         let _guard = PolicyGuard(previous);
@@ -552,12 +560,79 @@ mod tests {
                 let fallback = fallback_file_name(ctx, "/stdlib/boot.scm");
 
                 assert_eq!(
-                    fallback,
-                    temp.path()
-                        .join(std::env::consts::ARCH)
-                        .join("stdlib/boot")
-                        .with_extension(DYNLIB_EXTENSION)
+                    fallback.as_deref(),
+                    Some(
+                        temp.path()
+                            .join(std::env::consts::ARCH)
+                            .join("stdlib/boot")
+                            .with_extension(DYNLIB_EXTENSION)
+                            .as_path()
+                    )
                 );
+            });
+        });
+    }
+
+    #[test]
+    fn jit_policy_has_no_fallback_artifact() {
+        with_policy(ExecutionPolicy::JIT, || {
+            with_ctx(|ctx| {
+                let temp = TempDir::new();
+                ctx.globals().loc_compile_fallback_path().set(
+                    ctx,
+                    Str::new(*ctx, temp.path().to_string_lossy(), true).into(),
+                );
+
+                assert_eq!(fallback_file_name(ctx, "/stdlib/boot.scm"), None);
+            });
+        });
+    }
+
+    #[test]
+    fn jit_source_resolution_skips_persistent_artifact_selection() {
+        with_policy(ExecutionPolicy::JIT, || {
+            with_ctx(|ctx| {
+                let temp = TempDir::new();
+                let source_dir = temp.path().join("src");
+                let compiled_dir = temp.path().join("compiled");
+                fs::create_dir_all(&source_dir).unwrap();
+                fs::create_dir_all(compiled_dir.join("lib")).unwrap();
+
+                let source = source_dir.join("lib/test.scm");
+                fs::create_dir_all(source.parent().unwrap()).unwrap();
+                fs::write(&source, b"source").unwrap();
+
+                let compiled = compiled_dir
+                    .join("lib/test")
+                    .with_extension(DYNLIB_EXTENSION);
+                fs::write(&compiled, b"compiled").unwrap();
+
+                ctx.globals()
+                    .loc_load_extensions()
+                    .set(ctx, scm_list(ctx, &["scm"]));
+                ctx.globals()
+                    .loc_load_path()
+                    .set(ctx, scm_list(ctx, &[source_dir.to_string_lossy().as_ref()]));
+                ctx.globals().loc_load_compiled_path().set(
+                    ctx,
+                    scm_list(ctx, &[compiled_dir.to_string_lossy().as_ref()]),
+                );
+
+                let resolved =
+                    resolve_load_path(ctx, Path::new("lib/test"), None::<&Path>, false, None)
+                        .unwrap()
+                        .unwrap();
+                let ResolvedLoadPath::Source {
+                    compiled_artifact,
+                    build_destination,
+                    ..
+                } = resolved
+                else {
+                    panic!("expected source resolution");
+                };
+
+                assert_eq!(compiled_artifact, None);
+                assert_eq!(build_destination, None);
             });
         });
     }

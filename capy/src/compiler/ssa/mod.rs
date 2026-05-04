@@ -50,7 +50,19 @@ pub struct LinearRestSource {
 }
 
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
-pub struct ModuleBuilder<'gc> {
+pub struct ImportedDataSlots<'gc> {
+    pub constants: Vec<(Value<'gc>, String)>,
+    pub cache_cells: Vec<(Value<'gc>, String)>,
+    pub global_side_metadata_base_address: String,
+}
+
+enum DataSlotMode<'gc> {
+    Object,
+    Imported(ImportedDataSlots<'gc>),
+}
+
+/// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
+pub struct ModuleBuilder<'gc, M: Module = ObjectModule> {
     pub ctx: Context<'gc>,
     pub(crate) debug_context: DebugContext<'gc>,
     pub reify_info: ReifyInfo<'gc>,
@@ -58,7 +70,8 @@ pub struct ModuleBuilder<'gc> {
     pub constants: HashMap<ValueEqual<'gc>, DataId>,
     pub cache_cells: HashMap<ValueEqual<'gc>, DataId>,
 
-    pub module: ObjectModule,
+    pub module: M,
+    data_slot_mode: DataSlotMode<'gc>,
 
     pub prims: PrimitiveLowerer<'gc>,
     pub func_for_cont: HashMap<ContRef<'gc>, FuncId>,
@@ -70,9 +83,10 @@ pub struct ModuleBuilder<'gc> {
 
     pub thunks: Thunks,
     pub stacktraces: bool,
+    pub direct_calls: bool,
 }
 
-impl<'gc> ModuleBuilder<'gc> {
+impl<'gc> ModuleBuilder<'gc, ObjectModule> {
     pub fn new(
         ctx: Context<'gc>,
         mut module: ObjectModule,
@@ -100,11 +114,13 @@ impl<'gc> ModuleBuilder<'gc> {
             debug_context,
             ctx,
             stacktraces: true,
+            direct_calls: true,
             reify_info,
             linear,
             constants: HashMap::new(),
             cache_cells: HashMap::new(),
             module,
+            data_slot_mode: DataSlotMode::Object,
             import_data: HashMap::new(),
             prims,
             func_for_cont: HashMap::new(),
@@ -116,6 +132,57 @@ impl<'gc> ModuleBuilder<'gc> {
             thunks,
         }
     }
+}
+
+impl<'gc, M: Module> ModuleBuilder<'gc, M> {
+    pub fn new_with_imported_data(
+        ctx: Context<'gc>,
+        mut module: M,
+        reify_info: ReifyInfo<'gc>,
+        linear: LinearProgram<'gc>,
+        imported_slots: ImportedDataSlots<'gc>,
+    ) -> Self {
+        let prims = PrimitiveLowerer::new(ctx);
+        let thunks = Thunks::new(&mut module);
+        let debug_context = DebugContext::new(&reify_info, module.isa());
+        let global_side_metadata_base_address = module
+            .declare_data(
+                &imported_slots.global_side_metadata_base_address,
+                Linkage::Import,
+                false,
+                false,
+            )
+            .unwrap();
+
+        Self {
+            debug_context,
+            ctx,
+            stacktraces: true,
+            direct_calls: false,
+            reify_info,
+            linear,
+            constants: HashMap::new(),
+            cache_cells: HashMap::new(),
+            module,
+            data_slot_mode: DataSlotMode::Imported(imported_slots),
+            import_data: HashMap::new(),
+            prims,
+            func_for_cont: HashMap::new(),
+            func_for_func: HashMap::new(),
+            code_block_for_cont: HashMap::new(),
+            code_block_for_func: HashMap::new(),
+            global_side_metadata_base_address,
+
+            thunks,
+        }
+    }
+
+    pub fn declare_imported_code_block_slot(&mut self, name: &str) -> DataId {
+        self.module
+            .declare_data(name, Linkage::Import, false, false)
+            .expect("failed to declare imported code block data")
+    }
+
     pub fn compile(&mut self) {
         let procedures = self.linear.procedures.clone();
 
@@ -473,20 +540,35 @@ impl<'gc> ModuleBuilder<'gc> {
             return Some(*data_id);
         }
 
-        let ix = self.constants.len();
-        let name = format!("constant{}", ix);
-        // declare data as writable even though not all objects need to be written to. We don't currently have a way of knowing
-        // ahead of time if constant will be read-only or not.
-        let data_id = self
-            .module
-            .declare_data(&name, Linkage::Local, true, false)
-            .expect("failed to declare constant data");
-        let mut desc = DataDescription::new();
-        desc.define_zeroinit(size_of::<Value>());
-        desc.set_align(align_of::<usize>() as _);
-        self.module
-            .define_data(data_id, &desc)
-            .expect("failed to define constant data");
+        let data_id = match &self.data_slot_mode {
+            DataSlotMode::Object => {
+                let ix = self.constants.len();
+                let name = format!("constant{}", ix);
+                // declare data as writable even though not all objects need to be written to. We don't currently have a way of knowing
+                // ahead of time if constant will be read-only or not.
+                let data_id = self
+                    .module
+                    .declare_data(&name, Linkage::Local, true, false)
+                    .expect("failed to declare constant data");
+                let mut desc = DataDescription::new();
+                desc.define_zeroinit(size_of::<Value>());
+                desc.set_align(align_of::<usize>() as _);
+                self.module
+                    .define_data(data_id, &desc)
+                    .expect("failed to define constant data");
+                data_id
+            }
+            DataSlotMode::Imported(imported) => {
+                let name = imported
+                    .constants
+                    .iter()
+                    .find_map(|(value, name)| (ValueEqual(*value) == obj).then_some(name))
+                    .unwrap_or_else(|| panic!("JIT constant slot not found for {obj}"));
+                self.module
+                    .declare_data(name, Linkage::Import, false, false)
+                    .expect("failed to declare imported constant data")
+            }
+        };
 
         self.constants.insert(ValueEqual(obj), data_id);
 
@@ -498,19 +580,34 @@ impl<'gc> ModuleBuilder<'gc> {
             return *data_id;
         }
 
-        let ix = self.cache_cells.len();
-        let name = format!("cache_cell{}", ix);
+        let data_id = match &self.data_slot_mode {
+            DataSlotMode::Object => {
+                let ix = self.cache_cells.len();
+                let name = format!("cache_cell{}", ix);
 
-        let data_id = self
-            .module
-            .declare_data(&name, Linkage::Local, true, false)
-            .expect("failed to declare cache cell data");
-        let mut desc = DataDescription::new();
-        desc.define_zeroinit(size_of::<Value>());
-        desc.set_align(align_of::<usize>() as _);
-        self.module
-            .define_data(data_id, &desc)
-            .expect("failed to define cache cell data");
+                let data_id = self
+                    .module
+                    .declare_data(&name, Linkage::Local, true, false)
+                    .expect("failed to declare cache cell data");
+                let mut desc = DataDescription::new();
+                desc.define_zeroinit(size_of::<Value>());
+                desc.set_align(align_of::<usize>() as _);
+                self.module
+                    .define_data(data_id, &desc)
+                    .expect("failed to define cache cell data");
+                data_id
+            }
+            DataSlotMode::Imported(imported) => {
+                let name = imported
+                    .cache_cells
+                    .iter()
+                    .find_map(|(value, name)| (ValueEqual(*value) == key).then_some(name))
+                    .unwrap_or_else(|| panic!("JIT cache cell slot not found for {key}"));
+                self.module
+                    .declare_data(name, Linkage::Import, false, false)
+                    .expect("failed to declare imported cache cell data")
+            }
+        };
 
         self.cache_cells.insert(ValueEqual(key), data_id);
 
@@ -560,8 +657,8 @@ impl<'gc> ModuleBuilder<'gc> {
     }
 }
 
-pub struct SSABuilder<'gc, 'a, 'f> {
-    pub module_builder: &'a mut ModuleBuilder<'gc>,
+pub struct SSABuilder<'gc, 'a, 'f, M: Module = ObjectModule> {
+    pub module_builder: &'a mut ModuleBuilder<'gc, M>,
     pub builder: FunctionBuilder<'f>,
     pub(crate) func_debug_cx: FunctionDebugContext<'gc>,
 
@@ -603,9 +700,9 @@ pub enum ContOrFunc<'gc> {
     Procedure(Procedure<'gc>),
 }
 
-impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
     pub(crate) fn new(
-        module_builder: &'a mut ModuleBuilder<'gc>,
+        module_builder: &'a mut ModuleBuilder<'gc, M>,
         mut builder: FunctionBuilder<'f>,
         target: ContOrFunc<'gc>,
         thunks: ImportedThunks,

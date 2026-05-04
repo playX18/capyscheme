@@ -20,7 +20,7 @@ use super::paths::{fallback_file_name, find_path_to};
 use super::{
     artifact::LoadArtifact,
     compile::{
-        CompilationPhase, compile_cps_to_destination, destination_artifact_for_current_policy,
+        CompilationPhase, compile_cps_for_current_policy, destination_artifact_for_current_policy,
         load_thunk_in_vicinity,
     },
 };
@@ -290,7 +290,7 @@ fn resolve_continuation_module<'gc>(ctx: Context<'gc>, cenv: Value<'gc>) -> Gc<'
 fn compile_expanded_to_destination<'gc>(
     ctx: Context<'gc>,
     expanded: Value<'gc>,
-    destination: &str,
+    destination_path: &str,
     module: Gc<'gc, Module<'gc>>,
     options: CompilationOptions,
     load_thunk: bool,
@@ -298,15 +298,38 @@ fn compile_expanded_to_destination<'gc>(
 ) -> Result<Value<'gc>, Value<'gc>> {
     let _phase = CompilationPhase::new(ctx);
     let lowered = lower_expanded_scheme(ctx, expanded, module)?;
-    let destination = destination_artifact_for_current_policy(destination);
-    dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
-    compile_cps_to_destination(ctx, lowered.cps, options, &destination)?;
+    let destination = destination_artifact_for_current_policy(destination_path);
+    let dump_destination = destination
+        .as_ref()
+        .map(|destination| destination.path.as_path())
+        .unwrap_or_else(|| std::path::Path::new(destination_path));
+    dump_lowered_program_artifacts(ctx, dump_destination, &lowered, dump_options);
 
     if !load_thunk {
-        return Ok(Str::new(*ctx, destination.path.display().to_string(), true).into());
+        return destination
+            .map(|destination| Str::new(*ctx, destination.path.display().to_string(), true).into())
+            .ok_or_else(|| {
+                make_io_error(
+                    ctx,
+                    "compile",
+                    Str::new(
+                        *ctx,
+                        "JIT compilation does not produce a persistent artifact path",
+                        true,
+                    )
+                    .into(),
+                    &[],
+                )
+            });
     }
 
-    load_compiled_library(ctx, &destination)
+    compile_cps_for_current_policy(
+        ctx,
+        lowered.cps,
+        options,
+        destination.as_ref(),
+        |artifact| load_compiled_library(ctx, artifact),
+    )
 }
 
 fn lower_expanded_scheme<'gc>(
@@ -351,12 +374,15 @@ fn find_path_to_public<'gc>(
 ) -> Result<Value<'gc>, Value<'gc>> {
     match find_path_to(ctx, filename, in_vicinity, resolve_relative, arch)? {
         Some((source, full_source, compiled)) => {
-            let compiled = compiled.unwrap_or_else(|| fallback_file_name(ctx, &full_source));
+            let compiled = compiled.or_else(|| fallback_file_name(ctx, &full_source));
+            let compiled = compiled
+                .map(|compiled| Str::new(*ctx, &compiled.to_string_lossy(), true).into())
+                .unwrap_or(Value::new(false));
             Ok(list!(
                 ctx,
                 Str::new(*ctx, &source.to_string_lossy(), true),
                 Str::new(*ctx, &full_source.to_string_lossy(), true),
-                Str::new(*ctx, &compiled.to_string_lossy(), true)
+                compiled
             ))
         }
         None => Ok(Value::new(false)),

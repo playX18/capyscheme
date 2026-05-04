@@ -24,10 +24,10 @@ impl LoadArtifact {
     }
 }
 
-pub(crate) fn artifact_kind_for_policy(policy: ExecutionPolicy) -> LoadArtifactKind {
+pub(crate) fn artifact_kind_for_policy(policy: ExecutionPolicy) -> Option<LoadArtifactKind> {
     match policy {
-        ExecutionPolicy::AOT => LoadArtifactKind::SharedObject,
-        _ => todo!(),
+        ExecutionPolicy::AOT => Some(LoadArtifactKind::SharedObject),
+        ExecutionPolicy::JIT => None,
     }
 }
 
@@ -42,5 +42,23 @@ pub(crate) fn artifact_kind_for_path(path: &Path) -> Option<LoadArtifactKind> {
         Some(extension) if extension == DYNLIB_EXTENSION => Some(LoadArtifactKind::SharedObject),
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aot_policy_selects_shared_object_artifacts() {
+        assert_eq!(
+            artifact_kind_for_policy(ExecutionPolicy::AOT),
+            Some(LoadArtifactKind::SharedObject)
+        );
+    }
+
+    #[test]
+    fn jit_policy_selects_no_persistent_artifact() {
+        assert_eq!(artifact_kind_for_policy(ExecutionPolicy::JIT), None);
     }
 }

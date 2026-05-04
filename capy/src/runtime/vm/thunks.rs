@@ -78,6 +78,17 @@ macro_rules! thunks {
         }
 
         impl Thunks {
+            pub fn symbols() -> Vec<(&'static str, *const u8)> {
+                vec![
+                    $(
+                        (
+                            concat!("capy_thunks_", stringify!($name)),
+                            $name as *const u8,
+                        ),
+                    )*
+                ]
+            }
+
             pub fn new<$gl, M: cranelift_module::Module>(
                 module: &mut M,
             ) -> Self {
@@ -121,7 +132,7 @@ macro_rules! thunks {
             }
         }
 
-        impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
+        impl<'gc, 'a, 'f, M: cranelift_module::Module> SSABuilder<'gc, 'a, 'f, M> {
             thunks! {
                 @generate_ssa $gl, 'gc, 'a, 'f;
                 $(
@@ -135,7 +146,7 @@ macro_rules! thunks {
         $(fn $name: ident ($($arg: ident : $t: ty),*) -> $ret: ty;)*
     ) => {$(
         paste::paste! {
-            pub fn [<emit_ $name>](&mut self, $($arg: impl IntoSSA<$gc, $a, $f>),*) -> cranelift_codegen::ir::entities::Inst {
+            pub fn [<emit_ $name>](&mut self, $($arg: impl IntoSSA<$gc, $a, $f, M>),*) -> cranelift_codegen::ir::entities::Inst {
                 $(
                     let $arg = $arg.into_ssa(self);
                 )*

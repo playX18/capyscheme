@@ -149,8 +149,18 @@ impl VirtualRegister {
         self.0 != Self::INVALID
     }
 
+    /// Check if the register is a reference to a header slot.
     pub const fn is_header(self) -> bool {
         self.0 >= 0 && self.0 < CallFrameSlot::FirstArgument as isize
+    }
+
+    /// Header slots are `fp[0..CallFrameSlot::FirstArgument)`.
+    pub const fn for_header(slot: CallFrameSlot) -> Self {
+        Self(slot as isize)
+    }
+
+    pub const fn to_header(self) -> isize {
+        self.0
     }
 
     pub const fn to_local(self) -> isize {
@@ -713,10 +723,11 @@ bytecode_list! {
             }
         }
 
-        MakeClosue {
+        MakeClosure {
             args {
                 dst: VirtualRegister,
                 code: VirtualRegister,
+                nfree: usize
             }
         }
 

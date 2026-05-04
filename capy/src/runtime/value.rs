@@ -719,6 +719,7 @@ impl<'gc, T: Tagged> From<Gc<'gc, T>> for Value<'gc> {
 unsafe impl<'gc> bytemuck::Zeroable for Value<'gc> {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
 pub struct GlobalValue(u64);
 
 impl GlobalValue {
@@ -728,6 +729,18 @@ impl GlobalValue {
 
     pub fn get<'gc>(self, _ctx: Mutation<'gc>) -> Value<'gc> {
         Value::from_raw_i64(self.0 as i64)
+    }
+
+    pub fn set<'gc>(&mut self, value: Value<'gc>) {
+        self.0 = value.bits();
+    }
+
+    pub fn as_ptr(&self) -> *const u8 {
+        std::ptr::from_ref(self).cast()
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        std::ptr::from_mut(self).cast()
     }
 }
 

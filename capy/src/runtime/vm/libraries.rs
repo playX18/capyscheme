@@ -150,20 +150,101 @@ impl<'gc> SchemeLibrary<'gc> {
         }
     }
 }
+
+pub trait JitModuleRuntimeState<'gc>: Trace {}
+
+impl<'gc, T: Trace> JitModuleRuntimeState<'gc> for T {}
+
+pub struct JitLibrary<'gc> {
+    pub entrypoint: Value<'gc>,
+    shared_slots: Box<[Value<'gc>]>,
+    module_state: Option<Box<dyn JitModuleRuntimeState<'gc> + 'gc>>,
+}
+
+unsafe impl<'gc> Trace for JitLibrary<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        unsafe {
+            self.entrypoint.trace(visitor);
+            for slot in self.shared_slots.iter_mut() {
+                slot.trace(visitor);
+            }
+            if let Some(state) = &mut self.module_state {
+                state.trace(visitor);
+            }
+        }
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        unsafe {
+            self.entrypoint.process_weak_refs(weak_processor);
+            for slot in self.shared_slots.iter_mut() {
+                slot.process_weak_refs(weak_processor);
+            }
+            if let Some(state) = &mut self.module_state {
+                state.process_weak_refs(weak_processor);
+            }
+        }
+    }
+}
+
+impl<'gc> JitLibrary<'gc> {
+    pub fn new(
+        entrypoint: Value<'gc>,
+        shared_slots: impl Into<Box<[Value<'gc>]>>,
+        module_state: Box<dyn JitModuleRuntimeState<'gc> + 'gc>,
+    ) -> Self {
+        Self {
+            entrypoint,
+            shared_slots: shared_slots.into(),
+            module_state: Some(module_state),
+        }
+    }
+
+    pub fn without_module_state(
+        entrypoint: Value<'gc>,
+        shared_slots: impl Into<Box<[Value<'gc>]>>,
+    ) -> Self {
+        Self {
+            entrypoint,
+            shared_slots: shared_slots.into(),
+            module_state: None,
+        }
+    }
+
+    pub fn shared_slots(&self) -> &[Value<'gc>] {
+        &self.shared_slots
+    }
+
+    pub fn shared_slots_mut(&mut self) -> &mut [Value<'gc>] {
+        &mut self.shared_slots
+    }
+
+    pub fn shared_slots_ptr(&mut self) -> *mut Value<'gc> {
+        self.shared_slots.as_mut_ptr()
+    }
+
+    pub fn shared_slot_ptr(&mut self, index: usize) -> Option<*mut Value<'gc>> {
+        self.shared_slots.get_mut(index).map(|slot| slot as *mut _)
+    }
+}
+
 pub enum LoadedLibrary<'gc> {
     SharedObject(SchemeLibrary<'gc>),
+    JitModule(JitLibrary<'gc>),
 }
 
 unsafe impl<'gc> Trace for LoadedLibrary<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         match self {
             Self::SharedObject(lib) => unsafe { lib.trace(visitor) },
+            Self::JitModule(lib) => unsafe { lib.trace(visitor) },
         }
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         match self {
             Self::SharedObject(lib) => unsafe { lib.process_weak_refs(weak_processor) },
+            Self::JitModule(lib) => unsafe { lib.process_weak_refs(weak_processor) },
         }
     }
 }
@@ -182,6 +263,21 @@ impl<'gc> LoadedLibrary<'gc> {
             }
         }
     }
+
+    pub fn new_jit(
+        entrypoint: Value<'gc>,
+        shared_slots: impl Into<Box<[Value<'gc>]>>,
+        module_state: Box<dyn JitModuleRuntimeState<'gc> + 'gc>,
+    ) -> Self {
+        Self::JitModule(JitLibrary::new(entrypoint, shared_slots, module_state))
+    }
+
+    pub fn new_jit_without_module_state(
+        entrypoint: Value<'gc>,
+        shared_slots: impl Into<Box<[Value<'gc>]>>,
+    ) -> Self {
+        Self::JitModule(JitLibrary::without_module_state(entrypoint, shared_slots))
+    }
 }
 
 pub struct LibraryCollection<'gc> {
@@ -196,7 +292,9 @@ unsafe impl<'gc> Trace for LibraryCollection<'gc> {
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
-        let _ = weak_processor;
+        unsafe {
+            self.libs.get_mut().process_weak_refs(weak_processor);
+        }
     }
 }
 
@@ -215,6 +313,12 @@ impl<'gc> LibraryCollection<'gc> {
         let (lib, entrypoint) = LoadedLibrary::load(ctx, artifact, true)?;
         self.libs.lock().push(lib);
         Ok(entrypoint)
+    }
+
+    pub(crate) fn register_jit(&self, library: JitLibrary<'gc>) -> Value<'gc> {
+        let entrypoint = library.entrypoint;
+        self.libs.lock().push(LoadedLibrary::JitModule(library));
+        entrypoint
     }
 
     #[allow(dead_code)]

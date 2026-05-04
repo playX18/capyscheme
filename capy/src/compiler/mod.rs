@@ -49,6 +49,7 @@ mod artifact;
 mod bootstrap;
 pub mod bytecode;
 pub mod debuginfo;
+mod jit;
 pub mod linkutils;
 mod object;
 mod pipeline;
@@ -58,6 +59,7 @@ pub use bootstrap::compile_file;
 pub use object::{CompilationOptions, compile_cps_to_object, link_object_product};
 pub use pipeline::lower_to_cps;
 
+pub(crate) use jit::compile_cps_to_jit_thunk;
 pub(crate) use object::compile_cps_to_shared_object;
 pub(crate) use pipeline::{
     DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, lower_expanded_to_cps,
