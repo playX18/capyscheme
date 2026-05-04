@@ -3,7 +3,6 @@ use crate::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
         Procedure, ProcedureKind, RestPredicate, SwitchKind, Terminator, ValueId,
     },
-    expander::core::LVarRef,
     runtime::value::{Symbol, Value},
 };
 use std::fmt::Write;
@@ -11,12 +10,7 @@ use std::fmt::Write;
 pub fn render_program<'gc>(program: &LinearProgram<'gc>) -> String {
     let mut out = String::new();
     writeln!(out, "(linear-program").unwrap();
-    writeln!(
-        out,
-        "  (entry {})",
-        render_code_id(&CodeId::Function(program.entry))
-    )
-    .unwrap();
+    writeln!(out, "  (entry {})", render_code_id(&program.entry)).unwrap();
     for procedure in &program.procedures {
         render_procedure(&mut out, procedure, 2);
     }
@@ -309,10 +303,6 @@ fn render_value_id(id: ValueId) -> String {
     format!("%v{}", id.0)
 }
 
-fn render_lvar<'gc>(var: LVarRef<'gc>) -> String {
-    format!("%{}", render_value(var.name))
-}
-
 fn render_value_ids(vars: &[ValueId]) -> String {
     vars.iter()
         .map(|var| format!(" {}", render_value_id(*var)))
@@ -323,11 +313,8 @@ fn render_optional_value_id(var: Option<ValueId>) -> String {
     var.map(render_value_id).unwrap_or_else(|| "#f".to_string())
 }
 
-fn render_code_id<'gc>(code: &CodeId<'gc>) -> String {
-    match code {
-        CodeId::Function(func) => format!("(function {})", render_lvar(func.binding)),
-        CodeId::Continuation(cont) => format!("(continuation {})", render_lvar(cont.binding)),
-    }
+fn render_code_id(code: &CodeId) -> String {
+    format!("code{}", code.0)
 }
 
 fn render_block_id(id: BlockId) -> String {
@@ -365,15 +352,12 @@ fn render_value<'gc>(value: Value<'gc>) -> String {
 #[cfg(test)]
 mod tests {
     use crate::{
-        cps::{
-            linear::{
-                Block, BlockId, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
-                Procedure, ProcedureKind, Terminator, ValueId,
-            },
-            term::{Func, Term},
+        cps::linear::{
+            Block, BlockId, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram, Procedure,
+            ProcedureKind, Terminator, ValueId,
         },
         expander::core::{LVarRef, fresh_lvar},
-        rsgc::{Gc, alloc::Array, cell::Lock},
+        rsgc::alloc::Array,
         runtime::{
             Context, Scheme,
             value::{Symbol, Value},
@@ -401,69 +385,60 @@ mod tests {
             let retk = lvar(ctx, "retk");
             let free = lvar(ctx, "free");
             let closure = ValueId(1);
-            let body = Gc::new(
-                *ctx,
-                Term::Continue(retk, Array::from_slice(*ctx, &[]), Value::new(false)),
-            );
-            let entry = Gc::new(
-                *ctx,
-                Func {
-                    name: Symbol::from_str(ctx, "entry").into(),
-                    source: Value::new(false),
-                    binding,
-                    return_cont: retk,
-                    args: Array::from_slice(*ctx, &[]),
-                    variadic: None,
-                    body: Lock::new(body),
-                    free_vars: Lock::new(Some(Array::from_slice(*ctx, &[]))),
-                    meta: Value::new(false),
-                },
-            );
             let program = LinearProgram {
-                entry,
-                procedures: vec![Procedure {
-                    code: CodeId::Function(entry),
-                    kind: ProcedureKind::Function,
-                    binding: ValueId(0),
-                    name: Symbol::from_str(ctx, "entry").into(),
-                    source: Value::new(false),
-                    meta: Value::new(false),
-                    return_cont: Some(ValueId(2)),
-                    params: vec![],
-                    variadic: None,
-                    free_vars: vec![ValueId(3)],
-                    sources: [
-                        (ValueId(0), binding),
-                        (ValueId(2), retk),
-                        (ValueId(3), free),
-                    ]
-                    .into_iter()
-                    .collect(),
-                    entry: BlockId(0),
-                    blocks: vec![Block {
-                        id: BlockId(0),
-                        params: vec![],
-                        variadic: None,
-                        instructions: vec![
-                            Instruction::MakeClosure {
-                                dst: closure,
-                                code: CodeId::Function(entry),
-                                kind: ClosureKind::Function,
-                                free_count: 1,
-                            },
-                            Instruction::ClosureSet {
-                                closure: LinearAtom::Local(closure),
-                                index: 0,
-                                value: LinearAtom::Local(ValueId(3)),
-                            },
-                        ],
-                        terminator: Terminator::Jump {
-                            target: BlockId(0),
-                            args: vec![],
-                        },
+                entry: CodeId(0),
+                procedures: Array::from_slice(
+                    *ctx,
+                    &[Procedure {
+                        code: CodeId(0),
+                        kind: ProcedureKind::Function,
+                        binding: ValueId(0),
+                        name: Symbol::from_str(ctx, "entry").into(),
                         source: Value::new(false),
+                        meta: Value::new(false),
+                        return_cont: Some(ValueId(2)),
+                        params: Array::from_slice(*ctx, &[]),
+                        variadic: None,
+                        free_vars: Array::from_slice(*ctx, &[ValueId(3)]),
+                        sources: [
+                            (ValueId(0), binding),
+                            (ValueId(2), retk),
+                            (ValueId(3), free),
+                        ]
+                        .into_iter()
+                        .collect(),
+                        entry: BlockId(0),
+                        blocks: Array::from_slice(
+                            *ctx,
+                            &[Block {
+                                id: BlockId(0),
+                                params: Array::from_slice(*ctx, &[]),
+                                variadic: None,
+                                instructions: Array::from_slice(
+                                    *ctx,
+                                    &[
+                                        Instruction::MakeClosure {
+                                            dst: closure,
+                                            code: CodeId(0),
+                                            kind: ClosureKind::Function,
+                                            free_count: 1,
+                                        },
+                                        Instruction::ClosureSet {
+                                            closure: LinearAtom::Local(closure),
+                                            index: 0,
+                                            value: LinearAtom::Local(ValueId(3)),
+                                        },
+                                    ],
+                                ),
+                                terminator: Terminator::Jump {
+                                    target: BlockId(0),
+                                    args: Array::from_slice(*ctx, &[]),
+                                },
+                                source: Value::new(false),
+                            }],
+                        ),
                     }],
-                }],
+                ),
             };
 
             let rendered = super::render_program(&program);

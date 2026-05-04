@@ -4,6 +4,7 @@ use crate::runtime::Context;
 use crate::runtime::State;
 use crate::runtime::modules::Variable;
 use crate::runtime::value::*;
+use capy_derive::Trace;
 use cranelift::prelude::InstBuilder;
 use cranelift::prelude::IntCC;
 use cranelift::prelude::types;
@@ -15,7 +16,8 @@ use std::mem::offset_of;
 macro_rules! prim {
     ($($sname: literal => $name: ident ($ssa: ident, $args: ident, $h: ident) $b: block),*) => {
         #[allow(non_camel_case_types)]
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+        #[collect(no_drop)]
         pub enum Primitive {
             $($name),*
         }

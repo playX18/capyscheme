@@ -1077,11 +1077,8 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         }
     }
 
-    fn code_block_data(&self, code: CodeId<'gc>) -> DataId {
-        match code {
-            CodeId::Function(func) => self.module_builder.code_block_for_func[&func],
-            CodeId::Continuation(cont) => self.module_builder.code_block_for_cont[&cont],
-        }
+    fn code_block_data(&self, code: CodeId) -> DataId {
+        self.module_builder.code_block_for_code[&code]
     }
 
     fn linear_instruction(&mut self, instruction: &Instruction<'gc>) {

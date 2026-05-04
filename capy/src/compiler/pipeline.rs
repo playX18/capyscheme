@@ -141,7 +141,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
     let linear_cps = {
         let _profile = ProfileScope::new("compiler.lower.cps.linearize.dump");
         let reify_info = crate::cps::reify(ctx, lowered.cps);
-        crate::cps::linear::linearize(&reify_info)
+        crate::cps::linear::linearize(ctx, &reify_info)
     };
     let rendered = render_lcps_dump(&linear_cps);
     std::fs::write(format!("{destination}.lcps.scm"), rendered).unwrap();
@@ -220,43 +220,49 @@ mod tests {
     #[test]
     fn lcps_dump_includes_slot_allocation() {
         with_ctx(|ctx| {
-            let entry = dummy_func(ctx);
+            let _entry = dummy_func(ctx);
             let p0 = ValueId(0);
             let tmp = ValueId(1);
             let procedure = Procedure {
-                code: CodeId::Function(entry),
+                code: CodeId(0),
                 kind: ProcedureKind::Function,
                 binding: ValueId(10_000),
                 name: Value::new(false),
                 source: Value::new(false),
                 meta: Value::new(false),
                 return_cont: None,
-                params: vec![p0],
+                params: Array::from_slice(*ctx, &[p0]),
                 variadic: None,
-                free_vars: vec![],
+                free_vars: Array::from_slice(*ctx, &[]),
                 sources: Default::default(),
                 entry: BlockId(0),
-                blocks: vec![Block {
-                    id: BlockId(0),
-                    params: vec![p0],
-                    variadic: None,
-                    instructions: vec![crate::cps::linear::Instruction::PrimCall {
-                        dst: tmp,
-                        prim: Primitive::car,
-                        args: vec![LinearAtom::Local(p0)],
+                blocks: Array::from_slice(
+                    *ctx,
+                    &[Block {
+                        id: BlockId(0),
+                        params: Array::from_slice(*ctx, &[p0]),
+                        variadic: None,
+                        instructions: Array::from_slice(
+                            *ctx,
+                            &[crate::cps::linear::Instruction::PrimCall {
+                                dst: tmp,
+                                prim: Primitive::car,
+                                args: Array::from_slice(*ctx, &[LinearAtom::Local(p0)]),
+                                source: Value::new(false),
+                            }],
+                        ),
+                        terminator: Terminator::TailCall {
+                            callee: LinearAtom::Local(tmp),
+                            args: Array::from_slice(*ctx, &[LinearAtom::Local(p0)]),
+                            source: Value::new(false),
+                        },
                         source: Value::new(false),
                     }],
-                    terminator: Terminator::TailCall {
-                        callee: LinearAtom::Local(tmp),
-                        args: vec![LinearAtom::Local(p0)],
-                        source: Value::new(false),
-                    },
-                    source: Value::new(false),
-                }],
+                ),
             };
             let linear = LinearProgram {
-                entry,
-                procedures: vec![procedure],
+                entry: CodeId(0),
+                procedures: Array::from_slice(*ctx, &[procedure]),
             };
 
             let rendered = render_lcps_dump(&linear);

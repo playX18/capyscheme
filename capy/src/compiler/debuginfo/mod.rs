@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::cps::ReifyInfo;
 use crate::cps::term::{ContRef, FuncRef};
+use crate::cps::{ReifyInfo, linear::Procedure};
 use crate::expander::core::LVarRef;
 use crate::runtime::value::{Value, Vector};
 use cranelift_codegen::binemit::CodeOffset;
@@ -137,6 +137,7 @@ impl<'gc> DebugContext<'gc> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn define_function(
         &mut self,
         func: FuncRef<'gc>,
@@ -193,6 +194,7 @@ impl<'gc> DebugContext<'gc> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn define_cont(
         &mut self,
         func: ContRef<'gc>,
@@ -245,6 +247,61 @@ impl<'gc> DebugContext<'gc> {
             label_to_lvar: HashMap::new(),
             lvar_to_label: HashMap::new(),
 
+            srcloc: (file_id, line, column),
+            source_loc_set: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn define_linear_procedure(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        linkage_name: &str,
+    ) -> FunctionDebugContext<'gc> {
+        let (file_id, line, column) = self.get_span_loc(procedure.source);
+
+        let scope = self.dwarf.unit.root();
+        let entry_id = self.dwarf.unit.add(scope, gimli::DW_TAG_subprogram);
+        let entry = self.dwarf.unit.get_mut(entry_id);
+        let linkage_name_id = Some(self.dwarf.strings.add(linkage_name));
+
+        let name_id = if procedure.name != Value::new(false) {
+            self.dwarf.strings.add(procedure.name.to_string())
+        } else if let Some(binding) = procedure.sources.get(&procedure.binding) {
+            self.dwarf.strings.add(binding.name.to_string())
+        } else {
+            self.dwarf
+                .strings
+                .add(format!("linear-procedure-{}", procedure.code.0))
+        };
+
+        entry.set(gimli::DW_AT_low_pc, AttributeValue::Udata(0));
+        entry.set(gimli::DW_AT_high_pc, AttributeValue::Udata(0));
+
+        let mut frame_base_expr = Expression::new();
+        frame_base_expr.op_reg(self.stack_pointer_register);
+        entry.set(
+            gimli::DW_AT_frame_base,
+            AttributeValue::Exprloc(frame_base_expr),
+        );
+
+        if let Some(linkage_name_id) = linkage_name_id {
+            entry.set(
+                gimli::DW_AT_linkage_name,
+                AttributeValue::StringRef(linkage_name_id),
+            );
+        }
+        entry.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
+
+        entry.set(
+            gimli::DW_AT_decl_file,
+            AttributeValue::FileIndex(Some(file_id)),
+        );
+        entry.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
+
+        FunctionDebugContext {
+            entry_id,
+            label_to_lvar: HashMap::new(),
+            lvar_to_label: HashMap::new(),
             srcloc: (file_id, line, column),
             source_loc_set: HashMap::new(),
         }

@@ -177,6 +177,24 @@ impl<T: Trace> AsRef<[T]> for Array<T> {
     }
 }
 
+impl<'a, T: Trace> IntoIterator for &'a Array<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a, 'gc, T: Trace> IntoIterator for &'a Gc<'gc, Array<T>> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 impl<T: Trace> Deref for Array<T> {
     type Target = [T];
 

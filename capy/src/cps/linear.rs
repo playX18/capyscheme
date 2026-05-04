@@ -5,81 +5,103 @@ use crate::{
         term::{Atom, BranchHint, ContRef, Expression, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
-    runtime::value::{Symbol, Value},
+    rsgc::{
+        Trace,
+        alloc::{Array, ArrayRef},
+    },
+    runtime::{
+        Context,
+        value::{Symbol, Value},
+    },
 };
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub type Procedures<'gc> = ArrayRef<'gc, Procedure<'gc>>;
+pub type Blocks<'gc> = ArrayRef<'gc, Block<'gc>>;
+pub type ValueIds<'gc> = ArrayRef<'gc, ValueId>;
+pub type LinearAtoms<'gc> = ArrayRef<'gc, LinearAtom<'gc>>;
+pub type Instructions<'gc> = ArrayRef<'gc, Instruction<'gc>>;
+pub type SwitchCases<'gc> = ArrayRef<'gc, SwitchCase<'gc>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+#[collect(no_drop)]
 pub struct BlockId(pub usize);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+#[collect(no_drop)]
 pub struct ValueId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+#[collect(no_drop)]
 pub enum LinearAtom<'gc> {
     Constant(Value<'gc>),
     Local(ValueId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub enum ProcedureKind {
     Function,
     Continuation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub enum ClosureKind {
     Function,
     Continuation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CodeId<'gc> {
-    Function(FuncRef<'gc>),
-    Continuation(ContRef<'gc>),
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+#[collect(no_drop)]
+pub struct CodeId(pub u32);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
+#[collect(no_drop)]
 pub struct LinearProgram<'gc> {
-    pub entry: FuncRef<'gc>,
-    pub procedures: Vec<Procedure<'gc>>,
+    pub entry: CodeId,
+    pub procedures: Procedures<'gc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
+#[collect(no_drop)]
 pub struct Procedure<'gc> {
-    pub code: CodeId<'gc>,
+    pub code: CodeId,
     pub kind: ProcedureKind,
     pub binding: ValueId,
     pub name: Value<'gc>,
     pub source: Value<'gc>,
     pub meta: Value<'gc>,
     pub return_cont: Option<ValueId>,
-    pub params: Vec<ValueId>,
+    pub params: ValueIds<'gc>,
     pub variadic: Option<ValueId>,
-    pub free_vars: Vec<ValueId>,
+    pub free_vars: ValueIds<'gc>,
     pub sources: HashMap<ValueId, LVarRef<'gc>>,
     pub entry: BlockId,
-    pub blocks: Vec<Block<'gc>>,
+    pub blocks: Blocks<'gc>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Trace)]
+#[collect(no_drop)]
 pub struct Block<'gc> {
     pub id: BlockId,
-    pub params: Vec<ValueId>,
+    pub params: ValueIds<'gc>,
     pub variadic: Option<ValueId>,
-    pub instructions: Vec<Instruction<'gc>>,
+    pub instructions: Instructions<'gc>,
     pub terminator: Terminator<'gc>,
     pub source: Value<'gc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub enum RestPredicate {
     Null,
     Pair,
     List,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub enum Instruction<'gc> {
     Const {
         dst: ValueId,
@@ -87,7 +109,7 @@ pub enum Instruction<'gc> {
     },
     MakeClosure {
         dst: ValueId,
-        code: CodeId<'gc>,
+        code: CodeId,
         kind: ClosureKind,
         free_count: usize,
     },
@@ -115,7 +137,7 @@ pub enum Instruction<'gc> {
     PrimCall {
         dst: ValueId,
         prim: Primitive,
-        args: Vec<LinearAtom<'gc>>,
+        args: LinearAtoms<'gc>,
         source: Value<'gc>,
     },
     RestToList {
@@ -144,31 +166,35 @@ pub enum Instruction<'gc> {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub enum BranchTarget<'gc> {
     Local {
         block: BlockId,
-        args: Vec<LinearAtom<'gc>>,
+        args: LinearAtoms<'gc>,
     },
     Reified {
         continuation: LinearAtom<'gc>,
-        args: Vec<LinearAtom<'gc>>,
+        args: LinearAtoms<'gc>,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub struct SwitchCase<'gc> {
     pub value: SwitchCaseValue<'gc>,
     pub target: BranchTarget<'gc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+#[collect(no_drop)]
 pub enum SwitchCaseValue<'gc> {
     Integer(i32),
     Symbol { hash: u64, value: Value<'gc> },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub enum SwitchKind {
     Eq,
     Fixnum,
@@ -180,22 +206,23 @@ pub enum SwitchKind {
 
 const SYMBOL_HASH_DISPATCH_MIN_LENGTH: usize = 4;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
 pub enum Terminator<'gc> {
     Call {
         callee: LinearAtom<'gc>,
         retk: LinearAtom<'gc>,
-        args: Vec<LinearAtom<'gc>>,
+        args: LinearAtoms<'gc>,
         source: Value<'gc>,
     },
     TailCall {
         callee: LinearAtom<'gc>,
-        args: Vec<LinearAtom<'gc>>,
+        args: LinearAtoms<'gc>,
         source: Value<'gc>,
     },
     Jump {
         target: BlockId,
-        args: Vec<LinearAtom<'gc>>,
+        args: LinearAtoms<'gc>,
     },
     Branch {
         test: LinearAtom<'gc>,
@@ -206,39 +233,134 @@ pub enum Terminator<'gc> {
     Switch {
         kind: SwitchKind,
         scrutinee: LinearAtom<'gc>,
-        cases: Vec<SwitchCase<'gc>>,
+        cases: SwitchCases<'gc>,
         default: BranchTarget<'gc>,
     },
 }
 
-pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
-    let mut procedures = Vec::new();
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CodeRef<'gc> {
+    Function(FuncRef<'gc>),
+    Continuation(ContRef<'gc>),
+}
 
-    for func in reify.functions.iter() {
-        procedures.push(hoist_constants(lower_cache_operations(
-            lower_rest_arguments(infer_switches(linearize_function(*func))),
-        )));
+pub(crate) struct CodeIdTable<'gc> {
+    funcs: HashMap<FuncRef<'gc>, CodeId>,
+    conts: HashMap<ContRef<'gc>, CodeId>,
+    refs: HashMap<CodeId, CodeRef<'gc>>,
+}
+
+impl<'gc> CodeIdTable<'gc> {
+    pub(crate) fn new(reify: &ReifyInfo<'gc>) -> Self {
+        let mut table = Self {
+            funcs: HashMap::new(),
+            conts: HashMap::new(),
+            refs: HashMap::new(),
+        };
+
+        for func in reify.functions.iter().copied() {
+            table.insert(CodeRef::Function(func));
+        }
+        for cont in reify
+            .continuations
+            .iter()
+            .copied()
+            .filter(|cont| cont.reified.get())
+        {
+            table.insert(CodeRef::Continuation(cont));
+        }
+
+        table
     }
 
-    for cont in reify.continuations.iter().filter(|cont| cont.reified.get()) {
-        procedures.push(hoist_constants(lower_cache_operations(
-            lower_rest_arguments(infer_switches(linearize_continuation(*cont))),
-        )));
+    fn insert(&mut self, code_ref: CodeRef<'gc>) -> CodeId {
+        let code = CodeId(self.refs.len() as u32);
+        match code_ref {
+            CodeRef::Function(func) => {
+                self.funcs.insert(func, code);
+            }
+            CodeRef::Continuation(cont) => {
+                self.conts.insert(cont, code);
+            }
+        }
+        self.refs.insert(code, code_ref);
+        code
     }
 
-    LinearProgram {
-        entry: reify.entrypoint,
-        procedures,
+    pub(crate) fn function(&self, func: FuncRef<'gc>) -> CodeId {
+        self.funcs[&func]
+    }
+
+    pub(crate) fn continuation(&self, cont: ContRef<'gc>) -> CodeId {
+        self.conts[&cont]
+    }
+
+    pub(crate) fn code_ref(&self, code: CodeId) -> CodeRef<'gc> {
+        self.refs[&code]
     }
 }
 
-fn linearize_function<'gc>(func: FuncRef<'gc>) -> Procedure<'gc> {
+fn array_from_slice<'gc, T>(ctx: Context<'gc>, values: &[T]) -> ArrayRef<'gc, T>
+where
+    T: Trace + Clone,
+{
+    Array::from_slice(*ctx, values)
+}
+
+fn array_from_vec<'gc, T>(ctx: Context<'gc>, values: Vec<T>) -> ArrayRef<'gc, T>
+where
+    T: Trace + Clone,
+{
+    array_from_slice(ctx, &values)
+}
+
+pub fn linearize<'gc>(ctx: Context<'gc>, reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
+    let code_ids = CodeIdTable::new(reify);
+    let mut procedures = Vec::new();
+
+    for func in reify.functions.iter() {
+        procedures.push(hoist_constants(
+            ctx,
+            lower_cache_operations(
+                ctx,
+                lower_rest_arguments(
+                    ctx,
+                    infer_switches(ctx, linearize_function(ctx, &code_ids, *func)),
+                ),
+            ),
+        ));
+    }
+
+    for cont in reify.continuations.iter().filter(|cont| cont.reified.get()) {
+        procedures.push(hoist_constants(
+            ctx,
+            lower_cache_operations(
+                ctx,
+                lower_rest_arguments(
+                    ctx,
+                    infer_switches(ctx, linearize_continuation(ctx, &code_ids, *cont)),
+                ),
+            ),
+        ));
+    }
+
+    LinearProgram {
+        entry: code_ids.function(reify.entrypoint),
+        procedures: array_from_vec(ctx, procedures),
+    }
+}
+
+fn linearize_function<'gc>(
+    ctx: Context<'gc>,
+    code_ids: &CodeIdTable<'gc>,
+    func: FuncRef<'gc>,
+) -> Procedure<'gc> {
     let source_free_vars = vars_to_vec(
         func.free_vars
             .get()
             .expect("function free vars are reified"),
     );
-    let mut builder = ProcedureBuilder::new();
+    let mut builder = ProcedureBuilder::new(ctx, code_ids);
     let binding = builder.value(func.binding);
     let return_cont = builder.value(func.return_cont);
     let params = builder.values(func.args);
@@ -256,29 +378,33 @@ fn linearize_function<'gc>(func: FuncRef<'gc>) -> Procedure<'gc> {
     let (blocks, sources) = builder.finish();
 
     Procedure {
-        code: CodeId::Function(func),
+        code: code_ids.function(func),
         kind: ProcedureKind::Function,
         binding,
         name: func.name,
         source: func.source,
         meta: func.meta,
         return_cont: Some(return_cont),
-        params,
+        params: array_from_vec(ctx, params),
         variadic,
-        free_vars,
+        free_vars: array_from_vec(ctx, free_vars),
         entry,
         sources,
         blocks,
     }
 }
 
-fn linearize_continuation<'gc>(cont: ContRef<'gc>) -> Procedure<'gc> {
+fn linearize_continuation<'gc>(
+    ctx: Context<'gc>,
+    code_ids: &CodeIdTable<'gc>,
+    cont: ContRef<'gc>,
+) -> Procedure<'gc> {
     let source_free_vars = vars_to_vec(
         cont.free_vars
             .get()
             .expect("continuation free vars are reified"),
     );
-    let mut builder = ProcedureBuilder::new();
+    let mut builder = ProcedureBuilder::new(ctx, code_ids);
     let binding = builder.value(cont.binding);
     let params = builder.values(cont.args);
     let variadic = cont.variadic.map(|var| builder.value(var));
@@ -295,16 +421,16 @@ fn linearize_continuation<'gc>(cont: ContRef<'gc>) -> Procedure<'gc> {
     let (blocks, sources) = builder.finish();
 
     Procedure {
-        code: CodeId::Continuation(cont),
+        code: code_ids.continuation(cont),
         kind: ProcedureKind::Continuation,
         binding,
         name: cont.name,
         source: cont.source,
         meta: cont.meta,
         return_cont: None,
-        params,
+        params: array_from_vec(ctx, params),
         variadic,
-        free_vars,
+        free_vars: array_from_vec(ctx, free_vars),
         entry,
         sources,
         blocks,
@@ -328,7 +454,7 @@ fn params_with_variadic(mut args: Vec<ValueId>, variadic: Option<ValueId>) -> Ve
 }
 
 fn closure_refs<'gc>(
-    builder: &mut ProcedureBuilder<'gc>,
+    builder: &mut ProcedureBuilder<'gc, '_>,
     binding: ValueId,
     free_vars: &[LVarRef<'gc>],
 ) -> Vec<Instruction<'gc>> {
@@ -357,7 +483,7 @@ enum RestRewrite {
     Predicate(RestAlias, RestPredicate),
 }
 
-fn lower_rest_arguments<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+fn lower_rest_arguments<'gc>(ctx: Context<'gc>, procedure: Procedure<'gc>) -> Procedure<'gc> {
     let Some(rest) = procedure.variadic else {
         return procedure;
     };
@@ -365,12 +491,10 @@ fn lower_rest_arguments<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
     let aliases = collect_rest_aliases(&procedure, rest);
     let loop_blocks = loop_blocks(&procedure);
     if has_incompatible_rest_use(&procedure, rest, &aliases, &loop_blocks) {
-        insert_rest_to_list(&mut procedure, rest);
+        insert_rest_to_list(ctx, procedure, rest)
     } else {
-        rewrite_rest_uses(&mut procedure, rest, &aliases);
+        rewrite_rest_uses(ctx, procedure, rest, &aliases)
     }
-
-    procedure
 }
 
 fn collect_rest_aliases<'gc>(
@@ -501,71 +625,94 @@ fn has_incompatible_rest_use<'gc>(
     false
 }
 
-fn insert_rest_to_list<'gc>(procedure: &mut Procedure<'gc>, rest: ValueId) {
-    let entry = procedure
+fn insert_rest_to_list<'gc>(
+    ctx: Context<'gc>,
+    mut procedure: Procedure<'gc>,
+    rest: ValueId,
+) -> Procedure<'gc> {
+    let mut found_entry = false;
+    let blocks = procedure
         .blocks
-        .iter_mut()
-        .find(|block| block.id == procedure.entry)
-        .expect("procedure should contain entry block");
-    entry.instructions.insert(
-        0,
-        Instruction::RestToList {
-            dst: rest,
-            rest,
-            source: entry.source,
-        },
-    );
+        .iter()
+        .map(|block| {
+            let mut block = block.clone();
+            if block.id == procedure.entry {
+                found_entry = true;
+                let mut instructions = Vec::with_capacity(block.instructions.len() + 1);
+                instructions.push(Instruction::RestToList {
+                    dst: rest,
+                    rest,
+                    source: block.source,
+                });
+                instructions.extend(block.instructions.iter().cloned());
+                block.instructions = array_from_vec(ctx, instructions);
+            }
+            block
+        })
+        .collect::<Vec<_>>();
+    assert!(found_entry, "procedure should contain entry block");
+    procedure.blocks = array_from_vec(ctx, blocks);
+    procedure
 }
 
 fn rewrite_rest_uses<'gc>(
-    procedure: &mut Procedure<'gc>,
+    ctx: Context<'gc>,
+    mut procedure: Procedure<'gc>,
     rest: ValueId,
     aliases: &HashMap<ValueId, RestAlias>,
-) {
-    for block in &mut procedure.blocks {
-        let mut lowered = Vec::with_capacity(block.instructions.len());
-        for instruction in block.instructions.drain(..) {
-            match instruction {
-                Instruction::PrimCall {
-                    dst,
-                    prim,
-                    args,
-                    source,
-                } => match rest_rewrite_for_prim(prim, &args, rest, aliases) {
-                    Some(RestRewrite::Cdr) => {}
-                    Some(RestRewrite::Ref(alias)) => lowered.push(Instruction::RestRef {
-                        dst,
-                        rest: alias.rest,
-                        index: alias.skip,
-                        source,
-                    }),
-                    Some(RestRewrite::Length(alias)) => lowered.push(Instruction::RestLength {
-                        dst,
-                        rest: alias.rest,
-                        skip: alias.skip,
-                        source,
-                    }),
-                    Some(RestRewrite::Predicate(alias, predicate)) => {
-                        lowered.push(Instruction::RestPredicate {
-                            dst,
-                            rest: alias.rest,
-                            predicate,
-                            skip: alias.skip,
-                            source,
-                        })
-                    }
-                    None => lowered.push(Instruction::PrimCall {
+) -> Procedure<'gc> {
+    let blocks = procedure
+        .blocks
+        .iter()
+        .map(|block| {
+            let mut block = block.clone();
+            let mut lowered = Vec::with_capacity(block.instructions.len());
+            for instruction in block.instructions.iter().cloned() {
+                match instruction {
+                    Instruction::PrimCall {
                         dst,
                         prim,
                         args,
                         source,
-                    }),
-                },
-                other => lowered.push(other),
+                    } => match rest_rewrite_for_prim(prim, &args, rest, aliases) {
+                        Some(RestRewrite::Cdr) => {}
+                        Some(RestRewrite::Ref(alias)) => lowered.push(Instruction::RestRef {
+                            dst,
+                            rest: alias.rest,
+                            index: alias.skip,
+                            source,
+                        }),
+                        Some(RestRewrite::Length(alias)) => lowered.push(Instruction::RestLength {
+                            dst,
+                            rest: alias.rest,
+                            skip: alias.skip,
+                            source,
+                        }),
+                        Some(RestRewrite::Predicate(alias, predicate)) => {
+                            lowered.push(Instruction::RestPredicate {
+                                dst,
+                                rest: alias.rest,
+                                predicate,
+                                skip: alias.skip,
+                                source,
+                            })
+                        }
+                        None => lowered.push(Instruction::PrimCall {
+                            dst,
+                            prim,
+                            args,
+                            source,
+                        }),
+                    },
+                    other => lowered.push(other),
+                }
             }
-        }
-        block.instructions = lowered;
-    }
+            block.instructions = array_from_vec(ctx, lowered);
+            block
+        })
+        .collect::<Vec<_>>();
+    procedure.blocks = array_from_vec(ctx, blocks);
+    procedure
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -588,7 +735,7 @@ struct SwitchNode<'gc> {
     instruction_count: usize,
 }
 
-fn infer_switches<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+fn infer_switches<'gc>(ctx: Context<'gc>, mut procedure: Procedure<'gc>) -> Procedure<'gc> {
     loop {
         let predecessors = local_predecessor_counts(&procedure);
         let Some(candidate) = procedure
@@ -598,7 +745,7 @@ fn infer_switches<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
         else {
             break;
         };
-        apply_switch_candidate(&mut procedure, candidate);
+        apply_switch_candidate(ctx, &mut procedure, candidate);
     }
 
     procedure
@@ -682,7 +829,7 @@ fn infer_switch_candidate<'gc>(
             .any(|case| branch_target_mentions_defs(&case.target, &removed_defs))
         || branch_target_mentions_defs(&next, &removed_defs)
         || surviving_blocks_mention_defs(
-            &procedure.blocks,
+            procedure.blocks.as_slice(),
             start,
             &removed,
             &removed_defs,
@@ -1112,7 +1259,11 @@ fn surviving_blocks_mention_defs<'gc>(
     false
 }
 
-fn apply_switch_candidate<'gc>(procedure: &mut Procedure<'gc>, candidate: SwitchCandidate<'gc>) {
+fn apply_switch_candidate<'gc>(
+    ctx: Context<'gc>,
+    procedure: &mut Procedure<'gc>,
+    candidate: SwitchCandidate<'gc>,
+) {
     let removed = candidate
         .chain_blocks
         .iter()
@@ -1121,93 +1272,116 @@ fn apply_switch_candidate<'gc>(procedure: &mut Procedure<'gc>, candidate: Switch
         .collect::<HashSet<_>>();
     let start = candidate.chain_blocks[0];
 
-    for block in &mut procedure.blocks {
-        if block.id == start {
-            let keep = block
-                .instructions
-                .len()
-                .checked_sub(candidate.instruction_count)
-                .expect("switch candidate consumes no more than the block instructions");
-            block.instructions.truncate(keep);
-            block.terminator = Terminator::Switch {
-                kind: candidate.kind,
-                scrutinee: candidate.scrutinee,
-                cases: candidate.cases,
-                default: candidate.default,
-            };
-            break;
-        }
-    }
-
-    procedure
+    let mut found_start = false;
+    let blocks = procedure
         .blocks
-        .retain(|block| !removed.contains(&block.id));
-}
-
-fn hoist_constants<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
-    let mut hoister = ConstantHoister::new(&procedure);
-    for block in &mut procedure.blocks {
-        let mut instructions = Vec::with_capacity(block.instructions.len());
-        for instruction in block.instructions.drain(..) {
-            let instruction = hoister.instruction(instruction, &mut instructions);
-            instructions.push(instruction);
-        }
-        block.terminator = hoister.terminator(block.terminator.clone(), &mut instructions);
-        block.instructions = instructions;
-    }
-    procedure
-}
-
-fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
-    for block in &mut procedure.blocks {
-        let mut lowered = Vec::with_capacity(block.instructions.len());
-        for instruction in block.instructions.drain(..) {
-            match instruction {
-                Instruction::PrimCall {
-                    dst,
-                    prim: Primitive::cache_ref,
-                    args,
-                    source,
-                } => {
-                    let [cache_key] = args.as_slice() else {
-                        panic!("cache-ref expects 1 argument, got {}", args.len());
-                    };
-                    lowered.push(Instruction::CacheRef {
-                        dst,
-                        cache_key: *cache_key,
-                        source,
-                    });
-                }
-                Instruction::PrimCall {
-                    dst,
-                    prim: Primitive::cache_set,
-                    args,
-                    source,
-                } => {
-                    let [cache_key, value] = args.as_slice() else {
-                        panic!("cache-set! expects 2 arguments, got {}", args.len());
-                    };
-                    lowered.push(Instruction::CacheSet {
-                        dst,
-                        cache_key: *cache_key,
-                        value: *value,
-                        source,
-                    });
-                }
-                other => lowered.push(other),
+        .iter()
+        .filter_map(|block| {
+            if removed.contains(&block.id) {
+                return None;
             }
-        }
-        block.instructions = lowered;
-    }
+            let mut block = block.clone();
+            if block.id == start {
+                found_start = true;
+                let keep = block
+                    .instructions
+                    .len()
+                    .checked_sub(candidate.instruction_count)
+                    .expect("switch candidate consumes no more than the block instructions");
+                block.instructions = array_from_slice(ctx, &block.instructions[..keep]);
+                block.terminator = Terminator::Switch {
+                    kind: candidate.kind,
+                    scrutinee: candidate.scrutinee,
+                    cases: array_from_vec(ctx, candidate.cases.clone()),
+                    default: candidate.default.clone(),
+                };
+            }
+            Some(block)
+        })
+        .collect::<Vec<_>>();
+    assert!(found_start, "switch candidate start block should exist");
+    procedure.blocks = array_from_vec(ctx, blocks);
+}
+
+fn hoist_constants<'gc>(ctx: Context<'gc>, mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+    let mut hoister = ConstantHoister::new(ctx, &procedure);
+    let blocks = procedure
+        .blocks
+        .iter()
+        .map(|block| {
+            let mut block = block.clone();
+            let mut instructions = Vec::with_capacity(block.instructions.len());
+            for instruction in block.instructions.iter().cloned() {
+                let instruction = hoister.instruction(instruction, &mut instructions);
+                instructions.push(instruction);
+            }
+            block.terminator = hoister.terminator(block.terminator.clone(), &mut instructions);
+            block.instructions = array_from_vec(ctx, instructions);
+            block
+        })
+        .collect::<Vec<_>>();
+    procedure.blocks = array_from_vec(ctx, blocks);
     procedure
 }
 
-struct ConstantHoister {
+fn lower_cache_operations<'gc>(ctx: Context<'gc>, mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+    let blocks = procedure
+        .blocks
+        .iter()
+        .map(|block| {
+            let mut block = block.clone();
+            let mut lowered = Vec::with_capacity(block.instructions.len());
+            for instruction in block.instructions.iter().cloned() {
+                match instruction {
+                    Instruction::PrimCall {
+                        dst,
+                        prim: Primitive::cache_ref,
+                        args,
+                        source,
+                    } => {
+                        let [cache_key] = args.as_slice() else {
+                            panic!("cache-ref expects 1 argument, got {}", args.len());
+                        };
+                        lowered.push(Instruction::CacheRef {
+                            dst,
+                            cache_key: *cache_key,
+                            source,
+                        });
+                    }
+                    Instruction::PrimCall {
+                        dst,
+                        prim: Primitive::cache_set,
+                        args,
+                        source,
+                    } => {
+                        let [cache_key, value] = args.as_slice() else {
+                            panic!("cache-set! expects 2 arguments, got {}", args.len());
+                        };
+                        lowered.push(Instruction::CacheSet {
+                            dst,
+                            cache_key: *cache_key,
+                            value: *value,
+                            source,
+                        });
+                    }
+                    other => lowered.push(other),
+                }
+            }
+            block.instructions = array_from_vec(ctx, lowered);
+            block
+        })
+        .collect::<Vec<_>>();
+    procedure.blocks = array_from_vec(ctx, blocks);
+    procedure
+}
+
+struct ConstantHoister<'gc> {
+    ctx: Context<'gc>,
     next_value: u32,
 }
 
-impl ConstantHoister {
-    fn new<'gc>(procedure: &Procedure<'gc>) -> Self {
+impl<'gc> ConstantHoister<'gc> {
+    fn new(ctx: Context<'gc>, procedure: &Procedure<'gc>) -> Self {
         let mut max_value = procedure.binding.0;
         if let Some(return_cont) = procedure.return_cont {
             max_value = max_value.max(return_cont.0);
@@ -1238,6 +1412,7 @@ impl ConstantHoister {
             }
         }
         Self {
+            ctx,
             next_value: max_value + 1,
         }
     }
@@ -1248,7 +1423,7 @@ impl ConstantHoister {
         value
     }
 
-    fn atom<'gc>(
+    fn atom(
         &mut self,
         atom: LinearAtom<'gc>,
         instructions: &mut Vec<Instruction<'gc>>,
@@ -1263,18 +1438,18 @@ impl ConstantHoister {
         }
     }
 
-    fn atoms<'gc>(
-        &mut self,
-        atoms: Vec<LinearAtom<'gc>>,
-        instructions: &mut Vec<Instruction<'gc>>,
-    ) -> Vec<LinearAtom<'gc>> {
-        atoms
+    fn atoms<I>(&mut self, atoms: I, instructions: &mut Vec<Instruction<'gc>>) -> LinearAtoms<'gc>
+    where
+        I: IntoIterator<Item = LinearAtom<'gc>>,
+    {
+        let atoms = atoms
             .into_iter()
             .map(|atom| self.atom(atom, instructions))
-            .collect()
+            .collect::<Vec<_>>();
+        array_from_vec(self.ctx, atoms)
     }
 
-    fn instruction<'gc>(
+    fn instruction(
         &mut self,
         instruction: Instruction<'gc>,
         instructions: &mut Vec<Instruction<'gc>>,
@@ -1314,13 +1489,13 @@ impl ConstantHoister {
             } => Instruction::PrimCall {
                 dst,
                 prim,
-                args: self.atoms(args, instructions),
+                args: self.atoms(args.iter().copied(), instructions),
                 source,
             },
         }
     }
 
-    fn branch_target<'gc>(
+    fn branch_target(
         &mut self,
         target: BranchTarget<'gc>,
         instructions: &mut Vec<Instruction<'gc>>,
@@ -1328,16 +1503,16 @@ impl ConstantHoister {
         match target {
             BranchTarget::Local { block, args } => BranchTarget::Local {
                 block,
-                args: self.atoms(args, instructions),
+                args: self.atoms(args.iter().copied(), instructions),
             },
             BranchTarget::Reified { continuation, args } => BranchTarget::Reified {
                 continuation: self.atom(continuation, instructions),
-                args: self.atoms(args, instructions),
+                args: self.atoms(args.iter().copied(), instructions),
             },
         }
     }
 
-    fn terminator<'gc>(
+    fn terminator(
         &mut self,
         terminator: Terminator<'gc>,
         instructions: &mut Vec<Instruction<'gc>>,
@@ -1351,7 +1526,7 @@ impl ConstantHoister {
             } => Terminator::Call {
                 callee: self.atom(callee, instructions),
                 retk: self.atom(retk, instructions),
-                args: self.atoms(args, instructions),
+                args: self.atoms(args.iter().copied(), instructions),
                 source,
             },
             Terminator::TailCall {
@@ -1360,12 +1535,12 @@ impl ConstantHoister {
                 source,
             } => Terminator::TailCall {
                 callee: self.atom(callee, instructions),
-                args: self.atoms(args, instructions),
+                args: self.atoms(args.iter().copied(), instructions),
                 source,
             },
             Terminator::Jump { target, args } => Terminator::Jump {
                 target,
-                args: self.atoms(args, instructions),
+                args: self.atoms(args.iter().copied(), instructions),
             },
             Terminator::Branch {
                 test,
@@ -1386,13 +1561,17 @@ impl ConstantHoister {
             } => Terminator::Switch {
                 kind,
                 scrutinee: self.atom(scrutinee, instructions),
-                cases: cases
-                    .into_iter()
-                    .map(|case| SwitchCase {
-                        value: case.value,
-                        target: self.branch_target(case.target, instructions),
-                    })
-                    .collect(),
+                cases: array_from_vec(
+                    self.ctx,
+                    cases
+                        .iter()
+                        .cloned()
+                        .map(|case| SwitchCase {
+                            value: case.value,
+                            target: self.branch_target(case.target, instructions),
+                        })
+                        .collect(),
+                ),
                 default: self.branch_target(default, instructions),
             },
         }
@@ -1458,7 +1637,9 @@ fn can_reach(start: BlockId, target: BlockId, successors: &HashMap<BlockId, Vec<
     false
 }
 
-struct ProcedureBuilder<'gc> {
+struct ProcedureBuilder<'gc, 'a> {
+    ctx: Context<'gc>,
+    code_ids: &'a CodeIdTable<'gc>,
     blocks: Vec<Block<'gc>>,
     local_blocks: HashMap<LVarRef<'gc>, BlockId>,
     values: HashMap<LVarRef<'gc>, ValueId>,
@@ -1467,9 +1648,11 @@ struct ProcedureBuilder<'gc> {
     next_block: usize,
 }
 
-impl<'gc> ProcedureBuilder<'gc> {
-    fn new() -> Self {
+impl<'gc, 'a> ProcedureBuilder<'gc, 'a> {
+    fn new(ctx: Context<'gc>, code_ids: &'a CodeIdTable<'gc>) -> Self {
         Self {
+            ctx,
+            code_ids,
             blocks: Vec::new(),
             local_blocks: HashMap::new(),
             values: HashMap::new(),
@@ -1479,9 +1662,9 @@ impl<'gc> ProcedureBuilder<'gc> {
         }
     }
 
-    fn finish(mut self) -> (Vec<Block<'gc>>, HashMap<ValueId, LVarRef<'gc>>) {
+    fn finish(mut self) -> (Blocks<'gc>, HashMap<ValueId, LVarRef<'gc>>) {
         self.blocks.sort_by_key(|block| block.id.0);
-        (self.blocks, self.sources)
+        (array_from_vec(self.ctx, self.blocks), self.sources)
     }
 
     fn value(&mut self, var: LVarRef<'gc>) -> ValueId {
@@ -1510,8 +1693,13 @@ impl<'gc> ProcedureBuilder<'gc> {
         }
     }
 
-    fn atoms(&mut self, args: crate::cps::term::Atoms<'gc>) -> Vec<LinearAtom<'gc>> {
-        args.iter().copied().map(|atom| self.atom(atom)).collect()
+    fn atoms(&mut self, args: crate::cps::term::Atoms<'gc>) -> LinearAtoms<'gc> {
+        let atoms = args
+            .iter()
+            .copied()
+            .map(|atom| self.atom(atom))
+            .collect::<Vec<_>>();
+        array_from_vec(self.ctx, atoms)
     }
 
     fn alloc_block(&mut self) -> BlockId {
@@ -1532,9 +1720,9 @@ impl<'gc> ProcedureBuilder<'gc> {
         let terminator = self.convert_term(term, &mut instructions);
         self.blocks.push(Block {
             id,
-            params,
+            params: array_from_vec(self.ctx, params),
             variadic,
-            instructions,
+            instructions: array_from_vec(self.ctx, instructions),
             terminator,
             source,
         });
@@ -1568,7 +1756,7 @@ impl<'gc> ProcedureBuilder<'gc> {
                     );
                     instructions.push(Instruction::MakeClosure {
                         dst: self.value(func.binding),
-                        code: CodeId::Function(*func),
+                        code: self.code_ids.function(*func),
                         kind: ClosureKind::Function,
                         free_count: free_vars.len(),
                     });
@@ -1602,7 +1790,7 @@ impl<'gc> ProcedureBuilder<'gc> {
                     );
                     instructions.push(Instruction::MakeClosure {
                         dst: self.value(cont.binding),
-                        code: CodeId::Continuation(*cont),
+                        code: self.code_ids.continuation(*cont),
                         kind: ClosureKind::Continuation,
                         free_count: free_vars.len(),
                     });
@@ -1682,7 +1870,9 @@ impl<'gc> ProcedureBuilder<'gc> {
         continuation: LVarRef<'gc>,
         args: Option<crate::cps::term::Atoms<'gc>>,
     ) -> BranchTarget<'gc> {
-        let args = args.map(|args| self.atoms(args)).unwrap_or_default();
+        let args = args
+            .map(|args| self.atoms(args))
+            .unwrap_or_else(|| array_from_slice(self.ctx, &[]));
         if let Some(block) = self.local_blocks.get(&continuation) {
             BranchTarget::Local {
                 block: *block,
@@ -1698,7 +1888,7 @@ impl<'gc> ProcedureBuilder<'gc> {
 }
 
 fn emit_closure_sets<'gc>(
-    builder: &mut ProcedureBuilder<'gc>,
+    builder: &mut ProcedureBuilder<'gc, '_>,
     instructions: &mut Vec<Instruction<'gc>>,
     closure: ValueId,
     free_vars: &[LVarRef<'gc>],
@@ -1739,7 +1929,7 @@ impl<'gc> Instruction<'gc> {
             Self::CacheSet {
                 cache_key, value, ..
             } => vec![*cache_key, *value],
-            Self::PrimCall { args, .. } => args.clone(),
+            Self::PrimCall { args, .. } => args.iter().copied().collect(),
             Self::RestToList { .. } => vec![],
             Self::RestRef { rest, .. }
             | Self::RestLength { rest, .. }
@@ -1758,7 +1948,7 @@ impl<'gc> BranchTarget<'gc> {
 
     pub fn uses(&self) -> Vec<LinearAtom<'gc>> {
         match self {
-            Self::Local { args, .. } => args.clone(),
+            Self::Local { args, .. } => args.iter().copied().collect(),
             Self::Reified { continuation, args } => {
                 let mut uses = Vec::with_capacity(args.len() + 1);
                 uses.push(*continuation);
@@ -1787,7 +1977,7 @@ impl<'gc> Terminator<'gc> {
                 uses.extend(args.iter().copied());
                 uses
             }
-            Self::Jump { args, .. } => args.clone(),
+            Self::Jump { args, .. } => args.iter().copied().collect(),
             Self::Branch {
                 test,
                 consequent,

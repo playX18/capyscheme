@@ -31,7 +31,7 @@ pub fn compile_cps_to_object<'gc>(
 ) -> Result<ObjectProduct, Value<'gc>> {
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
     let reify_info = reify(ctx, cps);
-    let linear = linearize(&reify_info);
+    let linear = linearize(ctx, &reify_info);
 
     let mut shared_builder = settings::builder();
     shared_builder.set("enable_probestack", "false").unwrap();

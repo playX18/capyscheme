@@ -761,7 +761,7 @@ fn call_sites<'gc>(procedure: &Procedure<'gc>, liveness: &Liveness) -> Vec<CallS
                     source: block.id,
                     site: CallSitePos::Terminator,
                     kind: CallSiteKind::Call,
-                    args: args.clone(),
+                    args: args.iter().copied().collect(),
                     live,
                 });
             }
@@ -772,7 +772,7 @@ fn call_sites<'gc>(procedure: &Procedure<'gc>, liveness: &Liveness) -> Vec<CallS
                     source: block.id,
                     site: CallSitePos::Terminator,
                     kind: CallSiteKind::TailCall,
-                    args: args.clone(),
+                    args: args.iter().copied().collect(),
                     live,
                 });
             }
@@ -834,7 +834,7 @@ fn push_reified_call_site<'gc>(
         source,
         site,
         kind: CallSiteKind::ReifiedContinuation,
-        args: args.clone(),
+        args: args.iter().copied().collect(),
         live,
     });
 }

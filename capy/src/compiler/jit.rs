@@ -6,7 +6,7 @@ use std::sync::{
 use crate::{
     compiler::{
         CompilationOptions,
-        ssa::{ContOrFunc, ImportedDataSlots, ModuleBuilder, SSABuilder},
+        ssa::{ContOrFunc, ImportedDataSlots, ModuleBuilder, SSABuilder, procedure_linkage_name},
     },
     cps::{
         ReifyInfo,
@@ -44,7 +44,7 @@ pub(crate) fn compile_cps_to_jit_thunk<'gc>(
     options: CompilationOptions,
 ) -> Result<Value<'gc>, Value<'gc>> {
     let reify_info = reify(ctx, cps);
-    let linear = linearize(&reify_info);
+    let linear = linearize(ctx, &reify_info);
     let state = Box::new(JitModuleState::new(ctx, reify_info, linear, options));
     let state_ptr = &*state as *const JitModuleState<'gc> as usize;
     state.initialize_parents(state_ptr);
@@ -167,7 +167,7 @@ struct JitSlot<'gc> {
 }
 
 struct JitCodeBlockSlot<'gc> {
-    code: CodeId<'gc>,
+    code: CodeId,
     value: Value<'gc>,
     symbol: String,
 }
@@ -262,8 +262,7 @@ impl<'gc> JitModuleState<'gc> {
         let entry_code_block = code_block_slots
             .iter()
             .find_map(|slot| {
-                (slot.code == CodeId::Function(reify_info.entrypoint))
-                    .then(|| slot.value.downcast::<CodeBlock>())
+                (slot.code == linear.entry).then(|| slot.value.downcast::<CodeBlock>())
             })
             .expect("linear JIT module should contain entrypoint code block");
         let entrypoint = Closure::new(ctx, entry_code_block, &[], false).into();
@@ -330,37 +329,38 @@ impl<'gc> JitModuleState<'gc> {
 
         let sig = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
         for procedure in &self.linear.procedures {
-            match procedure.code {
-                CodeId::Function(func) => {
+            match procedure.kind {
+                ProcedureKind::Function => {
                     let name = jit_function_name(procedure);
                     let func_id = module_builder
                         .module
                         .declare_function(&name, Linkage::Export, &sig)
                         .expect("failed to declare JIT function");
-                    module_builder.func_for_func.insert(func, func_id);
+                    module_builder.func_for_code.insert(procedure.code, func_id);
                     let symbol = self.code_block_symbol(procedure.code);
                     let data_id = module_builder.declare_imported_code_block_slot(symbol);
-                    module_builder.code_block_for_func.insert(func, data_id);
+                    module_builder
+                        .code_block_for_code
+                        .insert(procedure.code, data_id);
                 }
-                CodeId::Continuation(cont) => {
+                ProcedureKind::Continuation => {
                     let name = jit_function_name(procedure);
                     let func_id = module_builder
                         .module
                         .declare_function(&name, Linkage::Export, &sig)
                         .expect("failed to declare JIT continuation");
-                    module_builder.func_for_cont.insert(cont, func_id);
+                    module_builder.func_for_code.insert(procedure.code, func_id);
                     let symbol = self.code_block_symbol(procedure.code);
                     let data_id = module_builder.declare_imported_code_block_slot(symbol);
-                    module_builder.code_block_for_cont.insert(cont, data_id);
+                    module_builder
+                        .code_block_for_code
+                        .insert(procedure.code, data_id);
                 }
             }
         }
 
         let procedure = &procedure_state.procedure;
-        let func_id = match procedure.code {
-            CodeId::Function(func) => module_builder.func_for_func[&func],
-            CodeId::Continuation(cont) => module_builder.func_for_cont[&cont],
-        };
+        let func_id = module_builder.func_for_code[&procedure.code];
 
         let mut context = module_builder.module.make_context();
         context.func.signature = sig;
@@ -371,14 +371,9 @@ impl<'gc> JitModuleState<'gc> {
             &mut builder.func,
             &mut module_builder.module,
         );
-        let func_debug_cx = match procedure.code {
-            CodeId::Function(func) => module_builder
-                .debug_context
-                .define_function(func, &jit_function_name(procedure)),
-            CodeId::Continuation(cont) => module_builder
-                .debug_context
-                .define_cont(cont, &jit_function_name(procedure)),
-        };
+        let func_debug_cx = module_builder
+            .debug_context
+            .define_linear_procedure(procedure, &jit_function_name(procedure));
         let mut ssa = SSABuilder::new(
             &mut module_builder,
             builder,
@@ -424,7 +419,7 @@ impl<'gc> JitModuleState<'gc> {
         }
     }
 
-    fn code_block_symbol(&self, code: CodeId<'gc>) -> &str {
+    fn code_block_symbol(&self, code: CodeId) -> &str {
         self.code_block_slots
             .iter()
             .find_map(|slot| (slot.code == code).then_some(slot.symbol.as_str()))
@@ -433,10 +428,11 @@ impl<'gc> JitModuleState<'gc> {
 }
 
 fn jit_function_name(procedure: &Procedure<'_>) -> String {
-    match procedure.code {
-        CodeId::Function(func) => format!("jit_fn:{}:{}", func.name, func.binding.name),
-        CodeId::Continuation(cont) => format!("jit_cont:{}:{}", cont.name, cont.binding.name),
-    }
+    let prefix = match procedure.kind {
+        ProcedureKind::Function => "jit_fn",
+        ProcedureKind::Continuation => "jit_cont",
+    };
+    procedure_linkage_name(prefix, procedure.code.0 as usize, procedure)
 }
 
 fn arity_for_procedure(procedure: &Procedure<'_>) -> CodeArity {
@@ -563,14 +559,14 @@ unsafe impl<'gc> Trace for JitSlot<'gc> {
 unsafe impl<'gc> Trace for JitCodeBlockSlot<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         unsafe {
-            trace_code_id(&mut self.code, visitor);
+            self.code.trace(visitor);
             self.value.trace(visitor);
         }
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         unsafe {
-            process_code_id_weak_refs(&mut self.code, weak_processor);
+            self.code.process_weak_refs(weak_processor);
             self.value.process_weak_refs(weak_processor);
         }
     }
@@ -579,14 +575,14 @@ unsafe impl<'gc> Trace for JitCodeBlockSlot<'gc> {
 unsafe impl<'gc> Trace for JitProcedureState<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         unsafe {
-            trace_procedure(&mut self.procedure, visitor);
+            self.procedure.trace(visitor);
             self.code_block.trace(visitor);
         }
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         unsafe {
-            process_procedure_weak_refs(&mut self.procedure, weak_processor);
+            self.procedure.process_weak_refs(weak_processor);
             self.code_block.process_weak_refs(weak_processor);
         }
     }
@@ -599,7 +595,7 @@ unsafe impl<'gc> Trace for JitModuleState<'gc> {
             self.reify_info.entrypoint.trace(visitor);
             self.reify_info.functions.trace(visitor);
             self.reify_info.continuations.trace(visitor);
-            trace_linear_program(&mut self.linear, visitor);
+            self.linear.trace(visitor);
             self.constant_slots.trace(visitor);
             self.cache_slots.trace(visitor);
             self.code_block_slots.trace(visitor);
@@ -615,181 +611,11 @@ unsafe impl<'gc> Trace for JitModuleState<'gc> {
             self.reify_info
                 .continuations
                 .process_weak_refs(weak_processor);
-            process_linear_program_weak_refs(&mut self.linear, weak_processor);
+            self.linear.process_weak_refs(weak_processor);
             self.constant_slots.process_weak_refs(weak_processor);
             self.cache_slots.process_weak_refs(weak_processor);
             self.code_block_slots.process_weak_refs(weak_processor);
             self.procedures.process_weak_refs(weak_processor);
-        }
-    }
-}
-
-fn trace_linear_program<'gc>(program: &mut LinearProgram<'gc>, visitor: &mut Visitor) {
-    unsafe {
-        program.entry.trace(visitor);
-        for procedure in &mut program.procedures {
-            trace_procedure(procedure, visitor);
-        }
-    }
-}
-
-fn process_linear_program_weak_refs<'gc>(
-    program: &mut LinearProgram<'gc>,
-    weak_processor: &mut crate::rsgc::WeakProcessor,
-) {
-    unsafe {
-        program.entry.process_weak_refs(weak_processor);
-        for procedure in &mut program.procedures {
-            process_procedure_weak_refs(procedure, weak_processor);
-        }
-    }
-}
-
-fn trace_procedure<'gc>(procedure: &mut Procedure<'gc>, visitor: &mut Visitor) {
-    unsafe {
-        trace_code_id(&mut procedure.code, visitor);
-        procedure.name.trace(visitor);
-        procedure.source.trace(visitor);
-        procedure.meta.trace(visitor);
-        for source in procedure.sources.values_mut() {
-            source.trace(visitor);
-        }
-        for block in &mut procedure.blocks {
-            block.source.trace(visitor);
-            for instruction in &mut block.instructions {
-                trace_instruction(instruction, visitor);
-            }
-            trace_terminator(&mut block.terminator, visitor);
-        }
-    }
-}
-
-fn process_procedure_weak_refs<'gc>(
-    procedure: &mut Procedure<'gc>,
-    weak_processor: &mut crate::rsgc::WeakProcessor,
-) {
-    unsafe {
-        process_code_id_weak_refs(&mut procedure.code, weak_processor);
-        procedure.name.process_weak_refs(weak_processor);
-        procedure.source.process_weak_refs(weak_processor);
-        procedure.meta.process_weak_refs(weak_processor);
-        for source in procedure.sources.values_mut() {
-            source.process_weak_refs(weak_processor);
-        }
-        for block in &mut procedure.blocks {
-            block.source.process_weak_refs(weak_processor);
-            for instruction in &mut block.instructions {
-                process_instruction_weak_refs(instruction, weak_processor);
-            }
-            process_terminator_weak_refs(&mut block.terminator, weak_processor);
-        }
-    }
-}
-
-fn trace_code_id<'gc>(code: &mut CodeId<'gc>, visitor: &mut Visitor) {
-    unsafe {
-        match code {
-            CodeId::Function(func) => func.trace(visitor),
-            CodeId::Continuation(cont) => cont.trace(visitor),
-        }
-    }
-}
-
-fn process_code_id_weak_refs<'gc>(
-    code: &mut CodeId<'gc>,
-    weak_processor: &mut crate::rsgc::WeakProcessor,
-) {
-    unsafe {
-        match code {
-            CodeId::Function(func) => func.process_weak_refs(weak_processor),
-            CodeId::Continuation(cont) => cont.process_weak_refs(weak_processor),
-        }
-    }
-}
-
-fn trace_instruction<'gc>(instruction: &mut Instruction<'gc>, visitor: &mut Visitor) {
-    unsafe {
-        match instruction {
-            Instruction::Const { value, .. } => value.trace(visitor),
-            Instruction::CacheRef { source, .. }
-            | Instruction::CacheSet { source, .. }
-            | Instruction::PrimCall { source, .. }
-            | Instruction::RestToList { source, .. }
-            | Instruction::RestRef { source, .. }
-            | Instruction::RestLength { source, .. }
-            | Instruction::RestPredicate { source, .. } => source.trace(visitor),
-            Instruction::MakeClosure { code, .. } => trace_code_id(code, visitor),
-            Instruction::ClosureRef { .. } | Instruction::ClosureSet { .. } => {}
-        }
-    }
-}
-
-fn process_instruction_weak_refs<'gc>(
-    instruction: &mut Instruction<'gc>,
-    weak_processor: &mut crate::rsgc::WeakProcessor,
-) {
-    unsafe {
-        match instruction {
-            Instruction::Const { value, .. } => value.process_weak_refs(weak_processor),
-            Instruction::CacheRef { source, .. }
-            | Instruction::CacheSet { source, .. }
-            | Instruction::PrimCall { source, .. }
-            | Instruction::RestToList { source, .. }
-            | Instruction::RestRef { source, .. }
-            | Instruction::RestLength { source, .. }
-            | Instruction::RestPredicate { source, .. } => source.process_weak_refs(weak_processor),
-            Instruction::MakeClosure { code, .. } => {
-                process_code_id_weak_refs(code, weak_processor)
-            }
-            Instruction::ClosureRef { .. } | Instruction::ClosureSet { .. } => {}
-        }
-    }
-}
-
-fn trace_terminator<'gc>(
-    terminator: &mut crate::cps::linear::Terminator<'gc>,
-    visitor: &mut Visitor,
-) {
-    unsafe {
-        match terminator {
-            crate::cps::linear::Terminator::Call { source, .. }
-            | crate::cps::linear::Terminator::TailCall { source, .. } => source.trace(visitor),
-            crate::cps::linear::Terminator::Jump { .. }
-            | crate::cps::linear::Terminator::Branch { .. } => {}
-            crate::cps::linear::Terminator::Switch { cases, .. } => {
-                for case in cases {
-                    if let crate::cps::linear::SwitchCaseValue::Symbol { value, .. } =
-                        &mut case.value
-                    {
-                        value.trace(visitor);
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn process_terminator_weak_refs<'gc>(
-    terminator: &mut crate::cps::linear::Terminator<'gc>,
-    weak_processor: &mut crate::rsgc::WeakProcessor,
-) {
-    unsafe {
-        match terminator {
-            crate::cps::linear::Terminator::Call { source, .. }
-            | crate::cps::linear::Terminator::TailCall { source, .. } => {
-                source.process_weak_refs(weak_processor)
-            }
-            crate::cps::linear::Terminator::Jump { .. }
-            | crate::cps::linear::Terminator::Branch { .. } => {}
-            crate::cps::linear::Terminator::Switch { cases, .. } => {
-                for case in cases {
-                    if let crate::cps::linear::SwitchCaseValue::Symbol { value, .. } =
-                        &mut case.value
-                    {
-                        value.process_weak_refs(weak_processor);
-                    }
-                }
-            }
         }
     }
 }

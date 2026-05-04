@@ -7,7 +7,9 @@ use crate::{
     },
     cps::{
         ReifyInfo,
-        linear::{BlockId, CodeId, LinearProgram, Procedure, ValueId},
+        linear::{
+            BlockId, CodeId, CodeIdTable, CodeRef, LinearProgram, Procedure, ProcedureKind, ValueId,
+        },
         term::{ContRef, FuncRef},
     },
     expander::core::LVarRef,
@@ -61,6 +63,28 @@ enum DataSlotMode<'gc> {
     Imported(ImportedDataSlots<'gc>),
 }
 
+pub(crate) fn procedure_binding_name<'gc>(procedure: &Procedure<'gc>) -> String {
+    procedure
+        .sources
+        .get(&procedure.binding)
+        .map(|binding| binding.name.to_string())
+        .unwrap_or_else(|| format!("v{}", procedure.binding.0))
+}
+
+pub(crate) fn procedure_linkage_name<'gc>(
+    prefix: &str,
+    index: usize,
+    procedure: &Procedure<'gc>,
+) -> String {
+    format!(
+        "{}{}:{}:{}",
+        prefix,
+        index,
+        procedure.name,
+        procedure_binding_name(procedure)
+    )
+}
+
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
 pub struct ModuleBuilder<'gc, M: Module = ObjectModule> {
     pub ctx: Context<'gc>,
@@ -74,8 +98,10 @@ pub struct ModuleBuilder<'gc, M: Module = ObjectModule> {
     data_slot_mode: DataSlotMode<'gc>,
 
     pub prims: PrimitiveLowerer<'gc>,
+    pub func_for_code: HashMap<CodeId, FuncId>,
     pub func_for_cont: HashMap<ContRef<'gc>, FuncId>,
     pub func_for_func: HashMap<FuncRef<'gc>, FuncId>,
+    pub code_block_for_code: HashMap<CodeId, DataId>,
     pub code_block_for_cont: HashMap<ContRef<'gc>, DataId>,
     pub code_block_for_func: HashMap<FuncRef<'gc>, DataId>,
     pub import_data: HashMap<&'static str, DataId>,
@@ -123,8 +149,10 @@ impl<'gc> ModuleBuilder<'gc, ObjectModule> {
             data_slot_mode: DataSlotMode::Object,
             import_data: HashMap::new(),
             prims,
+            func_for_code: HashMap::new(),
             func_for_cont: HashMap::new(),
             func_for_func: HashMap::new(),
+            code_block_for_code: HashMap::new(),
             code_block_for_cont: HashMap::new(),
             code_block_for_func: HashMap::new(),
             global_side_metadata_base_address,
@@ -167,8 +195,10 @@ impl<'gc, M: Module> ModuleBuilder<'gc, M> {
             data_slot_mode: DataSlotMode::Imported(imported_slots),
             import_data: HashMap::new(),
             prims,
+            func_for_code: HashMap::new(),
             func_for_cont: HashMap::new(),
             func_for_func: HashMap::new(),
+            code_block_for_code: HashMap::new(),
             code_block_for_cont: HashMap::new(),
             code_block_for_func: HashMap::new(),
             global_side_metadata_base_address,
@@ -185,38 +215,49 @@ impl<'gc, M: Module> ModuleBuilder<'gc, M> {
 
     pub fn compile(&mut self) {
         let procedures = self.linear.procedures.clone();
+        let code_ids = CodeIdTable::new(&self.reify_info);
 
         let sig = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
         let mut function_index = 0;
         let mut continuation_index = 0;
         for procedure in procedures.iter() {
-            match procedure.code {
-                CodeId::Function(func) => {
+            match procedure.kind {
+                ProcedureKind::Function => {
                     let i = function_index;
                     function_index += 1;
-                    let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
+                    let name = procedure_linkage_name("fn", i, procedure);
                     let func_id = self
                         .module
                         .declare_function(&name, Linkage::Export, &sig)
                         .expect("failed to declare function in cranelift module");
 
-                    self.func_for_func.insert(func, func_id);
+                    self.func_for_code.insert(procedure.code, func_id);
                     let code_block_data_id =
                         self.declare_code_block_slot(&format!("codeblock_fn{}", i));
-                    self.code_block_for_func.insert(func, code_block_data_id);
+                    self.code_block_for_code
+                        .insert(procedure.code, code_block_data_id);
+                    if let CodeRef::Function(func) = code_ids.code_ref(procedure.code) {
+                        self.func_for_func.insert(func, func_id);
+                        self.code_block_for_func.insert(func, code_block_data_id);
+                    }
                 }
-                CodeId::Continuation(cont) => {
+                ProcedureKind::Continuation => {
                     let i = continuation_index;
                     continuation_index += 1;
-                    let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
+                    let name = procedure_linkage_name("cont", i, procedure);
                     let cont_id = self
                         .module
                         .declare_function(&name, Linkage::Local, &sig)
                         .expect("failed to declare continuation in cranelift module");
-                    self.func_for_cont.insert(cont, cont_id);
+                    self.func_for_code.insert(procedure.code, cont_id);
                     let code_block_data_id =
                         self.declare_code_block_slot(&format!("codeblock_cont{}", i));
-                    self.code_block_for_cont.insert(cont, code_block_data_id);
+                    self.code_block_for_code
+                        .insert(procedure.code, code_block_data_id);
+                    if let CodeRef::Continuation(cont) = code_ids.code_ref(procedure.code) {
+                        self.func_for_cont.insert(cont, cont_id);
+                        self.code_block_for_cont.insert(cont, code_block_data_id);
+                    }
                 }
             }
         }
@@ -229,27 +270,29 @@ impl<'gc, M: Module> ModuleBuilder<'gc, M> {
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
-            let (func_id, func_debug_cx) = match procedure.code {
-                CodeId::Function(func) => {
+            let (func_id, func_debug_cx) = match procedure.kind {
+                ProcedureKind::Function => {
                     let i = function_index;
                     function_index += 1;
-                    let name = format!("fn{}:{}:{}", i, func.name, func.binding.name);
-                    let func_debug_cx = self.debug_context.define_function(func, &name);
+                    let name = procedure_linkage_name("fn", i, procedure);
+                    let func_debug_cx =
+                        self.debug_context.define_linear_procedure(procedure, &name);
                     let func_id = self
-                        .func_for_func
-                        .get(&func)
+                        .func_for_code
+                        .get(&procedure.code)
                         .copied()
                         .expect("function should have been declared before compilation");
                     (func_id, func_debug_cx)
                 }
-                CodeId::Continuation(cont) => {
+                ProcedureKind::Continuation => {
                     let i = continuation_index;
                     continuation_index += 1;
-                    let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
-                    let func_debug_cx = self.debug_context.define_cont(cont, &name);
+                    let name = procedure_linkage_name("cont", i, procedure);
+                    let func_debug_cx =
+                        self.debug_context.define_linear_procedure(procedure, &name);
                     let func_id = self
-                        .func_for_cont
-                        .get(&cont)
+                        .func_for_code
+                        .get(&procedure.code)
                         .copied()
                         .expect("continuation should have been declared before compilation");
                     (func_id, func_debug_cx)
@@ -866,11 +909,12 @@ mod tests {
             );
 
             let reify_info = reify(ctx, func);
-            let linear = linearize(&reify_info);
+            let linear = linearize(ctx, &reify_info);
+            let entry_code = linear.entry;
             let procedure = linear
                 .procedures
                 .iter()
-                .find(|procedure| procedure.code == CodeId::Function(func))
+                .find(|procedure| procedure.code == entry_code)
                 .expect("entry function should have a linear procedure")
                 .clone();
             let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
