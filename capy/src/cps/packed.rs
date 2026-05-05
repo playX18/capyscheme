@@ -274,6 +274,7 @@ pub enum Primitive {
     Winders,
     MakeSyntax,
     DefaultRetk,
+    FxEq,
 }
 
 impl Primitive {
@@ -548,6 +549,7 @@ impl Primitive {
             Primitive::Winders => "$winders",
             Primitive::MakeSyntax => "make-syntax",
             Primitive::DefaultRetk => "#%default-retk",
+            Primitive::FxEq => "fx=?",
         }
     }
 
@@ -822,7 +824,14 @@ impl Primitive {
             "$winders" => Some(Primitive::Winders),
             "make-syntax" => Some(Primitive::MakeSyntax),
             "#%default-retk" => Some(Primitive::DefaultRetk),
+            "fx=?" => Some(Primitive::FxEq),
             _ => None,
         }
+    }
+}
+
+impl std::fmt::Display for Primitive {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }

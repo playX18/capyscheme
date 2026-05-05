@@ -1,13 +1,14 @@
+#![allow(dead_code)]
+
 use std::{collections::HashMap, io::Write, mem::offset_of};
 
 use crate::rsgc::{Gc, sync::thread::Thread};
 
 use crate::{
-    compiler::ssa::{
-        ContOrFunc, LinearRestSource, SSABuilder, VarDef,
-        primitive::{PrimValue, lower_primitive},
-    },
+    call_signature,
+    compiler::debuginfo::{DebugContext, FunctionDebugContext},
     cps::{
+        ReifyInfo,
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
             Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
@@ -18,14 +19,220 @@ use crate::{
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
         Context, State,
-        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, Value},
+        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, Value, ValueEqual},
+        vm::thunks::{ImportedThunks, Thunks},
     },
 };
 use cranelift::frontend::Switch;
-use cranelift::prelude::{InstBuilder, IntCC, types};
-use cranelift_codegen::ir::{self, BlockArg};
+use cranelift::prelude::{FunctionBuilder, InstBuilder, IntCC, types};
+use cranelift_codegen::{
+    ir::{self, BlockArg, SourceLoc},
+    isa::CallConv,
+};
 use cranelift_module::{DataId, Linkage, Module};
 use pretty::BoxAllocator;
+
+use super::primitive::{PrimValue, Primitive as JitPrimitive, PrimitiveLowerer};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum VarDef {
+    Value(ir::Value),
+    Comparison(ir::Value),
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct LinearRestSource {
+    pub rands: ir::Value,
+    pub num_rands: ir::Value,
+    pub fixed_count: usize,
+}
+
+#[derive(Clone)]
+pub(super) enum JitTarget<'gc> {
+    Func(FuncRef<'gc>),
+    Cont(ContRef<'gc>),
+    Procedure(Procedure<'gc>),
+}
+
+pub(super) struct JitModuleBuilder<'gc, M: Module> {
+    pub ctx: Context<'gc>,
+    pub(crate) debug_context: DebugContext<'gc>,
+    pub reify_info: ReifyInfo<'gc>,
+    pub constants: HashMap<ValueEqual<'gc>, DataId>,
+    pub cache_cells: HashMap<ValueEqual<'gc>, DataId>,
+    pub module: M,
+    pub prims: PrimitiveLowerer<'gc>,
+    pub func_for_code: HashMap<CodeId, cranelift_module::FuncId>,
+    pub func_for_cont: HashMap<ContRef<'gc>, cranelift_module::FuncId>,
+    pub func_for_func: HashMap<FuncRef<'gc>, cranelift_module::FuncId>,
+    pub code_block_for_code: HashMap<CodeId, DataId>,
+    pub code_block_for_cont: HashMap<ContRef<'gc>, DataId>,
+    pub code_block_for_func: HashMap<FuncRef<'gc>, DataId>,
+    pub import_data: HashMap<&'static str, DataId>,
+    pub global_side_metadata_base_address: DataId,
+    pub thunks: Thunks,
+    pub stacktraces: bool,
+    pub direct_calls: bool,
+}
+
+impl<'gc, M: Module> JitModuleBuilder<'gc, M> {
+    pub(super) fn new(
+        ctx: Context<'gc>,
+        mut module: M,
+        reify_info: ReifyInfo<'gc>,
+        global_side_metadata_symbol: &str,
+    ) -> Self {
+        let prims = PrimitiveLowerer::new(ctx);
+        let thunks = Thunks::new(&mut module);
+        let debug_context = DebugContext::new(&reify_info, module.isa());
+        let global_side_metadata_base_address = module
+            .declare_data(global_side_metadata_symbol, Linkage::Import, false, false)
+            .expect("failed to declare imported global side metadata symbol");
+
+        Self {
+            debug_context,
+            ctx,
+            stacktraces: true,
+            direct_calls: false,
+            reify_info,
+            constants: HashMap::new(),
+            cache_cells: HashMap::new(),
+            module,
+            import_data: HashMap::new(),
+            prims,
+            func_for_code: HashMap::new(),
+            func_for_cont: HashMap::new(),
+            func_for_func: HashMap::new(),
+            code_block_for_code: HashMap::new(),
+            code_block_for_cont: HashMap::new(),
+            code_block_for_func: HashMap::new(),
+            global_side_metadata_base_address,
+            thunks,
+        }
+    }
+
+    pub fn intern_constant(&mut self, obj: Value<'gc>) -> Option<DataId> {
+        if obj.is_immediate() {
+            return None;
+        }
+        self.constants.get(&ValueEqual(obj)).copied().or_else(|| {
+            panic!("JIT constant slot not found for {obj}");
+        })
+    }
+
+    pub fn intern_cache_cell(&mut self, key: Value<'gc>) -> DataId {
+        self.cache_cells
+            .get(&ValueEqual(key))
+            .copied()
+            .unwrap_or_else(|| panic!("JIT cache cell slot not found for {key}"))
+    }
+}
+
+pub(super) struct JitLowerer<'gc, 'a, 'f, M: Module> {
+    pub module_builder: &'a mut JitModuleBuilder<'gc, M>,
+    pub builder: FunctionBuilder<'f>,
+    pub(crate) func_debug_cx: FunctionDebugContext<'gc>,
+
+    pub blockmap: HashMap<ContRef<'gc>, ir::Block>,
+    pub linear_blockmap: HashMap<crate::cps::linear::BlockId, ir::Block>,
+    pub variables: HashMap<LVarRef<'gc>, VarDef>,
+    pub linear_variables: HashMap<ValueId, VarDef>,
+    pub linear_rest_sources: HashMap<ValueId, LinearRestSource>,
+    pub synthetic_aliases: HashMap<ValueId, LVarRef<'gc>>,
+
+    pub target: JitTarget<'gc>,
+    pub exit_block: ir::Block,
+    pub entry_block: ir::Block,
+    pub app_block: Option<ir::Block>,
+
+    pub rator: ir::Value,
+    pub thunks: ImportedThunks,
+
+    pub sig_call: ir::SigRef,
+    pub to_generate: Vec<ContRef<'gc>>,
+
+    pub data_imports: HashMap<DataId, ir::GlobalValue>,
+
+    pub srcloc: Option<SourceLoc>,
+}
+
+impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
+    pub(crate) fn new(
+        module_builder: &'a mut JitModuleBuilder<'gc, M>,
+        mut builder: FunctionBuilder<'f>,
+        target: JitTarget<'gc>,
+        thunks: ImportedThunks,
+        mut func_debug_cx: FunctionDebugContext<'gc>,
+    ) -> Self {
+        builder.func.dfg.collect_debug_info();
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let rator = builder.block_params(entry)[0];
+        let rands = builder.block_params(entry)[1];
+        let num_rands = builder.block_params(entry)[2];
+
+        let variables = HashMap::new();
+
+        let sig_call = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
+        let sig_call = builder.import_signature(sig_call);
+
+        let exit_block = builder.create_block();
+
+        builder.append_block_param(exit_block, types::I64);
+        builder.append_block_param(exit_block, types::I64);
+        builder.append_block_param(exit_block, types::I64);
+        builder.append_block_param(exit_block, types::I64);
+
+        builder.set_val_label(rator, func_debug_cx.internal_variable(0));
+        builder.set_val_label(num_rands, func_debug_cx.internal_variable(1));
+        builder.set_val_label(rands, func_debug_cx.internal_variable(2));
+
+        let entry_block = builder.create_block();
+        builder.append_block_params_for_function_params(entry_block);
+        builder.ins().jump(
+            entry_block,
+            &[
+                BlockArg::Value(rator),
+                BlockArg::Value(rands),
+                BlockArg::Value(num_rands),
+            ],
+        );
+        builder.switch_to_block(entry_block);
+        let entry_rator = builder.block_params(entry_block)[0];
+        let entry_rands = builder.block_params(entry_block)[1];
+        let entry_num_rands = builder.block_params(entry_block)[2];
+        builder.set_val_label(entry_rator, func_debug_cx.internal_variable(0));
+        builder.set_val_label(entry_num_rands, func_debug_cx.internal_variable(1));
+        builder.set_val_label(entry_rands, func_debug_cx.internal_variable(2));
+
+        let mut this = Self {
+            module_builder,
+            builder,
+            target,
+            exit_block,
+            app_block: None,
+            rator: entry_rator,
+            func_debug_cx,
+            entry_block,
+            variables,
+            linear_variables: HashMap::new(),
+            linear_rest_sources: HashMap::new(),
+            synthetic_aliases: HashMap::new(),
+            blockmap: HashMap::new(),
+            linear_blockmap: HashMap::new(),
+            to_generate: Vec::new(),
+            thunks,
+            sig_call,
+            data_imports: HashMap::new(),
+            srcloc: None,
+        };
+
+        this.entrypoint(entry_rands, entry_num_rands);
+
+        this
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Callee {
@@ -45,36 +252,36 @@ pub enum Callee {
     SelfRec(ir::Block),
 }
 
-impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
+impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
     fn target_binding(&self) -> LVarRef<'gc> {
         match &self.target {
-            ContOrFunc::Cont(c) => c.binding,
-            ContOrFunc::Func(f) => f.binding,
-            ContOrFunc::Procedure(p) => p.sources[&p.binding],
+            JitTarget::Cont(c) => c.binding,
+            JitTarget::Func(f) => f.binding,
+            JitTarget::Procedure(p) => p.sources[&p.binding],
         }
     }
 
     fn target_name(&self) -> Value<'gc> {
         match &self.target {
-            ContOrFunc::Cont(c) => c.name,
-            ContOrFunc::Func(f) => f.name,
-            ContOrFunc::Procedure(p) => p.name,
+            JitTarget::Cont(c) => c.name,
+            JitTarget::Func(f) => f.name,
+            JitTarget::Procedure(p) => p.name,
         }
     }
 
     fn target_source(&self) -> Value<'gc> {
         match &self.target {
-            ContOrFunc::Cont(c) => c.source(),
-            ContOrFunc::Func(f) => f.source,
-            ContOrFunc::Procedure(p) => p.source,
+            JitTarget::Cont(c) => c.source(),
+            JitTarget::Func(f) => f.source,
+            JitTarget::Procedure(p) => p.source,
         }
     }
 
     fn target_params(&self) -> (Vec<LVarRef<'gc>>, Option<LVarRef<'gc>>) {
         match &self.target {
-            ContOrFunc::Cont(c) => (c.args().iter().copied().collect(), c.variadic()),
-            ContOrFunc::Func(f) => (f.args.iter().copied().collect(), f.variadic),
-            ContOrFunc::Procedure(p) => (
+            JitTarget::Cont(c) => (c.args().iter().copied().collect(), c.variadic()),
+            JitTarget::Func(f) => (f.args.iter().copied().collect(), f.variadic),
+            JitTarget::Procedure(p) => (
                 p.params.iter().map(|param| p.sources[param]).collect(),
                 p.variadic.map(|variadic| p.sources[&variadic]),
             ),
@@ -83,39 +290,39 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
 
     fn target_linear_variadic(&self) -> Option<ValueId> {
         match &self.target {
-            ContOrFunc::Procedure(p) => p.variadic,
-            ContOrFunc::Cont(_) | ContOrFunc::Func(_) => None,
+            JitTarget::Procedure(p) => p.variadic,
+            JitTarget::Cont(_) | JitTarget::Func(_) => None,
         }
     }
 
     fn should_materialize_entry_rest(&self, rest: LVarRef<'gc>) -> bool {
         match &self.target {
-            ContOrFunc::Procedure(_) => false,
-            ContOrFunc::Cont(_) | ContOrFunc::Func(_) => rest.is_referenced(),
+            JitTarget::Procedure(_) => false,
+            JitTarget::Cont(_) | JitTarget::Func(_) => rest.is_referenced(),
         }
     }
 
     fn target_return_cont(&self) -> Option<LVarRef<'gc>> {
         match &self.target {
-            ContOrFunc::Func(f) => Some(f.return_cont),
-            ContOrFunc::Procedure(p) => p.return_cont.map(|return_cont| p.sources[&return_cont]),
-            ContOrFunc::Cont(_) => None,
+            JitTarget::Func(f) => Some(f.return_cont),
+            JitTarget::Procedure(p) => p.return_cont.map(|return_cont| p.sources[&return_cont]),
+            JitTarget::Cont(_) => None,
         }
     }
 
     fn target_is_function(&self) -> bool {
         match &self.target {
-            ContOrFunc::Func(_) => true,
-            ContOrFunc::Procedure(p) => p.kind == ProcedureKind::Function,
-            ContOrFunc::Cont(_) => false,
+            JitTarget::Func(_) => true,
+            JitTarget::Procedure(p) => p.kind == ProcedureKind::Function,
+            JitTarget::Cont(_) => false,
         }
     }
 
     pub fn is_self_reference(&mut self, var: LVarRef<'gc>) -> bool {
         match &self.target {
-            ContOrFunc::Cont(c) => Gc::ptr_eq(c.binding, var),
-            ContOrFunc::Func(f) => Gc::ptr_eq(f.binding, var),
-            ContOrFunc::Procedure(p) => Gc::ptr_eq(p.sources[&p.binding], var),
+            JitTarget::Cont(c) => Gc::ptr_eq(c.binding, var),
+            JitTarget::Func(f) => Gc::ptr_eq(f.binding, var),
+            JitTarget::Procedure(p) => Gc::ptr_eq(p.sources[&p.binding], var),
         }
     }
 
@@ -171,9 +378,9 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         match *self.variables.get(&var).unwrap_or_else(|| {
             let alloc = ::pretty::BoxAllocator;
             let pretty = match &self.target {
-                ContOrFunc::Func(f) => f.pretty::<_, &BoxAllocator>(&alloc),
-                ContOrFunc::Cont(c) => c.pretty::<_, &BoxAllocator>(&alloc),
-                ContOrFunc::Procedure(_) => {
+                JitTarget::Func(f) => f.pretty::<_, &BoxAllocator>(&alloc),
+                JitTarget::Cont(c) => c.pretty::<_, &BoxAllocator>(&alloc),
+                JitTarget::Procedure(_) => {
                     panic!(
                         "{}@{:p} var not found when compiling {}({})",
                         var.name,
@@ -216,7 +423,7 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
             self.check_yield(self.rator, rands, num_rands);
         }
 
-        if !matches!(&self.target, ContOrFunc::Procedure(_)) {
+        if !matches!(&self.target, JitTarget::Procedure(_)) {
             self.load_free_vars();
         }
         self.load_arguments(rands, num_rands);
@@ -750,9 +957,9 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
 
     fn load_free_vars(&mut self) {
         let Some(fvs) = (match &self.target {
-            ContOrFunc::Func(func) => func.free_vars.get(),
-            ContOrFunc::Cont(cont) => cont.free_vars.get(),
-            ContOrFunc::Procedure(_) => None,
+            JitTarget::Func(func) => func.free_vars.get(),
+            JitTarget::Cont(cont) => cont.free_vars.get(),
+            JitTarget::Procedure(_) => None,
         }) else {
             return;
         };
@@ -986,8 +1193,8 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
 
     fn linear_source(&self, var: ValueId) -> Option<LVarRef<'gc>> {
         match &self.target {
-            ContOrFunc::Procedure(procedure) => procedure.sources.get(&var).copied(),
-            ContOrFunc::Func(_) | ContOrFunc::Cont(_) => None,
+            JitTarget::Procedure(procedure) => procedure.sources.get(&var).copied(),
+            JitTarget::Func(_) | JitTarget::Cont(_) => None,
         }
     }
 
@@ -1195,7 +1402,9 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
                     .copied()
                     .map(|arg| self.linear_atom_as_term_atom(arg))
                     .collect::<Vec<_>>();
-                let val = match lower_primitive(*prim, self, &args) {
+                let prim = JitPrimitive::from_name(prim.name())
+                    .unwrap_or_else(|| panic!("undefined JIT primitive: {prim}"));
+                let val = match prim.lower(self, &args) {
                     PrimValue::Value(val) => VarDef::Value(val),
                     PrimValue::Comparison(val) => VarDef::Comparison(val),
                 };
@@ -1835,7 +2044,7 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
                             panic!("undefined primitive: {prim}")
                         };
 
-                        let val = match lower_primitive(prim, self, args) {
+                        let val = match prim.lower(self, args) {
                             PrimValue::Value(val) => VarDef::Value(val),
                             PrimValue::Comparison(val) => VarDef::Comparison(val),
                         };

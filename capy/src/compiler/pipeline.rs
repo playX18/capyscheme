@@ -161,12 +161,12 @@ fn render_lcps_dump<'gc>(linear_cps: &crate::cps::linear::LinearProgram<'gc>) ->
 mod tests {
     use super::render_lcps_dump;
     use crate::{
-        compiler::ssa::primitive::Primitive,
         cps::{
             linear::{
                 Block, BlockId, CodeId, LinearAtom, LinearProgram, Procedure, ProcedureKind,
                 Terminator, ValueId,
             },
+            packed::Primitive,
             term::{Func, Term},
         },
         expander::core::{LVarRef, fresh_lvar},
@@ -246,7 +246,7 @@ mod tests {
                             *ctx,
                             &[crate::cps::linear::Instruction::PrimCall {
                                 dst: tmp,
-                                prim: Primitive::car,
+                                prim: Primitive::Car,
                                 args: Array::from_slice(*ctx, &[LinearAtom::Local(p0)]),
                                 source: Value::new(false),
                             }],

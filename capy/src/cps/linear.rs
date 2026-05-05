@@ -1,7 +1,7 @@
 use crate::{
-    compiler::ssa::primitive::Primitive,
     cps::{
         ReifyInfo,
+        packed::Primitive,
         term::{Atom, BranchHint, ContRef, Expression, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
@@ -514,7 +514,7 @@ fn collect_rest_aliases<'gc>(
                 else {
                     continue;
                 };
-                if *prim != Primitive::cdr || args.len() != 1 {
+                if *prim != Primitive::Cdr || args.len() != 1 {
                     continue;
                 }
                 if let Some(alias) = rest_alias_for_atom(args[0], rest, &aliases) {
@@ -558,12 +558,12 @@ fn rest_rewrite_for_prim<'gc>(
     }
     let alias = rest_alias_for_atom(args[0], rest, aliases)?;
     match prim {
-        Primitive::cdr => Some(RestRewrite::Cdr),
-        Primitive::car => Some(RestRewrite::Ref(alias)),
-        Primitive::length => Some(RestRewrite::Length(alias)),
-        Primitive::is_null => Some(RestRewrite::Predicate(alias, RestPredicate::Null)),
-        Primitive::is_pair => Some(RestRewrite::Predicate(alias, RestPredicate::Pair)),
-        Primitive::is_list => Some(RestRewrite::Predicate(alias, RestPredicate::List)),
+        Primitive::Cdr => Some(RestRewrite::Cdr),
+        Primitive::Car => Some(RestRewrite::Ref(alias)),
+        Primitive::Length => Some(RestRewrite::Length(alias)),
+        Primitive::IsNull => Some(RestRewrite::Predicate(alias, RestPredicate::Null)),
+        Primitive::IsPair => Some(RestRewrite::Predicate(alias, RestPredicate::Pair)),
+        Primitive::IsList => Some(RestRewrite::Predicate(alias, RestPredicate::List)),
         _ => None,
     }
 }
@@ -940,9 +940,9 @@ fn switch_fixnum_node<'gc>(
 
 fn switch_kind_for_primitive(prim: Primitive) -> Option<SwitchKind> {
     match prim {
-        Primitive::is_eq | Primitive::is_eqv | Primitive::is_equal => Some(SwitchKind::Eq),
-        Primitive::fx_eq => Some(SwitchKind::Fixnum),
-        Primitive::numeric_equal => Some(SwitchKind::Numeric),
+        Primitive::IsEq | Primitive::IsEqv | Primitive::IsEqual => Some(SwitchKind::Eq),
+        Primitive::FxEq => Some(SwitchKind::Fixnum),
+        Primitive::NumericEqual => Some(SwitchKind::Numeric),
         _ => None,
     }
 }
@@ -1040,7 +1040,7 @@ fn switch_eq_symbol_node<'gc>(
 fn is_eq_like_primitive(prim: Primitive) -> bool {
     matches!(
         prim,
-        Primitive::is_eq | Primitive::is_eqv | Primitive::is_equal
+        Primitive::IsEq | Primitive::IsEqv | Primitive::IsEqual
     )
 }
 
@@ -1139,9 +1139,9 @@ fn switch_char_node<'gc>(
         return None;
     };
 
-    if *scrutinee_prim != Primitive::char_to_integer
-        || *case_prim != Primitive::char_to_integer
-        || *cmp_prim != Primitive::numeric_equal
+    if *scrutinee_prim != Primitive::CharToInteger
+        || *case_prim != Primitive::CharToInteger
+        || *cmp_prim != Primitive::NumericEqual
         || scrutinee_args.len() != 1
         || case_args.len() != 1
         || *cmp != test
@@ -1335,7 +1335,7 @@ fn lower_cache_operations<'gc>(ctx: Context<'gc>, mut procedure: Procedure<'gc>)
                 match instruction {
                     Instruction::PrimCall {
                         dst,
-                        prim: Primitive::cache_ref,
+                        prim: Primitive::CacheRef,
                         args,
                         source,
                     } => {
@@ -1350,7 +1350,7 @@ fn lower_cache_operations<'gc>(ctx: Context<'gc>, mut procedure: Procedure<'gc>)
                     }
                     Instruction::PrimCall {
                         dst,
-                        prim: Primitive::cache_set,
+                        prim: Primitive::CacheSet,
                         args,
                         source,
                     } => {

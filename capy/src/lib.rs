@@ -24,6 +24,7 @@ pub mod cps;
 pub mod expander;
 pub mod frontend;
 pub mod interpreter;
+pub(crate) mod jit;
 pub mod rsgc;
 pub mod runtime;
 pub mod utils;

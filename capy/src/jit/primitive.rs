@@ -1,10 +1,10 @@
-use super::SSABuilder;
-use crate::cps::packed::Primitive;
+use super::lower::JitLowerer;
 use crate::cps::term::Atom;
 use crate::runtime::Context;
 use crate::runtime::State;
 use crate::runtime::modules::Variable;
 use crate::runtime::value::*;
+use capy_derive::Trace;
 use cranelift::prelude::InstBuilder;
 use cranelift::prelude::IntCC;
 use cranelift::prelude::types;
@@ -15,23 +15,50 @@ use std::collections::HashMap;
 use std::mem::offset_of;
 macro_rules! prim {
     ($($sname: literal => $name: ident ($ssa: ident, $args: ident, $h: ident) $b: block),*) => {
+        #[allow(non_camel_case_types)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
+        #[collect(no_drop)]
+        pub enum Primitive {
+            $($name),*
+        }
+
         pub struct PrimitiveLowerer<'gc> {
             pub map: HashMap<Value<'gc>, Primitive>,
         }
 
         $(
 
-            pub fn $name<'gc_, 'a, 'f, M: Module>($ssa: &mut SSABuilder<'gc_, 'a, 'f, M>, $args: &[Atom<'gc_>]) -> PrimValue $b
+            pub fn $name<'gc_, 'a, 'f, M: Module>($ssa: &mut JitLowerer<'gc_, 'a, 'f, M>, $args: &[Atom<'gc_>]) -> PrimValue $b
         )*
 
-        pub fn lower_primitive<'gc_, 'a, 'f, M: Module>(
-            prim: Primitive,
-            ssa: &mut SSABuilder<'gc_, 'a, 'f, M>,
-            args: &[Atom<'gc_>],
-        ) -> PrimValue {
-            match prim.name() {
-                $($sname => $name(ssa, args),)*
-                _ => panic!("undefined primitive lowering: {prim}"),
+        impl Primitive {
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($sname => Some(Self::$name),)*
+                    _ => None,
+                }
+            }
+
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Self::$name => $sname),*
+                }
+            }
+
+            pub fn lower<'gc_, 'a, 'f, M: Module>(
+                self,
+                ssa: &mut JitLowerer<'gc_, 'a, 'f, M>,
+                args: &[Atom<'gc_>],
+            ) -> PrimValue {
+                match self {
+                    $(Self::$name => $name(ssa, args)),*
+                }
+            }
+        }
+
+        impl std::fmt::Display for Primitive {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.name())
             }
         }
 
@@ -39,9 +66,7 @@ macro_rules! prim {
             pub fn new(ctx: Context<'gc>) -> Self {
                 let mut map = HashMap::new();
                 $(
-                    let prim = Primitive::from_name($sname)
-                        .unwrap_or_else(|| panic!("undefined primitive identity: {}", $sname));
-                    map.insert(Symbol::from_str(ctx, $sname).into(), prim);
+                    map.insert(Symbol::from_str(ctx, $sname).into(), Primitive::$name);
                 )*
                 Self { map }
             }
@@ -2687,7 +2712,7 @@ prim!(
 );
 
 fn emit_plus<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2712,7 +2737,7 @@ fn emit_plus<'gc, 'a, 'f, M: Module>(
 }
 
 fn emit_minus<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2738,7 +2763,7 @@ fn emit_minus<'gc, 'a, 'f, M: Module>(
 }
 
 fn emit_negate<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     a: ir::Value,
 ) -> ir::Value {
     ssa.inline_unary_op(
@@ -2763,7 +2788,7 @@ fn emit_negate<'gc, 'a, 'f, M: Module>(
 }
 
 fn emit_times<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2788,7 +2813,7 @@ fn emit_times<'gc, 'a, 'f, M: Module>(
 }
 
 fn emit_icmp<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
     cond: IntCC,
@@ -2820,7 +2845,7 @@ fn emit_icmp<'gc, 'a, 'f, M: Module>(
 }
 
 fn emit_fx_eq<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     a: ir::Value,
     b: ir::Value,
 ) -> ir::Value {
@@ -2839,10 +2864,10 @@ fn emit_fx_eq<'gc, 'a, 'f, M: Module>(
 }
 
 fn ensure_vector<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     val: ir::Value,
-    on_vector: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value, ir::Block),
-    slowpath: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value),
+    on_vector: impl FnOnce(&mut JitLowerer<'gc, 'a, 'f, M>, ir::Value, ir::Block),
+    slowpath: impl FnOnce(&mut JitLowerer<'gc, 'a, 'f, M>, ir::Value),
 ) {
     let bb_vector = ssa.builder.create_block();
     let bb_slow = ssa.builder.create_block();
@@ -2867,11 +2892,11 @@ fn ensure_vector<'gc, 'a, 'f, M: Module>(
 }
 
 fn fixnum_in_bounds_usize<'gc, 'a, 'f, M: Module>(
-    ssa: &mut SSABuilder<'gc, 'a, 'f, M>,
+    ssa: &mut JitLowerer<'gc, 'a, 'f, M>,
     ix: ir::Value,
     len: ir::Value,
-    on_in_bounds: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value, ir::Block),
-    slowpath: impl FnOnce(&mut SSABuilder<'gc, 'a, 'f, M>, ir::Value),
+    on_in_bounds: impl FnOnce(&mut JitLowerer<'gc, 'a, 'f, M>, ir::Value, ir::Block),
+    slowpath: impl FnOnce(&mut JitLowerer<'gc, 'a, 'f, M>, ir::Value),
 ) {
     let fixnum_ix_block = ssa.builder.create_block();
     let bb_slowpath = ssa.builder.create_block();
