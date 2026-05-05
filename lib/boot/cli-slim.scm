@@ -82,9 +82,6 @@
                        [arg (read port)])
                   (set! entrypoint arg))
                 (parse (cdr args) out)]
-              [(string=? arg "-fresh-auto-compile")
-                (set! %fresh-auto-compile! #t)
-                (parse args out)]
               [(string=? arg "-log:trace")
                 (log:set-max-level! log:trace)
                 (parse args out)]

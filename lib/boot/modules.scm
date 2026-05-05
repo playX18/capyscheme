@@ -236,58 +236,11 @@
   (let ([root *resolve-module-root*])
     (lambda (name autoload ensure)
       (let ([already (nested-ref-module root name)])
-        (if (and already
-             (or (not autoload) (module-public-interface already)))
+        (if (and already (or (not autoload) (module-public-interface already)))
           already
-          (if autoload
-            (begin
-              (try-module-autoload name)
-              (resolve-module name #f ensure))
-            (or already
-              (and ensure
-                (make-modules-in root name)))))))))
-
-(define (->bool x) (not (not x)))
-
-(define autoloads-in-progress '())
-(define autoloads-done '((capy . capy)))
-
-(define (autoload-done-or-in-progress? p m)
-  (let ((n (cons p m)))
-    (->bool (or (member n autoloads-done)
-             (member n autoloads-in-progress)))))
-
-(define (autoload-done! p m)
-  (let ((n (cons p m)))
-    (set! autoloads-in-progress
-      (delete! n autoloads-in-progress))
-    (or (member n autoloads-done)
-      (set! autoloads-done (cons n autoloads-done)))))
-
-(define (autoload-in-progress! p m)
-  (let ((n (cons p m)))
-    (set! autoloads-done
-      (delete! n autoloads-done))
-    (set! autoloads-in-progress (cons n autoloads-in-progress))))
-
-(define (set-autoloaded! p m done?)
-  (if done?
-    (autoload-done! p m)
-    (let ((n (cons p m)))
-      (set! autoloads-done (delete! n autoloads-done))
-      (set! autoloads-in-progress (delete! n autoloads-in-progress)))))
-
-(define (clear-module-autoload! module-name)
-  (let* ([reverse-name (reverse module-name)]
-         [name (symbol->string (car reverse-name))]
-         [dir-hint-module-name (reverse (cdr reverse-name))]
-         [dir-hint (apply string-append
-                    (map (lambda (elt)
-                          (string-append (symbol->string elt) "/"))
-                      dir-hint-module-name))]
-         [autoload-key (cons dir-hint name)])
-    (set! autoloads-done (delete! autoload-key autoloads-done))
-    (set! autoloads-in-progress (delete! autoload-key autoloads-in-progress))))
+          (or already
+            (and ensure
+              (make-modules-in root name))))))))
 
 (define (invalidate-module! module-name)
   (let* ([root *resolve-module-root*]
@@ -298,37 +251,9 @@
         (when interface
           (core-hash-clear! (module-obarray interface))
           (core-hash-clear! (module-import-obarray interface)))))
-    (clear-module-autoload! module-name)
     (when (and module (pair? module-name))
       (nested-remove-module! root module-name))
     (not (not module))))
-
-(define (try-module-autoload module-name)
-  (let* ([reverse-name (reverse module-name)]
-         [name (symbol->string (car reverse-name))]
-         [dir-hint-module-name (reverse (cdr reverse-name))]
-         [dir-hint (apply string-append
-                    (map (lambda (elt)
-                          (string-append (symbol->string elt) "/"))
-                      dir-hint-module-name))])
-    (resolve-module dir-hint-module-name #f #t)
-
-    (and (not (autoload-done-or-in-progress? dir-hint name))
-      (let ([didit #f])
-        (dynamic-wind
-          (lambda () (autoload-in-progress! dir-hint name))
-          (lambda ()
-            (save-module-excursion
-              (lambda ()
-                (current-module (make-fresh-user-module))
-                (call/cc (lambda (return)
-                          (with-exception-handler
-                            (lambda (_x) ((current-exception-printer) _x) (return #f))
-                            (lambda ()
-                              (load (string-append dir-hint name))
-                              (set! didit #t))))))))
-          (lambda () (set-autoloaded! dir-hint name didit)))
-        didit))))
 
 (define (identity x) x)
 
@@ -337,7 +262,7 @@
          [public-i (and mod (module-public-interface mod))]
          [renamer (if prefix (lambda (symbol) (symbol-append prefix symbol)) identity)])
     (if (not public-i)
-      (assertion-violation 'resolve-interface "no code for module" name))
+      (assertion-violation 'resolve-interface "module is not present in the static module graph" name))
 
     (if (and (not select) (null? hide) (eq? renamer identity))
       public-i

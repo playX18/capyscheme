@@ -87,8 +87,6 @@
           (set! %load-path (append %load-path (canonicalize-paths (reverse (arg-results-ref res "append-load-path")))))
           (set! %load-compiled-path (append (canonicalize-paths (reverse (arg-results-ref res "compiled-load-path"))) %load-compiled-path))
           (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
-          (if (arg-results-ref res "fresh-auto-compile")
-            (set! %fresh-auto-compile #t))
           (define out '())
 
           (when (arg-results-ref res "runtime-stats")
@@ -168,10 +166,6 @@
       (defaults-to #f)
       (value-help "EXPR")
       (help "Specify the entrypoint function to call"))
-    (add-flag! parser
-      "fresh-auto-compile"
-      (defaults-to #f)
-      (help "Enable fresh auto compilation of loaded files"))
     (add-flag! parser
       "runtime-stats"
       (defaults-to #f)
