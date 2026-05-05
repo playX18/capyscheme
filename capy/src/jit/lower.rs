@@ -26,12 +26,12 @@ use crate::{
 use cranelift::frontend::Switch;
 use cranelift::prelude::{FunctionBuilder, InstBuilder, IntCC, types};
 use cranelift_codegen::{
-    ir::{self, BlockArg, SourceLoc},
+    ir::{self, BlockArg, ExtFuncData, ExternalName, SourceLoc, UserExternalName},
     isa::CallConv,
 };
-use cranelift_module::{DataId, Linkage, Module};
 use pretty::BoxAllocator;
 
+use super::{JitCompiler, JitNameMap, JitRelocTarget, JitUnitDecls};
 use super::primitive::{PrimValue, Primitive as JitPrimitive, PrimitiveLowerer};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -54,40 +54,45 @@ pub(super) enum JitTarget<'gc> {
     Procedure(Procedure<'gc>),
 }
 
-pub(super) struct JitModuleBuilder<'gc, M: Module> {
+pub(super) struct JitBuilder<'gc, 'a> {
     pub ctx: Context<'gc>,
     pub(crate) debug_context: DebugContext<'gc>,
     pub reify_info: ReifyInfo<'gc>,
-    pub constants: HashMap<ValueEqual<'gc>, DataId>,
-    pub cache_cells: HashMap<ValueEqual<'gc>, DataId>,
-    pub module: M,
+    pub constants: HashMap<ValueEqual<'gc>, (u32, u32)>,
+    pub cache_cells: HashMap<ValueEqual<'gc>, (u32, u32)>,
+    pub name_map: &'a mut JitNameMap,
+    pub decls: &'a JitUnitDecls,
+    pub compiler: &'a mut JitCompiler,
     pub prims: PrimitiveLowerer<'gc>,
-    pub func_for_code: HashMap<CodeId, cranelift_module::FuncId>,
-    pub func_for_cont: HashMap<ContRef<'gc>, cranelift_module::FuncId>,
-    pub func_for_func: HashMap<FuncRef<'gc>, cranelift_module::FuncId>,
-    pub code_block_for_code: HashMap<CodeId, DataId>,
-    pub code_block_for_cont: HashMap<ContRef<'gc>, DataId>,
-    pub code_block_for_func: HashMap<FuncRef<'gc>, DataId>,
-    pub import_data: HashMap<&'static str, DataId>,
-    pub global_side_metadata_base_address: DataId,
+    pub func_for_code: HashMap<CodeId, (u32, u32)>,
+    pub func_for_cont: HashMap<ContRef<'gc>, (u32, u32)>,
+    pub func_for_func: HashMap<FuncRef<'gc>, (u32, u32)>,
+    pub code_block_for_code: HashMap<CodeId, (u32, u32)>,
+    pub code_block_for_cont: HashMap<ContRef<'gc>, (u32, u32)>,
+    pub code_block_for_func: HashMap<FuncRef<'gc>, (u32, u32)>,
+    pub import_data: HashMap<&'static str, (u32, u32)>,
+    pub global_side_metadata_base_address: (u32, u32),
     pub thunks: Thunks,
     pub stacktraces: bool,
     pub direct_calls: bool,
 }
 
-impl<'gc, M: Module> JitModuleBuilder<'gc, M> {
+impl<'gc, 'a> JitBuilder<'gc, 'a> {
     pub(super) fn new(
         ctx: Context<'gc>,
-        mut module: M,
+        compiler: &'a mut JitCompiler,
+        name_map: &'a mut JitNameMap,
+        decls: &'a JitUnitDecls,
         reify_info: ReifyInfo<'gc>,
         global_side_metadata_symbol: &str,
+        thunks: Thunks,
     ) -> Self {
         let prims = PrimitiveLowerer::new(ctx);
-        let thunks = Thunks::new(&mut module);
-        let debug_context = DebugContext::new(&reify_info, module.isa());
-        let global_side_metadata_base_address = module
-            .declare_data(global_side_metadata_symbol, Linkage::Import, false, false)
-            .expect("failed to declare imported global side metadata symbol");
+        let debug_context = DebugContext::new(&reify_info, compiler.isa.as_ref());
+        let global_side_metadata_base_address = name_map.declare_data(
+            JitRelocTarget::GlobalSideMetadataBaseAddress,
+            0,
+        );
 
         Self {
             debug_context,
@@ -97,13 +102,15 @@ impl<'gc, M: Module> JitModuleBuilder<'gc, M> {
             reify_info,
             constants: HashMap::new(),
             cache_cells: HashMap::new(),
-            module,
+            compiler,
+            name_map,
+            decls,
             import_data: HashMap::new(),
             prims,
-            func_for_code: HashMap::new(),
+            func_for_code: decls.funcs_by_code.clone(),
             func_for_cont: HashMap::new(),
             func_for_func: HashMap::new(),
-            code_block_for_code: HashMap::new(),
+            code_block_for_code: decls.code_blocks_by_code.clone(),
             code_block_for_cont: HashMap::new(),
             code_block_for_func: HashMap::new(),
             global_side_metadata_base_address,
@@ -111,7 +118,7 @@ impl<'gc, M: Module> JitModuleBuilder<'gc, M> {
         }
     }
 
-    pub fn intern_constant(&mut self, obj: Value<'gc>) -> Option<DataId> {
+    pub fn intern_constant(&mut self, obj: Value<'gc>) -> Option<(u32, u32)> {
         if obj.is_immediate() {
             return None;
         }
@@ -120,7 +127,7 @@ impl<'gc, M: Module> JitModuleBuilder<'gc, M> {
         })
     }
 
-    pub fn intern_cache_cell(&mut self, key: Value<'gc>) -> DataId {
+    pub fn intern_cache_cell(&mut self, key: Value<'gc>) -> (u32, u32) {
         self.cache_cells
             .get(&ValueEqual(key))
             .copied()
@@ -128,8 +135,8 @@ impl<'gc, M: Module> JitModuleBuilder<'gc, M> {
     }
 }
 
-pub(super) struct JitLowerer<'gc, 'a, 'f, M: Module> {
-    pub module_builder: &'a mut JitModuleBuilder<'gc, M>,
+pub(super) struct JitLowerer<'gc, 'a, 'f> {
+    pub module_builder: &'a mut JitBuilder<'gc, 'a>,
     pub builder: FunctionBuilder<'f>,
     pub(crate) func_debug_cx: FunctionDebugContext<'gc>,
 
@@ -151,14 +158,14 @@ pub(super) struct JitLowerer<'gc, 'a, 'f, M: Module> {
     pub sig_call: ir::SigRef,
     pub to_generate: Vec<ContRef<'gc>>,
 
-    pub data_imports: HashMap<DataId, ir::GlobalValue>,
+    pub data_imports: HashMap<(u32, u32), ir::GlobalValue>,
 
     pub srcloc: Option<SourceLoc>,
 }
 
-impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
+impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     pub(crate) fn new(
-        module_builder: &'a mut JitModuleBuilder<'gc, M>,
+        module_builder: &'a mut JitBuilder<'gc, 'a>,
         mut builder: FunctionBuilder<'f>,
         target: JitTarget<'gc>,
         thunks: ImportedThunks,
@@ -252,7 +259,7 @@ pub enum Callee {
     SelfRec(ir::Block),
 }
 
-impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
+impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     fn target_binding(&self) -> LVarRef<'gc> {
         match &self.target {
             JitTarget::Cont(c) => c.binding,
@@ -334,36 +341,66 @@ impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
         }
     }
 
+    fn declare_func_in_func(&mut self, name_pair: (u32, u32)) -> ir::FuncRef {
+        let (namespace, index) = name_pair;
+        let target = self.module_builder.name_map.targets[&(namespace, index)].clone();
+        let sig = self.signature_for_target(&target);
+        let sig_ref = self.builder.func.import_signature(sig);
+        let name_ref = self
+            .builder
+            .func
+            .declare_imported_user_function(UserExternalName { namespace, index });
+        self.builder.func.import_function(ExtFuncData {
+            name: ExternalName::user(name_ref),
+            signature: sig_ref,
+            colocated: true,
+        })
+    }
+
+    fn signature_for_target(&self, target: &JitRelocTarget) -> ir::Signature {
+        let callconv = CallConv::SystemV;
+        match target {
+            JitRelocTarget::Procedure { .. } => call_signature!(Tail (I64, I64, I64) -> (I64, I64)),
+            _ => ir::Signature::new(callconv),
+        }
+    }
+
     pub fn import_static(&mut self, name: &'static str, typ: ir::Type) -> ir::Value {
-        let data_id = *self
-            .module_builder
-            .import_data
-            .entry(name)
-            .or_insert_with(|| {
-                self.module_builder
-                    .module
-                    .declare_data(name, Linkage::Import, false, false)
-                    .expect("failed to declare imported data symbol")
-            });
-        let data = self.import_data(data_id);
+        let name_pair = if let Some(&pair) = self.module_builder.import_data.get(name) {
+            pair
+        } else {
+            let pair = self.module_builder.name_map.declare_data(
+                JitRelocTarget::RuntimeSymbol { name: name.to_owned() },
+                0,
+            );
+            self.module_builder.import_data.insert(name, pair);
+            pair
+        };
+        let data = self.import_data(name_pair);
 
         self.builder.ins().global_value(typ, data)
     }
 
-    pub fn import_data(&mut self, data: DataId) -> ir::GlobalValue {
+    pub fn import_data(&mut self, data: (u32, u32)) -> ir::GlobalValue {
         self.data_imports
             .entry(data)
             .or_insert_with(|| {
-                let gv = self
-                    .module_builder
-                    .module
-                    .declare_data_in_func(data, &mut self.builder.func);
-                gv
+                let (namespace, index) = data;
+                let name_ref = self
+                    .builder
+                    .func
+                    .declare_imported_user_function(UserExternalName { namespace, index });
+                self.builder.func.create_global_value(ir::GlobalValueData::Symbol {
+                    name: ExternalName::user(name_ref),
+                    offset: ir::immediates::Imm64::new(0),
+                    colocated: true,
+                    tls: false,
+                })
             })
             .clone()
     }
 
-    fn load_data_value(&mut self, data: DataId) -> ir::Value {
+    fn load_data_value(&mut self, data: (u32, u32)) -> ir::Value {
         let global_value = self.import_data(data);
         let addr = self.builder.ins().global_value(types::I64, global_value);
         self.builder
@@ -754,14 +791,11 @@ impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
 
     pub fn get_callee_k(&mut self, var: LVarRef<'gc>) -> Callee {
         if let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
-            && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
+            && let Some(name_pair) = self.module_builder.func_for_cont.get(cont)
         {
-            let func_id = *func_id;
+            let name_pair = *name_pair;
             let closure = self.var(var);
-            let func_ref = self
-                .module_builder
-                .module
-                .declare_func_in_func(func_id, &mut self.builder.func);
+            let func_ref = self.declare_func_in_func(name_pair);
             return Callee::Direct {
                 target: func_ref,
                 closure,
@@ -785,14 +819,11 @@ impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
     pub fn get_callee(&mut self, callee: &Atom<'gc>) -> Callee {
         if let Atom::Local(var) = callee {
             if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(var)
-                && let Some(func_id) = self.module_builder.func_for_func.get(func)
+                && let Some(name_pair) = self.module_builder.func_for_func.get(func)
             {
-                let func_id = *func_id;
+                let name_pair = *name_pair;
                 let closure = self.atom(*callee);
-                let func_ref = self
-                    .module_builder
-                    .module
-                    .declare_func_in_func(func_id, &mut self.builder.func);
+                let func_ref = self.declare_func_in_func(name_pair);
                 return Callee::Direct {
                     target: func_ref,
                     closure,
@@ -1287,7 +1318,7 @@ impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
         }
     }
 
-    fn code_block_data(&self, code: CodeId) -> DataId {
+    fn code_block_data(&self, code: CodeId) -> (u32, u32) {
         self.module_builder.code_block_for_code[&code]
     }
 
@@ -1493,14 +1524,11 @@ impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
 
             if self.module_builder.direct_calls
                 && let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
-                && let Some(func_id) = self.module_builder.func_for_func.get(func)
+                && let Some(name_pair) = self.module_builder.func_for_func.get(func)
             {
-                let func_id = *func_id;
+                let name_pair = *name_pair;
                 let closure = self.linear_atom(callee);
-                let func_ref = self
-                    .module_builder
-                    .module
-                    .declare_func_in_func(func_id, &mut self.builder.func);
+                let func_ref = self.declare_func_in_func(name_pair);
                 return Callee::Direct {
                     target: func_ref,
                     closure,
@@ -1542,14 +1570,11 @@ impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
             && let Some(var) = self.linear_source(var_id)
             && self.module_builder.direct_calls
             && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
-            && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
+            && let Some(name_pair) = self.module_builder.func_for_cont.get(cont)
         {
-            let func_id = *func_id;
+            let name_pair = *name_pair;
             let closure = self.linear_atom(callee);
-            let func_ref = self
-                .module_builder
-                .module
-                .declare_func_in_func(func_id, &mut self.builder.func);
+            let func_ref = self.declare_func_in_func(name_pair);
             return Callee::Direct {
                 target: func_ref,
                 closure,
@@ -2171,16 +2196,13 @@ impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
         };
 
         let func = *self.module_builder.reify_info.free_vars.funcs.get(&var)?;
-        let id = self
+        let name_pair = self
             .module_builder
             .func_for_func
             .get(&func)
             .expect("must be defined");
 
-        self.module_builder
-            .module
-            .declare_func_in_func(*id, &mut self.builder.func)
-            .into()
+        Some(self.declare_func_in_func(*name_pair))
     }
 
     pub fn check_yield(&mut self, rator: ir::Value, rands: ir::Value, num_rands: ir::Value) {

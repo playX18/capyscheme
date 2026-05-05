@@ -114,6 +114,17 @@ macro_rules! thunks {
                 }
 
             }
+
+            pub fn new_jit() -> Self {
+                let mut next_id: u32 = 0;
+                Self {
+                    $($name: {
+                        let id = cranelift_module::FuncId::from_u32(next_id);
+                        next_id += 1;
+                        id
+                    }),*
+                }
+            }
         }
 
         impl ImportedThunks {
@@ -124,6 +135,37 @@ macro_rules! thunks {
             ) -> Self {
                 $(
                     let $name = module.declare_func_in_func(thunks.$name, function);
+                )*
+
+                Self {
+                    $($name),*
+                }
+            }
+        }
+
+        impl<$gl> ImportedThunks {
+            pub fn new_jit(
+                thunks: &Thunks,
+                function: &mut cranelift_codegen::ir::function::Function,
+                mut import_func: impl FnMut(
+                    cranelift_codegen::ir::Signature,
+                    u32,
+                    &mut cranelift_codegen::ir::function::Function,
+                ) -> cranelift_codegen::ir::entities::FuncRef,
+            ) -> Self {
+                let callconv = cranelift_codegen::isa::CallConv::SystemV;
+                let mut sig = cranelift_codegen::ir::Signature::new(callconv);
+                $(
+                    sig.clear(callconv);
+                    $(
+                        for ty in < $t as compiler::PrimType>::clif_type() {
+                            sig.params.push(cranelift_codegen::ir::AbiParam::new(ty));
+                        }
+                    )*
+                    for ty in <$ret as compiler::PrimType>::clif_type() {
+                        sig.returns.push(cranelift_codegen::ir::AbiParam::new(ty));
+                    }
+                    let $name = import_func(sig.clone(), thunks.$name.as_u32(), function);
                 )*
 
                 Self {

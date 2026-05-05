@@ -31,7 +31,7 @@ use crate::{
         value::{Closure, CodeArity, CodeBlock, LazyJitHandle, Value, ValueEqual},
         vm::{
             libraries::{JitLibrary, LIBRARY_COLLECTION},
-            thunks::Thunks,
+            thunks::{ImportedThunks, Thunks},
         },
     },
 };
@@ -40,16 +40,12 @@ use cranelift::prelude::{
     Configurable, FunctionBuilder, FunctionBuilderContext, InstBuilder, types,
 };
 use cranelift_codegen::{
-    CodegenError, FinalizedMachReloc, FinalizedRelocTarget,
+    CodegenError, FinalizedRelocTarget,
     binemit::{CodeOffset, Reloc},
     control::ControlPlane,
-    ir::{self, AbiParam, ExternalName, KnownSymbol, LibCall},
-    isa::{CallConv, OwnedTargetIsa, TargetIsa},
+    ir::{self, AbiParam, ExtFuncData, ExternalName, KnownSymbol, LibCall, UserExternalName},
+    isa::{CallConv, OwnedTargetIsa},
     settings,
-};
-use cranelift_module::{
-    DataDescription, DataId, FuncId, FuncOrDataId, Linkage, Module, ModuleDeclarations,
-    ModuleError, ModuleReloc, ModuleRelocTarget, ModuleResult, default_libcall_names,
 };
 use mmtk::util::metadata::side_metadata::global_side_metadata_vm_base_address;
 
@@ -84,19 +80,19 @@ fn lazy_jit_stub_entrypoint() -> Address {
 }
 
 fn build_lazy_jit_stub() -> Address {
-    let mut module = CapyJitModule::new();
-    module.define_symbol("capy_jit_resolve", capy_jit_resolve as *const u8 as usize);
+    let mut compiler = JitCompiler::new();
+    compiler.define_symbol("capy_jit_resolve", capy_jit_resolve as *const u8 as usize);
+
+    let mut name_map = JitNameMap::new();
+    let (resolver_ns, resolver_idx) = name_map.declare_function(JitRelocTarget::RuntimeSymbol {
+        name: "capy_jit_resolve".to_owned(),
+    });
 
     let sig_tail = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
-    let func_id = module
-        .declare_function("capy_lazy_jit_stub", Linkage::Export, &sig_tail)
-        .expect("failed to declare lazy JIT stub");
-
-    let mut ctx = module.make_context();
-    ctx.func.signature = sig_tail;
+    let mut func = ir::Function::with_name_signature(ir::UserFuncName::user(0, 0), sig_tail);
     let mut fctx = FunctionBuilderContext::new();
     {
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fctx);
+        let mut builder = FunctionBuilder::new(&mut func, &mut fctx);
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
@@ -113,10 +109,16 @@ fn build_lazy_jit_stub() -> Address {
             sig.returns.push(AbiParam::new(types::I64));
             sig
         };
-        let resolver_id = module
-            .declare_function("capy_jit_resolve", Linkage::Import, &resolver_sig)
-            .expect("failed to declare lazy JIT resolver");
-        let resolver = module.declare_func_in_func(resolver_id, &mut builder.func);
+        let sig_ref = builder.func.import_signature(resolver_sig);
+        let name_ref = builder.func.declare_imported_user_function(UserExternalName {
+            namespace: resolver_ns,
+            index: resolver_idx,
+        });
+        let resolver = builder.func.import_function(ExtFuncData {
+            name: ExternalName::user(name_ref),
+            signature: sig_ref,
+            colocated: true,
+        });
         let call = builder.ins().call(resolver, &[runtime_ctx, rator]);
         let compiled = builder.inst_results(call)[0];
 
@@ -129,13 +131,16 @@ fn build_lazy_jit_stub() -> Address {
         builder.seal_all_blocks();
         builder.finalize();
     }
-    module
-        .define_function(func_id, &mut ctx)
-        .expect("failed to define lazy JIT stub");
 
-    let entrypoint = Address::from_ptr(module.get_finalized_function(func_id));
-    Box::leak(Box::new(module));
-    entrypoint
+    let stub_target = JitRelocTarget::RuntimeSymbol {
+        name: "capy_lazy_jit_stub".to_owned(),
+    };
+    let installed = compiler
+        .compile_function(&mut func, &name_map, stub_target)
+        .expect("failed to compile lazy JIT stub");
+
+    Box::leak(Box::new(compiler));
+    installed.entrypoint
 }
 
 extern "C-unwind" fn capy_jit_resolve<'gc>(ctx: Context<'gc>, rator: Value<'gc>) -> *const u8 {
@@ -172,15 +177,31 @@ extern "C-unwind" fn capy_jit_resolve<'gc>(ctx: Context<'gc>, rator: Value<'gc>)
     entrypoint.to_ptr()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+enum JitError {
+    Compilation(CodegenError),
+    Allocation { message: &'static str, err: std::io::Error },
+    Relocation(String),
+    Other(String),
+}
+
+impl std::fmt::Debug for JitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JitError::Compilation(err) => write!(f, "JIT compilation error: {err}"),
+            JitError::Allocation { message, err } => {
+                write!(f, "JIT allocation error: {message}: {err}")
+            }
+            JitError::Relocation(msg) => write!(f, "JIT relocation error: {msg}"),
+            JitError::Other(msg) => write!(f, "JIT error: {msg}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum JitRelocTarget {
     Procedure {
         unit_id: JitUnitId,
         index: usize,
-        offset: CodeOffset,
-    },
-    FunctionOffset {
-        function: FuncId,
         offset: CodeOffset,
     },
     ConstantSlot {
@@ -236,215 +257,99 @@ struct JitInstalledFunction {
     record: JitCompiledFunctionRecord,
 }
 
-struct InstalledFunction {
-    record: JitCompiledFunctionRecord,
-    span: Span,
-}
-
 struct ResolvedRelocation<'a> {
     relocation: &'a JitRelocation,
     address: usize,
 }
 
-struct CapyJitModule {
-    isa: OwnedTargetIsa,
-    declarations: ModuleDeclarations,
-    allocator: Box<JitAllocator>,
-    symbols: HashMap<String, usize>,
-    function_targets: HashMap<FuncId, JitRelocTarget>,
-    data_targets: HashMap<DataId, JitRelocTarget>,
-    data_addresses: HashMap<DataId, usize>,
-    installed_procedures: HashMap<(JitUnitId, usize), usize>,
-    compiled_functions: HashMap<FuncId, InstalledFunction>,
-    libcall_names: Box<dyn Fn(LibCall) -> String + Send + Sync>,
+struct JitNameMap {
+    targets: HashMap<(u32, u32), JitRelocTarget>,
+    target_addresses: HashMap<JitRelocTarget, usize>,
+    next_func_index: u32,
+    next_data_index: u32,
 }
 
-impl CapyJitModule {
+impl JitNameMap {
     fn new() -> Self {
-        let mut options = JitAllocatorOptions::default();
-        options.granularity = 256;
-
-        let mut module = Self {
-            isa: build_jit_isa(),
-            declarations: ModuleDeclarations::default(),
-            allocator: JitAllocator::new(options),
-            symbols: HashMap::new(),
-            function_targets: HashMap::new(),
-            data_targets: HashMap::new(),
-            data_addresses: HashMap::new(),
-            installed_procedures: HashMap::new(),
-            compiled_functions: HashMap::new(),
-            libcall_names: default_libcall_names(),
-        };
-
-        for (name, address) in Thunks::symbols() {
-            module.define_symbol(name, address as usize);
-        }
-        module
-    }
-
-    fn define_symbol(&mut self, name: impl Into<String>, address: usize) {
-        self.symbols.insert(name.into(), address);
-    }
-
-    fn bind_function_target(&mut self, func: FuncId, target: JitRelocTarget) {
-        self.function_targets.insert(func, target);
-    }
-
-    fn bind_data_target(&mut self, data: DataId, target: JitRelocTarget) {
-        self.data_targets.insert(data, target);
-    }
-
-    fn bind_data_address(&mut self, data: DataId, address: usize) {
-        self.data_addresses.insert(data, address);
-    }
-
-    fn get_finalized_function(&self, func: FuncId) -> *const u8 {
-        self.compiled_functions
-            .get(&func)
-            .unwrap_or_else(|| panic!("function {func} was not compiled"))
-            .span
-            .rx()
-    }
-
-    fn take_compiled_record(&self, func: FuncId) -> JitCompiledFunctionRecord {
-        self.compiled_functions
-            .get(&func)
-            .unwrap_or_else(|| panic!("function {func} was not compiled"))
-            .record
-            .clone()
-    }
-
-    fn stable_target_for_module_target(
-        &self,
-        target: &ModuleRelocTarget,
-    ) -> Result<JitRelocTarget, String> {
-        match *target {
-            ModuleRelocTarget::User { namespace, index } => match namespace {
-                0 => {
-                    let func_id = FuncId::from_u32(index);
-                    if let Some(target) = self.function_targets.get(&func_id) {
-                        Ok(target.clone())
-                    } else {
-                        let decl = self.declarations.get_function_decl(func_id);
-                        let name = decl.linkage_name(func_id).into_owned();
-                        Ok(JitRelocTarget::RuntimeSymbol { name })
-                    }
-                }
-                1 => {
-                    let data_id = DataId::from_u32(index);
-                    if let Some(target) = self.data_targets.get(&data_id) {
-                        Ok(target.clone())
-                    } else {
-                        let decl = self.declarations.get_data_decl(data_id);
-                        let name = decl.linkage_name(data_id).into_owned();
-                        if name == JIT_GLOBAL_SIDE_METADATA_SYMBOL {
-                            Ok(JitRelocTarget::GlobalSideMetadataBaseAddress)
-                        } else {
-                            Ok(JitRelocTarget::RuntimeSymbol { name })
-                        }
-                    }
-                }
-                _ => Err(format!("unsupported JIT relocation namespace {namespace}")),
-            },
-            ModuleRelocTarget::LibCall(libcall) => Ok(JitRelocTarget::LibCall { libcall }),
-            ModuleRelocTarget::KnownSymbol(symbol) => Ok(JitRelocTarget::RuntimeSymbol {
-                name: known_symbol_name(symbol),
-            }),
-            ModuleRelocTarget::FunctionOffset(func_id, offset) => {
-                match self.function_targets.get(&func_id) {
-                    Some(JitRelocTarget::Procedure { unit_id, index, .. }) => {
-                        Ok(JitRelocTarget::Procedure {
-                            unit_id: *unit_id,
-                            index: *index,
-                            offset,
-                        })
-                    }
-                    Some(other) => Err(format!(
-                        "function offset relocation points at non-procedure target {other:?}"
-                    )),
-                    None => Ok(JitRelocTarget::FunctionOffset {
-                        function: func_id,
-                        offset,
-                    }),
-                }
-            }
+        Self {
+            targets: HashMap::new(),
+            target_addresses: HashMap::new(),
+            next_func_index: 0,
+            next_data_index: 0,
         }
     }
 
-    fn stable_target_for_finalized_reloc_target(
+    fn declare_function(&mut self, target: JitRelocTarget) -> (u32, u32) {
+        let index = self.next_func_index;
+        self.next_func_index += 1;
+        self.targets.insert((0, index), target);
+        (0, index)
+    }
+
+    fn declare_data(&mut self, target: JitRelocTarget, address: usize) -> (u32, u32) {
+        let index = self.next_data_index;
+        self.next_data_index += 1;
+        self.targets.insert((1, index), target.clone());
+        self.target_addresses.insert(target, address);
+        (1, index)
+    }
+
+    fn resolve_reloc_target(
         &self,
         target: &FinalizedRelocTarget,
         func: &ir::Function,
-        current_func: FuncId,
+        current_func_target: &JitRelocTarget,
     ) -> Result<JitRelocTarget, String> {
         match target {
             FinalizedRelocTarget::ExternalName(ExternalName::User(reff)) => {
                 let name = &func.params.user_named_funcs()[*reff];
-                self.stable_target_for_module_target(&ModuleRelocTarget::user(
-                    name.namespace,
-                    name.index,
-                ))
+                self.targets
+                    .get(&(name.namespace, name.index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "cannot resolve JIT reloc target for namespace={} index={}",
+                            name.namespace, name.index
+                        )
+                    })
             }
-            FinalizedRelocTarget::ExternalName(ExternalName::TestCase(name)) => {
-                Err(format!("unsupported testcase relocation target {name:?}"))
-            }
-            FinalizedRelocTarget::ExternalName(ExternalName::LibCall(libcall)) => {
-                Ok(JitRelocTarget::LibCall { libcall: *libcall })
+            FinalizedRelocTarget::ExternalName(ExternalName::LibCall(lc)) => {
+                Ok(JitRelocTarget::LibCall { libcall: *lc })
             }
             FinalizedRelocTarget::ExternalName(ExternalName::KnownSymbol(symbol)) => {
                 Ok(JitRelocTarget::RuntimeSymbol {
                     name: known_symbol_name(*symbol),
                 })
             }
-            FinalizedRelocTarget::Func(offset) => self.stable_target_for_module_target(
-                &ModuleRelocTarget::FunctionOffset(current_func, *offset),
-            ),
+            FinalizedRelocTarget::ExternalName(ExternalName::TestCase(_)) => {
+                Err("unsupported testcase relocation target".to_owned())
+            }
+            FinalizedRelocTarget::Func(offset) => match current_func_target {
+                JitRelocTarget::Procedure {
+                    unit_id,
+                    index,
+                    offset: base_offset,
+                } => Ok(JitRelocTarget::Procedure {
+                    unit_id: *unit_id,
+                    index: *index,
+                    offset: *base_offset + *offset,
+                }),
+                _ => Err(format!(
+                    "Func-offset relocation on non-procedure target {:?}",
+                    current_func_target
+                )),
+            },
         }
-    }
-
-    fn relocation_from_mach_reloc(
-        &self,
-        reloc: &FinalizedMachReloc,
-        func: &ir::Function,
-        current_func: FuncId,
-    ) -> Result<JitRelocation, String> {
-        Ok(JitRelocation {
-            kind: reloc.kind,
-            offset: reloc.offset,
-            target: self.stable_target_for_finalized_reloc_target(
-                &reloc.target,
-                func,
-                current_func,
-            )?,
-            addend: reloc.addend,
-        })
-    }
-
-    fn translate_relocations(
-        &self,
-        ctx: &cranelift_codegen::Context,
-        func: FuncId,
-    ) -> ModuleResult<Vec<JitRelocation>> {
-        let compiled = ctx
-            .compiled_code()
-            .expect("Cranelift context should contain compiled code");
-        compiled
-            .buffer
-            .relocs()
-            .iter()
-            .map(|reloc| {
-                self.relocation_from_mach_reloc(reloc, &ctx.func, func)
-                    .map_err(jit_module_error)
-            })
-            .collect()
     }
 
     fn target_address(
         &self,
-        current_func: FuncId,
         current_entrypoint: usize,
+        current_func_target: &JitRelocTarget,
         target: &JitRelocTarget,
+        symbols: &HashMap<String, usize>,
+        installed_procedures: &HashMap<(JitUnitId, usize), usize>,
+        libcall_names: &dyn Fn(LibCall) -> String,
     ) -> Result<usize, String> {
         match target {
             JitRelocTarget::Procedure {
@@ -452,64 +357,33 @@ impl CapyJitModule {
                 index,
                 offset,
             } => {
-                if matches!(
-                    self.function_targets.get(&current_func),
-                    Some(JitRelocTarget::Procedure {
-                        unit_id: current_unit,
-                        index: current_index,
-                        ..
-                    }) if current_unit == unit_id && current_index == index
-                ) {
-                    return Ok(current_entrypoint + *offset as usize);
+                if let JitRelocTarget::Procedure {
+                    unit_id: current_unit,
+                    index: current_index,
+                    ..
+                } = current_func_target
+                {
+                    if current_unit == unit_id && current_index == index {
+                        return Ok(current_entrypoint + *offset as usize);
+                    }
                 }
-                self.installed_procedures
+                installed_procedures
                     .get(&(*unit_id, *index))
                     .map(|entry| entry + *offset as usize)
                     .ok_or_else(|| format!("JIT procedure {unit_id}:{index} is not installed"))
             }
-            JitRelocTarget::FunctionOffset { function, offset } => {
-                if *function == current_func {
-                    Ok(current_entrypoint + *offset as usize)
-                } else {
-                    self.compiled_functions
-                        .get(function)
-                        .map(|function| function.span.rx() as usize + *offset as usize)
-                        .ok_or_else(|| format!("JIT function {function} is not installed"))
-                }
-            }
-            JitRelocTarget::ConstantSlot { unit_id, index } => self
-                .data_targets
-                .iter()
-                .find_map(|(data, target)| {
-                    matches!(target, JitRelocTarget::ConstantSlot { unit_id: other_unit, index: other_index } if other_unit == unit_id && other_index == index)
-                        .then_some(*data)
-                })
-                .and_then(|data| self.data_address(data))
-                .ok_or_else(|| format!("JIT constant slot {unit_id}:{index} has no address")),
-            JitRelocTarget::CacheSlot { unit_id, index } => self
-                .data_targets
-                .iter()
-                .find_map(|(data, target)| {
-                    matches!(target, JitRelocTarget::CacheSlot { unit_id: other_unit, index: other_index } if other_unit == unit_id && other_index == index)
-                        .then_some(*data)
-                })
-                .and_then(|data| self.data_address(data))
-                .ok_or_else(|| format!("JIT cache slot {unit_id}:{index} has no address")),
-            JitRelocTarget::CodeBlockSlot { unit_id, index } => self
-                .data_targets
-                .iter()
-                .find_map(|(data, target)| {
-                    matches!(target, JitRelocTarget::CodeBlockSlot { unit_id: other_unit, index: other_index } if other_unit == unit_id && other_index == index)
-                        .then_some(*data)
-                })
-                .and_then(|data| self.data_address(data))
-                .ok_or_else(|| format!("JIT code block slot {unit_id}:{index} has no address")),
-            JitRelocTarget::RuntimeSymbol { name } => self
-                .lookup_symbol(name)
+            JitRelocTarget::ConstantSlot { .. }
+            | JitRelocTarget::CacheSlot { .. }
+            | JitRelocTarget::CodeBlockSlot { .. } => self
+                .target_addresses
+                .get(target)
+                .copied()
+                .ok_or_else(|| format!("JIT slot has no address: {target:?}")),
+            JitRelocTarget::RuntimeSymbol { name } => lookup_symbol(name, symbols)
                 .ok_or_else(|| format!("cannot resolve runtime symbol {name}")),
             JitRelocTarget::LibCall { libcall } => {
-                let name = (self.libcall_names)(*libcall);
-                self.lookup_symbol(&name)
+                let name = libcall_names(*libcall);
+                lookup_symbol(&name, symbols)
                     .ok_or_else(|| format!("cannot resolve libcall {name}"))
             }
             JitRelocTarget::GlobalSideMetadataBaseAddress => {
@@ -517,31 +391,113 @@ impl CapyJitModule {
             }
         }
     }
+}
 
-    fn data_address(&self, data: DataId) -> Option<usize> {
-        self.data_addresses.get(&data).copied()
+struct JitCompiler {
+    isa: OwnedTargetIsa,
+    allocator: Box<JitAllocator>,
+    symbols: HashMap<String, usize>,
+    installed_procedures: HashMap<(JitUnitId, usize), usize>,
+    libcall_names: Box<dyn Fn(LibCall) -> String + Send + Sync>,
+}
+
+impl JitCompiler {
+    fn new() -> Self {
+        let mut options = JitAllocatorOptions::default();
+        options.granularity = 256;
+
+        let mut compiler = Self {
+            isa: build_jit_isa(),
+            allocator: JitAllocator::new(options),
+            symbols: HashMap::new(),
+            installed_procedures: HashMap::new(),
+            libcall_names: default_libcall_names(),
+        };
+
+        for (name, address) in Thunks::symbols() {
+            compiler.define_symbol(name, address as usize);
+        }
+        compiler
+    }
+
+    fn define_symbol(&mut self, name: impl Into<String>, address: usize) {
+        self.symbols.insert(name.into(), address);
     }
 
     fn lookup_symbol(&self, name: &str) -> Option<usize> {
-        self.symbols
-            .get(name)
-            .copied()
-            .or_else(|| lookup_with_dlsym(name).map(|ptr| ptr as usize))
+        lookup_symbol(name, &self.symbols)
+    }
+
+    fn compile_function(
+        &mut self,
+        func: &mut ir::Function,
+        name_map: &JitNameMap,
+        current_func_target: JitRelocTarget,
+    ) -> Result<JitInstalledFunction, JitError> {
+        let mut ctx = cranelift_codegen::Context::for_function(std::mem::replace(
+            func,
+            ir::Function::with_name_signature(ir::UserFuncName::user(0, 0), ir::Signature::new(CallConv::SystemV)),
+        ));
+        let mut ctrl_plane = ControlPlane::default();
+        let compiled = ctx
+            .compile(&*self.isa, &mut ctrl_plane)
+            .map_err(|err| JitError::Compilation(err.inner))?;
+
+        let code = compiled.buffer.data().to_vec().into_boxed_slice();
+        let alignment = (compiled.buffer.alignment as u64)
+            .max(self.isa.function_alignment().minimum as u64)
+            .max(self.isa.symbol_alignment());
+
+        let raw_relocs: Vec<_> = compiled.buffer.relocs().to_vec();
+
+        let relocations = raw_relocs
+            .iter()
+            .map(|reloc| {
+                let target = name_map
+                    .resolve_reloc_target(&reloc.target, &ctx.func, &current_func_target)
+                    .map_err(JitError::Relocation)?;
+                Ok(JitRelocation {
+                    kind: reloc.kind,
+                    offset: reloc.offset,
+                    target,
+                    addend: reloc.addend,
+                })
+            })
+            .collect::<Result<Vec<_>, JitError>>()?;
+
+        let record = JitCompiledFunctionRecord {
+            code,
+            alignment,
+            target_triple: self.isa.triple().to_string(),
+            isa_fingerprint: self.isa.to_string(),
+            relocations,
+        };
+
+        let entrypoint = self.install_record(name_map, current_func_target.clone(), &record)?;
+
+        *func = ctx.func;
+
+        Ok(JitInstalledFunction { entrypoint, record })
     }
 
     fn install_record(
         &mut self,
-        func: FuncId,
-        record: JitCompiledFunctionRecord,
-    ) -> ModuleResult<Span> {
-        let alloc_size = (record.code.len() + record.relocations.len() * MAX_VENEER_SIZE).max(1);
+        name_map: &JitNameMap,
+        current_func_target: JitRelocTarget,
+        record: &JitCompiledFunctionRecord,
+    ) -> Result<Address, JitError> {
+        let alloc_size =
+            (record.code.len() + record.relocations.len() * MAX_VENEER_SIZE).max(1);
         let mut span = self
             .allocator
             .alloc(alloc_size)
-            .map_err(|err| jit_allocation_error("unable to allocate JIT function", err))?;
+            .map_err(|err| JitError::Allocation {
+                message: "unable to allocate JIT function",
+                err: std::io::Error::new(std::io::ErrorKind::Other, format!("{err:?}")),
+            })?;
 
         if span.rx() as usize % record.alignment.max(1) as usize != 0 {
-            return Err(jit_module_error(format!(
+            return Err(JitError::Other(format!(
                 "asmkit returned function address {:p} that does not satisfy Cranelift alignment {}",
                 span.rx(),
                 record.alignment
@@ -553,22 +509,32 @@ impl CapyJitModule {
             .relocations
             .iter()
             .map(|relocation| {
-                let address = self
-                    .target_address(func, current_entrypoint, &relocation.target)
-                    .map_err(jit_module_error)?;
+                let address = name_map
+                    .target_address(
+                        current_entrypoint,
+                        &current_func_target,
+                        &relocation.target,
+                        &self.symbols,
+                        &self.installed_procedures,
+                        &*self.libcall_names,
+                    )
+                    .map_err(JitError::Relocation)?;
                 Ok(ResolvedRelocation {
                     relocation,
                     address,
                 })
             })
-            .collect::<ModuleResult<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, JitError>>()?;
 
         let mut image = vec![0; alloc_size];
         image[..record.code.len()].copy_from_slice(&record.code);
         unsafe {
             self.allocator
                 .copy_from_slice(&mut span, 0, &image)
-                .map_err(|err| jit_allocation_error("unable to write JIT function", err))?;
+                .map_err(|err| JitError::Allocation {
+                    message: "unable to write JIT function",
+                    err: std::io::Error::new(std::io::ErrorKind::Other, format!("{err:?}")),
+                })?;
         }
 
         let mut relocation_error = None;
@@ -579,163 +545,16 @@ impl CapyJitModule {
                         relocation_error = Some(err);
                     }
                 })
-                .map_err(|err| jit_allocation_error("unable to patch JIT function", err))?;
+                .map_err(|err| JitError::Allocation {
+                    message: "unable to patch JIT function",
+                    err: std::io::Error::new(std::io::ErrorKind::Other, format!("{err:?}")),
+                })?;
         }
         if let Some(err) = relocation_error {
-            return Err(jit_module_error(err));
+            return Err(JitError::Relocation(err));
         }
 
-        Ok(span)
-    }
-}
-
-impl Module for CapyJitModule {
-    fn isa(&self) -> &dyn TargetIsa {
-        &*self.isa
-    }
-
-    fn declarations(&self) -> &ModuleDeclarations {
-        &self.declarations
-    }
-
-    fn get_name(&self, name: &str) -> Option<FuncOrDataId> {
-        self.declarations.get_name(name)
-    }
-
-    fn declare_function(
-        &mut self,
-        name: &str,
-        linkage: Linkage,
-        signature: &ir::Signature,
-    ) -> ModuleResult<FuncId> {
-        self.declarations
-            .declare_function(name, linkage, signature)
-            .map(|(id, _)| id)
-    }
-
-    fn declare_anonymous_function(&mut self, signature: &ir::Signature) -> ModuleResult<FuncId> {
-        self.declarations.declare_anonymous_function(signature)
-    }
-
-    fn declare_data(
-        &mut self,
-        name: &str,
-        linkage: Linkage,
-        writable: bool,
-        tls: bool,
-    ) -> ModuleResult<DataId> {
-        let (id, _) = self
-            .declarations
-            .declare_data(name, linkage, writable, tls)?;
-        if name == JIT_GLOBAL_SIDE_METADATA_SYMBOL {
-            self.bind_data_target(id, JitRelocTarget::GlobalSideMetadataBaseAddress);
-        }
-        Ok(id)
-    }
-
-    fn declare_anonymous_data(&mut self, writable: bool, tls: bool) -> ModuleResult<DataId> {
-        self.declarations.declare_anonymous_data(writable, tls)
-    }
-
-    fn define_function_with_control_plane(
-        &mut self,
-        func: FuncId,
-        ctx: &mut cranelift_codegen::Context,
-        ctrl_plane: &mut ControlPlane,
-    ) -> ModuleResult<()> {
-        let decl = self.declarations.get_function_decl(func);
-        if !decl.linkage.is_definable() {
-            return Err(ModuleError::InvalidImportDefinition(
-                decl.linkage_name(func).into_owned(),
-            ));
-        }
-        if self.compiled_functions.contains_key(&func) {
-            return Err(ModuleError::DuplicateDefinition(
-                decl.linkage_name(func).into_owned(),
-            ));
-        }
-
-        let compiled = ctx.compile(self.isa(), ctrl_plane)?;
-        let alignment = (compiled.buffer.alignment as u64)
-            .max(self.isa.function_alignment().minimum as u64)
-            .max(self.isa.symbol_alignment());
-        let record = JitCompiledFunctionRecord {
-            code: compiled.code_buffer().to_vec().into_boxed_slice(),
-            alignment,
-            target_triple: self.isa.triple().to_string(),
-            isa_fingerprint: self.isa.to_string(),
-            relocations: self.translate_relocations(ctx, func)?,
-        };
-        let span = self.install_record(func, record.clone())?;
-        if let Some(JitRelocTarget::Procedure { unit_id, index, .. }) =
-            self.function_targets.get(&func)
-        {
-            self.installed_procedures
-                .insert((*unit_id, *index), span.rx() as usize);
-        }
-        self.compiled_functions
-            .insert(func, InstalledFunction { record, span });
-        Ok(())
-    }
-
-    fn define_function_bytes(
-        &mut self,
-        func: FuncId,
-        alignment: u64,
-        bytes: &[u8],
-        relocs: &[ModuleReloc],
-    ) -> ModuleResult<()> {
-        let decl = self.declarations.get_function_decl(func);
-        if !decl.linkage.is_definable() {
-            return Err(ModuleError::InvalidImportDefinition(
-                decl.linkage_name(func).into_owned(),
-            ));
-        }
-        if self.compiled_functions.contains_key(&func) {
-            return Err(ModuleError::DuplicateDefinition(
-                decl.linkage_name(func).into_owned(),
-            ));
-        }
-
-        let relocations = relocs
-            .iter()
-            .map(|reloc| {
-                let target = self
-                    .stable_target_for_module_target(&reloc.name)
-                    .map_err(jit_module_error)?;
-                Ok(JitRelocation {
-                    kind: reloc.kind,
-                    offset: reloc.offset,
-                    target,
-                    addend: reloc.addend,
-                })
-            })
-            .collect::<ModuleResult<Vec<_>>>()?;
-        let record = JitCompiledFunctionRecord {
-            code: bytes.to_vec().into_boxed_slice(),
-            alignment: alignment
-                .max(self.isa.function_alignment().minimum as u64)
-                .max(self.isa.symbol_alignment()),
-            target_triple: self.isa.triple().to_string(),
-            isa_fingerprint: self.isa.to_string(),
-            relocations,
-        };
-        let span = self.install_record(func, record.clone())?;
-        if let Some(JitRelocTarget::Procedure { unit_id, index, .. }) =
-            self.function_targets.get(&func)
-        {
-            self.installed_procedures
-                .insert((*unit_id, *index), span.rx() as usize);
-        }
-        self.compiled_functions
-            .insert(func, InstalledFunction { record, span });
-        Ok(())
-    }
-
-    fn define_data(&mut self, _data: DataId, _desc: &DataDescription) -> ModuleResult<()> {
-        Err(jit_module_error(
-            "Capy direct JIT module does not support owned data definitions",
-        ))
+        Ok(Address::from_ptr(span.rx()))
     }
 }
 
@@ -749,7 +568,9 @@ fn build_jit_isa() -> OwnedTargetIsa {
     flag_builder.set("enable_pinned_reg", "true").unwrap();
     flag_builder.set("enable_probestack", "false").unwrap();
     flag_builder.set("opt_level", "speed").unwrap();
-    flag_builder.set("preserve_frame_pointers", "true").unwrap();
+    flag_builder
+        .set("preserve_frame_pointers", "true")
+        .unwrap();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     flag_builder.set("is_pic", "false").unwrap();
 
@@ -760,15 +581,27 @@ fn build_jit_isa() -> OwnedTargetIsa {
         .expect("failed to build Cranelift JIT ISA")
 }
 
-fn jit_module_error(message: impl Into<String>) -> ModuleError {
-    ModuleError::Compilation(CodegenError::Unsupported(message.into()))
-}
-
-fn jit_allocation_error(message: &'static str, err: impl std::fmt::Debug) -> ModuleError {
-    ModuleError::Allocation {
-        message,
-        err: std::io::Error::new(std::io::ErrorKind::Other, format!("{err:?}")),
-    }
+fn default_libcall_names() -> Box<dyn Fn(LibCall) -> String + Send + Sync> {
+    Box::new(|libcall| match libcall {
+        LibCall::Probestack => "__cranelift_probestack".to_owned(),
+        LibCall::CeilF32 => "ceilf".to_owned(),
+        LibCall::CeilF64 => "ceil".to_owned(),
+        LibCall::FloorF32 => "floorf".to_owned(),
+        LibCall::FloorF64 => "floor".to_owned(),
+        LibCall::TruncF32 => "truncf".to_owned(),
+        LibCall::TruncF64 => "trunc".to_owned(),
+        LibCall::NearestF32 => "nearbyintf".to_owned(),
+        LibCall::NearestF64 => "nearbyint".to_owned(),
+        LibCall::FmaF32 => "fmaf".to_owned(),
+        LibCall::FmaF64 => "fma".to_owned(),
+        LibCall::Memcpy => "memcpy".to_owned(),
+        LibCall::Memset => "memset".to_owned(),
+        LibCall::Memmove => "memmove".to_owned(),
+        LibCall::Memcmp => "memcmp".to_owned(),
+        LibCall::ElfTlsGetAddr => "__tls_get_addr".to_owned(),
+        LibCall::ElfTlsGetOffset => "__tls_get_offset".to_owned(),
+        LibCall::X86Pshufb => "__cranelift_x86_pshufb".to_owned(),
+    })
 }
 
 fn known_symbol_name(symbol: KnownSymbol) -> String {
@@ -777,6 +610,13 @@ fn known_symbol_name(symbol: KnownSymbol) -> String {
         KnownSymbol::CoffTlsIndex => "_tls_index",
     }
     .to_owned()
+}
+
+fn lookup_symbol(name: &str, symbols: &HashMap<String, usize>) -> Option<usize> {
+    symbols
+        .get(name)
+        .copied()
+        .or_else(|| lookup_with_dlsym(name).map(|ptr| ptr as usize))
 }
 
 #[cfg(not(windows))]
@@ -1342,21 +1182,37 @@ impl<'gc> JitModuleState<'gc> {
 
 #[derive(Clone)]
 struct JitUnitDecls {
-    funcs_by_code: HashMap<CodeId, FuncId>,
-    code_blocks_by_code: HashMap<CodeId, DataId>,
-    constants_by_symbol: HashMap<String, DataId>,
-    cache_cells_by_symbol: HashMap<String, DataId>,
+    funcs_by_code: HashMap<CodeId, (u32, u32)>,
+    code_blocks_by_code: HashMap<CodeId, (u32, u32)>,
+    constants_by_symbol: HashMap<String, (u32, u32)>,
+    cache_cells_by_symbol: HashMap<String, (u32, u32)>,
 }
 
 struct JitWorker {
-    module: CapyJitModule,
+    compiler: JitCompiler,
+    name_map: JitNameMap,
     units: HashMap<JitUnitId, JitUnitDecls>,
 }
 
 impl JitWorker {
     fn new() -> Self {
+        let compiler = JitCompiler::new();
+        let mut name_map = JitNameMap::new();
+
+        let mut thunk_index: u32 = 0;
+        for (name, _address) in Thunks::symbols() {
+            name_map.targets.insert(
+                (2, thunk_index),
+                JitRelocTarget::RuntimeSymbol {
+                    name: name.to_owned(),
+                },
+            );
+            thunk_index += 1;
+        }
+
         Self {
-            module: CapyJitModule::new(),
+            compiler,
+            name_map,
             units: HashMap::new(),
         }
     }
@@ -1366,83 +1222,49 @@ impl JitWorker {
             return decls.clone();
         }
 
-        let sig = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
         let mut funcs_by_code = HashMap::new();
         let mut code_blocks_by_code = HashMap::new();
         let mut constants_by_symbol = HashMap::new();
         let mut cache_cells_by_symbol = HashMap::new();
 
         for (index, procedure) in program.linear.procedures.iter().enumerate() {
-            let name = jit_function_name(program.unit_id, procedure);
-            let func_id = self
-                .module
-                .declare_function(&name, Linkage::Export, &sig)
-                .expect("failed to declare JIT procedure");
-            self.module.bind_function_target(
-                func_id,
-                JitRelocTarget::Procedure {
-                    unit_id: program.unit_id,
-                    index,
-                    offset: 0,
-                },
-            );
-            funcs_by_code.insert(procedure.code, func_id);
+            let (ns, idx) = self.name_map.declare_function(JitRelocTarget::Procedure {
+                unit_id: program.unit_id,
+                index,
+                offset: 0,
+            });
+            funcs_by_code.insert(procedure.code, (ns, idx));
 
-            let symbol = program.code_block_symbol(procedure.code);
-            let data_id = self
-                .module
-                .declare_data(symbol, Linkage::Import, false, false)
-                .expect("failed to declare JIT code block data");
-            self.module.bind_data_target(
-                data_id,
+            let (ns, idx) = self.name_map.declare_data(
                 JitRelocTarget::CodeBlockSlot {
                     unit_id: program.unit_id,
                     index,
                 },
-            );
-            self.module.bind_data_address(
-                data_id,
                 (&program.code_block_slots[index].value as *const Value<'gc>).cast::<u8>() as usize,
             );
-            code_blocks_by_code.insert(procedure.code, data_id);
+            code_blocks_by_code.insert(procedure.code, (ns, idx));
         }
 
         for (index, slot) in program.constant_slots.iter().enumerate() {
-            let data_id = self
-                .module
-                .declare_data(&slot.symbol, Linkage::Import, false, false)
-                .expect("failed to declare JIT constant data");
-            self.module.bind_data_target(
-                data_id,
+            let (ns, idx) = self.name_map.declare_data(
                 JitRelocTarget::ConstantSlot {
                     unit_id: program.unit_id,
                     index,
                 },
-            );
-            self.module.bind_data_address(
-                data_id,
                 (&slot.value as *const Value<'gc>).cast::<u8>() as usize,
             );
-            constants_by_symbol.insert(slot.symbol.clone(), data_id);
+            constants_by_symbol.insert(slot.symbol.clone(), (ns, idx));
         }
 
         for (index, slot) in program.cache_slots.iter().enumerate() {
-            let data_id = self
-                .module
-                .declare_data(&slot.symbol, Linkage::Import, false, false)
-                .expect("failed to declare JIT cache cell data");
-            self.module.bind_data_target(
-                data_id,
+            let (ns, idx) = self.name_map.declare_data(
                 JitRelocTarget::CacheSlot {
                     unit_id: program.unit_id,
                     index,
                 },
-            );
-            self.module.bind_data_address(
-                data_id,
                 (&slot.value as *const Value<'gc>).cast::<u8>() as usize,
             );
-            cache_cells_by_symbol.insert(slot.symbol.clone(), data_id);
+            cache_cells_by_symbol.insert(slot.symbol.clone(), (ns, idx));
         }
 
         let decls = JitUnitDecls {
@@ -1463,66 +1285,88 @@ impl JitWorker {
     ) -> JitInstalledFunction {
         let decls = self.ensure_unit_declared(program);
 
-        let mut module_builder = lower::JitModuleBuilder::new(
-            ctx,
-            &mut self.module,
-            program.reify_info_for_worker(),
-            JIT_GLOBAL_SIDE_METADATA_SYMBOL,
-        );
-        module_builder.stacktraces = program.options.backtraces;
-        module_builder.direct_calls = false;
-        module_builder.func_for_code = decls.funcs_by_code.clone();
-        module_builder.code_block_for_code = decls.code_blocks_by_code.clone();
-        for slot in &program.constant_slots {
-            let data_id = decls.constants_by_symbol[&slot.symbol];
-            module_builder
-                .constants
-                .insert(ValueEqual(slot.key), data_id);
-        }
-        for slot in &program.cache_slots {
-            let data_id = decls.cache_cells_by_symbol[&slot.symbol];
-            module_builder
-                .cache_cells
-                .insert(ValueEqual(slot.key), data_id);
-        }
+        let thunks = Thunks::new_jit();
 
         let procedure = &program.procedures[procedure_index].procedure;
-        let func_id = module_builder.func_for_code[&procedure.code];
         let sig = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
 
-        let mut context = module_builder.module.make_context();
-        context.func.signature = sig;
+        let mut func = ir::Function::with_name_signature(ir::UserFuncName::user(0, 0), sig);
         let mut fctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-        let thunks = crate::runtime::vm::thunks::ImportedThunks::new(
-            &module_builder.thunks,
+        let mut builder = FunctionBuilder::new(&mut func, &mut fctx);
+
+        let mut thunk_namespace_index: u32 = 0;
+        let thunks_imported = ImportedThunks::new_jit(
+            &thunks,
             &mut builder.func,
-            &mut module_builder.module,
+            |sig, _func_id_u32, func| {
+                let index = thunk_namespace_index;
+                thunk_namespace_index += 1;
+                let sig_ref = func.import_signature(sig);
+                let name_ref = func.declare_imported_user_function(UserExternalName {
+                    namespace: 2,
+                    index,
+                });
+                func.import_function(ExtFuncData {
+                    name: ExternalName::user(name_ref),
+                    signature: sig_ref,
+                    colocated: true,
+                })
+            },
         );
+
+        let mut jit_builder = lower::JitBuilder::new(
+            ctx,
+            &mut self.compiler,
+            &mut self.name_map,
+            &decls,
+            program.reify_info_for_worker(),
+            JIT_GLOBAL_SIDE_METADATA_SYMBOL,
+            thunks,
+        );
+        jit_builder.stacktraces = program.options.backtraces;
+        jit_builder.direct_calls = false;
+        for slot in &program.constant_slots {
+            let name_pair = decls.constants_by_symbol[&slot.symbol];
+            jit_builder.constants.insert(ValueEqual(slot.key), name_pair);
+        }
+        for slot in &program.cache_slots {
+            let name_pair = decls.cache_cells_by_symbol[&slot.symbol];
+            jit_builder.cache_cells.insert(ValueEqual(slot.key), name_pair);
+        }
+
         let function_name = jit_function_name(program.unit_id, procedure);
-        let func_debug_cx = module_builder
+        let func_debug_cx = jit_builder
             .debug_context
             .define_linear_procedure(procedure, &function_name);
         let mut ssa = lower::JitLowerer::new(
-            &mut module_builder,
+            &mut jit_builder,
             builder,
             lower::JitTarget::Procedure(procedure.clone()),
-            thunks,
+            thunks_imported,
             func_debug_cx,
         );
         ssa.linear_procedure(procedure);
         ssa.finalize();
         ssa.builder.seal_all_blocks();
         ssa.builder.finalize();
-        module_builder
-            .module
-            .define_function(func_id, &mut context)
-            .unwrap_or_else(|err| panic!("failed to define JIT procedure: {err}"));
-        let entrypoint = Address::from_ptr(module_builder.module.get_finalized_function(func_id));
-        let record = module_builder.module.take_compiled_record(func_id);
-        module_builder.module.clear_context(&mut context);
 
-        JitInstalledFunction { entrypoint, record }
+        let reloc_target = JitRelocTarget::Procedure {
+            unit_id: program.unit_id,
+            index: procedure_index,
+            offset: 0,
+        };
+
+        let installed = self
+            .compiler
+            .compile_function(&mut func, &self.name_map, reloc_target)
+            .unwrap_or_else(|err| panic!("failed to compile JIT procedure: {err:?}"));
+
+        self.compiler.installed_procedures.insert(
+            (program.unit_id, procedure_index),
+            installed.entrypoint.as_usize(),
+        );
+
+        installed
     }
 }
 
@@ -1817,7 +1661,8 @@ unsafe impl<'gc> Trace for JitModuleState<'gc> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapyJitModule, JitModuleState, JitRelocTarget, capy_jit_resolve, compile_cps_to_jit_thunk,
+        JitCompiler, JitModuleState, JitNameMap, JitRelocTarget, capy_jit_resolve,
+        compile_cps_to_jit_thunk,
     };
     use crate::{
         compiler::CompilationOptions,
@@ -1829,8 +1674,10 @@ mod tests {
             value::{Closure, CodeBlockKind, Symbol, Value},
         },
     };
-    use cranelift_codegen::{FinalizedMachReloc, FinalizedRelocTarget, binemit::Reloc, ir};
-    use cranelift_module::{Linkage, Module, ModuleReloc, ModuleRelocTarget};
+    use cranelift_codegen::{
+        FinalizedRelocTarget, binemit::Reloc, ir,
+        ir::{ExternalName, UserExternalName},
+    };
 
     fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
         let scm = Scheme::new_uninit();
@@ -1843,57 +1690,84 @@ mod tests {
 
     #[test]
     fn direct_jit_records_stable_runtime_symbol_relocations() {
-        let mut module = CapyJitModule::new();
-        let sig = ir::Signature::new(cranelift_codegen::isa::CallConv::SystemV);
-        let func = module
-            .declare_function("reloc_record_test", Linkage::Export, &sig)
-            .unwrap();
-        let data = module
-            .declare_data("capy_test_reloc_symbol", Linkage::Import, false, false)
-            .unwrap();
+        let mut compiler = JitCompiler::new();
+        let mut name_map = JitNameMap::new();
         let target = 0x1234_5678usize;
-        module.define_symbol("capy_test_reloc_symbol", target);
-        let reloc = ModuleReloc {
-            kind: Reloc::Abs8,
-            offset: 0,
-            name: ModuleRelocTarget::user(1, data.as_u32()),
-            addend: 0,
+        compiler.define_symbol("capy_test_reloc_symbol", target);
+
+        let (ns, idx) = name_map.declare_data(
+            JitRelocTarget::RuntimeSymbol {
+                name: "capy_test_reloc_symbol".to_owned(),
+            },
+            target,
+        );
+
+        let record = JitCompiledFunctionRecord {
+            code: vec![0u8; 8].into_boxed_slice(),
+            alignment: 8,
+            target_triple: String::new(),
+            isa_fingerprint: String::new(),
+            relocations: vec![super::JitRelocation {
+                kind: Reloc::Abs8,
+                offset: 0,
+                target: JitRelocTarget::RuntimeSymbol {
+                    name: "capy_test_reloc_symbol".to_owned(),
+                },
+                addend: 0,
+            }],
         };
 
-        module
-            .define_function_bytes(func, 8, &[0; 8], &[reloc])
+        let entrypoint = compiler
+            .install_record(
+                &name_map,
+                JitRelocTarget::RuntimeSymbol {
+                    name: "capy_test_reloc_symbol".to_owned(),
+                },
+                &record,
+            )
             .unwrap();
-        let record = module.take_compiled_record(func);
 
         assert!(matches!(
             &record.relocations[0].target,
             JitRelocTarget::RuntimeSymbol { name } if name == "capy_test_reloc_symbol"
         ));
-        let patched =
-            unsafe { (module.get_finalized_function(func) as *const u64).read_unaligned() };
+        let patched = unsafe { (entrypoint.to_ptr::<u8>() as *const u64).read_unaligned() };
         assert_eq!(patched, target as u64);
     }
 
     #[test]
-    fn module_reloc_targets_translate_to_stable_slot_identities() {
-        let mut module = CapyJitModule::new();
-        let data = module
-            .declare_data("capy_test_constant_slot", Linkage::Import, false, false)
-            .unwrap();
-        module.bind_data_target(
-            data,
+    fn name_map_resolves_data_to_stable_slot_identity() {
+        let mut name_map = JitNameMap::new();
+        let (ns, idx) = name_map.declare_data(
             JitRelocTarget::ConstantSlot {
                 unit_id: 77,
                 index: 5,
             },
+            0x1000,
         );
 
-        let target = module
-            .stable_target_for_module_target(&ModuleRelocTarget::user(1, data.as_u32()))
+        let mut func = ir::Function::new();
+        let name_ref = func.declare_imported_user_function(UserExternalName {
+            namespace: ns,
+            index: idx,
+        });
+
+        let target =
+            FinalizedRelocTarget::ExternalName(ExternalName::user(name_ref));
+        let resolved = name_map
+            .resolve_reloc_target(
+                &target,
+                &func,
+                &JitRelocTarget::Procedure {
+                    unit_id: 0,
+                    index: 0,
+                    offset: 0,
+                },
+            )
             .unwrap();
 
         assert_eq!(
-            target,
+            resolved,
             JitRelocTarget::ConstantSlot {
                 unit_id: 77,
                 index: 5
@@ -1903,35 +1777,20 @@ mod tests {
 
     #[test]
     fn finalized_func_reloc_translates_to_current_procedure_offset() {
-        let mut module = CapyJitModule::new();
-        let sig = ir::Signature::new(cranelift_codegen::isa::CallConv::SystemV);
-        let func = module
-            .declare_function("capy_test_func_reloc", Linkage::Export, &sig)
-            .unwrap();
-        module.bind_function_target(
-            func,
-            JitRelocTarget::Procedure {
-                unit_id: 88,
-                index: 9,
-                offset: 0,
-            },
-        );
-        let reloc = FinalizedMachReloc {
-            kind: Reloc::X86PCRel4,
-            offset: 4,
-            target: FinalizedRelocTarget::Func(12),
-            addend: -4,
+        let name_map = JitNameMap::new();
+        let current_target = JitRelocTarget::Procedure {
+            unit_id: 88,
+            index: 9,
+            offset: 0,
         };
 
-        let translated = module
-            .relocation_from_mach_reloc(&reloc, &ir::Function::new(), func)
+        let func = ir::Function::new();
+        let resolved = name_map
+            .resolve_reloc_target(&FinalizedRelocTarget::Func(12), &func, &current_target)
             .unwrap();
 
-        assert_eq!(translated.kind, Reloc::X86PCRel4);
-        assert_eq!(translated.offset, 4);
-        assert_eq!(translated.addend, -4);
         assert_eq!(
-            translated.target,
+            resolved,
             JitRelocTarget::Procedure {
                 unit_id: 88,
                 index: 9,
@@ -1942,28 +1801,41 @@ mod tests {
 
     #[test]
     fn x86_call_veneer_keeps_raw_symbol_target() {
-        let mut module = CapyJitModule::new();
-        let sig = ir::Signature::new(cranelift_codegen::isa::CallConv::SystemV);
-        let func = module
-            .declare_function("capy_test_veneer_source", Linkage::Export, &sig)
-            .unwrap();
-        let target_func = module
-            .declare_function("capy_test_veneer_target", Linkage::Import, &sig)
-            .unwrap();
+        let mut compiler = JitCompiler::new();
+        let mut name_map = JitNameMap::new();
         let far_target = usize::MAX - 0x1000;
-        module.define_symbol("capy_test_veneer_target", far_target);
-        let reloc = ModuleReloc {
-            kind: Reloc::X86CallPCRel4,
-            offset: 0,
-            name: ModuleRelocTarget::user(0, target_func.as_u32()),
-            addend: -4,
+        compiler.define_symbol("capy_test_veneer_target", far_target);
+
+        name_map.declare_function(JitRelocTarget::RuntimeSymbol {
+            name: "capy_test_veneer_target".to_owned(),
+        });
+
+        let record = JitCompiledFunctionRecord {
+            code: vec![0u8; 8].into_boxed_slice(),
+            alignment: 8,
+            target_triple: String::new(),
+            isa_fingerprint: String::new(),
+            relocations: vec![super::JitRelocation {
+                kind: Reloc::X86CallPCRel4,
+                offset: 0,
+                target: JitRelocTarget::RuntimeSymbol {
+                    name: "capy_test_veneer_target".to_owned(),
+                },
+                addend: -4,
+            }],
         };
 
-        module
-            .define_function_bytes(func, 8, &[0; 8], &[reloc])
+        let entrypoint = compiler
+            .install_record(
+                &name_map,
+                JitRelocTarget::RuntimeSymbol {
+                    name: "capy_test_veneer_source".to_owned(),
+                },
+                &record,
+            )
             .unwrap();
 
-        let entry = module.get_finalized_function(func) as *const u8;
+        let entry = entrypoint.to_ptr::<u8>();
         let immediate = unsafe { (entry as *const i32).read_unaligned() };
         let veneer = unsafe { entry.offset(immediate as isize + 4) };
         let veneer_target = unsafe { veneer.add(2).cast::<u64>().read_unaligned() };
@@ -1978,34 +1850,66 @@ mod tests {
 
     #[test]
     fn saved_jit_record_can_be_reinstalled_at_fresh_address() {
-        let mut module = CapyJitModule::new();
-        let sig = ir::Signature::new(cranelift_codegen::isa::CallConv::SystemV);
-        let func = module
-            .declare_function("reloc_reinstall_test", Linkage::Export, &sig)
-            .unwrap();
-        let data = module
-            .declare_data("capy_test_reinstall_symbol", Linkage::Import, false, false)
-            .unwrap();
+        let mut compiler = JitCompiler::new();
+        let mut name_map = JitNameMap::new();
         let target = 0xfeed_face_cafe_beefusize;
-        module.define_symbol("capy_test_reinstall_symbol", target);
-        let reloc = ModuleReloc {
-            kind: Reloc::Abs8,
-            offset: 0,
-            name: ModuleRelocTarget::user(1, data.as_u32()),
-            addend: 0,
+        compiler.define_symbol("capy_test_reinstall_symbol", target);
+
+        name_map.declare_data(
+            JitRelocTarget::RuntimeSymbol {
+                name: "capy_test_reinstall_symbol".to_owned(),
+            },
+            target,
+        );
+
+        let record = JitCompiledFunctionRecord {
+            code: vec![0u8; 8].into_boxed_slice(),
+            alignment: 8,
+            target_triple: String::new(),
+            isa_fingerprint: String::new(),
+            relocations: vec![super::JitRelocation {
+                kind: Reloc::Abs8,
+                offset: 0,
+                target: JitRelocTarget::RuntimeSymbol {
+                    name: "capy_test_reinstall_symbol".to_owned(),
+                },
+                addend: 0,
+            }],
         };
-        module
-            .define_function_bytes(func, 8, &[0; 8], &[reloc])
+
+        let first = compiler
+            .install_record(
+                &name_map,
+                JitRelocTarget::RuntimeSymbol {
+                    name: "capy_test_reinstall_func".to_owned(),
+                },
+                &record,
+            )
             .unwrap();
-        let first = module.get_finalized_function(func);
-        let record = module.take_compiled_record(func);
 
-        let mut restored = CapyJitModule::new();
+        let mut restored = JitCompiler::new();
+        let mut restored_name_map = JitNameMap::new();
         restored.define_symbol("capy_test_reinstall_symbol", target);
-        let span = restored.install_record(func, record).unwrap();
 
-        assert_ne!(first, span.rx());
-        let patched = unsafe { (span.rx() as *const u64).read_unaligned() };
+        restored_name_map.declare_data(
+            JitRelocTarget::RuntimeSymbol {
+                name: "capy_test_reinstall_symbol".to_owned(),
+            },
+            target,
+        );
+
+        let second = restored
+            .install_record(
+                &restored_name_map,
+                JitRelocTarget::RuntimeSymbol {
+                    name: "capy_test_reinstall_func".to_owned(),
+                },
+                &record,
+            )
+            .unwrap();
+
+        assert_ne!(first, second);
+        let patched = unsafe { (second.to_ptr::<u8>() as *const u64).read_unaligned() };
         assert_eq!(patched, target as u64);
     }
 

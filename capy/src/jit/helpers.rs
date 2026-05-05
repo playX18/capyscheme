@@ -4,8 +4,6 @@ use crate::rsgc::mmtk::BarrierSelector;
 use crate::rsgc::object::OBJECT_HEADER_OFFSET;
 use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
-use cranelift_module::Module;
-
 use crate::{
     cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
@@ -13,7 +11,7 @@ use crate::{
     runtime::value::{Symbol, TypeCode8, TypeCode16, Value, Vector},
 };
 
-impl<'gc, 'a, 'f, M: Module> JitLowerer<'gc, 'a, 'f, M> {
+impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     pub fn to_boolean(&mut self, v: ir::Value) -> ir::Value {
         let cmp = self
             .builder
