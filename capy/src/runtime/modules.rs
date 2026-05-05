@@ -1,4 +1,4 @@
-use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
+use std::{cell::Cell, collections::BTreeMap, mem::offset_of, sync::atomic::AtomicUsize};
 
 use crate::rsgc::object::{HeapTypeInfo, VTableOf};
 use crate::rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
@@ -41,6 +41,52 @@ pub enum ModuleKind {
 }
 
 pub type ModuleRef<'gc> = Gc<'gc, Module<'gc>>;
+
+pub type StaticModuleInit =
+    for<'gc> extern "C-unwind" fn(Context<'gc>, usize) -> Value<'gc>;
+
+#[derive(Clone, Copy)]
+pub struct StaticModuleDescriptor {
+    pub name: &'static [&'static str],
+    pub imports: &'static [&'static [&'static str]],
+    pub exports: &'static [&'static str],
+    pub init: StaticModuleInit,
+    pub globals: &'static [*mut Value<'static>],
+    pub requires_eval: bool,
+}
+
+impl StaticModuleDescriptor {
+    pub fn name_key(&self) -> String {
+        self.name.join(".")
+    }
+}
+
+#[derive(Default)]
+pub struct ModuleRegistry {
+    modules: BTreeMap<String, StaticModuleDescriptor>,
+}
+
+impl ModuleRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn register(&mut self, module: StaticModuleDescriptor) -> Option<StaticModuleDescriptor> {
+        self.modules.insert(module.name_key(), module)
+    }
+
+    pub fn get(&self, name: &[&str]) -> Option<&StaticModuleDescriptor> {
+        self.modules.get(&name.join("."))
+    }
+
+    pub fn contains(&self, name: &[&str]) -> bool {
+        self.get(name).is_some()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &StaticModuleDescriptor> {
+        self.modules.values()
+    }
+}
 
 #[repr(C)]
 pub struct Module<'gc> {

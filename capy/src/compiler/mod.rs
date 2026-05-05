@@ -50,6 +50,7 @@ mod bootstrap;
 pub mod bytecode;
 pub mod debuginfo;
 pub mod linkutils;
+pub mod module_graph;
 mod object;
 mod pipeline;
 pub mod ssa;
