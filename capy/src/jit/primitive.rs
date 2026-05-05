@@ -2761,10 +2761,7 @@ fn emit_minus<'gc, 'a, 'f>(
     )
 }
 
-fn emit_negate<'gc, 'a, 'f>(
-    ssa: &mut JitLowerer<'gc, 'a, 'f>,
-    a: ir::Value,
-) -> ir::Value {
+fn emit_negate<'gc, 'a, 'f>(ssa: &mut JitLowerer<'gc, 'a, 'f>, a: ir::Value) -> ir::Value {
     ssa.inline_unary_op(
         a,
         |ssa, val| {

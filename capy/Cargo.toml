@@ -71,6 +71,7 @@ portable = []
 aslr = []
 expeditor = []
 bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]
+aot = []
 
 [build-dependencies]
 cbindgen = "*"

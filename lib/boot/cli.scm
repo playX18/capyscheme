@@ -92,7 +92,10 @@
           (define out '())
 
           (when (arg-results-ref res "runtime-stats")
-            (set! out (cons `((@@ (capy) runtime-stats-enable!) #t) out)))
+            (set! out
+              (cons `(unless ((@@ (capy) runtime-stats-enabled?))
+                       ((@@ (capy) runtime-stats-enable!) #t))
+                    out)))
 
           (when (arg-results-ref res "load")
             (set! out (cons `((@@ (capy) load) ,(arg-results-ref res "load")) out)))
@@ -296,7 +299,8 @@
       (print-help))
 
     (when runtime-stats
-      ((@@ (capy) runtime-stats-enable!) #t))
+      (unless ((@@ (capy) runtime-stats-enabled?))
+        ((@@ (capy) runtime-stats-enable!) #t)))
 
     (define module-name (or (parse-module (arg-results-ref res "module"))
                          '(capy user)))

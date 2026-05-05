@@ -5,6 +5,7 @@ pub mod contify;
 pub mod fold;
 pub mod free_vars;
 pub mod linear;
+pub(crate) mod linear_artifact;
 pub mod linear_pretty;
 pub mod optimizer;
 pub mod packed;

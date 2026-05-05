@@ -354,9 +354,8 @@ mod tests {
     use crate::{
         cps::linear::{
             Block, BlockId, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram, Procedure,
-            ProcedureKind, Terminator, ValueId,
+            ProcedureKind, Terminator, ValueId, ValueSource,
         },
-        expander::core::{LVarRef, fresh_lvar},
         rsgc::alloc::Array,
         runtime::{
             Context, Scheme,
@@ -374,16 +373,17 @@ mod tests {
         scm.enter(f);
     }
 
-    fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
-        fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
+    fn sym<'gc>(ctx: Context<'gc>, name: &str) -> Value<'gc> {
+        Symbol::from_str_uninterned(*ctx, name, None).into()
+    }
+
+    fn value_source<'gc>(ctx: Context<'gc>, name: &str) -> ValueSource<'gc> {
+        ValueSource::new(sym(ctx, name), Value::new(false), 0, 0)
     }
 
     #[test]
     fn pretty_mentions_closure_ops_and_blocks() {
         with_ctx(|ctx| {
-            let binding = lvar(ctx, "entry");
-            let retk = lvar(ctx, "retk");
-            let free = lvar(ctx, "free");
             let closure = ValueId(1);
             let program = LinearProgram {
                 entry: CodeId(0),
@@ -393,7 +393,7 @@ mod tests {
                         code: CodeId(0),
                         kind: ProcedureKind::Function,
                         binding: ValueId(0),
-                        name: Symbol::from_str(ctx, "entry").into(),
+                        name: sym(ctx, "entry"),
                         source: Value::new(false),
                         meta: Value::new(false),
                         return_cont: Some(ValueId(2)),
@@ -401,9 +401,9 @@ mod tests {
                         variadic: None,
                         free_vars: Array::from_slice(*ctx, &[ValueId(3)]),
                         sources: [
-                            (ValueId(0), binding),
-                            (ValueId(2), retk),
-                            (ValueId(3), free),
+                            (ValueId(0), value_source(ctx, "entry")),
+                            (ValueId(2), value_source(ctx, "retk")),
+                            (ValueId(3), value_source(ctx, "free")),
                         ]
                         .into_iter()
                         .collect(),

@@ -22,6 +22,7 @@ pub type ValueIds<'gc> = ArrayRef<'gc, ValueId>;
 pub type LinearAtoms<'gc> = ArrayRef<'gc, LinearAtom<'gc>>;
 pub type Instructions<'gc> = ArrayRef<'gc, Instruction<'gc>>;
 pub type SwitchCases<'gc> = ArrayRef<'gc, SwitchCase<'gc>>;
+pub type ValueSources<'gc> = HashMap<ValueId, ValueSource<'gc>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
 #[collect(no_drop)]
@@ -76,9 +77,41 @@ pub struct Procedure<'gc> {
     pub params: ValueIds<'gc>,
     pub variadic: Option<ValueId>,
     pub free_vars: ValueIds<'gc>,
-    pub sources: HashMap<ValueId, LVarRef<'gc>>,
+    pub sources: ValueSources<'gc>,
     pub entry: BlockId,
     pub blocks: Blocks<'gc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Trace)]
+#[collect(no_drop)]
+pub struct ValueSource<'gc> {
+    pub name: Value<'gc>,
+    pub id: Value<'gc>,
+    pub set_count: u32,
+    pub ref_count: u32,
+}
+
+impl<'gc> ValueSource<'gc> {
+    pub fn new(name: Value<'gc>, id: Value<'gc>, set_count: u32, ref_count: u32) -> Self {
+        Self {
+            name,
+            id,
+            set_count,
+            ref_count,
+        }
+    }
+
+    pub fn from_lvar(var: LVarRef<'gc>) -> Self {
+        Self::new(var.name, var.id, var.set_count.get(), var.ref_count.get())
+    }
+
+    pub fn is_assigned(&self) -> bool {
+        self.set_count > 0
+    }
+
+    pub fn is_referenced(&self) -> bool {
+        self.ref_count > 0
+    }
 }
 
 #[derive(Debug, Clone, Trace)]
@@ -1643,7 +1676,7 @@ struct ProcedureBuilder<'gc, 'a> {
     blocks: Vec<Block<'gc>>,
     local_blocks: HashMap<LVarRef<'gc>, BlockId>,
     values: HashMap<LVarRef<'gc>, ValueId>,
-    sources: HashMap<ValueId, LVarRef<'gc>>,
+    sources: ValueSources<'gc>,
     next_value: u32,
     next_block: usize,
 }
@@ -1662,7 +1695,7 @@ impl<'gc, 'a> ProcedureBuilder<'gc, 'a> {
         }
     }
 
-    fn finish(mut self) -> (Blocks<'gc>, HashMap<ValueId, LVarRef<'gc>>) {
+    fn finish(mut self) -> (Blocks<'gc>, ValueSources<'gc>) {
         self.blocks.sort_by_key(|block| block.id.0);
         (array_from_vec(self.ctx, self.blocks), self.sources)
     }
@@ -1674,7 +1707,7 @@ impl<'gc, 'a> ProcedureBuilder<'gc, 'a> {
         let id = ValueId(self.next_value);
         self.next_value += 1;
         self.values.insert(var, id);
-        self.sources.insert(id, var);
+        self.sources.insert(id, ValueSource::from_lvar(var));
         id
     }
 

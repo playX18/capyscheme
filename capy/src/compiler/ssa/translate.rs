@@ -11,7 +11,7 @@ use crate::{
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
             Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
-            ValueId,
+            ValueId, ValueSource,
         },
         term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     },
@@ -50,7 +50,21 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         match &self.target {
             ContOrFunc::Cont(c) => c.binding,
             ContOrFunc::Func(f) => f.binding,
-            ContOrFunc::Procedure(p) => p.sources[&p.binding],
+            ContOrFunc::Procedure(_) => {
+                panic!("linear procedures do not expose LVarRef bindings")
+            }
+        }
+    }
+
+    fn target_binding_debug_name(&self) -> String {
+        match &self.target {
+            ContOrFunc::Cont(c) => c.binding.name.to_string(),
+            ContOrFunc::Func(f) => f.binding.name.to_string(),
+            ContOrFunc::Procedure(p) => p
+                .sources
+                .get(&p.binding)
+                .map(|source| source.name.to_string())
+                .unwrap_or_else(|| format!("v{}", p.binding.0)),
         }
     }
 
@@ -74,10 +88,9 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         match &self.target {
             ContOrFunc::Cont(c) => (c.args().iter().copied().collect(), c.variadic()),
             ContOrFunc::Func(f) => (f.args.iter().copied().collect(), f.variadic),
-            ContOrFunc::Procedure(p) => (
-                p.params.iter().map(|param| p.sources[param]).collect(),
-                p.variadic.map(|variadic| p.sources[&variadic]),
-            ),
+            ContOrFunc::Procedure(_) => {
+                panic!("linear procedures load ValueId parameters directly")
+            }
         }
     }
 
@@ -98,7 +111,7 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
     fn target_return_cont(&self) -> Option<LVarRef<'gc>> {
         match &self.target {
             ContOrFunc::Func(f) => Some(f.return_cont),
-            ContOrFunc::Procedure(p) => p.return_cont.map(|return_cont| p.sources[&return_cont]),
+            ContOrFunc::Procedure(_) => None,
             ContOrFunc::Cont(_) => None,
         }
     }
@@ -115,7 +128,14 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         match &self.target {
             ContOrFunc::Cont(c) => Gc::ptr_eq(c.binding, var),
             ContOrFunc::Func(f) => Gc::ptr_eq(f.binding, var),
-            ContOrFunc::Procedure(p) => Gc::ptr_eq(p.sources[&p.binding], var),
+            ContOrFunc::Procedure(_) => false,
+        }
+    }
+
+    pub fn is_linear_self_reference(&self, var: ValueId) -> bool {
+        match &self.target {
+            ContOrFunc::Procedure(p) => p.binding == var,
+            ContOrFunc::Cont(_) | ContOrFunc::Func(_) => false,
         }
     }
 
@@ -178,7 +198,7 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
                         "{}@{:p} var not found when compiling {}({})",
                         var.name,
                         var,
-                        self.target_binding().name,
+                        self.target_binding_debug_name(),
                         self.target_name()
                     )
                 }
@@ -191,7 +211,7 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
                 "{}@{:p} var not found when compiling {}({})",
                 var.name,
                 var,
-                self.target_binding().name,
+                self.target_binding_debug_name(),
                 self.target_name()
             )
         }) {
@@ -216,21 +236,31 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
             self.check_yield(self.rator, rands, num_rands);
         }
 
-        if !matches!(&self.target, ContOrFunc::Procedure(_)) {
+        if let ContOrFunc::Procedure(procedure) = self.target.clone() {
+            self.load_linear_arguments(&procedure, rands, num_rands);
+        } else {
             self.load_free_vars();
+            self.load_arguments(rands, num_rands);
         }
-        self.load_arguments(rands, num_rands);
     }
 
     pub(crate) fn current_retk_value(&mut self) -> ir::Value {
-        match self.target_return_cont() {
-            Some(return_cont) => self.var(return_cont),
-            None => {
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
-                let call = self.builder.ins().call(self.thunks.default_retk, &[ctx]);
-                self.builder.inst_results(call)[0]
-            }
+        match self.target.clone() {
+            ContOrFunc::Procedure(procedure) => procedure
+                .return_cont
+                .map(|return_cont| self.linear_var(return_cont))
+                .unwrap_or_else(|| self.default_retk_value()),
+            ContOrFunc::Func(_) | ContOrFunc::Cont(_) => match self.target_return_cont() {
+                Some(return_cont) => self.var(return_cont),
+                None => self.default_retk_value(),
+            },
         }
+    }
+
+    fn default_retk_value(&mut self) -> ir::Value {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let call = self.builder.ins().call(self.thunks.default_retk, &[ctx]);
+        self.builder.inst_results(call)[0]
     }
 
     pub(crate) fn call_proc_with_retk(
@@ -273,6 +303,162 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         let handler = self.builder.inst_results(call)[0];
         let retk = self.current_retk_value();
         self.call_proc_with_retk(handler, retk, &[err])
+    }
+
+    fn load_linear_arguments(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        mut rands: ir::Value,
+        mut num_rands: ir::Value,
+    ) {
+        let params = procedure.params;
+        let rest = procedure.variadic;
+
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+
+        let state = self
+            .builder
+            .ins()
+            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+        self.builder.ins().store(
+            ir::MemFlags::trusted().with_can_move(),
+            rands,
+            state,
+            offset_of!(State, runstack) as i32,
+        );
+
+        if let Some(return_cont) = procedure.return_cont {
+            let retk = self.builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                rands,
+                0,
+            );
+
+            rands = self.builder.ins().iadd_imm(rands, 8);
+            num_rands = self.builder.ins().iadd_imm(num_rands, -1);
+            self.bind_linear_var(return_cont, VarDef::Value(retk));
+        }
+
+        if let Some(rest) = rest {
+            self.linear_rest_sources.insert(
+                rest,
+                LinearRestSource {
+                    rands,
+                    num_rands,
+                    fixed_count: params.len(),
+                },
+            );
+        }
+
+        if params.len() != 0 {
+            if let Some(rest) = rest {
+                let not_enough = self.builder.ins().icmp_imm(
+                    IntCC::UnsignedLessThan,
+                    num_rands,
+                    params.len() as i64,
+                );
+
+                let succ = self.builder.create_block();
+                let err = self.builder.create_block();
+                self.builder.func.layout.set_cold(err);
+                self.builder.ins().brif(not_enough, err, &[], succ, &[]);
+
+                self.builder.switch_to_block(err);
+                {
+                    let got = num_rands;
+                    let expected = -(params.len() as isize);
+                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                    let err = self.builder.ins().call(
+                        self.thunks.wrong_number_of_args,
+                        &[ctx, self.rator, got, expected, rands],
+                    );
+                    let err = self.builder.inst_results(err)[0];
+                    self.raise_to_exception_handler(err);
+                }
+                self.builder.switch_to_block(succ);
+                {
+                    for (i, param) in params.iter().copied().enumerate() {
+                        let value = self.builder.ins().load(
+                            types::I64,
+                            ir::MemFlags::trusted().with_can_move(),
+                            rands,
+                            (i * 8) as i32,
+                        );
+                        self.bind_linear_var(param, VarDef::Value(value));
+                    }
+
+                    let null = self
+                        .builder
+                        .ins()
+                        .iconst(types::I64, Value::null().bits() as i64);
+                    self.bind_linear_var(rest, VarDef::Value(null));
+                }
+            } else {
+                let exact =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::Equal, num_rands, params.len() as i64);
+
+                let succ = self.builder.create_block();
+                let err = self.builder.create_block();
+                self.builder.func.layout.set_cold(err);
+                self.builder.ins().brif(exact, succ, &[], err, &[]);
+
+                self.builder.switch_to_block(err);
+                {
+                    let got = num_rands;
+                    let expected = params.len() as isize;
+                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                    let err = self.builder.ins().call(
+                        self.thunks.wrong_number_of_args,
+                        &[ctx, self.rator, got, expected, rands],
+                    );
+                    let err = self.builder.inst_results(err)[0];
+                    self.raise_to_exception_handler(err);
+                }
+                self.builder.switch_to_block(succ);
+                for (i, param) in params.iter().copied().enumerate() {
+                    let value = self.builder.ins().load(
+                        types::I64,
+                        ir::MemFlags::trusted().with_can_move(),
+                        rands,
+                        (i * 8) as i32,
+                    );
+                    self.bind_linear_var(param, VarDef::Value(value));
+                }
+            }
+        } else if let Some(rest) = rest {
+            let null = self
+                .builder
+                .ins()
+                .iconst(types::I64, Value::null().bits() as i64);
+            self.bind_linear_var(rest, VarDef::Value(null));
+        } else {
+            let succ = self.builder.create_block();
+            let err = self.builder.create_block();
+
+            self.builder.func.layout.set_cold(err);
+
+            let nonzero = self.builder.ins().icmp_imm(IntCC::NotEqual, num_rands, 0);
+
+            self.builder.ins().brif(nonzero, err, &[], succ, &[]);
+
+            self.builder.switch_to_block(err);
+            {
+                let got = num_rands;
+                let expected = 0isize;
+                let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                let err = self.builder.ins().call(
+                    self.thunks.wrong_number_of_args,
+                    &[ctx, num_rands, got, expected, rands],
+                );
+                let err = self.builder.inst_results(err)[0];
+                self.raise_to_exception_handler(err);
+            }
+
+            self.builder.switch_to_block(succ);
+        }
     }
 
     fn load_arguments(&mut self, mut rands: ir::Value, mut num_rands: ir::Value) {
@@ -954,11 +1140,6 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         self.set_debug_loc(block.source);
         if is_entry {
             self.bind_linear_var(procedure.binding, VarDef::Value(self.rator));
-            for (var, source) in procedure.sources.iter() {
-                if let Some(def) = self.variables.get(source).copied() {
-                    self.bind_linear_var(*var, def);
-                }
-            }
         } else {
             let clif_block = self.linear_blockmap[&block.id];
             let params = self.builder.block_params(clif_block).to_vec();
@@ -976,15 +1157,15 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
 
     fn bind_linear_var(&mut self, var: ValueId, def: VarDef) {
         self.linear_variables.insert(var, def);
-        if let Some(source) = self.linear_source(var) {
-            self.variables.insert(source, def);
-            if let VarDef::Value(value) = def {
-                self.debug_local(source, value);
-            }
+        if let (Some(source), VarDef::Value(value)) = (self.linear_value_source(var), def) {
+            let label = self
+                .func_debug_cx
+                .add_linear_variable(var, source, self.srcloc);
+            self.builder.set_val_label(value, label);
         }
     }
 
-    fn linear_source(&self, var: ValueId) -> Option<LVarRef<'gc>> {
+    fn linear_value_source(&self, var: ValueId) -> Option<ValueSource<'gc>> {
         match &self.target {
             ContOrFunc::Procedure(procedure) => procedure.sources.get(&var).copied(),
             ContOrFunc::Func(_) | ContOrFunc::Cont(_) => None,
@@ -1059,17 +1240,19 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         match atom {
             LinearAtom::Constant(value) => Atom::Constant(value),
             LinearAtom::Local(var) => {
-                let alias = self.linear_source(var).unwrap_or_else(|| {
-                    if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
-                        alias
-                    } else {
-                        let name =
-                            Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into();
-                        let alias = fresh_lvar(self.module_builder.ctx, name);
-                        self.synthetic_aliases.insert(var, alias);
-                        alias
-                    }
-                });
+                let alias = if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
+                    alias
+                } else {
+                    let name = self
+                        .linear_value_source(var)
+                        .map(|source| source.name)
+                        .unwrap_or_else(|| {
+                            Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into()
+                        });
+                    let alias = fresh_lvar(self.module_builder.ctx, name);
+                    self.synthetic_aliases.insert(var, alias);
+                    alias
+                };
                 let def = *self
                     .linear_variables
                     .get(&var)
@@ -1276,27 +1459,9 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
 
     fn get_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
         if let LinearAtom::Local(var_id) = callee
-            && let Some(var) = self.linear_source(var_id)
+            && self.is_linear_self_reference(var_id)
         {
-            if self.is_self_reference(var) {
-                return Callee::SelfRec(self.entry_block);
-            }
-
-            if self.module_builder.direct_calls
-                && let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
-                && let Some(func_id) = self.module_builder.func_for_func.get(func)
-            {
-                let func_id = *func_id;
-                let closure = self.linear_atom(callee);
-                let func_ref = self
-                    .module_builder
-                    .module
-                    .declare_func_in_func(func_id, &mut self.builder.func);
-                return Callee::Direct {
-                    target: func_ref,
-                    closure,
-                };
-            }
+            return Callee::SelfRec(self.entry_block);
         }
 
         let callee = self.linear_atom(callee);
@@ -1329,24 +1494,6 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
     }
 
     fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
-        if let LinearAtom::Local(var_id) = callee
-            && let Some(var) = self.linear_source(var_id)
-            && self.module_builder.direct_calls
-            && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
-            && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
-        {
-            let func_id = *func_id;
-            let closure = self.linear_atom(callee);
-            let func_ref = self
-                .module_builder
-                .module
-                .declare_func_in_func(func_id, &mut self.builder.func);
-            return Callee::Direct {
-                target: func_ref,
-                closure,
-            };
-        }
-
         let closure = self.linear_atom(callee);
         let code = self.builder.ins().load(
             types::I64,
@@ -1400,25 +1547,6 @@ impl<'gc, 'a, 'f, M: Module> SSABuilder<'gc, 'a, 'f, M> {
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        if self.module_builder.direct_calls
-            && let LinearAtom::Local(k_id) = callee
-            && let Some(k) = self.linear_source(k_id)
-            && self
-                .module_builder
-                .reify_info
-                .free_vars
-                .conts
-                .contains_key(&k)
-        {
-            let args = args
-                .iter()
-                .copied()
-                .map(|arg| self.linear_atom(arg))
-                .collect::<Vec<_>>();
-            self.continue_to(k, &args);
-            return;
-        }
-
         let callee = self.get_tail_callee_linear(callee);
         let args = args
             .iter()

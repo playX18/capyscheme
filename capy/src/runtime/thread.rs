@@ -840,6 +840,7 @@ impl Scheme {
         SCM_INITIALIZED.call_once(|| {
             should_init = true;
             crate::rsgc::logging::init_rust_logger();
+            crate::runtime::stats::enable_runtime_stats_from_process_args();
             let mmtk_builder = crate::rsgc::logging::mmtk_builder();
             /*match *mmtk_builder.options.plan {
                 PlanSelector::GenImmix | PlanSelector::StickyImmix | PlanSelector::GenCopy => {
@@ -890,6 +891,7 @@ impl Scheme {
             should_init = true;
 
             crate::rsgc::logging::init_rust_logger();
+            crate::runtime::stats::enable_runtime_stats_from_process_args();
             let mmtk_builder = crate::rsgc::logging::mmtk_builder();
             GarbageCollector::init(mmtk_builder);
         });

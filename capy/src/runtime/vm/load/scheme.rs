@@ -10,7 +10,6 @@ use crate::runtime::modules::{Module, current_module};
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::base::scm_log_level;
 use crate::runtime::vm::expand::ScmTermToRsTerm;
-use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
 #[cfg(feature = "bootstrap")]
 use crate::runtime::vm::thunks::make_lexical_violation;
@@ -20,8 +19,8 @@ use super::paths::{fallback_file_name, find_path_to};
 use super::{
     artifact::LoadArtifact,
     compile::{
-        CompilationPhase, compile_cps_for_current_policy, destination_artifact_for_current_policy,
-        load_thunk_in_vicinity,
+        CompilationPhase, compile_cps_for_current_policy, compile_cps_to_destination,
+        destination_artifact_for_current_policy, load_artifact, load_thunk_in_vicinity,
     },
 };
 
@@ -306,21 +305,21 @@ fn compile_expanded_to_destination<'gc>(
     dump_lowered_program_artifacts(ctx, dump_destination, &lowered, dump_options);
 
     if !load_thunk {
-        return destination
-            .map(|destination| Str::new(*ctx, destination.path.display().to_string(), true).into())
-            .ok_or_else(|| {
-                make_io_error(
-                    ctx,
-                    "compile",
-                    Str::new(
-                        *ctx,
-                        "JIT compilation does not produce a persistent artifact path",
-                        true,
-                    )
-                    .into(),
-                    &[],
+        let Some(destination) = destination.as_ref() else {
+            return Err(make_io_error(
+                ctx,
+                "compile",
+                Str::new(
+                    *ctx,
+                    "Compilation policy did not select a persistent artifact path",
+                    true,
                 )
-            });
+                .into(),
+                &[],
+            ));
+        };
+        compile_cps_to_destination(ctx, lowered.cps, options, destination)?;
+        return Ok(Str::new(*ctx, destination.path.display().to_string(), true).into());
     }
 
     compile_cps_for_current_policy(
@@ -346,23 +345,8 @@ fn load_compiled_library<'gc>(
     ctx: Context<'gc>,
     compiled_artifact: &LoadArtifact,
 ) -> Result<Value<'gc>, Value<'gc>> {
-    let libs = LIBRARY_COLLECTION.fetch(*ctx);
-    libs.load(compiled_artifact, ctx).map_err(|err| {
-        make_io_error(
-            ctx,
-            "load",
-            Str::new(
-                *ctx,
-                format!(
-                    "Failed to load compiled artifact {}: {err}",
-                    compiled_artifact.path.display()
-                ),
-                true,
-            )
-            .into(),
-            &[],
-        )
-    })
+    let libs = crate::runtime::vm::libraries::LIBRARY_COLLECTION.fetch(*ctx);
+    load_artifact(ctx, libs, compiled_artifact)
 }
 
 fn find_path_to_public<'gc>(

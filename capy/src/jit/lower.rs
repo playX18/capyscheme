@@ -9,17 +9,18 @@ use crate::{
     compiler::debuginfo::{DebugContext, FunctionDebugContext},
     cps::{
         ReifyInfo,
+        free_vars::FreeVars,
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
-            Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
-            ValueId,
+            LinearProgram, Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind,
+            Terminator, ValueId, ValueSource,
         },
         term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     },
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
         Context, State,
-        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, Value, ValueEqual},
+        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, Value},
         vm::thunks::{ImportedThunks, Thunks},
     },
 };
@@ -31,8 +32,8 @@ use cranelift_codegen::{
 };
 use pretty::BoxAllocator;
 
-use super::{JitCompiler, JitNameMap, JitRelocTarget, JitUnitDecls};
 use super::primitive::{PrimValue, Primitive as JitPrimitive, PrimitiveLowerer};
+use super::{JitCompiler, JitNameMap, JitRelocTarget, JitUnitDecls};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum VarDef {
@@ -57,9 +58,9 @@ pub(super) enum JitTarget<'gc> {
 pub(super) struct JitBuilder<'gc, 'a> {
     pub ctx: Context<'gc>,
     pub(crate) debug_context: DebugContext<'gc>,
-    pub reify_info: ReifyInfo<'gc>,
-    pub constants: HashMap<ValueEqual<'gc>, (u32, u32)>,
-    pub cache_cells: HashMap<ValueEqual<'gc>, (u32, u32)>,
+    pub known_free_vars: Option<FreeVars<'gc>>,
+    pub constants: HashMap<Value<'gc>, (u32, u32)>,
+    pub cache_cells: HashMap<Value<'gc>, (u32, u32)>,
     pub name_map: &'a mut JitNameMap,
     pub decls: &'a JitUnitDecls,
     pub compiler: &'a mut JitCompiler,
@@ -87,19 +88,61 @@ impl<'gc, 'a> JitBuilder<'gc, 'a> {
         global_side_metadata_symbol: &str,
         thunks: Thunks,
     ) -> Self {
-        let prims = PrimitiveLowerer::new(ctx);
         let debug_context = DebugContext::new(&reify_info, compiler.isa.as_ref());
-        let global_side_metadata_base_address = name_map.declare_data(
-            JitRelocTarget::GlobalSideMetadataBaseAddress,
-            0,
-        );
+        Self::new_with_debug_context(
+            ctx,
+            compiler,
+            name_map,
+            decls,
+            debug_context,
+            Some(reify_info.free_vars),
+            global_side_metadata_symbol,
+            thunks,
+        )
+    }
+
+    pub(super) fn new_for_linear_program(
+        ctx: Context<'gc>,
+        compiler: &'a mut JitCompiler,
+        name_map: &'a mut JitNameMap,
+        decls: &'a JitUnitDecls,
+        linear: &LinearProgram<'gc>,
+        global_side_metadata_symbol: &str,
+        thunks: Thunks,
+    ) -> Self {
+        let debug_context = DebugContext::new_for_linear_program(linear, compiler.isa.as_ref());
+        Self::new_with_debug_context(
+            ctx,
+            compiler,
+            name_map,
+            decls,
+            debug_context,
+            None,
+            global_side_metadata_symbol,
+            thunks,
+        )
+    }
+
+    fn new_with_debug_context(
+        ctx: Context<'gc>,
+        compiler: &'a mut JitCompiler,
+        name_map: &'a mut JitNameMap,
+        decls: &'a JitUnitDecls,
+        debug_context: DebugContext<'gc>,
+        known_free_vars: Option<FreeVars<'gc>>,
+        _global_side_metadata_symbol: &str,
+        thunks: Thunks,
+    ) -> Self {
+        let prims = PrimitiveLowerer::new(ctx);
+        let global_side_metadata_base_address =
+            name_map.declare_data(JitRelocTarget::GlobalSideMetadataBaseAddress, 0);
 
         Self {
             debug_context,
             ctx,
             stacktraces: true,
             direct_calls: false,
-            reify_info,
+            known_free_vars,
             constants: HashMap::new(),
             cache_cells: HashMap::new(),
             compiler,
@@ -118,18 +161,36 @@ impl<'gc, 'a> JitBuilder<'gc, 'a> {
         }
     }
 
+    fn known_func(&self, var: LVarRef<'gc>) -> Option<FuncRef<'gc>> {
+        self.known_free_vars
+            .as_ref()
+            .and_then(|free_vars| free_vars.funcs.get(&var).copied())
+    }
+
+    fn known_cont(&self, var: LVarRef<'gc>) -> Option<ContRef<'gc>> {
+        self.known_free_vars
+            .as_ref()
+            .and_then(|free_vars| free_vars.conts.get(&var).copied())
+    }
+
+    fn has_known_cont(&self, var: LVarRef<'gc>) -> bool {
+        self.known_free_vars
+            .as_ref()
+            .is_some_and(|free_vars| free_vars.conts.contains_key(&var))
+    }
+
     pub fn intern_constant(&mut self, obj: Value<'gc>) -> Option<(u32, u32)> {
         if obj.is_immediate() {
             return None;
         }
-        self.constants.get(&ValueEqual(obj)).copied().or_else(|| {
+        self.constants.get(&obj).copied().or_else(|| {
             panic!("JIT constant slot not found for {obj}");
         })
     }
 
     pub fn intern_cache_cell(&mut self, key: Value<'gc>) -> (u32, u32) {
         self.cache_cells
-            .get(&ValueEqual(key))
+            .get(&key)
             .copied()
             .unwrap_or_else(|| panic!("JIT cache cell slot not found for {key}"))
     }
@@ -160,6 +221,7 @@ pub(super) struct JitLowerer<'gc, 'a, 'f> {
 
     pub data_imports: HashMap<(u32, u32), ir::GlobalValue>,
 
+    pub observed_code_refs: Vec<CodeId>,
     pub srcloc: Option<SourceLoc>,
 }
 
@@ -232,6 +294,7 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
             thunks,
             sig_call,
             data_imports: HashMap::new(),
+            observed_code_refs: Vec::new(),
             srcloc: None,
         };
 
@@ -264,7 +327,21 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
         match &self.target {
             JitTarget::Cont(c) => c.binding,
             JitTarget::Func(f) => f.binding,
-            JitTarget::Procedure(p) => p.sources[&p.binding],
+            JitTarget::Procedure(_) => {
+                panic!("linear procedures do not expose LVarRef bindings")
+            }
+        }
+    }
+
+    fn target_binding_debug_name(&self) -> String {
+        match &self.target {
+            JitTarget::Cont(c) => c.binding.name.to_string(),
+            JitTarget::Func(f) => f.binding.name.to_string(),
+            JitTarget::Procedure(p) => p
+                .sources
+                .get(&p.binding)
+                .map(|source| source.name.to_string())
+                .unwrap_or_else(|| format!("v{}", p.binding.0)),
         }
     }
 
@@ -288,10 +365,9 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
         match &self.target {
             JitTarget::Cont(c) => (c.args().iter().copied().collect(), c.variadic()),
             JitTarget::Func(f) => (f.args.iter().copied().collect(), f.variadic),
-            JitTarget::Procedure(p) => (
-                p.params.iter().map(|param| p.sources[param]).collect(),
-                p.variadic.map(|variadic| p.sources[&variadic]),
-            ),
+            JitTarget::Procedure(_) => {
+                panic!("linear procedures load ValueId parameters directly")
+            }
         }
     }
 
@@ -312,7 +388,7 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     fn target_return_cont(&self) -> Option<LVarRef<'gc>> {
         match &self.target {
             JitTarget::Func(f) => Some(f.return_cont),
-            JitTarget::Procedure(p) => p.return_cont.map(|return_cont| p.sources[&return_cont]),
+            JitTarget::Procedure(_) => None,
             JitTarget::Cont(_) => None,
         }
     }
@@ -329,7 +405,14 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
         match &self.target {
             JitTarget::Cont(c) => Gc::ptr_eq(c.binding, var),
             JitTarget::Func(f) => Gc::ptr_eq(f.binding, var),
-            JitTarget::Procedure(p) => Gc::ptr_eq(p.sources[&p.binding], var),
+            JitTarget::Procedure(_) => false,
+        }
+    }
+
+    pub fn is_linear_self_reference(&self, var: ValueId) -> bool {
+        match &self.target {
+            JitTarget::Procedure(p) => p.binding == var,
+            JitTarget::Cont(_) | JitTarget::Func(_) => false,
         }
     }
 
@@ -370,7 +453,9 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
             pair
         } else {
             let pair = self.module_builder.name_map.declare_data(
-                JitRelocTarget::RuntimeSymbol { name: name.to_owned() },
+                JitRelocTarget::RuntimeSymbol {
+                    name: name.to_owned(),
+                },
                 0,
             );
             self.module_builder.import_data.insert(name, pair);
@@ -390,12 +475,14 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
                     .builder
                     .func
                     .declare_imported_user_function(UserExternalName { namespace, index });
-                self.builder.func.create_global_value(ir::GlobalValueData::Symbol {
-                    name: ExternalName::user(name_ref),
-                    offset: ir::immediates::Imm64::new(0),
-                    colocated: true,
-                    tls: false,
-                })
+                self.builder
+                    .func
+                    .create_global_value(ir::GlobalValueData::Symbol {
+                        name: ExternalName::user(name_ref),
+                        offset: ir::immediates::Imm64::new(0),
+                        colocated: false,
+                        tls: false,
+                    })
             })
             .clone()
     }
@@ -422,7 +509,7 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
                         "{}@{:p} var not found when compiling {}({})",
                         var.name,
                         var,
-                        self.target_binding().name,
+                        self.target_binding_debug_name(),
                         self.target_name()
                     )
                 }
@@ -435,7 +522,7 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
                 "{}@{:p} var not found when compiling {}({})",
                 var.name,
                 var,
-                self.target_binding().name,
+                self.target_binding_debug_name(),
                 self.target_name()
             )
         }) {
@@ -460,21 +547,187 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
             self.check_yield(self.rator, rands, num_rands);
         }
 
-        if !matches!(&self.target, JitTarget::Procedure(_)) {
+        if let JitTarget::Procedure(procedure) = self.target.clone() {
+            self.load_linear_arguments(&procedure, rands, num_rands);
+        } else {
             self.load_free_vars();
+            self.load_arguments(rands, num_rands);
         }
-        self.load_arguments(rands, num_rands);
     }
 
     pub(crate) fn current_retk_value(&mut self) -> ir::Value {
-        match self.target_return_cont() {
-            Some(return_cont) => self.var(return_cont),
-            None => {
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
-                let call = self.builder.ins().call(self.thunks.default_retk, &[ctx]);
-                self.builder.inst_results(call)[0]
-            }
+        match self.target.clone() {
+            JitTarget::Procedure(procedure) => procedure
+                .return_cont
+                .map(|return_cont| self.linear_var(return_cont))
+                .unwrap_or_else(|| self.default_retk_value()),
+            JitTarget::Func(_) | JitTarget::Cont(_) => match self.target_return_cont() {
+                Some(return_cont) => self.var(return_cont),
+                None => self.default_retk_value(),
+            },
         }
+    }
+
+    fn load_linear_arguments(
+        &mut self,
+        procedure: &Procedure<'gc>,
+        mut rands: ir::Value,
+        mut num_rands: ir::Value,
+    ) {
+        let params = procedure.params;
+        let rest = procedure.variadic;
+
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+
+        let state = self
+            .builder
+            .ins()
+            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+        self.builder.ins().store(
+            ir::MemFlags::trusted().with_can_move(),
+            rands,
+            state,
+            offset_of!(State, runstack) as i32,
+        );
+
+        if let Some(return_cont) = procedure.return_cont {
+            let retk = self.builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                rands,
+                0,
+            );
+
+            rands = self.builder.ins().iadd_imm(rands, 8);
+            num_rands = self.builder.ins().iadd_imm(num_rands, -1);
+            self.bind_linear_var(return_cont, VarDef::Value(retk));
+        }
+
+        if let Some(rest) = rest {
+            self.linear_rest_sources.insert(
+                rest,
+                LinearRestSource {
+                    rands,
+                    num_rands,
+                    fixed_count: params.len(),
+                },
+            );
+        }
+
+        if params.len() != 0 {
+            if let Some(rest) = rest {
+                let not_enough = self.builder.ins().icmp_imm(
+                    IntCC::UnsignedLessThan,
+                    num_rands,
+                    params.len() as i64,
+                );
+
+                let succ = self.builder.create_block();
+                let err = self.builder.create_block();
+                self.builder.func.layout.set_cold(err);
+                self.builder.ins().brif(not_enough, err, &[], succ, &[]);
+
+                self.builder.switch_to_block(err);
+                {
+                    let got = num_rands;
+                    let expected = -(params.len() as isize);
+                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                    let err = self.builder.ins().call(
+                        self.thunks.wrong_number_of_args,
+                        &[ctx, self.rator, got, expected, rands],
+                    );
+                    let err = self.builder.inst_results(err)[0];
+                    self.raise_to_exception_handler(err);
+                }
+                self.builder.switch_to_block(succ);
+                {
+                    for (i, param) in params.iter().copied().enumerate() {
+                        let value = self.builder.ins().load(
+                            types::I64,
+                            ir::MemFlags::trusted().with_can_move(),
+                            rands,
+                            (i * 8) as i32,
+                        );
+                        self.bind_linear_var(param, VarDef::Value(value));
+                    }
+
+                    let null = self
+                        .builder
+                        .ins()
+                        .iconst(types::I64, Value::null().bits() as i64);
+                    self.bind_linear_var(rest, VarDef::Value(null));
+                }
+            } else {
+                let exact =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::Equal, num_rands, params.len() as i64);
+
+                let succ = self.builder.create_block();
+                let err = self.builder.create_block();
+                self.builder.func.layout.set_cold(err);
+                self.builder.ins().brif(exact, succ, &[], err, &[]);
+
+                self.builder.switch_to_block(err);
+                {
+                    let got = num_rands;
+                    let expected = params.len() as isize;
+                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                    let err = self.builder.ins().call(
+                        self.thunks.wrong_number_of_args,
+                        &[ctx, self.rator, got, expected, rands],
+                    );
+                    let err = self.builder.inst_results(err)[0];
+                    self.raise_to_exception_handler(err);
+                }
+                self.builder.switch_to_block(succ);
+                for (i, param) in params.iter().copied().enumerate() {
+                    let value = self.builder.ins().load(
+                        types::I64,
+                        ir::MemFlags::trusted().with_can_move(),
+                        rands,
+                        (i * 8) as i32,
+                    );
+                    self.bind_linear_var(param, VarDef::Value(value));
+                }
+            }
+        } else if let Some(rest) = rest {
+            let null = self
+                .builder
+                .ins()
+                .iconst(types::I64, Value::null().bits() as i64);
+            self.bind_linear_var(rest, VarDef::Value(null));
+        } else {
+            let succ = self.builder.create_block();
+            let err = self.builder.create_block();
+
+            self.builder.func.layout.set_cold(err);
+
+            let nonzero = self.builder.ins().icmp_imm(IntCC::NotEqual, num_rands, 0);
+
+            self.builder.ins().brif(nonzero, err, &[], succ, &[]);
+
+            self.builder.switch_to_block(err);
+            {
+                let got = num_rands;
+                let expected = 0isize;
+                let expected = self.builder.ins().iconst(types::I64, expected as i64);
+                let err = self.builder.ins().call(
+                    self.thunks.wrong_number_of_args,
+                    &[ctx, num_rands, got, expected, rands],
+                );
+                let err = self.builder.inst_results(err)[0];
+                self.raise_to_exception_handler(err);
+            }
+
+            self.builder.switch_to_block(succ);
+        }
+    }
+
+    fn default_retk_value(&mut self) -> ir::Value {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let call = self.builder.ins().call(self.thunks.default_retk, &[ctx]);
+        self.builder.inst_results(call)[0]
     }
 
     pub(crate) fn call_proc_with_retk(
@@ -790,8 +1043,8 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     }
 
     pub fn get_callee_k(&mut self, var: LVarRef<'gc>) -> Callee {
-        if let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
-            && let Some(name_pair) = self.module_builder.func_for_cont.get(cont)
+        if let Some(cont) = self.module_builder.known_cont(var)
+            && let Some(name_pair) = self.module_builder.func_for_cont.get(&cont)
         {
             let name_pair = *name_pair;
             let closure = self.var(var);
@@ -818,8 +1071,8 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     /// Get callee entrypoint or report non-applicable error via current exception handler.
     pub fn get_callee(&mut self, callee: &Atom<'gc>) -> Callee {
         if let Atom::Local(var) = callee {
-            if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(var)
-                && let Some(name_pair) = self.module_builder.func_for_func.get(func)
+            if let Some(func) = self.module_builder.known_func(*var)
+                && let Some(name_pair) = self.module_builder.func_for_func.get(&func)
             {
                 let name_pair = *name_pair;
                 let closure = self.atom(*callee);
@@ -903,10 +1156,9 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     /// If `k` is reified this performs return call instead of local jump. Arguments
     /// are pushed onto runstack in that case.
     pub fn continue_to(&mut self, k: LVarRef<'gc>, args: &[ir::Value]) -> ir::Inst {
-        if let Some(k) = self.module_builder.reify_info.free_vars.conts.get(&k)
+        if let Some(k) = self.module_builder.known_cont(k)
             && !k.reified.get()
         {
-            let k = *k;
             // TODO: Support `k` where variadic is used and materialize a list.
             let block = self.block_for_cont(k);
             if k.args.len() > args.len() {
@@ -1192,11 +1444,6 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
         self.set_debug_loc(block.source);
         if is_entry {
             self.bind_linear_var(procedure.binding, VarDef::Value(self.rator));
-            for (var, source) in procedure.sources.iter() {
-                if let Some(def) = self.variables.get(source).copied() {
-                    self.bind_linear_var(*var, def);
-                }
-            }
         } else {
             let clif_block = self.linear_blockmap[&block.id];
             let params = self.builder.block_params(clif_block).to_vec();
@@ -1214,15 +1461,15 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
 
     fn bind_linear_var(&mut self, var: ValueId, def: VarDef) {
         self.linear_variables.insert(var, def);
-        if let Some(source) = self.linear_source(var) {
-            self.variables.insert(source, def);
-            if let VarDef::Value(value) = def {
-                self.debug_local(source, value);
-            }
+        if let (Some(source), VarDef::Value(value)) = (self.linear_value_source(var), def) {
+            let label = self
+                .func_debug_cx
+                .add_linear_variable(var, source, self.srcloc);
+            self.builder.set_val_label(value, label);
         }
     }
 
-    fn linear_source(&self, var: ValueId) -> Option<LVarRef<'gc>> {
+    fn linear_value_source(&self, var: ValueId) -> Option<ValueSource<'gc>> {
         match &self.target {
             JitTarget::Procedure(procedure) => procedure.sources.get(&var).copied(),
             JitTarget::Func(_) | JitTarget::Cont(_) => None,
@@ -1297,17 +1544,19 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
         match atom {
             LinearAtom::Constant(value) => Atom::Constant(value),
             LinearAtom::Local(var) => {
-                let alias = self.linear_source(var).unwrap_or_else(|| {
-                    if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
-                        alias
-                    } else {
-                        let name =
-                            Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into();
-                        let alias = fresh_lvar(self.module_builder.ctx, name);
-                        self.synthetic_aliases.insert(var, alias);
-                        alias
-                    }
-                });
+                let alias = if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
+                    alias
+                } else {
+                    let name = self
+                        .linear_value_source(var)
+                        .map(|source| source.name)
+                        .unwrap_or_else(|| {
+                            Symbol::from_str(self.module_builder.ctx, "linear-synthetic").into()
+                        });
+                    let alias = fresh_lvar(self.module_builder.ctx, name);
+                    self.synthetic_aliases.insert(var, alias);
+                    alias
+                };
                 let def = *self
                     .linear_variables
                     .get(&var)
@@ -1322,6 +1571,18 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
         self.module_builder.code_block_for_code[&code]
     }
 
+    fn observe_code_ref(&mut self, code: CodeId) {
+        if let JitTarget::Procedure(procedure) = &self.target
+            && procedure.code == code
+        {
+            return;
+        }
+
+        if !self.observed_code_refs.contains(&code) {
+            self.observed_code_refs.push(code);
+        }
+    }
+
     fn linear_instruction(&mut self, instruction: &Instruction<'gc>) {
         match instruction {
             Instruction::Const { dst, value } => {
@@ -1334,6 +1595,7 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
                 kind,
                 free_count,
             } => {
+                self.observe_code_ref(*code);
                 let nfree = self.builder.ins().iconst(types::I64, *free_count as i64);
                 let is_cont = self.builder.ins().iconst(
                     types::I8,
@@ -1516,24 +1778,9 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
 
     fn get_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
         if let LinearAtom::Local(var_id) = callee
-            && let Some(var) = self.linear_source(var_id)
+            && self.is_linear_self_reference(var_id)
         {
-            if self.is_self_reference(var) {
-                return Callee::SelfRec(self.entry_block);
-            }
-
-            if self.module_builder.direct_calls
-                && let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
-                && let Some(name_pair) = self.module_builder.func_for_func.get(func)
-            {
-                let name_pair = *name_pair;
-                let closure = self.linear_atom(callee);
-                let func_ref = self.declare_func_in_func(name_pair);
-                return Callee::Direct {
-                    target: func_ref,
-                    closure,
-                };
-            }
+            return Callee::SelfRec(self.entry_block);
         }
 
         let callee = self.linear_atom(callee);
@@ -1566,21 +1813,6 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
     }
 
     fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
-        if let LinearAtom::Local(var_id) = callee
-            && let Some(var) = self.linear_source(var_id)
-            && self.module_builder.direct_calls
-            && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
-            && let Some(name_pair) = self.module_builder.func_for_cont.get(cont)
-        {
-            let name_pair = *name_pair;
-            let closure = self.linear_atom(callee);
-            let func_ref = self.declare_func_in_func(name_pair);
-            return Callee::Direct {
-                target: func_ref,
-                closure,
-            };
-        }
-
         let closure = self.linear_atom(callee);
         let code = self.builder.ins().load(
             types::I64,
@@ -1634,25 +1866,6 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        if self.module_builder.direct_calls
-            && let LinearAtom::Local(k_id) = callee
-            && let Some(k) = self.linear_source(k_id)
-            && self
-                .module_builder
-                .reify_info
-                .free_vars
-                .conts
-                .contains_key(&k)
-        {
-            let args = args
-                .iter()
-                .copied()
-                .map(|arg| self.linear_atom(arg))
-                .collect::<Vec<_>>();
-            self.continue_to(k, &args);
-            return;
-        }
-
         let callee = self.get_tail_callee_linear(callee);
         let args = args
             .iter()
@@ -2195,7 +2408,7 @@ impl<'gc, 'a, 'f> JitLowerer<'gc, 'a, 'f> {
             return None;
         };
 
-        let func = *self.module_builder.reify_info.free_vars.funcs.get(&var)?;
+        let func = self.module_builder.known_func(var)?;
         let name_pair = self
             .module_builder
             .func_for_func

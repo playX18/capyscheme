@@ -1,5 +1,6 @@
 use std::{
     cell::Cell,
+    ffi::OsStr,
     time::{Duration, Instant},
 };
 
@@ -18,6 +19,11 @@ pub(crate) struct RuntimeStatsSnapshot {
     pub(crate) cranelift: Duration,
     pub(crate) object_emit: Duration,
     pub(crate) link: Duration,
+    pub(crate) lazy_jit_setup: Duration,
+    pub(crate) lazy_jit_wait: Duration,
+    pub(crate) lazy_jit_lowering: Duration,
+    pub(crate) lazy_jit_cranelift: Duration,
+    pub(crate) lazy_jit_link: Duration,
 }
 
 impl RuntimeStatsSnapshot {
@@ -26,13 +32,27 @@ impl RuntimeStatsSnapshot {
     }
 
     pub(crate) fn frontend_total(self) -> Duration {
-        self.compilation
-            .saturating_sub(self.lowering + self.cranelift + self.object_emit + self.link)
+        self.compilation.saturating_sub(
+            self.lowering
+                + self.cranelift
+                + self.object_emit
+                + self.link
+                + self.lazy_jit_setup
+                + self.lazy_jit_wait,
+        )
     }
 
     pub(crate) fn frontend_other(self) -> Duration {
         self.frontend_total()
             .saturating_sub(self.reader + self.psyntax)
+    }
+
+    pub(crate) fn lazy_jit_total(self) -> Duration {
+        self.lazy_jit_setup
+            + self.lazy_jit_wait
+            + self.lazy_jit_lowering
+            + self.lazy_jit_cranelift
+            + self.lazy_jit_link
     }
 
     fn percentage(self, value: Duration) -> f64 {
@@ -66,6 +86,13 @@ impl std::fmt::Display for RuntimeStatsSnapshot {
                 "    Cranelift: {:.3}s\n",
                 "    Object Emit: {:.3}s\n",
                 "    Link: {:.3}s\n",
+                "  Lazy JIT:\n",
+                "    Total: {:.3}s\n",
+                "    Setup: {:.3}s\n",
+                "    Wait: {:.3}s\n",
+                "    Lowering: {:.3}s\n",
+                "    Cranelift: {:.3}s\n",
+                "    Link: {:.3}s\n",
             ),
             self.execution.as_secs_f64(),
             self.percentage(self.execution),
@@ -86,6 +113,12 @@ impl std::fmt::Display for RuntimeStatsSnapshot {
             self.cranelift.as_secs_f64(),
             self.object_emit.as_secs_f64(),
             self.link.as_secs_f64(),
+            self.lazy_jit_total().as_secs_f64(),
+            self.lazy_jit_setup.as_secs_f64(),
+            self.lazy_jit_wait.as_secs_f64(),
+            self.lazy_jit_lowering.as_secs_f64(),
+            self.lazy_jit_cranelift.as_secs_f64(),
+            self.lazy_jit_link.as_secs_f64(),
         )
     }
 }
@@ -106,6 +139,11 @@ pub(crate) enum CompilationBreakdownPhase {
     Cranelift,
     ObjectEmit,
     Link,
+    LazyJitSetup,
+    LazyJitWait,
+    LazyJitLowering,
+    LazyJitCranelift,
+    LazyJitLink,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,6 +182,12 @@ pub(crate) fn end_compilation_breakdown(token: u64) {
 
 pub(crate) fn runtime_stats_enabled() -> bool {
     GLOBAL_STATS.lock().enabled
+}
+
+pub(crate) fn enable_runtime_stats_from_process_args() {
+    if std::env::args_os().any(|arg| arg == OsStr::new("--runtime-stats")) {
+        GLOBAL_STATS.lock().set_enabled(true);
+    }
 }
 
 pub(crate) fn set_runtime_stats_enabled(thread_stats: &ThreadStats, enabled: bool) {
@@ -479,6 +523,11 @@ impl GlobalStats {
                 cranelift: Duration::ZERO,
                 object_emit: Duration::ZERO,
                 link: Duration::ZERO,
+                lazy_jit_setup: Duration::ZERO,
+                lazy_jit_wait: Duration::ZERO,
+                lazy_jit_lowering: Duration::ZERO,
+                lazy_jit_cranelift: Duration::ZERO,
+                lazy_jit_link: Duration::ZERO,
             },
             gc_start: None,
             next_breakdown_token: 1,
@@ -592,6 +641,15 @@ impl GlobalStats {
             CompilationBreakdownPhase::Cranelift => self.snapshot.cranelift += elapsed,
             CompilationBreakdownPhase::ObjectEmit => self.snapshot.object_emit += elapsed,
             CompilationBreakdownPhase::Link => self.snapshot.link += elapsed,
+            CompilationBreakdownPhase::LazyJitSetup => self.snapshot.lazy_jit_setup += elapsed,
+            CompilationBreakdownPhase::LazyJitWait => self.snapshot.lazy_jit_wait += elapsed,
+            CompilationBreakdownPhase::LazyJitLowering => {
+                self.snapshot.lazy_jit_lowering += elapsed
+            }
+            CompilationBreakdownPhase::LazyJitCranelift => {
+                self.snapshot.lazy_jit_cranelift += elapsed
+            }
+            CompilationBreakdownPhase::LazyJitLink => self.snapshot.lazy_jit_link += elapsed,
         }
     }
 
@@ -615,6 +673,17 @@ impl GlobalStats {
                         CompilationBreakdownPhase::Cranelift => snapshot.cranelift += elapsed,
                         CompilationBreakdownPhase::ObjectEmit => snapshot.object_emit += elapsed,
                         CompilationBreakdownPhase::Link => snapshot.link += elapsed,
+                        CompilationBreakdownPhase::LazyJitSetup => {
+                            snapshot.lazy_jit_setup += elapsed
+                        }
+                        CompilationBreakdownPhase::LazyJitWait => snapshot.lazy_jit_wait += elapsed,
+                        CompilationBreakdownPhase::LazyJitLowering => {
+                            snapshot.lazy_jit_lowering += elapsed
+                        }
+                        CompilationBreakdownPhase::LazyJitCranelift => {
+                            snapshot.lazy_jit_cranelift += elapsed
+                        }
+                        CompilationBreakdownPhase::LazyJitLink => snapshot.lazy_jit_link += elapsed,
                     }
                 }
             }

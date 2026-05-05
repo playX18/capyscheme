@@ -23,11 +23,7 @@ global!(
     pub loc_load_extensions<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-extensions", list!(ctx, Str::new(*ctx, "scm", true)));
     pub loc_load_compiled_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-compiled-path", Value::null());
     pub loc_load_compiled_extensions<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%load-compiled-extensions", Value::null());
-    pub loc_native_extension<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%native-extension", Str::new(*ctx, if cfg!(target_vendor="apple") {
-        "dylib"
-    } else {
-        "so"
-    }, true));
+    pub loc_native_extension<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%native-extension", Str::new(*ctx, "csc", true));
     pub loc_compile_fallback_path<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%compile-fallback-path", Value::null());
     pub loc_capy_root<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%capy-root", Str::new(*ctx, "", true));
     pub loc_fresh_auto_compile<'gc>: Gc<'gc, Variable<'gc>> = (ctx) define(ctx, "%fresh-auto-compile", Value::new(false));
@@ -281,12 +277,11 @@ pub(super) fn fallback_file_name<'gc>(
 fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> Option<LoadArtifact> {
     let kind = artifact_kind_for_policy(get_execution_policy())?;
     let path = path.as_ref();
-    let fallback = ctx
-        .globals()
-        .loc_compile_fallback_path()
-        .get()
-        .downcast::<Str>()
-        .to_string();
+    let fallback = ctx.globals().loc_compile_fallback_path().get();
+    if fallback.is_null() || fallback == Value::new(false) {
+        return None;
+    }
+    let fallback = fallback.downcast::<Str>().to_string();
     let fallback = Path::new(&fallback).join(std::env::consts::ARCH);
     let relative_source = path.strip_prefix("/").unwrap_or(path);
     let full_path = fallback
@@ -432,16 +427,18 @@ fn is_regular_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "aot")]
     use super::super::artifact::DYNLIB_EXTENSION;
+    use super::super::artifact::{COMPILED_SCHEME_EXTENSION, LoadArtifactKind};
     use super::*;
-    use crate::runtime::vm::load::policy::{ExecutionPolicy, set_execution_policy};
+    use crate::runtime::vm::load::policy::{
+        EXECUTION_POLICY_TEST_LOCK, ExecutionPolicy, set_execution_policy,
+    };
     use crate::runtime::{Context, Scheme};
     use std::{fs, sync::Mutex, time::Duration};
     use uuid::Uuid;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
-    static POLICY_LOCK: Mutex<()> = Mutex::new(());
-
     struct TempDir {
         path: PathBuf,
     }
@@ -494,7 +491,7 @@ mod tests {
             }
         }
 
-        let _policy_guard = POLICY_LOCK
+        let _policy_guard = EXECUTION_POLICY_TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = get_execution_policy();
@@ -548,6 +545,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "aot")]
     fn fallback_file_name_uses_arch_scoped_cache_path() {
         with_policy(ExecutionPolicy::AOT, || {
             with_ctx(|ctx| {
@@ -574,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn jit_policy_has_no_fallback_artifact() {
+    fn jit_policy_uses_csc_fallback_artifact() {
         with_policy(ExecutionPolicy::JIT, || {
             with_ctx(|ctx| {
                 let temp = TempDir::new();
@@ -583,13 +581,22 @@ mod tests {
                     Str::new(*ctx, temp.path().to_string_lossy(), true).into(),
                 );
 
-                assert_eq!(fallback_file_name(ctx, "/stdlib/boot.scm"), None);
+                assert_eq!(
+                    fallback_file_name(ctx, "/stdlib/boot.scm").as_deref(),
+                    Some(
+                        temp.path()
+                            .join(std::env::consts::ARCH)
+                            .join("stdlib/boot")
+                            .with_extension(COMPILED_SCHEME_EXTENSION)
+                            .as_path()
+                    )
+                );
             });
         });
     }
 
     #[test]
-    fn jit_source_resolution_skips_persistent_artifact_selection() {
+    fn jit_source_resolution_selects_csc_artifacts() {
         with_policy(ExecutionPolicy::JIT, || {
             with_ctx(|ctx| {
                 let temp = TempDir::new();
@@ -604,7 +611,8 @@ mod tests {
 
                 let compiled = compiled_dir
                     .join("lib/test")
-                    .with_extension(DYNLIB_EXTENSION);
+                    .with_extension(COMPILED_SCHEME_EXTENSION);
+                std::thread::sleep(Duration::from_millis(20));
                 fs::write(&compiled, b"compiled").unwrap();
 
                 ctx.globals()
@@ -616,6 +624,10 @@ mod tests {
                 ctx.globals().loc_load_compiled_path().set(
                     ctx,
                     scm_list(ctx, &[compiled_dir.to_string_lossy().as_ref()]),
+                );
+                ctx.globals().loc_compile_fallback_path().set(
+                    ctx,
+                    Str::new(*ctx, temp.path().join("fallback").to_string_lossy(), true).into(),
                 );
 
                 let resolved =
@@ -631,13 +643,23 @@ mod tests {
                     panic!("expected source resolution");
                 };
 
-                assert_eq!(compiled_artifact, None);
-                assert_eq!(build_destination, None);
+                assert_eq!(
+                    compiled_artifact,
+                    Some(LoadArtifact::new(
+                        LoadArtifactKind::CompiledScheme,
+                        compiled
+                    ))
+                );
+                assert_eq!(
+                    build_destination.as_ref().map(|artifact| artifact.kind),
+                    Some(LoadArtifactKind::CompiledScheme)
+                );
             });
         });
     }
 
     #[test]
+    #[cfg(feature = "aot")]
     fn ignores_stale_compiled_artifacts() {
         with_policy(ExecutionPolicy::AOT, || {
             with_ctx(|ctx| {

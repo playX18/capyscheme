@@ -1,5 +1,6 @@
 //! Collection of loaded shared libraries
 
+#[cfg(feature = "aot")]
 use mmtk::util::metadata::side_metadata::global_side_metadata_vm_base_address;
 
 use crate::rsgc::{Global, Trace, mmtk::util::Address, sync::monitor::Monitor};
@@ -8,8 +9,11 @@ use crate::runtime::{
     value::Value,
     vm::load::artifact::{LoadArtifact, LoadArtifactKind},
 };
-use std::{ffi::OsStr, mem::MaybeUninit, sync::LazyLock};
+#[cfg(feature = "aot")]
+use std::{ffi::OsStr, mem::MaybeUninit};
+use std::{path::Path, sync::LazyLock};
 
+#[cfg(feature = "aot")]
 pub struct SchemeLibrary<'gc> {
     pub library: *mut (),
     pub path: std::path::PathBuf,
@@ -20,6 +24,7 @@ pub struct SchemeLibrary<'gc> {
     pub globals: &'static [*mut Value<'static>],
 }
 
+#[cfg(feature = "aot")]
 unsafe impl<'gc> Trace for SchemeLibrary<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         unsafe {
@@ -34,6 +39,7 @@ unsafe impl<'gc> Trace for SchemeLibrary<'gc> {
     }
 }
 
+#[cfg(feature = "aot")]
 impl<'gc> SchemeLibrary<'gc> {
     pub fn load(
         ctx: Context<'gc>,
@@ -229,6 +235,7 @@ impl<'gc> JitLibrary<'gc> {
 }
 
 pub enum LoadedLibrary<'gc> {
+    #[cfg(feature = "aot")]
     SharedObject(SchemeLibrary<'gc>),
     JitModule(JitLibrary<'gc>),
 }
@@ -236,6 +243,7 @@ pub enum LoadedLibrary<'gc> {
 unsafe impl<'gc> Trace for LoadedLibrary<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         match self {
+            #[cfg(feature = "aot")]
             Self::SharedObject(lib) => unsafe { lib.trace(visitor) },
             Self::JitModule(lib) => unsafe { lib.trace(visitor) },
         }
@@ -243,6 +251,7 @@ unsafe impl<'gc> Trace for LoadedLibrary<'gc> {
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         match self {
+            #[cfg(feature = "aot")]
             Self::SharedObject(lib) => unsafe { lib.process_weak_refs(weak_processor) },
             Self::JitModule(lib) => unsafe { lib.process_weak_refs(weak_processor) },
         }
@@ -255,7 +264,14 @@ impl<'gc> LoadedLibrary<'gc> {
         artifact: &LoadArtifact,
         initialize: bool,
     ) -> std::io::Result<(Self, Value<'gc>)> {
+        #[cfg(not(feature = "aot"))]
+        let _ = (ctx, initialize);
+
         match artifact.kind {
+            LoadArtifactKind::CompiledScheme => {
+                Err(compiled_scheme_loader_unavailable(&artifact.path))
+            }
+            #[cfg(feature = "aot")]
             LoadArtifactKind::SharedObject => {
                 let lib = SchemeLibrary::load(ctx, &artifact.path, initialize)?;
                 let entrypoint = lib.entrypoint;
@@ -327,7 +343,14 @@ impl<'gc> LibraryCollection<'gc> {
         artifact: &LoadArtifact,
         ctx: Context<'gc>,
     ) -> std::io::Result<(Address, *mut (), Value<'gc>)> {
+        #[cfg(not(feature = "aot"))]
+        let _ = ctx;
+
         match artifact.kind {
+            LoadArtifactKind::CompiledScheme => {
+                Err(compiled_scheme_loader_unavailable(&artifact.path))
+            }
+            #[cfg(feature = "aot")]
             LoadArtifactKind::SharedObject => {
                 let lib = SchemeLibrary::load(ctx, &artifact.path, false)?;
                 let fbase = lib.fbase;
@@ -349,6 +372,16 @@ impl<'gc> LibraryCollection<'gc> {
             f(lib);
         }
     }
+}
+
+fn compiled_scheme_loader_unavailable(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!(
+            "loading compiled Scheme artifact '{}' requires the JIT artifact loader",
+            path.display()
+        ),
+    )
 }
 
 pub static LIBRARY_COLLECTION: LazyLock<Global<crate::Rootable!(LibraryCollection<'_>)>> =

@@ -28,7 +28,7 @@
       arguments))
   (define (arg-results-ref results name)
     (cond
-      [(assq name (argparser-options (arg-results-parser results)))
+      [(assoc name (argparser-options (arg-results-parser results)))
         =>
         (lambda (opt)
           (if (and (option-mandatory? (cdr opt))

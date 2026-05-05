@@ -16,8 +16,9 @@ use crate::{
     call_signature,
     compiler::CompilationOptions,
     cps::{
-        ReifyInfo,
-        linear::{CodeId, Instruction, LinearProgram, Procedure, ProcedureKind, linearize},
+        linear::{
+            CodeId, Instruction, LinearProgram, Procedure, ProcedureKind, Terminator, linearize,
+        },
         reify,
         term::FuncRef,
     },
@@ -28,7 +29,8 @@ use crate::{
     },
     runtime::{
         Context, Scheme,
-        value::{Closure, CodeArity, CodeBlock, LazyJitHandle, Value, ValueEqual},
+        stats::{CompilationBreakdownPhase, CompilationBreakdownScope},
+        value::{Closure, CodeArity, CodeBlock, LazyJitHandle, Value},
         vm::{
             libraries::{JitLibrary, LIBRARY_COLLECTION},
             thunks::{ImportedThunks, Thunks},
@@ -65,12 +67,22 @@ pub(crate) fn compile_cps_to_jit_thunk<'gc>(
 ) -> Result<Value<'gc>, Value<'gc>> {
     let reify_info = reify(ctx, cps);
     let linear = linearize(ctx, &reify_info);
-    let state = Box::new(JitModuleState::new(ctx, reify_info, linear, options));
+    let library = compile_linear_program_to_jit_library(ctx, linear, options);
+    let libs = LIBRARY_COLLECTION.fetch(*ctx);
+    Ok(libs.register_jit(library))
+}
+
+pub(crate) fn compile_linear_program_to_jit_library<'gc>(
+    ctx: Context<'gc>,
+    linear: LinearProgram<'gc>,
+    options: CompilationOptions,
+) -> JitLibrary<'gc> {
+    let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::LazyJitSetup);
+    let state = Box::new(JitModuleState::new(ctx, linear, options));
     let state_ptr = &*state as *const JitModuleState<'gc> as *const ();
     state.initialize_lazy_handles(ctx, state_ptr);
     let entrypoint = state.entrypoint;
-    let libs = LIBRARY_COLLECTION.fetch(*ctx);
-    Ok(libs.register_jit(JitLibrary::new(entrypoint, Vec::<Value<'gc>>::new(), state)))
+    JitLibrary::new(entrypoint, Vec::<Value<'gc>>::new(), state)
 }
 
 static LAZY_JIT_STUB: LazyLock<Address> = LazyLock::new(build_lazy_jit_stub);
@@ -110,10 +122,12 @@ fn build_lazy_jit_stub() -> Address {
             sig
         };
         let sig_ref = builder.func.import_signature(resolver_sig);
-        let name_ref = builder.func.declare_imported_user_function(UserExternalName {
-            namespace: resolver_ns,
-            index: resolver_idx,
-        });
+        let name_ref = builder
+            .func
+            .declare_imported_user_function(UserExternalName {
+                namespace: resolver_ns,
+                index: resolver_idx,
+            });
         let resolver = builder.func.import_function(ExtFuncData {
             name: ExternalName::user(name_ref),
             signature: sig_ref,
@@ -179,7 +193,10 @@ extern "C-unwind" fn capy_jit_resolve<'gc>(ctx: Context<'gc>, rator: Value<'gc>)
 
 enum JitError {
     Compilation(CodegenError),
-    Allocation { message: &'static str, err: std::io::Error },
+    Allocation {
+        message: &'static str,
+        err: std::io::Error,
+    },
     Relocation(String),
     Other(String),
 }
@@ -436,12 +453,18 @@ impl JitCompiler {
     ) -> Result<JitInstalledFunction, JitError> {
         let mut ctx = cranelift_codegen::Context::for_function(std::mem::replace(
             func,
-            ir::Function::with_name_signature(ir::UserFuncName::user(0, 0), ir::Signature::new(CallConv::SystemV)),
+            ir::Function::with_name_signature(
+                ir::UserFuncName::user(0, 0),
+                ir::Signature::new(CallConv::SystemV),
+            ),
         ));
         let mut ctrl_plane = ControlPlane::default();
-        let compiled = ctx
-            .compile(&*self.isa, &mut ctrl_plane)
-            .map_err(|err| JitError::Compilation(err.inner))?;
+        let compiled = {
+            let _scope =
+                CompilationBreakdownScope::new(CompilationBreakdownPhase::LazyJitCranelift);
+            ctx.compile(&*self.isa, &mut ctrl_plane)
+                .map_err(|err| JitError::Compilation(err.inner))?
+        };
 
         let code = compiled.buffer.data().to_vec().into_boxed_slice();
         let alignment = (compiled.buffer.alignment as u64)
@@ -450,20 +473,23 @@ impl JitCompiler {
 
         let raw_relocs: Vec<_> = compiled.buffer.relocs().to_vec();
 
-        let relocations = raw_relocs
-            .iter()
-            .map(|reloc| {
-                let target = name_map
-                    .resolve_reloc_target(&reloc.target, &ctx.func, &current_func_target)
-                    .map_err(JitError::Relocation)?;
-                Ok(JitRelocation {
-                    kind: reloc.kind,
-                    offset: reloc.offset,
-                    target,
-                    addend: reloc.addend,
+        let relocations = {
+            let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::LazyJitLink);
+            raw_relocs
+                .iter()
+                .map(|reloc| {
+                    let target = name_map
+                        .resolve_reloc_target(&reloc.target, &ctx.func, &current_func_target)
+                        .map_err(JitError::Relocation)?;
+                    Ok(JitRelocation {
+                        kind: reloc.kind,
+                        offset: reloc.offset,
+                        target,
+                        addend: reloc.addend,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, JitError>>()?;
+                .collect::<Result<Vec<_>, JitError>>()?
+        };
 
         let record = JitCompiledFunctionRecord {
             code,
@@ -473,7 +499,10 @@ impl JitCompiler {
             relocations,
         };
 
-        let entrypoint = self.install_record(name_map, current_func_target.clone(), &record)?;
+        let entrypoint = {
+            let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::LazyJitLink);
+            self.install_record(name_map, current_func_target.clone(), &record)?
+        };
 
         *func = ctx.func;
 
@@ -486,8 +515,7 @@ impl JitCompiler {
         current_func_target: JitRelocTarget,
         record: &JitCompiledFunctionRecord,
     ) -> Result<Address, JitError> {
-        let alloc_size =
-            (record.code.len() + record.relocations.len() * MAX_VENEER_SIZE).max(1);
+        let alloc_size = (record.code.len() + record.relocations.len() * MAX_VENEER_SIZE).max(1);
         let mut span = self
             .allocator
             .alloc(alloc_size)
@@ -568,9 +596,7 @@ fn build_jit_isa() -> OwnedTargetIsa {
     flag_builder.set("enable_pinned_reg", "true").unwrap();
     flag_builder.set("enable_probestack", "false").unwrap();
     flag_builder.set("opt_level", "speed").unwrap();
-    flag_builder
-        .set("preserve_frame_pointers", "true")
-        .unwrap();
+    flag_builder.set("preserve_frame_pointers", "true").unwrap();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
     flag_builder.set("is_pic", "false").unwrap();
 
@@ -945,6 +971,23 @@ struct JitProcedureState<'gc> {
     compiled_code: Monitor<Option<JitCompiledFunctionRecord>>,
 }
 
+struct JitThreadCompilationScope<'gc> {
+    ctx: Context<'gc>,
+}
+
+impl<'gc> JitThreadCompilationScope<'gc> {
+    fn new(ctx: Context<'gc>) -> Self {
+        ctx.stats.start_compilation();
+        Self { ctx }
+    }
+}
+
+impl Drop for JitThreadCompilationScope<'_> {
+    fn drop(&mut self) {
+        self.ctx.stats.end_compilation();
+    }
+}
+
 impl<'gc> JitProcedureState<'gc> {
     fn compiled_address(&self) -> Option<Address> {
         let compiled = self.compiled_entry.load(Ordering::Acquire);
@@ -980,27 +1023,33 @@ impl<'gc> JitProcedureState<'gc> {
 struct JitModuleState<'gc> {
     unit_id: JitUnitId,
     entrypoint: Value<'gc>,
-    reify_info: ReifyInfo<'gc>,
     linear: LinearProgram<'gc>,
+    procedure_by_code: HashMap<CodeId, usize>,
     constant_slots: Vec<JitSlot<'gc>>,
     cache_slots: Vec<JitSlot<'gc>>,
     code_block_slots: Vec<JitCodeBlockSlot<'gc>>,
     procedures: Vec<Box<JitProcedureState<'gc>>>,
+    speculative_budget: AtomicUsize,
     options: CompilationOptions,
 }
 
 impl<'gc> JitModuleState<'gc> {
-    fn new(
-        ctx: Context<'gc>,
-        reify_info: ReifyInfo<'gc>,
-        linear: LinearProgram<'gc>,
-        options: CompilationOptions,
-    ) -> Self {
+    fn new(ctx: Context<'gc>, linear: LinearProgram<'gc>, options: CompilationOptions) -> Self {
         let unit_id = NEXT_JIT_UNIT_ID.fetch_add(1, Ordering::Relaxed);
         let mut constant_slots = collect_constant_slots(&linear);
         let mut cache_slots = collect_cache_slots(&linear);
+        let procedure_by_code = linear
+            .procedures
+            .iter()
+            .enumerate()
+            .map(|(index, procedure)| (procedure.code, index))
+            .collect();
         let mut code_block_slots = Vec::with_capacity(linear.procedures.len());
         let mut procedures = Vec::with_capacity(linear.procedures.len());
+        let speculative_budget = AtomicUsize::new(jit_speculative_compile_limit(
+            std::env::var("CAPY_JIT_PREWARM_LIMIT").ok().as_deref(),
+            linear.procedures.len(),
+        ));
 
         for (index, slot) in constant_slots.iter_mut().enumerate() {
             slot.symbol = format!("capy_jit_u{unit_id}_constant_{index}");
@@ -1046,12 +1095,13 @@ impl<'gc> JitModuleState<'gc> {
         Self {
             unit_id,
             entrypoint,
-            reify_info,
             linear,
+            procedure_by_code,
             constant_slots,
             cache_slots,
             code_block_slots,
             procedures,
+            speculative_budget,
             options,
         }
     }
@@ -1063,7 +1113,7 @@ impl<'gc> JitModuleState<'gc> {
         }
     }
 
-    fn ensure_compiled(&self, _ctx: Context<'gc>, procedure: usize) -> Address {
+    fn ensure_compiled(&self, ctx: Context<'gc>, procedure: usize) -> Address {
         let procedure_state = self
             .procedures
             .get(procedure)
@@ -1101,7 +1151,69 @@ impl<'gc> JitModuleState<'gc> {
             }
         }
 
+        let _compilation = JitThreadCompilationScope::new(ctx);
+        let _wait = CompilationBreakdownScope::new(CompilationBreakdownPhase::LazyJitWait);
         procedure_state.wait_for_compilation()
+    }
+
+    fn enqueue_observed_code_refs(&self, current_procedure: usize, observed: &[CodeId]) {
+        for code in observed {
+            let Some(&procedure) = self.procedure_by_code.get(code) else {
+                continue;
+            };
+            if procedure == current_procedure {
+                continue;
+            }
+
+            self.try_enqueue_speculative_compile(procedure);
+        }
+    }
+
+    fn try_enqueue_speculative_compile(&self, procedure: usize) {
+        let procedure_state = self
+            .procedures
+            .get(procedure)
+            .unwrap_or_else(|| panic!("lazy JIT procedure index {procedure} is out of bounds"));
+        if procedure_state.compiled_address().is_some() {
+            return;
+        }
+
+        let mut status = procedure_state.status.lock();
+        let JitCompileStatus::Idle = &*status else {
+            return;
+        };
+
+        if !self.try_consume_speculative_budget() {
+            return;
+        }
+
+        *status = JitCompileStatus::Queued;
+        let job = JitCompileJob {
+            program: self as *const Self as usize,
+            procedure,
+        };
+        if JIT_WORKER_POOL.enqueue(job).is_err() {
+            *status = JitCompileStatus::Idle;
+            status.notify_all();
+        }
+    }
+
+    fn try_consume_speculative_budget(&self) -> bool {
+        let mut remaining = self.speculative_budget.load(Ordering::Relaxed);
+        loop {
+            if remaining == 0 {
+                return false;
+            }
+            match self.speculative_budget.compare_exchange_weak(
+                remaining,
+                remaining - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => remaining = actual,
+            }
+        }
     }
 
     fn start_background_compile(&self, procedure: usize) -> bool {
@@ -1155,21 +1267,6 @@ impl<'gc> JitModuleState<'gc> {
         let mut status = procedure_state.status.lock();
         *status = JitCompileStatus::Failed(message);
         status.notify_all();
-    }
-
-    fn reify_info_for_worker(&self) -> ReifyInfo<'gc> {
-        ReifyInfo {
-            entrypoint: self.reify_info.entrypoint,
-            functions: self.reify_info.functions,
-            continuations: self.reify_info.continuations,
-            free_vars: crate::cps::free_vars::FreeVars {
-                fvars: self.reify_info.free_vars.fvars.clone(),
-                cvars: self.reify_info.free_vars.cvars.clone(),
-                funcs: self.reify_info.free_vars.funcs.clone(),
-                conts: self.reify_info.free_vars.conts.clone(),
-                cvals: self.reify_info.free_vars.cvals.clone(),
-            },
-        }
     }
 
     fn code_block_symbol(&self, code: CodeId) -> &str {
@@ -1283,72 +1380,81 @@ impl JitWorker {
         program: &JitModuleState<'gc>,
         procedure_index: usize,
     ) -> JitInstalledFunction {
-        let decls = self.ensure_unit_declared(program);
-
-        let thunks = Thunks::new_jit();
+        let decls = {
+            let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::LazyJitSetup);
+            self.ensure_unit_declared(program)
+        };
 
         let procedure = &program.procedures[procedure_index].procedure;
-        let sig = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
+        let early_observed_code_refs = observed_code_refs_in_procedure(procedure);
+        program.enqueue_observed_code_refs(procedure_index, &early_observed_code_refs);
 
+        let sig = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
         let mut func = ir::Function::with_name_signature(ir::UserFuncName::user(0, 0), sig);
         let mut fctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut func, &mut fctx);
 
-        let mut thunk_namespace_index: u32 = 0;
-        let thunks_imported = ImportedThunks::new_jit(
-            &thunks,
-            &mut builder.func,
-            |sig, _func_id_u32, func| {
-                let index = thunk_namespace_index;
-                thunk_namespace_index += 1;
-                let sig_ref = func.import_signature(sig);
-                let name_ref = func.declare_imported_user_function(UserExternalName {
-                    namespace: 2,
-                    index,
+        let observed_code_refs = {
+            let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::LazyJitLowering);
+            let thunks = Thunks::new_jit();
+            let mut builder = FunctionBuilder::new(&mut func, &mut fctx);
+
+            let mut thunk_namespace_index: u32 = 0;
+            let thunks_imported =
+                ImportedThunks::new_jit(&thunks, &mut builder.func, |sig, _func_id_u32, func| {
+                    let index = thunk_namespace_index;
+                    thunk_namespace_index += 1;
+                    let sig_ref = func.import_signature(sig);
+                    let name_ref = func.declare_imported_user_function(UserExternalName {
+                        namespace: 2,
+                        index,
+                    });
+                    func.import_function(ExtFuncData {
+                        name: ExternalName::user(name_ref),
+                        signature: sig_ref,
+                        colocated: true,
+                    })
                 });
-                func.import_function(ExtFuncData {
-                    name: ExternalName::user(name_ref),
-                    signature: sig_ref,
-                    colocated: true,
-                })
-            },
-        );
 
-        let mut jit_builder = lower::JitBuilder::new(
-            ctx,
-            &mut self.compiler,
-            &mut self.name_map,
-            &decls,
-            program.reify_info_for_worker(),
-            JIT_GLOBAL_SIDE_METADATA_SYMBOL,
-            thunks,
-        );
-        jit_builder.stacktraces = program.options.backtraces;
-        jit_builder.direct_calls = false;
-        for slot in &program.constant_slots {
-            let name_pair = decls.constants_by_symbol[&slot.symbol];
-            jit_builder.constants.insert(ValueEqual(slot.key), name_pair);
-        }
-        for slot in &program.cache_slots {
-            let name_pair = decls.cache_cells_by_symbol[&slot.symbol];
-            jit_builder.cache_cells.insert(ValueEqual(slot.key), name_pair);
-        }
+            let mut jit_builder = lower::JitBuilder::new_for_linear_program(
+                ctx,
+                &mut self.compiler,
+                &mut self.name_map,
+                &decls,
+                &program.linear,
+                JIT_GLOBAL_SIDE_METADATA_SYMBOL,
+                thunks,
+            );
+            jit_builder.stacktraces = program.options.backtraces;
+            jit_builder.direct_calls = false;
+            for slot in &program.constant_slots {
+                let name_pair = decls.constants_by_symbol[&slot.symbol];
+                jit_builder.constants.insert(slot.key, name_pair);
+            }
+            for slot in &program.cache_slots {
+                let name_pair = decls.cache_cells_by_symbol[&slot.symbol];
+                jit_builder.cache_cells.insert(slot.key, name_pair);
+            }
 
-        let function_name = jit_function_name(program.unit_id, procedure);
-        let func_debug_cx = jit_builder
-            .debug_context
-            .define_linear_procedure(procedure, &function_name);
-        let mut ssa = lower::JitLowerer::new(
-            &mut jit_builder,
-            builder,
-            lower::JitTarget::Procedure(procedure.clone()),
-            thunks_imported,
-            func_debug_cx,
-        );
-        ssa.linear_procedure(procedure);
-        ssa.finalize();
-        ssa.builder.seal_all_blocks();
-        ssa.builder.finalize();
+            let function_name = jit_function_name(program.unit_id, procedure);
+            let func_debug_cx = jit_builder
+                .debug_context
+                .define_linear_procedure(procedure, &function_name);
+            let mut ssa = lower::JitLowerer::new(
+                &mut jit_builder,
+                builder,
+                lower::JitTarget::Procedure(procedure.clone()),
+                thunks_imported,
+                func_debug_cx,
+            );
+            ssa.linear_procedure(procedure);
+            let observed_code_refs = std::mem::take(&mut ssa.observed_code_refs);
+            ssa.finalize();
+            ssa.builder.seal_all_blocks();
+            ssa.builder.finalize();
+            observed_code_refs
+        };
+
+        program.enqueue_observed_code_refs(procedure_index, &observed_code_refs);
 
         let reloc_target = JitRelocTarget::Procedure {
             unit_id: program.unit_id,
@@ -1446,7 +1552,22 @@ fn parse_jit_worker_count(value: Option<&str>, available_parallelism: usize) -> 
         return parsed;
     }
 
-    available_parallelism.clamp(1, 4)
+    available_parallelism.clamp(1, 8)
+}
+
+fn jit_speculative_compile_limit(value: Option<&str>, procedure_count: usize) -> usize {
+    let max_observable = procedure_count.saturating_sub(1);
+    if max_observable == 0 {
+        return 0;
+    }
+
+    if let Some(value) = value
+        && let Ok(parsed) = value.parse::<usize>()
+    {
+        return parsed.min(max_observable);
+    }
+
+    (jit_worker_count() * 8).min(max_observable)
 }
 
 fn jit_function_name(unit_id: JitUnitId, procedure: &Procedure<'_>) -> String {
@@ -1483,29 +1604,38 @@ fn arity_for_procedure(procedure: &Procedure<'_>) -> CodeArity {
     }
 }
 
+fn observed_code_refs_in_procedure(procedure: &Procedure<'_>) -> Vec<CodeId> {
+    let mut observed = Vec::new();
+    for block in &procedure.blocks {
+        for instruction in &block.instructions {
+            let Instruction::MakeClosure { code, .. } = instruction else {
+                continue;
+            };
+            if *code == procedure.code || observed.contains(code) {
+                continue;
+            }
+            observed.push(*code);
+        }
+    }
+    observed
+}
+
 fn collect_constant_slots<'gc>(linear: &LinearProgram<'gc>) -> Vec<JitSlot<'gc>> {
     let mut slots = Vec::new();
     for procedure in &linear.procedures {
         intern_constant_slot(&mut slots, procedure.name);
         intern_constant_slot(&mut slots, procedure.source);
         intern_constant_slot(&mut slots, procedure.meta);
+        for source in procedure.sources.values() {
+            intern_constant_slot(&mut slots, source.name);
+            intern_constant_slot(&mut slots, source.id);
+        }
         for block in &procedure.blocks {
             intern_constant_slot(&mut slots, block.source);
             for instruction in &block.instructions {
                 collect_instruction_constants(&mut slots, instruction);
             }
-            for atom in block.terminator.uses() {
-                if let crate::cps::linear::LinearAtom::Constant(value) = atom {
-                    intern_constant_slot(&mut slots, value);
-                }
-            }
-            if let crate::cps::linear::Terminator::Switch { cases, .. } = &block.terminator {
-                for case in cases {
-                    if let crate::cps::linear::SwitchCaseValue::Symbol { value, .. } = case.value {
-                        intern_constant_slot(&mut slots, value);
-                    }
-                }
-            }
+            collect_terminator_constants(&mut slots, &block.terminator);
         }
     }
     slots
@@ -1532,6 +1662,28 @@ fn collect_instruction_constants<'gc>(
         Instruction::MakeClosure { .. }
         | Instruction::ClosureRef { .. }
         | Instruction::ClosureSet { .. } => {}
+    }
+}
+
+fn collect_terminator_constants<'gc>(slots: &mut Vec<JitSlot<'gc>>, terminator: &Terminator<'gc>) {
+    for atom in terminator.uses() {
+        if let crate::cps::linear::LinearAtom::Constant(value) = atom {
+            intern_constant_slot(slots, value);
+        }
+    }
+
+    match terminator {
+        Terminator::Call { source, .. } | Terminator::TailCall { source, .. } => {
+            intern_constant_slot(slots, *source)
+        }
+        Terminator::Switch { cases, .. } => {
+            for case in cases {
+                if let crate::cps::linear::SwitchCaseValue::Symbol { value, .. } = case.value {
+                    intern_constant_slot(slots, value);
+                }
+            }
+        }
+        Terminator::Jump { .. } | Terminator::Branch { .. } => {}
     }
 }
 
@@ -1569,7 +1721,7 @@ fn intern_slot<'gc>(
     initial: Value<'gc>,
     prefix: &str,
 ) {
-    if slots.iter().any(|slot| ValueEqual(slot.key) == key) {
+    if slots.iter().any(|slot| slot.key == key) {
         return;
     }
     let symbol = format!("{prefix}_{}", slots.len());
@@ -1630,9 +1782,6 @@ unsafe impl<'gc> Trace for JitModuleState<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         unsafe {
             self.entrypoint.trace(visitor);
-            self.reify_info.entrypoint.trace(visitor);
-            self.reify_info.functions.trace(visitor);
-            self.reify_info.continuations.trace(visitor);
             self.linear.trace(visitor);
             self.constant_slots.trace(visitor);
             self.cache_slots.trace(visitor);
@@ -1644,11 +1793,6 @@ unsafe impl<'gc> Trace for JitModuleState<'gc> {
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         unsafe {
             self.entrypoint.process_weak_refs(weak_processor);
-            self.reify_info.entrypoint.process_weak_refs(weak_processor);
-            self.reify_info.functions.process_weak_refs(weak_processor);
-            self.reify_info
-                .continuations
-                .process_weak_refs(weak_processor);
             self.linear.process_weak_refs(weak_processor);
             self.constant_slots.process_weak_refs(weak_processor);
             self.cache_slots.process_weak_refs(weak_processor);
@@ -1661,12 +1805,16 @@ unsafe impl<'gc> Trace for JitModuleState<'gc> {
 #[cfg(test)]
 mod tests {
     use super::{
-        JitCompiler, JitModuleState, JitNameMap, JitRelocTarget, capy_jit_resolve,
-        compile_cps_to_jit_thunk,
+        JitCompiledFunctionRecord, JitCompiler, JitModuleState, JitNameMap, JitRelocTarget,
+        capy_jit_resolve, compile_cps_to_jit_thunk, compile_linear_program_to_jit_library,
     };
     use crate::{
         compiler::CompilationOptions,
-        cps::term::{Atoms, Func, Term},
+        cps::{
+            linear::linearize,
+            reify,
+            term::{Atoms, Func, Term},
+        },
         expander::core::fresh_lvar,
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
@@ -1675,7 +1823,9 @@ mod tests {
         },
     };
     use cranelift_codegen::{
-        FinalizedRelocTarget, binemit::Reloc, ir,
+        FinalizedRelocTarget,
+        binemit::Reloc,
+        ir,
         ir::{ExternalName, UserExternalName},
     };
 
@@ -1686,6 +1836,10 @@ mod tests {
 
     fn atoms<'gc>(ctx: Context<'gc>, atoms: &[crate::cps::term::Atom<'gc>]) -> Atoms<'gc> {
         Array::from_slice(*ctx, atoms)
+    }
+
+    fn sym<'gc>(ctx: Context<'gc>, name: &str) -> Value<'gc> {
+        Symbol::from_str_uninterned(*ctx, name, None).into()
     }
 
     #[test]
@@ -1752,8 +1906,7 @@ mod tests {
             index: idx,
         });
 
-        let target =
-            FinalizedRelocTarget::ExternalName(ExternalName::user(name_ref));
+        let target = FinalizedRelocTarget::ExternalName(ExternalName::user(name_ref));
         let resolved = name_map
             .resolve_reloc_target(
                 &target,
@@ -1916,8 +2069,8 @@ mod tests {
     #[test]
     fn compile_cps_to_jit_thunk_returns_lazy_entry_closure() {
         with_ctx(|ctx| {
-            let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "jit-test").into());
-            let retk = fresh_lvar(ctx, Symbol::from_str(ctx, "jit-retk").into());
+            let binding = fresh_lvar(ctx, sym(ctx, "jit-test"));
+            let retk = fresh_lvar(ctx, sym(ctx, "jit-retk"));
             let body = Gc::new(
                 *ctx,
                 Term::Continue(retk, atoms(ctx, &[]), Value::new(false)),
@@ -1925,7 +2078,7 @@ mod tests {
             let func = Gc::new(
                 *ctx,
                 Func {
-                    name: Symbol::from_str(ctx, "jit-test").into(),
+                    name: sym(ctx, "jit-test"),
                     source: Value::new(false),
                     binding,
                     return_cont: retk,
@@ -1988,10 +2141,10 @@ mod tests {
     }
 
     #[test]
-    fn shared_lazy_code_block_syncs_second_closure_without_recompile() {
+    fn compile_linear_program_to_jit_library_returns_lazy_entry_closure() {
         with_ctx(|ctx| {
-            let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "jit-shared").into());
-            let retk = fresh_lvar(ctx, Symbol::from_str(ctx, "jit-shared-retk").into());
+            let binding = fresh_lvar(ctx, sym(ctx, "jit-linear-test"));
+            let retk = fresh_lvar(ctx, sym(ctx, "jit-linear-retk"));
             let body = Gc::new(
                 *ctx,
                 Term::Continue(retk, atoms(ctx, &[]), Value::new(false)),
@@ -1999,7 +2152,55 @@ mod tests {
             let func = Gc::new(
                 *ctx,
                 Func {
-                    name: Symbol::from_str(ctx, "jit-shared").into(),
+                    name: sym(ctx, "jit-linear-test"),
+                    source: Value::new(false),
+                    binding,
+                    return_cont: retk,
+                    args: Array::from_slice(*ctx, &[]),
+                    variadic: None,
+                    body: Lock::new(body),
+                    free_vars: Lock::new(None),
+                    meta: Value::new(false),
+                },
+            );
+            let reify_info = reify(ctx, func);
+            let linear = linearize(ctx, &reify_info);
+            let library =
+                compile_linear_program_to_jit_library(ctx, linear, CompilationOptions::default());
+            let closure = library.entrypoint.downcast::<Closure>();
+
+            assert!(matches!(
+                closure.code_block.kind,
+                CodeBlockKind::LazyJit { .. }
+            ));
+            assert_eq!(closure.code, closure.code_block.entrypoint);
+            assert!(library.shared_slots().is_empty());
+            let handle = closure
+                .code_block
+                .lazy_jit_handle()
+                .expect("entry code block should have lazy JIT handle");
+            assert!(!handle.program.is_null());
+            let state = unsafe { &*(handle.program.cast::<JitModuleState<'_>>()) };
+            assert_eq!(
+                state.procedures[handle.procedure].procedure.code,
+                state.linear.entry
+            );
+        });
+    }
+
+    #[test]
+    fn shared_lazy_code_block_syncs_second_closure_without_recompile() {
+        with_ctx(|ctx| {
+            let binding = fresh_lvar(ctx, sym(ctx, "jit-shared"));
+            let retk = fresh_lvar(ctx, sym(ctx, "jit-shared-retk"));
+            let body = Gc::new(
+                *ctx,
+                Term::Continue(retk, atoms(ctx, &[]), Value::new(false)),
+            );
+            let func = Gc::new(
+                *ctx,
+                Func {
+                    name: sym(ctx, "jit-shared"),
                     source: Value::new(false),
                     binding,
                     return_cont: retk,
@@ -2038,9 +2239,16 @@ mod tests {
 
     #[test]
     fn jit_worker_count_env_parsing_falls_back_to_capped_parallelism() {
-        assert_eq!(super::parse_jit_worker_count(None, 8), 4);
-        assert_eq!(super::parse_jit_worker_count(Some("0"), 8), 4);
+        assert_eq!(super::parse_jit_worker_count(None, 16), 8);
+        assert_eq!(super::parse_jit_worker_count(Some("0"), 16), 8);
         assert_eq!(super::parse_jit_worker_count(Some("invalid"), 2), 2);
         assert_eq!(super::parse_jit_worker_count(None, 0), 1);
+    }
+
+    #[test]
+    fn jit_speculative_compile_limit_is_bounded() {
+        assert_eq!(super::jit_speculative_compile_limit(Some("0"), 12), 0);
+        assert_eq!(super::jit_speculative_compile_limit(Some("1000"), 12), 11);
+        assert_eq!(super::jit_speculative_compile_limit(Some("invalid"), 1), 0);
     }
 }

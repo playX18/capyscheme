@@ -562,11 +562,7 @@ impl<'gc> Globals<'gc> {
             define(ctx, "%load-extensions", crate::list!(ctx, ctx.str("scm")));
         let loc_load_compiled_path = define(ctx, "%load-compiled-path", Value::null());
         let loc_load_compiled_extensions = define(ctx, "%load-compiled-extensions", Value::null());
-        let loc_native_extension = define(
-            ctx,
-            "%native-extension",
-            ctx.str(std::env::consts::DLL_EXTENSION),
-        );
+        let loc_native_extension = define(ctx, "%native-extension", ctx.str("csc"));
         let loc_compile_fallback_path = define(ctx, "%compile-fallback-path", Value::null());
         let loc_capy_root = define(ctx, "%capy-root", ctx.str(env!("CARGO_MANIFEST_DIR")));
         let loc_fresh_auto_compile = define(ctx, "%fresh-auto-compile", Value::new(false));

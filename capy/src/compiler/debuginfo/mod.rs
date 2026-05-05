@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use crate::cps::term::{ContRef, FuncRef};
-use crate::cps::{ReifyInfo, linear::Procedure};
+use crate::cps::{
+    ReifyInfo,
+    linear::{LinearProgram, Procedure, ValueId, ValueSource},
+};
 use crate::expander::core::LVarRef;
 use crate::runtime::value::{Value, Vector};
 use cranelift_codegen::binemit::CodeOffset;
@@ -33,10 +36,37 @@ pub(crate) struct FunctionDebugContext<'gc> {
     source_loc_set: HashMap<SourceLoc, (FileId, u64, u64)>,
     lvar_to_label: HashMap<LVarRef<'gc>, (ValueLabel, Option<SourceLoc>)>,
     label_to_lvar: HashMap<ValueLabel, LVarRef<'gc>>,
+    linear_value_to_label: HashMap<ValueId, (ValueLabel, ValueSource<'gc>, Option<SourceLoc>)>,
+    label_to_linear_value: HashMap<ValueLabel, ValueId>,
 }
 
 impl<'gc> DebugContext<'gc> {
     pub(crate) fn new(reify_info: &ReifyInfo<'gc>, isa: &dyn TargetIsa) -> Self {
+        let name = if reify_info.entrypoint.name == Value::new(false) {
+            "<entrypoint>".to_owned()
+        } else {
+            reify_info.entrypoint.name.to_string()
+        };
+        Self::new_for_entry(reify_info.entrypoint.source(), name, isa)
+    }
+
+    pub(crate) fn new_for_linear_program(linear: &LinearProgram<'gc>, isa: &dyn TargetIsa) -> Self {
+        let entry = linear
+            .procedures
+            .iter()
+            .find(|procedure| procedure.code == linear.entry)
+            .expect("linear debug context should have an entry procedure");
+        let name = if entry.name != Value::new(false) {
+            entry.name.to_string()
+        } else if let Some(binding) = entry.sources.get(&entry.binding) {
+            binding.name.to_string()
+        } else {
+            "<entrypoint>".to_owned()
+        };
+        Self::new_for_entry(entry.source, name, isa)
+    }
+
+    fn new_for_entry(source: Value<'gc>, name: String, isa: &dyn TargetIsa) -> Self {
         let encoding = Encoding {
             format: Format::Dwarf32,
             version: 5,
@@ -59,14 +89,13 @@ impl<'gc> DebugContext<'gc> {
 
         let mut dwarf = DwarfUnit::new(encoding);
 
-        let main_srcloc = reify_info.entrypoint.source();
-        let file_name = if main_srcloc == Value::new(false) {
+        let file_name = if source == Value::new(false) {
             "<unknown>".to_owned()
-        } else if main_srcloc.is::<Vector>() {
-            main_srcloc.downcast::<Vector>()[0].get().to_string()
+        } else if source.is::<Vector>() {
+            source.downcast::<Vector>()[0].get().to_string()
         } else {
-            println!("main_srcloc: {main_srcloc}");
-            main_srcloc.car().to_string()
+            println!("main_srcloc: {source}");
+            source.car().to_string()
         };
 
         let line_program = LineProgram::new(
@@ -81,11 +110,6 @@ impl<'gc> DebugContext<'gc> {
         dwarf.unit.line_program = line_program;
 
         {
-            let name = if reify_info.entrypoint.name == Value::new(false) {
-                "<entrypoint>".to_owned()
-            } else {
-                reify_info.entrypoint.name.to_string()
-            };
             let name = dwarf.strings.add(name);
 
             let root = dwarf.unit.root();
@@ -189,6 +213,8 @@ impl<'gc> DebugContext<'gc> {
             entry_id,
             lvar_to_label: HashMap::new(),
             label_to_lvar: HashMap::new(),
+            linear_value_to_label: HashMap::new(),
+            label_to_linear_value: HashMap::new(),
             srcloc: (file_id, line, column),
             source_loc_set: HashMap::new(),
         }
@@ -246,6 +272,8 @@ impl<'gc> DebugContext<'gc> {
             entry_id,
             label_to_lvar: HashMap::new(),
             lvar_to_label: HashMap::new(),
+            linear_value_to_label: HashMap::new(),
+            label_to_linear_value: HashMap::new(),
 
             srcloc: (file_id, line, column),
             source_loc_set: HashMap::new(),
@@ -302,6 +330,8 @@ impl<'gc> DebugContext<'gc> {
             entry_id,
             label_to_lvar: HashMap::new(),
             lvar_to_label: HashMap::new(),
+            linear_value_to_label: HashMap::new(),
+            label_to_linear_value: HashMap::new(),
             srcloc: (file_id, line, column),
             source_loc_set: HashMap::new(),
         }
@@ -545,8 +575,7 @@ impl<'gc> FunctionDebugContext<'gc> {
                         gimli::DW_AT_decl_column,
                         AttributeValue::Udata(self.srcloc.2),
                     );
-                } else {
-                    let var_ref = self.label_to_lvar[&label];
+                } else if let Some(var_ref) = self.label_to_lvar.get(&label).copied() {
                     let name = debug_context.dwarf.strings.add(var_ref.name.to_string());
                     var.set(gimli::DW_AT_name, AttributeValue::StringRef(name));
                     var.set(
@@ -554,6 +583,38 @@ impl<'gc> FunctionDebugContext<'gc> {
                         AttributeValue::UnitRef(debug_context.value_type),
                     );
                     if let Some(srcloc) = self.lvar_to_label[&var_ref].1 {
+                        let (file_id, line, column) = self.source_loc_set[&srcloc];
+                        var.set(
+                            gimli::DW_AT_decl_file,
+                            AttributeValue::FileIndex(Some(file_id)),
+                        );
+                        var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
+                        var.set(gimli::DW_AT_decl_column, AttributeValue::Udata(column));
+                    } else {
+                        var.set(
+                            gimli::DW_AT_decl_file,
+                            AttributeValue::FileIndex(Some(self.srcloc.0)),
+                        );
+                        var.set(gimli::DW_AT_decl_line, AttributeValue::Udata(self.srcloc.1));
+                        var.set(
+                            gimli::DW_AT_decl_column,
+                            AttributeValue::Udata(self.srcloc.2),
+                        );
+                    }
+
+                    var.set(
+                        gimli::DW_AT_location,
+                        AttributeValue::LocationListRef(location_list_id),
+                    );
+                } else if let Some(value_id) = self.label_to_linear_value.get(&label).copied() {
+                    let (_, source, srcloc) = self.linear_value_to_label[&value_id];
+                    let name = debug_context.dwarf.strings.add(source.name.to_string());
+                    var.set(gimli::DW_AT_name, AttributeValue::StringRef(name));
+                    var.set(
+                        gimli::DW_AT_type,
+                        AttributeValue::UnitRef(debug_context.value_type),
+                    );
+                    if let Some(srcloc) = srcloc {
                         let (file_id, line, column) = self.source_loc_set[&srcloc];
                         var.set(
                             gimli::DW_AT_decl_file,
@@ -593,9 +654,30 @@ impl<'gc> FunctionDebugContext<'gc> {
         if let Some((label, _)) = self.lvar_to_label.get(&var) {
             *label
         } else {
-            let label = ValueLabel::from_u32(self.lvar_to_label.len() as u32 + 4);
+            let label = ValueLabel::from_u32(
+                (self.lvar_to_label.len() + self.linear_value_to_label.len()) as u32 + 4,
+            );
             self.lvar_to_label.insert(var, (label, src));
             self.label_to_lvar.insert(label, var);
+            label
+        }
+    }
+
+    pub(crate) fn add_linear_variable(
+        &mut self,
+        value_id: ValueId,
+        source: ValueSource<'gc>,
+        src: Option<SourceLoc>,
+    ) -> ValueLabel {
+        if let Some((label, _, _)) = self.linear_value_to_label.get(&value_id) {
+            *label
+        } else {
+            let label = ValueLabel::from_u32(
+                (self.lvar_to_label.len() + self.linear_value_to_label.len()) as u32 + 4,
+            );
+            self.linear_value_to_label
+                .insert(value_id, (label, source, src));
+            self.label_to_linear_value.insert(label, value_id);
             label
         }
     }

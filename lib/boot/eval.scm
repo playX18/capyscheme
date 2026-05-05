@@ -48,7 +48,7 @@
         (string-append "/" (substring canon 0 1) (substring canon 2)))
       (else canon)))
 
-  (define (compiled-extension) (string-append "." %native-extension))
+  (define (compiled-extension) ".csc")
   (and %compile-fallback-path
     (let ((f (string-append
               %compile-fallback-path

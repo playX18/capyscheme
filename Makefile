@@ -61,6 +61,8 @@ RPATH_PORTABLE := "\$$ORIGIN/"
 RPATH_FHS := ${PREFIX}/lib/
 endif
 
+COMPILED_EXT ?= csc
+
 ARCH := $(shell rustc -vV | awk '/^host:/ {print $$2}' | cut -d- -f1)
 
 # Use cross when target differs.
@@ -82,6 +84,9 @@ CAPY_ENV = \
 	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)" \
 	LD_LIBRARY_PATH="$(TARGET_PATH)" \
 	DYLD_FALLBACK_LIBRARY_PATH="$(TARGET_PATH)"
+
+CAPY_RUNTIME_STATS ?= 1
+CAPY_RUNTIME_STATS_FLAG = $(if $(filter 1 yes true on,$(CAPY_RUNTIME_STATS)),--runtime-stats,)
 
 
 BOOT_SRCS := \
@@ -264,14 +269,14 @@ R7RS_SRCS := \
 
 # Map sources to outputs (given OUT).
 
-BOOT_OUTS  = $(patsubst lib/boot/%.scm,$(OUT)/boot/%.$(DYNLIB_EXT),$(BOOT_SRCS))
-CORE_OUTS  = $(patsubst lib/core/%.scm,$(OUT)/core/%.$(DYNLIB_EXT),$(CORE_SRCS)) $(OUT)/core.$(DYNLIB_EXT)
-RNRS_OUTS  = $(patsubst lib/rnrs/%.scm,$(OUT)/rnrs/%.$(DYNLIB_EXT),$(RNRS_SRCS)) $(OUT)/rnrs.$(DYNLIB_EXT)
-CAPY_OUTS  = $(patsubst lib/capy/%.sls,$(OUT)/capy/%.$(DYNLIB_EXT),$(CAPY_SRCS_SLS)) \
-            $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(DYNLIB_EXT),$(CAPY_SRCS_SCM)) \
-            $(OUT)/capy/args.$(DYNLIB_EXT)
-SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(DYNLIB_EXT),$(SRFI_SRCS))
-R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(DYNLIB_EXT),$(R7RS_SRCS))
+BOOT_OUTS  = $(patsubst lib/boot/%.scm,$(OUT)/boot/%.$(COMPILED_EXT),$(BOOT_SRCS))
+CORE_OUTS  = $(patsubst lib/core/%.scm,$(OUT)/core/%.$(COMPILED_EXT),$(CORE_SRCS)) $(OUT)/core.$(COMPILED_EXT)
+RNRS_OUTS  = $(patsubst lib/rnrs/%.scm,$(OUT)/rnrs/%.$(COMPILED_EXT),$(RNRS_SRCS)) $(OUT)/rnrs.$(COMPILED_EXT)
+CAPY_OUTS  = $(patsubst lib/capy/%.sls,$(OUT)/capy/%.$(COMPILED_EXT),$(CAPY_SRCS_SLS)) \
+            $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(COMPILED_EXT),$(CAPY_SRCS_SCM)) \
+            $(OUT)/capy/args.$(COMPILED_EXT)
+SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(COMPILED_EXT),$(SRFI_SRCS))
+R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(COMPILED_EXT),$(R7RS_SRCS))
 
 .PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable build-lsp-server build-lsp-vm install-scm stage-0 stage-1 stage-2 \
 	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-srfi compile-r7rs \
@@ -339,7 +344,7 @@ install-scm:
 compile-psyntax:
 	$(call require_var,BIN)
 	@echo "Compiling psyntax"
-	$(CAPY_ENV) $(BIN) -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	$(CAPY_ENV) $(BIN) $(CAPY_RUNTIME_STATS_FLAG) -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
 
 
 # Stage 0 of bootstrapping.
@@ -351,14 +356,14 @@ stage-0: build-runtime-bootstrap
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	cp $(TARGET_PATH)/libcapy.* stage-0/
 	
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy $(CAPY_RUNTIME_STATS_FLAG) -L lib --fresh-auto-compile -c 42
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy $(CAPY_RUNTIME_STATS_FLAG) -L lib --fresh-auto-compile -c '(import (rnrs))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy $(CAPY_RUNTIME_STATS_FLAG) -L lib --fresh-auto-compile -c '(import (scheme base))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy $(CAPY_RUNTIME_STATS_FLAG) -L lib --fresh-auto-compile -c '(import (srfi 1))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy $(CAPY_RUNTIME_STATS_FLAG) -L lib --fresh-auto-compile -c '(import (srfi 13))'
 ifeq ($(COMPILE_PSYNTAX),1)
-	MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
+	MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy $(CAPY_RUNTIME_STATS_FLAG) -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy $(CAPY_RUNTIME_STATS_FLAG) -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
 endif
 	
 
@@ -389,54 +394,54 @@ COMPILER ?=
 OUT ?=
 
 # Boot
-$(OUT)/boot/%.$(DYNLIB_EXT): lib/boot/%.scm
+$(OUT)/boot/%.$(COMPILED_EXT): lib/boot/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy" -L lib $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy" -L lib $<
 
 # Core
-$(OUT)/core/%.$(DYNLIB_EXT): lib/core/%.scm
+$(OUT)/core/%.$(COMPILED_EXT): lib/core/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/core.$(DYNLIB_EXT): lib/core.scm
+$(OUT)/core.$(COMPILED_EXT): lib/core.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
 # RNRS
-$(OUT)/rnrs/%.$(DYNLIB_EXT): lib/rnrs/%.scm
+$(OUT)/rnrs/%.$(COMPILED_EXT): lib/rnrs/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/rnrs.$(DYNLIB_EXT): lib/rnrs.scm
+$(OUT)/rnrs.$(COMPILED_EXT): lib/rnrs.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
 # Capy (sls/scm)
-$(OUT)/capy/%.$(DYNLIB_EXT): lib/capy/%.sls
+$(OUT)/capy/%.$(COMPILED_EXT): lib/capy/%.sls
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/capy/%.$(DYNLIB_EXT): lib/capy/%.scm
+$(OUT)/capy/%.$(COMPILED_EXT): lib/capy/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/capy/args.$(DYNLIB_EXT): lib/capy/args.sls
+$(OUT)/capy/args.$(COMPILED_EXT): lib/capy/args.sls
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
 # SRFI
-$(OUT)/srfi/%.$(DYNLIB_EXT): lib/srfi/%.scm
+$(OUT)/srfi/%.$(COMPILED_EXT): lib/srfi/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
 # R7RS
-$(OUT)/scheme/%.$(DYNLIB_EXT): lib/scheme/%.scm
+$(OUT)/scheme/%.$(COMPILED_EXT): lib/scheme/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/scheme/%.$(DYNLIB_EXT): lib/scheme/%.sld
+$(OUT)/scheme/%.$(COMPILED_EXT): lib/scheme/%.sld
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) --nobacktrace -o $@ -m "capy user" $<
 
 # -------------------------
 # High-level compile targets
@@ -448,8 +453,8 @@ compile-cli:
 	$(call require_var,OUT)
 	@echo "Compiling CLI"
 	@mkdir -p $(OUT)
-	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot/cli.$(DYNLIB_EXT) -m "capy" -L lib lib/boot/cli.scm
-	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot.$(DYNLIB_EXT) -m "capy" -L lib lib/boot.scm
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) -o $(OUT)/boot/cli.$(COMPILED_EXT) -m "capy" -L lib lib/boot/cli.scm
+	$(CAPY_ENV) $(COMPILER) $(CAPY_RUNTIME_STATS_FLAG) -o $(OUT)/boot.$(COMPILED_EXT) -m "capy" -L lib lib/boot.scm
 
 compile-boot:
 	$(call require_var,COMPILER)

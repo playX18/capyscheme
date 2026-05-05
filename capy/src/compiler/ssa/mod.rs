@@ -853,8 +853,12 @@ mod tests {
         scm.enter(f);
     }
 
+    fn sym<'gc>(ctx: Context<'gc>, name: &str) -> Value<'gc> {
+        Symbol::from_str_uninterned(*ctx, name, None).into()
+    }
+
     fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
-        fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
+        fresh_lvar(ctx, sym(ctx, name))
     }
 
     fn object_module() -> ObjectModule {
@@ -896,7 +900,7 @@ mod tests {
             let func = Gc::new(
                 *ctx,
                 Func {
-                    name: Symbol::from_str(ctx, "loop").into(),
+                    name: sym(ctx, "loop"),
                     source: Value::new(false),
                     binding: f,
                     return_cont: retk,

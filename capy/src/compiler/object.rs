@@ -63,6 +63,7 @@ pub fn compile_cps_to_object<'gc>(
     Ok(product)
 }
 
+#[cfg(feature = "aot")]
 pub(crate) fn compile_cps_to_shared_object<'gc>(
     ctx: Context<'gc>,
     cps: FuncRef<'gc>,

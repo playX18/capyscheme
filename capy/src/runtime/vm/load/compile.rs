@@ -1,10 +1,16 @@
 use std::path::Path;
 
-use crate::compiler::{
-    CompilationOptions, compile_cps_to_jit_thunk, compile_cps_to_shared_object, compile_file,
+#[cfg(feature = "aot")]
+use crate::compiler::compile_cps_to_shared_object;
+use crate::compiler::{CompilationOptions, compile_cps_to_jit_thunk, compile_file};
+use crate::cps::{
+    linear::linearize,
+    linear_artifact::{LinearArtifactOptions, read_linear_program, write_linear_program},
+    reify,
 };
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
+use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
 use crate::runtime::vm::thunks::make_io_error;
@@ -99,19 +105,10 @@ fn load_thunk<'gc>(
         return Ok(thunk);
     }
 
-    match (mode, get_execution_policy()) {
-        (_, super::policy::ExecutionPolicy::JIT) => compile_and_load_source(ctx, libs, resolved),
-        (LoadMode::DescribeIfCompileNeeded, super::policy::ExecutionPolicy::AOT) => {
-            describe_uncompiled_source(ctx, &resolved)
-        }
-        (LoadMode::ForceCompile, super::policy::ExecutionPolicy::AOT) => {
-            compile_and_load_source(ctx, libs, resolved)
-        }
+    match mode {
+        LoadMode::DescribeIfCompileNeeded => describe_uncompiled_source(ctx, &resolved),
+        LoadMode::ForceCompile => compile_and_load_source(ctx, libs, resolved),
     }
-}
-
-fn fresh_auto_compile<'gc>(ctx: Context<'gc>) -> bool {
-    ctx.globals().loc_fresh_auto_compile().get() != Value::new(false)
 }
 
 fn load_precompiled_thunk<'gc>(
@@ -159,12 +156,16 @@ fn load_precompiled_thunk<'gc>(
         return Ok(None);
     };
 
-    let loaded = libs.load(&candidate, ctx).unwrap_or(Value::new(false));
+    let loaded = load_artifact(ctx, libs, &candidate)?;
     if loaded.is::<Closure>() {
         Ok(Some(loaded))
     } else {
         Ok(None)
     }
+}
+
+fn fresh_auto_compile<'gc>(ctx: Context<'gc>) -> bool {
+    ctx.globals().loc_fresh_auto_compile().get() != Value::new(false)
 }
 
 fn describe_uncompiled_source<'gc>(
@@ -217,6 +218,21 @@ fn compile_and_load_source<'gc>(
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
     let cps = compile_file(ctx, &source_path, Some(module))?;
+    if matches!(get_execution_policy(), super::policy::ExecutionPolicy::JIT)
+        && build_destination.is_none()
+    {
+        return Err(make_io_error(
+            ctx,
+            "load",
+            Str::new(
+                *ctx,
+                "JIT compilation requires a .csc destination artifact",
+                true,
+            )
+            .into(),
+            &[],
+        ));
+    }
     compile_cps_for_current_policy(
         ctx,
         cps,
@@ -234,6 +250,14 @@ pub(super) fn compile_cps_for_current_policy<'gc>(
     load_artifact: impl FnOnce(&LoadArtifact) -> Result<Value<'gc>, Value<'gc>>,
 ) -> Result<Value<'gc>, Value<'gc>> {
     match get_execution_policy() {
+        super::policy::ExecutionPolicy::JIT => {
+            let Some(destination) = destination else {
+                return compile_cps_to_jit_thunk(ctx, cps, options);
+            };
+            compile_cps_to_destination(ctx, cps, options, destination)?;
+            load_artifact(destination)
+        }
+        #[cfg(feature = "aot")]
         super::policy::ExecutionPolicy::AOT => {
             let Some(destination) = destination else {
                 return Err(make_io_error(
@@ -251,8 +275,59 @@ pub(super) fn compile_cps_for_current_policy<'gc>(
             compile_cps_to_destination(ctx, cps, options, destination)?;
             load_artifact(destination)
         }
-        super::policy::ExecutionPolicy::JIT => compile_cps_to_jit_thunk(ctx, cps, options),
     }
+}
+
+fn load_compiled_scheme_artifact<'gc>(
+    ctx: Context<'gc>,
+    libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
+    artifact: &LoadArtifact,
+) -> Result<Value<'gc>, Value<'gc>> {
+    let file = std::fs::File::open(&artifact.path).map_err(|err| {
+        make_io_error(
+            ctx,
+            "load",
+            Str::new(
+                *ctx,
+                format!(
+                    "Cannot open compiled Scheme artifact '{}': {err}",
+                    artifact.path.display()
+                ),
+                true,
+            )
+            .into(),
+            &[],
+        )
+    })?;
+
+    let (artifact_options, linear) = {
+        let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::ObjectEmit);
+        read_linear_program(ctx, file).map_err(|err| {
+            make_io_error(
+                ctx,
+                "load",
+                Str::new(
+                    *ctx,
+                    format!(
+                        "Cannot read compiled Scheme artifact '{}': {err}",
+                        artifact.path.display()
+                    ),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })?
+    };
+
+    let library = crate::jit::compile_linear_program_to_jit_library(
+        ctx,
+        linear,
+        CompilationOptions {
+            backtraces: artifact_options.backtraces,
+        },
+    );
+    Ok(libs.register_jit(library))
 }
 
 pub(super) fn compile_cps_to_destination<'gc>(
@@ -262,30 +337,136 @@ pub(super) fn compile_cps_to_destination<'gc>(
     destination: &LoadArtifact,
 ) -> Result<(), Value<'gc>> {
     match destination.kind {
+        LoadArtifactKind::CompiledScheme => {
+            compile_cps_to_compiled_scheme_artifact(ctx, cps, options, destination)
+        }
+        #[cfg(feature = "aot")]
         LoadArtifactKind::SharedObject => {
             compile_cps_to_shared_object(ctx, cps, options, &destination.path)
         }
     }
 }
 
-fn load_artifact<'gc>(
+fn compile_cps_to_compiled_scheme_artifact<'gc>(
     ctx: Context<'gc>,
-    libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
-    artifact: &LoadArtifact,
-) -> Result<Value<'gc>, Value<'gc>> {
-    libs.load(artifact, ctx).map_err(|err| {
-        make_io_error(
+    cps: crate::cps::term::FuncRef<'gc>,
+    options: CompilationOptions,
+    destination: &LoadArtifact,
+) -> Result<(), Value<'gc>> {
+    if destination.kind != LoadArtifactKind::CompiledScheme {
+        return Err(make_io_error(
             ctx,
-            "load",
+            "compile",
             Str::new(
                 *ctx,
-                format!("Failed to load {}: {err}", artifact.path.display()),
+                format!(
+                    "JIT compilation expected a .csc destination, got {}",
+                    destination.path.display()
+                ),
                 true,
             )
             .into(),
             &[],
+        ));
+    }
+
+    if let Some(parent) = destination.path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            make_io_error(
+                ctx,
+                "compile",
+                Str::new(
+                    *ctx,
+                    format!(
+                        "Cannot create compiled artifact directory '{}': {err}",
+                        parent.display()
+                    ),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })?;
+    }
+
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&destination.path)
+        .map_err(|err| {
+            make_io_error(
+                ctx,
+                "compile",
+                Str::new(
+                    *ctx,
+                    format!(
+                        "Cannot open compiled artifact '{}': {err}",
+                        destination.path.display()
+                    ),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })?;
+
+    let linear = {
+        let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::Lowering);
+        let reify_info = reify(ctx, cps);
+        linearize(ctx, &reify_info)
+    };
+    {
+        let _scope = CompilationBreakdownScope::new(CompilationBreakdownPhase::ObjectEmit);
+        write_linear_program(
+            ctx,
+            file,
+            &linear,
+            LinearArtifactOptions {
+                backtraces: options.backtraces,
+            },
         )
-    })
+        .map_err(|err| {
+            make_io_error(
+                ctx,
+                "compile",
+                Str::new(
+                    *ctx,
+                    format!(
+                        "Cannot write compiled artifact '{}': {err}",
+                        destination.path.display()
+                    ),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })
+    }
+}
+
+pub(super) fn load_artifact<'gc>(
+    ctx: Context<'gc>,
+    libs: &crate::runtime::vm::libraries::LibraryCollection<'gc>,
+    artifact: &LoadArtifact,
+) -> Result<Value<'gc>, Value<'gc>> {
+    match artifact.kind {
+        LoadArtifactKind::CompiledScheme => load_compiled_scheme_artifact(ctx, libs, artifact),
+        #[cfg(feature = "aot")]
+        LoadArtifactKind::SharedObject => libs.load(artifact, ctx).map_err(|err| {
+            make_io_error(
+                ctx,
+                "load",
+                Str::new(
+                    *ctx,
+                    format!("Failed to load {}: {err}", artifact.path.display()),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        }),
+    }
 }
 
 pub(super) fn destination_artifact_for_current_policy(
