@@ -4,9 +4,9 @@ use crate::compiler::{linkutils::Linker, ssa::ModuleBuilder};
 use crate::cps::{linear::linearize, reify, term::FuncRef};
 use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::{
-    Context,
     stats::{CompilationBreakdownPhase, CompilationBreakdownScope},
     value::{Str, Value},
+    Context,
 };
 use cranelift::prelude::Configurable;
 use cranelift_codegen::settings;
@@ -16,11 +16,34 @@ use cranelift_object::{ObjectModule, ObjectProduct};
 #[derive(Clone, Copy, Debug)]
 pub struct CompilationOptions {
     pub backtraces: bool,
+    pub symbols: ModuleSymbolNames,
 }
 
 impl Default for CompilationOptions {
     fn default() -> Self {
-        Self { backtraces: true }
+        Self {
+            backtraces: true,
+            symbols: ModuleSymbolNames::dynamic(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ModuleSymbolNames {
+    pub globals: &'static str,
+    pub globals_len: &'static str,
+    pub fasl_constants: &'static str,
+    pub init: &'static str,
+}
+
+impl ModuleSymbolNames {
+    pub const fn dynamic() -> Self {
+        Self {
+            globals: "CAPY_GLOBALS",
+            globals_len: "CAPY_GLOBALS_LEN",
+            fasl_constants: "capy_fasl_constants",
+            init: "capy_module_init",
+        }
     }
 }
 
@@ -54,7 +77,7 @@ pub fn compile_cps_to_object<'gc>(
         cranelift_object::ObjectBuilder::new(isa, "scheme", default_libcall_names()).unwrap();
     let objmodule = ObjectModule::new(objbuilder);
 
-    let mut module_builder = ModuleBuilder::new(ctx, objmodule, reify_info, linear);
+    let mut module_builder = ModuleBuilder::new(ctx, objmodule, reify_info, linear, opts.symbols);
     module_builder.stacktraces = opts.backtraces;
     module_builder.compile();
 
@@ -71,6 +94,74 @@ pub(crate) fn compile_cps_to_shared_object<'gc>(
 ) -> Result<(), Value<'gc>> {
     let product = compile_cps_to_object(ctx, cps, opts)?;
     link_object_product(ctx, product, output)
+}
+
+pub(crate) fn compile_cps_to_static_module_object<'gc>(
+    ctx: Context<'gc>,
+    cps: FuncRef<'gc>,
+    opts: CompilationOptions,
+    output: impl AsRef<Path>,
+) -> Result<(), Value<'gc>> {
+    let output = output.as_ref();
+    let product = compile_cps_to_object(ctx, cps, opts)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(output)
+        .map_err(|e| {
+            make_io_error(
+                ctx,
+                "emit-static-module-object",
+                Str::new(
+                    *ctx,
+                    format!("Cannot open output file '{}': {}", output.display(), e),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })?;
+
+    #[cfg(target_os = "macos")]
+    {
+        product
+            .object
+            .set_macho_build_version(macho_object_build_version_for_target());
+    }
+
+    let bytes = {
+        let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::ObjectEmit);
+        product.emit().map_err(|e| {
+            make_io_error(
+                ctx,
+                "emit-static-module-object",
+                Str::new(
+                    *ctx,
+                    format!("Cannot emit object file '{}': {}", output.display(), e),
+                    true,
+                )
+                .into(),
+                &[],
+            )
+        })?
+    };
+
+    file.write_all(&bytes).map_err(|e| {
+        make_io_error(
+            ctx,
+            "emit-static-module-object",
+            Str::new(
+                *ctx,
+                format!("Cannot write object file '{}': {}", output.display(), e),
+                true,
+            )
+            .into(),
+            &[],
+        )
+    })?;
+
+    Ok(())
 }
 
 #[allow(unused_mut)]

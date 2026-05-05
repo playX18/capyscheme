@@ -2,11 +2,11 @@
 
 use mmtk::util::metadata::side_metadata::global_side_metadata_vm_base_address;
 
-use crate::rsgc::{Global, Trace, mmtk::util::Address, sync::monitor::Monitor};
+use crate::rsgc::{mmtk::util::Address, sync::monitor::Monitor, Global, Trace};
 use crate::runtime::{
-    Context,
     value::Value,
     vm::load::artifact::{LoadArtifact, LoadArtifactKind},
+    Context,
 };
 use std::{ffi::OsStr, mem::MaybeUninit, sync::LazyLock};
 
@@ -180,6 +180,15 @@ impl<'gc> LoadedLibrary<'gc> {
                 let entrypoint = lib.entrypoint;
                 Ok((Self::SharedObject(lib), entrypoint))
             }
+            LoadArtifactKind::StaticModuleObject
+            | LoadArtifactKind::StaticArchive
+            | LoadArtifactKind::StaticExecutable => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "artifact kind {:?} cannot be loaded with the dynamic library loader",
+                    artifact.kind
+                ),
+            )),
         }
     }
 }
@@ -232,6 +241,15 @@ impl<'gc> LibraryCollection<'gc> {
                 self.libs.lock().push(LoadedLibrary::SharedObject(lib));
                 Ok((fbase, handle, entrypoint))
             }
+            LoadArtifactKind::StaticModuleObject
+            | LoadArtifactKind::StaticArchive
+            | LoadArtifactKind::StaticExecutable => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "artifact kind {:?} does not have a dynamic library base address",
+                    artifact.kind
+                ),
+            )),
         }
     }
 

@@ -3,6 +3,7 @@
 use crate::{
     compiler::{
         debuginfo::{DebugContext, FunctionDebugContext},
+        object::ModuleSymbolNames,
         ssa::primitive::PrimitiveLowerer,
     },
     cps::{
@@ -70,6 +71,7 @@ pub struct ModuleBuilder<'gc> {
 
     pub thunks: Thunks,
     pub stacktraces: bool,
+    pub symbols: ModuleSymbolNames,
 }
 
 impl<'gc> ModuleBuilder<'gc> {
@@ -78,6 +80,7 @@ impl<'gc> ModuleBuilder<'gc> {
         mut module: ObjectModule,
         reify_info: ReifyInfo<'gc>,
         linear: LinearProgram<'gc>,
+        symbols: ModuleSymbolNames,
     ) -> Self {
         let prims = PrimitiveLowerer::new(ctx);
         let thunks = Thunks::new(&mut module);
@@ -114,6 +117,7 @@ impl<'gc> ModuleBuilder<'gc> {
             global_side_metadata_base_address,
 
             thunks,
+            symbols,
         }
     }
     pub fn compile(&mut self) {
@@ -254,11 +258,11 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let globals_array = self
             .module
-            .declare_data("CAPY_GLOBALS", Linkage::Export, true, false)
+            .declare_data(self.symbols.globals, Linkage::Export, true, false)
             .expect("failed to declare CAPY_GLOBALS data");
         let globals_size = self
             .module
-            .declare_data("CAPY_GLOBALS_LEN", Linkage::Export, false, false)
+            .declare_data(self.symbols.globals_len, Linkage::Export, false, false)
             .expect("failed to declare CAPY_GLOBALS_LEN data");
 
         let mut desc = DataDescription::new();
@@ -311,12 +315,12 @@ impl<'gc> ModuleBuilder<'gc> {
         let sig = call_signature!(SystemV(I64, I64) -> I64);
         let init_fn_id = self
             .module
-            .declare_function("capy_module_init", Linkage::Export, &sig)
+            .declare_function(self.symbols.init, Linkage::Export, &sig)
             .expect("failed to declare capy_module_init function");
 
         let fasl_data = self
             .module
-            .declare_data("capy_fasl_constants", Linkage::Export, false, false)
+            .declare_data(self.symbols.fasl_constants, Linkage::Export, false, false)
             .expect("failed to declare capy_fasl_constants data");
         let mut desc = DataDescription::new();
 
@@ -776,7 +780,13 @@ mod tests {
                 .find(|procedure| procedure.code == CodeId::Function(func))
                 .expect("entry function should have a linear procedure")
                 .clone();
-            let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
+            let mut module_builder = ModuleBuilder::new(
+                ctx,
+                object_module(),
+                reify_info,
+                linear,
+                ModuleSymbolNames::dynamic(),
+            );
             let mut context = module_builder.module.make_context();
             context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
             let mut fctx = FunctionBuilderContext::new();

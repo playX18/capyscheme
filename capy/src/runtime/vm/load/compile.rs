@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use crate::compiler::{CompilationOptions, compile_cps_to_shared_object, compile_file};
+use crate::compiler::{
+    CompilationOptions, compile_cps_to_shared_object, compile_cps_to_static_module_object,
+    compile_file,
+};
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
@@ -221,6 +224,25 @@ pub(super) fn compile_cps_to_destination<'gc>(
     match destination.kind {
         LoadArtifactKind::SharedObject => {
             compile_cps_to_shared_object(ctx, cps, options, &destination.path)
+        }
+        LoadArtifactKind::StaticModuleObject => {
+            compile_cps_to_static_module_object(ctx, cps, options, &destination.path)
+        }
+        LoadArtifactKind::StaticArchive | LoadArtifactKind::StaticExecutable => {
+            Err(make_io_error(
+                ctx,
+                "compile",
+                Str::new(
+                    *ctx,
+                    format!(
+                        "artifact kind {:?} requires whole-graph static linking",
+                        destination.kind
+                    ),
+                    true,
+                )
+                .into(),
+                &[],
+            ))
         }
     }
 }

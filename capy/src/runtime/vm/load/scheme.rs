@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use crate::compiler::{
-    CompilationOptions, DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts,
-    lower_expanded_to_cps,
+    dump_lowered_program_artifacts, lower_expanded_to_cps, CompilationOptions,
+    DumpArtifactsOptions, LoweredProgram,
 };
 use crate::list;
 use crate::prelude::*;
-use crate::runtime::modules::{Module, current_module};
+use crate::runtime::modules::{current_module, Module};
 use crate::runtime::value::{Closure, Str, Value};
 use crate::runtime::vm::base::scm_log_level;
 use crate::runtime::vm::expand::ScmTermToRsTerm;
@@ -20,8 +20,8 @@ use super::paths::{fallback_file_name, find_path_to};
 use super::{
     artifact::LoadArtifact,
     compile::{
-        CompilationPhase, compile_cps_to_destination, destination_artifact_for_current_policy,
-        load_thunk_in_vicinity,
+        compile_cps_to_destination, destination_artifact_for_current_policy,
+        load_thunk_in_vicinity, CompilationPhase,
     },
 };
 
@@ -66,6 +66,7 @@ pub(super) mod load_ops {
             module,
             CompilationOptions {
                 backtraces: compile_backtraces_enabled(ctx),
+                ..CompilationOptions::default()
             },
             load_thunk.unwrap_or(true),
             DumpArtifactsOptions {

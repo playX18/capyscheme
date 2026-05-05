@@ -58,7 +58,7 @@ pub use bootstrap::compile_file;
 pub use object::{CompilationOptions, compile_cps_to_object, link_object_product};
 pub use pipeline::lower_to_cps;
 
-pub(crate) use object::compile_cps_to_shared_object;
+pub(crate) use object::{compile_cps_to_shared_object, compile_cps_to_static_module_object};
 pub(crate) use pipeline::{
     DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, lower_expanded_to_cps,
 };
