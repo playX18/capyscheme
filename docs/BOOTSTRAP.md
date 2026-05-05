@@ -60,9 +60,6 @@ Most targets accept these variables:
 	- Auto-detected from `capy/Cargo.toml` (you can override it).
 - `PORTABLE` (default: `1`)
 	- Controls some rpath behavior for the produced launchers.
-- `COMPILE_PSYNTAX` (default: `0`)
-   - When set to `1`, stage-0 will additionally compile psyntax into psyntax-exp.
-   Set this to 1 when you modify macro-expander code (psyntax.scm).
   
 
 ## Artifacts and directories
@@ -88,6 +85,10 @@ Each stage has two kinds of artifacts:
 
 The compiler (`capyc`) compiles Scheme sources from `lib/` into `.so`/`.dylib`/`.dll` under `stage-N/compiled/`.
 
+The static compiler migration changes graph discovery first: bootstrap and
+library compilation must use explicit manifests or Makefile source lists.
+Runtime module autoload is not a discovery mechanism.
+
 ## The bootstrap stages
 
 ### Stage 0: build a runnable system
@@ -98,13 +99,13 @@ What it does:
 
 1. Builds the Rust crate `capy` with `--features portable,bootstrap`.
 2. Builds `stage-0/capy` and `stage-0/capyc` (C launchers linked to `libcapy`).
-3. Warms up a cache and triggers auto-compilation once:
-	 - runs `stage-0/capy -L lib --fresh-auto-compile -c 42`
+3. Runs one explicit bootstrap batch:
+	 - `stage-0/capy -L lib -s lib/boot/bootstrap-batch.scm bootstrap/bootstrap-min.scm`
 	 - with `XDG_CACHE_HOME=stage-0/cache`.
 
-Optional psyntax compile (when `COMPILE_PSYNTAX=1`):
-
-- runs `lib/boot/compile-psyntax.scm` to compile `psyntax.scm` into `psyntax-exp.scm`.
+`--fresh-auto-compile` is intentionally not part of normal bootstrap. If
+`psyntax.scm` changes, regenerate `psyntax-exp.scm` with `make compile-psyntax
+BIN=stage-0/capy` as an explicit step.
 
 Environment used in stage-0 runs:
 

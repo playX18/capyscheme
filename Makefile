@@ -33,11 +33,6 @@ TARGET_PATH := $(TARGET_DIR)/$(PROFILE)
 
 CC ?= clang
 
-# Compile psyntax during stage-0 creation. By default set to 0 as
-# it's not strictly needed for bootstrapping unless you change
-# psyntax.scm.
-COMPILE_PSYNTAX ?= 0
-
 PREFIX ?= $(HOME)/.local/share
 
 # Try to match the old Justfile version discovery, but allow override.
@@ -351,15 +346,7 @@ stage-0: build-runtime-bootstrap
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	cp $(TARGET_PATH)/libcapy.* stage-0/
 	
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
-ifeq ($(COMPILE_PSYNTAX),1)
-	MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
-endif
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/bootstrap-batch.scm bootstrap/bootstrap-min.scm
 	
 
 	@echo "Stage-0 CapyScheme created in stage-0/ directory"
