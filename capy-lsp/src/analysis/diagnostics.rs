@@ -55,6 +55,7 @@ pub(super) fn balance_diagnostics(text: &str) -> Vec<DiagnosticFact> {
             severity: DiagnosticSeverityFact::Error,
             message: "unterminated string literal".into(),
             source: Some("capy-lsp".into()),
+            code: Some("syntax".into()),
         });
     }
     for (_, start) in stack {
@@ -69,5 +70,6 @@ fn unmatched(text: &str, byte: usize, message: &str) -> DiagnosticFact {
         severity: DiagnosticSeverityFact::Error,
         message: message.into(),
         source: Some("capy-lsp".into()),
+        code: Some("syntax".into()),
     }
 }

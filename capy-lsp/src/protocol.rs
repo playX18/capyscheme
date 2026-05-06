@@ -51,6 +51,8 @@ pub struct DiagnosticFact {
     pub message: String,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -108,6 +110,8 @@ pub struct CompletionFact {
     pub label: String,
     #[serde(default)]
     pub detail: Option<String>,
+    #[serde(default)]
+    pub documentation: Option<String>,
     pub kind: SymbolKindFact,
     #[serde(default, rename = "sourceModule", alias = "source_module")]
     pub source_module: Option<String>,

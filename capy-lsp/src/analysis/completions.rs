@@ -59,6 +59,7 @@ pub(super) fn append_keyword_completions(facts: &mut DocumentFacts) {
             facts.completions.push(CompletionFact {
                 label: (*keyword).into(),
                 detail: Some("syntax".into()),
+                documentation: None,
                 kind: SymbolKindFact::Keyword,
                 source_module: None,
                 source_file: None,
@@ -72,6 +73,7 @@ fn completion_from_symbol(symbol: &SymbolFact) -> CompletionFact {
     CompletionFact {
         label: symbol.name.clone(),
         detail: symbol.detail.clone(),
+        documentation: None,
         kind: symbol.kind,
         source_module: None,
         source_file: None,

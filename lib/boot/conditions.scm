@@ -82,6 +82,27 @@
 (define condition-source-line (condition-accessor (record-type-rtd &source) (record-accessor (record-type-rtd &source) 1)))
 (define condition-source-column (condition-accessor (record-type-rtd &source) (record-accessor (record-type-rtd &source) 2)))
 
+(define (condition-sourcev exn)
+  (define (valid-sourcev? src)
+    (and (vector? src)
+      (>= (vector-length src) 3)
+      (vector-ref src 1)
+      (vector-ref src 2)))
+  (define (syntax-sourcev* obj)
+    (and (syntax? obj)
+      (let ((src (syntax-sourcev obj)))
+        (and (valid-sourcev? src) src))))
+  (cond
+    [(and (condition? exn) (source-condition? exn))
+      (vector (condition-source-file exn)
+        (condition-source-line exn)
+        (condition-source-column exn))]
+    [(and (condition? exn) (syntax-violation? exn))
+      (or (syntax-sourcev* (syntax-violation-subform exn))
+        (syntax-sourcev* (syntax-violation-form exn))
+        #f)]
+    [else #f]))
+
 (define (make-condition-uid) #f)
 
 (define (print-condition exn p)
@@ -105,6 +126,12 @@
 
   (cond
     [(condition? exn)
+      (let ((src (condition-sourcev exn)))
+        (when src
+          (format p "At: ~a:~a:~a~%"
+            (vector-ref src 0)
+            (vector-ref src 1)
+            (vector-ref src 2))))
       (let ([c* (simple-conditions exn)])
         (format p "The condition has ~a components:~%" (length c*))
         (do ([i 1 (+ 1 i)]
