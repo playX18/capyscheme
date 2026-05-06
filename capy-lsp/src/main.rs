@@ -4,6 +4,7 @@ mod document;
 mod protocol;
 mod server;
 mod worker;
+mod workspace_index;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {

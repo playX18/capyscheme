@@ -29,6 +29,8 @@ impl WorkerPool {
         path: Option<&Path>,
         version: i32,
         text: &str,
+        workspace_epoch: u64,
+        config_fingerprint: u64,
     ) -> io::Result<DocumentFacts> {
         let mut worker = Worker::spawn(config).await?;
         let request = json!({
@@ -36,6 +38,8 @@ impl WorkerPool {
             "path": path.map(|path| path.to_string_lossy().into_owned()),
             "version": version,
             "text": text,
+            "workspaceEpoch": workspace_epoch,
+            "configFingerprint": config_fingerprint,
             "configRoot": config.root.to_string_lossy(),
             "loadPath": config.effective_load_path().iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
             "compiledLoadPath": config.compiled_load_path.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
@@ -60,6 +64,8 @@ impl WorkerPool {
         text: &str,
         action: &str,
         range: Option<lsp_types::Range>,
+        workspace_epoch: u64,
+        config_fingerprint: u64,
     ) -> io::Result<ActionOutput> {
         let mut worker = Worker::spawn(config).await?;
         let request = json!({
@@ -69,6 +75,8 @@ impl WorkerPool {
             "text": text,
             "action": action,
             "range": range,
+            "workspaceEpoch": workspace_epoch,
+            "configFingerprint": config_fingerprint,
             "configRoot": config.root.to_string_lossy(),
             "loadPath": config.effective_load_path().iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
             "compiledLoadPath": config.compiled_load_path.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),

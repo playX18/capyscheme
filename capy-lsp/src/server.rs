@@ -3,7 +3,10 @@ use std::{
     env, fs,
     ops::ControlFlow,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 mod actions;
@@ -33,15 +36,20 @@ use lsp_types::{
     notification, request,
 };
 use serde_json::Value;
+use tokio::{
+    task::JoinHandle,
+    time::{Duration, sleep},
+};
 use tower::ServiceBuilder;
 use tracing::Level;
 
 use crate::{
     analysis,
-    config::LspConfig,
-    document::{Document, word_at_position},
+    config::{ConfigFingerprint, LspConfig},
+    document::{CachedDocumentFacts, Document, word_at_position},
     protocol::{DiagnosticSeverityFact, DocumentFacts},
     worker::WorkerPool,
+    workspace_index::WorkspaceIndex,
 };
 
 use actions::{ActionCommandArgs, action_definitions, known_action};
@@ -61,6 +69,115 @@ use signature::{
 use util::{
     contains_position, file_name, io_error, io_response_error, lock, workspace_root_from_initialize,
 };
+
+const DID_CHANGE_DIAGNOSTIC_DEBOUNCE: Duration = Duration::from_millis(150);
+const DID_SAVE_DIAGNOSTIC_DEBOUNCE: Duration = Duration::from_millis(50);
+
+#[derive(Debug, Clone, Copy)]
+struct AnalysisRequestContext {
+    document_version: i32,
+    workspace_epoch: u64,
+    config_fingerprint: ConfigFingerprint,
+}
+
+#[derive(Debug, Clone)]
+struct AnalysisSnapshot {
+    text: String,
+    facts: DocumentFacts,
+    context: AnalysisRequestContext,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DiagnosticDelay {
+    Open,
+    Change,
+    Save,
+}
+
+impl DiagnosticDelay {
+    fn duration(self) -> Duration {
+        match self {
+            Self::Open => Duration::ZERO,
+            Self::Change => DID_CHANGE_DIAGNOSTIC_DEBOUNCE,
+            Self::Save => DID_SAVE_DIAGNOSTIC_DEBOUNCE,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AnalysisRequestContext, analysis_context_matches};
+
+    #[test]
+    fn analysis_context_accepts_matching_version_epoch_and_config() {
+        let context = AnalysisRequestContext {
+            document_version: 7,
+            workspace_epoch: 11,
+            config_fingerprint: 13,
+        };
+
+        assert!(analysis_context_matches(context, Some(7), 11, Some(13)));
+    }
+
+    #[test]
+    fn analysis_context_rejects_stale_inputs() {
+        let context = AnalysisRequestContext {
+            document_version: 7,
+            workspace_epoch: 11,
+            config_fingerprint: 13,
+        };
+
+        assert!(!analysis_context_matches(context, Some(8), 11, Some(13)));
+        assert!(!analysis_context_matches(context, Some(7), 12, Some(13)));
+        assert!(!analysis_context_matches(context, Some(7), 11, Some(14)));
+    }
+
+    #[test]
+    fn analysis_context_allows_missing_document_or_config_only_for_zero_context() {
+        let disk_context = AnalysisRequestContext {
+            document_version: 0,
+            workspace_epoch: 1,
+            config_fingerprint: 0,
+        };
+        let open_context = AnalysisRequestContext {
+            document_version: 2,
+            workspace_epoch: 1,
+            config_fingerprint: 3,
+        };
+
+        assert!(analysis_context_matches(disk_context, None, 1, None));
+        assert!(!analysis_context_matches(open_context, None, 1, Some(3)));
+        assert!(!analysis_context_matches(open_context, Some(2), 1, None));
+    }
+}
+
+fn watched_scheme_file(uri: &Url) -> bool {
+    uri.path()
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| matches!(extension, "scm" | "sls" | "sld"))
+}
+
+fn analysis_context_matches(
+    context: AnalysisRequestContext,
+    current_document_version: Option<i32>,
+    current_workspace_epoch: u64,
+    current_config_fingerprint: Option<ConfigFingerprint>,
+) -> bool {
+    if current_workspace_epoch != context.workspace_epoch {
+        return false;
+    }
+
+    match current_config_fingerprint {
+        Some(fingerprint) if fingerprint == context.config_fingerprint => {}
+        None if context.config_fingerprint == 0 => {}
+        _ => return false,
+    }
+
+    match current_document_version {
+        Some(version) => version == context.document_version,
+        None => context.document_version == 0,
+    }
+}
 
 pub async fn run() -> async_lsp::Result<()> {
     let (server, _) = async_lsp::MainLoop::new_server(|client| {
@@ -239,6 +356,9 @@ struct LanguageService {
     client: ClientSocket,
     workspace_root: Mutex<PathBuf>,
     documents: Mutex<HashMap<Url, Document>>,
+    diagnostic_tasks: Mutex<HashMap<Url, JoinHandle<()>>>,
+    workspace_index: Mutex<Option<WorkspaceIndex>>,
+    workspace_epoch: AtomicU64,
     worker_pool: Arc<WorkerPool>,
 }
 
@@ -248,13 +368,29 @@ impl LanguageService {
             client,
             workspace_root: Mutex::new(env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
             documents: Mutex::new(HashMap::new()),
+            diagnostic_tasks: Mutex::new(HashMap::new()),
+            workspace_index: Mutex::new(None),
+            workspace_epoch: AtomicU64::new(0),
             worker_pool: Arc::new(WorkerPool::default()),
         }
     }
 
+    fn current_epoch(&self) -> u64 {
+        self.workspace_epoch.load(Ordering::Acquire)
+    }
+
+    fn bump_epoch(&self) -> u64 {
+        *lock(&self.workspace_index) = None;
+        self.workspace_epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
     fn initialize(&self, params: InitializeParams) -> InitializeResult {
         if let Some(root) = workspace_root_from_initialize(&params) {
-            *lock(&self.workspace_root) = root;
+            let mut workspace_root = lock(&self.workspace_root);
+            if *workspace_root != root {
+                *workspace_root = root;
+                self.bump_epoch();
+            }
         }
 
         InitializeResult {
@@ -328,7 +464,7 @@ impl LanguageService {
             document.uri.clone(),
             Document::new(document.uri, document.version, document.text),
         );
-        self.schedule_publish_diagnostics(uri);
+        self.schedule_publish_diagnostics(uri, DiagnosticDelay::Open);
     }
 
     fn did_change(self: &Arc<Self>, params: lsp_types::DidChangeTextDocumentParams) {
@@ -350,7 +486,7 @@ impl LanguageService {
             }
         }
 
-        self.schedule_publish_diagnostics(uri);
+        self.schedule_publish_diagnostics(uri, DiagnosticDelay::Change);
     }
 
     fn did_save(self: &Arc<Self>, params: lsp_types::DidSaveTextDocumentParams) {
@@ -361,12 +497,15 @@ impl LanguageService {
                 document.facts = None;
             }
         }
-        self.schedule_publish_diagnostics(uri);
+        self.schedule_publish_diagnostics(uri, DiagnosticDelay::Save);
     }
 
     fn did_close(self: &Arc<Self>, params: lsp_types::DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         lock(&self.documents).remove(&uri);
+        if let Some(task) = lock(&self.diagnostic_tasks).remove(&uri) {
+            task.abort();
+        }
         self.publish_empty_diagnostics(uri);
     }
 
@@ -378,12 +517,17 @@ impl LanguageService {
             }
         }
 
-        if !params.changes.is_empty() {
+        if params
+            .changes
+            .iter()
+            .any(|event| watched_scheme_file(&event.uri))
+        {
             self.refresh_open_documents();
         }
     }
 
     fn refresh_open_documents(self: &Arc<Self>) {
+        self.bump_epoch();
         let uris = {
             let mut documents = lock(&self.documents);
             for document in documents.values_mut() {
@@ -392,29 +536,45 @@ impl LanguageService {
             documents.keys().cloned().collect::<Vec<_>>()
         };
         for uri in uris {
-            self.schedule_publish_diagnostics(uri);
+            self.schedule_publish_diagnostics(uri, DiagnosticDelay::Save);
         }
     }
 
-    fn schedule_publish_diagnostics(self: &Arc<Self>, uri: Url) {
+    fn schedule_publish_diagnostics(self: &Arc<Self>, uri: Url, delay: DiagnosticDelay) {
+        if let Some(task) = lock(&self.diagnostic_tasks).remove(&uri) {
+            task.abort();
+        }
         let service = self.clone();
-        tokio::spawn(async move {
+        let task_uri = uri.clone();
+        let task = tokio::spawn(async move {
+            let duration = delay.duration();
+            if !duration.is_zero() {
+                sleep(duration).await;
+            }
             service.publish_diagnostics(uri).await;
         });
+        lock(&self.diagnostic_tasks).insert(task_uri, task);
     }
 
     async fn publish_diagnostics(self: Arc<Self>, uri: Url) {
-        let facts = self.facts_for(&uri).await.unwrap_or_default();
-        let version = lock(&self.documents)
-            .get(&uri)
-            .map(|document| document.version);
-        let diagnostics = facts.diagnostics.into_iter().map(to_diagnostic).collect();
+        let Some(snapshot) = self.analysis_snapshot(&uri).await else {
+            return;
+        };
+        if !self.is_result_still_current(&uri, snapshot.context) {
+            return;
+        }
+        let diagnostics = snapshot
+            .facts
+            .diagnostics
+            .into_iter()
+            .map(to_diagnostic)
+            .collect();
         let _ =
             self.client
                 .notify::<notification::PublishDiagnostics>(PublishDiagnosticsParams::new(
                     uri,
                     diagnostics,
-                    version,
+                    Some(snapshot.context.document_version),
                 ));
     }
 
@@ -429,7 +589,11 @@ impl LanguageService {
     }
 
     async fn document_diagnostics(&self, uri: Url) -> DocumentDiagnosticReportResult {
-        let facts = self.facts_for(&uri).await.unwrap_or_default();
+        let facts = self
+            .analysis_snapshot(&uri)
+            .await
+            .map(|snapshot| snapshot.facts)
+            .unwrap_or_default();
         DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(
             RelatedFullDocumentDiagnosticReport {
                 related_documents: None,
@@ -442,7 +606,7 @@ impl LanguageService {
     }
 
     async fn hover(&self, uri: Url, position: Position) -> Option<Hover> {
-        let (text, facts) = self.text_and_facts(&uri).await?;
+        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let (name, range) = analysis::symbol_at(&facts, &text, position)?;
         let detail = facts
             .symbols
@@ -466,7 +630,7 @@ impl LanguageService {
     }
 
     async fn definition(&self, uri: Url, position: Position) -> Option<GotoDefinitionResponse> {
-        let (text, facts) = self.text_and_facts(&uri).await?;
+        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let (name, _) = word_at_position(&text, position)?;
         if let Some(reference) = facts.references.iter().find(|reference| {
             reference.name == name && contains_position(reference.range, position)
@@ -493,7 +657,7 @@ impl LanguageService {
         position: Position,
         include_declaration: bool,
     ) -> Option<Vec<Location>> {
-        let (text, facts) = self.text_and_facts(&uri).await?;
+        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let (name, _) = word_at_position(&text, position)?;
         let mut locations = Vec::new();
         let mut seen = HashSet::new();
@@ -530,7 +694,7 @@ impl LanguageService {
     }
 
     async fn completion(&self, uri: Url, position: Position) -> Option<CompletionResponse> {
-        let (text, facts) = self.text_and_facts(&uri).await?;
+        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let prefix = word_at_position(&text, position)
             .map(|(word, _)| word)
             .unwrap_or_default();
@@ -561,7 +725,7 @@ impl LanguageService {
     }
 
     async fn signature_help(&self, uri: Url, position: Position) -> Option<SignatureHelp> {
-        let (text, facts) = self.text_and_facts(&uri).await?;
+        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let call = enclosing_call(&text, position)?;
         let detail = completion_detail(&facts, &call.name).or_else(|| {
             facts
@@ -582,7 +746,7 @@ impl LanguageService {
     }
 
     async fn document_symbols(&self, uri: Url) -> Option<DocumentSymbolResponse> {
-        let (text, facts) = self.text_and_facts(&uri).await?;
+        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let import_symbols = analysis::import_symbols(&text, &facts);
         Some(DocumentSymbolResponse::Nested(
             facts
@@ -596,9 +760,9 @@ impl LanguageService {
 
     async fn workspace_symbols(&self, query: String) -> Option<WorkspaceSymbolResponse> {
         let query = query.to_lowercase();
-        let uris: Vec<Url> = lock(&self.documents).keys().cloned().collect();
+        let open_uris: HashSet<Url> = lock(&self.documents).keys().cloned().collect();
         let mut symbols = Vec::new();
-        for uri in uris {
+        for uri in &open_uris {
             let Some(facts) = self.facts_for(&uri).await else {
                 continue;
             };
@@ -608,7 +772,36 @@ impl LanguageService {
                 }
             }
         }
+
+        if let Some(index) = self.current_workspace_index() {
+            for entry in index.symbols() {
+                if open_uris.contains(&entry.uri) {
+                    continue;
+                }
+                if query.is_empty() || entry.symbol.name.to_lowercase().contains(&query) {
+                    symbols.push(to_symbol_information(entry.uri.clone(), &entry.symbol));
+                }
+            }
+        }
         Some(WorkspaceSymbolResponse::Flat(symbols))
+    }
+
+    fn current_workspace_index(&self) -> Option<WorkspaceIndex> {
+        let workspace_root = lock(&self.workspace_root).clone();
+        let config = LspConfig::discover(None, &workspace_root).ok()?;
+        let config_fingerprint = config.fingerprint();
+        let workspace_epoch = self.current_epoch();
+
+        if let Some(index) = lock(&self.workspace_index).as_ref()
+            && index.matches(workspace_epoch, config_fingerprint)
+        {
+            return Some(index.clone());
+        }
+
+        let documents = lock(&self.documents).clone();
+        let index = WorkspaceIndex::build(&config, workspace_epoch, config_fingerprint, &documents);
+        *lock(&self.workspace_index) = Some(index.clone());
+        Some(index)
     }
 
     async fn document_highlight(
@@ -616,7 +809,7 @@ impl LanguageService {
         uri: Url,
         position: Position,
     ) -> Option<Vec<DocumentHighlight>> {
-        let (text, facts) = self.text_and_facts(&uri).await?;
+        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let (name, _) = word_at_position(&text, position)?;
         let mut highlights = Vec::new();
         let selected_definition = selected_reference_definition(&facts, &name, position)
@@ -748,6 +941,13 @@ impl LanguageService {
                 format!("invalid lsp-config.scm: {err}"),
             )
         })?;
+        let workspace_epoch = self.current_epoch();
+        let config_fingerprint = config.fingerprint();
+        let context = AnalysisRequestContext {
+            document_version: version,
+            workspace_epoch,
+            config_fingerprint,
+        };
         let output = self
             .worker_pool
             .run_action(
@@ -758,31 +958,67 @@ impl LanguageService {
                 &text,
                 &action_args.action,
                 action_args.range,
+                workspace_epoch,
+                config_fingerprint,
             )
             .await
             .map_err(io_response_error)?;
+        if !self.is_result_still_current(&action_args.uri, context) {
+            return Err(ResponseError::new(
+                ErrorCode::CONTENT_MODIFIED,
+                "document changed before Capy action completed",
+            ));
+        }
 
         serde_json::to_value(output)
             .map(Some)
             .map_err(|err| ResponseError::new(ErrorCode::INTERNAL_ERROR, err.to_string()))
     }
 
-    async fn text_and_facts(&self, uri: &Url) -> Option<(String, DocumentFacts)> {
-        let text = self.document_text(uri)?;
-        let facts = self.facts_for(uri).await?;
-        Some((text, facts))
-    }
-
-    fn document_text(&self, uri: &Url) -> Option<String> {
-        if let Some(document) = lock(&self.documents).get(uri) {
-            return Some(document.text.clone());
-        }
-        uri.to_file_path()
-            .ok()
-            .and_then(|path| fs::read_to_string(path).ok())
-    }
-
     async fn facts_for(&self, uri: &Url) -> Option<DocumentFacts> {
+        self.analysis_snapshot(uri)
+            .await
+            .map(|snapshot| snapshot.facts)
+    }
+
+    async fn analysis_snapshot(&self, uri: &Url) -> Option<AnalysisSnapshot> {
+        let workspace_root = lock(&self.workspace_root).clone();
+        let path = uri.to_file_path().ok();
+        let config = match LspConfig::discover(path.as_deref(), &workspace_root) {
+            Ok(config) => config,
+            Err(err) => {
+                let (text, version) = self.document_snapshot(uri)?;
+                let mut facts = analysis::analyze_syntax(uri, &text);
+                facts.diagnostics.push(crate::protocol::DiagnosticFact {
+                    range: Range::default(),
+                    severity: DiagnosticSeverityFact::Error,
+                    message: format!("invalid lsp-config.scm: {err}"),
+                    source: Some("capy-lsp".into()),
+                });
+                analysis::fill_missing_facts(uri, &text, &mut facts);
+                let context = AnalysisRequestContext {
+                    document_version: version,
+                    workspace_epoch: self.current_epoch(),
+                    config_fingerprint: 0,
+                };
+                if let Some(document) = lock(&self.documents).get_mut(uri)
+                    && document.version == version
+                {
+                    document.facts = Some(CachedDocumentFacts::new(
+                        facts.clone(),
+                        context.document_version,
+                        context.workspace_epoch,
+                        context.config_fingerprint,
+                    ));
+                }
+                return Some(AnalysisSnapshot {
+                    text,
+                    facts,
+                    context,
+                });
+            }
+        };
+        let config_fingerprint = config.fingerprint();
         let (text, version, cached) = {
             let documents = lock(&self.documents);
             if let Some(document) = documents.get(uri) {
@@ -798,42 +1034,93 @@ impl LanguageService {
         };
 
         if let Some(facts) = cached {
-            return Some(facts);
+            if facts.matches(version, self.current_epoch(), config_fingerprint) {
+                let context = AnalysisRequestContext {
+                    document_version: version,
+                    workspace_epoch: self.current_epoch(),
+                    config_fingerprint,
+                };
+                return Some(AnalysisSnapshot {
+                    text,
+                    facts: facts.facts,
+                    context,
+                });
+            }
         }
 
-        let workspace_root = lock(&self.workspace_root).clone();
-        let path = uri.to_file_path().ok();
-        let mut facts = match LspConfig::discover(path.as_deref(), &workspace_root) {
-            Ok(config) => match self
-                .worker_pool
-                .analyze(&config, uri, path.as_deref(), version, &text)
-                .await
-            {
-                Ok(facts) => facts,
-                Err(err) => {
-                    tracing::warn!(uri = %uri, error = %err, "capy-lsp-vm analysis failed");
-                    analysis::analyze_syntax(uri, &text)
-                }
-            },
+        let context = AnalysisRequestContext {
+            document_version: version,
+            workspace_epoch: self.current_epoch(),
+            config_fingerprint,
+        };
+        let mut facts = match self
+            .worker_pool
+            .analyze(
+                &config,
+                uri,
+                path.as_deref(),
+                version,
+                &text,
+                context.workspace_epoch,
+                context.config_fingerprint,
+            )
+            .await
+        {
+            Ok(facts) => facts,
             Err(err) => {
-                let mut facts = analysis::analyze_syntax(uri, &text);
-                facts.diagnostics.push(crate::protocol::DiagnosticFact {
-                    range: Range::default(),
-                    severity: DiagnosticSeverityFact::Error,
-                    message: format!("invalid lsp-config.scm: {err}"),
-                    source: Some("capy-lsp".into()),
-                });
-                facts
+                tracing::warn!(uri = %uri, error = %err, "capy-lsp-vm analysis failed");
+                analysis::analyze_syntax(uri, &text)
             }
         };
         analysis::fill_missing_facts(uri, &text, &mut facts);
 
+        if !self.is_result_still_current(uri, context) {
+            return None;
+        }
+
         if let Some(document) = lock(&self.documents).get_mut(uri) {
             if document.version == version {
-                document.facts = Some(facts.clone());
+                document.facts = Some(CachedDocumentFacts::new(
+                    facts.clone(),
+                    context.document_version,
+                    context.workspace_epoch,
+                    context.config_fingerprint,
+                ));
             }
         }
-        Some(facts)
+        Some(AnalysisSnapshot {
+            text,
+            facts,
+            context,
+        })
+    }
+
+    fn document_snapshot(&self, uri: &Url) -> Option<(String, i32)> {
+        if let Some(document) = lock(&self.documents).get(uri) {
+            return Some((document.text.clone(), document.version));
+        }
+        let path = uri.to_file_path().ok()?;
+        Some((fs::read_to_string(path).ok()?, 0))
+    }
+
+    fn is_result_still_current(&self, uri: &Url, context: AnalysisRequestContext) -> bool {
+        let workspace_root = lock(&self.workspace_root).clone();
+        let path = uri.to_file_path().ok();
+        let current_config_fingerprint =
+            if let Ok(config) = LspConfig::discover(path.as_deref(), &workspace_root) {
+                Some(config.fingerprint())
+            } else {
+                None
+            };
+        let current_document_version = lock(&self.documents)
+            .get(uri)
+            .map(|document| document.version);
+        analysis_context_matches(
+            context,
+            current_document_version,
+            self.current_epoch(),
+            current_config_fingerprint,
+        )
     }
 
     async fn imported_completion_location(

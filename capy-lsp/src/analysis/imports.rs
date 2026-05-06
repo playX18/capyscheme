@@ -12,21 +12,33 @@ pub(crate) fn import_symbols(text: &str, facts: &DocumentFacts) -> Vec<SymbolFac
         .imports
         .iter()
         .map(|import| {
-            let range = range_for_import_name(text, &import.name).unwrap_or_default();
+            let range = if import.range != Range::default() {
+                import.range
+            } else {
+                range_for_import_name(text, &import.name).unwrap_or_default()
+            };
             SymbolFact {
                 name: import.name.clone(),
                 kind: SymbolKindFact::Module,
                 range,
                 selection_range: range,
-                detail: import
-                    .file
-                    .as_ref()
-                    .map(|file| format!("import: {file}"))
-                    .or_else(|| Some("unresolved import".into())),
+                detail: import_detail(import),
                 container: None,
             }
         })
         .collect()
+}
+
+fn import_detail(import: &crate::protocol::ImportFact) -> Option<String> {
+    if let Some(file) = &import.file {
+        Some(format!("import: {file}"))
+    } else if let Some(error) = &import.error {
+        Some(format!("unresolved import: {error}"))
+    } else if !import.resolved {
+        Some("unresolved import".into())
+    } else {
+        Some("import".into())
+    }
 }
 
 fn range_for_import_name(text: &str, name: &str) -> Option<Range> {

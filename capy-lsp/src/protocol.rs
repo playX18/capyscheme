@@ -121,6 +121,12 @@ pub struct CompletionFact {
 pub struct ImportFact {
     pub name: String,
     #[serde(default)]
+    pub range: Range,
+    #[serde(default)]
+    pub resolved: bool,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
     pub file: Option<String>,
 }
 
