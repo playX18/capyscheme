@@ -24,10 +24,10 @@ use async_lsp::{
 use lsp_types::{
     CompletionItem, CompletionOptions, CompletionResponse, DiagnosticOptions,
     DiagnosticServerCapabilities, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
-    DocumentHighlight, DocumentHighlightKind, DocumentSymbolResponse, ExecuteCommandOptions,
-    ExecuteCommandParams, FullDocumentDiagnosticReport, GotoDefinitionResponse, Hover,
-    HoverContents, HoverProviderCapability, InitializeParams, InitializeResult, InsertTextFormat,
-    Location, OneOf, Position, PublishDiagnosticsParams, Range,
+    DocumentHighlight, DocumentHighlightKind, DocumentSymbolResponse, Documentation,
+    ExecuteCommandOptions, ExecuteCommandParams, FullDocumentDiagnosticReport,
+    GotoDefinitionResponse, Hover, HoverContents, HoverProviderCapability, InitializeParams,
+    InitializeResult, InsertTextFormat, Location, OneOf, Position, PublishDiagnosticsParams, Range,
     RelatedFullDocumentDiagnosticReport, SemanticToken, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensResult, SemanticTokensServerCapabilities,
     ServerCapabilities, ServerInfo, SignatureHelp, SignatureHelpOptions,
@@ -623,9 +623,14 @@ impl LanguageService {
             })
             .or_else(|| completion_detail(&facts, &name))
             .unwrap_or_else(|| "identifier".into());
+        let documentation = facts
+            .completions
+            .iter()
+            .find(|item| item.label == name)
+            .and_then(|item| item.documentation.as_deref());
 
         Some(Hover {
-            contents: HoverContents::Markup(format_hover_content(&name, &detail)),
+            contents: HoverContents::Markup(format_hover_content(&name, &detail, documentation)),
             range: Some(range),
         })
     }
@@ -716,6 +721,10 @@ impl LanguageService {
                     label: item.label,
                     kind: Some(to_completion_kind(item.kind)),
                     detail,
+                    documentation: item
+                        .documentation
+                        .filter(|documentation| !documentation.is_empty())
+                        .map(|documentation| Documentation::String(documentation)),
                     insert_text,
                     insert_text_format,
                     ..CompletionItem::default()
@@ -737,6 +746,11 @@ impl LanguageService {
     async fn signature_help(&self, uri: Url, position: Position) -> Option<SignatureHelp> {
         let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let call = enclosing_call(&text, position)?;
+        let documentation = facts
+            .completions
+            .iter()
+            .find(|item| item.label == call.name)
+            .and_then(|item| item.documentation.as_deref());
         let detail = completion_detail(&facts, &call.name).or_else(|| {
             facts
                 .symbols
@@ -746,7 +760,7 @@ impl LanguageService {
         });
         let signature = callable_signature(&call.name, detail.as_deref())?;
         Some(SignatureHelp {
-            signatures: vec![signature_information(&signature)],
+            signatures: vec![signature_information(&signature, documentation)],
             active_signature: Some(0),
             active_parameter: Some(
                 call.active_parameter
@@ -1102,6 +1116,7 @@ impl LanguageService {
                     severity: DiagnosticSeverityFact::Error,
                     message: format!("capy-lsp-vm analysis failed: {err}"),
                     source: Some("capy-lsp".into()),
+                    code: Some("config".into()),
                 });
                 facts
             }

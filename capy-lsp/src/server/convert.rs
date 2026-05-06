@@ -1,6 +1,6 @@
 use lsp_types::{
     CompletionItemKind, Diagnostic, DocumentSymbol, Location, MarkupContent, MarkupKind,
-    SymbolInformation, SymbolKind, Url,
+    NumberOrString, SymbolInformation, SymbolKind, Url,
 };
 
 use crate::protocol::{
@@ -17,7 +17,7 @@ pub(super) fn to_diagnostic(fact: DiagnosticFact) -> Diagnostic {
             DiagnosticSeverityFact::Information => lsp_types::DiagnosticSeverity::INFORMATION,
             DiagnosticSeverityFact::Hint => lsp_types::DiagnosticSeverity::HINT,
         }),
-        None,
+        fact.code.map(NumberOrString::String),
         fact.source,
         fact.message,
         None,
@@ -29,7 +29,11 @@ pub(super) fn to_location(location: &LocationFact) -> Location {
     Location::new(location.uri.clone(), location.range)
 }
 
-pub(super) fn format_hover_content(name: &str, detail: &str) -> MarkupContent {
+pub(super) fn format_hover_content(
+    name: &str,
+    detail: &str,
+    documentation: Option<&str>,
+) -> MarkupContent {
     let mut value = format!("`{}`", markdown_inline_code(name));
     let lines = detail
         .lines()
@@ -42,6 +46,22 @@ pub(super) fn format_hover_content(name: &str, detail: &str) -> MarkupContent {
             &lines
                 .into_iter()
                 .map(|line| format!("- {}", markdown_text(line)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    let docs = documentation
+        .into_iter()
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if !docs.is_empty() {
+        value.push_str("\n\n");
+        value.push_str(
+            &docs
+                .into_iter()
+                .map(markdown_text)
                 .collect::<Vec<_>>()
                 .join("\n"),
         );

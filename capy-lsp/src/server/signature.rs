@@ -1,4 +1,6 @@
-use lsp_types::{ParameterInformation, ParameterLabel, Position, SignatureInformation};
+use lsp_types::{
+    Documentation, ParameterInformation, ParameterLabel, Position, SignatureInformation,
+};
 
 use crate::{
     document::position_to_byte,
@@ -59,10 +61,15 @@ pub(super) fn completion_snippet(
     Some(format!("{label} {placeholders}"))
 }
 
-pub(super) fn signature_information(signature: &CallableSignature) -> SignatureInformation {
+pub(super) fn signature_information(
+    signature: &CallableSignature,
+    documentation: Option<&str>,
+) -> SignatureInformation {
     SignatureInformation {
         label: signature.label.clone(),
-        documentation: None,
+        documentation: documentation
+            .filter(|documentation| !documentation.is_empty())
+            .map(|documentation| Documentation::String(documentation.to_string())),
         parameters: Some(
             signature
                 .params

@@ -160,21 +160,25 @@
 (define (syntax-error message line character)
   (make-diagnostic "error" "syntax" message line character))
 
+(define (condition-range exn)
+  (let ((src (and (condition? exn) (condition-sourcev exn))))
+    (if src
+      (sourcev->range src)
+      (zero-range))))
+
 (define (read-error-diagnostic exn)
-  (make-diagnostic
+  (make-diagnostic-at
     "error"
     "read"
     (string-append "read failed: " (condition->message exn))
-    0
-    0))
+    (condition-range exn)))
 
 (define (expand-error-diagnostic exn)
-  (make-diagnostic
+  (make-diagnostic-at
     "error"
     "expand"
     (string-append "expand failed: " (condition->message exn))
-    0
-    0))
+    (condition-range exn)))
 
 (define (delimiter? ch)
   (or (eof-object? ch)
@@ -746,13 +750,14 @@
     (calleeKind . ,callee-kind)
     (range . ,range)))
 
-(define (make-import-completion name kind detail module-name file source-name)
+(define (make-import-completion name kind detail module-name file source-name documentation)
   `((label . ,name)
     (kind . ,kind)
     (detail . ,detail)
     (sourceModule . ,(json-nullable-string module-name))
     (sourceFile . ,(json-nullable-string file))
-    (sourceName . ,(json-nullable-string source-name))))
+    (sourceName . ,(json-nullable-string source-name))
+    (documentation . ,(json-nullable-string documentation))))
 
 (define (string-all-digits? s start end)
   (let loop ((i start))
@@ -1516,11 +1521,11 @@
   (cond
     [(or (not module) (memq module seen)) #f]
     [(let loop ((entries (module-map (lambda (entry) entry) module)))
-       (and (pair? entries)
-         (let ((entry (car entries)))
-           (or (and (eq? (cdr entry) var)
+        (and (pair? entries)
+          (let ((entry (car entries)))
+            (or (and (eq? (cdr entry) var)
                  (resolved-interface-module-name module))
-             (loop (cdr entries))))))]
+              (loop (cdr entries))))))]
     [else
       (let loop ((uses (module-uses module)))
         (and (pair? uses)
@@ -1530,27 +1535,28 @@
 (define (variable-origin-module-name iface var)
   (let ((iface-name (resolved-interface-module-name iface)))
     (or (and iface-name
-          (guard (exn [else #f])
-            (find-variable-origin-module-name
-              (resolve-module iface-name #f #f)
-              var
-              '())))
+         (guard (exn [else #f])
+           (find-variable-origin-module-name
+             (resolve-module iface-name #f #f)
+             var
+             '())))
       iface-name)))
 
 (define (import-completion-detail imported-label origin-label documentation)
   (let* ((origin
            (cond
              [(and origin-label
-                imported-label
-                (not (string=? origin-label imported-label)))
+                 imported-label
+                 (not (string=? origin-label imported-label)))
                (string-append "defined in " origin-label
-                 "\nre-exported from " imported-label)]
+                 "\nre-exported from "
+                 imported-label)]
              [origin-label (string-append "defined in " origin-label)]
              [imported-label (string-append "imported from " imported-label)]
              [else "imported binding"]))
          (detail (if documentation
-                   (string-append origin "\n" documentation)
-                   origin)))
+                  (string-append origin "\n" documentation)
+                  origin)))
     detail))
 
 (define (import-interface-completions import-spec)
@@ -1568,15 +1574,16 @@
                    (file (and origin-name (safe-module-filename origin-name)))
                    (documentation (variable->documentation var))
                    (detail (import-completion-detail
-                             module-label
-                             origin-label
-                             documentation)))
+                            module-label
+                            origin-label
+                            documentation)))
               (make-import-completion label
                 (variable->completion-kind var)
                 detail
                 origin-label
                 file
-                (import-completion-source-name import-spec label)))))
+                (import-completion-source-name import-spec label)
+                documentation))))
         iface))))
 
 (define (capy-module-ref? term name)
@@ -1655,10 +1662,10 @@
     [(application? term)
       (let ((operands (application-operands term)))
         (or (and (capy-module-ref? (application-operator term) 'module-use-interfaces!)
-              (let loop ((operands operands))
-                (and (pair? operands)
-                  (or (tree-il-contains-lref? (car operands) identity)
-                    (loop (cdr operands))))))
+             (let loop ((operands operands))
+               (and (pair? operands)
+                 (or (tree-il-contains-lref? (car operands) identity)
+                   (loop (cdr operands))))))
           (module-use-interfaces-with-id? (application-operator term) identity)
           (contains-list? operands)))]
     [(or (constant? term)
@@ -1880,12 +1887,12 @@
               (loop (cdr import-specs)
                 (if name
                   (cons (make-import name
-                          (or (and (zero-range? range)
-                                (import-range-ref syntax-import-ranges
-                                  (module-name-string name)))
-                            range)
-                          resolved
-                          error)
+                         (or (and (zero-range? range)
+                              (import-range-ref syntax-import-ranges
+                                (module-name-string name)))
+                           range)
+                         resolved
+                         error)
                     out)
                   out)))))])))
 
@@ -1911,7 +1918,7 @@
                             out)))))]))]
           [_ '()])]
       [(and (pair? datum) (or (eq? (car datum) 'library)
-                              (eq? (car datum) 'define-library)))
+                           (eq? (car datum) 'define-library)))
         (syntax-case form ()
           [(_ head body ...)
             (collect-imports/syntax (syntax-list #'(body ...)))]

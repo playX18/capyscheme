@@ -607,6 +607,13 @@
     &lexical
     make-lexical-violation
     lexical-violation?
+    &source
+    make-source-condition
+    source-condition?
+    condition-source-file
+    condition-source-line
+    condition-source-column
+    condition-sourcev
     &syntax
     make-syntax-violation
     syntax-violation?
