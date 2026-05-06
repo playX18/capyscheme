@@ -47,7 +47,8 @@ use crate::{
     analysis,
     config::{ConfigFingerprint, LspConfig},
     document::{CachedDocumentFacts, Document, word_at_position},
-    protocol::{DiagnosticSeverityFact, DocumentFacts},
+    module_completions::import_module_completion_items,
+    protocol::{DiagnosticFact, DiagnosticSeverityFact, DocumentFacts},
     worker::WorkerPool,
     workspace_index::WorkspaceIndex,
 };
@@ -721,6 +722,15 @@ impl LanguageService {
                 });
             }
         }
+        if let Some((load_path, extensions)) = self.worker_load_path_for_uri(&uri).await {
+            items.extend(import_module_completion_items(
+                &load_path,
+                &extensions,
+                &text,
+                position,
+                &mut seen,
+            ));
+        }
         Some(CompletionResponse::Array(items))
     }
 
@@ -746,8 +756,8 @@ impl LanguageService {
     }
 
     async fn document_symbols(&self, uri: Url) -> Option<DocumentSymbolResponse> {
-        let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
-        let import_symbols = analysis::import_symbols(&text, &facts);
+        let AnalysisSnapshot { facts, .. } = self.analysis_snapshot(&uri).await?;
+        let import_symbols = analysis::import_symbols(&facts);
         Some(DocumentSymbolResponse::Nested(
             facts
                 .symbols
@@ -981,6 +991,23 @@ impl LanguageService {
             .map(|snapshot| snapshot.facts)
     }
 
+    fn config_for_uri(&self, uri: &Url) -> Option<LspConfig> {
+        let workspace_root = lock(&self.workspace_root).clone();
+        let path = uri.to_file_path().ok();
+        LspConfig::discover(path.as_deref(), &workspace_root).ok()
+    }
+
+    async fn worker_load_path_for_uri(&self, uri: &Url) -> Option<(Vec<PathBuf>, Vec<String>)> {
+        let config = self.config_for_uri(uri)?;
+        match self.worker_pool.load_path(&config).await {
+            Ok(load_path) => Some((load_path.load_path, load_path.extensions)),
+            Err(err) => {
+                tracing::warn!(uri = %uri, error = %err, "capy-lsp-vm load-path request failed");
+                Some((config.effective_load_path(), config.extensions))
+            }
+        }
+    }
+
     async fn analysis_snapshot(&self, uri: &Url) -> Option<AnalysisSnapshot> {
         let workspace_root = lock(&self.workspace_root).clone();
         let path = uri.to_file_path().ok();
@@ -988,8 +1015,8 @@ impl LanguageService {
             Ok(config) => config,
             Err(err) => {
                 let (text, version) = self.document_snapshot(uri)?;
-                let mut facts = analysis::analyze_syntax(uri, &text);
-                facts.diagnostics.push(crate::protocol::DiagnosticFact {
+                let mut facts = DocumentFacts::default();
+                facts.diagnostics.push(DiagnosticFact {
                     range: Range::default(),
                     severity: DiagnosticSeverityFact::Error,
                     message: format!("invalid lsp-config.scm: {err}"),
@@ -1069,7 +1096,14 @@ impl LanguageService {
             Ok(facts) => facts,
             Err(err) => {
                 tracing::warn!(uri = %uri, error = %err, "capy-lsp-vm analysis failed");
-                analysis::analyze_syntax(uri, &text)
+                let mut facts = DocumentFacts::default();
+                facts.diagnostics.push(DiagnosticFact {
+                    range: Range::default(),
+                    severity: DiagnosticSeverityFact::Error,
+                    message: format!("capy-lsp-vm analysis failed: {err}"),
+                    source: Some("capy-lsp".into()),
+                });
+                facts
             }
         };
         analysis::fill_missing_facts(uri, &text, &mut facts);

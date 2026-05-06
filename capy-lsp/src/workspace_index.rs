@@ -1,14 +1,8 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    path::{Path, PathBuf},
-};
+use std::collections::HashMap;
 
 use lsp_types::Url;
 
-use crate::{analysis, config::LspConfig, document::Document, protocol::SymbolFact};
-
-const MAX_INDEXED_FILES: usize = 5000;
+use crate::{config::LspConfig, document::Document, protocol::SymbolFact};
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceIndex {
@@ -25,31 +19,33 @@ pub(crate) struct IndexedSymbol {
 
 impl WorkspaceIndex {
     pub(crate) fn build(
-        config: &LspConfig,
+        _config: &LspConfig,
         workspace_epoch: u64,
         config_fingerprint: u64,
         open_documents: &HashMap<Url, Document>,
     ) -> Self {
-        let mut builder = IndexBuilder {
-            config,
-            seen_paths: HashSet::new(),
-            seen_uris: HashSet::new(),
-            symbols: Vec::new(),
-            file_count: 0,
-        };
-
-        for (uri, document) in open_documents {
-            builder.index_text(uri.clone(), &document.text);
-        }
-
-        for root in config.effective_load_path() {
-            builder.scan_path(&root);
-        }
-
+        let symbols = open_documents
+            .iter()
+            .filter_map(|(uri, document)| {
+                document
+                    .facts
+                    .as_ref()
+                    .filter(|facts| {
+                        facts.matches(document.version, workspace_epoch, config_fingerprint)
+                    })
+                    .map(|facts| (uri, &facts.facts.symbols))
+            })
+            .flat_map(|(uri, symbols)| {
+                symbols.iter().cloned().map(|symbol| IndexedSymbol {
+                    uri: uri.clone(),
+                    symbol,
+                })
+            })
+            .collect();
         Self {
             workspace_epoch,
             config_fingerprint,
-            symbols: builder.symbols,
+            symbols,
         }
     }
 
@@ -62,156 +58,68 @@ impl WorkspaceIndex {
     }
 }
 
-struct IndexBuilder<'a> {
-    config: &'a LspConfig,
-    seen_paths: HashSet<PathBuf>,
-    seen_uris: HashSet<Url>,
-    symbols: Vec<IndexedSymbol>,
-    file_count: usize,
-}
-
-impl IndexBuilder<'_> {
-    fn scan_path(&mut self, path: &Path) {
-        if self.file_count >= MAX_INDEXED_FILES || should_skip_path(path) {
-            return;
-        }
-
-        let Ok(metadata) = fs::symlink_metadata(path) else {
-            return;
-        };
-        if metadata.file_type().is_symlink() {
-            return;
-        }
-        if metadata.is_dir() {
-            self.scan_dir(path);
-        } else if metadata.is_file() {
-            self.index_file(path);
-        }
-    }
-
-    fn scan_dir(&mut self, dir: &Path) {
-        let key = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-        if !self.seen_paths.insert(key) {
-            return;
-        }
-
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            if self.file_count >= MAX_INDEXED_FILES {
-                break;
-            }
-            self.scan_path(&entry.path());
-        }
-    }
-
-    fn index_file(&mut self, path: &Path) {
-        if !has_indexed_extension(path, &self.config.extensions) {
-            return;
-        }
-        let Ok(uri) = Url::from_file_path(path) else {
-            return;
-        };
-        if self.seen_uris.contains(&uri) {
-            return;
-        }
-        let Ok(text) = fs::read_to_string(path) else {
-            return;
-        };
-        self.index_text(uri, &text);
-        self.file_count += 1;
-    }
-
-    fn index_text(&mut self, uri: Url, text: &str) {
-        if !self.seen_uris.insert(uri.clone()) {
-            return;
-        }
-        let facts = analysis::analyze_syntax(&uri, text);
-        self.symbols
-            .extend(facts.symbols.into_iter().map(|symbol| IndexedSymbol {
-                uri: uri.clone(),
-                symbol,
-            }));
-    }
-}
-
-fn has_indexed_extension(path: &Path, extensions: &[String]) -> bool {
-    let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-        return false;
-    };
-    extensions
-        .iter()
-        .any(|configured| configured.trim_start_matches('.') == extension)
-}
-
-fn should_skip_path(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| matches!(name, ".git" | "target" | ".direnv" | "node_modules"))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, fs};
+    use std::collections::HashMap;
 
     use lsp_types::Url;
     use tempfile::tempdir;
 
-    use crate::{config::LspConfig, document::Document};
+    use crate::{
+        config::LspConfig,
+        document::{CachedDocumentFacts, Document},
+        protocol::{DocumentFacts, SymbolFact, SymbolKindFact},
+    };
 
     use super::WorkspaceIndex;
 
     #[test]
-    fn indexes_unopened_workspace_files_by_config_extensions() {
+    fn does_not_tokenize_unopened_workspace_files() {
         let dir = tempdir().unwrap();
-        fs::write(dir.path().join("one.scm"), "(define visible 1)\n").unwrap();
-        fs::write(dir.path().join("two.txt"), "(define hidden 2)\n").unwrap();
 
         let config = LspConfig::default_for_root(dir.path());
         let index = WorkspaceIndex::build(&config, 3, config.fingerprint(), &HashMap::new());
 
         assert!(index.matches(3, config.fingerprint()));
-        assert!(
-            index
-                .symbols()
-                .iter()
-                .any(|entry| entry.symbol.name == "visible")
-        );
-        assert!(
-            index
-                .symbols()
-                .iter()
-                .all(|entry| entry.symbol.name != "hidden")
-        );
+        assert!(index.symbols().is_empty());
     }
 
     #[test]
-    fn indexes_open_document_text_before_disk_text() {
+    fn indexes_current_cached_open_document_facts() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("open.scm");
-        fs::write(&path, "(define disk-name 1)\n").unwrap();
         let uri = Url::from_file_path(&path).unwrap();
-        let mut documents = HashMap::new();
-        documents.insert(
-            uri.clone(),
-            Document::new(uri, 7, "(define memory-name 2)\n".into()),
-        );
-
         let config = LspConfig::default_for_root(dir.path());
-        let index = WorkspaceIndex::build(&config, 1, config.fingerprint(), &documents);
+        let fingerprint = config.fingerprint();
+        let facts = DocumentFacts {
+            symbols: vec![SymbolFact {
+                name: "tree-il-name".into(),
+                kind: SymbolKindFact::Variable,
+                range: Default::default(),
+                selection_range: Default::default(),
+                detail: Some("define".into()),
+                container: None,
+            }],
+            ..DocumentFacts::default()
+        };
+        let mut documents = HashMap::new();
+        let mut document = Document::new(uri.clone(), 7, "(define ignored-source 2)\n".into());
+        document.facts = Some(CachedDocumentFacts::new(facts, 7, 1, fingerprint));
+        documents.insert(uri, document);
+
+        let index = WorkspaceIndex::build(&config, 1, fingerprint, &documents);
 
         assert!(
             index
                 .symbols()
                 .iter()
-                .any(|entry| entry.symbol.name == "memory-name")
+                .any(|entry| entry.symbol.name == "tree-il-name")
         );
         assert!(
             index
                 .symbols()
                 .iter()
-                .all(|entry| entry.symbol.name != "disk-name")
+                .all(|entry| entry.symbol.name != "ignored-source")
         );
     }
 }

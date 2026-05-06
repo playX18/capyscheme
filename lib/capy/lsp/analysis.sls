@@ -140,68 +140,8 @@
                          action-definitions)))
           (loop (cdr forms) (append (reverse actions) out)))])))
 
-(define (position->index text target-line target-character)
-  (let ((len (string-length text)))
-    (let loop ((i 0) (line 0) (character 0))
-      (cond
-        [(>= i len) len]
-        [(and (= line target-line) (= character target-character)) i]
-        [else
-          (let ((ch (string-ref text i)))
-            (if (char=? ch #\newline)
-              (loop (+ i 1) (+ line 1) 0)
-              (loop (+ i 1) line (+ character 1))))]))))
-
-(define (index->position text target-index)
-  (let ((len (string-length text)))
-    (let loop ((i 0) (line 0) (character 0))
-      (cond
-        [(or (>= i len) (>= i target-index)) (make-position line character)]
-        [else
-          (let ((ch (string-ref text i)))
-            (if (char=? ch #\newline)
-              (loop (+ i 1) (+ line 1) 0)
-              (loop (+ i 1) line (+ character 1))))]))))
-
-(define (identifier-char? ch)
-  (not (delimiter? ch)))
-
-(define (identifier-boundary? text i)
-  (or (< i 0)
-    (>= i (string-length text))
-    (not (identifier-char? (string-ref text i)))))
-
-(define (identifier-at? text i name)
-  (let ((name-len (string-length name))
-        (text-len (string-length text)))
-    (and (<= (+ i name-len) text-len)
-      (string=? (substring text i (+ i name-len)) name)
-      (identifier-boundary? text (- i 1))
-      (identifier-boundary? text (+ i name-len)))))
-
-(define (range-for-text-indices text start end)
-  `((start . ,(index->position text start))
-    (end . ,(index->position text end))))
-
 (define (sourcev->binding-range sourcev name)
-  (let ((fallback (sourcev->range sourcev)))
-    (if (and (vector? sourcev)
-         (>= (vector-length sourcev) 3)
-         (number? (vector-ref sourcev 1))
-         (number? (vector-ref sourcev 2)))
-      (let* ((text current-analysis-text)
-             (name-string (symbol->string name))
-             (start (position->index text
-                     (max 0 (- (vector-ref sourcev 1) 1))
-                     (vector-ref sourcev 2)))
-             (len (string-length text)))
-        (let loop ((i start))
-          (cond
-            [(>= i len) fallback]
-            [(identifier-at? text i name-string)
-              (range-for-text-indices text i (+ i (string-length name-string)))]
-            [else (loop (+ i 1))])))
-      fallback)))
+  (sourcev->range sourcev))
 
 (define (make-diagnostic severity code message line character)
   `((source . "capy-lsp")
@@ -588,15 +528,16 @@
 
 (define (srfi-number-symbol n)
   (string->symbol
-    (string-append "srfi-"
-      (cond
-        [(number? n) (number->string n)]
-        [(symbol? n)
-          (let ((colon-number (colon-srfi-number n)))
-            (if colon-number
-              (number->string colon-number)
-              (symbol->string n)))]
-        [else (datum->name-string n)]))))
+    (cond
+      [(number? n) (string-append "srfi-" (number->string n))]
+      [(symbol? n)
+        (let ((colon-number (colon-srfi-number n))
+              (text (symbol->string n)))
+          (cond
+            [colon-number (string-append "srfi-" (number->string colon-number))]
+            [(string-prefix? "srfi-" text) text]
+            [else (string-append "srfi-" text)]))]
+      [else (string-append "srfi-" (datum->name-string n))])))
 
 (define (normalize-module-name name)
   (let ((base (strip-module-version name)))
@@ -851,29 +792,6 @@
         [(symbol? identity) identity]
         [else 'lexical]))))
 
-(define (source-symbols datum)
-  (cond
-    [(symbol? datum) (list datum)]
-    [(pair? datum)
-      (let loop ((xs datum) (out '()))
-        (cond
-          [(null? xs) out]
-          [(pair? xs)
-            (loop (cdr xs) (append (source-symbols (car xs)) out))]
-          [else (append (source-symbols xs) out)]))]
-    [(vector? datum)
-      (let loop ((i 0) (out '()))
-        (if (= i (vector-length datum))
-          out
-          (loop (+ i 1) (append (source-symbols (vector-ref datum i)) out))))]
-    [else '()]))
-
-(define (collect-source-symbols forms)
-  (let loop ((forms forms) (out '()))
-    (if (null? forms)
-      out
-      (loop (cdr forms) (append (source-symbols (car forms)) out)))))
-
 (define (collect-formal-locals identities readable-names detail source-symbols sourcev)
   (cond
     [(null? identities) '()]
@@ -898,9 +816,13 @@
                  sourcev)
           out)))))
 
+(define (source-symbol-visible? source-symbols name)
+  (or (not (list? source-symbols))
+    (memq name source-symbols)))
+
 (define (collect-one-local identity readable-name detail source-symbols sourcev)
   (let ((name (readable-name->symbol identity readable-name)))
-    (if (memq name source-symbols)
+    (if (source-symbol-visible? source-symbols name)
       (list (make-symbol-at (symbol->string name)
              "variable"
              detail
@@ -928,7 +850,7 @@
           env))]
     [else
       (let ((name (readable-name->symbol identities readable-names)))
-        (if (memq name source-symbols)
+        (if (source-symbol-visible? source-symbols name)
           (cons (list identities name (sourcev->binding-range sourcev name) detail) env)
           env))]))
 
@@ -956,7 +878,7 @@
       (if entry
         (let ((name (cadr entry))
               (definition-range (caddr entry)))
-          (if (memq name source-symbols)
+          (if (source-symbol-visible? source-symbols name)
             (list (make-reference uri
                    (symbol->string name)
                    range
@@ -1392,6 +1314,113 @@
         (append (reverse (collect-tree-il-locals-from-term (car terms) source-symbols))
           out)))))
 
+(define (tree-il-define-kind value)
+  (cond
+    [(proc? value) "function"]
+    [else "variable"]))
+
+(define (tree-il-define-detail value)
+  (cond
+    [(proc? value)
+      (let ((name (proc-name value #f)))
+        (if name
+          (string-append "define " name)
+          "define"))]
+    [else "define"]))
+
+(define (collect-tree-il-definitions-from-term term)
+  (define (collect-list terms)
+    (let loop ((terms terms) (out '()))
+      (if (null? terms)
+        (reverse out)
+        (loop (cdr terms)
+          (append (reverse (collect-tree-il-definitions-from-term (car terms))) out)))))
+  (cond
+    [(or (constant? term)
+        (void? term)
+        (lref? term)
+        (module-ref? term)
+        (toplevel-ref? term)
+        (primref? term))
+      '()]
+    [(lset? term)
+      (collect-tree-il-definitions-from-term (lset-value term))]
+    [(module-set? term)
+      (let ((value (module-set-value term)))
+        (cons
+          (make-symbol-at
+            (datum->name-string (module-set-name term))
+            (tree-il-define-kind value)
+            "module binding"
+            (sourcev->range (term-src term)))
+          (collect-tree-il-definitions-from-term value)))]
+    [(toplevel-set? term)
+      (let ((value (toplevel-set-value term)))
+        (cons
+          (make-symbol-at
+            (datum->name-string (toplevel-set-name term))
+            (tree-il-define-kind value)
+            "set!"
+            (sourcev->range (term-src term)))
+          (collect-tree-il-definitions-from-term value)))]
+    [(toplevel-define? term)
+      (let ((value (toplevel-define-value term)))
+        (cons
+          (make-symbol-at
+            (datum->name-string (toplevel-define-name term))
+            (tree-il-define-kind value)
+            (tree-il-define-detail value)
+            (sourcev->range (term-src term)))
+          (collect-tree-il-definitions-from-term value)))]
+    [(if? term)
+      (append
+        (collect-tree-il-definitions-from-term (if-test term))
+        (collect-tree-il-definitions-from-term (if-then term))
+        (collect-tree-il-definitions-from-term (if-else term)))]
+    [(let? term)
+      (append
+        (collect-list (let-rhs term))
+        (collect-tree-il-definitions-from-term (let-body term)))]
+    [(receive? term)
+      (append
+        (collect-tree-il-definitions-from-term (receive-producer term))
+        (collect-tree-il-definitions-from-term (receive-consumer term)))]
+    [(fix? term)
+      (append
+        (collect-list (fix-rhs term))
+        (collect-tree-il-definitions-from-term (fix-body term)))]
+    [(proc? term)
+      (collect-tree-il-definitions-from-term (proc-body term))]
+    [(application? term)
+      (append
+        (collect-tree-il-definitions-from-term (application-operator term))
+        (collect-list (application-operands term)))]
+    [(primcall? term)
+      (collect-list (primcall-args term))]
+    [(values? term)
+      (collect-list (values-values term))]
+    [(sequence? term)
+      (append
+        (collect-tree-il-definitions-from-term (sequence-head term))
+        (collect-tree-il-definitions-from-term (sequence-tail term)))]
+    [(wcm? term)
+      (append
+        (collect-tree-il-definitions-from-term (wcm-mark term))
+        (collect-tree-il-definitions-from-term (wcm-result term)))]
+    [else '()]))
+
+(define (collect-tree-il-definitions terms)
+  (let loop ((terms terms) (out '()))
+    (if (null? terms)
+      (reverse out)
+      (loop (cdr terms)
+        (append (reverse (collect-tree-il-definitions-from-term (car terms))) out)))))
+
+(define (collect-tree-il-symbols terms source-symbols)
+  (append
+    (collect-tree-il-definitions terms)
+    (collect-tree-il-locals terms source-symbols)))
+
 (define (symbol->completion symbol)
   (make-completion (cdr (assq 'name symbol))
     (cdr (assq 'kind symbol))
@@ -1483,31 +1512,285 @@
     (and (module-name? name)
       (normalize-module-name name))))
 
+(define (find-variable-origin-module-name module var seen)
+  (cond
+    [(or (not module) (memq module seen)) #f]
+    [(let loop ((entries (module-map (lambda (entry) entry) module)))
+       (and (pair? entries)
+         (let ((entry (car entries)))
+           (or (and (eq? (cdr entry) var)
+                 (resolved-interface-module-name module))
+             (loop (cdr entries))))))]
+    [else
+      (let loop ((uses (module-uses module)))
+        (and (pair? uses)
+          (or (find-variable-origin-module-name (car uses) var (cons module seen))
+            (loop (cdr uses)))))]))
+
+(define (variable-origin-module-name iface var)
+  (let ((iface-name (resolved-interface-module-name iface)))
+    (or (and iface-name
+          (guard (exn [else #f])
+            (find-variable-origin-module-name
+              (resolve-module iface-name #f #f)
+              var
+              '())))
+      iface-name)))
+
+(define (import-completion-detail imported-label origin-label documentation)
+  (let* ((origin
+           (cond
+             [(and origin-label
+                imported-label
+                (not (string=? origin-label imported-label)))
+               (string-append "defined in " origin-label
+                 "\nre-exported from " imported-label)]
+             [origin-label (string-append "defined in " origin-label)]
+             [imported-label (string-append "imported from " imported-label)]
+             [else "imported binding"]))
+         (detail (if documentation
+                   (string-append origin "\n" documentation)
+                   origin)))
+    detail))
+
 (define (import-interface-completions import-spec)
   (guard (exn [else '()])
     (let* ((iface (resolved-import-interface import-spec))
            (module-name (resolved-interface-module-name iface))
-           (module-label (and module-name (module-name-string module-name)))
-           (file (and module-name (safe-module-filename module-name))))
+           (module-label (and module-name (module-name-string module-name))))
       (module-map
         (lambda (entry)
           (let ((name (car entry))
                 (var (cdr entry)))
             (let* ((label (symbol->string name))
-                   (origin (if module-label
-                            (string-append "imported from " module-label)
-                            "imported binding"))
+                   (origin-name (variable-origin-module-name iface var))
+                   (origin-label (and origin-name (module-name-string origin-name)))
+                   (file (and origin-name (safe-module-filename origin-name)))
                    (documentation (variable->documentation var))
-                   (detail (if documentation
-                            (string-append origin "\n" documentation)
-                            origin)))
+                   (detail (import-completion-detail
+                             module-label
+                             origin-label
+                             documentation)))
               (make-import-completion label
                 (variable->completion-kind var)
                 detail
-                module-label
+                origin-label
                 file
                 (import-completion-source-name import-spec label)))))
         iface))))
+
+(define (capy-module-ref? term name)
+  (and (module-ref? term)
+    (equal? (module-ref-module term) '(capy))
+    (eq? (module-ref-name term) name)))
+
+(define (resolve-r6rs-interface-call-spec term)
+  (and (application? term)
+    (capy-module-ref? (application-operator term) 'resolve-r6rs-interface)
+    (let ((operands (application-operands term)))
+      (and (pair? operands)
+        (null? (cdr operands))
+        (constant? (car operands))
+        (constant-value (car operands))))))
+
+(define (tree-il-contains-lref? term identity)
+  (define (contains-list? terms)
+    (let loop ((terms terms))
+      (and (pair? terms)
+        (or (tree-il-contains-lref? (car terms) identity)
+          (loop (cdr terms))))))
+  (cond
+    [(lref? term) (eq? (lref-sym term) identity)]
+    [(or (constant? term)
+        (void? term)
+        (module-ref? term)
+        (toplevel-ref? term)
+        (primref? term))
+      #f]
+    [(lset? term)
+      (tree-il-contains-lref? (lset-value term) identity)]
+    [(module-set? term)
+      (tree-il-contains-lref? (module-set-value term) identity)]
+    [(toplevel-set? term)
+      (tree-il-contains-lref? (toplevel-set-value term) identity)]
+    [(toplevel-define? term)
+      (tree-il-contains-lref? (toplevel-define-value term) identity)]
+    [(if? term)
+      (or (tree-il-contains-lref? (if-test term) identity)
+        (tree-il-contains-lref? (if-then term) identity)
+        (tree-il-contains-lref? (if-else term) identity))]
+    [(let? term)
+      (or (contains-list? (let-rhs term))
+        (tree-il-contains-lref? (let-body term) identity))]
+    [(receive? term)
+      (or (tree-il-contains-lref? (receive-producer term) identity)
+        (tree-il-contains-lref? (receive-consumer term) identity))]
+    [(fix? term)
+      (or (contains-list? (fix-rhs term))
+        (tree-il-contains-lref? (fix-body term) identity))]
+    [(proc? term)
+      (tree-il-contains-lref? (proc-body term) identity)]
+    [(application? term)
+      (or (tree-il-contains-lref? (application-operator term) identity)
+        (contains-list? (application-operands term)))]
+    [(primcall? term)
+      (contains-list? (primcall-args term))]
+    [(values? term)
+      (contains-list? (values-values term))]
+    [(sequence? term)
+      (or (tree-il-contains-lref? (sequence-head term) identity)
+        (tree-il-contains-lref? (sequence-tail term) identity))]
+    [(wcm? term)
+      (or (tree-il-contains-lref? (wcm-mark term) identity)
+        (tree-il-contains-lref? (wcm-result term) identity))]
+    [else #f]))
+
+(define (module-use-interfaces-with-id? term identity)
+  (define (contains-list? terms)
+    (let loop ((terms terms))
+      (and (pair? terms)
+        (or (module-use-interfaces-with-id? (car terms) identity)
+          (loop (cdr terms))))))
+  (cond
+    [(application? term)
+      (let ((operands (application-operands term)))
+        (or (and (capy-module-ref? (application-operator term) 'module-use-interfaces!)
+              (let loop ((operands operands))
+                (and (pair? operands)
+                  (or (tree-il-contains-lref? (car operands) identity)
+                    (loop (cdr operands))))))
+          (module-use-interfaces-with-id? (application-operator term) identity)
+          (contains-list? operands)))]
+    [(or (constant? term)
+        (void? term)
+        (module-ref? term)
+        (toplevel-ref? term)
+        (primref? term)
+        (lref? term))
+      #f]
+    [(lset? term)
+      (module-use-interfaces-with-id? (lset-value term) identity)]
+    [(module-set? term)
+      (module-use-interfaces-with-id? (module-set-value term) identity)]
+    [(toplevel-set? term)
+      (module-use-interfaces-with-id? (toplevel-set-value term) identity)]
+    [(toplevel-define? term)
+      (module-use-interfaces-with-id? (toplevel-define-value term) identity)]
+    [(if? term)
+      (or (module-use-interfaces-with-id? (if-test term) identity)
+        (module-use-interfaces-with-id? (if-then term) identity)
+        (module-use-interfaces-with-id? (if-else term) identity))]
+    [(let? term)
+      (or (contains-list? (let-rhs term))
+        (module-use-interfaces-with-id? (let-body term) identity))]
+    [(receive? term)
+      (or (module-use-interfaces-with-id? (receive-producer term) identity)
+        (module-use-interfaces-with-id? (receive-consumer term) identity))]
+    [(fix? term)
+      (or (contains-list? (fix-rhs term))
+        (module-use-interfaces-with-id? (fix-body term) identity))]
+    [(proc? term)
+      (module-use-interfaces-with-id? (proc-body term) identity)]
+    [(primcall? term)
+      (contains-list? (primcall-args term))]
+    [(values? term)
+      (contains-list? (values-values term))]
+    [(sequence? term)
+      (or (module-use-interfaces-with-id? (sequence-head term) identity)
+        (module-use-interfaces-with-id? (sequence-tail term) identity))]
+    [(wcm? term)
+      (or (module-use-interfaces-with-id? (wcm-mark term) identity)
+        (module-use-interfaces-with-id? (wcm-result term) identity))]
+    [else #f]))
+
+(define (collect-tree-il-import-specs-from-let term)
+  (let loop ((ids (let-lhs term)) (rhs (let-rhs term)) (out '()))
+    (cond
+      [(or (null? ids) (null? rhs)) (reverse out)]
+      [else
+        (let ((spec (resolve-r6rs-interface-call-spec (car rhs))))
+          (loop (cdr ids)
+            (cdr rhs)
+            (if (and spec
+                 (module-use-interfaces-with-id? (let-body term) (car ids)))
+              (cons (cons spec (sourcev->range (term-src (car rhs)))) out)
+              out)))])))
+
+(define (collect-tree-il-import-specs-from-term term)
+  (define (collect-list terms)
+    (let loop ((terms terms) (out '()))
+      (if (null? terms)
+        (reverse out)
+        (loop (cdr terms)
+          (append (reverse (collect-tree-il-import-specs-from-term (car terms)))
+            out)))))
+  (cond
+    [(or (constant? term)
+        (void? term)
+        (module-ref? term)
+        (toplevel-ref? term)
+        (primref? term)
+        (lref? term))
+      '()]
+    [(lset? term)
+      (collect-tree-il-import-specs-from-term (lset-value term))]
+    [(module-set? term)
+      (collect-tree-il-import-specs-from-term (module-set-value term))]
+    [(toplevel-set? term)
+      (collect-tree-il-import-specs-from-term (toplevel-set-value term))]
+    [(toplevel-define? term)
+      (collect-tree-il-import-specs-from-term (toplevel-define-value term))]
+    [(if? term)
+      (append
+        (collect-tree-il-import-specs-from-term (if-test term))
+        (collect-tree-il-import-specs-from-term (if-then term))
+        (collect-tree-il-import-specs-from-term (if-else term)))]
+    [(let? term)
+      (append
+        (collect-tree-il-import-specs-from-let term)
+        (collect-list (let-rhs term))
+        (collect-tree-il-import-specs-from-term (let-body term)))]
+    [(receive? term)
+      (append
+        (collect-tree-il-import-specs-from-term (receive-producer term))
+        (collect-tree-il-import-specs-from-term (receive-consumer term)))]
+    [(fix? term)
+      (append
+        (collect-list (fix-rhs term))
+        (collect-tree-il-import-specs-from-term (fix-body term)))]
+    [(proc? term)
+      (collect-tree-il-import-specs-from-term (proc-body term))]
+    [(application? term)
+      (append
+        (collect-tree-il-import-specs-from-term (application-operator term))
+        (collect-list (application-operands term)))]
+    [(primcall? term)
+      (collect-list (primcall-args term))]
+    [(values? term)
+      (collect-list (values-values term))]
+    [(sequence? term)
+      (append
+        (collect-tree-il-import-specs-from-term (sequence-head term))
+        (collect-tree-il-import-specs-from-term (sequence-tail term)))]
+    [(wcm? term)
+      (append
+        (collect-tree-il-import-specs-from-term (wcm-mark term))
+        (collect-tree-il-import-specs-from-term (wcm-result term)))]
+    [else '()]))
+
+(define (collect-tree-il-import-specs terms)
+  (let loop ((terms terms) (out '()))
+    (if (null? terms)
+      (reverse out)
+      (loop (cdr terms)
+        (append (reverse (collect-tree-il-import-specs-from-term (car terms))) out)))))
+
+(define (collect-tree-il-import-completions import-specs)
+  (let loop ((import-specs import-specs) (out '()))
+    (if (null? import-specs)
+      (reverse out)
+      (loop (cdr import-specs)
+        (append (reverse (import-interface-completions (caar import-specs))) out)))))
 
 (define (completion-import-spec spec)
   (cond
@@ -1516,44 +1799,6 @@
         (pair? (cdr spec)))
       (cadr spec)]
     [else spec]))
-
-(define (form-import-completions form)
-  (cond
-    [(and (pair? form) (eq? (car form) 'import))
-      (let loop ((specs (cdr form)) (out '()))
-        (cond
-          [(null? specs) (reverse out)]
-          [else
-            (loop (cdr specs)
-              (append (reverse (import-interface-completions
-                                (completion-import-spec (car specs))))
-                out))]))]
-    [(and (pair? form) (eq? (car form) 'library))
-      (collect-import-completions (cddr form))]
-    [(and (pair? form) (eq? (car form) 'define-library))
-      (collect-define-library-import-completions (cddr form))]
-    [(and (pair? form) (eq? (car form) 'begin))
-      (collect-import-completions (cdr form))]
-    [else '()]))
-
-(define (collect-define-library-import-completions clauses)
-  (let loop ((clauses clauses) (out '()))
-    (cond
-      [(null? clauses) (reverse out)]
-      [(and (pair? (car clauses)) (eq? (caar clauses) 'import))
-        (loop (cdr clauses)
-          (append (reverse (form-import-completions (car clauses))) out))]
-      [(and (pair? (car clauses)) (eq? (caar clauses) 'begin))
-        (loop (cdr clauses)
-          (append (reverse (collect-import-completions (cdar clauses))) out))]
-      [else (loop (cdr clauses) out)])))
-
-(define (collect-import-completions forms)
-  (let loop ((forms forms) (out '()))
-    (if (null? forms)
-      (reverse out)
-      (loop (cdr forms)
-        (append (reverse (form-import-completions (car forms))) out)))))
 
 (define (completion-key completion)
   (cons (cdr (assq 'label completion))
@@ -1570,73 +1815,6 @@
             (loop (cdr items)
               (cons key seen)
               (cons (car items) out))))])))
-
-(define (formal-names formals)
-  (cond
-    [(null? formals) '()]
-    [(pair? formals)
-      (cons (datum->name-string (car formals))
-        (formal-names (cdr formals)))]
-    [else (list "." (datum->name-string formals))]))
-
-(define (define-head-signature head)
-  (and (pair? head)
-    (symbol? (car head))
-    (let ((parts (cons (symbol->string (car head))
-                   (formal-names (cdr head)))))
-      (string-append "(" (string-join parts " ") ")"))))
-
-(define (definition-symbol form)
-  (cond
-    [(and (pair? form) (eq? (car form) 'define) (pair? (cdr form)))
-      (let ((head (cadr form)))
-        (cond
-          [(symbol? head)
-            (list (make-symbol (symbol->string head) "variable" "define"))]
-          [(and (pair? head) (symbol? (car head)))
-            (list (make-symbol (symbol->string (car head))
-                   "function"
-                   (or (define-head-signature head) "define")))]
-          [else '()]))]
-    [(and (pair? form) (eq? (car form) 'define-syntax) (pair? (cdr form)) (symbol? (cadr form)))
-      (list (make-symbol (symbol->string (cadr form)) "macro" "define-syntax"))]
-    [(and (pair? form) (eq? (car form) 'define-record-type) (pair? (cdr form)))
-      (let ((name (cadr form)))
-        (cond
-          [(symbol? name)
-            (list (make-symbol (symbol->string name) "variable" "define-record-type"))]
-          [(and (pair? name) (symbol? (car name)))
-            (list (make-symbol (symbol->string (car name)) "variable" "define-record-type"))]
-          [else '()]))]
-    [(and (pair? form) (eq? (car form) 'define-values) (pair? (cdr form)) (list? (cadr form)))
-      (map (lambda (name)
-            (make-symbol (datum->name-string name) "variable" "define-values"))
-        (cadr form))]
-    [(and (pair? form) (eq? (car form) 'library) (pair? (cdr form)))
-      (cons (make-symbol (module-name-string (cadr form)) "module" "library")
-        (collect-symbols (cddr form)))]
-    [(and (pair? form) (eq? (car form) 'define-library) (pair? (cdr form)))
-      (cons (make-symbol (module-name-string (cadr form)) "module" "define-library")
-        (collect-define-library-symbols (cddr form)))]
-    [(and (pair? form) (eq? (car form) 'begin))
-      (collect-symbols (cdr form))]
-    [else '()]))
-
-(define (collect-define-library-symbols clauses)
-  (let loop ((clauses clauses) (out '()))
-    (cond
-      [(null? clauses) (reverse out)]
-      [(and (pair? (car clauses))
-          (eq? (caar clauses) 'begin))
-        (loop (cdr clauses)
-          (append (reverse (collect-symbols (cdar clauses))) out))]
-      [else (loop (cdr clauses) out)])))
-
-(define (collect-symbols forms)
-  (let loop ((forms forms) (out '()))
-    (if (null? forms)
-      (reverse out)
-      (loop (cdr forms) (append (reverse (definition-symbol (car forms))) out)))))
 
 (define (module-name? value)
   (and (list? value)
@@ -1675,45 +1853,41 @@
              (resolved-name (resolved-interface-module-name iface)))
         (values (or resolved-name fallback-name) #t #f)))))
 
-(define (form-imports form)
-  (cond
-    [(and (pair? form) (eq? (car form) 'import))
-      (let loop ((specs (cdr form)) (out '()))
-        (cond
-          [(null? specs) (reverse out)]
-          [else
-            (call-with-values
-              (lambda ()
-                (import-spec-resolution
-                  (completion-import-spec (car specs))))
-              (lambda (name resolved error)
-                (loop (cdr specs)
-                  (if name (cons (make-import name (zero-range) resolved error) out) out))))]))]
-    [(and (pair? form) (eq? (car form) 'library))
-      (collect-imports (cddr form))]
-    [(and (pair? form) (eq? (car form) 'define-library))
-      (collect-define-library-imports (cddr form))]
-    [(and (pair? form) (eq? (car form) 'begin))
-      (collect-imports (cdr form))]
-    [else '()]))
-
-(define (collect-define-library-imports clauses)
-  (let loop ((clauses clauses) (out '()))
+(define (import-range-ref imports name)
+  (let loop ((imports imports))
     (cond
-      [(null? clauses) (reverse out)]
-      [(and (pair? (car clauses)) (eq? (caar clauses) 'import))
-        (loop (cdr clauses)
-          (append (reverse (form-imports (car clauses))) out))]
-      [(and (pair? (car clauses)) (eq? (caar clauses) 'begin))
-        (loop (cdr clauses)
-          (append (reverse (collect-imports (cdar clauses))) out))]
-      [else (loop (cdr clauses) out)])))
+      [(null? imports) #f]
+      [(and (list? (car imports))
+          (let ((name-entry (assq 'name (car imports)))
+                (range-entry (assq 'range (car imports))))
+            (and name-entry
+              range-entry
+              (string=? (cdr name-entry) name)
+              (not (zero-range? (cdr range-entry))))))
+        (cdr (assq 'range (car imports)))]
+      [else (loop (cdr imports))])))
 
-(define (collect-imports forms)
-  (let loop ((forms forms) (out '()))
-    (if (null? forms)
-      (reverse out)
-      (loop (cdr forms) (append (reverse (form-imports (car forms))) out)))))
+(define (tree-il-imports import-specs syntax-import-ranges)
+  (let loop ((import-specs import-specs) (out '()))
+    (cond
+      [(null? import-specs) (reverse out)]
+      [else
+        (let ((spec (caar import-specs))
+              (range (cdar import-specs)))
+          (call-with-values
+            (lambda () (import-spec-resolution spec))
+            (lambda (name resolved error)
+              (loop (cdr import-specs)
+                (if name
+                  (cons (make-import name
+                          (or (and (zero-range? range)
+                                (import-range-ref syntax-import-ranges
+                                  (module-name-string name)))
+                            range)
+                          resolved
+                          error)
+                    out)
+                  out)))))])))
 
 (define (form-imports/syntax form)
   (let ((datum (syntax->datum form)))
@@ -1737,10 +1911,14 @@
                             out)))))]))]
           [_ '()])]
       [(and (pair? datum) (or (eq? (car datum) 'library)
-                              (eq? (car datum) 'define-library)
-                              (eq? (car datum) 'begin)))
+                              (eq? (car datum) 'define-library)))
         (syntax-case form ()
           [(_ head body ...)
+            (collect-imports/syntax (syntax-list #'(body ...)))]
+          [_ '()])]
+      [(and (pair? datum) (eq? (car datum) 'begin))
+        (syntax-case form ()
+          [(_ body ...)
             (collect-imports/syntax (syntax-list #'(body ...)))]
           [_ '()])]
       [else '()])))
@@ -1843,17 +2021,17 @@
           (lambda (expanded-forms expand-diagnostics)
             (let* (
                    (diagnostics (append (scan-syntax text) read-diagnostics expand-diagnostics))
-                   (source-symbols (collect-source-symbols datums))
-                   (symbols (append (collect-symbols datums)
-                             (collect-tree-il-locals expanded-forms source-symbols)))
+                   (source-symbols #f)
+                   (symbols (collect-tree-il-symbols expanded-forms source-symbols))
                    (references (collect-tree-il-references uri expanded-forms source-symbols))
                    (call-graph (collect-call-graph uri expanded-forms source-symbols))
+                   (import-specs (collect-tree-il-import-specs expanded-forms))
                    (semantic-diagnostics (duplicate-definition-diagnostics symbols))
                    (all-diagnostics (append diagnostics semantic-diagnostics))
                    (completions (dedupe-completions
                                  (append (map symbol->completion symbols)
-                                   (collect-import-completions datums))))
-                   (imports (collect-imports/syntax forms)))
+                                   (collect-tree-il-import-completions import-specs))))
+                   (imports (tree-il-imports import-specs (collect-imports/syntax forms))))
               `((uri . ,(json-nullable-string uri))
                 (version . ,(json-nullable-version version))
                 (engine . "macroexpand")

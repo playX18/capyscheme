@@ -120,6 +120,14 @@
                   `((configFingerprint . ,config-fingerprint))
                   '()))))
 
+  (define (string-list->vector values)
+    (list->vector
+      (let loop ((values values) (out '()))
+        (cond
+          [(null? values) (reverse out)]
+          [(string? (car values)) (loop (cdr values) (cons (car values) out))]
+          [else (loop (cdr values) out)]))))
+
   (define (call-with-worker-config params request thunk)
     (let ((old-load-path %load-path)
           (old-compiled-load-path %load-compiled-path)
@@ -278,6 +286,17 @@
                  params
                  request))))])))
 
+  (define (load-path-request id params request)
+    (success-response
+      id
+      "load-path"
+      (call-with-worker-config
+        params
+        request
+        (lambda ()
+          `((loadPath . ,(string-list->vector %load-path))
+            (extensions . ,(string-list->vector %load-extensions)))))))
+
   (define (shutdown id)
     (set! shutdown-requested? #t)
     (success-response
@@ -300,6 +319,8 @@
              (analyze-document-request id (if (json-object? params) params '()) request)]
             [(string=? method "run-action")
              (run-action-request id (if (json-object? params) params '()) request)]
+            [(string=? method "load-path")
+             (load-path-request id (if (json-object? params) params '()) request)]
             [(string=? method "shutdown")
              (shutdown id)]
             [else
