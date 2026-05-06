@@ -6,7 +6,42 @@ use crate::protocol::DocumentFacts;
 pub struct Document {
     pub version: i32,
     pub text: String,
-    pub facts: Option<DocumentFacts>,
+    pub facts: Option<CachedDocumentFacts>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedDocumentFacts {
+    pub facts: DocumentFacts,
+    pub document_version: i32,
+    pub workspace_epoch: u64,
+    pub config_fingerprint: u64,
+}
+
+impl CachedDocumentFacts {
+    pub fn new(
+        facts: DocumentFacts,
+        document_version: i32,
+        workspace_epoch: u64,
+        config_fingerprint: u64,
+    ) -> Self {
+        Self {
+            facts,
+            document_version,
+            workspace_epoch,
+            config_fingerprint,
+        }
+    }
+
+    pub fn matches(
+        &self,
+        document_version: i32,
+        workspace_epoch: u64,
+        config_fingerprint: u64,
+    ) -> bool {
+        self.document_version == document_version
+            && self.workspace_epoch == workspace_epoch
+            && self.config_fingerprint == config_fingerprint
+    }
 }
 
 impl Document {
@@ -141,7 +176,9 @@ fn is_ident_byte(byte: u8) -> bool {
 mod tests {
     use lsp_types::Position;
 
-    use super::{apply_range_change, word_at_position};
+    use crate::protocol::DocumentFacts;
+
+    use super::{CachedDocumentFacts, apply_range_change, word_at_position};
 
     #[test]
     fn applies_full_range_change() {
@@ -175,5 +212,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(word, "answer");
+    }
+
+    #[test]
+    fn cached_facts_match_exact_version_epoch_and_config() {
+        let facts = DocumentFacts::default();
+        let cached = CachedDocumentFacts::new(facts, 7, 11, 13);
+
+        assert!(cached.matches(7, 11, 13));
+        assert!(!cached.matches(8, 11, 13));
+        assert!(!cached.matches(7, 12, 13));
+        assert!(!cached.matches(7, 11, 14));
     }
 }

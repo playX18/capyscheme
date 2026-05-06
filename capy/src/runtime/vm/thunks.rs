@@ -3958,8 +3958,22 @@ pub(crate) static BOX_VTABLE: &'static VTable = &VTableOf::<Boxed>::VT;
 #[unsafe(no_mangle)]
 pub(crate) static PAIR_VTABLE: &'static VTable = &VTableOf::<Pair>::VT;
 #[unsafe(no_mangle)]
+pub(crate) static PAIR_INFO_STATIC: &'static HeapTypeInfo = crate::runtime::value::PAIR_INFO;
+#[unsafe(no_mangle)]
+pub(crate) static VARIABLE_INFO_STATIC: &'static HeapTypeInfo =
+    crate::runtime::modules::VARIABLE_INFO;
+#[unsafe(no_mangle)]
+pub(crate) static CLOSURE_PROC_INFO_STATIC: &'static HeapTypeInfo =
+    crate::runtime::value::CLOSURE_PROC_INFO;
+#[unsafe(no_mangle)]
+pub(crate) static CLOSURE_K_INFO_STATIC: &'static HeapTypeInfo =
+    crate::runtime::value::CLOSURE_K_INFO;
+#[unsafe(no_mangle)]
 pub(crate) static MUTABLE_VECTOR_INFO_STATIC: &'static HeapTypeInfo =
     crate::runtime::value::MUTABLE_VECTOR_INFO;
+#[unsafe(no_mangle)]
+pub(crate) static IMMUTABLE_VECTOR_INFO_STATIC: &'static HeapTypeInfo =
+    crate::runtime::value::IMMUTABLE_VECTOR_INFO;
 #[unsafe(no_mangle)]
 pub(crate) static TUPLE_INFO_STATIC: &'static HeapTypeInfo = crate::runtime::value::TUPLE_INFO;
 

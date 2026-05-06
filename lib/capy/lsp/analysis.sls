@@ -472,7 +472,6 @@
               (list (expand-error-diagnostic exn)))])
     (save-module-excursion
       (lambda ()
-        (current-module (make-fresh-user-module))
         (let loop ((forms forms) (out '()))
           (cond
             [(null? forms) (values (reverse out) '())]
@@ -1659,14 +1658,22 @@
       (normalize-module-name spec)]
     [else #f]))
 
-(define (make-import name)
+(define (make-import name range resolved error)
   (let ((file (safe-module-filename name)))
     `((name . ,(module-name-string name))
+      (range . ,range)
+      (resolved . ,resolved)
+      (error . ,(json-nullable-string error))
       (file . ,(json-nullable-string file)))))
 
-(define (import-spec-resolved-module-name spec)
-  (guard (exn [else (import-spec-module-name spec)])
-    (resolved-interface-module-name (resolved-import-interface spec))))
+(define (import-spec-resolution spec)
+  (let ((fallback-name (import-spec-module-name spec)))
+    (guard (exn
+            [else
+              (values fallback-name #f (condition->message exn))])
+      (let* ((iface (resolved-import-interface spec))
+             (resolved-name (resolved-interface-module-name iface)))
+        (values (or resolved-name fallback-name) #t #f)))))
 
 (define (form-imports form)
   (cond
@@ -1675,10 +1682,13 @@
         (cond
           [(null? specs) (reverse out)]
           [else
-            (let ((name (import-spec-resolved-module-name
-                         (completion-import-spec (car specs)))))
-              (loop (cdr specs)
-                (if name (cons (make-import name) out) out)))]))]
+            (call-with-values
+              (lambda ()
+                (import-spec-resolution
+                  (completion-import-spec (car specs))))
+              (lambda (name resolved error)
+                (loop (cdr specs)
+                  (if name (cons (make-import name (zero-range) resolved error) out) out))))]))]
     [(and (pair? form) (eq? (car form) 'library))
       (collect-imports (cddr form))]
     [(and (pair? form) (eq? (car form) 'define-library))
@@ -1704,6 +1714,42 @@
     (if (null? forms)
       (reverse out)
       (loop (cdr forms) (append (reverse (form-imports (car forms))) out)))))
+
+(define (form-imports/syntax form)
+  (let ((datum (syntax->datum form)))
+    (cond
+      [(and (pair? datum) (eq? (car datum) 'import))
+        (syntax-case form ()
+          [(_ spec ...)
+            (let loop ((specs (syntax-list #'(spec ...))) (out '()))
+              (cond
+                [(null? specs) (reverse out)]
+                [else
+                  (let* ((spec-stx (car specs))
+                         (spec (completion-import-spec (syntax->datum spec-stx)))
+                         (range (sourcev->range (syntax-sourcev spec-stx))))
+                    (call-with-values
+                      (lambda () (import-spec-resolution spec))
+                      (lambda (name resolved error)
+                        (loop (cdr specs)
+                          (if name
+                            (cons (make-import name range resolved error) out)
+                            out)))))]))]
+          [_ '()])]
+      [(and (pair? datum) (or (eq? (car datum) 'library)
+                              (eq? (car datum) 'define-library)
+                              (eq? (car datum) 'begin)))
+        (syntax-case form ()
+          [(_ head body ...)
+            (collect-imports/syntax (syntax-list #'(body ...)))]
+          [_ '()])]
+      [else '()])))
+
+(define (collect-imports/syntax forms)
+  (let loop ((forms forms) (out '()))
+    (if (null? forms)
+      (reverse out)
+      (loop (cdr forms) (append (reverse (form-imports/syntax (car forms))) out)))))
 
 (define (selected-action-forms forms range)
   (if (not range)
@@ -1807,7 +1853,7 @@
                    (completions (dedupe-completions
                                  (append (map symbol->completion symbols)
                                    (collect-import-completions datums))))
-                   (imports (collect-imports datums)))
+                   (imports (collect-imports/syntax forms)))
               `((uri . ,(json-nullable-string uri))
                 (version . ,(json-nullable-version version))
                 (engine . "macroexpand")

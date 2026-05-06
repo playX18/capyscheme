@@ -16,3 +16,4 @@ stage-*
 dist
 .fmt-tmp
 .worktrees/
+package-lock.json

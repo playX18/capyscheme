@@ -152,8 +152,6 @@
 
 #define RTD_FIELDS 6
 
-typedef struct HeapTypeInfo HeapTypeInfo;
-
 typedef struct Scm Scm;
 
 typedef struct Scm *ScmRef;
@@ -214,9 +212,19 @@ typedef int (*FinishCallFn)(ContextRef ctx, bool success, struct Value result, v
 
 
 
-extern const struct HeapTypeInfo *MUTABLE_VECTOR_INFO_STATIC;
+extern const HeapTypeInfo *PAIR_INFO_STATIC;
 
-extern const struct HeapTypeInfo *TUPLE_INFO_STATIC;
+extern const HeapTypeInfo *VARIABLE_INFO_STATIC;
+
+extern const HeapTypeInfo *CLOSURE_PROC_INFO_STATIC;
+
+extern const HeapTypeInfo *CLOSURE_K_INFO_STATIC;
+
+extern const HeapTypeInfo *MUTABLE_VECTOR_INFO_STATIC;
+
+extern const HeapTypeInfo *IMMUTABLE_VECTOR_INFO_STATIC;
+
+extern const HeapTypeInfo *TUPLE_INFO_STATIC;
 
 /**
  * Create a new Scheme thread instance.

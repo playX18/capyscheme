@@ -83,6 +83,7 @@ unsafe impl<'gc> Trace for Module<'gc> {
             self.public_interface.trace(visitor);
             self.replacements.trace(visitor);
             self.inlinable_exports.trace(visitor);
+            self.environment.trace(visitor);
         }
     }
 
@@ -386,7 +387,7 @@ impl<'gc> Module<'gc> {
                 .set(Some(interface));
         }
 
-        if self.uses.get().memq((ctx.globals().scm_module()).into())
+        if !self.uses.get().memq((ctx.globals().scm_module()).into())
             && !Gc::ptr_eq(self, ctx.globals().root_module())
         {
             self.use_iface(ctx, ctx.globals().scm_module());
@@ -653,7 +654,7 @@ pub fn make_modules_in<'gc>(
 
         barrier::field!(wm, Module, name)
             .unlock()
-            .set(m.name.get().append(ctx, name));
+            .set(module.name.get().append(ctx, name));
 
         module.nested_define_module(ctx, name, m);
         m

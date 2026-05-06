@@ -4,6 +4,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub type ConfigFingerprint = u64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspConfig {
     pub root: PathBuf,
@@ -120,6 +122,18 @@ impl LspConfig {
         }
     }
 
+    pub fn fingerprint(&self) -> ConfigFingerprint {
+        let mut hash = Fnv1a64::default();
+        hash.write_path(&self.root);
+        hash.write_paths(&self.effective_load_path());
+        hash.write_paths(&self.compiled_load_path);
+        hash.write_strings(&self.extensions);
+        hash.write_strings(&self.default_module);
+        hash.write_string_map(&self.env);
+        hash.write_string_map(&self.gc_env);
+        hash.finish()
+    }
+
     fn merge_env_load_path(&mut self) {
         if let Ok(value) = env::var("CAPY_LOAD_PATH") {
             self.append_load_path.extend(
@@ -129,6 +143,68 @@ impl LspConfig {
                     .map(PathBuf::from),
             );
         }
+    }
+}
+
+struct Fnv1a64(u64);
+
+impl Default for Fnv1a64 {
+    fn default() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+}
+
+impl Fnv1a64 {
+    fn write_byte(&mut self, byte: u8) {
+        self.0 ^= byte as u64;
+        self.0 = self.0.wrapping_mul(0x100000001b3);
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.write_byte(*byte);
+        }
+        self.write_byte(0xff);
+    }
+
+    fn write_string(&mut self, value: &str) {
+        self.write_bytes(value.as_bytes());
+    }
+
+    fn write_strings(&mut self, values: &[String]) {
+        self.write_usize(values.len());
+        for value in values {
+            self.write_string(value);
+        }
+    }
+
+    fn write_string_map(&mut self, values: &HashMap<String, String>) {
+        let mut entries = values.iter().collect::<Vec<_>>();
+        entries.sort_by(|(left_key, _), (right_key, _)| left_key.cmp(right_key));
+        self.write_usize(entries.len());
+        for (key, value) in entries {
+            self.write_string(key);
+            self.write_string(value);
+        }
+    }
+
+    fn write_path(&mut self, path: &Path) {
+        self.write_string(&path.to_string_lossy());
+    }
+
+    fn write_paths(&mut self, paths: &[PathBuf]) {
+        self.write_usize(paths.len());
+        for path in paths {
+            self.write_path(path);
+        }
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    fn finish(self) -> u64 {
+        self.0
     }
 }
 
@@ -448,5 +524,35 @@ mod tests {
         let config = LspConfig::discover(Some(&file), dir.path()).unwrap();
         assert_eq!(config.root, project);
         assert_eq!(config.load_path, vec![config.root.join("lib")]);
+    }
+
+    #[test]
+    fn fingerprint_tracks_analysis_relevant_config() {
+        let dir = tempdir().unwrap();
+        let mut base = LspConfig::default_for_root(dir.path());
+        let same = base.clone();
+
+        assert_eq!(base.fingerprint(), same.fingerprint());
+
+        base.load_path.push(dir.path().join("extra"));
+        assert_ne!(base.fingerprint(), same.fingerprint());
+
+        let mut changed_default_module = same.clone();
+        changed_default_module.default_module = vec!["demo".into(), "user".into()];
+        assert_ne!(changed_default_module.fingerprint(), same.fingerprint());
+
+        let mut changed_extensions = same.clone();
+        changed_extensions.extensions = vec!["sld".into()];
+        assert_ne!(changed_extensions.fingerprint(), same.fingerprint());
+
+        let mut changed_env = same.clone();
+        changed_env.env.insert("CAPY_FEATURE".into(), "on".into());
+        assert_ne!(changed_env.fingerprint(), same.fingerprint());
+
+        let mut changed_gc = same.clone();
+        changed_gc
+            .gc_env
+            .insert("MMTK_PLAN".into(), "StickyImmix".into());
+        assert_ne!(changed_gc.fingerprint(), same.fingerprint());
     }
 }

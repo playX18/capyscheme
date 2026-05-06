@@ -58,6 +58,96 @@
         [(string? (car values)) (car values)]
         [else (loop (cdr values))])))
 
+  (define (string-vector->list value)
+    (cond
+      [(vector? value)
+       (let loop ((i 0) (out '()))
+         (cond
+           [(= i (vector-length value)) (reverse out)]
+           [(string? (vector-ref value i))
+            (loop (+ i 1) (cons (vector-ref value i) out))]
+           [else #f]))]
+      [(list? value)
+       (let loop ((value value) (out '()))
+         (cond
+           [(null? value) (reverse out)]
+           [(string? (car value)) (loop (cdr value) (cons (car value) out))]
+           [else #f]))]
+      [else #f]))
+
+  (define (string-list->symbols value)
+    (let ((strings (string-vector->list value)))
+      (and strings
+           (let loop ((strings strings) (out '()))
+             (if (null? strings)
+                 (reverse out)
+                 (loop (cdr strings)
+                       (cons (string->symbol (car strings)) out)))))))
+
+  (define (read-module-name text)
+    (guard (_ [else #f])
+      (let ((datum (read (open-input-string text))))
+        (cond
+          [(and (pair? datum) (eq? (car datum) 'quote))
+           (let ((name (cadr datum)))
+             (and (symbol-list? name) name))]
+          [(symbol-list? datum) datum]
+          [else #f]))))
+
+  (define (symbol-list? value)
+    (and (list? value)
+         (let loop ((value value))
+           (or (null? value)
+               (and (symbol? (car value))
+                    (loop (cdr value)))))))
+
+  (define (config-module-name value)
+    (cond
+      [(string? value) (read-module-name value)]
+      [else (string-list->symbols value)]))
+
+  (define (config-ref params request key)
+    (json-ref params key (json-ref request key #f)))
+
+  (define (result-with-config-echo result params request)
+    (let ((workspace-epoch (config-ref params request 'workspaceEpoch))
+          (config-fingerprint (config-ref params request 'configFingerprint)))
+      (append result
+              (if workspace-epoch
+                  `((workspaceEpoch . ,workspace-epoch))
+                  '())
+              (if config-fingerprint
+                  `((configFingerprint . ,config-fingerprint))
+                  '()))))
+
+  (define (call-with-worker-config params request thunk)
+    (let ((old-load-path %load-path)
+          (old-compiled-load-path %load-compiled-path)
+          (old-load-extensions %load-extensions)
+          (old-module (current-module))
+          (load-path (string-vector->list (config-ref params request 'loadPath)))
+          (compiled-load-path
+            (string-vector->list (config-ref params request 'compiledLoadPath)))
+          (extensions (string-vector->list (config-ref params request 'extensions)))
+          (default-module (config-module-name (config-ref params request 'defaultModule))))
+      (dynamic-wind
+        (lambda ()
+          (when load-path
+            (set! %load-path (append load-path old-load-path)))
+          (when compiled-load-path
+            (set! %load-compiled-path
+                  (append compiled-load-path old-compiled-load-path)))
+          (when extensions
+            (set! %load-extensions extensions))
+          (when default-module
+            (current-module (resolve-module default-module #f #t))))
+        thunk
+        (lambda ()
+          (set! %load-path old-load-path)
+          (set! %load-compiled-path old-compiled-load-path)
+          (set! %load-extensions old-load-extensions)
+          (current-module old-module)))))
+
   (define (json->string obj)
     (let ((port (open-output-string)))
       (json-write obj port)
@@ -136,7 +226,14 @@
           (success-response
             id
             "analyze-document"
-            (analyze-document uri text version path)))))
+            (call-with-worker-config
+              params
+              request
+              (lambda ()
+                (result-with-config-echo
+                  (analyze-document uri text version path)
+                  params
+                  request)))))))
 
   (define (run-action-request id params request)
     (let* ((document (document-params params request))
@@ -172,7 +269,14 @@
          (success-response
            id
            "run-action"
-           (run-document-action uri text version path action range))])))
+           (call-with-worker-config
+             params
+             request
+             (lambda ()
+               (result-with-config-echo
+                 (run-document-action uri text version path action range)
+                 params
+                 request))))])))
 
   (define (shutdown id)
     (set! shutdown-requested? #t)

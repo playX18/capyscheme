@@ -64,6 +64,7 @@ fn gc_only_info_map() -> &'static Mutex<HashMap<usize, &'static HeapTypeInfo>> {
     GC_ONLY_INFO_MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[repr(C)]
 pub struct HeapTypeInfo {
     pub vtable: &'static VTable,
     pub type_bits: u16,

@@ -185,11 +185,11 @@ fn identifier_ranges(text: &str) -> HashMap<String, Vec<Range>> {
 
 #[cfg(test)]
 mod tests {
-    use lsp_types::Url;
+    use lsp_types::{Position, Range, Url};
 
-    use crate::protocol::{DocumentFacts, SymbolFact, SymbolKindFact};
+    use crate::protocol::{DocumentFacts, ImportFact, SymbolFact, SymbolKindFact};
 
-    use super::{analyze_syntax, fill_missing_facts};
+    use super::{analyze_syntax, fill_missing_facts, import_symbols};
 
     #[test]
     fn finds_define_symbols_and_references() {
@@ -283,5 +283,34 @@ mod tests {
                 .filter(|symbol| symbol.name == "x" || symbol.name == "y")
                 .all(|symbol| symbol.range != Default::default())
         );
+    }
+
+    #[test]
+    fn import_symbols_prefer_worker_ranges() {
+        let worker_range = Range {
+            start: Position {
+                line: 3,
+                character: 4,
+            },
+            end: Position {
+                line: 3,
+                character: 12,
+            },
+        };
+        let facts = DocumentFacts {
+            imports: vec![ImportFact {
+                name: "demo lib".into(),
+                range: worker_range,
+                resolved: true,
+                error: None,
+                file: Some("/tmp/demo/lib.sls".into()),
+            }],
+            ..DocumentFacts::default()
+        };
+
+        let symbols = import_symbols("(import (demo lib))\n", &facts);
+
+        assert_eq!(symbols[0].range, worker_range);
+        assert_eq!(symbols[0].selection_range, worker_range);
     }
 }
