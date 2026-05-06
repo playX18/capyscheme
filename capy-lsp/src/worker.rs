@@ -22,6 +22,18 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct WorkerPool;
 
 impl WorkerPool {
+    pub async fn load_path(&self, config: &LspConfig) -> io::Result<WorkerLoadPath> {
+        let mut worker = Worker::spawn(config).await?;
+        let request = worker_config_request(config);
+
+        let result = worker
+            .request("load-path", request)
+            .await
+            .and_then(|value| serde_json::from_value(value).map_err(invalid_data));
+        worker.shutdown().await;
+        result
+    }
+
     pub async fn analyze(
         &self,
         config: &LspConfig,
@@ -91,6 +103,23 @@ impl WorkerPool {
         worker.shutdown().await;
         result
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerLoadPath {
+    pub load_path: Vec<PathBuf>,
+    pub extensions: Vec<String>,
+}
+
+fn worker_config_request(config: &LspConfig) -> serde_json::Value {
+    json!({
+        "configRoot": config.root.to_string_lossy(),
+        "loadPath": config.effective_load_path().iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+        "compiledLoadPath": config.compiled_load_path.iter().map(|path| path.to_string_lossy().into_owned()).collect::<Vec<_>>(),
+        "extensions": &config.extensions,
+        "defaultModule": &config.default_module,
+    })
 }
 
 #[derive(Debug)]

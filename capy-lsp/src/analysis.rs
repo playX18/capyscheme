@@ -1,24 +1,24 @@
-use std::collections::{HashMap, HashSet};
-
 use lsp_types::{Range, Url};
 
 mod completions;
+#[cfg(test)]
 mod diagnostics;
 mod imports;
+#[cfg(test)]
 mod symbols;
+#[cfg(test)]
 mod syntax;
 
-use crate::{
-    document::{range_for_bytes, word_at_position},
-    protocol::{DocumentFacts, SymbolFact},
-};
+use crate::{document::word_at_position, protocol::DocumentFacts};
 
 use completions::{append_keyword_completions, append_symbol_completions};
+#[cfg(test)]
 use diagnostics::balance_diagnostics;
 pub(crate) use imports::import_symbols;
+#[cfg(test)]
 use symbols::{collect_references, collect_symbols};
-use syntax::{is_identifier, tokenize_code};
 
+#[cfg(test)]
 pub fn analyze_syntax(uri: &Url, text: &str) -> DocumentFacts {
     let mut facts = DocumentFacts::default();
     facts.diagnostics = balance_diagnostics(text);
@@ -29,69 +29,13 @@ pub fn analyze_syntax(uri: &Url, text: &str) -> DocumentFacts {
     facts
 }
 
-pub fn fill_missing_facts(uri: &Url, text: &str, facts: &mut DocumentFacts) {
-    let needs_symbol_ranges = symbols_have_default_ranges(&facts.symbols);
-    let needs_references = facts.references.is_empty();
-    let needs_completions = facts.completions.is_empty();
-
-    let fallback = if needs_symbol_ranges || needs_references || needs_completions {
-        Some(analyze_syntax(uri, text))
-    } else {
-        None
-    };
-
-    if let Some(fallback) = &fallback {
-        if facts.symbols.is_empty() && !fallback.symbols.is_empty() {
-            facts.symbols = fallback.symbols.clone();
-        } else if needs_symbol_ranges {
-            fill_symbol_ranges(text, &mut facts.symbols, &fallback.symbols);
-            append_missing_symbols(&mut facts.symbols, &fallback.symbols);
-        }
-    }
-
-    if needs_references {
-        facts.references = collect_references(uri, text, &facts.symbols);
-        if facts.references.is_empty()
-            && let Some(fallback) = &fallback
-        {
-            facts.references = fallback.references.clone();
-        }
-    } else {
-        append_unscoped_fallback_references(uri, text, facts);
-    }
-
-    if needs_completions {
+pub fn fill_missing_facts(_uri: &Url, _text: &str, facts: &mut DocumentFacts) {
+    if facts.completions.is_empty() {
         append_symbol_completions(facts);
-        if facts.completions.is_empty() {
-            if let Some(fallback) = &fallback {
-                facts.completions = fallback.completions.clone();
-            }
-        }
     }
 
     append_symbol_completions(facts);
     append_keyword_completions(facts);
-}
-
-fn append_unscoped_fallback_references(uri: &Url, text: &str, facts: &mut DocumentFacts) {
-    let scoped_names = facts
-        .references
-        .iter()
-        .map(|reference| reference.name.clone())
-        .collect::<HashSet<_>>();
-    let mut seen = facts
-        .references
-        .iter()
-        .map(|reference| (reference.name.clone(), reference.range))
-        .collect::<HashSet<_>>();
-    for reference in collect_references(uri, text, &facts.symbols) {
-        if scoped_names.contains(&reference.name) {
-            continue;
-        }
-        if seen.insert((reference.name.clone(), reference.range)) {
-            facts.references.push(reference);
-        }
-    }
 }
 
 pub fn symbol_at(
@@ -110,77 +54,6 @@ pub fn symbol_at(
     } else {
         Some((name, range))
     }
-}
-
-fn symbols_have_default_ranges(symbols: &[SymbolFact]) -> bool {
-    symbols
-        .iter()
-        .any(|symbol| placeholder_range(symbol.range) || placeholder_range(symbol.selection_range))
-}
-
-fn placeholder_range(range: Range) -> bool {
-    range == Range::default()
-}
-
-fn fill_symbol_ranges(text: &str, symbols: &mut [SymbolFact], fallback_symbols: &[SymbolFact]) {
-    let mut token_ranges = identifier_ranges(text);
-    let mut token_indices = HashMap::<String, usize>::new();
-
-    for symbol in symbols {
-        if !placeholder_range(symbol.range) && !placeholder_range(symbol.selection_range) {
-            continue;
-        }
-
-        if let Some(fallback) = fallback_symbols.iter().find(|fallback| {
-            fallback.name == symbol.name
-                && fallback.kind == symbol.kind
-                && !placeholder_range(fallback.selection_range)
-        }) {
-            symbol.range = fallback.range;
-            symbol.selection_range = fallback.selection_range;
-            continue;
-        }
-
-        let ranges = token_ranges.remove(&symbol.name).unwrap_or_default();
-        let next = token_indices.entry(symbol.name.clone()).or_default();
-        if let Some(range) = ranges
-            .get(*next)
-            .copied()
-            .or_else(|| ranges.first().copied())
-        {
-            symbol.range = range;
-            symbol.selection_range = range;
-            *next += 1;
-        }
-        if !ranges.is_empty() {
-            token_ranges.insert(symbol.name.clone(), ranges);
-        }
-    }
-}
-
-fn append_missing_symbols(symbols: &mut Vec<SymbolFact>, fallback_symbols: &[SymbolFact]) {
-    let mut seen = symbols
-        .iter()
-        .map(|symbol| (symbol.name.clone(), symbol.kind))
-        .collect::<HashSet<_>>();
-    for symbol in fallback_symbols {
-        if seen.insert((symbol.name.clone(), symbol.kind)) {
-            symbols.push(symbol.clone());
-        }
-    }
-}
-
-fn identifier_ranges(text: &str) -> HashMap<String, Vec<Range>> {
-    let mut ranges = HashMap::<String, Vec<Range>>::new();
-    for token in tokenize_code(text) {
-        if is_identifier(&token.text) {
-            ranges
-                .entry(token.text.clone())
-                .or_default()
-                .push(range_for_bytes(text, token.start, token.end));
-        }
-    }
-    ranges
 }
 
 #[cfg(test)]
@@ -234,12 +107,12 @@ mod tests {
             facts
                 .symbols
                 .iter()
-                .all(|symbol| symbol.range != Default::default())
+                .all(|symbol| symbol.range == Default::default())
         );
     }
 
     #[test]
-    fn preserves_tree_il_local_completions_when_filling_ranges() {
+    fn preserves_tree_il_local_completions_without_source_range_repair() {
         let uri = Url::parse("file:///tmp/test.scm").unwrap();
         let text = "(define (square x) (let ((y x)) (+ y x)))\n";
         let mut facts = DocumentFacts {
@@ -281,7 +154,7 @@ mod tests {
                 .symbols
                 .iter()
                 .filter(|symbol| symbol.name == "x" || symbol.name == "y")
-                .all(|symbol| symbol.range != Default::default())
+                .all(|symbol| symbol.range == Default::default())
         );
     }
 
@@ -308,9 +181,28 @@ mod tests {
             ..DocumentFacts::default()
         };
 
-        let symbols = import_symbols("(import (demo lib))\n", &facts);
+        let symbols = import_symbols(&facts);
 
         assert_eq!(symbols[0].range, worker_range);
         assert_eq!(symbols[0].selection_range, worker_range);
+    }
+
+    #[test]
+    fn import_symbols_do_not_infer_missing_ranges_from_text() {
+        let facts = DocumentFacts {
+            imports: vec![ImportFact {
+                name: "demo lib".into(),
+                range: Range::default(),
+                resolved: true,
+                error: None,
+                file: None,
+            }],
+            ..DocumentFacts::default()
+        };
+
+        let symbols = import_symbols(&facts);
+
+        assert_eq!(symbols[0].range, Range::default());
+        assert_eq!(symbols[0].selection_range, Range::default());
     }
 }

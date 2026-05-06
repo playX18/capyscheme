@@ -1,6 +1,7 @@
 mod analysis;
 mod config;
 mod document;
+mod module_completions;
 mod protocol;
 mod server;
 mod worker;
