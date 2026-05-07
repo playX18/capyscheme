@@ -22,7 +22,6 @@ pub mod compiler;
 pub mod cps;
 pub mod expander;
 pub mod frontend;
-pub mod interpreter;
 pub mod rsgc;
 pub mod runtime;
 pub mod utils;

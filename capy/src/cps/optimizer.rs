@@ -31,6 +31,7 @@ use std::{cell::Cell, sync::LazyLock};
 struct Count {
     applied: u32,
     as_value: u32,
+    single_app_arity: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,10 +76,12 @@ impl<'gc> State<'gc> {
             .map_or(true, |var| var.applied == 0 && var.as_value == 0)
     }
 
-    fn applied_once(&self, var: LVarRef<'gc>) -> bool {
-        self.census
-            .get(&var)
-            .map_or(false, |count| count.applied == 1 && count.as_value == 0)
+    fn applied_once_with_arity(&self, var: LVarRef<'gc>) -> Option<usize> {
+        self.census.get(&var).and_then(|count| {
+            (count.applied == 1 && count.as_value == 0)
+                .then_some(count.single_app_arity)
+                .flatten()
+        })
     }
 
     fn is_referenced(&self, var: LVarRef<'gc>) -> bool {
@@ -181,6 +184,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
 
     fn inc_app_use_n<'gc>(
         name: LVarRef<'gc>,
+        arity: usize,
         census: &mut HashMap<LVarRef<'gc>, Count>,
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
     ) {
@@ -190,6 +194,11 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
             Count {
                 applied: curr_count.applied + 1,
                 as_value: curr_count.as_value,
+                single_app_arity: if curr_count.applied == 0 {
+                    Some(arity)
+                } else {
+                    None
+                },
             },
         );
 
@@ -200,11 +209,12 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
 
     fn inc_app_use_a<'gc>(
         atom: Atom<'gc>,
+        arity: usize,
         census: &mut HashMap<LVarRef<'gc>, Count>,
         rhs: &mut HashMap<LVarRef<'gc>, TermRef<'gc>>,
     ) {
         if let Atom::Local(name) = atom {
-            inc_app_use_n(name, census, rhs);
+            inc_app_use_n(name, arity, census, rhs);
         }
     }
 
@@ -220,6 +230,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
             Count {
                 applied: curr_count.applied,
                 as_value: curr_count.as_value + 1,
+                single_app_arity: curr_count.single_app_arity,
             },
         );
 
@@ -273,7 +284,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
             }
 
             Term::App(fun, ret_c, args, _) => {
-                inc_app_use_a(fun, census, rhs);
+                inc_app_use_a(fun, args.len(), census, rhs);
                 inc_val_use_n(ret_c, census, rhs);
 
                 for arg in args.iter() {
@@ -282,7 +293,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
             }
 
             Term::Continue(k, args, _) => {
-                inc_app_use_n(k, census, rhs);
+                inc_app_use_n(k, args.len(), census, rhs);
                 for arg in args.iter() {
                     inc_val_use_a(*arg, census, rhs);
                 }
@@ -382,7 +393,10 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, boo
                 .collect::<Vec<_>>()
                 .into_iter()
                 .partition::<Vec<_>, _>(|&cont| {
-                    !cont.noinline && state.applied_once(cont.binding())
+                    !cont.noinline
+                        && state
+                            .applied_once_with_arity(cont.binding())
+                            .is_some_and(|arity| cont.arity_matches(arity))
                 });
 
             let state = state.with_continuations(&inlined);

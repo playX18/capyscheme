@@ -348,6 +348,14 @@
                          ((x y) (values a b)))
              (list a b x y)))
       '(x y x y))
+    (test/exn
+      (let-values ((() (values 1)))
+        'unreachable)
+      &assertion)
+    (test/exn
+      (let-values ((() (if #f #f)))
+        'unreachable)
+      &assertion)
 
     ;; 11.4.7
     (test (begin (set! x 5)

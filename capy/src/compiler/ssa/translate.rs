@@ -763,7 +763,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let expected = self.builder.ins().iconst(types::I64, expected as i64);
                     let err = self.builder.ins().call(
                         self.thunks.wrong_number_of_args,
-                        &[ctx, num_rands, got, expected, rands],
+                        &[ctx, self.rator, got, expected, rands],
                     );
                     let err = self.builder.inst_results(err)[0];
                     self.raise_to_exception_handler(err);
