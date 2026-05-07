@@ -1,7 +1,9 @@
-use crate::rsgc::{
-    Trace, barrier,
-    cell::Lock,
-    object::{HeapTypeInfo, VTableOf},
+use crate::{
+    rsgc::{
+        Trace, barrier,
+        cell::Lock,
+        object::{HeapTypeInfo, VTableOf, builtin_type_ids},
+    },
 };
 use std::mem::offset_of;
 
@@ -20,9 +22,10 @@ const _: () = {
     assert!(offset_of!(Pair<'static>, car) == 0);
 };
 
-static PAIR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+static PAIR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
     VTableOf::<'static, Pair<'static>>::VT,
     TypeCode8::PAIR.bits() as u16,
+    builtin_type_ids::PAIR,
 );
 pub static PAIR_INFO: &'static HeapTypeInfo = &PAIR_INFO_VALUE;
 

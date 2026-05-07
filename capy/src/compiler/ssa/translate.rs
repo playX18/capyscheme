@@ -1,6 +1,10 @@
 use std::{collections::HashMap, io::Write, mem::offset_of};
 
-use crate::rsgc::{Gc, sync::thread::Thread};
+use crate::rsgc::{
+    Gc,
+    object::{HeapObjectHeader, HeapTypeInfo, OBJECT_REF_OFFSET, builtin_type_ids},
+    sync::thread::Thread,
+};
 
 use crate::{
     compiler::ssa::{ContOrFunc, LinearRestSource, SSABuilder, VarDef, primitive::PrimValue},
@@ -15,7 +19,8 @@ use crate::{
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
         Context, State,
-        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, Value},
+        value::CodeBlock,
+        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, TypeCode16, Value},
     },
 };
 use cranelift::frontend::Switch;
@@ -40,6 +45,47 @@ pub enum Callee {
 
     /// Callee is a self-recursive function, and the function body block is returned.
     SelfRec(ir::Block),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AllocInfoPreset {
+    Pair,
+    ClosureProc,
+    ClosureK,
+    MutableVector,
+}
+
+impl AllocInfoPreset {
+    const fn info_symbol(self) -> &'static str {
+        match self {
+            Self::Pair => "PAIR_INFO_STATIC",
+            Self::ClosureProc => "CLOSURE_PROC_INFO_STATIC",
+            Self::ClosureK => "CLOSURE_K_INFO_STATIC",
+            Self::MutableVector => "MUTABLE_VECTOR_INFO_STATIC",
+        }
+    }
+
+    const fn type_bits(self) -> u16 {
+        match self {
+            Self::Pair => TypeCode8::PAIR.bits() as u16,
+            Self::ClosureProc => TypeCode16::CLOSURE_PROC.bits(),
+            Self::ClosureK => TypeCode16::CLOSURE_K.bits(),
+            Self::MutableVector => TypeCode16::MUTABLE_VECTOR.bits(),
+        }
+    }
+
+    const fn info_id(self) -> u16 {
+        match self {
+            Self::Pair => builtin_type_ids::PAIR,
+            Self::ClosureProc => builtin_type_ids::CLOSURE_PROC,
+            Self::ClosureK => builtin_type_ids::CLOSURE_K,
+            Self::MutableVector => builtin_type_ids::MUTABLE_VECTOR,
+        }
+    }
+
+    const fn header_word(self) -> u64 {
+        self.type_bits() as u64 | ((self.info_id() as u64) << 16)
+    }
 }
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
@@ -228,6 +274,226 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.inst_results(call)[0]
             }
         }
+    }
+
+    pub(crate) fn alloc_with_info_preset(
+        &mut self,
+        preset: AllocInfoPreset,
+        con_alloc_size: usize,
+        var_alloc_size: Option<ir::Value>,
+    ) -> ir::Value {
+        let info = self.import_static(preset.info_symbol(), types::I64);
+        self.alloc_with_info_inner(info, Some(preset), con_alloc_size, var_alloc_size)
+    }
+
+    fn alloc_with_info_inner(
+        &mut self,
+        info: ir::Value,
+        preset: Option<AllocInfoPreset>,
+        con_alloc_size: usize,
+        var_alloc_size: Option<ir::Value>,
+    ) -> ir::Value {
+        const INLINE_ALLOC_LIMIT: usize = 8 * 1024;
+        const HEADER_SIZE: usize = size_of::<HeapObjectHeader>();
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let info = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            info,
+            0,
+        );
+        let slowpath = self.builder.create_block();
+        let merge = self.builder.create_block();
+        self.builder.append_block_param(merge, types::I64);
+        self.builder.func.layout.set_cold(slowpath);
+
+        let payload_size = match var_alloc_size {
+            Some(var_alloc_size) if con_alloc_size != 0 => self
+                .builder
+                .ins()
+                .iadd_imm(var_alloc_size, con_alloc_size as i64),
+            Some(var_alloc_size) => var_alloc_size,
+            None => self.builder.ins().iconst(types::I64, con_alloc_size as i64),
+        };
+
+        let inline_payload_limit = INLINE_ALLOC_LIMIT.saturating_sub(HEADER_SIZE);
+        if con_alloc_size >= inline_payload_limit {
+            self.builder.ins().jump(slowpath, &[]);
+        } else if let Some(var_alloc_size) = var_alloc_size {
+            let remaining = inline_payload_limit - con_alloc_size;
+            let is_small = self.builder.ins().icmp_imm(
+                IntCC::UnsignedLessThan,
+                var_alloc_size,
+                remaining as i64,
+            );
+            let fastpath = self.builder.create_block();
+            self.builder
+                .ins()
+                .brif(is_small, fastpath, &[], slowpath, &[]);
+            self.builder.switch_to_block(fastpath);
+            self.emit_alloc_with_info_fastpath(ctx, info, preset, payload_size, slowpath, merge);
+        } else {
+            self.emit_alloc_with_info_fastpath(ctx, info, preset, payload_size, slowpath, merge);
+        }
+
+        self.builder.switch_to_block(slowpath);
+        {
+            let call = self
+                .builder
+                .ins()
+                .call(self.thunks.alloc_with_info, &[ctx, info, payload_size]);
+            let value = self.builder.inst_results(call)[0];
+            self.builder.ins().jump(merge, &[BlockArg::Value(value)]);
+        }
+
+        self.builder.switch_to_block(merge);
+        self.builder.block_params(merge)[0]
+    }
+
+    fn emit_alloc_with_info_fastpath(
+        &mut self,
+        ctx: ir::Value,
+        info: ir::Value,
+        preset: Option<AllocInfoPreset>,
+        payload_size: ir::Value,
+        slowpath: ir::Block,
+        merge: ir::Block,
+    ) {
+        let header_word = preset.map(|preset| preset.header_word());
+        let cursor = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted(),
+            ctx,
+            Thread::LAB_OFFSET_CURSOR as i32,
+        );
+        let limit = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            ctx,
+            Thread::LAB_OFFSET_LIMIT as i32,
+        );
+        let aligned_payload_size = self.builder.ins().iadd_imm(payload_size, 7);
+        let aligned_payload_size = self.builder.ins().band_imm(aligned_payload_size, !7);
+        let total_size = self
+            .builder
+            .ins()
+            .iadd_imm(aligned_payload_size, size_of::<HeapObjectHeader>() as i64);
+        let alloc_end = self.builder.ins().iadd(cursor, total_size);
+        let fits = self
+            .builder
+            .ins()
+            .icmp(IntCC::UnsignedLessThanOrEqual, alloc_end, limit);
+        let commit = self.builder.create_block();
+        self.builder.ins().brif(fits, commit, &[], slowpath, &[]);
+
+        self.builder.switch_to_block(commit);
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            alloc_end,
+            ctx,
+            Thread::LAB_OFFSET_CURSOR as i32,
+        );
+        let header_word = match header_word {
+            Some(header_word) => self.builder.ins().iconst(types::I64, header_word as i64),
+            None => {
+                let header_type_bits = self.builder.ins().load(
+                    types::I16,
+                    ir::MemFlags::trusted().with_can_move(),
+                    info,
+                    HeapTypeInfo::TYPE_BITS_OFFSET as i32,
+                );
+                let header_info_id = self.builder.ins().load(
+                    types::I16,
+                    ir::MemFlags::trusted().with_can_move(),
+                    info,
+                    HeapTypeInfo::ID_OFFSET as i32,
+                );
+                let header_type_bits = self.builder.ins().uextend(types::I64, header_type_bits);
+                let header_type_bits = self
+                    .builder
+                    .ins()
+                    .band_imm(header_type_bits, u16::MAX as i64);
+                let header_info_id = self.builder.ins().uextend(types::I64, header_info_id);
+                let header_info_id = self.builder.ins().ishl_imm(header_info_id, 16);
+                self.builder.ins().bor(header_type_bits, header_info_id)
+            }
+        };
+        self.builder
+            .ins()
+            .store(ir::MemFlags::trusted(), header_word, cursor, 0);
+        let object = self
+            .builder
+            .ins()
+            .iadd_imm(cursor, OBJECT_REF_OFFSET as i64);
+        self.builder.ins().jump(merge, &[BlockArg::Value(object)]);
+    }
+
+    pub(crate) fn make_closure(
+        &mut self,
+        code_block: ir::Value,
+        free_count: usize,
+        is_cont: bool,
+    ) -> ir::Value {
+        let preset = if is_cont {
+            AllocInfoPreset::ClosureK
+        } else {
+            AllocInfoPreset::ClosureProc
+        };
+        let size = size_of::<Closure>() + free_count * size_of::<Value>();
+        let closure = self.alloc_with_info_preset(preset, size, None);
+
+        let entrypoint = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            code_block,
+            offset_of!(CodeBlock, entrypoint) as i32,
+        );
+        let metadata = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            code_block,
+            offset_of!(CodeBlock, metadata) as i32,
+        );
+        let nfree = self.builder.ins().iconst(types::I64, free_count as i64);
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            entrypoint,
+            closure,
+            offset_of!(Closure, code) as i32,
+        );
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            code_block,
+            closure,
+            offset_of!(Closure, code_block) as i32,
+        );
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            metadata,
+            closure,
+            offset_of!(Closure, meta) as i32,
+        );
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            nfree,
+            closure,
+            offset_of!(Closure, nfree) as i32,
+        );
+
+        let undefined = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        for i in 0..free_count {
+            self.builder.ins().store(
+                ir::MemFlags::trusted(),
+                undefined,
+                closure,
+                Closure::DATA_OFFSET as i32 + (i * size_of::<Value>()) as i32,
+            );
+        }
+
+        closure
     }
 
     pub(crate) fn call_proc_with_retk(
@@ -687,10 +953,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         .builder
                         .ins()
                         .iconst(types::I64, Value::null().bits() as i64);
-                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
                     for arg in args[k.args.len()..].iter().rev() {
-                        let call = self.builder.ins().call(self.thunks.cons, &[ctx, *arg, ls]);
-                        ls = self.builder.inst_results(call)[0];
+                        ls = self.cons(*arg, ls);
                     }
                     block_args.push(ir::BlockArg::Value(ls));
                 } else {
@@ -836,16 +1100,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         for func in funcs.iter() {
             let free = func.free_vars.get();
             let nfree = free.map_or(0, |f| f.len());
-            let nfree = self.builder.ins().iconst(types::I64, nfree as i64);
-            let is_cont = self.builder.ins().iconst(types::I8, 0);
             let code_block = self.load_data_value(self.module_builder.code_block_for_func[&func]);
-            let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
-            let clos = self
-                .builder
-                .ins()
-                .call(self.thunks.make_closure, &[ctx, code_block, nfree, is_cont]);
-            let clos = self.builder.inst_results(clos)[0];
+            let clos = self.make_closure(code_block, nfree, false);
             self.debug_local_with_source(func.binding, clos, func.source);
             self.variables.insert(func.binding, VarDef::Value(clos));
         }
@@ -873,15 +1130,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let free = cont.free_vars.get();
             let nfree = free.map_or(0, |f| f.len());
 
-            let nfree = self.builder.ins().iconst(types::I64, nfree as i64);
-            let is_cont = self.builder.ins().iconst(types::I8, 1);
             let code_block = self.load_data_value(self.module_builder.code_block_for_cont[&cont]);
-            let ctx = self.builder.ins().get_pinned_reg(types::I64);
-            let clos = self
-                .builder
-                .ins()
-                .call(self.thunks.make_closure, &[ctx, code_block, nfree, is_cont]);
-            let clos = self.builder.inst_results(clos)[0];
+            let clos = self.make_closure(code_block, nfree, true);
             self.debug_local_with_source(cont.binding, clos, cont.source);
             self.variables.insert(cont.binding, VarDef::Value(clos));
         }
@@ -1096,22 +1346,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 kind,
                 free_count,
             } => {
-                let nfree = self.builder.ins().iconst(types::I64, *free_count as i64);
-                let is_cont = self.builder.ins().iconst(
-                    types::I8,
-                    match kind {
-                        ClosureKind::Function => 0,
-                        ClosureKind::Continuation => 1,
-                    },
-                );
                 let code_block = self.load_data_value(self.code_block_data(*code));
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
-
-                let clos = self
-                    .builder
-                    .ins()
-                    .call(self.thunks.make_closure, &[ctx, code_block, nfree, is_cont]);
-                let clos = self.builder.inst_results(clos)[0];
+                let clos = self.make_closure(
+                    code_block,
+                    *free_count,
+                    matches!(kind, ClosureKind::Continuation),
+                );
                 self.bind_linear_var(*dst, VarDef::Value(clos));
             }
             Instruction::ClosureRef {
@@ -1495,11 +1735,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     .builder
                     .ins()
                     .iconst(types::I64, Value::null().bits() as i64);
-                let ctx = self.builder.ins().get_pinned_reg(types::I64);
                 for arg in args[fixed_count..].iter().rev().copied() {
                     let arg = self.linear_atom(arg);
-                    let call = self.builder.ins().call(self.thunks.cons, &[ctx, arg, ls]);
-                    ls = self.builder.inst_results(call)[0];
+                    ls = self.cons(arg, ls);
                 }
                 block_args.push(BlockArg::Value(ls));
             } else {

@@ -13,6 +13,7 @@ pub mod vmthread;
 
 pub(crate) fn init<'gc>(mc: Context<'gc>) {
     let _ = &*VM_THREAD;
+    init_static_heap_type_infos();
 
     VM_GLOBALS
         .set(crate::rsgc::Global::new(global::Globals::new(mc)))
@@ -44,6 +45,16 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::control::init_control(mc);
     vm::gc::gc::register(mc);
     //let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
+}
+
+fn init_static_heap_type_infos() {
+    let _ = value::PAIR_INFO.id();
+    let _ = modules::VARIABLE_INFO.id();
+    let _ = value::CLOSURE_PROC_INFO.id();
+    let _ = value::CLOSURE_K_INFO.id();
+    let _ = value::MUTABLE_VECTOR_INFO.id();
+    let _ = value::IMMUTABLE_VECTOR_INFO.id();
+    let _ = value::TUPLE_INFO.id();
 }
 
 use parking_lot::Mutex;
