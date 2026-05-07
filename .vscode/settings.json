@@ -21,4 +21,5 @@
   "[commonlisp]": {
     "editor.tabSize": 2
   },
+  "capyLsp.enabled": false,
 }

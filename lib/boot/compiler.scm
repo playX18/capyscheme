@@ -1,6 +1,10 @@
 42
 
-(import (capy compiler tree-il primitives) (capy pretty-print) (capy compiler tree-il))
+(import
+  (capy compiler tree-il resolve-free-vars)
+  (capy compiler tree-il primitives)
+  (capy pretty-print)
+  (capy compiler tree-il))
 
 ;; Self-hosted compiler which utilizes code written in Scheme
 ;; to compile & optimize Scheme.
@@ -40,7 +44,8 @@
             (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
               (receive (code mod new-mod) (compile-tree-il exps module)
                 (let* ([code (resolve-primitives code mod)]
-                       [code (expand-primitives code)])
+                       [code (expand-primitives code)]
+                       [code (resolve-free-vars code)])
                   (%compile code output-file mod load-thunk?)))))))
       (lambda ()
         ((@@ (capy) %runtime-stats-end-compilation))))))
