@@ -46,7 +46,14 @@ impl LspConfig {
             extensions: default_extensions(),
             default_module: vec!["capy".into(), "user".into()],
             env: HashMap::new(),
-            gc_env: HashMap::new(),
+            gc_env: [
+                ("MMTK_PLAN", "GenImmix"),
+                ("CAPY_GC_MAX_HEAP", "2G"),
+                ("CAPY_GC_HEURISTIC", "compact"),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect(),
         };
         config.merge_env_load_path();
         config

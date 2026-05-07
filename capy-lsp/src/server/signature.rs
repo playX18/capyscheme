@@ -11,7 +11,7 @@ use super::convert::completion_fact_detail;
 
 #[derive(Debug, Clone)]
 pub(super) struct CallableSignature {
-    label: String,
+    pub(super) label: String,
     pub(super) params: Vec<String>,
 }
 

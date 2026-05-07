@@ -77,6 +77,10 @@
     `((start . ,(make-position line character))
       (end . ,(make-position line (+ character 1)))))
 
+  (define (make-token-range line character length)
+    `((start . ,(make-position line character))
+      (end . ,(make-position line (+ character length)))))
+
   (define (zero-range)
     `((start . ,(make-position 0 0))
       (end . ,(make-position 0 0))))
@@ -140,8 +144,82 @@
                          action-definitions)))
           (loop (cdr forms) (append (reverse actions) out)))])))
 
-(define (sourcev->binding-range sourcev name)
-  (sourcev->range sourcev))
+  (define (string-index-of text needle start)
+    (let ((text-len (string-length text))
+          (needle-len (string-length needle)))
+      (let loop ((i (max 0 start)))
+        (cond
+          [(> (+ i needle-len) text-len) #f]
+          [(string=? (substring text i (+ i needle-len)) needle) i]
+          [else (loop (+ i 1))]))))
+
+  (define (line-character->index text line character)
+    (let ((len (string-length text)))
+      (let loop ((i 0) (current-line 0) (current-character 0))
+        (cond
+          [(or (>= i len)
+             (and (= current-line line) (= current-character character)))
+            i]
+          [(char=? (string-ref text i) #\newline)
+            (loop (+ i 1) (+ current-line 1) 0)]
+          [else
+            (loop (+ i 1) current-line (+ current-character 1))]))))
+
+  (define (index->line-character text index)
+    (let loop ((i 0) (line 0) (character 0))
+      (cond
+        [(or (>= i index) (>= i (string-length text)))
+          (values line character)]
+        [(char=? (string-ref text i) #\newline)
+          (loop (+ i 1) (+ line 1) 0)]
+        [else
+          (loop (+ i 1) line (+ character 1))])))
+
+  (define (identifier-boundary? text index)
+    (or (< index 0)
+      (>= index (string-length text))
+      (delimiter? (string-ref text index))))
+
+  (define (identifier-token-at? text token index)
+    (let ((end (+ index (string-length token))))
+      (and (<= end (string-length text))
+        (string=? (substring text index end) token)
+        (identifier-boundary? text (- index 1))
+        (identifier-boundary? text end))))
+
+  (define (find-identifier-token text token start)
+    (let loop ((index (string-index-of text token start)))
+      (cond
+        [(not index) #f]
+        [(identifier-token-at? text token index) index]
+        [else (loop (string-index-of text token (+ index 1)))])))
+
+  (define (find-identifier-after-marker text token start marker)
+    (let loop ((marker-index (string-index-of text marker start)))
+      (cond
+        [(not marker-index) #f]
+        [(find-identifier-token text token (+ marker-index (string-length marker)))
+          =>
+          (lambda (token-index) token-index)]
+        [else (loop (string-index-of text marker (+ marker-index 1)))])))
+
+  (define (sourcev->binding-range sourcev name)
+    (let ((line (sourcev->line sourcev))
+          (character (sourcev->character sourcev))
+          (token (symbol->string name)))
+      (let* ((start (if (and line character)
+                      (line-character->index current-analysis-text line character)
+                      0))
+             (index (or (find-identifier-after-marker current-analysis-text token start "(define (")
+                      (find-identifier-after-marker current-analysis-text token start "(define ")
+                      (find-identifier-after-marker current-analysis-text token start "(define-record-type ")
+                      (find-identifier-token current-analysis-text token start))))
+        (if index
+          (call-with-values
+            (lambda () (index->line-character current-analysis-text index))
+            (lambda (line character)
+              (make-token-range line character (string-length token))))
+          (sourcev->range sourcev)))))
 
 (define (make-diagnostic severity code message line character)
   `((source . "capy-lsp")
@@ -717,16 +795,21 @@
   (make-symbol-at name kind detail (zero-range)))
 
 (define (make-symbol-at name kind detail range)
+  (make-symbol-at/doc name kind detail range #f))
+
+(define (make-symbol-at/doc name kind detail range documentation)
   `((name . ,name)
     (kind . ,kind)
     (detail . ,detail)
+    (documentation . ,(json-nullable-string documentation))
     (range . ,range)
     (selectionRange . ,range)))
 
-(define (make-completion name kind detail)
+(define (make-completion name kind detail documentation)
   `((label . ,name)
     (kind . ,kind)
-    (detail . ,detail)))
+    (detail . ,detail)
+    (documentation . ,(json-nullable-string documentation))))
 
 (define (make-location uri range)
   `((uri . ,(json-nullable-string uri))
@@ -820,6 +903,56 @@
                  source-symbols
                  sourcev)
           out)))))
+
+(define (collect-fix-locals identities readable-names values source-symbols sourcev)
+  (let loop ((identities identities) (readable-names readable-names) (values values) (out '()))
+    (if (or (null? identities) (null? readable-names) (null? values))
+      (reverse out)
+      (let* ((identity (car identities))
+             (readable-name (car readable-names))
+             (value (car values))
+             (name (readable-name->symbol identity readable-name)))
+        (loop
+          (cdr identities)
+          (cdr readable-names)
+          (cdr values)
+          (if (source-symbol-visible? source-symbols name)
+            (cons
+              (make-symbol-at/doc
+                (symbol->string name)
+                (tree-il-define-kind value)
+                (if (proc? value)
+                  (or (tree-il-proc-signature (symbol->string name) value) "fix binding")
+                  "fix binding")
+                (sourcev->binding-range sourcev name)
+                (tree-il-proc-documentation value))
+              out)
+            out))))))
+
+(define (collect-valued-binding-locals identities readable-names values detail source-symbols sourcev)
+  (let loop ((identities identities) (readable-names readable-names) (values values) (out '()))
+    (if (or (null? identities) (null? readable-names) (null? values))
+      (reverse out)
+      (let* ((identity (car identities))
+             (readable-name (car readable-names))
+             (value (car values))
+             (name (readable-name->symbol identity readable-name)))
+        (loop
+          (cdr identities)
+          (cdr readable-names)
+          (cdr values)
+          (if (source-symbol-visible? source-symbols name)
+            (cons
+              (make-symbol-at/doc
+                (symbol->string name)
+                (tree-il-define-kind value)
+                (if (proc? value)
+                  (or (tree-il-proc-signature (symbol->string name) value) detail)
+                  detail)
+                (sourcev->binding-range sourcev name)
+                (tree-il-proc-documentation value))
+              out)
+            out))))))
 
 (define (source-symbol-visible? source-symbols name)
   (or (not (list? source-symbols))
@@ -1093,6 +1226,13 @@
                        (term-src term)
                        env)))
         (append
+          (symbol-nodes
+            (collect-valued-binding-locals (let-lhs term)
+              (let-ids term)
+              (let-rhs term)
+              (let-detail (let-style term))
+              source-symbols
+              (term-src term)))
           (collect-list (let-rhs term) caller env)
           (collect-call-graph-from-term uri (let-body term) source-symbols caller body-env)))]
     [(receive? term)
@@ -1118,9 +1258,9 @@
                       env)))
         (append
           (symbol-nodes
-            (collect-binding-locals (fix-lhs term)
+            (collect-fix-locals (fix-lhs term)
               (fix-ids term)
-              "function"
+              (fix-rhs term)
               source-symbols
               (term-src term)))
           (collect-list (fix-rhs term) caller fix-env)
@@ -1260,8 +1400,9 @@
         (collect-tree-il-locals-from-term (if-else term) source-symbols))]
     [(let? term)
       (append
-        (collect-binding-locals (let-lhs term)
+        (collect-valued-binding-locals (let-lhs term)
           (let-ids term)
+          (let-rhs term)
           (let-detail (let-style term))
           source-symbols
           (term-src term))
@@ -1278,9 +1419,9 @@
         (collect-tree-il-locals-from-term (receive-consumer term) source-symbols))]
     [(fix? term)
       (append
-        (collect-binding-locals (fix-lhs term)
+        (collect-fix-locals (fix-lhs term)
           (fix-ids term)
-          "fix binding"
+          (fix-rhs term)
           source-symbols
           (term-src term))
         (collect-list (fix-rhs term))
@@ -1324,12 +1465,41 @@
     [(proc? value) "function"]
     [else "variable"]))
 
+(define (tree-il-proc-documentation value)
+  (and (proc? value)
+    (cond
+      [(assq 'documentation (proc-meta value)) => cdr]
+      [else #f])))
+
+(define (readable-formal-name identity readable-name)
+  (symbol->string (readable-name->symbol identity readable-name)))
+
+(define (tree-il-formals->strings identities readable-names)
+  (cond
+    [(null? identities) '()]
+    [(pair? identities)
+      (cons (readable-formal-name (car identities) (car readable-names))
+        (tree-il-formals->strings (cdr identities) (cdr readable-names)))]
+    [else
+      (list "." (readable-formal-name identities readable-names))]))
+
+(define (tree-il-proc-signature name value)
+  (and (proc? value)
+    (string-append "("
+      name
+      (let ((params (tree-il-formals->strings (proc-args value) (proc-ids value))))
+        (if (null? params)
+          ""
+          (string-append " " (string-join params " "))))
+      ")")))
+
 (define (tree-il-define-detail value)
   (cond
     [(proc? value)
       (let ((name (proc-name value #f)))
         (if name
-          (string-append "define " name)
+          (or (tree-il-proc-signature name value)
+            (string-append "define " name))
           "define"))]
     [else "define"]))
 
@@ -1353,29 +1523,39 @@
     [(module-set? term)
       (let ((value (module-set-value term)))
         (cons
-          (make-symbol-at
-            (datum->name-string (module-set-name term))
-            (tree-il-define-kind value)
-            "module binding"
-            (sourcev->range (term-src term)))
+          (let ((name (module-set-name term)))
+            (make-symbol-at/doc
+              (datum->name-string name)
+              (tree-il-define-kind value)
+              (if (proc? value)
+                (or (tree-il-proc-signature (datum->name-string name) value) "module binding")
+                "module binding")
+              (sourcev->binding-range (term-src term) name)
+              (tree-il-proc-documentation value)))
           (collect-tree-il-definitions-from-term value)))]
     [(toplevel-set? term)
       (let ((value (toplevel-set-value term)))
         (cons
-          (make-symbol-at
-            (datum->name-string (toplevel-set-name term))
-            (tree-il-define-kind value)
-            "set!"
-            (sourcev->range (term-src term)))
+          (let ((name (toplevel-set-name term)))
+            (make-symbol-at/doc
+              (datum->name-string name)
+              (tree-il-define-kind value)
+              (if (proc? value)
+                (or (tree-il-proc-signature (datum->name-string name) value) "set!")
+                "set!")
+              (sourcev->binding-range (term-src term) name)
+              (tree-il-proc-documentation value)))
           (collect-tree-il-definitions-from-term value)))]
     [(toplevel-define? term)
       (let ((value (toplevel-define-value term)))
         (cons
-          (make-symbol-at
-            (datum->name-string (toplevel-define-name term))
-            (tree-il-define-kind value)
-            (tree-il-define-detail value)
-            (sourcev->range (term-src term)))
+          (let ((name (toplevel-define-name term)))
+            (make-symbol-at/doc
+              (datum->name-string name)
+              (tree-il-define-kind value)
+              (tree-il-define-detail value)
+              (sourcev->binding-range (term-src term) name)
+              (tree-il-proc-documentation value)))
           (collect-tree-il-definitions-from-term value)))]
     [(if? term)
       (append
@@ -1429,7 +1609,9 @@
 (define (symbol->completion symbol)
   (make-completion (cdr (assq 'name symbol))
     (cdr (assq 'kind symbol))
-    (cdr (assq 'detail symbol))))
+    (cdr (assq 'detail symbol))
+    (let ((entry (assq 'documentation symbol)))
+      (and entry (string? (cdr entry)) (cdr entry)))))
 
 (define (zero-range? range)
   (and (= (or (range-start range 'line) -1) 0)

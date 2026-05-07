@@ -15,6 +15,22 @@
 
 #define UNKNOWN_TYPE_BITS UINT16_MAX
 
+#define PAIR 1
+
+#define VARIABLE 2
+
+#define CLOSURE_PROC 3
+
+#define CLOSURE_K 4
+
+#define MUTABLE_VECTOR 5
+
+#define IMMUTABLE_VECTOR 6
+
+#define TUPLE 7
+
+#define MAX TUPLE
+
 #define FASL_EOF 0
 
 #define FASL_TAG_LOOKUP 1
