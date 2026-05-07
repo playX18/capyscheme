@@ -46,15 +46,14 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
     if expand_primitives && let Some(module) = module {
         il = primitives::resolve_primitives(ctx, il, module);
         il = primitives::expand_primitives(ctx, il);
+        let _profile = ProfileScope::new("compiler.lower.resolve_free_vars");
+        il = resolve_free_vars(ctx, il);
+        drop(_profile);
     }
 
     let optimized_il = {
-        let _profile = ProfileScope::new("compiler.lower.resolve_free_vars");
-        resolve_free_vars(ctx, il)
-    };
-    let optimized_il = {
         let _profile = ProfileScope::new("compiler.lower.letrectify");
-        letrectify(ctx, optimized_il)
+        letrectify(ctx, il)
     };
     let optimized_il = {
         let _profile = ProfileScope::new("compiler.lower.fix_letrec");

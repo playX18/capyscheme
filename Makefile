@@ -195,6 +195,7 @@ CAPY_SRCS_SCM := \
 	lib/capy/compiler/tree-il/terms.scm 	 \
 	lib/capy/compiler/tree-il/fold.scm       \
 	lib/capy/compiler/tree-il/primitives.scm \
+	lib/capy/compiler/tree-il/resolve-free-vars.scm \
 	lib/capy/compiler/tree-il.scm				
 
 

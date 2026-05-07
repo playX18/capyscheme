@@ -138,6 +138,7 @@
     ~receive
     ~application
     ~primcall
+    ~primref
     ~proc
     ~void
     ~constant
@@ -259,11 +260,13 @@
 
   (define-record-match-pattern
     (~primref src name)
+    primref?
     (src term-src)
     (name primref-prim))
 
   (define-record-match-pattern
     (~constant src value)
+    constant?
     (src term-src)
     (value constant-value))
 

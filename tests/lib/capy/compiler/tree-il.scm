@@ -1,6 +1,7 @@
 (import (srfi 64)
   (capy)
   (capy compiler tree-il)
+  (capy compiler tree-il resolve-free-vars)
   (capy compiler tree-il terms))
 
 (test-begin "capy compiler tree-il")
@@ -73,5 +74,34 @@
       "lambda parameters with syntax-object readable ids are denoised"
       (tree-il->scheme term '(denoise-lexicals?))
       '(lambda (x) x))))
+
+(test-group "resolve-free-vars"
+  (let* ((provider-name '(test resolve-free-vars provider))
+         (consumer-name '(test resolve-free-vars consumer))
+         (provider (define-module* provider-name #t))
+         (consumer (define-module* consumer-name #t)))
+    (module-define! provider 'exported-value 42)
+    (module-export! provider '(exported-value))
+    (module-use-interfaces! consumer (list (module-public-interface provider)))
+    (test-equal
+      "imported free toplevel reference becomes public module ref"
+      `(let ((module-var
+               ((@@ (capy) define-module*)
+                ',consumer-name)))
+         (@ ,provider-name exported-value))
+      (tree-il->scheme
+        (resolve-free-vars
+          (make-let
+            src
+            'let
+            (list 'module-id)
+            (list 'module-var)
+            (list
+              (make-application
+                src
+                (make-module-ref src '(capy) 'define-module* #f)
+                (list (make-constant src consumer-name))))
+            (make-toplevel-ref src consumer-name 'exported-value)))
+        '()))))
 
 (test-end "capy compiler tree-il")
