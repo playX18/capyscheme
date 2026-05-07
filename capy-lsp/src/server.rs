@@ -55,8 +55,8 @@ use crate::{
 
 use actions::{ActionCommandArgs, action_definitions, known_action};
 use convert::{
-    completion_fact_detail, format_hover_content, to_completion_kind, to_diagnostic,
-    to_document_symbol, to_location, to_symbol_information,
+    completion_fact_detail, format_completion_hover_content, format_hover_content,
+    to_completion_kind, to_diagnostic, to_document_symbol, to_location, to_symbol_information,
 };
 use navigation::{
     push_location, reference_targets_definition, selected_reference_definition,
@@ -609,28 +609,25 @@ impl LanguageService {
     async fn hover(&self, uri: Url, position: Position) -> Option<Hover> {
         let AnalysisSnapshot { text, facts, .. } = self.analysis_snapshot(&uri).await?;
         let (name, range) = analysis::symbol_at(&facts, &text, position)?;
+        let completion = facts.completions.iter().find(|item| item.label == name);
         let detail = facts
             .symbols
             .iter()
             .find(|symbol| symbol.name == name)
             .and_then(|symbol| symbol.detail.clone())
-            .or_else(|| {
-                facts
-                    .references
-                    .iter()
-                    .find(|reference| reference.name == name)
-                    .and_then(|_| completion_detail(&facts, &name))
-            })
-            .or_else(|| completion_detail(&facts, &name))
+            .or_else(|| completion.and_then(completion_fact_detail))
             .unwrap_or_else(|| "identifier".into());
         let documentation = facts
             .completions
             .iter()
             .find(|item| item.label == name)
             .and_then(|item| item.documentation.as_deref());
+        let contents = completion
+            .map(format_completion_hover_content)
+            .unwrap_or_else(|| format_hover_content(&name, &detail, documentation));
 
         Some(Hover {
-            contents: HoverContents::Markup(format_hover_content(&name, &detail, documentation)),
+            contents: HoverContents::Markup(contents),
             range: Some(range),
         })
     }
@@ -1035,6 +1032,7 @@ impl LanguageService {
                     severity: DiagnosticSeverityFact::Error,
                     message: format!("invalid lsp-config.scm: {err}"),
                     source: Some("capy-lsp".into()),
+                    code: None,
                 });
                 analysis::fill_missing_facts(uri, &text, &mut facts);
                 let context = AnalysisRequestContext {

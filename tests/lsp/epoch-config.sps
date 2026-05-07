@@ -84,6 +84,41 @@
                 (string? (cdr detail-entry))
                 (string-contains? (cdr detail-entry) text))))))
 
+(define (completion-documentation-contains? facts label text)
+  (let ((entry (completion-fact facts label)))
+    (and entry
+         (let ((documentation-entry (assq 'documentation entry)))
+           (and documentation-entry
+                (string? (cdr documentation-entry))
+                (string-contains? (cdr documentation-entry) text))))))
+
+(define (symbol-fact facts label)
+  (let ((symbols (alist-ref 'symbols facts)))
+    (and (vector? symbols)
+         (let loop ((i 0))
+           (and (< i (vector-length symbols))
+                (let ((entry (vector-ref symbols i)))
+                  (if (and (list? entry)
+                           (let ((name-entry (assq 'name entry)))
+                             (and name-entry
+                                  (string=? (cdr name-entry) label))))
+                      entry
+                      (loop (+ i 1)))))))))
+
+(define (range-start-at? range line character)
+  (let* ((start (and (list? range) (alist-ref 'start range)))
+         (start-line (and (list? start) (alist-ref 'line start)))
+         (start-character (and (list? start) (alist-ref 'character start))))
+    (and (number? start-line)
+         (number? start-character)
+         (= start-line line)
+         (= start-character character))))
+
+(define (symbol-start-at? facts label line character)
+  (let ((symbol (symbol-fact facts label)))
+    (and symbol
+         (range-start-at? (alist-ref 'selectionRange symbol) line character))))
+
 (define (diagnostic-code? facts code)
   (let ((diagnostics (alist-ref 'diagnostics facts)))
     (and (vector? diagnostics)
@@ -203,7 +238,7 @@
 (set! %load-path (cons root %load-path))
 
 (write-file dep-path
-            "(library (dep) (export dep-a dep-b) (import (rnrs)) (define dep-a 1) (define dep-b 2))\n")
+            "(library (dep)\n  (export dep-a dep-b)\n  (import (rnrs))\n  (define dep-a 1)\n  (define dep-b 2))\n")
 (write-file origin-path
             "(library (origin) (export origin-a) (import (rnrs)) (define origin-a 1))\n")
 (write-file reexport-path
@@ -215,6 +250,15 @@
 
 (let ((initial (analyze-consumer 1)))
   (check-only-dep-a initial "top-level only import"))
+
+(let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/dep.sls"
+                               (call-with-input-file dep-path get-string-all)
+                               1
+                               dep-path)))
+  (check (symbol-start-at? facts "dep-a" 3 10)
+         "imported module dep-a definition range did not point at binding name")
+  (check (symbol-start-at? facts "dep-b" 4 10)
+         "imported module dep-b definition range did not point at binding name"))
 
 (check-only-dep-a
   (analyze-text "library-import.sls"
@@ -287,8 +331,36 @@
                                "(define (foo x) (bar x))\n(define (bar y) (+ y 1))\n"
                                1
                                "/tmp/capy-lsp-refresh-test/calls.scm")))
+  (check (symbol-start-at? facts "foo" 0 9)
+         "local function foo definition range did not point at binding name")
+  (check (symbol-start-at? facts "bar" 1 9)
+         "local function bar definition range did not point at binding name")
+  (check (completion-detail-contains? facts "foo" "(foo x)")
+         "local function foo completion detail did not include signature")
   (check (call-graph-edge? facts "foo" "bar") "call graph edge foo -> bar missing")
   (check (call-graph-edge? facts "bar" "+") "call graph primitive edge bar -> + missing"))
+
+(let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/local-doc.scm"
+                               "(define (documented value)\n  \"Local function docs.\"\n  (+ value 1))\n(documented 41)\n"
+                               1
+                               "/tmp/capy-lsp-refresh-test/local-doc.scm")))
+  (check (symbol-start-at? facts "documented" 0 9)
+         "documented local function definition range did not point at binding name")
+  (check (completion-detail-contains? facts "documented" "(documented value)")
+         "documented local function completion detail did not include signature")
+  (check (completion-documentation-contains? facts "documented" "Local function docs.")
+         "documented local function completion documentation missing"))
+
+(let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/body-local-doc.scm"
+                               "(let ()\n  (define (inner x) \"Inner docs.\" (+ x 1))\n  (inner 1))\n"
+                               1
+                               "/tmp/capy-lsp-refresh-test/body-local-doc.scm")))
+  (check (symbol-start-at? facts "inner" 1 11)
+         "body-local function definition range did not point at binding name")
+  (check (completion-detail-contains? facts "inner" "(inner x)")
+         "body-local function completion detail did not include signature")
+  (check (completion-documentation-contains? facts "inner" "Inner docs.")
+         "body-local function completion documentation missing"))
 
 (let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/record.scm"
                                "(import (rnrs records syntactic))\n(define-record-type point (fields x y))\n(make-point 42 42)\n"
