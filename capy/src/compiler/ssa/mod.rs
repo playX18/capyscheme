@@ -36,6 +36,8 @@ pub mod primitive;
 pub mod traits;
 pub mod translate;
 
+pub(crate) use translate::AllocInfoPreset;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum VarDef {
     Value(ir::Value),

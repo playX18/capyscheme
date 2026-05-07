@@ -2,12 +2,13 @@ use crate::rsgc::mmtk::BarrierSelector;
 use crate::rsgc::object::OBJECT_HEADER_OFFSET;
 use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
+use std::mem::{offset_of, size_of};
 
 use crate::{
-    compiler::ssa::SSABuilder,
+    compiler::ssa::{AllocInfoPreset, SSABuilder},
     cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
-    runtime::value::{Symbol, TypeCode8, TypeCode16, Value, Vector},
+    runtime::value::{Pair, Symbol, TypeCode8, TypeCode16, Value, Vector},
 };
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
@@ -20,9 +21,20 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn cons(&mut self, a: ir::Value, b: ir::Value) -> ir::Value {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let call = self.builder.ins().call(self.thunks.cons, &[ctx, a, b]);
-        self.builder.inst_results(call)[0]
+        let pair = self.alloc_with_info_preset(AllocInfoPreset::Pair, size_of::<Pair>(), None);
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            a,
+            pair,
+            offset_of!(Pair, car) as i32,
+        );
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            b,
+            pair,
+            offset_of!(Pair, cdr) as i32,
+        );
+        pair
     }
 
     pub fn inline_cmp_op(

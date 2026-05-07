@@ -7,7 +7,7 @@ use crate::{
 };
 use mmtk::AllocationSemantics;
 
-use crate::rsgc::object::HeapTypeInfo;
+use crate::rsgc::object::{HeapTypeInfo, builtin_type_ids};
 use crate::runtime::{
     Context,
     vm::trampolines::{get_cont_trampoline_from_scheme, get_trampoline_from_scheme},
@@ -89,12 +89,18 @@ pub struct Closure<'gc> {
     pub free: [Lock<Value<'gc>>; 0],
 }
 
-static CLOSURE_PROC_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_PROC.bits());
+static CLOSURE_PROC_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
+    CLOSURE_VTABLE,
+    TypeCode16::CLOSURE_PROC.bits(),
+    builtin_type_ids::CLOSURE_PROC,
+);
 pub static CLOSURE_PROC_INFO: &'static HeapTypeInfo = &CLOSURE_PROC_INFO_VALUE;
 
-static CLOSURE_K_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_K.bits());
+static CLOSURE_K_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
+    CLOSURE_VTABLE,
+    TypeCode16::CLOSURE_K.bits(),
+    builtin_type_ids::CLOSURE_K,
+);
 pub static CLOSURE_K_INFO: &'static HeapTypeInfo = &CLOSURE_K_INFO_VALUE;
 
 static CLOSURE_NATIVE_PROC_INFO_VALUE: HeapTypeInfo =

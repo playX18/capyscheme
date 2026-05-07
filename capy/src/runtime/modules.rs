@@ -1,6 +1,6 @@
 use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 
-use crate::rsgc::object::{HeapTypeInfo, VTableOf};
+use crate::rsgc::object::{HeapTypeInfo, VTableOf, builtin_type_ids};
 use crate::rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
 use crate::{
@@ -699,9 +699,10 @@ pub struct Variable<'gc> {
     pub value: Lock<Value<'gc>>,
 }
 
-static VARIABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+static VARIABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
     VTableOf::<'static, Variable<'static>>::VT,
     TypeCode8::VARIABLE.bits() as u16,
+    builtin_type_ids::VARIABLE,
 );
 pub static VARIABLE_INFO: &'static HeapTypeInfo = &VARIABLE_INFO_VALUE;
 

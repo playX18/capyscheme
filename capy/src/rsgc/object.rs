@@ -24,6 +24,17 @@ const HASH_HASHED: u8 = 1;
 const HASH_HASHED_AND_MOVED: u8 = 2;
 pub const UNKNOWN_TYPE_BITS: u16 = u16::MAX;
 
+pub mod builtin_type_ids {
+    pub const PAIR: u16 = 1;
+    pub const VARIABLE: u16 = 2;
+    pub const CLOSURE_PROC: u16 = 3;
+    pub const CLOSURE_K: u16 = 4;
+    pub const MUTABLE_VECTOR: u16 = 5;
+    pub const IMMUTABLE_VECTOR: u16 = 6;
+    pub const TUPLE: u16 = 7;
+    pub const MAX: u16 = TUPLE;
+}
+
 #[derive()]
 #[repr(C)]
 pub struct VTable {
@@ -48,7 +59,7 @@ static TYPE_INFO_TABLE: OnceLock<Box<[AtomicPtr<HeapTypeInfo>]>> = OnceLock::new
 static GC_ONLY_INFO_MAP: OnceLock<Mutex<HashMap<usize, &'static HeapTypeInfo>>> = OnceLock::new();
 
 fn type_info_registry_lock() -> &'static Mutex<usize> {
-    TYPE_INFO_REGISTRY_LOCK.get_or_init(|| Mutex::new(0))
+    TYPE_INFO_REGISTRY_LOCK.get_or_init(|| Mutex::new(builtin_type_ids::MAX as usize))
 }
 
 fn type_info_table() -> &'static [AtomicPtr<HeapTypeInfo>] {
@@ -72,6 +83,9 @@ pub struct HeapTypeInfo {
 }
 
 impl HeapTypeInfo {
+    pub const TYPE_BITS_OFFSET: usize = std::mem::offset_of!(Self, type_bits);
+    pub const ID_OFFSET: usize = std::mem::offset_of!(Self, id);
+
     pub const fn new(vtable: &'static VTable, type_bits: u16) -> Self {
         Self {
             vtable,
@@ -80,9 +94,19 @@ impl HeapTypeInfo {
         }
     }
 
+    pub const fn new_static(vtable: &'static VTable, type_bits: u16, id: u16) -> Self {
+        assert!(id != 0);
+        Self {
+            vtable,
+            type_bits,
+            id: AtomicU16::new(id),
+        }
+    }
+
     pub fn id(&'static self) -> u16 {
         let existing = self.id.load(Ordering::Acquire);
         if existing != 0 {
+            self.register_static_id(existing);
             return existing;
         }
 
@@ -97,6 +121,27 @@ impl HeapTypeInfo {
         type_info_table()[id as usize].store(self as *const _ as *mut _, Ordering::Release);
         self.id.store(id, Ordering::Release);
         id
+    }
+
+    fn register_static_id(&'static self, id: u16) {
+        let slot = &type_info_table()[id as usize];
+        let self_ptr = self as *const _ as *mut _;
+        let existing = slot.load(Ordering::Acquire);
+        if existing == self_ptr {
+            return;
+        }
+
+        let mut next = type_info_registry_lock().lock().unwrap();
+        let existing = slot.load(Ordering::Acquire);
+        if existing.is_null() {
+            slot.store(self_ptr, Ordering::Release);
+            *next = (*next).max(id as usize);
+        } else {
+            assert_eq!(
+                existing, self_ptr,
+                "HeapTypeInfo id {id} is already registered to a different type"
+            );
+        }
     }
 
     pub fn lookup(id: u16) -> &'static Self {
@@ -581,6 +626,15 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, 0);
         assert_ne!(first, other);
+    }
+
+    #[test]
+    fn static_heap_type_info_id_is_registered_for_lookup() {
+        static STATIC_INFO_VALUE: HeapTypeInfo =
+            HeapTypeInfo::new_static(VTableOf::<'static, Dummy>::VT, 0x2468, 0x8000);
+
+        assert_eq!(STATIC_INFO_VALUE.id(), 0x8000);
+        assert!(std::ptr::eq(HeapTypeInfo::lookup(0x8000), &STATIC_INFO_VALUE));
     }
 
     #[test]

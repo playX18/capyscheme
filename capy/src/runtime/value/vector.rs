@@ -6,7 +6,7 @@ use crate::rsgc::{
     cell::Lock,
     collection::Visitor,
     mmtk::AllocationSemantics,
-    object::{HeapTypeInfo, VTable},
+    object::{HeapTypeInfo, VTable, builtin_type_ids},
 };
 use std::ops::{Deref, DerefMut, Index};
 use std::{mem::offset_of, ops::IndexMut};
@@ -23,12 +23,18 @@ const _: () = {
     assert!(offset_of!(Vector<'static>, length) == 0);
 };
 
-static MUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(Vector::VT, TypeCode16::MUTABLE_VECTOR.bits());
+static MUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
+    Vector::VT,
+    TypeCode16::MUTABLE_VECTOR.bits(),
+    builtin_type_ids::MUTABLE_VECTOR,
+);
 pub static MUTABLE_VECTOR_INFO: &'static HeapTypeInfo = &MUTABLE_VECTOR_INFO_VALUE;
 
-static IMMUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(Vector::VT, TypeCode16::IMMUTABLE_VECTOR.bits());
+static IMMUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
+    Vector::VT,
+    TypeCode16::IMMUTABLE_VECTOR.bits(),
+    builtin_type_ids::IMMUTABLE_VECTOR,
+);
 pub static IMMUTABLE_VECTOR_INFO: &'static HeapTypeInfo = &IMMUTABLE_VECTOR_INFO_VALUE;
 
 #[inline(never)]
@@ -489,8 +495,11 @@ const _: () = {
     assert!(offset_of!(Tuple<'static>, length) == 0);
 };
 
-static TUPLE_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(Tuple::VT, TypeCode8::TUPLE.bits() as u16);
+static TUPLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
+    Tuple::VT,
+    TypeCode8::TUPLE.bits() as u16,
+    builtin_type_ids::TUPLE,
+);
 pub static TUPLE_INFO: &'static HeapTypeInfo = &TUPLE_INFO_VALUE;
 
 extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {

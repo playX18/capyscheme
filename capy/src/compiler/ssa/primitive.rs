@@ -1,4 +1,4 @@
-use super::SSABuilder;
+use super::{AllocInfoPreset, SSABuilder};
 use crate::cps::term::Atom;
 use crate::runtime::Context;
 use crate::runtime::State;
@@ -1605,10 +1605,7 @@ prim!(
         let car = ssa.atom(args[0]);
         let cdr = ssa.atom(args[1]);
 
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let call = ssa.builder.ins().call(ssa.thunks.cons, &[ctx, car, cdr]);
-
-        PrimValue::Value(ssa.builder.inst_results(call)[0])
+        PrimValue::Value(ssa.cons(car, cdr))
     },
 
     "reverse" => reverse(ssa, args, _h) {
@@ -1672,11 +1669,9 @@ prim!(
 
     "list" => list(ssa, args, _h) {
         let args = args.iter().map(|x| ssa.atom(*x)).collect::<Vec<_>>();
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
         let mut ls = ssa.builder.ins().iconst(types::I64, Value::null().bits() as i64);
         for arg in args.iter().rev().copied() {
-            let call = ssa.builder.ins().call(ssa.thunks.cons, &[ctx, arg, ls]);
-            ls = ssa.builder.inst_results(call)[0];
+            ls = ssa.cons(arg, ls);
         }
         PrimValue::Value(ls)
     },
@@ -1697,11 +1692,7 @@ prim!(
     "vector" => vector(ssa, args, _h) {
 
         let size = size_of::<Vector>() as i64 + args.len() as i64 * size_of::<Value>() as i64;
-        let size = ssa.builder.ins().iconst(types::I64, size);
-        let info = ssa.import_static("MUTABLE_VECTOR_INFO_STATIC", types::I64);
-        let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        let call = ssa.builder.ins().call(ssa.thunks.alloc_with_info, &[ctx, info, size]);
-        let vec = ssa.builder.inst_results(call)[0];
+        let vec = ssa.alloc_with_info_preset(AllocInfoPreset::MutableVector, size as usize, None);
         let len = ssa.builder.ins().iconst(types::I64, args.len() as i64);
         ssa.builder.ins().store(ir::MemFlags::trusted(), len, vec, offset_of!(Vector, length) as i32);
         for (i, &arg) in args.iter().enumerate() {
