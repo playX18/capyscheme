@@ -151,9 +151,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
 fn render_lcps_dump<'gc>(linear_cps: &crate::cps::linear::LinearProgram<'gc>) -> String {
     let mut rendered = crate::cps::linear_pretty::render_program(linear_cps);
     rendered.push('\n');
-    rendered.push_str(
-        &crate::compiler::bytecode::greedy_slotalloc::render_program_allocations(linear_cps),
-    );
+
     rendered
 }
 
