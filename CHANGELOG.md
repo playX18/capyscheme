@@ -14,6 +14,7 @@
 - *(compiler)* Optimize rest arguments to direct access - ([76e7a05](https://codeberg.org/playXE/capy/commit/76e7a056cf0b938fd37a38e2bdd3e24503cb7f81))
 - *(control)* Implement call-in-continuation and add tests for its behavior - ([7fce732](https://codeberg.org/playXE/capy/commit/7fce732bfd1228654c1899cf1c8c0424be0882f8))
 - *(library)* Auto-import capy prelims - ([3116a3f](https://codeberg.org/playXE/capy/commit/3116a3f471f7f1bf229a60216029ef0b2b09bc38))
+- *(lsp)* Build workspace index on worker side - ([88fd7fc](https://codeberg.org/playXE/capy/commit/88fd7fc4f760ab5a9efc78fc0851e15b999336ee))
 - *(lsp)* CallGraph - ([a7d2ebe](https://codeberg.org/playXE/capy/commit/a7d2ebec1d75a3fe8aa3051aa2fb2dd1e7fb66e5))
 - *(lsp)* Add refactored Rust language server - ([12382c8](https://codeberg.org/playXE/capy/commit/12382c8d29247d2409d7ce9dfd9a097a27fdfed5))
 - *(lsp)* Add Scheme worker analysis - ([689d7aa](https://codeberg.org/playXE/capy/commit/689d7aa581242527135bd060d1343be4f4c59b3b))
@@ -25,6 +26,7 @@
 - *(srfi)* SRFI-213 full implementation - ([db8ebc7](https://codeberg.org/playXE/capy/commit/db8ebc7df8a292b6d1a9a30c692a265cb36cb9d8))
 - *(tests)* Use srfi-64 test runner for racket/r6rs test suite - ([0ca56c9](https://codeberg.org/playXE/capy/commit/0ca56c9ed305d6528c9c56be31d37a483dd74fba))
 - *(vscode)* Add Capy Scheme LSP extension - ([180ec16](https://codeberg.org/playXE/capy/commit/180ec160da7aa46f8b6c981d6a59961ef96e036f))
+- Use tree il as source of truth for lsp - ([842dc7a](https://codeberg.org/playXE/capy/commit/842dc7a1a4c6e343952aa8ebb83196eb70537780))
 
 ### 🐛 Bug Fixes
 
@@ -47,6 +49,7 @@
 - *(compiler)* Use ValueId in linear CPS - ([e6b26bd](https://codeberg.org/playXE/capy/commit/e6b26bd224ad526b505e4ddb76ecd41c9fa6d0ed))
 - *(lsp)* Restart on file changes instead of fighting with autoload - ([67e3cb8](https://codeberg.org/playXE/capy/commit/67e3cb8ae1302353deff8f567a6b01c6a124c5b8))
 - *(lsp)* Invalidate files differently - ([1e1b74c](https://codeberg.org/playXE/capy/commit/1e1b74c0cfd9311fdf0d22532371821e546ac08d))
+- *(runtime)* Better source handling - ([83a33e2](https://codeberg.org/playXE/capy/commit/83a33e2a32f53303269c26fc022291a2b975d3f6))
 
 ### 📚 Documentation
 
