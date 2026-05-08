@@ -1054,12 +1054,16 @@ unsafe impl<'gc> Trace for YieldReason<'gc> {
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         match self {
-            YieldReason::Operation(op) => unsafe {
-                op.process_weak_refs(weak_processor);
-            },
-            YieldReason::OperationWithReturn(op) => unsafe {
-                op.process_weak_refs(weak_processor);
-            },
+            YieldReason::Operation(op) => {
+                unsafe {
+                    op.process_weak_refs(weak_processor);
+                }
+            }
+            YieldReason::OperationWithReturn(op) => {
+                unsafe {
+                    op.process_weak_refs(weak_processor);
+                }
+            }
             _ => {}
         }
     }

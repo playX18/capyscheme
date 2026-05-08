@@ -1,7 +1,9 @@
-use crate::rsgc::{
-    Trace, barrier,
-    cell::Lock,
-    object::{HeapTypeInfo, VTableOf, builtin_type_ids},
+use crate::{
+    rsgc::{
+        Trace, barrier,
+        cell::Lock,
+        object::{HeapTypeInfo, VTableOf, builtin_type_ids},
+    },
 };
 use std::mem::offset_of;
 
