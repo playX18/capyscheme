@@ -18,7 +18,7 @@
 ;;;;
 
 ;;; Module system routines. Originally extracted from Guile boot-9.scm, modified
-;;l to better suit Capy's needs.
+;;; to better suit Capy's needs.
 
 (define (module-search fn m v)
   (or (fn m v)

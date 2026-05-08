@@ -1,6 +1,7 @@
 (import (srfi 64)
   (capy)
   (capy compiler tree-il)
+  (capy compiler tree-il letrectify)
   (capy compiler tree-il resolve-free-vars)
   (capy compiler tree-il terms))
 
@@ -103,5 +104,25 @@
                 (list (make-constant src consumer-name))))
             (make-toplevel-ref src consumer-name 'exported-value)))
         '()))))
+
+(test-group "letrectify"
+  (let* ((module-name '(test letrectify private))
+         (module (define-module* module-name #t))
+         (term
+           (make-sequence
+             src
+             (make-toplevel-define
+               src
+               module-name
+               'private-value
+               (make-constant src 42))
+             (make-toplevel-ref src module-name 'private-value))))
+    (test-equal
+      "private declarative toplevel define becomes lexical letrec"
+      '(letrec ((private-value (quote 42)))
+         private-value)
+      (tree-il->scheme
+        (letrectify term #:seal-private-bindings? #t)
+        '(denoise-lexicals?)))))
 
 (test-end "capy compiler tree-il")
