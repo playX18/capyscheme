@@ -1,3 +1,5 @@
+#!nobacktrace
+
 (library (capy compiler tree-il resolve-free-vars)
   (export resolve-free-vars
     make-resolver)
@@ -58,7 +60,7 @@
               (cons (module-name iface)
                 (hashtable-ref by-var var)))))))
 
-    (define the-module (resolve-module mod #f #f))
+    (define the-module (resolve-module mod #t #f))
     (define resolvers
       (map imported-resolver (module-uses the-module)))
 
