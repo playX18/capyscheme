@@ -1,6 +1,5 @@
 #include "../c/capy.h"
 #include "gc_args.h"
-#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -10,100 +9,8 @@
 struct DispatchData
 {
     const char *line;
-    bool should_exit;
     int status;
 };
-
-static const char *skip_json_ws(const char *p)
-{
-    while (*p && isspace((unsigned char)*p))
-    {
-        p++;
-    }
-    return p;
-}
-
-static bool is_json_delim(char ch)
-{
-    return ch == '\0' || ch == ',' || ch == '}' || isspace((unsigned char)ch);
-}
-
-static bool json_field_string_equals(const char *json, const char *field, const char *value)
-{
-    char pattern[128];
-    size_t field_len = strlen(field);
-    size_t value_len = strlen(value);
-
-    if (field_len + 3 > sizeof(pattern))
-    {
-        return false;
-    }
-
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
-
-    for (const char *p = json; (p = strstr(p, pattern)) != NULL; p += field_len + 2)
-    {
-        const char *q = skip_json_ws(p + field_len + 2);
-        if (*q != ':')
-        {
-            continue;
-        }
-
-        q = skip_json_ws(q + 1);
-        if (*q != '"')
-        {
-            continue;
-        }
-
-        q++;
-        if (strncmp(q, value, value_len) == 0 && q[value_len] == '"')
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool json_field_bool_true(const char *json, const char *field)
-{
-    char pattern[128];
-    size_t field_len = strlen(field);
-
-    if (field_len + 3 > sizeof(pattern))
-    {
-        return false;
-    }
-
-    snprintf(pattern, sizeof(pattern), "\"%s\"", field);
-
-    for (const char *p = json; (p = strstr(p, pattern)) != NULL; p += field_len + 2)
-    {
-        const char *q = skip_json_ws(p + field_len + 2);
-        if (*q != ':')
-        {
-            continue;
-        }
-
-        q = skip_json_ws(q + 1);
-        if (strncmp(q, "true", 4) == 0 && is_json_delim(q[4]))
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool is_shutdown_like_json(const char *json)
-{
-    return json_field_string_equals(json, "method", "shutdown") ||
-           json_field_string_equals(json, "method", "exit") ||
-           json_field_string_equals(json, "type", "shutdown") ||
-           json_field_string_equals(json, "type", "exit") ||
-           json_field_bool_true(json, "shutdown") ||
-           json_field_bool_true(json, "exit");
-}
 
 static char *scheme_dispatch_expression(const char *line)
 {
@@ -265,11 +172,6 @@ static int finish_dispatch(ContextRef ctx, bool success, Value result, void *dat
         return 1;
     }
 
-    if (is_shutdown_like_json(response))
-    {
-        dispatch->should_exit = true;
-    }
-
     free(response);
     return 0;
 }
@@ -306,7 +208,6 @@ int main(int argc, char **argv)
     {
         struct DispatchData bootstrap = {
             .line = "(import (capy lsp worker))",
-            .should_exit = false,
             .status = 0,
         };
         int bootstrap_status = scm_call(scm,
@@ -353,7 +254,6 @@ int main(int argc, char **argv)
         }
 
         dispatch.line = expr;
-        dispatch.should_exit = is_shutdown_like_json(line);
         dispatch.status = 0;
 
         call_status = scm_call(scm,
@@ -370,13 +270,9 @@ int main(int argc, char **argv)
         if (call_status != 0 || dispatch.status != 0)
         {
             exit_code = dispatch.status != 0 ? dispatch.status : call_status;
-            break;
         }
 
-        if (dispatch.should_exit)
-        {
-            break;
-        }
+        break;
     }
 
     scm_free(scm);

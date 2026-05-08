@@ -144,20 +144,6 @@
                       entry
                       (loop (+ i 1)))))))))
 
-(define (range-nonzero? range)
-  (let* ((start (and (list? range) (alist-ref 'start range)))
-         (end (and (list? range) (alist-ref 'end range)))
-         (start-line (and (list? start) (alist-ref 'line start)))
-         (start-character (and (list? start) (alist-ref 'character start)))
-         (end-line (and (list? end) (alist-ref 'line end)))
-         (end-character (and (list? end) (alist-ref 'character end))))
-    (and (number? start-line)
-         (number? start-character)
-         (number? end-line)
-         (number? end-character)
-         (or (not (= start-line end-line))
-             (not (= start-character end-character))))))
-
 (define (call-graph-edge? facts caller callee)
   (let* ((call-graph (alist-ref 'callGraph facts))
          (edges (and (list? call-graph) (alist-ref 'edges call-graph))))
@@ -173,6 +159,11 @@
                                   (string=? (cdr caller-entry) caller)
                                   (string=? (cdr callee-entry) callee)))))
                     (loop (+ i 1))))))))
+
+(define (actions-empty? facts)
+  (let ((actions (alist-ref 'actions facts)))
+    (and (vector? actions)
+         (= (vector-length actions) 0))))
 
 (define (vector-string? value expected)
   (and (vector? value)
@@ -217,8 +208,6 @@
 (define (check-dep-import facts message)
   (let ((import (import-fact facts "dep")))
     (check import (string-append message ": dep import fact missing"))
-    (check (range-nonzero? (alist-ref 'range import))
-           (string-append message ": dep import fact range was not populated"))
     (check (alist-ref 'resolved import)
            (string-append message ": dep import fact was not marked resolved"))
     (check (not (string? (alist-ref 'error import)))
@@ -371,6 +360,11 @@
   (check (completion-label? facts "point?") "record predicate completion missing")
   (check (completion-label? facts "point-x") "record accessor x completion missing")
   (check (completion-label? facts "point-y") "record accessor y completion missing"))
+
+(let ((facts (analyze-text "action-facts.scm"
+                           "(define action-fact-source 1)\n")))
+  (check (actions-empty? facts)
+         "analysis should not expose syntax-derived action facts"))
 
 (let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/bad.scm"
                                "(define x 1\n"

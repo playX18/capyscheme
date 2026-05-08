@@ -23,15 +23,13 @@ pub struct WorkerPool;
 
 impl WorkerPool {
     pub async fn load_path(&self, config: &LspConfig) -> io::Result<WorkerLoadPath> {
-        let mut worker = Worker::spawn(config).await?;
+        let worker = Worker::spawn(config).await?;
         let request = worker_config_request(config);
 
         let result = worker
             .request("load-path", request)
             .await
-            .and_then(|value| serde_json::from_value(value).map_err(invalid_data));
-        worker.shutdown().await;
-        result
+            .and_then(|value| serde_json::from_value(value).map_err(invalid_data))
     }
 
     pub async fn analyze(
@@ -44,7 +42,7 @@ impl WorkerPool {
         workspace_epoch: u64,
         config_fingerprint: u64,
     ) -> io::Result<DocumentFacts> {
-        let mut worker = Worker::spawn(config).await?;
+        let worker = Worker::spawn(config).await?;
         let request = json!({
             "uri": uri,
             "path": path.map(|path| path.to_string_lossy().into_owned()),
@@ -59,12 +57,10 @@ impl WorkerPool {
             "defaultModule": config.default_module,
         });
 
-        let result = worker
-            .request("analyze-document", request)
+        worker
+            .request_once("analyze-document", request)
             .await
-            .and_then(|value| serde_json::from_value(value).map_err(invalid_data));
-        worker.shutdown().await;
-        result
+            .and_then(|value| serde_json::from_value(value).map_err(invalid_data))
     }
 
     pub async fn run_action(
@@ -79,7 +75,7 @@ impl WorkerPool {
         workspace_epoch: u64,
         config_fingerprint: u64,
     ) -> io::Result<ActionOutput> {
-        let mut worker = Worker::spawn(config).await?;
+        let worker = Worker::spawn(config).await?;
         let request = json!({
             "uri": uri,
             "path": path.map(|path| path.to_string_lossy().into_owned()),
@@ -96,12 +92,10 @@ impl WorkerPool {
             "defaultModule": config.default_module,
         });
 
-        let result = worker
-            .request("run-action", request)
+        worker
+            .request_once("run-action", request)
             .await
-            .and_then(|value| serde_json::from_value(value).map_err(invalid_data));
-        worker.shutdown().await;
-        result
+            .and_then(|value| serde_json::from_value(value).map_err(invalid_data))
     }
 }
 
@@ -127,14 +121,15 @@ struct Worker {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
-    next_id: u64,
-    #[allow(dead_code)]
-    broken: bool,
 }
 
 impl Worker {
     async fn spawn(config: &LspConfig) -> io::Result<Self> {
         let executable = worker_executable()?;
+        Self::spawn_with_executable(config, executable).await
+    }
+
+    async fn spawn_with_executable(config: &LspConfig, executable: PathBuf) -> io::Result<Self> {
         let mut command = Command::new(executable);
         command
             .stdin(Stdio::piped())
@@ -164,36 +159,46 @@ impl Worker {
             child,
             stdin,
             stdout: BufReader::new(stdout).lines(),
-            next_id: 1,
-            broken: false,
         })
     }
 
-    async fn shutdown(&mut self) {
-        if !self.broken {
-            let _ = self.request("shutdown", json!({})).await;
-        }
-        let _ = self.child.kill().await;
-    }
-
-    async fn request(
-        &mut self,
+    async fn request_once(
+        mut self,
         method: impl Into<String>,
         params: serde_json::Value,
     ) -> io::Result<serde_json::Value> {
-        if self.broken {
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "capy-lsp-vm worker is no longer usable",
-            ));
-        }
-
         let result = self.request_inner(method, params).await;
-        if result.is_err() {
-            self.broken = true;
-            let _ = self.child.kill().await;
+
+        match timeout(WORKER_TIMEOUT, self.child.wait()).await {
+            Ok(Ok(status)) => {
+                if result.is_ok() && !status.success() {
+                    Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("capy-lsp-vm exited with status {status}"),
+                    ))
+                } else {
+                    result
+                }
+            }
+            Ok(Err(err)) => {
+                if result.is_ok() {
+                    Err(err)
+                } else {
+                    result
+                }
+            }
+            Err(_) => {
+                let _ = self.child.kill().await;
+                if result.is_ok() {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "capy-lsp-vm did not exit after request",
+                    ))
+                } else {
+                    result
+                }
+            }
         }
-        result
     }
 
     async fn request_inner(
@@ -201,8 +206,7 @@ impl Worker {
         method: impl Into<String>,
         params: serde_json::Value,
     ) -> io::Result<serde_json::Value> {
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = 1;
         let request = WorkerRequest {
             id,
             method: method.into(),

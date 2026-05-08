@@ -1,33 +1,12 @@
 use lsp_types::{Range, Url};
 
 mod completions;
-#[cfg(test)]
-mod diagnostics;
 mod imports;
-#[cfg(test)]
-mod symbols;
-#[cfg(test)]
-mod syntax;
 
 use crate::{document::word_at_position, protocol::DocumentFacts};
 
 use completions::{append_keyword_completions, append_symbol_completions};
-#[cfg(test)]
-use diagnostics::balance_diagnostics;
 pub(crate) use imports::import_symbols;
-#[cfg(test)]
-use symbols::{collect_references, collect_symbols};
-
-#[cfg(test)]
-pub fn analyze_syntax(uri: &Url, text: &str) -> DocumentFacts {
-    let mut facts = DocumentFacts::default();
-    facts.diagnostics = balance_diagnostics(text);
-    facts.symbols = collect_symbols(text);
-    append_symbol_completions(&mut facts);
-    append_keyword_completions(&mut facts);
-    facts.references = collect_references(uri, text, &facts.symbols);
-    facts
-}
 
 pub fn fill_missing_facts(_uri: &Url, _text: &str, facts: &mut DocumentFacts) {
     if facts.completions.is_empty() {
@@ -62,27 +41,7 @@ mod tests {
 
     use crate::protocol::{DocumentFacts, ImportFact, SymbolFact, SymbolKindFact};
 
-    use super::{analyze_syntax, fill_missing_facts, import_symbols};
-
-    #[test]
-    fn finds_define_symbols_and_references() {
-        let uri = Url::parse("file:///tmp/test.scm").unwrap();
-        let facts = analyze_syntax(&uri, "(define (square x) (* x x))\n(square 4)\n");
-        assert!(facts.symbols.iter().any(|symbol| symbol.name == "square"));
-        assert!(
-            facts
-                .references
-                .iter()
-                .any(|reference| reference.name == "square")
-        );
-    }
-
-    #[test]
-    fn reports_unclosed_lists() {
-        let uri = Url::parse("file:///tmp/test.scm").unwrap();
-        let facts = analyze_syntax(&uri, "(define x 1\n");
-        assert_eq!(facts.diagnostics.len(), 1);
-    }
+    use super::{fill_missing_facts, import_symbols};
 
     #[test]
     fn fills_missing_completions_from_symbols() {
