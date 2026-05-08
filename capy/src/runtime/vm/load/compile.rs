@@ -9,7 +9,6 @@ use crate::runtime::vm::thunks::make_io_error;
 
 use super::{
     artifact::{LoadArtifact, LoadArtifactKind, artifact_extension, artifact_kind_for_policy},
-    lock::CacheLock,
     paths::{ResolvedLoadPath, resolve_load_path},
     policy::get_execution_policy,
 };
@@ -124,7 +123,22 @@ fn load_precompiled_thunk<'gc>(
     };
 
     let candidate = if compiled_artifact.is_none() && !fresh_auto_compile(ctx) {
-        if build_destination_is_fresh(full_source_path, build_destination) {
+        if let Some(source_time) = full_source_path
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            && let Some(compiled_time) = build_destination
+                .path
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+            && super::paths::compiled_is_fresh(
+                full_source_path,
+                &build_destination.path,
+                source_time,
+                compiled_time,
+            )
+        {
             Some(build_destination.clone())
         } else {
             None
@@ -136,14 +150,6 @@ fn load_precompiled_thunk<'gc>(
     let Some(candidate) = candidate else {
         return Ok(None);
     };
-    let _guard = if compiled_artifact.is_none() {
-        Some(lock_artifact(ctx, &candidate)?)
-    } else {
-        None
-    };
-    if compiled_artifact.is_none() && !build_destination_is_fresh(full_source_path, &candidate) {
-        return Ok(None);
-    }
 
     let loaded = libs.load(&candidate, ctx).unwrap_or(Value::new(false));
     if loaded.is::<Closure>() {
@@ -187,7 +193,6 @@ fn compile_and_load_source<'gc>(
 ) -> Result<Value<'gc>, Value<'gc>> {
     let ResolvedLoadPath::Source {
         source_path,
-        full_source_path,
         build_destination,
         ..
     } = resolved
@@ -202,10 +207,6 @@ fn compile_and_load_source<'gc>(
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
     let cps = compile_file(ctx, &source_path, Some(module))?;
-    let _guard = lock_artifact(ctx, &build_destination)?;
-    if build_destination_is_fresh(&full_source_path, &build_destination) {
-        return load_artifact(ctx, libs, &build_destination);
-    }
     compile_cps_to_destination(ctx, cps, CompilationOptions::default(), &build_destination)?;
 
     load_artifact(ctx, libs, &build_destination)
@@ -248,47 +249,6 @@ pub(super) fn destination_artifact_for_current_policy(path: impl AsRef<Path>) ->
     let kind = artifact_kind_for_policy(get_execution_policy());
     let path = path.as_ref().with_extension(artifact_extension(kind));
     LoadArtifact::new(kind, path)
-}
-
-fn build_destination_is_fresh(full_source_path: &Path, destination: &LoadArtifact) -> bool {
-    if let Some(source_time) = full_source_path
-        .metadata()
-        .ok()
-        .and_then(|metadata| metadata.modified().ok())
-        && let Some(compiled_time) = destination
-            .path
-            .metadata()
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
-    {
-        super::paths::compiled_is_fresh(
-            full_source_path,
-            &destination.path,
-            source_time,
-            compiled_time,
-        )
-    } else {
-        false
-    }
-}
-
-fn lock_artifact<'gc>(ctx: Context<'gc>, artifact: &LoadArtifact) -> Result<CacheLock, Value<'gc>> {
-    CacheLock::acquire(CacheLock::for_artifact(&artifact.path)).map_err(|err| {
-        make_io_error(
-            ctx,
-            "load",
-            Str::new(
-                *ctx,
-                format!(
-                    "Failed to lock cached artifact {}: {err}",
-                    artifact.path.display()
-                ),
-                true,
-            )
-            .into(),
-            &[],
-        )
-    })
 }
 
 #[cfg(test)]
