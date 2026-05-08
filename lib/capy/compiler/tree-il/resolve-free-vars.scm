@@ -1,5 +1,3 @@
-#!nobacktrace
-
 (library (capy compiler tree-il resolve-free-vars)
   (export resolve-free-vars
     make-resolver)
