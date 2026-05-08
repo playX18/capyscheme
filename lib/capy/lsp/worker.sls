@@ -9,8 +9,6 @@
     (srfi 180)
     (capy lsp analysis))
 
-  (define shutdown-requested? #f)
-
   (define key-text-document (string->symbol "textDocument"))
 
   (define (write-to-string obj)
@@ -298,7 +296,6 @@
             (extensions . ,(string-list->vector %load-extensions)))))))
 
   (define (shutdown id)
-    (set! shutdown-requested? #t)
     (success-response
       id
       "shutdown"

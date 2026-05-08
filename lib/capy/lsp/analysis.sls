@@ -108,41 +108,17 @@
       (number? (vector-ref sourcev 2))
       (vector-ref sourcev 2)))
 
-  (define (range-start range key)
-    (let ((start (and (list? range) (assq 'start range))))
-      (and start
-        (let ((entry (and (list? (cdr start)) (assq key (cdr start)))))
+  (define (range-position range endpoint key)
+    (let ((position (and (list? range) (assq endpoint range))))
+      (and position
+        (let ((entry (and (list? (cdr position)) (assq key (cdr position)))))
           (and entry (number? (cdr entry)) (cdr entry))))))
 
-  (define (same-range-start? sourcev range)
-    (and range
-      (let ((line (sourcev->line sourcev))
-            (character (sourcev->character sourcev)))
-        (let ((range-line (range-start range 'line))
-              (range-character (range-start range 'character)))
-          (and line
-            character
-            range-line
-            range-character
-            (= line range-line)
-            (= character range-character)))))))
+  (define (range-start range key)
+    (range-position range 'start key))
 
-(define (make-action action title range)
-  `((action . ,action)
-    (title . ,title)
-    (range . ,range)))
-
-(define (document-actions forms)
-  (let loop ((forms forms) (out '()))
-    (cond
-      [(null? forms) (reverse out)]
-      [else
-        (let* ((sourcev (and (syntax? (car forms)) (syntax-sourcev (car forms))))
-               (range (sourcev->range sourcev))
-               (actions (map (lambda (definition)
-                              (make-action (car definition) (cdr definition) range))
-                         action-definitions)))
-          (loop (cdr forms) (append (reverse actions) out)))])))
+  (define (range-end range key)
+    (range-position range 'end key))
 
   (define (string-index-of text needle start)
     (let ((text-len (string-length text))
@@ -174,6 +150,20 @@
           (loop (+ i 1) (+ line 1) 0)]
         [else
           (loop (+ i 1) line (+ character 1))])))
+
+  (define (range->text text range)
+    (let ((start-line (range-start range 'line))
+          (start-character (range-start range 'character))
+          (end-line (range-end range 'line))
+          (end-character (range-end range 'character)))
+      (and start-line
+        start-character
+        end-line
+        end-character
+        (let ((start (line-character->index text start-line start-character))
+              (end (line-character->index text end-line end-character)))
+          (and (<= start end)
+            (substring text start end))))))
 
   (define (identifier-boundary? text index)
     (or (< index 0)
@@ -2042,21 +2032,7 @@
              (resolved-name (resolved-interface-module-name iface)))
         (values (or resolved-name fallback-name) #t #f)))))
 
-(define (import-range-ref imports name)
-  (let loop ((imports imports))
-    (cond
-      [(null? imports) #f]
-      [(and (list? (car imports))
-          (let ((name-entry (assq 'name (car imports)))
-                (range-entry (assq 'range (car imports))))
-            (and name-entry
-              range-entry
-              (string=? (cdr name-entry) name)
-              (not (zero-range? (cdr range-entry))))))
-        (cdr (assq 'range (car imports)))]
-      [else (loop (cdr imports))])))
-
-(define (tree-il-imports import-specs syntax-import-ranges)
+(define (tree-il-imports import-specs)
   (let loop ((import-specs import-specs) (out '()))
     (cond
       [(null? import-specs) (reverse out)]
@@ -2068,66 +2044,9 @@
             (lambda (name resolved error)
               (loop (cdr import-specs)
                 (if name
-                  (cons (make-import name
-                         (or (and (zero-range? range)
-                              (import-range-ref syntax-import-ranges
-                                (module-name-string name)))
-                           range)
-                         resolved
-                         error)
+                  (cons (make-import name range resolved error)
                     out)
                   out)))))])))
-
-(define (form-imports/syntax form)
-  (let ((datum (syntax->datum form)))
-    (cond
-      [(and (pair? datum) (eq? (car datum) 'import))
-        (syntax-case form ()
-          [(_ spec ...)
-            (let loop ((specs (syntax-list #'(spec ...))) (out '()))
-              (cond
-                [(null? specs) (reverse out)]
-                [else
-                  (let* ((spec-stx (car specs))
-                         (spec (completion-import-spec (syntax->datum spec-stx)))
-                         (range (sourcev->range (syntax-sourcev spec-stx))))
-                    (call-with-values
-                      (lambda () (import-spec-resolution spec))
-                      (lambda (name resolved error)
-                        (loop (cdr specs)
-                          (if name
-                            (cons (make-import name range resolved error) out)
-                            out)))))]))]
-          [_ '()])]
-      [(and (pair? datum) (or (eq? (car datum) 'library)
-                           (eq? (car datum) 'define-library)))
-        (syntax-case form ()
-          [(_ head body ...)
-            (collect-imports/syntax (syntax-list #'(body ...)))]
-          [_ '()])]
-      [(and (pair? datum) (eq? (car datum) 'begin))
-        (syntax-case form ()
-          [(_ body ...)
-            (collect-imports/syntax (syntax-list #'(body ...)))]
-          [_ '()])]
-      [else '()])))
-
-(define (collect-imports/syntax forms)
-  (let loop ((forms forms) (out '()))
-    (if (null? forms)
-      (reverse out)
-      (loop (cdr forms) (append (reverse (form-imports/syntax (car forms))) out)))))
-
-(define (selected-action-forms forms range)
-  (if (not range)
-    forms
-    (let loop ((forms forms) (out '()))
-      (cond
-        [(null? forms) (reverse out)]
-        [(and (syntax? (car forms))
-            (same-range-start? (syntax-sourcev (car forms)) range))
-          (loop (cdr forms) (cons (car forms) out))]
-        [else (loop (cdr forms) out)]))))
 
 (define (pretty-objects objects)
   (let ((port (open-output-string)))
@@ -2148,8 +2067,9 @@
 (define (run-document-action uri text version path action range)
   (set! current-analysis-path path)
   (set! current-analysis-text text)
-  (call-with-values
-    (lambda () (read-forms text))
+  (let ((action-text (or (range->text text range) text)))
+    (call-with-values
+      (lambda () (read-forms action-text))
     (lambda (forms read-diagnostics)
       (if (pair? read-diagnostics)
         `((title . ,(action-title action))
@@ -2162,13 +2082,12 @@
                              =>
                              cdr]
                            [else "invalid syntax"])))))
-        (let ((selected (selected-action-forms forms range)))
-          (if (null? selected)
+          (if (null? forms)
             `((title . ,(action-title action))
               (language . "scheme")
               (content . "no form found for action range\n"))
             (call-with-values
-              (lambda () (expand-forms selected))
+              (lambda () (expand-forms forms))
               (lambda (expanded-forms expand-diagnostics)
                 (if (pair? expand-diagnostics)
                   `((title . ,(action-title action))
@@ -2190,7 +2109,7 @@
                               expanded-forms))))
                     `((title . ,(action-title action))
                       (language . "scheme")
-                      (content . ,content))))))))))))
+                      (content . ,content)))))))))))))
 
 (define (analyze-document uri text version . maybe-path)
   (set! current-analysis-path
@@ -2220,7 +2139,7 @@
                    (completions (dedupe-completions
                                  (append (map symbol->completion symbols)
                                    (collect-tree-il-import-completions import-specs))))
-                   (imports (tree-il-imports import-specs (collect-imports/syntax forms))))
+                   (imports (tree-il-imports import-specs)))
               `((uri . ,(json-nullable-string uri))
                 (version . ,(json-nullable-version version))
                 (engine . "macroexpand")
@@ -2235,4 +2154,4 @@
                 (callGraph . ,call-graph)
                 (completions . ,(list->vector completions))
                 (imports . ,(list->vector imports))
-                (actions . ,(list->vector (document-actions forms)))))))))))
+                (actions . ,(list->vector '()))))))))))
