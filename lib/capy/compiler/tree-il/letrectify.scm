@@ -1,3 +1,5 @@
+#!nobacktrace
+
 (library (capy compiler tree-il letrectify)
   (export letrectify)
   (import
