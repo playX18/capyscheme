@@ -296,12 +296,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         const INLINE_ALLOC_LIMIT: usize = 8 * 1024;
         const HEADER_SIZE: usize = size_of::<HeapObjectHeader>();
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let info = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            info,
-            0,
-        );
+        let info =
+            self.builder
+                .ins()
+                .load(types::I64, ir::MemFlags::trusted().with_can_move(), info, 0);
         let slowpath = self.builder.create_block();
         let merge = self.builder.create_block();
         self.builder.append_block_param(merge, types::I64);

@@ -634,7 +634,10 @@ mod tests {
             HeapTypeInfo::new_static(VTableOf::<'static, Dummy>::VT, 0x2468, 0x8000);
 
         assert_eq!(STATIC_INFO_VALUE.id(), 0x8000);
-        assert!(std::ptr::eq(HeapTypeInfo::lookup(0x8000), &STATIC_INFO_VALUE));
+        assert!(std::ptr::eq(
+            HeapTypeInfo::lookup(0x8000),
+            &STATIC_INFO_VALUE
+        ));
     }
 
     #[test]
