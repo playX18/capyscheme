@@ -142,6 +142,15 @@
                5 'five
                4))
 
+    (let ([h (make-hashtable equal-hash equal?)]
+          [key (make-string 3 #\a)])
+      (hashtable-set! h key 'value)
+      (test (hashtable-ref h (make-string 3 #\a) 'missing) 'value)
+      (test (hashtable-contains? h (make-string 3 #\a)) #t)
+      (hashtable-set! h (make-string 3 #\a) 'updated)
+      (test (hashtable-size h) 1)
+      (test (hashtable-ref h key 'missing) 'updated))
+
     (test (hashtable? (make-eq-hashtable 10)) #t)
     (test (hashtable? (make-eqv-hashtable 10)) #t)
     (test (hashtable? (make-hashtable (lambda (x) 0) equal? 10)) #t)
@@ -165,4 +174,3 @@
 
     ;;
     ))
-
