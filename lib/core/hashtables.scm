@@ -169,7 +169,7 @@
           (assertion-violation 'make-hashtable (format "expected procedure, but got ~r, as argument 1" hash-function)))
         (or (procedure? equiv-function)
           (assertion-violation 'make-hashtable (format "expected procedure, but got ~r, as argument 2" equiv-function)))
-        (make-generic-hashtable hash-function equiv-function (make-core-hashtable 'eq? k) 0 #t))))
+        (make-generic-hashtable hash-function equiv-function (make-core-hashtable 'eqv? k) 0 #t))))
 
   (define make-eq-hashtable
     (lambda opt
