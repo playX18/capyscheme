@@ -26,8 +26,8 @@ impl WorkerPool {
         let worker = Worker::spawn(config).await?;
         let request = worker_config_request(config);
 
-        let result = worker
-            .request("load-path", request)
+        worker
+            .request_once("load-path", request)
             .await
             .and_then(|value| serde_json::from_value(value).map_err(invalid_data))
     }
@@ -293,4 +293,81 @@ fn validate_worker_executable(path: PathBuf, source: &str) -> io::Result<PathBuf
 
 fn invalid_data(err: impl std::error::Error + Send + Sync + 'static) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, err)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        process::{Command as StdCommand, Stdio as StdStdio},
+    };
+
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use crate::config::LspConfig;
+
+    use super::{Worker, WorkerLoadPath};
+
+    #[tokio::test]
+    async fn request_once_does_not_send_shutdown_after_response() {
+        if !StdCommand::new("python3")
+            .arg("--version")
+            .stdout(StdStdio::null())
+            .stderr(StdStdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("worker-requests.log");
+        let worker_path = dir.path().join("fake-capy-lsp-vm");
+        fs::write(
+            &worker_path,
+            format!(
+                r#"#!/usr/bin/env python3
+import os
+import select
+import sys
+
+log_path = os.environ["CAPY_FAKE_WORKER_LOG"]
+line = sys.stdin.readline()
+if not line:
+    sys.exit(1)
+with open(log_path, "a", encoding="utf-8") as log:
+    log.write(line)
+print('{{"id":1,"ok":true,"result":{{"loadPath":[],"extensions":[]}}}}', flush=True)
+ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+if ready:
+    second = sys.stdin.readline()
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write(second)
+"#
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&worker_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&worker_path, permissions).unwrap();
+
+        let mut config = LspConfig::default_for_root(dir.path());
+        config.env.insert(
+            "CAPY_FAKE_WORKER_LOG".into(),
+            log_path.to_string_lossy().into_owned(),
+        );
+        let worker = Worker::spawn_with_executable(&config, worker_path)
+            .await
+            .unwrap();
+
+        let result = worker.request_once("load-path", json!({})).await.unwrap();
+        let _load_path: WorkerLoadPath = serde_json::from_value(result).unwrap();
+
+        let requests = fs::read_to_string(log_path).unwrap();
+        let lines = requests.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1, "{requests}");
+        assert!(lines[0].contains(r#""method":"load-path""#), "{requests}");
+    }
 }
