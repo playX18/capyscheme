@@ -2,6 +2,7 @@
 
 (import
   (capy compiler tree-il resolve-free-vars)
+  (capy compiler tree-il letrectify)
   (capy compiler tree-il primitives)
   (capy pretty-print)
   (capy compiler tree-il))
@@ -45,7 +46,8 @@
               (receive (code mod new-mod) (compile-tree-il exps module)
                 (let* ([code (resolve-primitives code mod)]
                        [code (expand-primitives code)]
-                       [code (resolve-free-vars code)])
+                       [code (resolve-free-vars code)]
+                       [code (letrectify code #t)])
                   (%compile code output-file mod load-thunk?)))))))
       (lambda ()
         ((@@ (capy) %runtime-stats-end-compilation))))))
