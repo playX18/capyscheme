@@ -318,6 +318,11 @@
 
     (define-syntax ~cons
       (syntax-rules ()
+        "Matches a pair pattern.
+
+@signature (~cons car-pattern cdr-pattern)
+@snippet ~cons ${1:car-pattern} ${2:cdr-pattern}
+@kind pattern-macro"
         ((_ () (ap dp) (n) kt ()) ; scan ap, dp for vars
           (submatch () ap (n) (submatch () dp (n) kt ()) ()))
         ((_ xv (ap dp) c kt kf)

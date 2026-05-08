@@ -64,8 +64,8 @@ use navigation::{
 };
 use semantic::{semantic_token_type, semantic_tokens_legend};
 use signature::{
-    callable_signature, completion_detail, completion_snippet, enclosing_call,
-    signature_information,
+    callable_signature, completion_detail, completion_doc_snippet, completion_snippet,
+    enclosing_call, signature_information,
 };
 use util::{
     contains_position, file_name, io_error, io_response_error, lock, workspace_root_from_initialize,
@@ -710,9 +710,12 @@ impl LanguageService {
             if seen.insert(item.label.clone()) {
                 let detail = completion_fact_detail(&item);
                 let signature = callable_signature(&item.label, detail.as_deref());
-                let insert_text = signature
-                    .as_ref()
-                    .and_then(|signature| completion_snippet(item.kind, &item.label, signature));
+                let insert_text =
+                    completion_doc_snippet(item.documentation.as_deref()).or_else(|| {
+                        signature.as_ref().and_then(|signature| {
+                            completion_snippet(item.kind, &item.label, signature)
+                        })
+                    });
                 let insert_text_format = insert_text.as_ref().map(|_| InsertTextFormat::SNIPPET);
                 items.push(CompletionItem {
                     label: item.label,

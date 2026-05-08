@@ -14,6 +14,7 @@
   (define max-syntax-diagnostics 64)
   (define current-analysis-path #f)
   (define current-analysis-text "")
+  (define current-source-doc-cache '())
   (define expand-action "capy.lsp.action.expand")
 
   (define (write-to-string obj)
@@ -1615,17 +1616,106 @@
     (let ((value (and (variable-bound? var)
                   (variable-ref var))))
       (cond
+        [(macro? value) "macro"]
         [(procedure? value) "function"]
         [else "variable"]))))
+
+(define (macro-transformer-procedure value)
+  (and (macro? value)
+       (let ((binding (macro-binding value)))
+         (cond
+           [(procedure? binding) binding]
+           [(and (pair? binding) (procedure? (car binding))) (car binding)]
+           [else #f]))))
+
+(define (binding-documentation value)
+  (cond
+    [(procedure? value)
+      (let ((documentation (procedure-documentation value)))
+        (and (string? documentation)
+          documentation))]
+    [(macro-transformer-procedure value)
+      => (lambda (transformer)
+           (let ((documentation (procedure-documentation transformer)))
+             (and (string? documentation)
+               documentation)))]
+    [else #f]))
 
 (define (variable->documentation var)
   (guard (exn [else #f])
     (let ((value (and (variable-bound? var)
                   (variable-ref var))))
-      (and (procedure? value)
-        (let ((documentation (procedure-documentation value)))
-          (and (string? documentation)
-            documentation))))))
+      (binding-documentation value))))
+
+(define (variable->value var)
+  (guard (exn [else #f])
+    (and (variable-bound? var)
+      (variable-ref var))))
+
+(define (safe-read-file-datums file)
+  (guard (exn [else '()])
+    (call-with-input-file file
+      (lambda (port)
+        (let loop ((out '()))
+          (let ((datum (read port)))
+            (if (eof-object? datum)
+              (reverse out)
+              (loop (cons datum out)))))))))
+
+(define (syntax-rules-docstring form)
+  (and (pair? form)
+    (eq? (car form) 'syntax-rules)
+    (pair? (cdr form))
+    (let ((tail (cdr form)))
+      (cond
+        [(and (pair? tail)
+            (list? (car tail))
+            (pair? (cdr tail))
+            (string? (cadr tail)))
+          (cadr tail)]
+        [(and (pair? tail)
+            (symbol? (car tail))
+            (pair? (cdr tail))
+            (list? (cadr tail))
+            (pair? (cddr tail))
+            (string? (caddr tail)))
+          (caddr tail)]
+        [else #f]))))
+
+(define (source-define-syntax-docstring datum name)
+  (cond
+    [(and (pair? datum)
+        (eq? (car datum) 'define-syntax)
+        (pair? (cdr datum))
+        (eq? (cadr datum) name)
+        (pair? (cddr datum)))
+      (syntax-rules-docstring (caddr datum))]
+    [(pair? datum)
+      (or (source-define-syntax-docstring (car datum) name)
+        (source-define-syntax-docstring (cdr datum) name))]
+    [(vector? datum)
+      (let loop ((i 0))
+        (and (< i (vector-length datum))
+          (or (source-define-syntax-docstring (vector-ref datum i) name)
+            (loop (+ i 1)))))]
+    [else #f]))
+
+(define (source-macro-documentation file source-name)
+  (and file
+    source-name
+    (let ((key (cons file source-name)))
+      (cond
+        [(assoc key current-source-doc-cache) => cdr]
+        [else
+          (let* ((name (string->symbol source-name))
+                 (documentation
+                   (let loop ((datums (safe-read-file-datums file)))
+                     (and (pair? datums)
+                       (or (source-define-syntax-docstring (car datums) name)
+                         (loop (cdr datums)))))))
+            (set! current-source-doc-cache
+              (cons (cons key documentation) current-source-doc-cache))
+            documentation)]))))
 
 (define (string-prefix? prefix text)
   (let ((prefix-len (string-length prefix))
@@ -1744,7 +1834,12 @@
                    (origin-name (variable-origin-module-name iface var))
                    (origin-label (and origin-name (module-name-string origin-name)))
                    (file (and origin-name (safe-module-filename origin-name)))
-                   (documentation (variable->documentation var))
+                   (source-name (import-completion-source-name import-spec label))
+                   (value (variable->value var))
+                   (documentation
+                     (or (binding-documentation value)
+                       (and (macro? value)
+                         (source-macro-documentation file source-name))))
                    (detail (import-completion-detail
                             module-label
                             origin-label
@@ -1754,7 +1849,7 @@
                 detail
                 origin-label
                 file
-                (import-completion-source-name import-spec label)
+                source-name
                 documentation))))
         iface))))
 
@@ -2112,6 +2207,7 @@
                       (content . ,content)))))))))))))
 
 (define (analyze-document uri text version . maybe-path)
+  (set! current-source-doc-cache '())
   (set! current-analysis-path
     (and (pair? maybe-path)
       (string? (car maybe-path))

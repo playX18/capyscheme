@@ -48,7 +48,9 @@ pub(super) fn completion_snippet(
     label: &str,
     signature: &CallableSignature,
 ) -> Option<String> {
-    if kind != SymbolKindFact::Function || signature.params.is_empty() {
+    if !matches!(kind, SymbolKindFact::Function | SymbolKindFact::Macro)
+        || signature.params.is_empty()
+    {
         return None;
     }
     let placeholders = signature
@@ -61,6 +63,34 @@ pub(super) fn completion_snippet(
     Some(format!("{label} {placeholders}"))
 }
 
+pub(super) fn completion_doc_snippet(documentation: Option<&str>) -> Option<String> {
+    documentation.and_then(|documentation| {
+        documentation.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("@snippet ")
+                .map(str::trim)
+                .filter(|snippet| !snippet.is_empty())
+                .map(str::to_owned)
+        })
+    })
+}
+
+pub(super) fn visible_documentation(documentation: &str) -> String {
+    documentation
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !matches!(
+                trimmed.split_once(' '),
+                Some(("@signature", _)) | Some(("@snippet", _)) | Some(("@kind", _))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 pub(super) fn signature_information(
     signature: &CallableSignature,
     documentation: Option<&str>,
@@ -68,8 +98,9 @@ pub(super) fn signature_information(
     SignatureInformation {
         label: signature.label.clone(),
         documentation: documentation
+            .map(visible_documentation)
             .filter(|documentation| !documentation.is_empty())
-            .map(|documentation| Documentation::String(documentation.to_string())),
+            .map(Documentation::String),
         parameters: Some(
             signature
                 .params
@@ -291,5 +322,54 @@ fn active_parameter_index(text: &str) -> u32 {
         started
     } else {
         started.saturating_sub(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        callable_signature, completion_doc_snippet, completion_snippet, visible_documentation,
+    };
+    use crate::protocol::SymbolKindFact;
+
+    #[test]
+    fn callable_signature_reads_signature_tag() {
+        let signature = callable_signature(
+            "~cons",
+            Some("Matches a pair.\n\n@signature (~cons car-pattern cdr-pattern)"),
+        )
+        .expect("signature");
+
+        assert_eq!(signature.label, "(~cons car-pattern cdr-pattern)");
+        assert_eq!(signature.params, ["car-pattern", "cdr-pattern"]);
+    }
+
+    #[test]
+    fn doc_snippet_wins_over_generated_snippet() {
+        let signature =
+            callable_signature("~cons", Some("@signature (~cons car-pattern cdr-pattern)"))
+                .expect("signature");
+        let generated = completion_snippet(SymbolKindFact::Macro, "~cons", &signature);
+        let explicit = completion_doc_snippet(Some(
+            "Matches a pair.\n\n@snippet ~cons ${1:car-pattern} ${2:cdr-pattern}",
+        ));
+
+        assert_eq!(
+            generated.as_deref(),
+            Some("~cons ${1:car-pattern} ${2:cdr-pattern}")
+        );
+        assert_eq!(
+            explicit.as_deref(),
+            Some("~cons ${1:car-pattern} ${2:cdr-pattern}")
+        );
+    }
+
+    #[test]
+    fn visible_documentation_strips_lsp_tags() {
+        let documentation = visible_documentation(
+            "Matches a pair.\n\n@signature (~cons car-pattern cdr-pattern)\n@snippet ~cons ${1:car-pattern} ${2:cdr-pattern}\n@kind pattern-macro",
+        );
+
+        assert_eq!(documentation.trim(), "Matches a pair.");
     }
 }
