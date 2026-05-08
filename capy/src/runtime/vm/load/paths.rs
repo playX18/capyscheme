@@ -15,6 +15,7 @@ use super::{
     artifact::{
         LoadArtifact, artifact_extension, artifact_kind_for_path, artifact_kind_for_policy,
     },
+    lock::CacheLock,
     policy::get_execution_policy,
 };
 
@@ -91,7 +92,11 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     };
 
     if cache_dir != FALLBACK_DIR {
-        let path = Path::new(&cache_dir).join(plan);
+        let cache_root = Path::new(&cache_dir);
+        std::fs::create_dir_all(cache_root).expect("Failed to create cache root directory");
+        let _guard = CacheLock::acquire(cache_root.join(".capy-dir.lock"))
+            .expect("Failed to lock cache directory");
+        let path = cache_root.join(plan);
         if !path.exists() {
             std::fs::create_dir_all(&path).expect("Failed to create cache directory");
         }
@@ -292,6 +297,13 @@ fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> LoadArti
     if let Some(parent) = full_path.parent()
         && !parent.exists()
     {
+        let lock_root = fallback
+            .parent()
+            .map(Path::to_owned)
+            .unwrap_or_else(|| fallback.clone());
+        std::fs::create_dir_all(&lock_root).expect("Failed to create fallback lock directory");
+        let _guard = CacheLock::acquire(lock_root.join(".capy-dir.lock"))
+            .expect("Failed to lock fallback directory");
         std::fs::create_dir_all(parent).expect("Failed to create fallback directory");
     }
 

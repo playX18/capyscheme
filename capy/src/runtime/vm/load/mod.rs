@@ -2,6 +2,7 @@ use crate::runtime::Context;
 
 pub(crate) mod artifact;
 mod compile;
+mod lock;
 mod paths;
 pub(crate) mod policy;
 mod scheme;
