@@ -13,6 +13,7 @@
 (define origin-path "/tmp/capy-lsp-refresh-test/origin.sls")
 (define reexport-path "/tmp/capy-lsp-refresh-test/reexport.sls")
 (define consumer-path "/tmp/capy-lsp-refresh-test/consumer.sls")
+(define docmacro-path "/tmp/capy-lsp-refresh-test/docmacro.sls")
 (define config-root "/tmp/capy-lsp-worker-config-test")
 (define config-dep-path "/tmp/capy-lsp-worker-config-test/wcdep.workertest")
 
@@ -91,6 +92,14 @@
            (and documentation-entry
                 (string? (cdr documentation-entry))
                 (string-contains? (cdr documentation-entry) text))))))
+
+(define (completion-kind? facts label kind)
+  (let ((entry (completion-fact facts label)))
+    (and entry
+         (let ((kind-entry (assq 'kind entry)))
+           (and kind-entry
+                (string? (cdr kind-entry))
+                (string=? (cdr kind-entry) kind))))))
 
 (define (symbol-fact facts label)
   (let ((symbols (alist-ref 'symbols facts)))
@@ -234,6 +243,8 @@
             "(library (reexport) (export origin-a) (import (rnrs) (origin)))\n")
 (write-file consumer-path
             "(library (consumer) (export dep-use) (import (rnrs) (only (dep) dep-a)) (define dep-use 1))\n")
+(write-file docmacro-path
+            "(library (docmacro)\n  (export documented-syntax)\n  (import (rnrs))\n  (define-syntax documented-syntax\n    (syntax-rules ()\n      \"Documented syntax.\\n\\n@signature (documented-syntax value)\\n@snippet documented-syntax ${1:value}\"\n      ((_ value) value))))\n")
 (write-file config-dep-path
             "(library (wcdep) (export wc-value) (import (rnrs)) (define wc-value 7))\n")
 
@@ -339,6 +350,33 @@
          "documented local function completion detail did not include signature")
   (check (completion-documentation-contains? facts "documented" "Local function docs.")
          "documented local function completion documentation missing"))
+
+(let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/local-doc-tags.scm"
+                               "(define (documented-tags value)\n  \"Local function docs.\\n\\n@signature (documented-tags item)\\n@snippet documented-tags ${1:item}\"\n  (+ value 1))\n(documented-tags 41)\n"
+                               1
+                               "/tmp/capy-lsp-refresh-test/local-doc-tags.scm")))
+  (check (completion-detail-contains? facts "documented-tags" "(documented-tags value)")
+         "documented local function completion detail lost tree-il signature")
+  (check (completion-documentation-contains? facts "documented-tags" "@signature (documented-tags item)")
+         "documented local function completion documentation missing @signature tag"))
+
+(let ((facts (analyze-text "imported-macro-doc.scm"
+                           "(import (docmacro))\n(documented-syntax 1)\n")))
+  (check (completion-kind? facts "documented-syntax" "macro")
+         "documented syntax-rules macro completion kind was not macro")
+  (check (completion-documentation-contains? facts "documented-syntax" "Documented syntax.")
+         "documented syntax-rules macro completion documentation missing")
+  (check (completion-detail-contains? facts "documented-syntax" "@signature (documented-syntax value)")
+         "documented syntax-rules macro completion detail missing docstring metadata"))
+
+(let ((facts (analyze-text "srfi-257-doc.scm"
+                           "(import (srfi srfi-257))\n(match '(1 . 2) [(~cons a b) a])\n")))
+  (check (completion-kind? facts "~cons" "macro")
+         "~cons completion kind was not macro")
+  (check (completion-documentation-contains? facts "~cons" "Matches a pair pattern.")
+         "~cons completion documentation missing docstring")
+  (check (completion-detail-contains? facts "~cons" "@signature (~cons car-pattern cdr-pattern)")
+         "~cons completion detail missing signature metadata"))
 
 (let ((facts (analyze-document "file:///tmp/capy-lsp-refresh-test/body-local-doc.scm"
                                "(let ()\n  (define (inner x) \"Inner docs.\" (+ x 1))\n  (inner 1))\n"

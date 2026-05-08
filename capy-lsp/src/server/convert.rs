@@ -9,7 +9,7 @@ use crate::protocol::{
     SymbolKindFact,
 };
 
-use super::signature::callable_signature;
+use super::signature::{callable_signature, visible_documentation};
 
 pub(super) fn to_diagnostic(fact: DiagnosticFact) -> Diagnostic {
     Diagnostic::new(
@@ -37,7 +37,8 @@ pub(super) fn format_hover_content(
     detail: &str,
     documentation: Option<&str>,
 ) -> MarkupContent {
-    let lines = detail_lines(detail);
+    let visible_detail = visible_documentation(detail);
+    let lines = detail_lines(&visible_detail);
     if let Some(content) = format_import_hover_content(name, name, &lines, documentation) {
         return content;
     }
@@ -53,7 +54,8 @@ pub(super) fn format_hover_content(
                 .join("\n"),
         );
     }
-    let docs = detail_lines(documentation.unwrap_or(""));
+    let visible_docs = documentation.map(visible_documentation).unwrap_or_default();
+    let docs = detail_lines(&visible_docs);
     if !docs.is_empty() {
         value.push_str("\n\n");
         value.push_str(
@@ -73,7 +75,8 @@ pub(super) fn format_hover_content(
 
 pub(super) fn format_completion_hover_content(item: &CompletionFact) -> MarkupContent {
     let detail = completion_fact_detail(item).unwrap_or_else(|| "identifier".into());
-    let lines = detail_lines(&detail);
+    let visible_detail = visible_documentation(&detail);
+    let lines = detail_lines(&visible_detail);
     let declaration = completion_hover_declaration(item, &detail);
     if let Some(content) = format_import_hover_content(
         &item.label,
@@ -139,7 +142,8 @@ fn format_import_hover_content(
         );
     }
 
-    let docs = detail_lines(documentation.unwrap_or(""));
+    let visible_docs = documentation.map(visible_documentation).unwrap_or_default();
+    let docs = detail_lines(&visible_docs);
     if !docs.is_empty() {
         value.push_str("\n\n");
         value.push_str(
