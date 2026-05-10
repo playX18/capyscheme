@@ -10,7 +10,6 @@ capy.heap
 bin/capy
 bin/capyc
 bin/capy-*
-!bin/capy-lsp-vm.c
 bin/capyc-*
 stage-*
 dist
