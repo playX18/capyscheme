@@ -14,6 +14,8 @@
 - *(compiler)* Optimize rest arguments to direct access - ([76e7a05](https://codeberg.org/playXE/capy/commit/76e7a056cf0b938fd37a38e2bdd3e24503cb7f81))
 - *(control)* Implement call-in-continuation and add tests for its behavior - ([7fce732](https://codeberg.org/playXE/capy/commit/7fce732bfd1228654c1899cf1c8c0424be0882f8))
 - *(library)* Auto-import capy prelims - ([3116a3f](https://codeberg.org/playXE/capy/commit/3116a3f471f7f1bf229a60216029ef0b2b09bc38))
+- *(lsp)* Dsl docstring - ([a07efec](https://codeberg.org/playXE/capy/commit/a07efec53c580c0df346669a90a1da5882417352))
+- *(lsp)* One shot workers - ([c9c26a2](https://codeberg.org/playXE/capy/commit/c9c26a227528e9d42e112b82b4fac89b0855529d))
 - *(lsp)* Enhance hover functionality and add import metadata support - ([529e860](https://codeberg.org/playXE/capy/commit/529e8604b61920530b978747c8dcefd102796934))
 - *(lsp)* Build workspace index on worker side - ([88fd7fc](https://codeberg.org/playXE/capy/commit/88fd7fc4f760ab5a9efc78fc0851e15b999336ee))
 - *(lsp)* CallGraph - ([a7d2ebe](https://codeberg.org/playXE/capy/commit/a7d2ebec1d75a3fe8aa3051aa2fb2dd1e7fb66e5))
@@ -29,16 +31,20 @@
 - *(ssa)* Inline allocation - ([1fd7b1b](https://codeberg.org/playXE/capy/commit/1fd7b1b2845547cacbdd03ca5fcd7aa74c4ccd91))
 - *(tests)* Use srfi-64 test runner for racket/r6rs test suite - ([0ca56c9](https://codeberg.org/playXE/capy/commit/0ca56c9ed305d6528c9c56be31d37a483dd74fba))
 - *(vscode)* Add Capy Scheme LSP extension - ([180ec16](https://codeberg.org/playXE/capy/commit/180ec160da7aa46f8b6c981d6a59961ef96e036f))
+- Add cache lock - ([499ad32](https://codeberg.org/playXE/capy/commit/499ad32545131a1168e7d4326b2870f88600ed26))
+- Letrectify in self-hosted compiler - ([99f3001](https://codeberg.org/playXE/capy/commit/99f30016026c1e107b2f74299137623db5f11e99))
 - Use tree il as source of truth for lsp - ([842dc7a](https://codeberg.org/playXE/capy/commit/842dc7a1a4c6e343952aa8ebb83196eb70537780))
 
 ### 🐛 Bug Fixes
 
 - *(capy/gc)* Mutator always used 8 bytes alignment, use max(alignment, 8) - ([577c283](https://codeberg.org/playXE/capy/commit/577c283c91b61dcb7b7e930437838aa359542f7d))
+- *(core)* Make generic hashtables work properly - ([3becc08](https://codeberg.org/playXE/capy/commit/3becc08906b43fb0835fb84fe45c23b7280dc82b))
 - *(cps)* Lower to wrong arity condition instead of panicking in compiler - ([4ecdeca](https://codeberg.org/playXE/capy/commit/4ecdecaa0f4c1a929fe339b4aa8ea12d756d7c6e))
 - *(lib)* Fix #%app imports - ([23d5085](https://codeberg.org/playXE/capy/commit/23d50859053535873404050e35ccee128280173d))
 - *(lib/capy)* Better threading - ([712093f](https://codeberg.org/playXE/capy/commit/712093f4a25348acec0393f9325d51d6814b046b))
 - *(lib/core)* Mutex protect data - ([e551a91](https://codeberg.org/playXE/capy/commit/e551a911a1704e6744ff456c2491a27dfa2d1742))
 - *(psyntax)* Stabilize implicit #%app bootstrap - ([5df6bc0](https://codeberg.org/playXE/capy/commit/5df6bc03e6114e320377034c9bf6496c2f03d325))
+- Print subform from syntax-violation correctly - ([45c8c4e](https://codeberg.org/playXE/capy/commit/45c8c4e41bbf68b73c34a47a95dc9280426c41a4))
 - Empty values now report arity error where applicable instead of silent crash - ([c5704cb](https://codeberg.org/playXE/capy/commit/c5704cb3d047d796d559baa5a9266bb78b0f9b30))
 - Dead code - ([2579e97](https://codeberg.org/playXE/capy/commit/2579e972148f3b19c5aec6575dd2b6104e4fa81f))
 - Remove redundant/outdated tests - ([47c0fd4](https://codeberg.org/playXE/capy/commit/47c0fd495b645fe08a0d1476eb860ad0d982cffc))
@@ -54,6 +60,7 @@
 - *(lsp)* Restart on file changes instead of fighting with autoload - ([67e3cb8](https://codeberg.org/playXE/capy/commit/67e3cb8ae1302353deff8f567a6b01c6a124c5b8))
 - *(lsp)* Invalidate files differently - ([1e1b74c](https://codeberg.org/playXE/capy/commit/1e1b74c0cfd9311fdf0d22532371821e546ac08d))
 - *(runtime)* Better source handling - ([83a33e2](https://codeberg.org/playXE/capy/commit/83a33e2a32f53303269c26fc022291a2b975d3f6))
+- #!nobacktrace in letrectify and resolve-free-vars - ([7365caa](https://codeberg.org/playXE/capy/commit/7365caa3337836c785ce22cc125e8a728d698b60))
 
 ### 📚 Documentation
 
@@ -61,6 +68,7 @@
 
 ### 🧪 Testing
 
+- Add generic hashtable test to r6rs test suite - ([d3ed8ba](https://codeberg.org/playXE/capy/commit/d3ed8bac49a727b1cfc6dcd55b3d113d45443c54))
 - Cover implicit #%app expansion - ([b6f2633](https://codeberg.org/playXE/capy/commit/b6f263318e24bedb7556b847e6e0dcde8422b13d))
 
 ### ⚙️ Miscellaneous Tasks
