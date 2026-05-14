@@ -289,6 +289,21 @@ impl<'gc> Term<'gc> {
                 }
             }
 
+            Self::Raise { args, .. } => {
+                if args
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        Atom::Local(l) => Some(*l),
+                        _ => None,
+                    })
+                    .any(|arg| ns.contains(&arg))
+                {
+                    SingleValueSet::Top
+                } else {
+                    SingleValueSet::Bottom
+                }
+            }
+
             Self::App(Atom::Local(fun), retc, args, _) => {
                 if args
                     .iter()
@@ -671,6 +686,33 @@ impl<'gc> Term<'gc> {
                     return self;
                 }
                 TermRef::new(*ctx, Self::Continue(k, args, *src))
+            }
+
+            Self::Raise {
+                kind,
+                args: prev_args,
+                source,
+            } => {
+                let args = prev_args
+                    .iter()
+                    .map(|arg| arg.subst(ctx, subst))
+                    .collect::<Vec<_>>();
+                let args = if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
+                    *prev_args
+                } else {
+                    Array::from_slice(*ctx, args)
+                };
+                if Gc::ptr_eq(args, *prev_args) {
+                    return self;
+                }
+                TermRef::new(
+                    *ctx,
+                    Self::Raise {
+                        kind: *kind,
+                        args,
+                        source: *source,
+                    },
+                )
             }
 
             Self::If {

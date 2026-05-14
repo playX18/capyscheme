@@ -296,7 +296,23 @@ macro_rules! with_cps {
         }
     };
 
-    // TODO: Add `raise` macro branch when Term::Raise is implemented
+    ($builder: ident; raise $kind: expr, ($($arg: expr),*) $(@ $src: expr)?) => {
+        {
+            #[allow(unused_mut, unused_assignments)]
+            let mut src = $crate::runtime::value::Value::new(false);
+            $(
+                src = $src;
+            )*
+            $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Term::Raise {
+                kind: $kind,
+                args: $crate::rsgc::alloc::array::Array::from_slice(
+                    *$builder.ctx,
+                    &[$($arg.into()),*],
+                ),
+                source: src,
+            })
+        }
+    };
 
     ($builder: ident; continue $k: ident $args: ident ... $(@ $src : expr)?) => {
         {
@@ -314,7 +330,21 @@ macro_rules! with_cps {
         }
     };
 
-    // TODO: Add `raise` (splat) macro branch when Term::Raise is implemented
+    ($builder: ident; raise $kind: expr, $args: ident ... $(@ $src : expr)?) => {
+        {
+            #[allow(unused_mut, unused_assignments)]
+            let mut src = $crate::runtime::value::Value::new(false);
+            $(
+                src = $src;
+            )*
+            let args = $crate::rsgc::alloc::array::Array::from_slice(*$builder.ctx, $args);
+            $crate::rsgc::Gc::new(*$builder.ctx, $crate::cps::term::Term::Raise {
+                kind: $kind,
+                args,
+                source: src,
+            })
+        }
+    };
 
     ($builder: ident; $callee: ident ($k: ident $(,)? $($arg:ident),*) @ $src: expr) => {
         {

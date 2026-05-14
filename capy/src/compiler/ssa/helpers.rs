@@ -8,7 +8,7 @@ use crate::{
     compiler::ssa::{AllocInfoPreset, SSABuilder},
     cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
-    runtime::value::{Pair, Symbol, TypeCode8, TypeCode16, Value, Vector},
+    runtime::value::{Pair, TypeCode8, TypeCode16, Value, Vector},
 };
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
@@ -485,41 +485,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder
             .ins()
             .brif(has_typ, then, then_args, else_, else_args);
-    }
-
-    pub fn wrong_num_args(&mut self, proc: &str, got: usize, expected: isize) {
-        let c = Symbol::from_str(self.module_builder.ctx, proc);
-        let c = self.module_builder.intern_constant(c.into()).unwrap();
-        let c = self.import_data(c);
-
-        let addr = self.builder.ins().global_value(types::I64, c);
-        let value =
-            self.builder
-                .ins()
-                .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0);
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let got = self.builder.ins().iconst(types::I64, got as i64);
-        let expected = self.builder.ins().iconst(types::I64, expected as i64);
-        let call_args = self.prepare_call_args(&[]);
-        let from = self.builder.ins().iconst(types::I64, 0);
-        let err = self.builder.ins().call(
-            self.thunks.wrong_number_of_args_regs,
-            &[
-                ctx,
-                value,
-                got,
-                expected,
-                call_args.argc,
-                call_args.args[0],
-                call_args.args[1],
-                call_args.args[2],
-                call_args.args[3],
-                call_args.overflow,
-                from,
-            ],
-        );
-        let val = self.builder.inst_results(err)[0];
-        self.raise_to_exception_handler(val);
     }
 
     pub fn handle_thunk_call_result(

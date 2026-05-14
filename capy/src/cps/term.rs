@@ -10,7 +10,7 @@ use crate::rsgc::{
 
 use crate::{
     expander::core::LVarRef,
-    runtime::{Context, value::Value},
+    runtime::{Context, value::Value, vm::exceptions::RaiseKind},
 };
 
 /// Array of CPS atom references.
@@ -44,6 +44,12 @@ pub enum Term<'gc> {
     Continue(LVarRef<'gc>, Atoms<'gc>, Value<'gc>),
 
     App(Atom<'gc>, LVarRef<'gc>, Atoms<'gc>, Value<'gc>),
+
+    Raise {
+        kind: RaiseKind,
+        args: Atoms<'gc>,
+        source: Value<'gc>,
+    },
 
     If {
         test: Atom<'gc>,
@@ -247,6 +253,7 @@ impl<'gc> Term<'gc> {
     pub fn source(&self) -> Value<'gc> {
         match self {
             Term::Continue(_, _, source) | Term::App(_, _, _, source) => *source,
+            Term::Raise { source, .. } => *source,
             Term::If { .. } => Value::new(false),
             Term::Letk(_, body) | Term::Fix(_, body) | Term::Let(_, _, body) => body.source(),
         }
@@ -352,6 +359,12 @@ impl<'gc> Term<'gc> {
                 }
             }
 
+            Term::Raise { args, .. } => {
+                for arg in args.iter() {
+                    arg.count_refs();
+                }
+            }
+
             Term::If {
                 test,
                 consequent,
@@ -409,7 +422,9 @@ where
         let x = pre(ctx, term);
 
         match &*x {
-            Term::App(..) | Term::Continue(..) | Term::If { .. } => post(ctx, x),
+            Term::App(..) | Term::Continue(..) | Term::Raise { .. } | Term::If { .. } => {
+                post(ctx, x)
+            }
             Term::Let(binding, exp, body) => {
                 let nbody = rec(ctx, pre, post, *body);
                 if Gc::ptr_eq(nbody, *body) {
@@ -505,7 +520,7 @@ pub fn fold_cps<'gc, ACC>(
         let acc = down(ctx, acc, term);
 
         let acc = match &*term {
-            Term::App(..) | Term::Continue(..) | Term::If { .. } => acc,
+            Term::App(..) | Term::Continue(..) | Term::Raise { .. } | Term::If { .. } => acc,
 
             Term::Let(_, _exp, body) => foldts(ctx, down, up, acc, *body),
 

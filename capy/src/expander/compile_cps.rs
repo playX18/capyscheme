@@ -10,6 +10,7 @@ use crate::runtime::Context;
 use crate::runtime::prelude::*;
 use crate::runtime::value::{Str, Vector};
 use crate::runtime::value::{TypeCode8, Value};
+use crate::runtime::vm::exceptions::RaiseKind;
 use crate::{list, static_symbols, with_cps};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -78,6 +79,65 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
     let func = cps_func(&mut builder, &proc, bind);
 
     func
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{Scheme, vm::exceptions::RaiseKind};
+
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(f);
+    }
+
+    #[test]
+    fn assertion_violation_lowers_directly_to_raise_term() {
+        with_ctx(|ctx| {
+            let mut cps = CPSBuilder::new(ctx);
+            let who = Symbol::from_str(ctx, "car").into();
+            let irritant = Atom::Constant(Value::new(1));
+
+            let term =
+                assertion_violation(&mut cps, Value::new(false), who, "not a pair", &[irritant]);
+
+            let Term::Raise { kind, args, .. } = *term else {
+                panic!("assertion_violation should lower directly to Term::Raise");
+            };
+
+            assert_eq!(kind, RaiseKind::AssertionViolation);
+            assert_eq!(args.len(), 3);
+            assert_eq!(args[0], Atom::Constant(who));
+            assert_eq!(args[2], irritant);
+        });
+    }
+
+    #[test]
+    fn wrong_number_of_arguments_lowers_to_specific_raise_term() {
+        with_ctx(|ctx| {
+            let mut cps = CPSBuilder::new(ctx);
+
+            let term = primitive_wrong_number_of_arguments(
+                &mut cps,
+                Value::new(false),
+                RaiseKind::WrongNumberOfArgumentsCar,
+                5,
+            );
+
+            let Term::Raise { kind, args, .. } = *term else {
+                panic!("wrong_number_of_arguments should lower directly to Term::Raise");
+            };
+
+            assert_eq!(kind, RaiseKind::WrongNumberOfArgumentsCar);
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0], Atom::Constant(Value::new(5)));
+        });
+    }
 }
 
 pub type PrimitiveTransformer = for<'a, 'gc, 'b> fn(
@@ -169,31 +229,33 @@ pub fn assertion_violation<'gc>(
     message: &str,
     irritants: &[Atom<'gc>],
 ) -> TermRef<'gc> {
-    let assertion_violation = Value::new(Symbol::from_str(cps.ctx, "assertion-violation"));
-    let module = list!(cps.ctx, Value::new(Symbol::from_str(cps.ctx, "capy")));
     let message = Atom::Constant(Value::new(Str::new(*cps.ctx, message, true)));
     let opc = Atom::Constant(opc);
-
-    module_box(
-        cps,
-        |cps, var| {
-            let mut args = vec![opc, message];
-            args.extend_from_slice(irritants);
-
-            with_cps!(cps;
-                letk kretk (xretk) = with_cps!(cps;
-                    let value = #% "variable-ref" (var) @ src;
-                    value(xretk,  args...) @ src
-                );
-                let retk = #% "#%default-retk" () @ src;
-                continue kretk (retk)
-            )
+    let mut args = vec![opc, message];
+    args.extend_from_slice(irritants);
+    Gc::new(
+        *cps.ctx,
+        Term::Raise {
+            kind: RaiseKind::AssertionViolation,
+            args: Array::from_slice(*cps.ctx, &args),
+            source: src,
         },
-        module,
-        assertion_violation,
-        true,
-        true,
-        src,
+    )
+}
+
+pub fn primitive_wrong_number_of_arguments<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    src: Value<'gc>,
+    kind: RaiseKind,
+    got: usize,
+) -> TermRef<'gc> {
+    Gc::new(
+        *cps.ctx,
+        Term::Raise {
+            kind,
+            args: Array::from_slice(*cps.ctx, &[Atom::Constant(Value::new(got as i32))]),
+            source: src,
+        },
     )
 }
 
@@ -362,7 +424,12 @@ primitive_transformers!(
 
     "car" => car(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
+            return Some(primitive_wrong_number_of_arguments(
+                cps,
+                src,
+                RaiseKind::WrongNumberOfArgumentsCar,
+                args.len(),
+            ));
         };
 
         Some(
@@ -375,7 +442,12 @@ primitive_transformers!(
 
     "cdr" => cdr(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
+            return Some(primitive_wrong_number_of_arguments(
+                cps,
+                src,
+                RaiseKind::WrongNumberOfArgumentsCdr,
+                args.len(),
+            ));
         };
 
         Some(
@@ -388,7 +460,12 @@ primitive_transformers!(
 
     "set-car!" => set_car(cps, src, op, args, k) {
         let Some((pair, value)) = (args.len() == 2).then(|| (args[0], args[1])) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
+            return Some(primitive_wrong_number_of_arguments(
+                cps,
+                src,
+                RaiseKind::WrongNumberOfArgumentsSetCar,
+                args.len(),
+            ));
         };
         let undef = Atom::Constant(Value::undefined());
         Some(ensure_pair(cps, src, op, pair, |cps, pair| {
@@ -401,7 +478,12 @@ primitive_transformers!(
 
     "set-cdr!" => set_cdr(cps, src, op, args, k) {
         let Some((pair, value)) = (args.len() == 2).then(|| (args[0], args[1])) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
+            return Some(primitive_wrong_number_of_arguments(
+                cps,
+                src,
+                RaiseKind::WrongNumberOfArgumentsSetCdr,
+                args.len(),
+            ));
         };
         let undef = Atom::Constant(Value::undefined());
         Some(ensure_pair(cps, src, op, pair, |cps, pair| {
@@ -414,7 +496,12 @@ primitive_transformers!(
 
     "variable-ref" => variable_ref(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
+            return Some(primitive_wrong_number_of_arguments(
+                cps,
+                src,
+                RaiseKind::WrongNumberOfArgumentsVariableRef,
+                args.len(),
+            ));
         };
 
         Some(ensure_variable(cps, src, op, x, |cps, var| {
@@ -427,7 +514,12 @@ primitive_transformers!(
 
     "variable-set!" => variable_set(cps, src, op, args, k) {
         let Some((var, value)) = (args.len() == 2).then(|| (args[0], args[1])) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
+            return Some(primitive_wrong_number_of_arguments(
+                cps,
+                src,
+                RaiseKind::WrongNumberOfArgumentsVariableSet,
+                args.len(),
+            ));
         };
         let undef = Atom::Constant(Value::undefined());
         Some(ensure_variable(cps, src, op, var, |cps, var| {
@@ -440,7 +532,12 @@ primitive_transformers!(
 
     "variable-bound?" => variable_bound(cps, src, op, args, k) {
         let Some(x) = (args.len() == 1).then(|| args[0]) else {
-            return Some(assertion_violation(cps, src, op, "wrong number of arguments", args));
+            return Some(primitive_wrong_number_of_arguments(
+                cps,
+                src,
+                RaiseKind::WrongNumberOfArgumentsVariableBound,
+                args.len(),
+            ));
         };
 
         Some(ensure_variable(cps, src, op, x, |cps, var| {
