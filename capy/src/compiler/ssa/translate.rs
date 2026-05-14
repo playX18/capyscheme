@@ -331,16 +331,36 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .collect()
     }
 
-    fn raise_wrong_number_of_args(&mut self, got: ir::Value, expected: isize) {
+    fn emit_wrong_arity_trampoline_call(
+        &mut self,
+        actual_argc: ir::Value,
+        retk_or_zero: ir::Value,
+        got: ir::Value,
+        expected: isize,
+    ) {
         let got = self.linear_fixnum_from_usize_value(got);
         let expected = self
             .builder
             .ins()
             .iconst(types::I64, Value::new(expected as i32).bits() as i64);
-        self.emit_raise(
-            RaiseKind::WrongNumberOfArguments,
-            &[self.rator, got, expected],
-            Value::new(false),
+        let target = self.module_builder.module.declare_func_in_func(
+            self.module_builder.wrong_arity_trampoline,
+            &mut self.builder.func,
+        );
+        let undefined = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        self.builder.ins().return_call(
+            target,
+            &[
+                self.rator,
+                actual_argc,
+                retk_or_zero,
+                got,
+                expected,
+                undefined,
+            ],
         );
     }
 
@@ -348,15 +368,78 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let source = self.target_source();
         let is_function = self.target_is_function();
         self.set_debug_loc(source);
-        let overflow = self.overflow_base_from_argc(argc);
         if is_function {
             self.check_yield(self.rator, argc, args);
         }
 
+        if self.load_fixed_arity_register_arguments(argc, args) {
+            if !matches!(&self.target, ContOrFunc::Procedure(_)) {
+                self.load_free_vars();
+            }
+            return;
+        }
+
+        let overflow = self.overflow_base_from_argc(argc);
         if !matches!(&self.target, ContOrFunc::Procedure(_)) {
             self.load_free_vars();
         }
         self.load_arguments(argc, args, overflow);
+    }
+
+    fn load_fixed_arity_register_arguments(
+        &mut self,
+        argc: ir::Value,
+        args: [ir::Value; REGISTER_ARG_COUNT],
+    ) -> bool {
+        let (params, rest) = self.target_params();
+        if rest.is_some() || self.target_linear_variadic().is_some() {
+            return false;
+        }
+
+        let return_cont = self.target_return_cont();
+        let first_arg = usize::from(return_cont.is_some());
+        let expected_argc = first_arg + params.len();
+        if expected_argc > REGISTER_ARG_COUNT {
+            return false;
+        }
+
+        let exact = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, argc, expected_argc as i64);
+        let succ = self.builder.create_block();
+        let err = self.builder.create_block();
+        self.builder.func.layout.set_cold(err);
+        self.builder.ins().brif(exact, succ, &[], err, &[]);
+
+        self.builder.switch_to_block(err);
+        {
+            let got = if first_arg == 0 {
+                argc
+            } else {
+                self.builder.ins().iadd_imm(argc, -(first_arg as i64))
+            };
+            let expected = params.len() as isize;
+            let retk_or_zero = return_cont
+                .map(|_| args[0])
+                .unwrap_or_else(|| self.builder.ins().iconst(types::I64, 0));
+            self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
+        }
+
+        self.builder.switch_to_block(succ);
+        if let Some(return_cont) = return_cont {
+            let retk = args[0];
+            self.debug_local(return_cont, retk);
+            self.variables.insert(return_cont, VarDef::Value(retk));
+        }
+
+        for (i, param) in params.iter().enumerate() {
+            let value = args[first_arg + i];
+            self.variables.insert(*param, VarDef::Value(value));
+            self.debug_local(*param, value);
+        }
+
+        true
     }
 
     pub(crate) fn current_retk_value(&mut self) -> ir::Value {
@@ -667,7 +750,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = -(params.len() as isize);
-                    self.raise_wrong_number_of_args(got, expected);
+                    let retk_or_zero = self.current_retk_value();
+                    self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
                 }
                 self.builder.switch_to_block(succ);
                 {
@@ -745,7 +829,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = params.len() as isize;
-                    self.raise_wrong_number_of_args(got, expected);
+                    let retk_or_zero = self.current_retk_value();
+                    self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
                 }
                 self.builder.switch_to_block(succ);
                 for (i, param) in params.iter().enumerate() {
@@ -813,7 +898,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = 0isize;
-                    self.raise_wrong_number_of_args(got, expected);
+                    let retk_or_zero = self.current_retk_value();
+                    self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
                 }
 
                 self.builder.switch_to_block(succ);
@@ -931,30 +1017,32 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     /// Prepare register-call arguments. The first four logical arguments are
     /// returned as SSA values; logical arg4 and later are stored at the current runstack.
     pub fn prepare_call_args(&mut self, args: &[ir::Value]) -> RegisterCallArgs {
-        let state = self.state_ptr();
-        let runstack = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack) as i32,
-        );
         let overflow_count = args.len().saturating_sub(REGISTER_ARG_COUNT);
-        let new_runstack = self.builder.ins().iadd_imm(
-            runstack,
-            (overflow_count * std::mem::size_of::<Value>()) as i64,
-        );
-        self.builder.ins().store(
-            ir::MemFlags::trusted().with_can_move(),
-            new_runstack,
-            state,
-            offset_of!(State, runstack) as i32,
-        );
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let overflow = if overflow_count == 0 {
+            zero
+        } else {
+            let state = self.state_ptr();
+            let runstack = self.builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                state,
+                offset_of!(State, runstack) as i32,
+            );
+            let new_runstack = self.builder.ins().iadd_imm(
+                runstack,
+                (overflow_count * std::mem::size_of::<Value>()) as i64,
+            );
+            self.builder.ins().store(
+                ir::MemFlags::trusted().with_can_move(),
+                new_runstack,
+                state,
+                offset_of!(State, runstack) as i32,
+            );
+            runstack
+        };
 
-        let undefined = self
-            .builder
-            .ins()
-            .iconst(types::I64, Value::undefined().bits() as i64);
-        let mut regs = [undefined; REGISTER_ARG_COUNT];
+        let mut regs = [zero; REGISTER_ARG_COUNT];
         for (i, arg) in args.iter().enumerate() {
             if i < REGISTER_ARG_COUNT {
                 regs[i] = *arg;
@@ -962,7 +1050,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.ins().store(
                     ir::MemFlags::trusted().with_can_move(),
                     *arg,
-                    runstack,
+                    overflow,
                     ((i - REGISTER_ARG_COUNT) * std::mem::size_of::<Value>()) as i32,
                 );
             }
@@ -971,7 +1059,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         RegisterCallArgs {
             argc: self.builder.ins().iconst(types::I64, args.len() as i64),
             args: regs,
-            overflow: runstack,
+            overflow,
         }
     }
 

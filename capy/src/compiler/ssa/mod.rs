@@ -93,6 +93,7 @@ pub struct ModuleBuilder<'gc> {
     pub raise_trampolines: Vec<FuncId>,
     pub yieldpoint_trampoline: FuncId,
     pub raise_to_exception_handler_trampoline: FuncId,
+    pub wrong_arity_trampoline: FuncId,
     pub import_data: HashMap<&'static str, DataId>,
     pub global_side_metadata_base_address: DataId,
 
@@ -136,6 +137,9 @@ impl<'gc> ModuleBuilder<'gc> {
                 &raise_sig,
             )
             .expect("failed to declare exception handler trampoline");
+        let wrong_arity_trampoline = module
+            .declare_function("capy_raise_wrong_arity", Linkage::Local, &raise_sig)
+            .expect("failed to declare wrong arity trampoline");
 
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size_of::<usize>());
@@ -160,6 +164,7 @@ impl<'gc> ModuleBuilder<'gc> {
             raise_trampolines,
             yieldpoint_trampoline,
             raise_to_exception_handler_trampoline,
+            wrong_arity_trampoline,
             global_side_metadata_base_address,
 
             thunks,
@@ -207,6 +212,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let mut fctx = FunctionBuilderContext::new();
         self.define_yieldpoint_trampoline(&mut context, &mut fctx);
         self.define_raise_to_exception_handler_trampoline(&mut context, &mut fctx);
+        self.define_wrong_arity_trampoline(&mut context, &mut fctx);
         self.define_raise_trampolines(&mut context, &mut fctx);
         function_index = 0;
         continuation_index = 0;
@@ -398,6 +404,128 @@ impl<'gc> ModuleBuilder<'gc> {
         self.module
             .define_function(self.raise_to_exception_handler_trampoline, context)
             .expect("failed to define exception handler trampoline");
+        self.module.clear_context(context);
+    }
+
+    fn define_wrong_arity_trampoline(
+        &mut self,
+        context: &mut cranelift_codegen::Context,
+        fctx: &mut FunctionBuilderContext,
+    ) {
+        context.func.signature = compiled_scheme_signature();
+        let mut builder = FunctionBuilder::new(&mut context.func, fctx);
+        let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
+
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+
+        let rator = builder.block_params(entry)[0];
+        let actual_argc = builder.block_params(entry)[1];
+        let retk_or_zero = builder.block_params(entry)[2];
+        let got = builder.block_params(entry)[3];
+        let expected = builder.block_params(entry)[4];
+
+        let ctx = builder.ins().get_pinned_reg(types::I64);
+        let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+        let overflow_count = builder
+            .ins()
+            .iadd_imm(actual_argc, -(REGISTER_ARG_COUNT as i64));
+        let zero = builder.ins().iconst(types::I64, 0);
+        let has_overflow = builder.ins().icmp_imm(
+            ir::condcodes::IntCC::UnsignedGreaterThan,
+            actual_argc,
+            REGISTER_ARG_COUNT as i64,
+        );
+        let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
+        let overflow_bytes = builder
+            .ins()
+            .imul_imm(overflow_count, size_of::<Value>() as i64);
+        let runstack = builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            offset_of!(State, runstack) as i32,
+        );
+        let overflow = builder.ins().isub(runstack, overflow_bytes);
+        builder.ins().store(
+            ir::MemFlags::trusted().with_can_move(),
+            overflow,
+            state,
+            offset_of!(State, runstack) as i32,
+        );
+
+        let code = builder.ins().iconst(
+            types::I64,
+            crate::runtime::vm::exceptions::RaiseKind::WrongNumberOfArguments.code() as i64,
+        );
+        let raise_argc = builder.ins().iconst(types::I64, 4);
+        let undefined = builder
+            .ins()
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        let from = builder.ins().iconst(types::I64, 1);
+        let condition = builder.ins().call(
+            thunks.raise_condition_regs,
+            &[
+                ctx,
+                code,
+                raise_argc,
+                retk_or_zero,
+                rator,
+                got,
+                expected,
+                overflow,
+                from,
+            ],
+        );
+        let condition = builder.inst_results(condition)[0];
+
+        let load_default_retk = builder.create_block();
+        let got_retk = builder.create_block();
+        builder.append_block_param(got_retk, types::I64);
+        builder.func.layout.set_cold(load_default_retk);
+
+        let is_zero = builder
+            .ins()
+            .icmp_imm(ir::condcodes::IntCC::Equal, retk_or_zero, 0);
+        builder.ins().brif(
+            is_zero,
+            load_default_retk,
+            &[],
+            got_retk,
+            &[BlockArg::Value(retk_or_zero)],
+        );
+
+        builder.switch_to_block(load_default_retk);
+        let default_retk = builder.ins().call(thunks.default_retk, &[ctx]);
+        let default_retk = builder.inst_results(default_retk)[0];
+        builder
+            .ins()
+            .jump(got_retk, &[BlockArg::Value(default_retk)]);
+
+        builder.switch_to_block(got_retk);
+        let retk = builder.block_params(got_retk)[0];
+        let handler = builder.ins().call(thunks.exception_handler, &[ctx]);
+        let handler = builder.inst_results(handler)[0];
+        let handler_code = builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            handler,
+            offset_of!(Closure, code) as i32,
+        );
+        let sig_call = builder.import_signature(compiled_scheme_signature());
+        let handler_argc = builder.ins().iconst(types::I64, 2);
+        builder.ins().return_call_indirect(
+            sig_call,
+            handler_code,
+            &[handler, handler_argc, retk, condition, undefined, undefined],
+        );
+        builder.seal_all_blocks();
+        builder.finalize();
+
+        self.module
+            .define_function(self.wrong_arity_trampoline, context)
+            .expect("failed to define wrong arity trampoline");
         self.module.clear_context(context);
     }
 
@@ -993,6 +1121,38 @@ mod tests {
         fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
     }
 
+    fn one_arg_identity_func<'gc>(
+        ctx: Context<'gc>,
+    ) -> (Gc<'gc, Func<'gc>>, LVarRef<'gc>, LVarRef<'gc>, LVarRef<'gc>) {
+        let f = lvar(ctx, "f");
+        let retk = lvar(ctx, "retk");
+        let arg = lvar(ctx, "arg");
+        let body = Gc::new(
+            *ctx,
+            Term::Continue(
+                retk,
+                Array::from_slice(*ctx, &[Atom::Local(arg)]),
+                Value::new(false),
+            ),
+        );
+        let func = Gc::new(
+            *ctx,
+            Func {
+                name: Symbol::from_str(ctx, "identity").into(),
+                source: Value::new(false),
+                binding: f,
+                return_cont: retk,
+                args: Array::from_slice(*ctx, &[arg]),
+                variadic: None,
+                body: Lock::new(body),
+                free_vars: Lock::new(None),
+                meta: Value::new(false),
+            },
+        );
+
+        (func, f, retk, arg)
+    }
+
     fn object_module() -> ObjectModule {
         let mut shared_builder = cranelift_codegen::settings::builder();
         shared_builder.set("enable_probestack", "false").unwrap();
@@ -1095,6 +1255,239 @@ mod tests {
     }
 
     #[test]
+    fn fixed_arity_register_entry_skips_generic_overflow_adjustment() {
+        with_ctx(|ctx| {
+            let (func, _, _, _) = one_arg_identity_func(ctx);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let procedure = linear
+                .procedures
+                .iter()
+                .find(|procedure| procedure.code == CodeId::Function(func))
+                .expect("entry function should have a linear procedure")
+                .clone();
+            let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
+            let mut context = module_builder.module.make_context();
+            context.func.signature = compiled_scheme_signature();
+            let mut fctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
+            let thunks = ImportedThunks::new(
+                &module_builder.thunks,
+                &mut builder.func,
+                &mut module_builder.module,
+            );
+            let func_debug_cx = module_builder
+                .debug_context
+                .define_function(func, "fn0:identity:f");
+
+            let mut ssa = SSABuilder::new(
+                &mut module_builder,
+                builder,
+                ContOrFunc::Procedure(procedure),
+                thunks,
+                func_debug_cx,
+            );
+            ssa.finalize();
+            let clif = ssa.builder.func.display().to_string();
+
+            assert!(
+                !clif.contains("imul_imm") && !clif.contains("iadd_imm v1, -4"),
+                "fixed arity <= register arg count should not emit generic overflow-base adjustment:\n{clif}"
+            );
+        });
+    }
+
+    #[test]
+    fn register_only_call_args_do_not_touch_runstack() {
+        with_ctx(|ctx| {
+            let (func, _, _, _) = one_arg_identity_func(ctx);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let procedure = linear
+                .procedures
+                .iter()
+                .find(|procedure| procedure.code == CodeId::Function(func))
+                .expect("entry function should have a linear procedure")
+                .clone();
+            let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
+            let mut context = module_builder.module.make_context();
+            context.func.signature = compiled_scheme_signature();
+            let mut fctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
+            let thunks = ImportedThunks::new(
+                &module_builder.thunks,
+                &mut builder.func,
+                &mut module_builder.module,
+            );
+            let func_debug_cx = module_builder
+                .debug_context
+                .define_function(func, "fn0:identity:f");
+
+            let mut ssa = SSABuilder::new(
+                &mut module_builder,
+                builder,
+                ContOrFunc::Procedure(procedure),
+                thunks,
+                func_debug_cx,
+            );
+            let arg = ssa.builder.ins().iconst(types::I64, 42);
+            ssa.prepare_call_args(&[arg]);
+            let clif = ssa.builder.func.display().to_string();
+
+            assert!(
+                !clif.contains("+40"),
+                "register-only call arg preparation should not touch State.runstack:\n{clif}"
+            );
+        });
+    }
+
+    #[test]
+    fn full_register_call_args_do_not_touch_runstack() {
+        with_ctx(|ctx| {
+            let (func, _, _, _) = one_arg_identity_func(ctx);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let procedure = linear
+                .procedures
+                .iter()
+                .find(|procedure| procedure.code == CodeId::Function(func))
+                .expect("entry function should have a linear procedure")
+                .clone();
+            let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
+            let mut context = module_builder.module.make_context();
+            context.func.signature = compiled_scheme_signature();
+            let mut fctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
+            let thunks = ImportedThunks::new(
+                &module_builder.thunks,
+                &mut builder.func,
+                &mut module_builder.module,
+            );
+            let func_debug_cx = module_builder
+                .debug_context
+                .define_function(func, "fn0:identity:f");
+
+            let mut ssa = SSABuilder::new(
+                &mut module_builder,
+                builder,
+                ContOrFunc::Procedure(procedure),
+                thunks,
+                func_debug_cx,
+            );
+            let args = [
+                ssa.builder.ins().iconst(types::I64, 1),
+                ssa.builder.ins().iconst(types::I64, 2),
+                ssa.builder.ins().iconst(types::I64, 3),
+                ssa.builder.ins().iconst(types::I64, 4),
+            ];
+            ssa.prepare_call_args(&args);
+            let clif = ssa.builder.func.display().to_string();
+
+            assert!(
+                !clif.contains("+40"),
+                "4-arg register call preparation should not touch State.runstack:\n{clif}"
+            );
+        });
+    }
+
+    #[test]
+    fn register_only_call_args_pad_with_zero() {
+        with_ctx(|ctx| {
+            let (func, _, _, _) = one_arg_identity_func(ctx);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let procedure = linear
+                .procedures
+                .iter()
+                .find(|procedure| procedure.code == CodeId::Function(func))
+                .expect("entry function should have a linear procedure")
+                .clone();
+            let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
+            let mut context = module_builder.module.make_context();
+            context.func.signature = compiled_scheme_signature();
+            let mut fctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
+            let thunks = ImportedThunks::new(
+                &module_builder.thunks,
+                &mut builder.func,
+                &mut module_builder.module,
+            );
+            let func_debug_cx = module_builder
+                .debug_context
+                .define_function(func, "fn0:identity:f");
+
+            let mut ssa = SSABuilder::new(
+                &mut module_builder,
+                builder,
+                ContOrFunc::Procedure(procedure),
+                thunks,
+                func_debug_cx,
+            );
+            let arg = ssa.builder.ins().iconst(types::I64, 42);
+            let call_args = ssa.prepare_call_args(&[arg]);
+            let clif = ssa.builder.func.display().to_string();
+
+            assert_eq!(call_args.args[0], arg);
+            assert_eq!(call_args.args[1], call_args.args[2]);
+            assert_eq!(call_args.args[2], call_args.args[3]);
+            assert!(
+                clif.contains("iconst.i64 0"),
+                "unused register arguments should be padded with zero:\n{clif}"
+            );
+        });
+    }
+
+    #[test]
+    fn overflow_call_args_still_use_runstack() {
+        with_ctx(|ctx| {
+            let (func, _, _, _) = one_arg_identity_func(ctx);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let procedure = linear
+                .procedures
+                .iter()
+                .find(|procedure| procedure.code == CodeId::Function(func))
+                .expect("entry function should have a linear procedure")
+                .clone();
+            let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
+            let mut context = module_builder.module.make_context();
+            context.func.signature = compiled_scheme_signature();
+            let mut fctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
+            let thunks = ImportedThunks::new(
+                &module_builder.thunks,
+                &mut builder.func,
+                &mut module_builder.module,
+            );
+            let func_debug_cx = module_builder
+                .debug_context
+                .define_function(func, "fn0:identity:f");
+
+            let mut ssa = SSABuilder::new(
+                &mut module_builder,
+                builder,
+                ContOrFunc::Procedure(procedure),
+                thunks,
+                func_debug_cx,
+            );
+            let args = [
+                ssa.builder.ins().iconst(types::I64, 1),
+                ssa.builder.ins().iconst(types::I64, 2),
+                ssa.builder.ins().iconst(types::I64, 3),
+                ssa.builder.ins().iconst(types::I64, 4),
+                ssa.builder.ins().iconst(types::I64, 5),
+            ];
+            ssa.prepare_call_args(&args);
+            let clif = ssa.builder.func.display().to_string();
+
+            assert!(
+                clif.contains("+40") && clif.contains("store"),
+                "overflow call arg preparation should still store to runstack:\n{clif}"
+            );
+        });
+    }
+
+    #[test]
     fn module_builder_declares_shared_slowpath_trampolines() {
         with_ctx(|ctx| {
             let f = lvar(ctx, "f");
@@ -1139,6 +1532,15 @@ mod tests {
             );
             assert_ne!(
                 module_builder.yieldpoint_trampoline,
+                module_builder.raise_to_exception_handler_trampoline
+            );
+            assert!(
+                !module_builder
+                    .raise_trampolines
+                    .contains(&module_builder.wrong_arity_trampoline)
+            );
+            assert_ne!(
+                module_builder.wrong_arity_trampoline,
                 module_builder.raise_to_exception_handler_trampoline
             );
 
