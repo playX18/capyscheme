@@ -299,6 +299,12 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
                 }
             }
 
+            Term::Raise { args, .. } => {
+                for arg in args.iter() {
+                    inc_val_use_a(*arg, census, rhs);
+                }
+            }
+
             Term::If {
                 test,
                 consequent,
@@ -586,6 +592,31 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, boo
             return (Gc::new(*state.ctx, Term::App(fun, retc, args, span)), true);
         }
 
+        Term::Raise {
+            kind,
+            args: args_prev,
+            source,
+        } => {
+            let args = state
+                .substitute_atoms(args_prev.iter().copied())
+                .collect::<Vec<_>>();
+            let args_changed = !args.iter().zip(args_prev.iter()).all(|(a, b)| a == b);
+            if !args_changed {
+                return (term, false);
+            }
+            (
+                Gc::new(
+                    *state.ctx,
+                    Term::Raise {
+                        kind,
+                        args: Array::from_slice(*state.ctx, args),
+                        source,
+                    },
+                ),
+                true,
+            )
+        }
+
         Term::If {
             test: test_prev,
             consequent: consequent_prev,
@@ -831,6 +862,13 @@ fn copy_t<'gc>(
             Gc::new(*ctx, Term::App(fun, retc, args, src))
         }
 
+        Term::Raise { kind, args, source } => {
+            let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
+            let args = Array::from_slice(*ctx, args);
+
+            Gc::new(*ctx, Term::Raise { kind, args, source })
+        }
+
         Term::If {
             test,
             consequent,
@@ -1003,6 +1041,13 @@ fn term_metadata<'gc>(term: TermRef<'gc>, tracked_binding: Option<LVarRef<'gc>>)
                     .iter()
                     .copied()
                     .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
+        ),
+
+        Term::Raise { args, .. } => (
+            1,
+            args.iter()
+                .copied()
+                .any(|arg| mentions_tracked_atom(tracked_binding, arg)),
         ),
 
         Term::If {
@@ -1314,6 +1359,42 @@ fn inline_t<'gc>(
             }
             RewriteResult {
                 term: Gc::new(*state.ctx, Term::App(fun, retc, args, src)),
+                changed: true,
+                size: 1,
+                mentions_tracked_binding: mentions,
+            }
+        }
+
+        Term::Raise {
+            kind,
+            args: prev_args,
+            source,
+        } => {
+            let args = state
+                .substitute_atoms(prev_args.iter().copied())
+                .collect::<Vec<_>>();
+            let args_changed = !args.iter().zip(prev_args.iter()).all(|(a, b)| a == b);
+            let mentions = args
+                .iter()
+                .copied()
+                .any(|arg| mentions_tracked_atom(tracked_binding, arg));
+            if !args_changed {
+                return RewriteResult {
+                    term,
+                    changed: false,
+                    size: 1,
+                    mentions_tracked_binding: mentions,
+                };
+            }
+            RewriteResult {
+                term: Gc::new(
+                    *state.ctx,
+                    Term::Raise {
+                        kind,
+                        args: Array::from_slice(*state.ctx, args),
+                        source,
+                    },
+                ),
                 changed: true,
                 size: 1,
                 mentions_tracked_binding: mentions,

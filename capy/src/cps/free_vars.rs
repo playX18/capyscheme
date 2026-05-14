@@ -74,6 +74,8 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
                 .collect()
         }
 
+        Term::Raise { args, .. } => args.iter().copied().flat_map(get_fva).collect(),
+
         Term::If {
             test,
             consequent,

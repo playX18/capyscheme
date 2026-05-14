@@ -6,7 +6,9 @@
 
 #![allow(dead_code, unused_variables)]
 use crate::prelude::PROCEDURES;
-use crate::runtime::vm::exceptions::make_undefined_violation as undefined_violation;
+use crate::runtime::vm::exceptions::{
+    make_raise_condition, make_undefined_violation as undefined_violation,
+};
 use crate::runtime::vm::{default_exception_handler, default_retk as vm_default_retk};
 use crate::{
     compiler::ssa::{SSABuilder, traits::IntoSSA},
@@ -482,6 +484,32 @@ thunks! {
         }
 
         ls
+    }
+
+    pub fn raise_condition_regs(
+        ctx: Context<'gc>,
+        code: usize,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>,
+        from: usize
+    ) -> Value<'gc> {
+        save_register_args(ctx, argc, arg0, arg1, arg2, arg3);
+        let count = argc.saturating_sub(from);
+        let values = collect_register_arg_range(
+            argc,
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            overflow,
+            from,
+            count,
+        );
+        make_raise_condition(ctx, code, &values)
     }
 
     pub fn non_applicable(

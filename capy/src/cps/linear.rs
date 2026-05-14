@@ -5,7 +5,10 @@ use crate::{
         term::{Atom, BranchHint, ContRef, Expression, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
-    runtime::value::{Symbol, Value},
+    runtime::{
+        value::{Symbol, Value},
+        vm::exceptions::RaiseKind,
+    },
 };
 use std::collections::{HashMap, HashSet};
 
@@ -190,6 +193,11 @@ pub enum Terminator<'gc> {
     },
     TailCall {
         callee: LinearAtom<'gc>,
+        args: Vec<LinearAtom<'gc>>,
+        source: Value<'gc>,
+    },
+    Raise {
+        kind: RaiseKind,
         args: Vec<LinearAtom<'gc>>,
         source: Value<'gc>,
     },
@@ -1363,6 +1371,11 @@ impl ConstantHoister {
                 args: self.atoms(args, instructions),
                 source,
             },
+            Terminator::Raise { kind, args, source } => Terminator::Raise {
+                kind,
+                args: self.atoms(args, instructions),
+                source,
+            },
             Terminator::Jump { target, args } => Terminator::Jump {
                 target,
                 args: self.atoms(args, instructions),
@@ -1661,6 +1674,12 @@ impl<'gc> ProcedureBuilder<'gc> {
                 source,
             },
 
+            Term::Raise { kind, args, source } => Terminator::Raise {
+                kind,
+                args: self.atoms(args),
+                source,
+            },
+
             Term::If {
                 test,
                 consequent,
@@ -1787,6 +1806,7 @@ impl<'gc> Terminator<'gc> {
                 uses.extend(args.iter().copied());
                 uses
             }
+            Self::Raise { args, .. } => args.clone(),
             Self::Jump { args, .. } => args.clone(),
             Self::Branch {
                 test,
@@ -1826,7 +1846,7 @@ impl<'gc> Terminator<'gc> {
 
     pub fn successors(&self) -> Vec<BlockId> {
         match self {
-            Self::Call { .. } | Self::TailCall { .. } => vec![],
+            Self::Call { .. } | Self::TailCall { .. } | Self::Raise { .. } => vec![],
             Self::Jump { target, .. } => vec![*target],
             Self::Branch {
                 consequent,
@@ -1842,5 +1862,93 @@ impl<'gc> Terminator<'gc> {
                 .chain(default.local_successor())
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        cps::{
+            linear::{CodeId, Terminator, linearize},
+            reify::reify,
+            term::{Atom, Func, Term},
+        },
+        expander::core::{LVarRef, fresh_lvar},
+        rsgc::{Gc, alloc::Array, cell::Lock},
+        runtime::{
+            Context, Scheme,
+            value::{Symbol, Value},
+            vm::exceptions::RaiseKind,
+        },
+    };
+
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(f);
+    }
+
+    fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
+        fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
+    }
+
+    #[test]
+    fn linearize_raise_term_to_raise_terminator() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "f");
+            let retk = lvar(ctx, "retk");
+            let who = Symbol::from_str(ctx, "car").into();
+            let irritant = lvar(ctx, "x");
+            let body = Gc::new(
+                *ctx,
+                Term::Raise {
+                    kind: RaiseKind::AssertionViolation,
+                    args: Array::from_slice(
+                        *ctx,
+                        &[
+                            Atom::Constant(who),
+                            Atom::Constant(Value::new(false)),
+                            Atom::Local(irritant),
+                        ],
+                    ),
+                    source: Value::new(false),
+                },
+            );
+            let func = Gc::new(
+                *ctx,
+                Func {
+                    name: Symbol::from_str(ctx, "raise-entry").into(),
+                    source: Value::new(false),
+                    binding: f,
+                    return_cont: retk,
+                    args: Array::from_slice(*ctx, &[irritant]),
+                    variadic: None,
+                    body: Lock::new(body),
+                    free_vars: Lock::new(None),
+                    meta: Value::new(false),
+                },
+            );
+
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let procedure = linear
+                .procedures
+                .iter()
+                .find(|procedure| procedure.code == CodeId::Function(func))
+                .expect("entry function should have a linear procedure");
+
+            let Terminator::Raise { kind, args, .. } = &procedure.blocks[0].terminator else {
+                panic!("raise term should linearize to raise terminator");
+            };
+
+            assert_eq!(*kind, RaiseKind::AssertionViolation);
+            assert_eq!(args.len(), 3);
+            assert_eq!(procedure.blocks[0].terminator.successors(), Vec::new());
+            assert_eq!(procedure.blocks[0].terminator.uses(), args.clone());
+        });
     }
 }

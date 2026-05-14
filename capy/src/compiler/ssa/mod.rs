@@ -12,9 +12,9 @@ use crate::{
     },
     expander::core::LVarRef,
     runtime::{
-        COMPILED_ENTRY_ARG_COUNT, Context, REGISTER_ARG_COUNT,
+        COMPILED_ENTRY_ARG_COUNT, Context, REGISTER_ARG_COUNT, State,
         fasl::FASLWriter,
-        value::{Value, ValueEqual, Vector},
+        value::{Closure, Value, ValueEqual, Vector},
     },
 };
 
@@ -27,7 +27,10 @@ use cranelift_codegen::{
 use crate::rsgc::Gc;
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::ObjectModule;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    mem::{offset_of, size_of},
+};
 
 use crate::runtime::vm::thunks::*;
 
@@ -69,6 +72,8 @@ pub(crate) fn compiled_scheme_signature() -> ir::Signature {
     sig
 }
 
+pub(crate) const MAX_RAISE_ARITY: usize = 4;
+
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
 pub struct ModuleBuilder<'gc> {
     pub ctx: Context<'gc>,
@@ -85,6 +90,7 @@ pub struct ModuleBuilder<'gc> {
     pub func_for_func: HashMap<FuncRef<'gc>, FuncId>,
     pub code_block_for_cont: HashMap<ContRef<'gc>, DataId>,
     pub code_block_for_func: HashMap<FuncRef<'gc>, DataId>,
+    pub raise_trampolines: Vec<FuncId>,
     pub import_data: HashMap<&'static str, DataId>,
     pub global_side_metadata_base_address: DataId,
 
@@ -110,6 +116,14 @@ impl<'gc> ModuleBuilder<'gc> {
                 false,
             )
             .unwrap();
+        let raise_sig = compiled_scheme_signature();
+        let raise_trampolines = (0..=MAX_RAISE_ARITY)
+            .map(|arity| {
+                module
+                    .declare_function(&format!("capy_raise{arity}"), Linkage::Local, &raise_sig)
+                    .expect("failed to declare raise trampoline")
+            })
+            .collect();
 
         let mut desc = DataDescription::new();
         desc.define_zeroinit(size_of::<usize>());
@@ -131,6 +145,7 @@ impl<'gc> ModuleBuilder<'gc> {
             func_for_func: HashMap::new(),
             code_block_for_cont: HashMap::new(),
             code_block_for_func: HashMap::new(),
+            raise_trampolines,
             global_side_metadata_base_address,
 
             thunks,
@@ -176,6 +191,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let mut context = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
+        self.define_raise_trampolines(&mut context, &mut fctx);
         function_index = 0;
         continuation_index = 0;
         for procedure in procedures.iter() {
@@ -240,6 +256,89 @@ impl<'gc> ModuleBuilder<'gc> {
         }
 
         self.initialize_constants(&mut context, &mut fctx);
+    }
+
+    fn define_raise_trampolines(
+        &mut self,
+        context: &mut cranelift_codegen::Context,
+        fctx: &mut FunctionBuilderContext,
+    ) {
+        let raise_trampolines = self.raise_trampolines.clone();
+        for func_id in raise_trampolines {
+            context.func.signature = compiled_scheme_signature();
+            let mut builder = FunctionBuilder::new(&mut context.func, fctx);
+            let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
+
+            let entry = builder.create_block();
+            builder.append_block_params_for_function_params(entry);
+            builder.switch_to_block(entry);
+
+            let code = builder.block_params(entry)[0];
+            let argc = builder.block_params(entry)[1];
+            let arg0 = builder.block_params(entry)[2];
+            let arg1 = builder.block_params(entry)[3];
+            let arg2 = builder.block_params(entry)[4];
+            let arg3 = builder.block_params(entry)[5];
+
+            let ctx = builder.ins().get_pinned_reg(types::I64);
+            let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+            let overflow_count = builder.ins().iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
+            let zero = builder.ins().iconst(types::I64, 0);
+            let has_overflow = builder.ins().icmp_imm(
+                ir::condcodes::IntCC::UnsignedGreaterThan,
+                argc,
+                REGISTER_ARG_COUNT as i64,
+            );
+            let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
+            let overflow_bytes = builder
+                .ins()
+                .imul_imm(overflow_count, size_of::<Value>() as i64);
+            let runstack = builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                state,
+                offset_of!(State, runstack) as i32,
+            );
+            let overflow = builder.ins().isub(runstack, overflow_bytes);
+            let from = builder.ins().iconst(types::I64, 1);
+            let condition = builder.ins().call(
+                thunks.raise_condition_regs,
+                &[ctx, code, argc, arg0, arg1, arg2, arg3, overflow, from],
+            );
+            let condition = builder.inst_results(condition)[0];
+            builder.ins().store(
+                ir::MemFlags::trusted().with_can_move(),
+                overflow,
+                state,
+                offset_of!(State, runstack) as i32,
+            );
+
+            let handler = builder.ins().call(thunks.exception_handler, &[ctx]);
+            let handler = builder.inst_results(handler)[0];
+            let handler_code = builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                handler,
+                offset_of!(Closure, code) as i32,
+            );
+            let sig_call = builder.import_signature(compiled_scheme_signature());
+            let argc = builder.ins().iconst(types::I64, 2);
+            let undefined = builder
+                .ins()
+                .iconst(types::I64, Value::undefined().bits() as i64);
+            builder.ins().return_call_indirect(
+                sig_call,
+                handler_code,
+                &[handler, argc, arg0, condition, undefined, undefined],
+            );
+            builder.seal_all_blocks();
+            builder.finalize();
+
+            self.module
+                .define_function(func_id, context)
+                .expect("failed to define raise trampoline");
+            self.module.clear_context(context);
+        }
     }
 
     /// Generate code to initialize constants.

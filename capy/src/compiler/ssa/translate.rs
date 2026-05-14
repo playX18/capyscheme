@@ -8,7 +8,8 @@ use crate::rsgc::{
 
 use crate::{
     compiler::ssa::{
-        ContOrFunc, LinearRestSource, RegisterCallArgs, SSABuilder, VarDef, primitive::PrimValue,
+        ContOrFunc, LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
+        primitive::PrimValue,
     },
     cps::{
         linear::{
@@ -23,6 +24,7 @@ use crate::{
         Context, REGISTER_ARG_COUNT, State,
         value::CodeBlock,
         value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, TypeCode16, Value},
+        vm::exceptions::RaiseKind,
     },
 };
 use cranelift::frontend::Switch;
@@ -329,24 +331,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .collect()
     }
 
-    fn call_wrong_number_of_args_regs(
-        &mut self,
-        got: ir::Value,
-        expected: ir::Value,
-        argc: ir::Value,
-        args: [ir::Value; REGISTER_ARG_COUNT],
-        overflow: ir::Value,
-        from: usize,
-    ) -> ir::Inst {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let from = self.builder.ins().iconst(types::I64, from as i64);
-        self.builder.ins().call(
-            self.thunks.wrong_number_of_args_regs,
-            &[
-                ctx, self.rator, got, expected, argc, args[0], args[1], args[2], args[3], overflow,
-                from,
-            ],
-        )
+    fn raise_wrong_number_of_args(&mut self, got: ir::Value, expected: isize) {
+        let got = self.linear_fixnum_from_usize_value(got);
+        let expected = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(expected as i32).bits() as i64);
+        self.emit_raise(
+            RaiseKind::WrongNumberOfArguments,
+            &[self.rator, got, expected],
+            Value::new(false),
+        );
     }
 
     pub fn entrypoint(&mut self, argc: ir::Value, args: [ir::Value; REGISTER_ARG_COUNT]) {
@@ -685,12 +680,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = -(params.len() as isize);
-                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.call_wrong_number_of_args_regs(
-                        got, expected, argc, args, overflow, first_arg,
-                    );
-                    let err = self.builder.inst_results(err)[0];
-                    self.raise_to_exception_handler(err);
+                    self.raise_wrong_number_of_args(got, expected);
                 }
                 self.builder.switch_to_block(succ);
                 {
@@ -768,12 +758,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = params.len() as isize;
-                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.call_wrong_number_of_args_regs(
-                        got, expected, argc, args, overflow, first_arg,
-                    );
-                    let err = self.builder.inst_results(err)[0];
-                    self.raise_to_exception_handler(err);
+                    self.raise_wrong_number_of_args(got, expected);
                 }
                 self.builder.switch_to_block(succ);
                 for (i, param) in params.iter().enumerate() {
@@ -841,12 +826,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = 0isize;
-                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.call_wrong_number_of_args_regs(
-                        got, expected, argc, args, overflow, first_arg,
-                    );
-                    let err = self.builder.inst_results(err)[0];
-                    self.raise_to_exception_handler(err);
+                    self.raise_wrong_number_of_args(got, expected);
                 }
 
                 self.builder.switch_to_block(succ);
@@ -937,19 +917,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
         let callee = self.atom(*callee);
 
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let get_clos_code = self.builder.create_block();
         let error = self.builder.create_block();
         self.builder.func.layout.set_cold(error);
         self.branch_if_has_typ8(callee, Closure::TC8.bits(), get_clos_code, &[], error, &[]);
         self.builder.switch_to_block(error);
         {
-            let err = self
-                .builder
-                .ins()
-                .call(self.thunks.non_applicable, &[ctx, callee]);
-            let err = self.builder.inst_results(err)[0];
-            self.raise_to_exception_handler(err);
+            self.emit_raise(RaiseKind::NonApplicable, &[callee], Value::new(false));
         }
 
         self.builder.switch_to_block(get_clos_code);
@@ -1114,26 +1088,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             );
             self.variables.insert(var, VarDef::Value(value));
         }
-    }
-
-    /* helpers */
-
-    pub fn check_argcount(&mut self, proc: &str, got_: usize, expected_: usize) {
-        let got = self.builder.ins().iconst(types::I64, got_ as i64);
-        let expected = self.builder.ins().iconst(types::I64, expected_ as i64);
-
-        let on_err = self.builder.create_block();
-        let on_succ = self.builder.create_block();
-
-        let cmp = self.builder.ins().icmp(IntCC::Equal, got, expected);
-
-        self.builder.ins().brif(cmp, on_succ, &[], on_err, &[]);
-        self.builder.func.layout.set_cold(on_err);
-        self.builder.switch_to_block(on_err);
-        {
-            self.wrong_num_args(proc, got_, expected_ as _);
-        }
-        self.builder.switch_to_block(on_succ);
     }
 
     pub fn atom_for_cond(&mut self, atom: Atom<'gc>) -> ir::Value {
@@ -1629,19 +1583,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let callee = self.linear_atom(callee);
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let get_clos_code = self.builder.create_block();
         let error = self.builder.create_block();
         self.builder.func.layout.set_cold(error);
         self.branch_if_has_typ8(callee, Closure::TC8.bits(), get_clos_code, &[], error, &[]);
         self.builder.switch_to_block(error);
         {
-            let err = self
-                .builder
-                .ins()
-                .call(self.thunks.non_applicable, &[ctx, callee]);
-            let err = self.builder.inst_results(err)[0];
-            self.raise_to_exception_handler(err);
+            self.emit_raise(RaiseKind::NonApplicable, &[callee], Value::new(false));
         }
 
         self.builder.switch_to_block(get_clos_code);
@@ -1763,6 +1711,39 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.emit_callee_jump(callee, call_args);
     }
 
+    fn linear_raise(&mut self, kind: RaiseKind, args: &[LinearAtom<'gc>], source: Value<'gc>) {
+        let args = args
+            .iter()
+            .copied()
+            .map(|arg| self.linear_atom(arg))
+            .collect::<Vec<_>>();
+        self.emit_raise(kind, &args, source);
+    }
+
+    pub(crate) fn emit_raise(&mut self, kind: RaiseKind, args: &[ir::Value], source: Value<'gc>) {
+        self.set_debug_loc(source);
+        if args.len() > MAX_RAISE_ARITY {
+            panic!(
+                "%raise arity {} exceeds maximum fixed raise arity {}",
+                args.len(),
+                MAX_RAISE_ARITY
+            );
+        }
+        let code = self.builder.ins().iconst(types::I64, kind.code() as i64);
+        let retk = self.current_retk_value();
+        let rands = std::iter::once(retk)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>();
+        let call_args = self.prepare_call_args(&rands);
+        let trampoline_id = self.module_builder.raise_trampolines[args.len()];
+        let target = self
+            .module_builder
+            .module
+            .declare_func_in_func(trampoline_id, &mut self.builder.func);
+        let values = self.call_values(code, call_args);
+        self.builder.ins().return_call(target, &values);
+    }
+
     fn emit_callee_jump(&mut self, callee: Callee, call_args: RegisterCallArgs) {
         match callee {
             Callee::Indirect { target, closure } => {
@@ -1840,34 +1821,19 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn raise_wrong_linear_block_arity(&mut self, args: &[LinearAtom<'gc>], expected: isize) {
-        let args = args
-            .iter()
-            .copied()
-            .map(|arg| self.linear_atom(arg))
-            .collect::<Vec<_>>();
-        let call_args = self.prepare_call_args(&args);
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let got = self.builder.ins().iconst(types::I64, args.len() as i64);
-        let expected = self.builder.ins().iconst(types::I64, expected as i64);
-        let from = self.builder.ins().iconst(types::I64, 0);
-        let err = self.builder.ins().call(
-            self.thunks.wrong_number_of_args_regs,
-            &[
-                ctx,
-                self.rator,
-                got,
-                expected,
-                call_args.argc,
-                call_args.args[0],
-                call_args.args[1],
-                call_args.args[2],
-                call_args.args[3],
-                call_args.overflow,
-                from,
-            ],
+        let got = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(args.len() as i32).bits() as i64);
+        let expected = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(expected as i32).bits() as i64);
+        self.emit_raise(
+            RaiseKind::WrongNumberOfArguments,
+            &[self.rator, got, expected],
+            Value::new(false),
         );
-        let err = self.builder.inst_results(err)[0];
-        self.raise_to_exception_handler(err);
     }
 
     fn linear_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
@@ -1894,6 +1860,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 args,
                 source,
             } => self.linear_tail_call(*callee, args, *source),
+            Terminator::Raise { kind, args, source } => self.linear_raise(*kind, args, *source),
             Terminator::Jump { target, args } => {
                 self.jump_to_linear_block(procedure, *target, args);
             }
@@ -2251,6 +2218,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let rands = rands.iter().map(|a| self.atom(*a)).collect::<Vec<_>>();
 
                 self.continue_to(*k, &rands);
+            }
+
+            Term::Raise { kind, args, source } => {
+                let args = args.iter().map(|arg| self.atom(*arg)).collect::<Vec<_>>();
+                self.emit_raise(*kind, &args, *source);
             }
 
             Term::If {
