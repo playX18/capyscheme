@@ -23,7 +23,7 @@ use crate::{
     runtime::{
         Context, REGISTER_ARG_COUNT, State,
         value::CodeBlock,
-        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, TypeCode16, Value},
+        value::{Closure, Symbol, Tagged, TypeCode8, TypeCode16, Value},
         vm::exceptions::RaiseKind,
     },
 };
@@ -350,7 +350,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.set_debug_loc(source);
         let overflow = self.overflow_base_from_argc(argc);
         if is_function {
-            self.check_yield(self.rator, argc, args, overflow);
+            self.check_yield(self.rator, argc, args);
         }
 
         if !matches!(&self.target, ContOrFunc::Procedure(_)) {
@@ -588,36 +588,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         closure
     }
 
-    pub(crate) fn call_proc_with_retk(
-        &mut self,
-        proc: ir::Value,
-        retk: ir::Value,
-        args: &[ir::Value],
-    ) -> ir::Inst {
-        let rands = std::iter::once(retk)
-            .chain(args.iter().copied())
-            .collect::<Vec<_>>();
-        let call_args = self.prepare_call_args(&rands);
-        let code = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            proc,
-            offset_of!(Closure, code) as i32,
-        );
-        let mut block_args = vec![BlockArg::Value(code)];
-        block_args.extend(self.call_block_args(proc, call_args));
-        self.builder.ins().jump(self.exit_block, &block_args)
-    }
-
     pub(crate) fn raise_to_exception_handler(&mut self, err: ir::Value) -> ir::Inst {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let call = self
+        let retk = match self.target_return_cont() {
+            Some(return_cont) => self.var(return_cont),
+            None => self.builder.ins().iconst(types::I64, 0),
+        };
+        let target = self.module_builder.module.declare_func_in_func(
+            self.module_builder.raise_to_exception_handler_trampoline,
+            &mut self.builder.func,
+        );
+        let undefined = self
             .builder
             .ins()
-            .call(self.thunks.exception_handler, &[ctx]);
-        let handler = self.builder.inst_results(call)[0];
-        let retk = self.current_retk_value();
-        self.call_proc_with_retk(handler, retk, &[err])
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        self.builder.ins().return_call(
+            target,
+            &[err, undefined, retk, undefined, undefined, undefined],
+        )
     }
 
     fn load_arguments(
@@ -2281,7 +2268,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         rator: ir::Value,
         argc: ir::Value,
         args: [ir::Value; REGISTER_ARG_COUNT],
-        overflow: ir::Value,
     ) {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
@@ -2323,18 +2309,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .brif(is_nested, on_no_yieldpoint, &[], on_not_nested, &[]);
             self.builder.switch_to_block(on_not_nested);
             self.builder.func.layout.set_cold(on_not_nested);
-            let saved_call = self.builder.ins().call(
-                self.thunks.yieldpoint_regs,
-                &[
-                    ctx, rator, argc, args[0], args[1], args[2], args[3], overflow,
-                ],
+            let target = self.module_builder.module.declare_func_in_func(
+                self.module_builder.yieldpoint_trampoline,
+                &mut self.builder.func,
             );
-            let code = self
-                .builder
+            self.builder
                 .ins()
-                .iconst(types::I64, ReturnCode::Yield as i64);
-            let val = self.builder.inst_results(saved_call)[0];
-            self.builder.ins().return_(&[code, val]);
+                .return_call(target, &[rator, argc, args[0], args[1], args[2], args[3]]);
         }
         self.builder.switch_to_block(on_no_yieldpoint);
     }
