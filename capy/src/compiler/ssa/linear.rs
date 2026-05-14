@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Write, mem::offset_of};
+use std::{collections::HashMap, mem::offset_of};
 
 use crate::{
     cps::term::BranchHint,
@@ -11,7 +11,7 @@ use crate::{
 
 use crate::{
     compiler::ssa::{
-        ContOrFunc, LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
+        LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
         primitive::{PrimValue, Primitive},
     },
     cps::{
@@ -20,7 +20,7 @@ use crate::{
             LowIntPredicate, LowPrim, LowType, Procedure, ProcedureKind, RestPredicate,
             SwitchCaseValue, SwitchKind, Terminator, ValueId,
         },
-        term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
+        term::Atom,
     },
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
@@ -34,7 +34,6 @@ use cranelift::frontend::Switch;
 use cranelift::prelude::{InstBuilder, IntCC, types};
 use cranelift_codegen::ir::{self, BlockArg};
 use cranelift_module::{DataId, Linkage, Module};
-use pretty::BoxAllocator;
 use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug, Clone, Copy)]
@@ -128,76 +127,50 @@ impl AllocInfoPreset {
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn target_binding(&self) -> LVarRef<'gc> {
-        match &self.target {
-            ContOrFunc::Cont(c) => c.binding,
-            ContOrFunc::Func(f) => f.binding,
-            ContOrFunc::Procedure(p) => p.sources[&p.binding],
-        }
+        self.target.sources[&self.target.binding]
     }
 
     fn target_name(&self) -> Value<'gc> {
-        match &self.target {
-            ContOrFunc::Cont(c) => c.name,
-            ContOrFunc::Func(f) => f.name,
-            ContOrFunc::Procedure(p) => p.name,
-        }
+        self.target.name
     }
 
     fn target_source(&self) -> Value<'gc> {
-        match &self.target {
-            ContOrFunc::Cont(c) => c.source(),
-            ContOrFunc::Func(f) => f.source,
-            ContOrFunc::Procedure(p) => p.source,
-        }
+        self.target.source
     }
 
     fn target_params(&self) -> (Vec<LVarRef<'gc>>, Option<LVarRef<'gc>>) {
-        match &self.target {
-            ContOrFunc::Cont(c) => (c.args().iter().copied().collect(), c.variadic()),
-            ContOrFunc::Func(f) => (f.args.iter().copied().collect(), f.variadic),
-            ContOrFunc::Procedure(p) => (
-                p.params.iter().map(|param| p.sources[param]).collect(),
-                p.variadic.map(|variadic| p.sources[&variadic]),
-            ),
-        }
+        (
+            self.target
+                .params
+                .iter()
+                .map(|param| self.target.sources[param])
+                .collect(),
+            self.target
+                .variadic
+                .map(|variadic| self.target.sources[&variadic]),
+        )
     }
 
     fn target_linear_variadic(&self) -> Option<ValueId> {
-        match &self.target {
-            ContOrFunc::Procedure(p) => p.variadic,
-            ContOrFunc::Cont(_) | ContOrFunc::Func(_) => None,
-        }
+        self.target.variadic
     }
 
-    fn should_materialize_entry_rest(&self, rest: LVarRef<'gc>) -> bool {
-        match &self.target {
-            ContOrFunc::Procedure(_) => false,
-            ContOrFunc::Cont(_) | ContOrFunc::Func(_) => rest.is_referenced(),
-        }
+    fn should_materialize_entry_rest(&self, _rest: LVarRef<'gc>) -> bool {
+        false
     }
 
     fn target_return_cont(&self) -> Option<LVarRef<'gc>> {
-        match &self.target {
-            ContOrFunc::Func(f) => Some(f.return_cont),
-            ContOrFunc::Procedure(p) => p.return_cont.map(|return_cont| p.sources[&return_cont]),
-            ContOrFunc::Cont(_) => None,
-        }
+        self.target
+            .return_cont
+            .map(|return_cont| self.target.sources[&return_cont])
     }
 
     fn target_is_function(&self) -> bool {
-        match &self.target {
-            ContOrFunc::Func(_) => true,
-            ContOrFunc::Procedure(p) => p.kind == ProcedureKind::Function,
-            ContOrFunc::Cont(_) => false,
-        }
+        self.target.kind == ProcedureKind::Function
     }
 
     pub fn is_self_reference(&mut self, var: LVarRef<'gc>) -> bool {
-        match &self.target {
-            ContOrFunc::Cont(c) => Gc::ptr_eq(c.binding, var),
-            ContOrFunc::Func(f) => Gc::ptr_eq(f.binding, var),
-            ContOrFunc::Procedure(p) => Gc::ptr_eq(p.sources[&p.binding], var),
-        }
+        Gc::ptr_eq(self.target.sources[&self.target.binding], var)
     }
 
     pub fn closure_from_callee(&mut self, callee: Callee) -> ir::Value {
@@ -250,24 +223,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             return self.rator;
         }
         match *self.variables.get(&var).unwrap_or_else(|| {
-            let alloc = ::pretty::BoxAllocator;
-            let pretty = match &self.target {
-                ContOrFunc::Func(f) => f.pretty::<_, &BoxAllocator>(&alloc),
-                ContOrFunc::Cont(c) => c.pretty::<_, &BoxAllocator>(&alloc),
-                ContOrFunc::Procedure(_) => {
-                    panic!(
-                        "{}@{:p} var not found when compiling {}({})",
-                        var.name,
-                        var,
-                        self.target_binding().name,
-                        self.target_name()
-                    )
-                }
-            };
-
-            let _ = pretty.1.render(80, &mut std::io::stdout());
-            println!();
-            let _ = std::io::stdout().flush();
             panic!(
                 "{}@{:p} var not found when compiling {}({})",
                 var.name,
@@ -407,16 +362,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         if self.load_fixed_arity_register_arguments(argc, args) {
-            if !matches!(&self.target, ContOrFunc::Procedure(_)) {
-                self.load_free_vars();
-            }
             return;
         }
 
         let overflow = self.overflow_base_from_argc(argc);
-        if !matches!(&self.target, ContOrFunc::Procedure(_)) {
-            self.load_free_vars();
-        }
         self.load_arguments(argc, args, overflow);
     }
 
@@ -941,113 +890,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    pub fn block_for_cont(&mut self, k: ContRef<'gc>) -> ir::Block {
-        if let Some(block) = self.blockmap.get(&k) {
-            return *block;
-        }
-
-        let block = self.builder.create_block();
-        if k.cold {
-            self.builder.func.layout.set_cold(block);
-        }
-        self.blockmap.insert(k, block);
-        for _ in k.args.iter() {
-            self.builder.append_block_param(block, types::I64);
-        }
-
-        if k.variadic().is_some() {
-            self.builder.append_block_param(block, types::I64);
-        }
-
-        for i in 0..k.args.len() {
-            self.variables.insert(
-                k.args[i],
-                VarDef::Value(self.builder.block_params(block)[i]),
-            );
-        }
-        if let Some(rest) = k.variadic() {
-            self.variables.insert(
-                rest,
-                VarDef::Value(self.builder.block_params(block)[k.args.len()]),
-            );
-        }
-
-        block
-    }
-
-    pub fn get_callee_k(&mut self, var: LVarRef<'gc>) -> Callee {
-        if let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
-            && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
-        {
-            let func_id = *func_id;
-            let closure = self.var(var);
-            let func_ref = self
-                .module_builder
-                .module
-                .declare_func_in_func(func_id, &mut self.builder.func);
-            return Callee::Direct {
-                target: func_ref,
-                closure,
-            };
-        }
-
-        let callee = self.atom(Atom::Local(var));
-        let code = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            callee,
-            offset_of!(Closure, code) as i32,
-        );
-        Callee::Indirect {
-            target: code,
-            closure: callee,
-        }
-    }
-
-    /// Get callee entrypoint or report non-applicable error via current exception handler.
-    pub fn get_callee(&mut self, callee: &Atom<'gc>) -> Callee {
-        if let Atom::Local(var) = callee {
-            if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(var)
-                && let Some(func_id) = self.module_builder.func_for_func.get(func)
-            {
-                let func_id = *func_id;
-                let closure = self.atom(*callee);
-                let func_ref = self
-                    .module_builder
-                    .module
-                    .declare_func_in_func(func_id, &mut self.builder.func);
-                return Callee::Direct {
-                    target: func_ref,
-                    closure,
-                };
-            }
-        }
-        let callee = self.atom(*callee);
-
-        let get_clos_code = self.builder.create_block();
-        let error = self.builder.create_block();
-        self.builder.func.layout.set_cold(error);
-        self.branch_if_has_typ8(callee, Closure::TC8.bits(), get_clos_code, &[], error, &[]);
-        self.builder.switch_to_block(error);
-        {
-            self.emit_raise(RaiseKind::NonApplicable, &[callee], Value::new(false));
-        }
-
-        self.builder.switch_to_block(get_clos_code);
-        {
-            let code = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                callee,
-                offset_of!(Closure, code) as i32,
-            );
-            Callee::Indirect {
-                target: code,
-                closure: callee,
-            }
-        }
-    }
-
     /// Prepare register-call arguments. The first four logical arguments are
     /// returned as SSA values; logical arg4 and later are stored at the current runstack.
     pub fn prepare_call_args(&mut self, args: &[ir::Value]) -> RegisterCallArgs {
@@ -1097,129 +939,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    /// Continue execution at continuation `k` with arguments `args`.
-    ///
-    /// If `k` is reified this performs return call instead of local jump. Arguments
-    /// are pushed onto runstack in that case.
-    pub fn continue_to(&mut self, k: LVarRef<'gc>, args: &[ir::Value]) -> ir::Inst {
-        if let Some(k) = self.module_builder.reify_info.free_vars.conts.get(&k)
-            && !k.reified.get()
-        {
-            let k = *k;
-            // TODO: Support `k` where variadic is used and materialize a list.
-            let block = self.block_for_cont(k);
-            if k.args.len() > args.len() {
-                panic!(
-                    "not enough args when jumping to continuation {}@{:p}, expected {}, got {}",
-                    k.binding.name,
-                    k.binding,
-                    k.args.len(),
-                    args.len()
-                );
-            }
-            let mut block_args = args[..k.args.len()]
-                .into_iter()
-                .map(|v| ir::BlockArg::Value(*v))
-                .collect::<Vec<_>>();
-            if let Some(variadic) = k.variadic() {
-                if variadic.is_referenced() {
-                    let mut ls = self
-                        .builder
-                        .ins()
-                        .iconst(types::I64, Value::null().bits() as i64);
-                    for arg in args[k.args.len()..].iter().rev() {
-                        ls = self.cons(*arg, ls);
-                    }
-                    block_args.push(ir::BlockArg::Value(ls));
-                } else {
-                    // Do not materialize the list if variadic is not referenced
-                    let null = self
-                        .builder
-                        .ins()
-                        .iconst(types::I64, Value::null().bits() as i64);
-                    block_args.push(ir::BlockArg::Value(null));
-                }
-            }
-
-            let bb_args_len = self.builder.block_params(block).len();
-            if bb_args_len != block_args.len() {
-                panic!(
-                    "wrong number of args when jumping to continuation {}@{:p}, expected {}, got {}",
-                    k.binding.name,
-                    k.binding,
-                    bb_args_len,
-                    block_args.len()
-                );
-            }
-            return self.builder.ins().jump(block, &block_args);
-        }
-
-        let callee = self.get_callee_k(k);
-        let call_args = self.prepare_call_args(args);
-        match callee {
-            Callee::Indirect { target, closure } => {
-                let mut block_args = vec![BlockArg::Value(target)];
-                block_args.extend(self.call_block_args(closure, call_args));
-                self.builder.ins().jump(self.exit_block, &block_args)
-            }
-            Callee::Direct { target, closure } => {
-                let values = self.call_values(closure, call_args);
-                self.builder.ins().return_call(target, &values)
-            }
-
-            Callee::SelfRec(block) => {
-                let block_args = self.call_block_args(self.rator, call_args);
-                self.builder.ins().jump(block, &block_args)
-            }
-        }
-    }
-
-    fn load_free_vars(&mut self) {
-        let Some(fvs) = (match &self.target {
-            ContOrFunc::Func(func) => func.free_vars.get(),
-            ContOrFunc::Cont(cont) => cont.free_vars.get(),
-            ContOrFunc::Procedure(_) => None,
-        }) else {
-            return;
-        };
-
-        /* load all free-variables of closure.
-
-           We can directly load values without later modifying `free` vector
-           as all variables are immutable, mutable variables should've been boxed by optimizing compiler.
-        */
-        for (i, var) in fvs.iter().copied().enumerate() {
-            let value = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                self.rator,
-                Closure::DATA_OFFSET as i32 + (i * 8) as i32,
-            );
-            self.variables.insert(var, VarDef::Value(value));
-        }
-    }
-
-    pub fn atom_for_cond(&mut self, atom: Atom<'gc>) -> ir::Value {
-        match atom {
-            Atom::Local(var) => match self.variables[&var] {
-                VarDef::Comparison(val) => val,
-                _ => {
-                    let val = self.var(var);
-                    self.builder
-                        .ins()
-                        .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
-                }
-            },
-
-            _ => {
-                let val = self.atom(atom);
-                self.builder
-                    .ins()
-                    .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
-            }
-        }
-    }
-
     pub fn atom(&mut self, atom: Atom<'gc>) -> ir::Value {
         match atom {
             Atom::Local(var) => self.var(var),
@@ -1238,70 +957,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     0,
                 )
             }
-        }
-    }
-
-    pub fn fix(&mut self, funcs: &[FuncRef<'gc>]) {
-        for func in funcs.iter() {
-            let free = func.free_vars.get();
-            let nfree = free.map_or(0, |f| f.len());
-            let code_block = self.load_data_value(self.module_builder.code_block_for_func[&func]);
-
-            let clos = self.make_closure(code_block, nfree, false);
-            self.debug_local_with_source(func.binding, clos, func.source);
-            self.variables.insert(func.binding, VarDef::Value(clos));
-        }
-
-        for func in funcs.iter() {
-            let clos = self.var(func.binding);
-            let free = func.free_vars.get();
-            if let Some(free) = free {
-                for (i, &var) in free.iter().enumerate() {
-                    let var = self.var(var);
-
-                    self.builder.ins().store(
-                        ir::MemFlags::trusted().with_can_move(),
-                        var,
-                        clos,
-                        (Closure::DATA_OFFSET as i32 + (i as i32 * 8)) as i32,
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn letk(&mut self, conts: &[ContRef<'gc>]) {
-        for cont in conts.iter().filter(|k| k.reified.get()) {
-            let free = cont.free_vars.get();
-            let nfree = free.map_or(0, |f| f.len());
-
-            let code_block = self.load_data_value(self.module_builder.code_block_for_cont[&cont]);
-            let clos = self.make_closure(code_block, nfree, true);
-            self.debug_local_with_source(cont.binding, clos, cont.source);
-            self.variables.insert(cont.binding, VarDef::Value(clos));
-        }
-
-        for cont in conts.iter().filter(|k| k.reified.get()) {
-            let clos = self.var(cont.binding);
-            let free = cont.free_vars.get();
-
-            if let Some(free) = free {
-                for (i, &var) in free.iter().enumerate() {
-                    let var = self.var(var);
-
-                    self.builder.ins().store(
-                        ir::MemFlags::trusted().with_can_move(),
-                        var,
-                        clos,
-                        (Closure::DATA_OFFSET as i32 + (i as i32 * 8)) as i32,
-                    );
-                }
-            }
-        }
-
-        for &cont in conts.iter().filter(|k| !k.reified.get()) {
-            let _block = self.block_for_cont(cont);
-            self.to_generate.push(cont);
         }
     }
 
@@ -1377,10 +1032,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn linear_source(&self, var: ValueId) -> Option<LVarRef<'gc>> {
-        match &self.target {
-            ContOrFunc::Procedure(procedure) => procedure.sources.get(&var).copied(),
-            ContOrFunc::Func(_) | ContOrFunc::Cont(_) => None,
-        }
+        self.target.sources.get(&var).copied()
     }
 
     fn comparison_to_value(&mut self, val: ir::Value) -> ir::Value {
@@ -1955,24 +1607,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        if let LinearAtom::Local(k_id) = callee
-            && let Some(k) = self.linear_source(k_id)
-            && self
-                .module_builder
-                .reify_info
-                .free_vars
-                .conts
-                .contains_key(&k)
-        {
-            let args = args
-                .iter()
-                .copied()
-                .map(|arg| self.linear_atom(arg))
-                .collect::<Vec<_>>();
-            self.continue_to(k, &args);
-            return;
-        }
-
         let callee = self.get_tail_callee_linear(callee);
         let args = args
             .iter()
@@ -2371,13 +2005,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn finalize(&mut self) {
-        while let Some(cont) = self.to_generate.pop() {
-            let block = self.block_for_cont(cont);
-            self.builder.switch_to_block(block);
-            self.set_debug_loc(cont.source());
-            self.term(cont.body());
-        }
-
         self.builder.switch_to_block(self.exit_block);
 
         let code = self.builder.block_params(self.exit_block)[0];
@@ -2405,155 +2032,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.builder.set_srcloc(source_loc);
             self.srcloc = Some(source_loc);
         }
-    }
-
-    pub fn term(&mut self, term: TermRef<'gc>) {
-        let src = term.source();
-        self.set_debug_loc(src);
-        match &*term {
-            Term::Let(var, expr, next) => {
-                match expr {
-                    Expression::PrimCall(prim, args, _) => {
-                        let Some(prim) = self.module_builder.prims.primitive(*prim) else {
-                            panic!("undefined primitive: {prim}")
-                        };
-
-                        let val = match prim.lower(self, args) {
-                            PrimValue::Value(val) => VarDef::Value(val),
-                            PrimValue::Comparison(val) => VarDef::Comparison(val),
-                        };
-                        self.variables.insert(*var, val);
-                    }
-                }
-                self.term(*next);
-            }
-
-            Term::Letk(conts, next) => {
-                self.letk(conts);
-                self.term(*next);
-            }
-
-            Term::Fix(funs, next) => {
-                self.fix(funs);
-                self.term(*next);
-            }
-
-            Term::App(rator, retk, rands, _) => {
-                let callee = self.get_callee(rator);
-
-                let retk = self.var(*retk);
-
-                let rands = [retk]
-                    .into_iter()
-                    .chain(rands.iter().copied().map(|a| self.atom(a)))
-                    .collect::<Vec<_>>();
-
-                let mut call_args = self.prepare_call_args(&rands);
-
-                if self.module_builder.stacktraces {
-                    /* do `(with-continuation-mark <stacktrace-key> <info> app)` */
-                    let ctx = self.builder.ins().get_pinned_reg(types::I64);
-
-                    let src_info = self.atom(Atom::Constant(src));
-                    let rator = self.closure_from_callee(callee);
-
-                    let call = self.builder.ins().call(
-                        self.thunks.push_dframe_regs,
-                        &[
-                            ctx,
-                            src_info,
-                            rator,
-                            call_args.argc,
-                            call_args.args[0],
-                            call_args.args[1],
-                            call_args.args[2],
-                            call_args.args[3],
-                            call_args.overflow,
-                        ],
-                    );
-                    call_args.args[0] = self.builder.inst_results(call)[0];
-                }
-
-                match callee {
-                    Callee::Indirect { target, closure } => {
-                        let mut block_args = vec![BlockArg::Value(target)];
-                        block_args.extend(self.call_block_args(closure, call_args));
-                        self.builder.ins().jump(self.exit_block, &block_args);
-                    }
-
-                    Callee::Direct { target, closure } => {
-                        let values = self.call_values(closure, call_args);
-                        self.builder.ins().return_call(target, &values);
-                    }
-
-                    Callee::SelfRec(block) => {
-                        // just jump back to entrypoint
-                        let block_args = self.call_block_args(self.rator, call_args);
-                        self.builder.ins().jump(block, &block_args);
-                    }
-                }
-            }
-
-            Term::Continue(k, rands, _) => {
-                let rands = rands.iter().map(|a| self.atom(*a)).collect::<Vec<_>>();
-
-                self.continue_to(*k, &rands);
-            }
-
-            Term::Raise { kind, args, source } => {
-                let args = args.iter().map(|arg| self.atom(*arg)).collect::<Vec<_>>();
-                self.emit_raise(*kind, &args, *source);
-            }
-
-            Term::If {
-                test,
-                consequent,
-                consequent_args,
-                alternative,
-                alternative_args,
-                hints: _,
-            } => {
-                let truthy = self.atom_for_cond(*test);
-
-                let kcons = self.builder.create_block();
-                let kalt = self.builder.create_block();
-
-                self.builder.ins().brif(truthy, kcons, &[], kalt, &[]);
-                self.builder.switch_to_block(kalt);
-                {
-                    let alternative_args = alternative_args.map_or(vec![], |args| {
-                        args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>()
-                    });
-                    self.continue_to(*alternative, &alternative_args);
-                }
-
-                self.builder.switch_to_block(kcons);
-                {
-                    let consequent_args = consequent_args.map_or(vec![], |args| {
-                        args.iter().map(|a| self.atom(*a)).collect::<Vec<_>>()
-                    });
-                    self.continue_to(*consequent, &consequent_args);
-                }
-            }
-        }
-    }
-
-    pub fn maybe_known_function(&mut self, rator: Atom<'gc>) -> Option<ir::FuncRef> {
-        let Atom::Local(var) = rator else {
-            return None;
-        };
-
-        let func = *self.module_builder.reify_info.free_vars.funcs.get(&var)?;
-        let id = self
-            .module_builder
-            .func_for_func
-            .get(&func)
-            .expect("must be defined");
-
-        self.module_builder
-            .module
-            .declare_func_in_func(*id, &mut self.builder.func)
-            .into()
     }
 
     pub fn check_yield(
