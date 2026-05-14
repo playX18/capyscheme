@@ -38,7 +38,7 @@ pub fn compile_cps_to_object<'gc>(
     shared_builder
         .set("enable_heap_access_spectre_mitigation", "false")
         .unwrap();
-    shared_builder.set("opt_level", "speed").unwrap();
+    shared_builder.set("opt_level", "speed_and_size").unwrap();
     shared_builder.enable("preserve_frame_pointers").unwrap();
     shared_builder.enable("is_pic").unwrap();
     shared_builder.enable("enable_pinned_reg").unwrap();
