@@ -35,11 +35,11 @@ use std::{
 use crate::runtime::vm::thunks::*;
 
 pub mod helpers;
+pub mod linear;
 pub mod primitive;
 pub mod traits;
-pub mod translate;
 
-pub(crate) use translate::AllocInfoPreset;
+pub(crate) use linear::AllocInfoPreset;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum VarDef {
@@ -246,13 +246,7 @@ impl<'gc> ModuleBuilder<'gc> {
                     (func_id, func_debug_cx)
                 }
             };
-            let mut ssa = SSABuilder::new(
-                self,
-                builder,
-                ContOrFunc::Procedure(procedure.clone()),
-                thunks,
-                func_debug_cx,
-            );
+            let mut ssa = SSABuilder::new(self, builder, procedure.clone(), thunks, func_debug_cx);
 
             ssa.linear_procedure(procedure);
             ssa.finalize();
@@ -955,15 +949,13 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub builder: FunctionBuilder<'f>,
     pub(crate) func_debug_cx: FunctionDebugContext<'gc>,
 
-    /// Map from non reified continuations to corresponding Cranelift block.
-    pub blockmap: HashMap<ContRef<'gc>, ir::Block>,
     pub linear_blockmap: HashMap<BlockId, ir::Block>,
     pub variables: HashMap<LVarRef<'gc>, VarDef>,
     pub linear_variables: HashMap<ValueId, VarDef>,
     pub linear_rest_sources: HashMap<ValueId, LinearRestSource>,
     pub synthetic_aliases: HashMap<ValueId, LVarRef<'gc>>,
 
-    pub target: ContOrFunc<'gc>,
+    pub target: Procedure<'gc>,
     pub exit_block: ir::Block,
     /// Real entrypoint block of the function/continuation.
     ///
@@ -979,25 +971,17 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub thunks: ImportedThunks,
 
     pub sig_call: ir::SigRef,
-    pub to_generate: Vec<ContRef<'gc>>,
 
     pub data_imports: HashMap<DataId, ir::GlobalValue>,
 
     pub srcloc: Option<SourceLoc>,
 }
 
-#[derive(Clone)]
-pub enum ContOrFunc<'gc> {
-    Func(FuncRef<'gc>),
-    Cont(ContRef<'gc>),
-    Procedure(Procedure<'gc>),
-}
-
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     pub(crate) fn new(
         module_builder: &'a mut ModuleBuilder<'gc>,
         mut builder: FunctionBuilder<'f>,
-        target: ContOrFunc<'gc>,
+        target: Procedure<'gc>,
         thunks: ImportedThunks,
         mut func_debug_cx: FunctionDebugContext<'gc>,
     ) -> Self {
@@ -1070,9 +1054,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             linear_variables: HashMap::new(),
             linear_rest_sources: HashMap::new(),
             synthetic_aliases: HashMap::new(),
-            blockmap: HashMap::new(),
             linear_blockmap: HashMap::new(),
-            to_generate: Vec::new(),
             thunks,
 
             sig_call,
@@ -1229,7 +1211,7 @@ mod tests {
             let ssa = SSABuilder::new(
                 &mut module_builder,
                 builder,
-                ContOrFunc::Procedure(procedure),
+                procedure,
                 thunks,
                 func_debug_cx,
             );
@@ -1283,7 +1265,7 @@ mod tests {
             let mut ssa = SSABuilder::new(
                 &mut module_builder,
                 builder,
-                ContOrFunc::Procedure(procedure),
+                procedure,
                 thunks,
                 func_debug_cx,
             );
@@ -1326,7 +1308,7 @@ mod tests {
             let mut ssa = SSABuilder::new(
                 &mut module_builder,
                 builder,
-                ContOrFunc::Procedure(procedure),
+                procedure,
                 thunks,
                 func_debug_cx,
             );
@@ -1370,7 +1352,7 @@ mod tests {
             let mut ssa = SSABuilder::new(
                 &mut module_builder,
                 builder,
-                ContOrFunc::Procedure(procedure),
+                procedure,
                 thunks,
                 func_debug_cx,
             );
@@ -1419,7 +1401,7 @@ mod tests {
             let mut ssa = SSABuilder::new(
                 &mut module_builder,
                 builder,
-                ContOrFunc::Procedure(procedure),
+                procedure,
                 thunks,
                 func_debug_cx,
             );
@@ -1466,7 +1448,7 @@ mod tests {
             let mut ssa = SSABuilder::new(
                 &mut module_builder,
                 builder,
-                ContOrFunc::Procedure(procedure),
+                procedure,
                 thunks,
                 func_debug_cx,
             );
