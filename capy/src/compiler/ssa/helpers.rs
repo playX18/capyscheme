@@ -500,9 +500,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let got = self.builder.ins().iconst(types::I64, got as i64);
         let expected = self.builder.ins().iconst(types::I64, expected as i64);
+        let call_args = self.prepare_call_args(&[]);
+        let from = self.builder.ins().iconst(types::I64, 0);
         let err = self.builder.ins().call(
-            self.thunks.wrong_number_of_args,
-            &[ctx, value, got, expected],
+            self.thunks.wrong_number_of_args_regs,
+            &[
+                ctx,
+                value,
+                got,
+                expected,
+                call_args.argc,
+                call_args.args[0],
+                call_args.args[1],
+                call_args.args[2],
+                call_args.args[3],
+                call_args.overflow,
+                from,
+            ],
         );
         let val = self.builder.inst_results(err)[0];
         self.raise_to_exception_handler(val);

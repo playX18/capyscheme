@@ -21,7 +21,7 @@ use crate::{
 use crate::{
     prelude::ClosureRef,
     runtime::{
-        Context,
+        Context, REGISTER_ARG_COUNT,
         fasl::FASLReader,
         modules::{Module, Variable},
         value::{
@@ -287,6 +287,125 @@ pub mod compiler {
     }
 }
 
+fn register_arg<'gc>(
+    index: usize,
+    arg0: Value<'gc>,
+    arg1: Value<'gc>,
+    arg2: Value<'gc>,
+    arg3: Value<'gc>,
+    overflow: *const Value<'gc>,
+) -> Value<'gc> {
+    match index {
+        0 => arg0,
+        1 => arg1,
+        2 => arg2,
+        3 => arg3,
+        _ => unsafe { *overflow.add(index - REGISTER_ARG_COUNT) },
+    }
+}
+
+fn collect_register_args<'gc>(
+    argc: usize,
+    arg0: Value<'gc>,
+    arg1: Value<'gc>,
+    arg2: Value<'gc>,
+    arg3: Value<'gc>,
+    overflow: *const Value<'gc>,
+    from: usize,
+) -> Vec<Value<'gc>> {
+    (from..argc)
+        .map(|index| register_arg(index, arg0, arg1, arg2, arg3, overflow))
+        .collect()
+}
+
+fn collect_register_arg_range<'gc>(
+    argc: usize,
+    arg0: Value<'gc>,
+    arg1: Value<'gc>,
+    arg2: Value<'gc>,
+    arg3: Value<'gc>,
+    overflow: *const Value<'gc>,
+    from: usize,
+    count: usize,
+) -> Vec<Value<'gc>> {
+    let end = from.saturating_add(count).min(argc);
+    (from..end)
+        .map(|index| register_arg(index, arg0, arg1, arg2, arg3, overflow))
+        .collect()
+}
+
+fn save_register_args<'gc>(
+    ctx: Context<'gc>,
+    argc: usize,
+    arg0: Value<'gc>,
+    arg1: Value<'gc>,
+    arg2: Value<'gc>,
+    arg3: Value<'gc>,
+) {
+    ctx.state().gc_save.save(argc, [arg0, arg1, arg2, arg3]);
+}
+
+fn wrong_number_of_args_impl<'gc>(
+    ctx: Context<'gc>,
+    subr: Value<'gc>,
+    got: usize,
+    expected: isize,
+    rands: &[Value<'gc>],
+) -> Value<'gc> {
+    let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
+    let msg = if is_cont {
+        let ret = unsafe { returnaddress(0) };
+        backtrace::resolve(ret as _, |sym| {
+            println!(
+                "WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}",
+                meta = if subr.is::<Closure>() {
+                    subr.downcast::<Closure>().meta.get()
+                } else {
+                    Value::new(false)
+                }
+            );
+        });
+        if expected < 0 {
+            format!("expected at least {} values, got {}", -expected, got)
+        } else {
+            format!("expected {} value(s), got {}", expected, got)
+        }
+    } else {
+        let ret = unsafe { returnaddress(0) };
+        backtrace::resolve(ret as _, |sym| {
+            println!(
+                "WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}",
+                meta = if subr.is::<Closure>() {
+                    subr.downcast::<Closure>().meta.get()
+                } else {
+                    Value::new(false)
+                }
+            );
+        });
+        crate::runtime::vm::debug::print_stacktraces_impl(ctx);
+        if expected < 0 {
+            format!(
+                "procedure expected at least {} arguments, got {}",
+                -expected, got
+            )
+        } else {
+            format!("procedure expected {} arguments, got {}", expected, got)
+        }
+    };
+
+    let meta = if subr.is::<Closure>() {
+        subr.downcast::<Closure>().meta.get()
+    } else {
+        Value::new(false)
+    };
+    make_assertion_violation(
+        ctx,
+        Value::new(false),
+        Str::new(*ctx, &msg, true).into(),
+        &[subr, meta],
+    )
+}
+
 thunks! {
     'gc:
 
@@ -299,49 +418,33 @@ thunks! {
     ) -> Value<'gc> {
         //print_stacktraces_impl(ctx);
         let rands = unsafe { std::slice::from_raw_parts(rands, got) };
-        let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
-        let msg = if is_cont {
-            let ret = unsafe { returnaddress(0) };
-            backtrace::resolve(ret as _, |sym| {
-                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}", meta = if subr.is::<Closure>() {
-                    subr.downcast::<Closure>().meta.get()
-                } else {
-                    Value::new(false)
-                });
-            });
-            if expected < 0 {
-                format!("expected at least {} values, got {}", -expected, got)
-            } else {
-                format!("expected {} value(s), got {}", expected, got)
-            }
-        } else {
-            let ret = unsafe { returnaddress(0) };
-            backtrace::resolve(ret as _, |sym| {
-                println!("WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}", meta = if subr.is::<Closure>() {
-                    subr.downcast::<Closure>().meta.get()
-                } else {
-                    Value::new(false)
-                });
-            });
-            crate::runtime::vm::debug::print_stacktraces_impl(ctx);
-            if expected < 0 {
-                format!("procedure expected at least {} arguments, got {}", -expected, got)
-            } else {
-                format!("procedure expected {} arguments, got {}", expected, got)
-            }
-        };
+        wrong_number_of_args_impl(ctx, subr, got, expected, rands)
+    }
 
-        let meta = if subr.is::<Closure>() {
-            subr.downcast::<Closure>().meta.get()
-        } else {
-            Value::new(false)
-        };
-        make_assertion_violation(
-            ctx,
-            Value::new(false),
-            Str::new(*ctx, &msg, true).into(),
-            &[subr, meta]
-        )
+    pub fn wrong_number_of_args_regs(
+        ctx: Context<'gc>,
+        subr: Value<'gc>,
+        got: usize,
+        expected: isize,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>,
+        from: usize
+    ) -> Value<'gc> {
+        let rands = collect_register_arg_range(
+            argc,
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            overflow,
+            from,
+            got,
+        );
+        wrong_number_of_args_impl(ctx, subr, got, expected, &rands)
     }
 
     pub fn cons_rest(
@@ -356,6 +459,25 @@ thunks! {
         if from >= args.len() {
         }
         for &arg in args[from..].iter().rev() {
+            ls = Value::cons(ctx, arg, ls);
+        }
+
+        ls
+    }
+
+    pub fn cons_rest_regs(
+        ctx: Context<'gc>,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>,
+        from: usize
+    ) -> Value<'gc> {
+        let mut ls = Value::null();
+        for index in (from..argc).rev() {
+            let arg = register_arg(index, arg0, arg1, arg2, arg3, overflow);
             ls = Value::cons(ctx, arg, ls);
         }
 
@@ -595,6 +717,24 @@ thunks! {
         ctx.state().runstack.set(ctx.state().runstack_start);
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
         let arr = Array::from_slice(*ctx, args);
+
+        Gc::new(*ctx, SavedCall { rands: arr, rator, from_procedure: true })
+    }
+
+    pub fn yieldpoint_regs(
+        ctx: Context<'gc>,
+        rator: Value<'gc>,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>
+    ) -> Gc<'gc, SavedCall<'gc>> {
+        save_register_args(ctx, argc, arg0, arg1, arg2, arg3);
+        ctx.state().runstack.set(ctx.state().runstack_start);
+        let args = collect_register_args(argc, arg0, arg1, arg2, arg3, overflow, 0);
+        let arr = Array::from_slice(*ctx, &args);
 
         Gc::new(*ctx, SavedCall { rands: arr, rator, from_procedure: true })
     }
@@ -3843,6 +3983,36 @@ thunks! {
             );
             rands.write(ck.into());
         }
+    }
+
+    pub fn push_dframe_regs(
+        ctx: Context<'gc>,
+        src: Value<'gc>,
+        rator: Value<'gc>,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>
+    ) -> Value<'gc> {
+        assert!(argc > 0, "push_dframe_regs called without a return continuation");
+
+        let retk = register_arg(0, arg0, arg1, arg2, arg3, overflow);
+        let args = (1..argc).rev().fold(Value::null(), |acc, index| {
+            let arg = register_arg(index, arg0, arg1, arg2, arg3, overflow);
+            Value::cons(ctx, arg, acc)
+        });
+
+        let info = Vector::from_slice(*ctx, &[src, rator, args]);
+        let key = crate::runtime::vm::debug::sym_stacktrace_key(ctx);
+        let ck = crate::runtime::vm::control::push_cframe(
+            ctx,
+            key.into(),
+            info.into(),
+            retk.downcast::<Closure>(),
+        );
+        ck.into()
     }
 
     pub fn push_cframe(

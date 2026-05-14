@@ -36,6 +36,9 @@ use std::{
     sync::{Once, atomic::AtomicUsize},
 };
 
+pub(crate) const REGISTER_ARG_COUNT: usize = 4;
+pub(crate) const COMPILED_ENTRY_ARG_COUNT: usize = REGISTER_ARG_COUNT + 2;
+
 /// cbindgen:ignore
 #[derive(Clone, Copy)]
 #[repr(transparent)]
@@ -211,32 +214,141 @@ impl<'gc> Context<'gc> {
         rands: impl IntoIterator<Item = Value<'gc>>,
         retk: Option<Value<'gc>>,
     ) -> NativeReturn<'gc> {
-        let rands_ptr = self.state().runstack.get().to_mut_ptr::<Value>();
-        let disp = if retk.is_some() { 1 } else { 0 };
-        // SAFETY: `runstack` is a pre-allocated buffer of `RUNSTACK_SIZE` Values.
-        // `rands_ptr` points within that buffer; the caller must not exceed stack capacity.
-        unsafe {
-            if let Some(retk) = retk {
-                *rands_ptr = retk;
-            }
-            let mut count = 0;
-            for (i, rand) in rands.into_iter().enumerate() {
-                *rands_ptr.add(disp + i) = rand;
-                count += 1;
-            }
-
-            self.state()
-                .runstack
-                .set(Address::from_ptr(rands_ptr.add(count + disp)));
-            self.state().call_data.rands.set(rands_ptr);
-            self.state().call_data.num_rands.set(count + disp);
-            self.state().call_data.rator.set(rator);
-        }
+        self.prepare_call_data(rator, rands, retk);
 
         NativeReturn {
             code: ReturnCode::Continue,
             value: Value::new(false),
         }
+    }
+
+    pub(crate) fn return_apply(
+        self,
+        rator: Value<'gc>,
+        fixed: &[Value<'gc>],
+        mut rest: Value<'gc>,
+        retk: Value<'gc>,
+    ) -> Result<NativeReturn<'gc>, Value<'gc>> {
+        let mut rest_len = 0usize;
+        let mut cursor = rest;
+        while !cursor.is_null() {
+            if !cursor.is_pair() {
+                return Err(rest);
+            }
+            rest_len += 1;
+            cursor = cursor.cdr();
+        }
+
+        let mut args = Vec::with_capacity(fixed.len() + rest_len);
+        args.extend_from_slice(fixed);
+        while !rest.is_null() {
+            args.push(rest.car());
+            rest = rest.cdr();
+        }
+
+        Ok(self.return_call(rator, args, Some(retk)))
+    }
+
+    fn prepare_call_data(
+        self,
+        rator: Value<'gc>,
+        rands: impl IntoIterator<Item = Value<'gc>>,
+        retk: Option<Value<'gc>>,
+    ) {
+        let state = self.state();
+        let overflow = state.runstack.get().to_mut_ptr::<Value>();
+        let mut argc = 0usize;
+
+        state.call_data.clear();
+
+        if let Some(retk) = retk {
+            state.call_data.set_arg(argc, retk);
+            argc += 1;
+        }
+
+        for rand in rands {
+            if argc < REGISTER_ARG_COUNT {
+                state.call_data.set_arg(argc, rand);
+            } else {
+                let overflow_index = argc - REGISTER_ARG_COUNT;
+                unsafe {
+                    let slot = overflow.add(overflow_index);
+                    if Address::from_ptr(slot) >= state.runstack_end {
+                        panic!(
+                            "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
+                            Address::from_ptr(slot),
+                            state.runstack_end,
+                            argc + 1,
+                            (state.runstack_end - state.runstack_start) / size_of::<Value>()
+                        );
+                    }
+                    if Address::from_ptr(slot) < state.runstack_start {
+                        panic!("runstack underflow");
+                    }
+                    *slot = rand;
+                }
+            }
+            argc += 1;
+        }
+
+        let overflow_count = argc.saturating_sub(REGISTER_ARG_COUNT);
+        unsafe {
+            state
+                .runstack
+                .set(Address::from_ptr(overflow.add(overflow_count)));
+        }
+        state.call_data.argc.set(argc);
+        state.call_data.rator.set(rator);
+    }
+
+    pub(crate) fn prepare_scheme_call_args(
+        self,
+        rands: impl IntoIterator<Item = Value<'gc>>,
+        retk: Option<Value<'gc>>,
+    ) -> (usize, [Value<'gc>; REGISTER_ARG_COUNT]) {
+        let state = self.state();
+        let overflow = state.runstack.get().to_mut_ptr::<Value>();
+        let mut regs = [Value::undefined(); REGISTER_ARG_COUNT];
+        let mut argc = 0usize;
+
+        if let Some(retk) = retk {
+            regs[argc] = retk;
+            argc += 1;
+        }
+
+        for rand in rands {
+            if argc < REGISTER_ARG_COUNT {
+                regs[argc] = rand;
+            } else {
+                let overflow_index = argc - REGISTER_ARG_COUNT;
+                unsafe {
+                    let slot = overflow.add(overflow_index);
+                    if Address::from_ptr(slot) >= state.runstack_end {
+                        panic!(
+                            "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
+                            Address::from_ptr(slot),
+                            state.runstack_end,
+                            argc + 1,
+                            (state.runstack_end - state.runstack_start) / size_of::<Value>()
+                        );
+                    }
+                    if Address::from_ptr(slot) < state.runstack_start {
+                        panic!("runstack underflow");
+                    }
+                    *slot = rand;
+                }
+            }
+            argc += 1;
+        }
+
+        let overflow_count = argc.saturating_sub(REGISTER_ARG_COUNT);
+        unsafe {
+            state
+                .runstack
+                .set(Address::from_ptr(overflow.add(overflow_count)));
+        }
+
+        (argc, regs)
     }
 
     pub fn module(self, name: &str) -> Option<Gc<'gc, Module<'gc>>> {
@@ -395,6 +507,7 @@ pub struct State<'gc> {
     ///
     /// In that case, some operations (primarily GC) won't be allowed.
     pub(crate) nest_level: AtomicUsize,
+    pub(crate) gc_save: GcSave<'gc>,
     pub(crate) call_data: CallData<'gc>,
     pub(crate) saved_call: Cell<Option<Gc<'gc, SavedCall<'gc>>>>,
     pub(crate) shadow_stack: UnsafeCell<debug::ShadowStack<'gc>>,
@@ -412,25 +525,93 @@ pub struct State<'gc> {
 #[repr(C)]
 pub struct CallData<'gc> {
     pub rator: Cell<Value<'gc>>,
-    pub rands: Cell<*mut Value<'gc>>,
-    pub num_rands: Cell<usize>,
+    pub argc: Cell<usize>,
+    pub arg0: Cell<Value<'gc>>,
+    pub arg1: Cell<Value<'gc>>,
+    pub arg2: Cell<Value<'gc>>,
+    pub arg3: Cell<Value<'gc>>,
 }
 
-// SAFETY: CallData stores GC-managed Values (rator + rands array). During tracing we
-// visit each live slot. `rands` is a raw pointer to the runstack region — valid while
-// the owning State/mutator is alive.
+impl<'gc> CallData<'gc> {
+    fn new() -> Self {
+        Self {
+            rator: Cell::new(Value::undefined()),
+            argc: Cell::new(0),
+            arg0: Cell::new(Value::undefined()),
+            arg1: Cell::new(Value::undefined()),
+            arg2: Cell::new(Value::undefined()),
+            arg3: Cell::new(Value::undefined()),
+        }
+    }
+
+    pub(crate) fn set_arg(&self, index: usize, value: Value<'gc>) {
+        match index {
+            0 => self.arg0.set(value),
+            1 => self.arg1.set(value),
+            2 => self.arg2.set(value),
+            3 => self.arg3.set(value),
+            _ => panic!("call register argument index out of bounds: {index}"),
+        }
+    }
+
+    pub(crate) fn clear(&self) {
+        self.rator.set(Value::undefined());
+        self.argc.set(0);
+        for index in 0..REGISTER_ARG_COUNT {
+            self.set_arg(index, Value::undefined());
+        }
+    }
+}
+
+#[repr(C)]
+pub struct GcSave<'gc> {
+    pub argc: Cell<usize>,
+    pub arg0: Cell<Value<'gc>>,
+    pub arg1: Cell<Value<'gc>>,
+    pub arg2: Cell<Value<'gc>>,
+    pub arg3: Cell<Value<'gc>>,
+}
+
+impl<'gc> GcSave<'gc> {
+    fn new() -> Self {
+        Self {
+            argc: Cell::new(0),
+            arg0: Cell::new(Value::undefined()),
+            arg1: Cell::new(Value::undefined()),
+            arg2: Cell::new(Value::undefined()),
+            arg3: Cell::new(Value::undefined()),
+        }
+    }
+
+    pub(crate) fn save(&self, argc: usize, args: [Value<'gc>; REGISTER_ARG_COUNT]) {
+        self.argc.set(argc);
+        self.arg0.set(args[0]);
+        self.arg1.set(args[1]);
+        self.arg2.set(args[2]);
+        self.arg3.set(args[3]);
+    }
+}
+
+// SAFETY: CallData stores GC-managed Values used to stage a tail call from native code.
 unsafe impl<'gc> Trace for CallData<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.trace(&mut self.rator);
-        unsafe {
-            // SAFETY: `rands` points into the runstack buffer allocated by `make_fresh_runstack`.
-            // `num_rands` is set when the call is saved, bounding the iteration.
-            if !self.rands.get().is_null() {
-                for i in 0..self.num_rands.get() {
-                    (*self.rands.get().add(i)).trace(visitor);
-                }
-            }
-        }
+        visitor.trace(&mut self.arg0);
+        visitor.trace(&mut self.arg1);
+        visitor.trace(&mut self.arg2);
+        visitor.trace(&mut self.arg3);
+    }
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        let _ = weak_processor;
+    }
+}
+
+unsafe impl<'gc> Trace for GcSave<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
+        visitor.trace(&mut self.arg0);
+        visitor.trace(&mut self.arg1);
+        visitor.trace(&mut self.arg2);
+        visitor.trace(&mut self.arg3);
     }
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
@@ -457,6 +638,9 @@ unsafe impl Trace for State<'_> {
         for value in runstack {
             visitor.trace(value);
         }
+
+        visitor.trace(&mut self.gc_save);
+        visitor.trace(&mut self.call_data);
 
         unsafe {
             // SAFETY: `shadow_stack` UnsafeCell is only accessed during GC tracing (stop-the-world)
@@ -497,12 +681,9 @@ impl<'gc> State<'gc> {
             runstack: Cell::new(runstack_start),
             runstack_end: _runstack_end,
             nest_level: AtomicUsize::new(0),
+            gc_save: GcSave::new(),
             runstack_start,
-            call_data: CallData {
-                rator: Cell::new(Value::undefined()),
-                rands: Cell::new(std::ptr::null_mut()),
-                num_rands: Cell::new(0),
-            },
+            call_data: CallData::new(),
             last_ret_addr: Cell::new(Address::ZERO),
             saved_call: Cell::new(None),
             thread_object,
@@ -1054,16 +1235,12 @@ unsafe impl<'gc> Trace for YieldReason<'gc> {
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         match self {
-            YieldReason::Operation(op) => {
-                unsafe {
-                    op.process_weak_refs(weak_processor);
-                }
-            }
-            YieldReason::OperationWithReturn(op) => {
-                unsafe {
-                    op.process_weak_refs(weak_processor);
-                }
-            }
+            YieldReason::Operation(op) => unsafe {
+                op.process_weak_refs(weak_processor);
+            },
+            YieldReason::OperationWithReturn(op) => unsafe {
+                op.process_weak_refs(weak_processor);
+            },
             _ => {}
         }
     }
