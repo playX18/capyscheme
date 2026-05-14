@@ -4,6 +4,7 @@ use crate::runtime::Context;
 use crate::runtime::State;
 use crate::runtime::modules::Variable;
 use crate::runtime::value::*;
+use crate::runtime::vm::exceptions::RaiseKind;
 use cranelift::prelude::InstBuilder;
 use cranelift::prelude::IntCC;
 use cranelift::prelude::types;
@@ -2518,10 +2519,7 @@ prim!(
 
         ssa.builder.switch_to_block(not_pair);
         {
-            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let res = ssa.builder.ins().call(ssa.thunks.car_not_pair, &[ctx, pair]);
-            let res = ssa.builder.inst_results(res)[0];
-            ssa.raise_to_exception_handler(res);
+            ssa.emit_raise(RaiseKind::CarNotPair, &[pair], Value::new(false));
         }
         ssa.builder.switch_to_block(is_pair);
 
@@ -2538,11 +2536,7 @@ prim!(
 
         ssa.builder.switch_to_block(not_pair);
         {
-
-            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let res = ssa.builder.ins().call(ssa.thunks.cdr_not_pair, &[ctx, pair]);
-            let res = ssa.builder.inst_results(res)[0];
-            ssa.raise_to_exception_handler(res);
+            ssa.emit_raise(RaiseKind::CdrNotPair, &[pair], Value::new(false));
         }
         ssa.builder.switch_to_block(is_pair);
 

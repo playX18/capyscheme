@@ -209,6 +209,9 @@ fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
             render_linear_atom(*callee),
             render_linear_atoms(args)
         ),
+        Terminator::Raise { kind, args, .. } => {
+            format!("(%raise {:?}{})", kind, render_linear_atoms(args))
+        }
         Terminator::Jump { target, args } => {
             format!(
                 "(jump {}{})",
