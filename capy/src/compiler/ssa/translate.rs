@@ -8,7 +8,8 @@ use crate::rsgc::{
 
 use crate::{
     compiler::ssa::{
-        ContOrFunc, LinearRestSource, RegisterCallArgs, SSABuilder, VarDef, primitive::PrimValue,
+        ContOrFunc, LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
+        primitive::PrimValue,
     },
     cps::{
         linear::{
@@ -22,7 +23,8 @@ use crate::{
     runtime::{
         Context, REGISTER_ARG_COUNT, State,
         value::CodeBlock,
-        value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, TypeCode16, Value},
+        value::{Closure, Symbol, Tagged, TypeCode8, TypeCode16, Value},
+        vm::exceptions::RaiseKind,
     },
 };
 use cranelift::frontend::Switch;
@@ -329,39 +331,115 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .collect()
     }
 
-    fn call_wrong_number_of_args_regs(
+    fn emit_wrong_arity_trampoline_call(
         &mut self,
+        actual_argc: ir::Value,
+        retk_or_zero: ir::Value,
         got: ir::Value,
-        expected: ir::Value,
-        argc: ir::Value,
-        args: [ir::Value; REGISTER_ARG_COUNT],
-        overflow: ir::Value,
-        from: usize,
-    ) -> ir::Inst {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let from = self.builder.ins().iconst(types::I64, from as i64);
-        self.builder.ins().call(
-            self.thunks.wrong_number_of_args_regs,
+        expected: isize,
+    ) {
+        let got = self.linear_fixnum_from_usize_value(got);
+        let expected = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(expected as i32).bits() as i64);
+        let target = self.module_builder.module.declare_func_in_func(
+            self.module_builder.wrong_arity_trampoline,
+            &mut self.builder.func,
+        );
+        let undefined = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        self.builder.ins().return_call(
+            target,
             &[
-                ctx, self.rator, got, expected, argc, args[0], args[1], args[2], args[3], overflow,
-                from,
+                self.rator,
+                actual_argc,
+                retk_or_zero,
+                got,
+                expected,
+                undefined,
             ],
-        )
+        );
     }
 
     pub fn entrypoint(&mut self, argc: ir::Value, args: [ir::Value; REGISTER_ARG_COUNT]) {
         let source = self.target_source();
         let is_function = self.target_is_function();
         self.set_debug_loc(source);
-        let overflow = self.overflow_base_from_argc(argc);
         if is_function {
-            self.check_yield(self.rator, argc, args, overflow);
+            self.check_yield(self.rator, argc, args);
         }
 
+        if self.load_fixed_arity_register_arguments(argc, args) {
+            if !matches!(&self.target, ContOrFunc::Procedure(_)) {
+                self.load_free_vars();
+            }
+            return;
+        }
+
+        let overflow = self.overflow_base_from_argc(argc);
         if !matches!(&self.target, ContOrFunc::Procedure(_)) {
             self.load_free_vars();
         }
         self.load_arguments(argc, args, overflow);
+    }
+
+    fn load_fixed_arity_register_arguments(
+        &mut self,
+        argc: ir::Value,
+        args: [ir::Value; REGISTER_ARG_COUNT],
+    ) -> bool {
+        let (params, rest) = self.target_params();
+        if rest.is_some() || self.target_linear_variadic().is_some() {
+            return false;
+        }
+
+        let return_cont = self.target_return_cont();
+        let first_arg = usize::from(return_cont.is_some());
+        let expected_argc = first_arg + params.len();
+        if expected_argc > REGISTER_ARG_COUNT {
+            return false;
+        }
+
+        let exact = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, argc, expected_argc as i64);
+        let succ = self.builder.create_block();
+        let err = self.builder.create_block();
+        self.builder.func.layout.set_cold(err);
+        self.builder.ins().brif(exact, succ, &[], err, &[]);
+
+        self.builder.switch_to_block(err);
+        {
+            let got = if first_arg == 0 {
+                argc
+            } else {
+                self.builder.ins().iadd_imm(argc, -(first_arg as i64))
+            };
+            let expected = params.len() as isize;
+            let retk_or_zero = return_cont
+                .map(|_| args[0])
+                .unwrap_or_else(|| self.builder.ins().iconst(types::I64, 0));
+            self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
+        }
+
+        self.builder.switch_to_block(succ);
+        if let Some(return_cont) = return_cont {
+            let retk = args[0];
+            self.debug_local(return_cont, retk);
+            self.variables.insert(return_cont, VarDef::Value(retk));
+        }
+
+        for (i, param) in params.iter().enumerate() {
+            let value = args[first_arg + i];
+            self.variables.insert(*param, VarDef::Value(value));
+            self.debug_local(*param, value);
+        }
+
+        true
     }
 
     pub(crate) fn current_retk_value(&mut self) -> ir::Value {
@@ -593,36 +671,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         closure
     }
 
-    pub(crate) fn call_proc_with_retk(
-        &mut self,
-        proc: ir::Value,
-        retk: ir::Value,
-        args: &[ir::Value],
-    ) -> ir::Inst {
-        let rands = std::iter::once(retk)
-            .chain(args.iter().copied())
-            .collect::<Vec<_>>();
-        let call_args = self.prepare_call_args(&rands);
-        let code = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            proc,
-            offset_of!(Closure, code) as i32,
-        );
-        let mut block_args = vec![BlockArg::Value(code)];
-        block_args.extend(self.call_block_args(proc, call_args));
-        self.builder.ins().jump(self.exit_block, &block_args)
-    }
-
     pub(crate) fn raise_to_exception_handler(&mut self, err: ir::Value) -> ir::Inst {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let call = self
+        let retk = match self.target_return_cont() {
+            Some(return_cont) => self.var(return_cont),
+            None => self.builder.ins().iconst(types::I64, 0),
+        };
+        let target = self.module_builder.module.declare_func_in_func(
+            self.module_builder.raise_to_exception_handler_trampoline,
+            &mut self.builder.func,
+        );
+        let undefined = self
             .builder
             .ins()
-            .call(self.thunks.exception_handler, &[ctx]);
-        let handler = self.builder.inst_results(call)[0];
-        let retk = self.current_retk_value();
-        self.call_proc_with_retk(handler, retk, &[err])
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        self.builder.ins().return_call(
+            target,
+            &[err, undefined, retk, undefined, undefined, undefined],
+        )
     }
 
     fn load_arguments(
@@ -685,12 +750,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = -(params.len() as isize);
-                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.call_wrong_number_of_args_regs(
-                        got, expected, argc, args, overflow, first_arg,
-                    );
-                    let err = self.builder.inst_results(err)[0];
-                    self.raise_to_exception_handler(err);
+                    let retk_or_zero = self.current_retk_value();
+                    self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
                 }
                 self.builder.switch_to_block(succ);
                 {
@@ -768,12 +829,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = params.len() as isize;
-                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.call_wrong_number_of_args_regs(
-                        got, expected, argc, args, overflow, first_arg,
-                    );
-                    let err = self.builder.inst_results(err)[0];
-                    self.raise_to_exception_handler(err);
+                    let retk_or_zero = self.current_retk_value();
+                    self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
                 }
                 self.builder.switch_to_block(succ);
                 for (i, param) in params.iter().enumerate() {
@@ -841,12 +898,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 {
                     let got = num_rands;
                     let expected = 0isize;
-                    let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.call_wrong_number_of_args_regs(
-                        got, expected, argc, args, overflow, first_arg,
-                    );
-                    let err = self.builder.inst_results(err)[0];
-                    self.raise_to_exception_handler(err);
+                    let retk_or_zero = self.current_retk_value();
+                    self.emit_wrong_arity_trampoline_call(argc, retk_or_zero, got, expected);
                 }
 
                 self.builder.switch_to_block(succ);
@@ -937,19 +990,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
         let callee = self.atom(*callee);
 
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let get_clos_code = self.builder.create_block();
         let error = self.builder.create_block();
         self.builder.func.layout.set_cold(error);
         self.branch_if_has_typ8(callee, Closure::TC8.bits(), get_clos_code, &[], error, &[]);
         self.builder.switch_to_block(error);
         {
-            let err = self
-                .builder
-                .ins()
-                .call(self.thunks.non_applicable, &[ctx, callee]);
-            let err = self.builder.inst_results(err)[0];
-            self.raise_to_exception_handler(err);
+            self.emit_raise(RaiseKind::NonApplicable, &[callee], Value::new(false));
         }
 
         self.builder.switch_to_block(get_clos_code);
@@ -970,30 +1017,32 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     /// Prepare register-call arguments. The first four logical arguments are
     /// returned as SSA values; logical arg4 and later are stored at the current runstack.
     pub fn prepare_call_args(&mut self, args: &[ir::Value]) -> RegisterCallArgs {
-        let state = self.state_ptr();
-        let runstack = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack) as i32,
-        );
         let overflow_count = args.len().saturating_sub(REGISTER_ARG_COUNT);
-        let new_runstack = self.builder.ins().iadd_imm(
-            runstack,
-            (overflow_count * std::mem::size_of::<Value>()) as i64,
-        );
-        self.builder.ins().store(
-            ir::MemFlags::trusted().with_can_move(),
-            new_runstack,
-            state,
-            offset_of!(State, runstack) as i32,
-        );
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let overflow = if overflow_count == 0 {
+            zero
+        } else {
+            let state = self.state_ptr();
+            let runstack = self.builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                state,
+                offset_of!(State, runstack) as i32,
+            );
+            let new_runstack = self.builder.ins().iadd_imm(
+                runstack,
+                (overflow_count * std::mem::size_of::<Value>()) as i64,
+            );
+            self.builder.ins().store(
+                ir::MemFlags::trusted().with_can_move(),
+                new_runstack,
+                state,
+                offset_of!(State, runstack) as i32,
+            );
+            runstack
+        };
 
-        let undefined = self
-            .builder
-            .ins()
-            .iconst(types::I64, Value::undefined().bits() as i64);
-        let mut regs = [undefined; REGISTER_ARG_COUNT];
+        let mut regs = [zero; REGISTER_ARG_COUNT];
         for (i, arg) in args.iter().enumerate() {
             if i < REGISTER_ARG_COUNT {
                 regs[i] = *arg;
@@ -1001,7 +1050,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.ins().store(
                     ir::MemFlags::trusted().with_can_move(),
                     *arg,
-                    runstack,
+                    overflow,
                     ((i - REGISTER_ARG_COUNT) * std::mem::size_of::<Value>()) as i32,
                 );
             }
@@ -1010,7 +1059,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         RegisterCallArgs {
             argc: self.builder.ins().iconst(types::I64, args.len() as i64),
             args: regs,
-            overflow: runstack,
+            overflow,
         }
     }
 
@@ -1114,26 +1163,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             );
             self.variables.insert(var, VarDef::Value(value));
         }
-    }
-
-    /* helpers */
-
-    pub fn check_argcount(&mut self, proc: &str, got_: usize, expected_: usize) {
-        let got = self.builder.ins().iconst(types::I64, got_ as i64);
-        let expected = self.builder.ins().iconst(types::I64, expected_ as i64);
-
-        let on_err = self.builder.create_block();
-        let on_succ = self.builder.create_block();
-
-        let cmp = self.builder.ins().icmp(IntCC::Equal, got, expected);
-
-        self.builder.ins().brif(cmp, on_succ, &[], on_err, &[]);
-        self.builder.func.layout.set_cold(on_err);
-        self.builder.switch_to_block(on_err);
-        {
-            self.wrong_num_args(proc, got_, expected_ as _);
-        }
-        self.builder.switch_to_block(on_succ);
     }
 
     pub fn atom_for_cond(&mut self, atom: Atom<'gc>) -> ir::Value {
@@ -1629,19 +1658,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let callee = self.linear_atom(callee);
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let get_clos_code = self.builder.create_block();
         let error = self.builder.create_block();
         self.builder.func.layout.set_cold(error);
         self.branch_if_has_typ8(callee, Closure::TC8.bits(), get_clos_code, &[], error, &[]);
         self.builder.switch_to_block(error);
         {
-            let err = self
-                .builder
-                .ins()
-                .call(self.thunks.non_applicable, &[ctx, callee]);
-            let err = self.builder.inst_results(err)[0];
-            self.raise_to_exception_handler(err);
+            self.emit_raise(RaiseKind::NonApplicable, &[callee], Value::new(false));
         }
 
         self.builder.switch_to_block(get_clos_code);
@@ -1763,6 +1786,39 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.emit_callee_jump(callee, call_args);
     }
 
+    fn linear_raise(&mut self, kind: RaiseKind, args: &[LinearAtom<'gc>], source: Value<'gc>) {
+        let args = args
+            .iter()
+            .copied()
+            .map(|arg| self.linear_atom(arg))
+            .collect::<Vec<_>>();
+        self.emit_raise(kind, &args, source);
+    }
+
+    pub(crate) fn emit_raise(&mut self, kind: RaiseKind, args: &[ir::Value], source: Value<'gc>) {
+        self.set_debug_loc(source);
+        if args.len() > MAX_RAISE_ARITY {
+            panic!(
+                "%raise arity {} exceeds maximum fixed raise arity {}",
+                args.len(),
+                MAX_RAISE_ARITY
+            );
+        }
+        let code = self.builder.ins().iconst(types::I64, kind.code() as i64);
+        let retk = self.current_retk_value();
+        let rands = std::iter::once(retk)
+            .chain(args.iter().copied())
+            .collect::<Vec<_>>();
+        let call_args = self.prepare_call_args(&rands);
+        let trampoline_id = self.module_builder.raise_trampolines[args.len()];
+        let target = self
+            .module_builder
+            .module
+            .declare_func_in_func(trampoline_id, &mut self.builder.func);
+        let values = self.call_values(code, call_args);
+        self.builder.ins().return_call(target, &values);
+    }
+
     fn emit_callee_jump(&mut self, callee: Callee, call_args: RegisterCallArgs) {
         match callee {
             Callee::Indirect { target, closure } => {
@@ -1840,34 +1896,19 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn raise_wrong_linear_block_arity(&mut self, args: &[LinearAtom<'gc>], expected: isize) {
-        let args = args
-            .iter()
-            .copied()
-            .map(|arg| self.linear_atom(arg))
-            .collect::<Vec<_>>();
-        let call_args = self.prepare_call_args(&args);
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let got = self.builder.ins().iconst(types::I64, args.len() as i64);
-        let expected = self.builder.ins().iconst(types::I64, expected as i64);
-        let from = self.builder.ins().iconst(types::I64, 0);
-        let err = self.builder.ins().call(
-            self.thunks.wrong_number_of_args_regs,
-            &[
-                ctx,
-                self.rator,
-                got,
-                expected,
-                call_args.argc,
-                call_args.args[0],
-                call_args.args[1],
-                call_args.args[2],
-                call_args.args[3],
-                call_args.overflow,
-                from,
-            ],
+        let got = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(args.len() as i32).bits() as i64);
+        let expected = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::new(expected as i32).bits() as i64);
+        self.emit_raise(
+            RaiseKind::WrongNumberOfArguments,
+            &[self.rator, got, expected],
+            Value::new(false),
         );
-        let err = self.builder.inst_results(err)[0];
-        self.raise_to_exception_handler(err);
     }
 
     fn linear_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
@@ -1894,6 +1935,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 args,
                 source,
             } => self.linear_tail_call(*callee, args, *source),
+            Terminator::Raise { kind, args, source } => self.linear_raise(*kind, args, *source),
             Terminator::Jump { target, args } => {
                 self.jump_to_linear_block(procedure, *target, args);
             }
@@ -2253,6 +2295,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.continue_to(*k, &rands);
             }
 
+            Term::Raise { kind, args, source } => {
+                let args = args.iter().map(|arg| self.atom(*arg)).collect::<Vec<_>>();
+                self.emit_raise(*kind, &args, *source);
+            }
+
             Term::If {
                 test,
                 consequent,
@@ -2309,7 +2356,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         rator: ir::Value,
         argc: ir::Value,
         args: [ir::Value; REGISTER_ARG_COUNT],
-        overflow: ir::Value,
     ) {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
@@ -2351,18 +2397,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .brif(is_nested, on_no_yieldpoint, &[], on_not_nested, &[]);
             self.builder.switch_to_block(on_not_nested);
             self.builder.func.layout.set_cold(on_not_nested);
-            let saved_call = self.builder.ins().call(
-                self.thunks.yieldpoint_regs,
-                &[
-                    ctx, rator, argc, args[0], args[1], args[2], args[3], overflow,
-                ],
+            let target = self.module_builder.module.declare_func_in_func(
+                self.module_builder.yieldpoint_trampoline,
+                &mut self.builder.func,
             );
-            let code = self
-                .builder
+            self.builder
                 .ins()
-                .iconst(types::I64, ReturnCode::Yield as i64);
-            let val = self.builder.inst_results(saved_call)[0];
-            self.builder.ins().return_(&[code, val]);
+                .return_call(target, &[rator, argc, args[0], args[1], args[2], args[3]]);
         }
         self.builder.switch_to_block(on_no_yieldpoint);
     }

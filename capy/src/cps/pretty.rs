@@ -82,6 +82,22 @@ impl<'gc> Term<'gc> {
                     .parens()
             }
 
+            Term::Raise { kind, args, .. } => {
+                let args_doc =
+                    alloc.intersperse(args.iter().map(|arg| arg.pretty(alloc)), alloc.space());
+                (alloc.text("%raise")
+                    + alloc.space()
+                    + alloc.text(format!("{kind:?}"))
+                    + if args.is_empty() {
+                        alloc.nil()
+                    } else {
+                        alloc.space()
+                    }
+                    + args_doc)
+                    .group()
+                    .parens()
+            }
+
             // (cond <test> => <kcons> | <kalt>)
             Term::If {
                 test,

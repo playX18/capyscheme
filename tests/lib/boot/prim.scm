@@ -40,6 +40,22 @@
     (vector-set! circular-vec 0 circular-vec)
     (test-equal "equal?: circular vector" circular-vec circular-vec))
 
+  (test-group "apply"
+    (test-equal "apply empty list" (apply list '()) '())
+    (test-equal "apply fills register arguments"
+      (apply list 1 '(2 3))
+      '(1 2 3))
+    (test-equal "apply spills after four logical arguments"
+      (apply list 1 2 3 '(4 5))
+      '(1 2 3 4 5))
+    (test-equal "apply crosses register overflow boundary"
+      (apply list 1 2 3 4 5 '(6 7 8 9))
+      '(1 2 3 4 5 6 7 8 9))
+    (test-equal "apply variadic rest crosses overflow boundary"
+      (apply (lambda (a b . rest) (list a b rest)) 1 2 3 4 5 '(6 7 8))
+      '(1 2 (3 4 5 6 7 8)))
+    (test-error "apply improper final list" &assertion-violation (apply list 1 2 3)))
+
   (test-group "null?"
     (test-assert "(null? '())" (null? '()))
     (test-assert "(null? '(1 2))" (not (null? '(1 2))))
