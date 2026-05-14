@@ -6,11 +6,15 @@ use crate::{
     },
     expander::core::LVarRef,
     runtime::{
-        value::{Symbol, Value},
+        value::{Str, Symbol, Tuple, TypeCode8, Value, Vector},
         vm::exceptions::RaiseKind,
     },
 };
-use std::collections::{HashMap, HashSet};
+use smallvec::{SmallVec, smallvec};
+use std::{
+    collections::{HashMap, HashSet},
+    mem::{offset_of, size_of},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub usize);
@@ -82,6 +86,68 @@ pub enum RestPredicate {
     List,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LowType {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Value,
+    Ptr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LowPrim {
+    HasType8(u8),
+    IsFixnum,
+    UntagFixnum,
+    TagFixnum,
+    IReduce(LowType),
+    SExt(LowType),
+    ZExt(LowType),
+    ICmp(LowIntPredicate, LowType),
+    IAdd(LowType),
+    ISub(LowType),
+    IMul(LowType),
+    IDiv(LowType),
+    IRem(LowType),
+    IShl(LowType),
+    IShr(LowType),
+    IAnd(LowType),
+    IOr(LowType),
+    IXor(LowType),
+    IAddImm(LowType, i64),
+    IMulImm(LowType, i64),
+    IAddOverflow(LowType),
+    ISubOverflow(LowType),
+    IMulOverflow(LowType),
+    Load { ty: LowType, offset: i32 },
+    FAdd(LowType),
+    FSub(LowType),
+    FMul(LowType),
+    FDiv(LowType),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LowIntPredicate {
+    Equal,
+    NotEqual,
+    SignedLessThan,
+    SignedLessThanOrEqual,
+    SignedGreaterThan,
+    SignedGreaterThanOrEqual,
+    UnsignedLessThan,
+    UnsignedLessThanOrEqual,
+    UnsignedGreaterThan,
+    UnsignedGreaterThanOrEqual,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<'gc> {
     Const {
@@ -116,6 +182,18 @@ pub enum Instruction<'gc> {
         source: Value<'gc>,
     },
     PrimCall {
+        dst: ValueId,
+        prim: Primitive,
+        args: Vec<LinearAtom<'gc>>,
+        source: Value<'gc>,
+    },
+    LowPrimCall {
+        dsts: SmallVec<[ValueId; 2]>,
+        op: LowPrim,
+        args: Vec<LinearAtom<'gc>>,
+        source: Value<'gc>,
+    },
+    RuntimePrimCall {
         dst: ValueId,
         prim: Primitive,
         args: Vec<LinearAtom<'gc>>,
@@ -223,14 +301,18 @@ pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
     let mut procedures = Vec::new();
 
     for func in reify.functions.iter() {
-        procedures.push(hoist_constants(lower_cache_operations(
-            lower_rest_arguments(infer_switches(linearize_function(*func))),
+        procedures.push(hoist_constants(lower_low_level_primitives(
+            lower_cache_operations(lower_rest_arguments(infer_switches(linearize_function(
+                *func,
+            )))),
         )));
     }
 
     for cont in reify.continuations.iter().filter(|cont| cont.reified.get()) {
-        procedures.push(hoist_constants(lower_cache_operations(
-            lower_rest_arguments(infer_switches(linearize_continuation(*cont))),
+        procedures.push(hoist_constants(lower_low_level_primitives(
+            lower_cache_operations(lower_rest_arguments(infer_switches(
+                linearize_continuation(*cont),
+            ))),
         )));
     }
 
@@ -1059,7 +1141,7 @@ fn switch_removed_defs<'gc>(
     for block in chain_blocks.iter().copied().skip(1) {
         if let Some(block) = blocks.get(&block) {
             defs.extend(block.params.iter().copied());
-            defs.extend(block.instructions.iter().filter_map(Instruction::def));
+            defs.extend(block.instructions.iter().flat_map(Instruction::defs));
         }
     }
 
@@ -1068,7 +1150,7 @@ fn switch_removed_defs<'gc>(
         defs.extend(
             block.instructions[consumed_start..]
                 .iter()
-                .filter_map(Instruction::def),
+                .flat_map(Instruction::defs),
         );
     }
 
@@ -1210,6 +1292,765 @@ fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> 
     procedure
 }
 
+struct LowLevelLowerer {
+    next_value: u32,
+    next_block: usize,
+}
+
+impl LowLevelLowerer {
+    fn new<'gc>(procedure: &Procedure<'gc>) -> Self {
+        let mut max_value = procedure.binding.0;
+        if let Some(return_cont) = procedure.return_cont {
+            max_value = max_value.max(return_cont.0);
+        }
+        let mut max_block = procedure.entry.0;
+        for value in procedure
+            .params
+            .iter()
+            .chain(procedure.variadic.iter())
+            .chain(procedure.free_vars.iter())
+            .copied()
+        {
+            max_value = max_value.max(value.0);
+        }
+        for block in &procedure.blocks {
+            max_block = max_block.max(block.id.0);
+            for value in block.params.iter().chain(block.variadic.iter()).copied() {
+                max_value = max_value.max(value.0);
+            }
+            for instruction in &block.instructions {
+                for def in instruction.defs() {
+                    max_value = max_value.max(def.0);
+                }
+                for value in local_values(instruction.uses()) {
+                    max_value = max_value.max(value.0);
+                }
+            }
+            for value in local_values(block.terminator.uses()) {
+                max_value = max_value.max(value.0);
+            }
+        }
+        Self {
+            next_value: max_value + 1,
+            next_block: max_block + 1,
+        }
+    }
+
+    fn fresh_value(&mut self) -> ValueId {
+        let value = ValueId(self.next_value);
+        self.next_value += 1;
+        value
+    }
+
+    fn fresh_block(&mut self) -> BlockId {
+        let block = BlockId(self.next_block);
+        self.next_block += 1;
+        block
+    }
+
+    fn lower_procedure<'gc>(&mut self, mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+        let mut lowered = Vec::with_capacity(procedure.blocks.len());
+        let blocks = std::mem::take(&mut procedure.blocks);
+        for block in blocks {
+            self.lower_block(block, &mut lowered);
+        }
+        procedure.blocks = lowered;
+        procedure
+    }
+
+    fn lower_block<'gc>(&mut self, block: Block<'gc>, out: &mut Vec<Block<'gc>>) {
+        let Block {
+            id,
+            params,
+            variadic,
+            instructions,
+            terminator,
+            source: block_source,
+        } = block;
+
+        let mut lowered = Vec::with_capacity(instructions.len());
+        let mut iter = instructions.into_iter();
+        while let Some(instruction) = iter.next() {
+            match instruction {
+                Instruction::PrimCall {
+                    dst,
+                    prim,
+                    args,
+                    source,
+                } if prim == Primitive::vector_ref && args.len() == 2 => {
+                    let suffix = iter.collect::<Vec<_>>();
+                    self.lower_indexed_ref_block(
+                        Block {
+                            id,
+                            params,
+                            variadic,
+                            instructions: lowered,
+                            terminator,
+                            source: block_source,
+                        },
+                        dst,
+                        prim,
+                        args,
+                        TypeCode8::VECTOR.bits(),
+                        offset_of!(Vector, length) as i32,
+                        Vector::OFFSET_OF_DATA as i64,
+                        source,
+                        suffix,
+                        out,
+                    );
+                    return;
+                }
+                Instruction::PrimCall {
+                    dst,
+                    prim,
+                    args,
+                    source,
+                } if prim == Primitive::tuple_ref && args.len() == 2 => {
+                    let suffix = iter.collect::<Vec<_>>();
+                    self.lower_indexed_ref_block(
+                        Block {
+                            id,
+                            params,
+                            variadic,
+                            instructions: lowered,
+                            terminator,
+                            source: block_source,
+                        },
+                        dst,
+                        prim,
+                        args,
+                        TypeCode8::TUPLE.bits(),
+                        offset_of!(Tuple, length) as i32,
+                        offset_of!(Tuple, data) as i64,
+                        source,
+                        suffix,
+                        out,
+                    );
+                    return;
+                }
+                Instruction::PrimCall {
+                    dst,
+                    prim,
+                    args,
+                    source,
+                } if prim == Primitive::string_length && args.len() == 1 => {
+                    let suffix = iter.collect::<Vec<_>>();
+                    self.lower_type_checked_length_block(
+                        Block {
+                            id,
+                            params,
+                            variadic,
+                            instructions: lowered,
+                            terminator,
+                            source: block_source,
+                        },
+                        dst,
+                        prim,
+                        args[0],
+                        TypeCode8::STRING.bits(),
+                        offset_of!(Str, length) as i32,
+                        source,
+                        suffix,
+                        out,
+                    );
+                    return;
+                }
+                Instruction::PrimCall {
+                    dst,
+                    prim,
+                    args,
+                    source,
+                } if args.len() == 1 => {
+                    if let Some(typecode) = low_type_predicate_prim(prim) {
+                        lowered.push(Instruction::low_prim_call(
+                            dst,
+                            LowPrim::HasType8(typecode),
+                            args,
+                            source,
+                        ));
+                    } else {
+                        lowered.push(Instruction::PrimCall {
+                            dst,
+                            prim,
+                            args,
+                            source,
+                        });
+                    }
+                }
+                Instruction::PrimCall {
+                    dst,
+                    prim,
+                    args,
+                    source,
+                } if prim == Primitive::plus && args.len() == 2 => {
+                    let suffix = iter.collect::<Vec<_>>();
+                    self.lower_fixnum_binary_block(
+                        Block {
+                            id,
+                            params,
+                            variadic,
+                            instructions: lowered,
+                            terminator,
+                            source: block_source,
+                        },
+                        dst,
+                        prim,
+                        args,
+                        source,
+                        LowPrim::IAddOverflow(LowType::I32),
+                        suffix,
+                        out,
+                    );
+                    return;
+                }
+                Instruction::PrimCall {
+                    dst,
+                    prim,
+                    args,
+                    source,
+                } if args.len() == 2 => {
+                    if let Some((ty, op)) = low_integer_binary_prim(prim) {
+                        let lhs = self.fresh_value();
+                        let rhs = self.fresh_value();
+                        lowered.push(Instruction::low_prim_call(
+                            lhs,
+                            LowPrim::IReduce(ty),
+                            vec![args[0]],
+                            source,
+                        ));
+                        lowered.push(Instruction::low_prim_call(
+                            rhs,
+                            LowPrim::IReduce(ty),
+                            vec![args[1]],
+                            source,
+                        ));
+                        lowered.push(Instruction::low_prim_call(
+                            dst,
+                            op,
+                            vec![LinearAtom::Local(lhs), LinearAtom::Local(rhs)],
+                            source,
+                        ));
+                    } else {
+                        lowered.push(Instruction::PrimCall {
+                            dst,
+                            prim,
+                            args,
+                            source,
+                        });
+                    }
+                }
+                other => lowered.push(other),
+            }
+        }
+
+        out.push(Block {
+            id,
+            params,
+            variadic,
+            instructions: lowered,
+            terminator,
+            source: block_source,
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_type_checked_length_block<'gc>(
+        &mut self,
+        block: Block<'gc>,
+        dst: ValueId,
+        prim: Primitive,
+        arg: LinearAtom<'gc>,
+        typecode: u8,
+        length_offset: i32,
+        source: Value<'gc>,
+        suffix: Vec<Instruction<'gc>>,
+        out: &mut Vec<Block<'gc>>,
+    ) {
+        let fast = self.fresh_block();
+        let slow = self.fresh_block();
+        let merge = self.fresh_block();
+        let type_ok = self.fresh_value();
+        let raw_len = self.fresh_value();
+        let tagged_len = self.fresh_value();
+
+        let mut entry_instructions = block.instructions;
+        entry_instructions.push(Instruction::low_prim_call(
+            type_ok,
+            LowPrim::HasType8(typecode),
+            vec![arg],
+            source,
+        ));
+        out.push(Block {
+            id: block.id,
+            params: block.params,
+            variadic: block.variadic,
+            instructions: entry_instructions,
+            terminator: Terminator::Branch {
+                test: LinearAtom::Local(type_ok),
+                consequent: BranchTarget::Local {
+                    block: fast,
+                    args: vec![],
+                },
+                alternative: BranchTarget::Local {
+                    block: slow,
+                    args: vec![],
+                },
+                hints: [BranchHint::Hot, BranchHint::Cold],
+            },
+            source: block.source,
+        });
+
+        out.push(Block {
+            id: fast,
+            params: vec![],
+            variadic: None,
+            instructions: vec![
+                Instruction::low_prim_call(
+                    raw_len,
+                    LowPrim::Load {
+                        ty: LowType::I64,
+                        offset: length_offset,
+                    },
+                    vec![arg],
+                    source,
+                ),
+                Instruction::low_prim_call(
+                    tagged_len,
+                    LowPrim::TagFixnum,
+                    vec![LinearAtom::Local(raw_len)],
+                    source,
+                ),
+            ],
+            terminator: Terminator::Jump {
+                target: merge,
+                args: vec![LinearAtom::Local(tagged_len)],
+            },
+            source,
+        });
+
+        out.push(Block {
+            id: slow,
+            params: vec![],
+            variadic: None,
+            instructions: vec![Instruction::RuntimePrimCall {
+                dst,
+                prim,
+                args: vec![arg],
+                source,
+            }],
+            terminator: Terminator::Jump {
+                target: merge,
+                args: vec![LinearAtom::Local(dst)],
+            },
+            source,
+        });
+
+        self.lower_block(
+            Block {
+                id: merge,
+                params: vec![dst],
+                variadic: None,
+                instructions: suffix,
+                terminator: block.terminator,
+                source,
+            },
+            out,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_indexed_ref_block<'gc>(
+        &mut self,
+        block: Block<'gc>,
+        dst: ValueId,
+        prim: Primitive,
+        args: Vec<LinearAtom<'gc>>,
+        typecode: u8,
+        length_offset: i32,
+        data_offset: i64,
+        source: Value<'gc>,
+        suffix: Vec<Instruction<'gc>>,
+        out: &mut Vec<Block<'gc>>,
+    ) {
+        let index_check = self.fresh_block();
+        let bounds_check = self.fresh_block();
+        let fast = self.fresh_block();
+        let slow = self.fresh_block();
+        let merge = self.fresh_block();
+
+        let type_ok = self.fresh_value();
+        let index_is_fixnum = self.fresh_value();
+        let raw_index = self.fresh_value();
+        let index64 = self.fresh_value();
+        let length = self.fresh_value();
+        let in_bounds = self.fresh_value();
+        let index_offset = self.fresh_value();
+        let data_ptr = self.fresh_value();
+        let elem_ptr = self.fresh_value();
+        let elem = self.fresh_value();
+
+        let vector = args[0];
+        let index = args[1];
+        let mut entry_instructions = block.instructions;
+        entry_instructions.push(Instruction::low_prim_call(
+            type_ok,
+            LowPrim::HasType8(typecode),
+            vec![vector],
+            source,
+        ));
+        out.push(Block {
+            id: block.id,
+            params: block.params,
+            variadic: block.variadic,
+            instructions: entry_instructions,
+            terminator: Terminator::Branch {
+                test: LinearAtom::Local(type_ok),
+                consequent: BranchTarget::Local {
+                    block: index_check,
+                    args: vec![],
+                },
+                alternative: BranchTarget::Local {
+                    block: slow,
+                    args: vec![],
+                },
+                hints: [BranchHint::Hot, BranchHint::Cold],
+            },
+            source: block.source,
+        });
+
+        out.push(Block {
+            id: index_check,
+            params: vec![],
+            variadic: None,
+            instructions: vec![Instruction::low_prim_call(
+                index_is_fixnum,
+                LowPrim::IsFixnum,
+                vec![index],
+                source,
+            )],
+            terminator: Terminator::Branch {
+                test: LinearAtom::Local(index_is_fixnum),
+                consequent: BranchTarget::Local {
+                    block: bounds_check,
+                    args: vec![],
+                },
+                alternative: BranchTarget::Local {
+                    block: slow,
+                    args: vec![],
+                },
+                hints: [BranchHint::Hot, BranchHint::Cold],
+            },
+            source,
+        });
+
+        out.push(Block {
+            id: bounds_check,
+            params: vec![],
+            variadic: None,
+            instructions: vec![
+                Instruction::low_prim_call(raw_index, LowPrim::UntagFixnum, vec![index], source),
+                Instruction::low_prim_call(
+                    index64,
+                    LowPrim::ZExt(LowType::I64),
+                    vec![LinearAtom::Local(raw_index)],
+                    source,
+                ),
+                Instruction::low_prim_call(
+                    length,
+                    LowPrim::Load {
+                        ty: LowType::I64,
+                        offset: length_offset,
+                    },
+                    vec![vector],
+                    source,
+                ),
+                Instruction::low_prim_call(
+                    in_bounds,
+                    LowPrim::ICmp(LowIntPredicate::UnsignedLessThan, LowType::I64),
+                    vec![LinearAtom::Local(index64), LinearAtom::Local(length)],
+                    source,
+                ),
+            ],
+            terminator: Terminator::Branch {
+                test: LinearAtom::Local(in_bounds),
+                consequent: BranchTarget::Local {
+                    block: fast,
+                    args: vec![],
+                },
+                alternative: BranchTarget::Local {
+                    block: slow,
+                    args: vec![],
+                },
+                hints: [BranchHint::Hot, BranchHint::Cold],
+            },
+            source,
+        });
+
+        out.push(Block {
+            id: fast,
+            params: vec![],
+            variadic: None,
+            instructions: vec![
+                Instruction::low_prim_call(
+                    index_offset,
+                    LowPrim::IMulImm(LowType::I64, size_of::<Value>() as i64),
+                    vec![LinearAtom::Local(index64)],
+                    source,
+                ),
+                Instruction::low_prim_call(
+                    data_ptr,
+                    LowPrim::IAddImm(LowType::Ptr, data_offset),
+                    vec![vector],
+                    source,
+                ),
+                Instruction::low_prim_call(
+                    elem_ptr,
+                    LowPrim::IAdd(LowType::Ptr),
+                    vec![LinearAtom::Local(data_ptr), LinearAtom::Local(index_offset)],
+                    source,
+                ),
+                Instruction::low_prim_call(
+                    elem,
+                    LowPrim::Load {
+                        ty: LowType::Value,
+                        offset: 0,
+                    },
+                    vec![LinearAtom::Local(elem_ptr)],
+                    source,
+                ),
+            ],
+            terminator: Terminator::Jump {
+                target: merge,
+                args: vec![LinearAtom::Local(elem)],
+            },
+            source,
+        });
+
+        out.push(Block {
+            id: slow,
+            params: vec![],
+            variadic: None,
+            instructions: vec![Instruction::RuntimePrimCall {
+                dst,
+                prim,
+                args,
+                source,
+            }],
+            terminator: Terminator::Jump {
+                target: merge,
+                args: vec![LinearAtom::Local(dst)],
+            },
+            source,
+        });
+
+        self.lower_block(
+            Block {
+                id: merge,
+                params: vec![dst],
+                variadic: None,
+                instructions: suffix,
+                terminator: block.terminator,
+                source,
+            },
+            out,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_fixnum_binary_block<'gc>(
+        &mut self,
+        block: Block<'gc>,
+        dst: ValueId,
+        prim: Primitive,
+        args: Vec<LinearAtom<'gc>>,
+        source: Value<'gc>,
+        overflow_op: LowPrim,
+        suffix: Vec<Instruction<'gc>>,
+        out: &mut Vec<Block<'gc>>,
+    ) {
+        let rhs_check = self.fresh_block();
+        let fast = self.fresh_block();
+        let slow = self.fresh_block();
+        let merge = self.fresh_block();
+
+        let lhs_is_fixnum = self.fresh_value();
+        let rhs_is_fixnum = self.fresh_value();
+        let lhs_raw = self.fresh_value();
+        let rhs_raw = self.fresh_value();
+        let overflow = self.fresh_value();
+        let raw_result = self.fresh_value();
+        let tagged_result = self.fresh_value();
+
+        let lhs = args[0];
+        let rhs = args[1];
+        let mut entry_instructions = block.instructions;
+        entry_instructions.push(Instruction::low_prim_call(
+            lhs_is_fixnum,
+            LowPrim::IsFixnum,
+            vec![lhs],
+            source,
+        ));
+        out.push(Block {
+            id: block.id,
+            params: block.params,
+            variadic: block.variadic,
+            instructions: entry_instructions,
+            terminator: Terminator::Branch {
+                test: LinearAtom::Local(lhs_is_fixnum),
+                consequent: BranchTarget::Local {
+                    block: rhs_check,
+                    args: vec![],
+                },
+                alternative: BranchTarget::Local {
+                    block: slow,
+                    args: vec![],
+                },
+                hints: [BranchHint::Hot, BranchHint::Cold],
+            },
+            source: block.source,
+        });
+
+        out.push(Block {
+            id: rhs_check,
+            params: vec![],
+            variadic: None,
+            instructions: vec![Instruction::low_prim_call(
+                rhs_is_fixnum,
+                LowPrim::IsFixnum,
+                vec![rhs],
+                source,
+            )],
+            terminator: Terminator::Branch {
+                test: LinearAtom::Local(rhs_is_fixnum),
+                consequent: BranchTarget::Local {
+                    block: fast,
+                    args: vec![],
+                },
+                alternative: BranchTarget::Local {
+                    block: slow,
+                    args: vec![],
+                },
+                hints: [BranchHint::Hot, BranchHint::Cold],
+            },
+            source,
+        });
+
+        out.push(Block {
+            id: fast,
+            params: vec![],
+            variadic: None,
+            instructions: vec![
+                Instruction::low_prim_call(lhs_raw, LowPrim::UntagFixnum, vec![lhs], source),
+                Instruction::low_prim_call(rhs_raw, LowPrim::UntagFixnum, vec![rhs], source),
+                Instruction::low_prim_multi_call(
+                    smallvec![raw_result, overflow],
+                    overflow_op,
+                    vec![LinearAtom::Local(lhs_raw), LinearAtom::Local(rhs_raw)],
+                    source,
+                ),
+                Instruction::low_prim_call(
+                    tagged_result,
+                    LowPrim::TagFixnum,
+                    vec![LinearAtom::Local(raw_result)],
+                    source,
+                ),
+            ],
+            terminator: Terminator::Branch {
+                test: LinearAtom::Local(overflow),
+                consequent: BranchTarget::Local {
+                    block: slow,
+                    args: vec![],
+                },
+                alternative: BranchTarget::Local {
+                    block: merge,
+                    args: vec![LinearAtom::Local(tagged_result)],
+                },
+                hints: [BranchHint::Cold, BranchHint::Hot],
+            },
+            source,
+        });
+
+        out.push(Block {
+            id: slow,
+            params: vec![],
+            variadic: None,
+            instructions: vec![Instruction::RuntimePrimCall {
+                dst,
+                prim,
+                args,
+                source,
+            }],
+            terminator: Terminator::Jump {
+                target: merge,
+                args: vec![LinearAtom::Local(dst)],
+            },
+            source,
+        });
+
+        self.lower_block(
+            Block {
+                id: merge,
+                params: vec![dst],
+                variadic: None,
+                instructions: suffix,
+                terminator: block.terminator,
+                source,
+            },
+            out,
+        );
+    }
+}
+
+fn low_integer_binary_prim(prim: Primitive) -> Option<(LowType, LowPrim)> {
+    let name = prim.name();
+    let (rest, ty) = integer_prefix(name)?;
+    let op = match rest {
+        "+" => LowPrim::IAdd(ty),
+        "-" => LowPrim::ISub(ty),
+        "*" => LowPrim::IMul(ty),
+        "/" => LowPrim::IDiv(ty),
+        "%" => LowPrim::IRem(ty),
+        "<<" => LowPrim::IShl(ty),
+        ">>" => LowPrim::IShr(ty),
+        "&" => LowPrim::IAnd(ty),
+        "|" => LowPrim::IOr(ty),
+        "^" => LowPrim::IXor(ty),
+        _ => return None,
+    };
+    Some((ty, op))
+}
+
+fn integer_prefix(name: &str) -> Option<(&str, LowType)> {
+    [
+        ("s64", LowType::I64),
+        ("s32", LowType::I32),
+        ("s16", LowType::I16),
+        ("s8", LowType::I8),
+        ("u64", LowType::U64),
+        ("u32", LowType::U32),
+        ("u16", LowType::U16),
+        ("u8", LowType::U8),
+    ]
+    .into_iter()
+    .find_map(|(prefix, ty)| name.strip_prefix(prefix).map(|rest| (rest, ty)))
+}
+
+fn low_type_predicate_prim(prim: Primitive) -> Option<u8> {
+    match prim {
+        Primitive::is_vector => Some(TypeCode8::VECTOR.bits()),
+        Primitive::is_bytevector => Some(TypeCode8::BYTEVECTOR.bits()),
+        Primitive::is_string => Some(TypeCode8::STRING.bits()),
+        Primitive::is_tuple => Some(TypeCode8::TUPLE.bits()),
+        Primitive::is_pair => Some(TypeCode8::PAIR.bits()),
+        Primitive::is_procedure => Some(TypeCode8::CLOSURE.bits()),
+        _ => None,
+    }
+}
+
+fn lower_low_level_primitives<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc> {
+    LowLevelLowerer::new(&procedure).lower_procedure(procedure)
+}
+
 struct ConstantHoister {
     next_value: u32,
 }
@@ -1234,7 +2075,7 @@ impl ConstantHoister {
                 max_value = max_value.max(value.0);
             }
             for instruction in &block.instructions {
-                if let Some(def) = instruction.def() {
+                for def in instruction.defs() {
                     max_value = max_value.max(def.0);
                 }
                 for value in local_values(instruction.uses()) {
@@ -1320,6 +2161,28 @@ impl ConstantHoister {
                 args,
                 source,
             } => Instruction::PrimCall {
+                dst,
+                prim,
+                args: self.atoms(args, instructions),
+                source,
+            },
+            Instruction::LowPrimCall {
+                dsts,
+                op,
+                args,
+                source,
+            } => Instruction::LowPrimCall {
+                dsts,
+                op,
+                args: self.atoms(args, instructions),
+                source,
+            },
+            Instruction::RuntimePrimCall {
+                dst,
+                prim,
+                args,
+                source,
+            } => Instruction::RuntimePrimCall {
                 dst,
                 prim,
                 args: self.atoms(args, instructions),
@@ -1732,6 +2595,34 @@ fn emit_closure_sets<'gc>(
 }
 
 impl<'gc> Instruction<'gc> {
+    fn low_prim_call(
+        dst: ValueId,
+        op: LowPrim,
+        args: Vec<LinearAtom<'gc>>,
+        source: Value<'gc>,
+    ) -> Self {
+        Self::LowPrimCall {
+            dsts: smallvec![dst],
+            op,
+            args,
+            source,
+        }
+    }
+
+    fn low_prim_multi_call(
+        dsts: SmallVec<[ValueId; 2]>,
+        op: LowPrim,
+        args: Vec<LinearAtom<'gc>>,
+        source: Value<'gc>,
+    ) -> Self {
+        Self::LowPrimCall {
+            dsts,
+            op,
+            args,
+            source,
+        }
+    }
+
     pub fn def(&self) -> Option<ValueId> {
         match self {
             Self::Const { dst, .. }
@@ -1740,11 +2631,31 @@ impl<'gc> Instruction<'gc> {
             | Self::CacheRef { dst, .. }
             | Self::CacheSet { dst, .. }
             | Self::PrimCall { dst, .. }
+            | Self::RuntimePrimCall { dst, .. }
             | Self::RestToList { dst, .. }
             | Self::RestRef { dst, .. }
             | Self::RestLength { dst, .. }
             | Self::RestPredicate { dst, .. } => Some(*dst),
+            Self::LowPrimCall { dsts, .. } => dsts.first().copied(),
             Self::ClosureSet { .. } => None,
+        }
+    }
+
+    pub fn defs(&self) -> SmallVec<[ValueId; 2]> {
+        match self {
+            Self::Const { dst, .. }
+            | Self::MakeClosure { dst, .. }
+            | Self::ClosureRef { dst, .. }
+            | Self::CacheRef { dst, .. }
+            | Self::CacheSet { dst, .. }
+            | Self::PrimCall { dst, .. }
+            | Self::RuntimePrimCall { dst, .. }
+            | Self::RestToList { dst, .. }
+            | Self::RestRef { dst, .. }
+            | Self::RestLength { dst, .. }
+            | Self::RestPredicate { dst, .. } => smallvec![*dst],
+            Self::LowPrimCall { dsts, .. } => dsts.clone(),
+            Self::ClosureSet { .. } => SmallVec::new(),
         }
     }
 
@@ -1758,7 +2669,9 @@ impl<'gc> Instruction<'gc> {
             Self::CacheSet {
                 cache_key, value, ..
             } => vec![*cache_key, *value],
-            Self::PrimCall { args, .. } => args.clone(),
+            Self::PrimCall { args, .. }
+            | Self::LowPrimCall { args, .. }
+            | Self::RuntimePrimCall { args, .. } => args.clone(),
             Self::RestToList { .. } => vec![],
             Self::RestRef { rest, .. }
             | Self::RestLength { rest, .. }
@@ -1868,10 +2781,15 @@ impl<'gc> Terminator<'gc> {
 #[cfg(test)]
 mod tests {
     use crate::{
+        compiler::ssa::primitive::Primitive,
         cps::{
-            linear::{CodeId, Terminator, linearize},
+            linear::{
+                Block, BlockId, BranchTarget, CodeId, Instruction, LinearAtom, LinearProgram,
+                Procedure, ProcedureKind, Terminator, ValueId, linearize,
+            },
+            linear_pretty::render_program,
             reify::reify,
-            term::{Atom, Func, Term},
+            term::{Atom, BranchHint, Expression, Func, Term},
         },
         expander::core::{LVarRef, fresh_lvar},
         rsgc::{Gc, alloc::Array, cell::Lock},
@@ -1894,6 +2812,48 @@ mod tests {
 
     fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
         fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
+    }
+
+    fn prim_call_func<'gc>(
+        ctx: Context<'gc>,
+        name: &str,
+        args: &[LVarRef<'gc>],
+    ) -> Gc<'gc, Func<'gc>> {
+        let f = lvar(ctx, "f");
+        let retk = lvar(ctx, "retk");
+        let result = lvar(ctx, "result");
+        let prim = Symbol::from_str(ctx, name).into();
+        let prim_args = args.iter().copied().map(Atom::Local).collect::<Vec<_>>();
+        let body = Gc::new(
+            *ctx,
+            Term::Let(
+                result,
+                Expression::PrimCall(prim, Array::from_slice(*ctx, &prim_args), Value::new(false)),
+                Gc::new(
+                    *ctx,
+                    Term::Continue(
+                        retk,
+                        Array::from_slice(*ctx, &[Atom::Local(result)]),
+                        Value::new(false),
+                    ),
+                ),
+            ),
+        );
+
+        Gc::new(
+            *ctx,
+            Func {
+                name: Symbol::from_str(ctx, "prim-call-entry").into(),
+                source: Value::new(false),
+                binding: f,
+                return_cont: retk,
+                args: Array::from_slice(*ctx, args),
+                variadic: None,
+                body: Lock::new(body),
+                free_vars: Lock::new(None),
+                meta: Value::new(false),
+            },
+        )
     }
 
     #[test]
@@ -1949,6 +2909,314 @@ mod tests {
             assert_eq!(args.len(), 3);
             assert_eq!(procedure.blocks[0].terminator.successors(), Vec::new());
             assert_eq!(procedure.blocks[0].terminator.uses(), args.clone());
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_expands_plus_into_fixnum_fastpath() {
+        with_ctx(|ctx| {
+            let lhs = lvar(ctx, "lhs");
+            let rhs = lvar(ctx, "rhs");
+            let func = prim_call_func(ctx, "+", &[lhs, rhs]);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let rendered = render_program(&linear);
+
+            assert!(
+                rendered.contains("(low-call")
+                    && rendered.contains("is-fixnum")
+                    && rendered.contains("iadd-overflow.i32")
+                    && rendered.contains("(runtime-call"),
+                "expected + to lower to explicit fixnum fastpath and runtime slowpath:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("(prim-call"),
+                "low-level lowering should remove high-level primitive calls from this program:\n{rendered}"
+            );
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_reuses_checked_add_result_without_second_iadd() {
+        with_ctx(|ctx| {
+            let lhs = lvar(ctx, "lhs");
+            let rhs = lvar(ctx, "rhs");
+            let func = prim_call_func(ctx, "+", &[lhs, rhs]);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+
+            let mut checked_adds = 0;
+            let mut plain_i32_adds = 0;
+            for procedure in &linear.procedures {
+                for block in &procedure.blocks {
+                    for instruction in &block.instructions {
+                        match instruction {
+                            Instruction::LowPrimCall {
+                                dsts,
+                                op: super::LowPrim::IAddOverflow(super::LowType::I32),
+                                ..
+                            } => {
+                                checked_adds += 1;
+                                assert_eq!(
+                                    dsts.len(),
+                                    2,
+                                    "checked i32 add should define raw result and overflow flag"
+                                );
+                            }
+                            Instruction::LowPrimCall {
+                                op: super::LowPrim::IAdd(super::LowType::I32),
+                                ..
+                            } => plain_i32_adds += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            assert_eq!(checked_adds, 1, "expected one checked i32 add");
+            assert_eq!(
+                plain_i32_adds,
+                0,
+                "checked fixnum addition should not also emit a second plain iadd:\n{}",
+                render_program(&linear)
+            );
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_keeps_split_merge_before_existing_successors() {
+        with_ctx(|ctx| {
+            let func = prim_call_func(ctx, "unused", &[]);
+            let retk = ValueId(1);
+            let lhs = ValueId(2);
+            let variable = ValueId(3);
+            let sum = ValueId(7);
+            let predicate = ValueId(8);
+            let stored = ValueId(9);
+            let procedure = Procedure {
+                code: CodeId::Function(func),
+                kind: ProcedureKind::Function,
+                binding: ValueId(0),
+                name: Value::new(false),
+                source: Value::new(false),
+                meta: Value::new(false),
+                return_cont: Some(retk),
+                params: vec![lhs, variable],
+                variadic: None,
+                free_vars: vec![],
+                sources: Default::default(),
+                entry: BlockId(0),
+                blocks: vec![
+                    Block {
+                        id: BlockId(0),
+                        params: vec![lhs, variable],
+                        variadic: None,
+                        instructions: vec![
+                            Instruction::PrimCall {
+                                dst: sum,
+                                prim: Primitive::plus,
+                                args: vec![
+                                    LinearAtom::Local(lhs),
+                                    LinearAtom::Constant(Value::new(1)),
+                                ],
+                                source: Value::new(false),
+                            },
+                            Instruction::PrimCall {
+                                dst: predicate,
+                                prim: Primitive::is_variable,
+                                args: vec![LinearAtom::Local(variable)],
+                                source: Value::new(false),
+                            },
+                        ],
+                        terminator: Terminator::Branch {
+                            test: LinearAtom::Local(predicate),
+                            consequent: BranchTarget::Local {
+                                block: BlockId(1),
+                                args: vec![],
+                            },
+                            alternative: BranchTarget::Local {
+                                block: BlockId(2),
+                                args: vec![],
+                            },
+                            hints: [BranchHint::Normal, BranchHint::Normal],
+                        },
+                        source: Value::new(false),
+                    },
+                    Block {
+                        id: BlockId(1),
+                        params: vec![],
+                        variadic: None,
+                        instructions: vec![Instruction::PrimCall {
+                            dst: stored,
+                            prim: Primitive::variable_set,
+                            args: vec![LinearAtom::Local(variable), LinearAtom::Local(sum)],
+                            source: Value::new(false),
+                        }],
+                        terminator: Terminator::TailCall {
+                            callee: LinearAtom::Local(retk),
+                            args: vec![LinearAtom::Local(stored)],
+                            source: Value::new(false),
+                        },
+                        source: Value::new(false),
+                    },
+                    Block {
+                        id: BlockId(2),
+                        params: vec![],
+                        variadic: None,
+                        instructions: vec![],
+                        terminator: Terminator::TailCall {
+                            callee: LinearAtom::Local(retk),
+                            args: vec![LinearAtom::Local(lhs)],
+                            source: Value::new(false),
+                        },
+                        source: Value::new(false),
+                    },
+                ],
+            };
+
+            let lowered = super::lower_low_level_primitives(procedure);
+            let merge_position = lowered
+                .blocks
+                .iter()
+                .position(|block| {
+                    block.params == vec![sum]
+                        && matches!(
+                            block.instructions.first(),
+                            Some(Instruction::PrimCall {
+                                prim: Primitive::is_variable,
+                                ..
+                            })
+                        )
+                })
+                .expect("plus merge block should contain the original suffix");
+            let successor_position = lowered
+                .blocks
+                .iter()
+                .position(|block| block.id == BlockId(1))
+                .expect("original successor should still exist");
+
+            assert!(
+                merge_position < successor_position,
+                "the merge block defining the split result must be lowered before existing successors that use it:\n{}",
+                render_program(&LinearProgram {
+                    entry: func,
+                    procedures: vec![lowered],
+                })
+            );
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_reuses_integer_op_family_for_s8_add() {
+        with_ctx(|ctx| {
+            let lhs = lvar(ctx, "lhs");
+            let rhs = lvar(ctx, "rhs");
+            let func = prim_call_func(ctx, "s8+", &[lhs, rhs]);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let rendered = render_program(&linear);
+
+            assert!(
+                rendered.contains("ireduce.i8") && rendered.contains("iadd.i8"),
+                "expected s8+ to lower through shared ireduce/iadd low ops:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("s8+"),
+                "typed integer primitives should not survive as primitive-specific low ops:\n{rendered}"
+            );
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_expands_vector_ref_into_type_and_bounds_fastpath() {
+        with_ctx(|ctx| {
+            let vector = lvar(ctx, "vector");
+            let index = lvar(ctx, "index");
+            let func = prim_call_func(ctx, "vector-ref", &[vector, index]);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let rendered = render_program(&linear);
+
+            assert!(
+                rendered.contains("has-type8.vector")
+                    && rendered.contains("is-fixnum")
+                    && rendered.contains("icmp.ult.i64")
+                    && rendered.contains("load.value")
+                    && rendered.contains("(runtime-call"),
+                "expected vector-ref to lower to type/index/bounds fastpath and runtime slowpath:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("(prim-call"),
+                "low-level vector-ref lowering should remove high-level primitive calls:\n{rendered}"
+            );
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_expands_string_length_into_type_checked_load() {
+        with_ctx(|ctx| {
+            let string = lvar(ctx, "string");
+            let func = prim_call_func(ctx, "string-length", &[string]);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let rendered = render_program(&linear);
+
+            assert!(
+                rendered.contains("has-type8.string")
+                    && rendered.contains("load.i64")
+                    && rendered.contains("tag-fixnum")
+                    && rendered.contains("(runtime-call"),
+                "expected string-length to lower to type-checked length load and runtime slowpath:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("(prim-call"),
+                "low-level string-length lowering should remove high-level primitive calls:\n{rendered}"
+            );
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_expands_tuple_ref_into_type_and_bounds_fastpath() {
+        with_ctx(|ctx| {
+            let tuple = lvar(ctx, "tuple");
+            let index = lvar(ctx, "index");
+            let func = prim_call_func(ctx, "tuple-ref", &[tuple, index]);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let rendered = render_program(&linear);
+
+            assert!(
+                rendered.contains("has-type8.tuple")
+                    && rendered.contains("is-fixnum")
+                    && rendered.contains("icmp.ult.i64")
+                    && rendered.contains("load.value")
+                    && rendered.contains("(runtime-call"),
+                "expected tuple-ref to lower to type/index/bounds fastpath and runtime slowpath:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("(prim-call"),
+                "low-level tuple-ref lowering should remove high-level primitive calls:\n{rendered}"
+            );
+        });
+    }
+
+    #[test]
+    fn low_level_lowering_expands_bytevector_predicate_to_type_test() {
+        with_ctx(|ctx| {
+            let value = lvar(ctx, "value");
+            let func = prim_call_func(ctx, "bytevector?", &[value]);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let rendered = render_program(&linear);
+
+            assert!(
+                rendered.contains("has-type8.bytevector"),
+                "expected bytevector? to lower to a low-level type test:\n{rendered}"
+            );
+            assert!(
+                !rendered.contains("(prim-call"),
+                "low-level bytevector? lowering should remove high-level primitive calls:\n{rendered}"
+            );
         });
     }
 }
