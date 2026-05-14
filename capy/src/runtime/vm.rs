@@ -81,35 +81,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     let old_runstack = ctx.state().runstack.get();
     let nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
 
-    let rands = ctx.state().runstack.get();
-    let mut argc = 0;
-
-    unsafe {
-        rands.store(retk);
-
-        for (i, arg) in args.into_iter().enumerate() {
-            if rands.add((i + 1) * size_of::<Value>()) >= ctx.state().runstack_end {
-                panic!(
-                    "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
-                    rands.add((i + 1) * size_of::<Value>()),
-                    ctx.state().runstack_end,
-                    i + 1,
-                    (ctx.state().runstack_end - ctx.state().runstack_start) / size_of::<Value>()
-                );
-            }
-            if rands.add((i + 1) * size_of::<Value>()) < ctx.state().runstack_start {
-                panic!("runstack underflow");
-            }
-            rands.add((i + 1) * size_of::<Value>()).store(arg);
-            argc += 1;
-        }
-
-        ctx.state()
-            .runstack
-            .set(rands.add((argc + 1) * size_of::<Value>()));
-    }
-
-    let num_rands = argc + 1;
+    let (argc, regs) = ctx.prepare_scheme_call_args(args, Some(retk));
 
     let f = get_trampoline_into_scheme().to_ptr::<()>();
 
@@ -117,11 +89,14 @@ pub extern "C" fn call_scheme_with_k<'gc>(
         let f: extern "C-unwind" fn(
             Context<'gc>,
             Value<'gc>,
-            *const Value<'gc>,
             usize,
+            Value<'gc>,
+            Value<'gc>,
+            Value<'gc>,
+            Value<'gc>,
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
-        let val = trampoline(ctx, rator, rands.to_ptr(), num_rands, f);
+        let val = trampoline(ctx, rator, argc, regs[0], regs[1], regs[2], regs[3], f);
         ctx.state().nest_level.store(nest_level, Ordering::Relaxed);
         ctx.state().runstack.set(old_runstack);
 
@@ -151,33 +126,7 @@ pub unsafe extern "C" fn continue_to<'gc>(
     let old_runstack = ctx.state().runstack.get();
     let nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
 
-    let rands = ctx.state().runstack.get();
-    let mut argc = 0;
-
-    unsafe {
-        for (i, arg) in args.into_iter().enumerate() {
-            if rands.add(i * size_of::<Value>()) >= ctx.state().runstack_end {
-                panic!(
-                    "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
-                    rands.add(i * size_of::<Value>()),
-                    ctx.state().runstack_end,
-                    i,
-                    (ctx.state().runstack_end - ctx.state().runstack_start) / size_of::<Value>()
-                );
-            }
-            if rands.add(i * size_of::<Value>()) < ctx.state().runstack_start {
-                panic!("runstack underflow");
-            }
-            rands.add(i * size_of::<Value>()).store(arg);
-            argc += 1;
-        }
-
-        ctx.state()
-            .runstack
-            .set(rands.add(argc * size_of::<Value>()));
-    }
-
-    let num_rands = argc;
+    let (argc, regs) = ctx.prepare_scheme_call_args(args, None);
 
     let f = get_trampoline_into_scheme().to_ptr::<()>();
 
@@ -185,11 +134,14 @@ pub unsafe extern "C" fn continue_to<'gc>(
         let f: extern "C-unwind" fn(
             Context<'gc>,
             Value<'gc>,
-            *const Value<'gc>,
             usize,
+            Value<'gc>,
+            Value<'gc>,
+            Value<'gc>,
+            Value<'gc>,
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
-        let val = trampoline(ctx, cont, rands.to_ptr(), num_rands, f);
+        let val = trampoline(ctx, cont, argc, regs[0], regs[1], regs[2], regs[3], f);
         ctx.state().nest_level.store(nest_level, Ordering::Relaxed);
         ctx.state().runstack.set(old_runstack);
         match val.code {
@@ -211,11 +163,22 @@ pub unsafe extern "C" fn continue_to<'gc>(
 extern "C" fn trampoline<'a>(
     ctx: Context<'a>,
     rator: Value<'a>,
-    rands: *const Value<'a>,
-    num_rands: usize,
-    f: extern "C-unwind" fn(Context<'a>, Value<'a>, *const Value<'a>, usize) -> NativeReturn<'a>,
+    argc: usize,
+    arg0: Value<'a>,
+    arg1: Value<'a>,
+    arg2: Value<'a>,
+    arg3: Value<'a>,
+    f: extern "C-unwind" fn(
+        Context<'a>,
+        Value<'a>,
+        usize,
+        Value<'a>,
+        Value<'a>,
+        Value<'a>,
+        Value<'a>,
+    ) -> NativeReturn<'a>,
 ) -> NativeReturn<'a> {
-    f(ctx, rator, rands, num_rands)
+    f(ctx, rator, argc, arg0, arg1, arg2, arg3)
 }
 
 pub(crate) extern "C-unwind" fn default_retk<'gc>(

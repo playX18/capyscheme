@@ -22,30 +22,19 @@ pub mod eval_ops {
         if rands.len() == 0 {
             return nctx.return_call(rator, &[]);
         }
-        let mut args = Vec::with_capacity(rands.len());
-
-        for i in 0..rands.len() - 1 {
-            args.push(rands[i]);
-        }
-
-        if !rands[rands.len() - 1].is_list() {
-            return nctx.wrong_argument_violation(
+        let fixed = &rands[..rands.len() - 1];
+        let rest = rands[rands.len() - 1];
+        match nctx.ctx.return_apply(rator, fixed, rest, nctx.retk) {
+            Ok(ret) => NativeCallReturn { ret },
+            Err(improper_tail) => nctx.wrong_argument_violation(
                 "apply",
                 "last argument must be a list",
-                Some(rands[rands.len() - 1]),
+                Some(improper_tail),
                 Some(rands.len() - 1),
                 rands.len(),
                 rands,
-            );
+            ),
         }
-
-        let mut ls = rands[rands.len() - 1];
-        while !ls.is_null() {
-            args.push(ls.car());
-            ls = ls.cdr();
-        }
-
-        nctx.return_call(rator, &args)
     }
 
     #[scheme(name = "procedure?")]

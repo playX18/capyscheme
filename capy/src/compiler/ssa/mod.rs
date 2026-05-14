@@ -12,7 +12,7 @@ use crate::{
     },
     expander::core::LVarRef,
     runtime::{
-        Context,
+        COMPILED_ENTRY_ARG_COUNT, Context, REGISTER_ARG_COUNT,
         fasl::FASLWriter,
         value::{Value, ValueEqual, Vector},
     },
@@ -46,9 +46,27 @@ pub enum VarDef {
 
 #[derive(Clone, Copy)]
 pub struct LinearRestSource {
-    pub rands: ir::Value,
-    pub num_rands: ir::Value,
-    pub fixed_count: usize,
+    pub argc: ir::Value,
+    pub args: [ir::Value; REGISTER_ARG_COUNT],
+    pub overflow: ir::Value,
+    pub first_rest: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct RegisterCallArgs {
+    pub argc: ir::Value,
+    pub args: [ir::Value; REGISTER_ARG_COUNT],
+    pub overflow: ir::Value,
+}
+
+pub(crate) fn compiled_scheme_signature() -> ir::Signature {
+    let mut sig = ir::Signature::new(CallConv::Tail);
+    for _ in 0..COMPILED_ENTRY_ARG_COUNT {
+        sig.params.push(ir::AbiParam::new(types::I64));
+    }
+    sig.returns.push(ir::AbiParam::new(types::I64));
+    sig.returns.push(ir::AbiParam::new(types::I64));
+    sig
 }
 
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
@@ -121,7 +139,7 @@ impl<'gc> ModuleBuilder<'gc> {
     pub fn compile(&mut self) {
         let procedures = self.linear.procedures.clone();
 
-        let sig = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
+        let sig = compiled_scheme_signature();
         let mut function_index = 0;
         let mut continuation_index = 0;
         for procedure in procedures.iter() {
@@ -161,7 +179,7 @@ impl<'gc> ModuleBuilder<'gc> {
         function_index = 0;
         continuation_index = 0;
         for procedure in procedures.iter() {
-            context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
+            context.func.signature = compiled_scheme_signature();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
             let (func_id, func_debug_cx) = match procedure.code {
@@ -618,42 +636,56 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
         let rator = builder.block_params(entry)[0];
-        let rands = builder.block_params(entry)[1];
-        let num_rands = builder.block_params(entry)[2];
+        let argc = builder.block_params(entry)[1];
+        let args = [
+            builder.block_params(entry)[2],
+            builder.block_params(entry)[3],
+            builder.block_params(entry)[4],
+            builder.block_params(entry)[5],
+        ];
 
         let variables = HashMap::new();
 
-        let sig_call = call_signature!(Tail (I64 /* rator */, I64 /* rands */, I64 /* num_rands */) -> (I64, I64));
+        let sig_call = compiled_scheme_signature();
         let sig_call = builder.import_signature(sig_call);
 
         let exit_block = builder.create_block();
 
         builder.append_block_param(exit_block, types::I64); /* code */
         builder.append_block_param(exit_block, types::I64); /* rator */
-        builder.append_block_param(exit_block, types::I64); /* rands */
-        builder.append_block_param(exit_block, types::I64); /* num_rands */
+        builder.append_block_param(exit_block, types::I64); /* argc */
+        for _ in 0..REGISTER_ARG_COUNT {
+            builder.append_block_param(exit_block, types::I64);
+        }
 
         builder.set_val_label(rator, func_debug_cx.internal_variable(0));
-        builder.set_val_label(num_rands, func_debug_cx.internal_variable(1));
-        builder.set_val_label(rands, func_debug_cx.internal_variable(2));
+        builder.set_val_label(argc, func_debug_cx.internal_variable(1));
+        for (index, arg) in args.iter().copied().enumerate() {
+            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 2) as u32));
+        }
 
         let entry_block = builder.create_block();
         builder.append_block_params_for_function_params(entry_block);
-        builder.ins().jump(
-            entry_block,
-            &[
-                BlockArg::Value(rator),
-                BlockArg::Value(rands),
-                BlockArg::Value(num_rands),
-            ],
-        );
+        let entry_args = std::iter::once(rator)
+            .chain(std::iter::once(argc))
+            .chain(args)
+            .map(BlockArg::Value)
+            .collect::<Vec<_>>();
+        builder.ins().jump(entry_block, &entry_args);
         builder.switch_to_block(entry_block);
         let entry_rator = builder.block_params(entry_block)[0];
-        let entry_rands = builder.block_params(entry_block)[1];
-        let entry_num_rands = builder.block_params(entry_block)[2];
+        let entry_argc = builder.block_params(entry_block)[1];
+        let entry_args = [
+            builder.block_params(entry_block)[2],
+            builder.block_params(entry_block)[3],
+            builder.block_params(entry_block)[4],
+            builder.block_params(entry_block)[5],
+        ];
         builder.set_val_label(entry_rator, func_debug_cx.internal_variable(0));
-        builder.set_val_label(entry_num_rands, func_debug_cx.internal_variable(1));
-        builder.set_val_label(entry_rands, func_debug_cx.internal_variable(2));
+        builder.set_val_label(entry_argc, func_debug_cx.internal_variable(1));
+        for (index, arg) in entry_args.iter().copied().enumerate() {
+            builder.set_val_label(arg, func_debug_cx.internal_variable((index + 2) as u32));
+        }
 
         let mut this = Self {
             module_builder,
@@ -679,7 +711,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             srcloc: None,
         };
 
-        this.entrypoint(entry_rands, entry_num_rands);
+        this.entrypoint(entry_argc, entry_args);
 
         this
     }
@@ -780,7 +812,7 @@ mod tests {
                 .clone();
             let mut module_builder = ModuleBuilder::new(ctx, object_module(), reify_info, linear);
             let mut context = module_builder.module.make_context();
-            context.func.signature = call_signature!(Tail (I64, I64, I64) -> (I64, I64));
+            context.func.signature = compiled_scheme_signature();
             let mut fctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
             let thunks = ImportedThunks::new(
@@ -802,5 +834,21 @@ mod tests {
 
             assert_eq!(ssa.rator, ssa.builder.block_params(ssa.entry_block)[0]);
         });
+    }
+
+    #[test]
+    fn compiled_scheme_signature_uses_arg_register_abi() {
+        let sig = compiled_scheme_signature();
+
+        assert_eq!(REGISTER_ARG_COUNT, 4);
+        assert_eq!(sig.params.len(), REGISTER_ARG_COUNT + 2);
+        assert_eq!(sig.params.len(), 6);
+        assert_eq!(sig.returns.len(), 2);
+        assert!(
+            sig.params
+                .iter()
+                .all(|param| param.value_type == types::I64)
+        );
+        assert!(sig.returns.iter().all(|ret| ret.value_type == types::I64));
     }
 }

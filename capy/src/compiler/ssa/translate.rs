@@ -7,7 +7,9 @@ use crate::rsgc::{
 };
 
 use crate::{
-    compiler::ssa::{ContOrFunc, LinearRestSource, SSABuilder, VarDef, primitive::PrimValue},
+    compiler::ssa::{
+        ContOrFunc, LinearRestSource, RegisterCallArgs, SSABuilder, VarDef, primitive::PrimValue,
+    },
     cps::{
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
@@ -18,7 +20,7 @@ use crate::{
     },
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
-        Context, State,
+        Context, REGISTER_ARG_COUNT, State,
         value::CodeBlock,
         value::{Closure, ReturnCode, Symbol, Tagged, TypeCode8, TypeCode16, Value},
     },
@@ -251,18 +253,115 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    pub fn entrypoint(&mut self, rands: ir::Value, num_rands: ir::Value) {
+    fn state_ptr(&mut self) -> ir::Value {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        self.builder
+            .ins()
+            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64)
+    }
+
+    fn overflow_base_from_argc(&mut self, argc: ir::Value) -> ir::Value {
+        let state = self.state_ptr();
+        let overflow_count = self
+            .builder
+            .ins()
+            .iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
+        let zero = self.builder.ins().iconst(types::I64, 0);
+        let has_overflow = self.builder.ins().icmp_imm(
+            IntCC::UnsignedGreaterThan,
+            argc,
+            REGISTER_ARG_COUNT as i64,
+        );
+        let overflow_count = self
+            .builder
+            .ins()
+            .select(has_overflow, overflow_count, zero);
+        let overflow_bytes = self
+            .builder
+            .ins()
+            .imul_imm(overflow_count, std::mem::size_of::<Value>() as i64);
+        let runstack = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            offset_of!(State, runstack) as i32,
+        );
+        self.builder.ins().isub(runstack, overflow_bytes)
+    }
+
+    fn raw_arg_at(
+        &mut self,
+        args: [ir::Value; REGISTER_ARG_COUNT],
+        overflow: ir::Value,
+        index: usize,
+    ) -> ir::Value {
+        if index < REGISTER_ARG_COUNT {
+            return args[index];
+        }
+
+        self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            overflow,
+            ((index - REGISTER_ARG_COUNT) * std::mem::size_of::<Value>()) as i32,
+        )
+    }
+
+    fn call_values(
+        &mut self,
+        rator: ir::Value,
+        args: RegisterCallArgs,
+    ) -> [ir::Value; REGISTER_ARG_COUNT + 2] {
+        [
+            rator,
+            args.argc,
+            args.args[0],
+            args.args[1],
+            args.args[2],
+            args.args[3],
+        ]
+    }
+
+    fn call_block_args(&mut self, rator: ir::Value, args: RegisterCallArgs) -> Vec<BlockArg> {
+        self.call_values(rator, args)
+            .into_iter()
+            .map(BlockArg::Value)
+            .collect()
+    }
+
+    fn call_wrong_number_of_args_regs(
+        &mut self,
+        got: ir::Value,
+        expected: ir::Value,
+        argc: ir::Value,
+        args: [ir::Value; REGISTER_ARG_COUNT],
+        overflow: ir::Value,
+        from: usize,
+    ) -> ir::Inst {
+        let ctx = self.builder.ins().get_pinned_reg(types::I64);
+        let from = self.builder.ins().iconst(types::I64, from as i64);
+        self.builder.ins().call(
+            self.thunks.wrong_number_of_args_regs,
+            &[
+                ctx, self.rator, got, expected, argc, args[0], args[1], args[2], args[3], overflow,
+                from,
+            ],
+        )
+    }
+
+    pub fn entrypoint(&mut self, argc: ir::Value, args: [ir::Value; REGISTER_ARG_COUNT]) {
         let source = self.target_source();
         let is_function = self.target_is_function();
         self.set_debug_loc(source);
+        let overflow = self.overflow_base_from_argc(argc);
         if is_function {
-            self.check_yield(self.rator, rands, num_rands);
+            self.check_yield(self.rator, argc, args, overflow);
         }
 
         if !matches!(&self.target, ContOrFunc::Procedure(_)) {
             self.load_free_vars();
         }
-        self.load_arguments(rands, num_rands);
+        self.load_arguments(argc, args, overflow);
     }
 
     pub(crate) fn current_retk_value(&mut self) -> ir::Value {
@@ -296,12 +395,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         const INLINE_ALLOC_LIMIT: usize = 8 * 1024;
         const HEADER_SIZE: usize = size_of::<HeapObjectHeader>();
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let info = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            info,
-            0,
-        );
+        let info =
+            self.builder
+                .ins()
+                .load(types::I64, ir::MemFlags::trusted().with_can_move(), info, 0);
         let slowpath = self.builder.create_block();
         let merge = self.builder.create_block();
         self.builder.append_block_param(merge, types::I64);
@@ -505,26 +602,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let rands = std::iter::once(retk)
             .chain(args.iter().copied())
             .collect::<Vec<_>>();
-        let rands = self.push_args(&rands);
-        let num_rands = self
-            .builder
-            .ins()
-            .iconst(types::I64, (args.len() + 1) as i64);
+        let call_args = self.prepare_call_args(&rands);
         let code = self.builder.ins().load(
             types::I64,
             ir::MemFlags::trusted().with_can_move(),
             proc,
             offset_of!(Closure, code) as i32,
         );
-        self.builder.ins().jump(
-            self.exit_block,
-            &[
-                BlockArg::Value(code),
-                BlockArg::Value(proc),
-                BlockArg::Value(rands),
-                BlockArg::Value(num_rands),
-            ],
-        )
+        let mut block_args = vec![BlockArg::Value(code)];
+        block_args.extend(self.call_block_args(proc, call_args));
+        self.builder.ins().jump(self.exit_block, &block_args)
     }
 
     pub(crate) fn raise_to_exception_handler(&mut self, err: ir::Value) -> ir::Inst {
@@ -538,32 +625,30 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.call_proc_with_retk(handler, retk, &[err])
     }
 
-    fn load_arguments(&mut self, mut rands: ir::Value, mut num_rands: ir::Value) {
+    fn load_arguments(
+        &mut self,
+        argc: ir::Value,
+        args: [ir::Value; REGISTER_ARG_COUNT],
+        overflow: ir::Value,
+    ) {
         let (params, rest) = self.target_params();
 
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
-        let state = self
-            .builder
-            .ins()
-            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+        let state = self.state_ptr();
         /* reset the runstack to the state it was before call */
         self.builder.ins().store(
             ir::MemFlags::trusted().with_can_move(),
-            rands,
+            overflow,
             state,
             offset_of!(State, runstack) as i32,
         );
 
+        let mut first_arg = 0usize;
+        let mut num_rands = argc;
         if let Some(return_cont) = self.target_return_cont() {
-            let retk = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                rands,
-                0,
-            );
-
-            rands = self.builder.ins().iadd_imm(rands, 8);
+            let retk = self.raw_arg_at(args, overflow, 0);
+            first_arg = 1;
             num_rands = self.builder.ins().iadd_imm(num_rands, -1);
 
             self.debug_local(return_cont, retk);
@@ -575,9 +660,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.linear_rest_sources.insert(
                 rest,
                 LinearRestSource {
-                    rands,
-                    num_rands,
-                    fixed_count: params.len(),
+                    argc,
+                    args,
+                    overflow,
+                    first_rest: first_arg + params.len(),
                 },
             );
         }
@@ -600,9 +686,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let got = num_rands;
                     let expected = -(params.len() as isize);
                     let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.builder.ins().call(
-                        self.thunks.wrong_number_of_args,
-                        &[ctx, self.rator, got, expected, rands],
+                    let err = self.call_wrong_number_of_args_regs(
+                        got, expected, argc, args, overflow, first_arg,
                     );
                     let err = self.builder.inst_results(err)[0];
                     self.raise_to_exception_handler(err);
@@ -610,12 +695,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.switch_to_block(succ);
                 {
                     for (i, param) in params.iter().enumerate() {
-                        let value = self.builder.ins().load(
-                            types::I64,
-                            ir::MemFlags::trusted().with_can_move(),
-                            rands,
-                            (i * 8) as i32,
-                        );
+                        let value = self.raw_arg_at(args, overflow, first_arg + i);
                         self.variables.insert(*param, VarDef::Value(value));
                         self.debug_local(*param, value);
                     }
@@ -644,11 +724,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     self.builder.switch_to_block(cons_block);
                     {
                         if self.should_materialize_entry_rest(rest) {
-                            let from = self.builder.ins().iconst(types::I64, params.len() as i64);
-                            let cons = self
+                            let from = self
                                 .builder
                                 .ins()
-                                .call(self.thunks.cons_rest, &[ctx, rands, num_rands, from]);
+                                .iconst(types::I64, (first_arg + params.len()) as i64);
+                            let cons = self.builder.ins().call(
+                                self.thunks.cons_rest_regs,
+                                &[
+                                    ctx, argc, args[0], args[1], args[2], args[3], overflow, from,
+                                ],
+                            );
                             let list = self.builder.inst_results(cons)[0];
 
                             self.builder.ins().jump(succ, &[BlockArg::Value(list)]);
@@ -684,21 +769,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let got = num_rands;
                     let expected = params.len() as isize;
                     let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.builder.ins().call(
-                        self.thunks.wrong_number_of_args,
-                        &[ctx, self.rator, got, expected, rands],
+                    let err = self.call_wrong_number_of_args_regs(
+                        got, expected, argc, args, overflow, first_arg,
                     );
                     let err = self.builder.inst_results(err)[0];
                     self.raise_to_exception_handler(err);
                 }
                 self.builder.switch_to_block(succ);
                 for (i, param) in params.iter().enumerate() {
-                    let value = self.builder.ins().load(
-                        types::I64,
-                        ir::MemFlags::trusted().with_can_move(),
-                        rands,
-                        (i * 8) as i32,
-                    );
+                    let value = self.raw_arg_at(args, overflow, first_arg + i);
                     self.variables.insert(*param, VarDef::Value(value));
                     self.debug_local(*param, value);
                 }
@@ -723,11 +802,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.switch_to_block(cons_block);
                 {
                     if self.should_materialize_entry_rest(rest) {
-                        let from = self.builder.ins().iconst(types::I64, 0);
-                        let cons = self
-                            .builder
-                            .ins()
-                            .call(self.thunks.cons_rest, &[ctx, rands, num_rands, from]);
+                        let from = self.builder.ins().iconst(types::I64, first_arg as i64);
+                        let cons = self.builder.ins().call(
+                            self.thunks.cons_rest_regs,
+                            &[
+                                ctx, argc, args[0], args[1], args[2], args[3], overflow, from,
+                            ],
+                        );
                         let list = self.builder.inst_results(cons)[0];
 
                         self.builder.ins().jump(succ, &[BlockArg::Value(list)]);
@@ -761,9 +842,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let got = num_rands;
                     let expected = 0isize;
                     let expected = self.builder.ins().iconst(types::I64, expected as i64);
-                    let err = self.builder.ins().call(
-                        self.thunks.wrong_number_of_args,
-                        &[ctx, self.rator, got, expected, rands],
+                    let err = self.call_wrong_number_of_args_regs(
+                        got, expected, argc, args, overflow, first_arg,
                     );
                     let err = self.builder.inst_results(err)[0];
                     self.raise_to_exception_handler(err);
@@ -887,23 +967,21 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    /// Push arguments to runstack. Returns the base of the arguments array.
-    pub fn push_args(&mut self, args: &[ir::Value]) -> ir::Value {
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let state = self
-            .builder
-            .ins()
-            .iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+    /// Prepare register-call arguments. The first four logical arguments are
+    /// returned as SSA values; logical arg4 and later are stored at the current runstack.
+    pub fn prepare_call_args(&mut self, args: &[ir::Value]) -> RegisterCallArgs {
+        let state = self.state_ptr();
         let runstack = self.builder.ins().load(
             types::I64,
             ir::MemFlags::trusted().with_can_move(),
             state,
             offset_of!(State, runstack) as i32,
         );
-        let new_runstack = self
-            .builder
-            .ins()
-            .iadd_imm(runstack, (args.len() * 8) as i64);
+        let overflow_count = args.len().saturating_sub(REGISTER_ARG_COUNT);
+        let new_runstack = self.builder.ins().iadd_imm(
+            runstack,
+            (overflow_count * std::mem::size_of::<Value>()) as i64,
+        );
         self.builder.ins().store(
             ir::MemFlags::trusted().with_can_move(),
             new_runstack,
@@ -911,16 +989,29 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             offset_of!(State, runstack) as i32,
         );
 
+        let undefined = self
+            .builder
+            .ins()
+            .iconst(types::I64, Value::undefined().bits() as i64);
+        let mut regs = [undefined; REGISTER_ARG_COUNT];
         for (i, arg) in args.iter().enumerate() {
-            self.builder.ins().store(
-                ir::MemFlags::trusted().with_can_move(),
-                *arg,
-                runstack,
-                (i * 8) as i32,
-            );
+            if i < REGISTER_ARG_COUNT {
+                regs[i] = *arg;
+            } else {
+                self.builder.ins().store(
+                    ir::MemFlags::trusted().with_can_move(),
+                    *arg,
+                    runstack,
+                    ((i - REGISTER_ARG_COUNT) * std::mem::size_of::<Value>()) as i32,
+                );
+            }
         }
 
-        runstack
+        RegisterCallArgs {
+            argc: self.builder.ins().iconst(types::I64, args.len() as i64),
+            args: regs,
+            overflow: runstack,
+        }
     }
 
     /// Continue execution at continuation `k` with arguments `args`.
@@ -981,31 +1072,22 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let callee = self.get_callee_k(k);
-        let rands = self.push_args(args);
-        let num_rands = self.builder.ins().iconst(types::I64, args.len() as i64);
+        let call_args = self.prepare_call_args(args);
         match callee {
-            Callee::Indirect { target, closure } => self.builder.ins().jump(
-                self.exit_block,
-                &[
-                    BlockArg::Value(target),
-                    BlockArg::Value(closure),
-                    BlockArg::Value(rands),
-                    BlockArg::Value(num_rands),
-                ],
-            ),
-            Callee::Direct { target, closure } => self
-                .builder
-                .ins()
-                .return_call(target, &[closure, rands, num_rands]),
+            Callee::Indirect { target, closure } => {
+                let mut block_args = vec![BlockArg::Value(target)];
+                block_args.extend(self.call_block_args(closure, call_args));
+                self.builder.ins().jump(self.exit_block, &block_args)
+            }
+            Callee::Direct { target, closure } => {
+                let values = self.call_values(closure, call_args);
+                self.builder.ins().return_call(target, &values)
+            }
 
-            Callee::SelfRec(block) => self.builder.ins().jump(
-                block,
-                &[
-                    BlockArg::Value(self.rator),
-                    BlockArg::Value(rands),
-                    BlockArg::Value(num_rands),
-                ],
-            ),
+            Callee::SelfRec(block) => {
+                let block_args = self.call_block_args(self.rator, call_args);
+                self.builder.ins().jump(block, &block_args)
+            }
         }
     }
 
@@ -1266,7 +1348,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let source = self.linear_rest_source(rest);
         self.builder
             .ins()
-            .iadd_imm(source.num_rands, -((source.fixed_count + skip) as i64))
+            .iadd_imm(source.argc, -((source.first_rest + skip) as i64))
     }
 
     fn linear_fixnum_from_usize_value(&mut self, value: ir::Value) -> ir::Value {
@@ -1448,10 +1530,19 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let from = self
                     .builder
                     .ins()
-                    .iconst(types::I64, rest_source.fixed_count as i64);
+                    .iconst(types::I64, rest_source.first_rest as i64);
                 let call = self.builder.ins().call(
-                    self.thunks.cons_rest,
-                    &[ctx, rest_source.rands, rest_source.num_rands, from],
+                    self.thunks.cons_rest_regs,
+                    &[
+                        ctx,
+                        rest_source.argc,
+                        rest_source.args[0],
+                        rest_source.args[1],
+                        rest_source.args[2],
+                        rest_source.args[3],
+                        rest_source.overflow,
+                        from,
+                    ],
                 );
                 let list = self.builder.inst_results(call)[0];
                 self.bind_linear_var(*dst, VarDef::Value(list));
@@ -1464,11 +1555,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             } => {
                 self.set_debug_loc(*source);
                 let rest_source = self.linear_rest_source(*rest);
-                let value = self.builder.ins().load(
-                    types::I64,
-                    ir::MemFlags::trusted().with_can_move(),
-                    rest_source.rands,
-                    ((rest_source.fixed_count + *index) * 8) as i32,
+                let value = self.raw_arg_at(
+                    rest_source.args,
+                    rest_source.overflow,
+                    rest_source.first_rest + *index,
                 );
                 self.bind_linear_var(*dst, VarDef::Value(value));
             }
@@ -1492,16 +1582,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             } => {
                 self.set_debug_loc(*source);
                 let rest_source = self.linear_rest_source(*rest);
-                let threshold = (rest_source.fixed_count + *skip) as i64;
+                let threshold = (rest_source.first_rest + *skip) as i64;
                 let val = match predicate {
                     RestPredicate::Null => VarDef::Comparison(self.builder.ins().icmp_imm(
                         IntCC::Equal,
-                        rest_source.num_rands,
+                        rest_source.argc,
                         threshold,
                     )),
                     RestPredicate::Pair => VarDef::Comparison(self.builder.ins().icmp_imm(
                         IntCC::UnsignedGreaterThan,
-                        rest_source.num_rands,
+                        rest_source.argc,
                         threshold,
                     )),
                     RestPredicate::List => {
@@ -1606,29 +1696,36 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        let num_rands = self
-            .builder
-            .ins()
-            .iconst(types::I64, (args.len() + 1) as i64);
         let callee = self.get_callee_linear(callee);
         let retk = self.linear_atom(retk);
         let rands = std::iter::once(retk)
             .chain(args.iter().copied().map(|arg| self.linear_atom(arg)))
             .collect::<Vec<_>>();
-        let rands = self.push_args(&rands);
+        let mut call_args = self.prepare_call_args(&rands);
 
         if self.module_builder.stacktraces {
             let ctx = self.builder.ins().get_pinned_reg(types::I64);
             let src_info = self.atom(Atom::Constant(source));
             let rator = self.closure_from_callee(callee);
 
-            self.builder.ins().call(
-                self.thunks.push_dframe,
-                &[ctx, src_info, rator, num_rands, rands],
+            let call = self.builder.ins().call(
+                self.thunks.push_dframe_regs,
+                &[
+                    ctx,
+                    src_info,
+                    rator,
+                    call_args.argc,
+                    call_args.args[0],
+                    call_args.args[1],
+                    call_args.args[2],
+                    call_args.args[3],
+                    call_args.overflow,
+                ],
             );
+            call_args.args[0] = self.builder.inst_results(call)[0];
         }
 
-        self.emit_callee_jump(callee, rands, num_rands);
+        self.emit_callee_jump(callee, call_args);
     }
 
     fn linear_tail_call(
@@ -1662,38 +1759,24 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .copied()
             .map(|arg| self.linear_atom(arg))
             .collect::<Vec<_>>();
-        let rands = self.push_args(&args);
-        let num_rands = self.builder.ins().iconst(types::I64, args.len() as i64);
-        self.emit_callee_jump(callee, rands, num_rands);
+        let call_args = self.prepare_call_args(&args);
+        self.emit_callee_jump(callee, call_args);
     }
 
-    fn emit_callee_jump(&mut self, callee: Callee, rands: ir::Value, num_rands: ir::Value) {
+    fn emit_callee_jump(&mut self, callee: Callee, call_args: RegisterCallArgs) {
         match callee {
             Callee::Indirect { target, closure } => {
-                self.builder.ins().jump(
-                    self.exit_block,
-                    &[
-                        BlockArg::Value(target),
-                        BlockArg::Value(closure),
-                        BlockArg::Value(rands),
-                        BlockArg::Value(num_rands),
-                    ],
-                );
+                let mut block_args = vec![BlockArg::Value(target)];
+                block_args.extend(self.call_block_args(closure, call_args));
+                self.builder.ins().jump(self.exit_block, &block_args);
             }
             Callee::Direct { target, closure } => {
-                self.builder
-                    .ins()
-                    .return_call(target, &[closure, rands, num_rands]);
+                let values = self.call_values(closure, call_args);
+                self.builder.ins().return_call(target, &values);
             }
             Callee::SelfRec(block) => {
-                self.builder.ins().jump(
-                    block,
-                    &[
-                        BlockArg::Value(self.rator),
-                        BlockArg::Value(rands),
-                        BlockArg::Value(num_rands),
-                    ],
-                );
+                let block_args = self.call_block_args(self.rator, call_args);
+                self.builder.ins().jump(block, &block_args);
             }
         }
     }
@@ -1762,13 +1845,26 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .copied()
             .map(|arg| self.linear_atom(arg))
             .collect::<Vec<_>>();
-        let rands = self.push_args(&args);
+        let call_args = self.prepare_call_args(&args);
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let got = self.builder.ins().iconst(types::I64, args.len() as i64);
         let expected = self.builder.ins().iconst(types::I64, expected as i64);
+        let from = self.builder.ins().iconst(types::I64, 0);
         let err = self.builder.ins().call(
-            self.thunks.wrong_number_of_args,
-            &[ctx, self.rator, got, expected, rands],
+            self.thunks.wrong_number_of_args_regs,
+            &[
+                ctx,
+                self.rator,
+                got,
+                expected,
+                call_args.argc,
+                call_args.args[0],
+                call_args.args[1],
+                call_args.args[2],
+                call_args.args[3],
+                call_args.overflow,
+                from,
+            ],
         );
         let err = self.builder.inst_results(err)[0];
         self.raise_to_exception_handler(err);
@@ -2039,12 +2135,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         let code = self.builder.block_params(self.exit_block)[0];
         let rator = self.builder.block_params(self.exit_block)[1];
-        let rands = self.builder.block_params(self.exit_block)[2];
-        let num_rands = self.builder.block_params(self.exit_block)[3];
+        let argc = self.builder.block_params(self.exit_block)[2];
+        let arg0 = self.builder.block_params(self.exit_block)[3];
+        let arg1 = self.builder.block_params(self.exit_block)[4];
+        let arg2 = self.builder.block_params(self.exit_block)[5];
+        let arg3 = self.builder.block_params(self.exit_block)[6];
 
-        self.builder
-            .ins()
-            .return_call_indirect(self.sig_call, code, &[rator, rands, num_rands]);
+        self.builder.ins().return_call_indirect(
+            self.sig_call,
+            code,
+            &[rator, argc, arg0, arg1, arg2, arg3],
+        );
 
         self.builder.seal_all_blocks();
     }
@@ -2091,9 +2192,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             }
 
             Term::App(rator, retk, rands, _) => {
-                let num_rands = rands.len() + 1;
-                let num_rands = self.builder.ins().iconst(types::I64, num_rands as i64);
-
                 let callee = self.get_callee(rator);
 
                 let retk = self.var(*retk);
@@ -2103,7 +2201,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     .chain(rands.iter().copied().map(|a| self.atom(a)))
                     .collect::<Vec<_>>();
 
-                let rands = self.push_args(&rands);
+                let mut call_args = self.prepare_call_args(&rands);
 
                 if self.module_builder.stacktraces {
                     /* do `(with-continuation-mark <stacktrace-key> <info> app)` */
@@ -2112,37 +2210,38 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     let src_info = self.atom(Atom::Constant(src));
                     let rator = self.closure_from_callee(callee);
 
-                    self.builder.ins().call(
-                        self.thunks.push_dframe,
-                        &[ctx, src_info, rator, num_rands, rands],
+                    let call = self.builder.ins().call(
+                        self.thunks.push_dframe_regs,
+                        &[
+                            ctx,
+                            src_info,
+                            rator,
+                            call_args.argc,
+                            call_args.args[0],
+                            call_args.args[1],
+                            call_args.args[2],
+                            call_args.args[3],
+                            call_args.overflow,
+                        ],
                     );
+                    call_args.args[0] = self.builder.inst_results(call)[0];
                 }
 
                 match callee {
                     Callee::Indirect { target, closure } => {
-                        self.builder.ins().jump(
-                            self.exit_block,
-                            &[
-                                BlockArg::Value(target),
-                                BlockArg::Value(closure),
-                                BlockArg::Value(rands),
-                                BlockArg::Value(num_rands),
-                            ],
-                        );
+                        let mut block_args = vec![BlockArg::Value(target)];
+                        block_args.extend(self.call_block_args(closure, call_args));
+                        self.builder.ins().jump(self.exit_block, &block_args);
                     }
 
                     Callee::Direct { target, closure } => {
-                        self.builder
-                            .ins()
-                            .return_call(target, &[closure, rands, num_rands]);
+                        let values = self.call_values(closure, call_args);
+                        self.builder.ins().return_call(target, &values);
                     }
 
                     Callee::SelfRec(block) => {
                         // just jump back to entrypoint
-                        let block_args = [self.rator, rands, num_rands]
-                            .into_iter()
-                            .map(|v| ir::BlockArg::Value(v))
-                            .collect::<Vec<_>>();
+                        let block_args = self.call_block_args(self.rator, call_args);
                         self.builder.ins().jump(block, &block_args);
                     }
                 }
@@ -2205,7 +2304,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .into()
     }
 
-    pub fn check_yield(&mut self, rator: ir::Value, rands: ir::Value, num_rands: ir::Value) {
+    pub fn check_yield(
+        &mut self,
+        rator: ir::Value,
+        argc: ir::Value,
+        args: [ir::Value; REGISTER_ARG_COUNT],
+        overflow: ir::Value,
+    ) {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
 
         let thread = ctx;
@@ -2246,10 +2351,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .brif(is_nested, on_no_yieldpoint, &[], on_not_nested, &[]);
             self.builder.switch_to_block(on_not_nested);
             self.builder.func.layout.set_cold(on_not_nested);
-            let saved_call = self
-                .builder
-                .ins()
-                .call(self.thunks.yieldpoint, &[ctx, rator, rands, num_rands]);
+            let saved_call = self.builder.ins().call(
+                self.thunks.yieldpoint_regs,
+                &[
+                    ctx, rator, argc, args[0], args[1], args[2], args[3], overflow,
+                ],
+            );
             let code = self
                 .builder
                 .ins()
