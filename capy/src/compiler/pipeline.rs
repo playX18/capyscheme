@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::{collections::HashMap, fmt::Write, path::Path};
 
 use crate::cps::contify::contify;
+use crate::cps::linear::{BranchTarget, LinearAtom, LinearProgram, Procedure, Terminator, ValueId};
 use crate::cps::term::FuncRef;
 use crate::expander::core::TermRef;
 use crate::expander::{
@@ -149,8 +150,215 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
 fn render_lcps_dump<'gc>(linear_cps: &crate::cps::linear::LinearProgram<'gc>) -> String {
     let mut rendered = crate::cps::linear_pretty::render_program(linear_cps);
     rendered.push('\n');
+    render_slot_allocations(&mut rendered, linear_cps);
 
     rendered
+}
+
+fn render_slot_allocations<'gc>(out: &mut String, linear_cps: &LinearProgram<'gc>) {
+    writeln!(out, "(slot-allocations").unwrap();
+    for procedure in &linear_cps.procedures {
+        render_procedure_slot_allocations(out, procedure, 2);
+    }
+    writeln!(out, ")").unwrap();
+}
+
+#[derive(Clone)]
+struct SlotAllocation {
+    value: ValueId,
+    slot: usize,
+    name: String,
+}
+
+fn render_procedure_slot_allocations<'gc>(
+    out: &mut String,
+    procedure: &Procedure<'gc>,
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    let allocations = collect_slot_allocations(procedure);
+    let slots = allocations
+        .iter()
+        .map(|allocation| (allocation.value, allocation.slot))
+        .collect::<HashMap<_, _>>();
+
+    writeln!(out, "{pad}(procedure").unwrap();
+    writeln!(out, "{pad}  (nlocals {})", allocations.len()).unwrap();
+    writeln!(out, "{pad}  (values").unwrap();
+    for allocation in &allocations {
+        writeln!(
+            out,
+            "{pad}    (%v{} {} local{})",
+            allocation.value.0, allocation.name, allocation.slot
+        )
+        .unwrap();
+    }
+    writeln!(out, "{pad}  )").unwrap();
+    writeln!(out, "{pad}  (blocks").unwrap();
+    for block in &procedure.blocks {
+        writeln!(
+            out,
+            "{pad}    (block{} terminator {})",
+            block.id.0,
+            render_slot_terminator(&block.terminator, &slots)
+        )
+        .unwrap();
+    }
+    writeln!(out, "{pad}  )").unwrap();
+    writeln!(out, "{pad}  (parallel-copy-tmps)").unwrap();
+    writeln!(out, "{pad})").unwrap();
+}
+
+fn collect_slot_allocations<'gc>(procedure: &Procedure<'gc>) -> Vec<SlotAllocation> {
+    let mut allocations = Vec::new();
+    let mut seen = HashMap::new();
+    let mut next_local = 0usize;
+
+    for (index, value) in procedure.params.iter().copied().enumerate() {
+        push_slot_allocation(&mut allocations, &mut seen, value, format!("arg{index}"));
+    }
+
+    if let Some(value) = procedure.variadic {
+        push_slot_allocation(
+            &mut allocations,
+            &mut seen,
+            value,
+            format!("arg{}", procedure.params.len()),
+        );
+    }
+
+    for (index, value) in procedure.free_vars.iter().copied().enumerate() {
+        push_slot_allocation(&mut allocations, &mut seen, value, format!("free{index}"));
+    }
+
+    for block in &procedure.blocks {
+        for value in block.params.iter().copied().chain(block.variadic) {
+            push_local_slot_allocation(&mut allocations, &mut seen, &mut next_local, value);
+        }
+        for instruction in &block.instructions {
+            for atom in instruction.uses() {
+                push_atom_slot_allocation(&mut allocations, &mut seen, &mut next_local, atom);
+            }
+            for value in instruction.defs() {
+                push_local_slot_allocation(&mut allocations, &mut seen, &mut next_local, value);
+            }
+        }
+        for atom in block.terminator.uses() {
+            push_atom_slot_allocation(&mut allocations, &mut seen, &mut next_local, atom);
+        }
+    }
+
+    allocations
+}
+
+fn push_slot_allocation(
+    allocations: &mut Vec<SlotAllocation>,
+    seen: &mut HashMap<ValueId, usize>,
+    value: ValueId,
+    name: String,
+) {
+    if seen.contains_key(&value) {
+        return;
+    }
+
+    let slot = allocations.len();
+    seen.insert(value, slot);
+    allocations.push(SlotAllocation { value, slot, name });
+}
+
+fn push_local_slot_allocation(
+    allocations: &mut Vec<SlotAllocation>,
+    seen: &mut HashMap<ValueId, usize>,
+    next_local: &mut usize,
+    value: ValueId,
+) {
+    if seen.contains_key(&value) {
+        return;
+    }
+
+    let name = format!("local{}", *next_local);
+    *next_local += 1;
+    push_slot_allocation(allocations, seen, value, name);
+}
+
+fn push_atom_slot_allocation<'gc>(
+    allocations: &mut Vec<SlotAllocation>,
+    seen: &mut HashMap<ValueId, usize>,
+    next_local: &mut usize,
+    atom: LinearAtom<'gc>,
+) {
+    if let LinearAtom::Local(value) = atom {
+        push_local_slot_allocation(allocations, seen, next_local, value);
+    }
+}
+
+fn render_slot_terminator<'gc>(
+    terminator: &Terminator<'gc>,
+    slots: &HashMap<ValueId, usize>,
+) -> String {
+    match terminator {
+        Terminator::Call {
+            callee, retk, args, ..
+        } => format!(
+            "call {} {} {}",
+            render_slot_atom(*callee, slots),
+            render_slot_atom(*retk, slots),
+            args.len()
+        ),
+        Terminator::TailCall { callee, args, .. } => {
+            format!(
+                "tail-call {} {}",
+                render_slot_atom(*callee, slots),
+                args.len()
+            )
+        }
+        Terminator::Raise { kind, args, .. } => format!("raise {:?} {}", kind, args.len()),
+        Terminator::Jump { target, args } => format!("jump block{} {}", target.0, args.len()),
+        Terminator::Branch {
+            test,
+            consequent,
+            alternative,
+            ..
+        } => format!(
+            "branch {} {} {}",
+            render_slot_atom(*test, slots),
+            render_slot_branch_target(consequent, slots),
+            render_slot_branch_target(alternative, slots)
+        ),
+        Terminator::Switch {
+            scrutinee,
+            cases,
+            default,
+            ..
+        } => format!(
+            "switch {} {} {}",
+            render_slot_atom(*scrutinee, slots),
+            cases.len(),
+            render_slot_branch_target(default, slots)
+        ),
+    }
+}
+
+fn render_slot_branch_target<'gc>(
+    target: &BranchTarget<'gc>,
+    slots: &HashMap<ValueId, usize>,
+) -> String {
+    match target {
+        BranchTarget::Local { block, args } => format!("block{}:{}", block.0, args.len()),
+        BranchTarget::Reified { continuation, args } => {
+            format!("{}:{}", render_slot_atom(*continuation, slots), args.len())
+        }
+    }
+}
+
+fn render_slot_atom<'gc>(atom: LinearAtom<'gc>, slots: &HashMap<ValueId, usize>) -> String {
+    match atom {
+        LinearAtom::Constant(_) => "constant".to_string(),
+        LinearAtom::Local(value) => slots
+            .get(&value)
+            .map(|slot| format!("local{slot}"))
+            .unwrap_or_else(|| format!("%v{}", value.0)),
+    }
 }
 
 #[cfg(test)]
