@@ -1602,9 +1602,7 @@ impl<'gc> Number<'gc> {
                         if lhs == 0.0 {
                             return Number::Flonum(0.0);
                         }
-                    } else {
-                        unreachable!()
-                    }
+                    } 
 
                     'flonum_again: loop {
                         match rhs {
