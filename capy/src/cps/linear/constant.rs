@@ -128,28 +128,6 @@ impl ConstantHoister {
                 args: self.atoms(args, instructions),
                 source,
             },
-            Instruction::LowPrimCall {
-                dsts,
-                op,
-                args,
-                source,
-            } => Instruction::LowPrimCall {
-                dsts,
-                op,
-                args: self.atoms(args, instructions),
-                source,
-            },
-            Instruction::RuntimePrimCall {
-                dst,
-                prim,
-                args,
-                source,
-            } => Instruction::RuntimePrimCall {
-                dst,
-                prim,
-                args: self.atoms(args, instructions),
-                source,
-            },
         }
     }
 

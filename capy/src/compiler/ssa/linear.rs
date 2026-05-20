@@ -1,24 +1,21 @@
 use std::{collections::HashMap, mem::offset_of};
 
-use crate::{
-    cps::term::BranchHint,
-    rsgc::{
-        Gc,
-        object::{HeapObjectHeader, HeapTypeInfo, OBJECT_REF_OFFSET, builtin_type_ids},
-        sync::thread::Thread,
-    },
+use crate::rsgc::{
+    Gc,
+    object::{HeapObjectHeader, HeapTypeInfo, OBJECT_REF_OFFSET, builtin_type_ids},
+    sync::thread::Thread,
 };
 
 use crate::{
     compiler::ssa::{
         LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
-        primitive::{PrimValue, Primitive},
+        primitive::PrimValue,
     },
     cps::{
         linear::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
-            LowIntPredicate, LowPrim, LowType, Procedure, ProcedureKind, RestPredicate,
-            SwitchCaseValue, SwitchKind, Terminator, ValueId,
+            Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
+            ValueId,
         },
         term::Atom,
     },
@@ -34,7 +31,6 @@ use cranelift::frontend::Switch;
 use cranelift::prelude::{InstBuilder, IntCC, types};
 use cranelift_codegen::ir::{self, BlockArg};
 use cranelift_module::{DataId, Linkage, Module};
-use smallvec::{SmallVec, smallvec};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Callee {
@@ -52,36 +48,6 @@ pub enum Callee {
 
     /// Callee is a self-recursive function, and the function body block is returned.
     SelfRec(ir::Block),
-}
-
-fn low_clif_type(ty: LowType) -> types::Type {
-    match ty {
-        LowType::I8 | LowType::U8 => types::I8,
-        LowType::I16 | LowType::U16 => types::I16,
-        LowType::I32 | LowType::U32 => types::I32,
-        LowType::I64 | LowType::U64 | LowType::Value | LowType::Ptr => types::I64,
-        LowType::F32 => types::F32,
-        LowType::F64 => types::F64,
-    }
-}
-
-fn low_type_is_unsigned(ty: LowType) -> bool {
-    matches!(ty, LowType::U8 | LowType::U16 | LowType::U32 | LowType::U64)
-}
-
-fn low_intcc(cond: LowIntPredicate) -> IntCC {
-    match cond {
-        LowIntPredicate::Equal => IntCC::Equal,
-        LowIntPredicate::NotEqual => IntCC::NotEqual,
-        LowIntPredicate::SignedLessThan => IntCC::SignedLessThan,
-        LowIntPredicate::SignedLessThanOrEqual => IntCC::SignedLessThanOrEqual,
-        LowIntPredicate::SignedGreaterThan => IntCC::SignedGreaterThan,
-        LowIntPredicate::SignedGreaterThanOrEqual => IntCC::SignedGreaterThanOrEqual,
-        LowIntPredicate::UnsignedLessThan => IntCC::UnsignedLessThan,
-        LowIntPredicate::UnsignedLessThanOrEqual => IntCC::UnsignedLessThanOrEqual,
-        LowIntPredicate::UnsignedGreaterThan => IntCC::UnsignedGreaterThan,
-        LowIntPredicate::UnsignedGreaterThanOrEqual => IntCC::UnsignedGreaterThanOrEqual,
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1124,140 +1090,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn linear_low_prim(&mut self, op: LowPrim, args: &[LinearAtom<'gc>]) -> SmallVec<[VarDef; 2]> {
-        let args = args
-            .iter()
-            .copied()
-            .map(|arg| self.linear_atom(arg))
-            .collect::<Vec<_>>();
-        match op {
-            LowPrim::HasType8(typecode) => {
-                smallvec![VarDef::Comparison(self.has_typ8(args[0], typecode))]
-            }
-            LowPrim::IsFixnum => smallvec![VarDef::Comparison(self.is_int32(args[0]))],
-            LowPrim::UntagFixnum => smallvec![VarDef::Value(
-                self.builder.ins().ireduce(types::I32, args[0])
-            )],
-            LowPrim::TagFixnum => {
-                let value = self.zextend(types::I64, args[0]);
-                smallvec![VarDef::Value(
-                    self.builder.ins().bor_imm(value, Value::NUMBER_TAG as i64)
-                )]
-            }
-            LowPrim::IReduce(ty) => {
-                smallvec![VarDef::Value(self.ireduce(low_clif_type(ty), args[0]))]
-            }
-            LowPrim::SExt(ty) => smallvec![VarDef::Value(self.sextend(low_clif_type(ty), args[0]))],
-            LowPrim::ZExt(ty) => smallvec![VarDef::Value(self.zextend(low_clif_type(ty), args[0]))],
-            LowPrim::ICmp(cond, _) => {
-                smallvec![VarDef::Comparison(self.builder.ins().icmp(
-                    low_intcc(cond),
-                    args[0],
-                    args[1]
-                ))]
-            }
-            LowPrim::IAdd(_) => smallvec![VarDef::Value(self.builder.ins().iadd(args[0], args[1]))],
-            LowPrim::ISub(_) => smallvec![VarDef::Value(self.builder.ins().isub(args[0], args[1]))],
-            LowPrim::IMul(_) => smallvec![VarDef::Value(self.builder.ins().imul(args[0], args[1]))],
-            LowPrim::IDiv(ty) if low_type_is_unsigned(ty) => {
-                smallvec![VarDef::Value(self.builder.ins().udiv(args[0], args[1]))]
-            }
-            LowPrim::IDiv(_) => smallvec![VarDef::Value(self.builder.ins().sdiv(args[0], args[1]))],
-            LowPrim::IRem(ty) if low_type_is_unsigned(ty) => {
-                smallvec![VarDef::Value(self.builder.ins().urem(args[0], args[1]))]
-            }
-            LowPrim::IRem(_) => smallvec![VarDef::Value(self.builder.ins().srem(args[0], args[1]))],
-            LowPrim::IShl(_) => smallvec![VarDef::Value(self.builder.ins().ishl(args[0], args[1]))],
-            LowPrim::IShr(ty) if low_type_is_unsigned(ty) => {
-                smallvec![VarDef::Value(self.builder.ins().ushr(args[0], args[1]))]
-            }
-            LowPrim::IShr(_) => smallvec![VarDef::Value(self.builder.ins().sshr(args[0], args[1]))],
-            LowPrim::IAnd(_) => smallvec![VarDef::Value(self.builder.ins().band(args[0], args[1]))],
-            LowPrim::IOr(_) => smallvec![VarDef::Value(self.builder.ins().bor(args[0], args[1]))],
-            LowPrim::IXor(_) => smallvec![VarDef::Value(self.builder.ins().bxor(args[0], args[1]))],
-            LowPrim::IAddImm(_, imm) => {
-                smallvec![VarDef::Value(self.builder.ins().iadd_imm(args[0], imm))]
-            }
-            LowPrim::IMulImm(_, imm) => {
-                smallvec![VarDef::Value(self.builder.ins().imul_imm(args[0], imm))]
-            }
-            LowPrim::IAddOverflow(_) => {
-                let (value, overflow) = self.builder.ins().sadd_overflow(args[0], args[1]);
-                smallvec![VarDef::Value(value), VarDef::Comparison(overflow)]
-            }
-            LowPrim::ISubOverflow(_) => {
-                let (value, overflow) = self.builder.ins().ssub_overflow(args[0], args[1]);
-                smallvec![VarDef::Value(value), VarDef::Comparison(overflow)]
-            }
-            LowPrim::IMulOverflow(_) => {
-                let (value, overflow) = self.builder.ins().smul_overflow(args[0], args[1]);
-                smallvec![VarDef::Value(value), VarDef::Comparison(overflow)]
-            }
-            LowPrim::Load { ty, offset } => smallvec![VarDef::Value(self.builder.ins().load(
-                low_clif_type(ty),
-                ir::MemFlags::trusted().with_can_move(),
-                args[0],
-                offset,
-            ))],
-            LowPrim::FAdd(_) => smallvec![VarDef::Value(self.builder.ins().fadd(args[0], args[1]))],
-            LowPrim::FSub(_) => smallvec![VarDef::Value(self.builder.ins().fsub(args[0], args[1]))],
-            LowPrim::FMul(_) => smallvec![VarDef::Value(self.builder.ins().fmul(args[0], args[1]))],
-            LowPrim::FDiv(_) => smallvec![VarDef::Value(self.builder.ins().fdiv(args[0], args[1]))],
-        }
-    }
-
-    fn linear_runtime_prim(&mut self, prim: Primitive, args: &[LinearAtom<'gc>]) -> ir::Value {
-        let args = args
-            .iter()
-            .copied()
-            .map(|arg| self.linear_atom(arg))
-            .collect::<Vec<_>>();
-        let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        match prim {
-            Primitive::plus => {
-                self.handle_thunk_call_result(self.thunks.number_plus, &[ctx, args[0], args[1]])
-            }
-            Primitive::minus => {
-                self.handle_thunk_call_result(self.thunks.number_minus, &[ctx, args[0], args[1]])
-            }
-            Primitive::times => {
-                self.handle_thunk_call_result(self.thunks.number_times, &[ctx, args[0], args[1]])
-            }
-            Primitive::div => {
-                self.handle_thunk_call_result(self.thunks.number_div, &[ctx, args[0], args[1]])
-            }
-            Primitive::numeric_equal => {
-                self.handle_thunk_call_result(self.thunks.number_eq, &[ctx, args[0], args[1]])
-            }
-            Primitive::numeric_lt => {
-                self.handle_thunk_call_result(self.thunks.number_lt, &[ctx, args[0], args[1]])
-            }
-            Primitive::numeric_gt => {
-                self.handle_thunk_call_result(self.thunks.number_gt, &[ctx, args[0], args[1]])
-            }
-            Primitive::numeric_gte => {
-                self.handle_thunk_call_result(self.thunks.number_ge, &[ctx, args[0], args[1]])
-            }
-            Primitive::numeric_lte => {
-                self.handle_thunk_call_result(self.thunks.number_le, &[ctx, args[0], args[1]])
-            }
-            Primitive::vector_ref => {
-                self.handle_thunk_call_result(self.thunks.vector_ref, &[ctx, args[0], args[1]])
-            }
-            Primitive::vector_set => self.handle_thunk_call_result(
-                self.thunks.vector_set,
-                &[ctx, args[0], args[1], args[2]],
-            ),
-            Primitive::tuple_ref => {
-                self.handle_thunk_call_result(self.thunks.tuple_ref, &[ctx, args[0], args[1]])
-            }
-            Primitive::string_length => {
-                self.handle_thunk_call_result(self.thunks.string_length, &[ctx, args[0]])
-            }
-            _ => panic!("runtime primitive slowpath is not defined for {prim}"),
-        }
-    }
-
     fn code_block_data(&self, code: CodeId<'gc>) -> DataId {
         match code {
             CodeId::Function(func) => self.module_builder.code_block_for_func[&func],
@@ -1371,35 +1203,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     PrimValue::Comparison(val) => VarDef::Comparison(val),
                 };
                 self.bind_linear_var(*dst, val);
-            }
-            Instruction::LowPrimCall {
-                dsts,
-                op,
-                args,
-                source,
-            } => {
-                self.set_debug_loc(*source);
-                let vals = self.linear_low_prim(*op, args);
-                assert_eq!(
-                    dsts.len(),
-                    vals.len(),
-                    "low primitive {op:?} produced {} values for {} destinations",
-                    vals.len(),
-                    dsts.len()
-                );
-                for (dst, val) in dsts.iter().copied().zip(vals) {
-                    self.bind_linear_var(dst, val);
-                }
-            }
-            Instruction::RuntimePrimCall {
-                dst,
-                prim,
-                args,
-                source,
-            } => {
-                self.set_debug_loc(*source);
-                let val = self.linear_runtime_prim(*prim, args);
-                self.bind_linear_var(*dst, VarDef::Value(val));
             }
             Instruction::RestToList { dst, rest, source } => {
                 self.set_debug_loc(*source);
@@ -1774,7 +1577,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 test,
                 consequent,
                 alternative,
-                hints,
+                hints: _,
             } => {
                 let truthy = self.linear_atom_for_cond(*test);
                 let kcons = self.builder.create_block();
@@ -1787,13 +1590,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.switch_to_block(kcons);
                 self.linear_branch_target(procedure, consequent);
 
-                if matches!(hints[0], BranchHint::Cold) {
-                    self.builder.func.layout.set_cold(kalt);
-                }
-
-                if matches!(hints[1], BranchHint::Cold) {
-                    self.builder.func.layout.set_cold(kcons);
-                }
             }
             Terminator::Switch {
                 kind,

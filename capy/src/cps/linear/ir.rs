@@ -77,68 +77,6 @@ pub enum RestPredicate {
     List,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LowType {
-    I8,
-    I16,
-    I32,
-    I64,
-    U8,
-    U16,
-    U32,
-    U64,
-    F32,
-    F64,
-    Value,
-    Ptr,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LowPrim {
-    HasType8(u8),
-    IsFixnum,
-    UntagFixnum,
-    TagFixnum,
-    IReduce(LowType),
-    SExt(LowType),
-    ZExt(LowType),
-    ICmp(LowIntPredicate, LowType),
-    IAdd(LowType),
-    ISub(LowType),
-    IMul(LowType),
-    IDiv(LowType),
-    IRem(LowType),
-    IShl(LowType),
-    IShr(LowType),
-    IAnd(LowType),
-    IOr(LowType),
-    IXor(LowType),
-    IAddImm(LowType, i64),
-    IMulImm(LowType, i64),
-    IAddOverflow(LowType),
-    ISubOverflow(LowType),
-    IMulOverflow(LowType),
-    Load { ty: LowType, offset: i32 },
-    FAdd(LowType),
-    FSub(LowType),
-    FMul(LowType),
-    FDiv(LowType),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LowIntPredicate {
-    Equal,
-    NotEqual,
-    SignedLessThan,
-    SignedLessThanOrEqual,
-    SignedGreaterThan,
-    SignedGreaterThanOrEqual,
-    UnsignedLessThan,
-    UnsignedLessThanOrEqual,
-    UnsignedGreaterThan,
-    UnsignedGreaterThanOrEqual,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction<'gc> {
     Const {
@@ -173,18 +111,6 @@ pub enum Instruction<'gc> {
         source: Value<'gc>,
     },
     PrimCall {
-        dst: ValueId,
-        prim: Primitive,
-        args: Vec<LinearAtom<'gc>>,
-        source: Value<'gc>,
-    },
-    LowPrimCall {
-        dsts: SmallVec<[ValueId; 2]>,
-        op: LowPrim,
-        args: Vec<LinearAtom<'gc>>,
-        source: Value<'gc>,
-    },
-    RuntimePrimCall {
         dst: ValueId,
         prim: Primitive,
         args: Vec<LinearAtom<'gc>>,
@@ -287,34 +213,6 @@ pub enum Terminator<'gc> {
 }
 
 impl<'gc> Instruction<'gc> {
-    pub(super) fn low_prim_call(
-        dst: ValueId,
-        op: LowPrim,
-        args: Vec<LinearAtom<'gc>>,
-        source: Value<'gc>,
-    ) -> Self {
-        Self::LowPrimCall {
-            dsts: smallvec![dst],
-            op,
-            args,
-            source,
-        }
-    }
-
-    pub(super) fn low_prim_multi_call(
-        dsts: SmallVec<[ValueId; 2]>,
-        op: LowPrim,
-        args: Vec<LinearAtom<'gc>>,
-        source: Value<'gc>,
-    ) -> Self {
-        Self::LowPrimCall {
-            dsts,
-            op,
-            args,
-            source,
-        }
-    }
-
     pub fn def(&self) -> Option<ValueId> {
         match self {
             Self::Const { dst, .. }
@@ -323,12 +221,10 @@ impl<'gc> Instruction<'gc> {
             | Self::CacheRef { dst, .. }
             | Self::CacheSet { dst, .. }
             | Self::PrimCall { dst, .. }
-            | Self::RuntimePrimCall { dst, .. }
             | Self::RestToList { dst, .. }
             | Self::RestRef { dst, .. }
             | Self::RestLength { dst, .. }
             | Self::RestPredicate { dst, .. } => Some(*dst),
-            Self::LowPrimCall { dsts, .. } => dsts.first().copied(),
             Self::ClosureSet { .. } => None,
         }
     }
@@ -341,12 +237,10 @@ impl<'gc> Instruction<'gc> {
             | Self::CacheRef { dst, .. }
             | Self::CacheSet { dst, .. }
             | Self::PrimCall { dst, .. }
-            | Self::RuntimePrimCall { dst, .. }
             | Self::RestToList { dst, .. }
             | Self::RestRef { dst, .. }
             | Self::RestLength { dst, .. }
             | Self::RestPredicate { dst, .. } => smallvec![*dst],
-            Self::LowPrimCall { dsts, .. } => dsts.clone(),
             Self::ClosureSet { .. } => SmallVec::new(),
         }
     }
@@ -361,9 +255,7 @@ impl<'gc> Instruction<'gc> {
             Self::CacheSet {
                 cache_key, value, ..
             } => vec![*cache_key, *value],
-            Self::PrimCall { args, .. }
-            | Self::LowPrimCall { args, .. }
-            | Self::RuntimePrimCall { args, .. } => args.clone(),
+            Self::PrimCall { args, .. } => args.clone(),
             Self::RestToList { .. } => vec![],
             Self::RestRef { rest, .. }
             | Self::RestLength { rest, .. }

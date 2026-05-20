@@ -15,18 +15,14 @@ pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
     let mut procedures = Vec::new();
 
     for func in reify.functions.iter() {
-        procedures.push(hoist_constants(lower_low_level_primitives(
-            lower_cache_operations(lower_rest_arguments(infer_switches(linearize_function(
-                *func,
-            )))),
+        procedures.push(hoist_constants(lower_cache_operations(
+            lower_rest_arguments(infer_switches(linearize_function(*func))),
         )));
     }
 
     for cont in reify.continuations.iter().filter(|cont| cont.reified.get()) {
-        procedures.push(hoist_constants(lower_low_level_primitives(
-            lower_cache_operations(lower_rest_arguments(infer_switches(
-                linearize_continuation(*cont),
-            ))),
+        procedures.push(hoist_constants(lower_cache_operations(
+            lower_rest_arguments(infer_switches(linearize_continuation(*cont))),
         )));
     }
 
