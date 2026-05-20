@@ -1,11 +1,10 @@
 use crate::{
     cps::linear::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
-        LowIntPredicate, LowPrim, LowType, Procedure, ProcedureKind, RestPredicate, SwitchKind,
-        Terminator, ValueId,
+        Procedure, ProcedureKind, RestPredicate, SwitchKind, Terminator, ValueId,
     },
     expander::core::LVarRef,
-    runtime::value::{Symbol, TypeCode8, Value},
+    runtime::value::{Symbol, Value},
 };
 use std::fmt::Write;
 
@@ -150,20 +149,6 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             prim,
             render_linear_atoms(args)
         ),
-        Instruction::LowPrimCall { dsts, op, args, .. } => format!(
-            "(low-call {} {}{})",
-            render_low_call_dsts(dsts),
-            render_low_prim(*op),
-            render_linear_atoms(args)
-        ),
-        Instruction::RuntimePrimCall {
-            dst, prim, args, ..
-        } => format!(
-            "(runtime-call {} {}{})",
-            render_value_id(*dst),
-            prim,
-            render_linear_atoms(args)
-        ),
         Instruction::RestToList { dst, rest, .. } => format!(
             "(rest->list {} {})",
             render_value_id(*dst),
@@ -198,91 +183,6 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             render_value_id(*rest),
             skip
         ),
-    }
-}
-
-fn render_low_prim(op: LowPrim) -> String {
-    match op {
-        LowPrim::HasType8(typecode) => format!("has-type8.{}", render_typecode8(typecode)),
-        LowPrim::IsFixnum => "is-fixnum".to_string(),
-        LowPrim::UntagFixnum => "untag-fixnum".to_string(),
-        LowPrim::TagFixnum => "tag-fixnum".to_string(),
-        LowPrim::IReduce(ty) => format!("ireduce.{}", render_low_type(ty)),
-        LowPrim::SExt(ty) => format!("sext.{}", render_low_type(ty)),
-        LowPrim::ZExt(ty) => format!("zext.{}", render_low_type(ty)),
-        LowPrim::ICmp(cond, ty) => format!(
-            "icmp.{}.{}",
-            render_low_int_predicate(cond),
-            render_low_type(ty)
-        ),
-        LowPrim::IAdd(ty) => format!("iadd.{}", render_low_type(ty)),
-        LowPrim::ISub(ty) => format!("isub.{}", render_low_type(ty)),
-        LowPrim::IMul(ty) => format!("imul.{}", render_low_type(ty)),
-        LowPrim::IDiv(ty) => format!("idiv.{}", render_low_type(ty)),
-        LowPrim::IRem(ty) => format!("irem.{}", render_low_type(ty)),
-        LowPrim::IShl(ty) => format!("ishl.{}", render_low_type(ty)),
-        LowPrim::IShr(ty) => format!("ishr.{}", render_low_type(ty)),
-        LowPrim::IAnd(ty) => format!("iand.{}", render_low_type(ty)),
-        LowPrim::IOr(ty) => format!("ior.{}", render_low_type(ty)),
-        LowPrim::IXor(ty) => format!("ixor.{}", render_low_type(ty)),
-        LowPrim::IAddImm(ty, imm) => format!("iadd-imm.{}.{}", render_low_type(ty), imm),
-        LowPrim::IMulImm(ty, imm) => format!("imul-imm.{}.{}", render_low_type(ty), imm),
-        LowPrim::IAddOverflow(ty) => format!("iadd-overflow.{}", render_low_type(ty)),
-        LowPrim::ISubOverflow(ty) => format!("isub-overflow.{}", render_low_type(ty)),
-        LowPrim::IMulOverflow(ty) => format!("imul-overflow.{}", render_low_type(ty)),
-        LowPrim::Load { ty, offset } => format!("load.{}@{}", render_low_type(ty), offset),
-        LowPrim::FAdd(ty) => format!("fadd.{}", render_low_type(ty)),
-        LowPrim::FSub(ty) => format!("fsub.{}", render_low_type(ty)),
-        LowPrim::FMul(ty) => format!("fmul.{}", render_low_type(ty)),
-        LowPrim::FDiv(ty) => format!("fdiv.{}", render_low_type(ty)),
-    }
-}
-
-fn render_low_int_predicate(cond: LowIntPredicate) -> &'static str {
-    match cond {
-        LowIntPredicate::Equal => "eq",
-        LowIntPredicate::NotEqual => "ne",
-        LowIntPredicate::SignedLessThan => "slt",
-        LowIntPredicate::SignedLessThanOrEqual => "sle",
-        LowIntPredicate::SignedGreaterThan => "sgt",
-        LowIntPredicate::SignedGreaterThanOrEqual => "sge",
-        LowIntPredicate::UnsignedLessThan => "ult",
-        LowIntPredicate::UnsignedLessThanOrEqual => "ule",
-        LowIntPredicate::UnsignedGreaterThan => "ugt",
-        LowIntPredicate::UnsignedGreaterThanOrEqual => "uge",
-    }
-}
-
-fn render_typecode8(typecode: u8) -> String {
-    if typecode == TypeCode8::VECTOR.bits() {
-        "vector".to_string()
-    } else if typecode == TypeCode8::STRING.bits() {
-        "string".to_string()
-    } else if typecode == TypeCode8::TUPLE.bits() {
-        "tuple".to_string()
-    } else if typecode == TypeCode8::BYTEVECTOR.bits() {
-        "bytevector".to_string()
-    } else if typecode == TypeCode8::PAIR.bits() {
-        "pair".to_string()
-    } else {
-        typecode.to_string()
-    }
-}
-
-fn render_low_type(ty: LowType) -> &'static str {
-    match ty {
-        LowType::I8 => "i8",
-        LowType::I16 => "i16",
-        LowType::I32 => "i32",
-        LowType::I64 => "i64",
-        LowType::U8 => "u8",
-        LowType::U16 => "u16",
-        LowType::U32 => "u32",
-        LowType::U64 => "u64",
-        LowType::F32 => "f32",
-        LowType::F64 => "f64",
-        LowType::Value => "value",
-        LowType::Ptr => "ptr",
     }
 }
 
@@ -410,20 +310,6 @@ fn render_linear_atoms<'gc>(atoms: &[LinearAtom<'gc>]) -> String {
 
 fn render_value_id(id: ValueId) -> String {
     format!("%v{}", id.0)
-}
-
-fn render_low_call_dsts(dsts: &[ValueId]) -> String {
-    match dsts {
-        [] => "()".to_string(),
-        [dst] => render_value_id(*dst),
-        _ => format!(
-            "({})",
-            dsts.iter()
-                .map(|dst| render_value_id(*dst))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ),
-    }
 }
 
 fn render_lvar<'gc>(var: LVarRef<'gc>) -> String {
