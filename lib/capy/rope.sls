@@ -1,6 +1,4 @@
-(define-library (capy rope)
-  (import (core records)
-    (core optargs))
+(library (capy rope)
   (export
     *short-leaf*
     *long-leaf*
@@ -12,7 +10,7 @@
     rope-balance
     rope-concat
     rope-append
-    rope-prepent
+    rope-prepend
     rope-insert
     rope-split
     rope-index
@@ -24,7 +22,12 @@
     rope-map
     rope-find
     rope-rfind)
-  (begin
+  (import (rnrs)
+    (srfi 8)
+    (core control)
+    (core optargs)
+    (core parameters)
+    (core records))
 
     (define *short-leaf* (make-parameter 16))
     (define *long-leaf* (make-parameter 128))
@@ -284,10 +287,10 @@ but it is expensive - O(n)."
               after))]))
 
     (define (rope-substring rope from . maybe-to)
-      (define to (if maybe-to (car maybe-to) (rope-length rope)))
+      (define to (if (null? maybe-to) (rope-length rope) (car maybe-to)))
       (receive (before after) (rope-split rope to)
-        (receive (before2 after) (rope-split before from)
-          (write-rope before2 #f))))
+        (receive (before2 middle) (rope-split before from)
+          (write-rope middle #f))))
 
     (define (rope-find rope char . opts)
       "Find the first occurrence of char in rope."
@@ -309,9 +312,9 @@ but it is expensive - O(n)."
             [(char=? (rope-index rope index) char) index]
             [else (loop (- index 1))]))))
 
-    (define (rope-kill rope from . maybe-to)
-      "Remove a substring from the rope between from and to."
-      (define to (if (null? maybe-to) (+ from 1) (car maybe-to)))
-      (receive (before after) (rope-split rope from)
-        (receive (before2 after2) (rope-split rope to)
-          (rope-concat before after2))))))
+  (define (rope-kill rope from . maybe-to)
+    "Remove a substring from the rope between from and to."
+    (define to (if (null? maybe-to) (+ from 1) (car maybe-to)))
+    (receive (before after) (rope-split rope from)
+      (receive (before2 after2) (rope-split rope to)
+        (rope-concat before after2)))))
