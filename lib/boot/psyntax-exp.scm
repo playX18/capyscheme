@@ -2818,7 +2818,7 @@
                                            w
                                            s
                                            mod)
-                                         (expand-void))))
+                                         (make-void '#f))))
                                  tmp.1)
                           (syntax-violation
                             '#f
