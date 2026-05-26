@@ -35,7 +35,7 @@
              (not (hashtable-contains? recorded name)))
           (begin
             (hashtable-set! recorded name #t)
-            (folder name val data))
+            (proc module name val data))
           data))
       (define (module-filter binding data)
         (if (variable-bound? (cdr binding))
@@ -45,7 +45,7 @@
           data))
       (cond
         [module
-          (fold module-filter data (core-hash->list (module-obarray module)))]
+          (fold module-filter data (core-hash->alist (module-obarray module)))]
         [else data]))
     (folder fold-module init))
   (define (make-fold-module init-thunk traverse extract)
@@ -57,15 +57,14 @@
           [else
             (hashtable-set! table obj #t)
             #t]))
-      (define modules (init-thunk))
-      (define (rec data)
+      (define (rec modules data)
         (do ((modules modules (cdr modules))
              (data data (if (first? (car modules))
-                         (rec (fold-module (extract (car modules)) data)
-                           (traverse (car modules)))
+                         (rec (traverse (car modules))
+                              (fold-module (extract (car modules)) data))
                          data)))
           ((null? modules) data)))
-      (rec init)))
+      (rec (init-thunk) init)))
 
   (define (root-modules)
     (submodules (resolve-module '() #f #f)))
@@ -73,7 +72,7 @@
   (define (submodules mod)
     (map (lambda (binding)
           (cdr binding))
-      (core-hash->list (module-submodules mod))))
+      (core-hash->alist (module-submodules mod))))
   (define fold-exported-bindings
     (make-fold-module root-modules submodules module-public-interface))
 
