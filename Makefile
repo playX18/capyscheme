@@ -28,6 +28,7 @@ HOST_TARGET := $(shell rustc --print host-tuple)
 
 TARGET_DIR  := target/$(TARGET)
 TARGET_PATH := $(TARGET_DIR)/$(PROFILE)
+RUST_STAMP_DIR := $(TARGET_PATH)/.make
 
 CC ?= clang
 
@@ -80,6 +81,20 @@ CAPY_ENV = \
 	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)" \
 	LD_LIBRARY_PATH="$(TARGET_PATH)" \
 	DYLD_FALLBACK_LIBRARY_PATH="$(TARGET_PATH)"
+
+RUST_INPUTS := \
+	Cargo.toml \
+	Cargo.lock \
+	$(shell find capy capy-derive -type f \( -name '*.rs' -o -name 'Cargo.toml' \) | sort)
+
+RUST_BOOTSTRAP_CACHE_DIR := $(RUST_STAMP_DIR)/portable-bootstrap
+RUST_PORTABLE_CACHE_DIR := $(RUST_STAMP_DIR)/portable
+RUST_FHS_CACHE_KEY := $(subst /,_,$(PREFIX))
+RUST_FHS_CACHE_DIR := $(RUST_STAMP_DIR)/fhs-$(RUST_FHS_CACHE_KEY)
+
+RUST_BOOTSTRAP_STAMP := $(RUST_BOOTSTRAP_CACHE_DIR)/stamp
+RUST_PORTABLE_STAMP := $(RUST_PORTABLE_CACHE_DIR)/stamp
+RUST_FHS_STAMP := $(RUST_FHS_CACHE_DIR)/stamp
 
 
 BOOT_SRCS := \
@@ -302,13 +317,30 @@ install-cross:
 	fi
 
 # Build the Rust library and the C launcher binaries.
-build-runtime-bootstrap:
+$(RUST_BOOTSTRAP_STAMP): $(RUST_INPUTS)
 	@echo "Version: $(VERSION)"
 	@echo "Target path: $(TARGET_PATH)"
 	@echo "Building CapyScheme with profile '$(PROFILE)' for target '$(TARGET)'"
 	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable,bootstrap
+	@mkdir -p $(RUST_BOOTSTRAP_CACHE_DIR)
+	cp $(TARGET_PATH)/libcapy.* $(RUST_BOOTSTRAP_CACHE_DIR)/
+	@touch $@
+
+$(RUST_PORTABLE_STAMP): $(RUST_INPUTS)
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+	@mkdir -p $(RUST_PORTABLE_CACHE_DIR)
+	cp $(TARGET_PATH)/libcapy.* $(RUST_PORTABLE_CACHE_DIR)/
+	@touch $@
+
+$(RUST_FHS_STAMP): $(RUST_INPUTS)
+	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
+	@mkdir -p $(RUST_FHS_CACHE_DIR)
+	cp $(TARGET_PATH)/libcapy.* $(RUST_FHS_CACHE_DIR)/
+	@touch $@
+
+build-runtime-bootstrap: $(RUST_BOOTSTRAP_STAMP)
+	cp $(RUST_BOOTSTRAP_CACHE_DIR)/libcapy.* $(TARGET_PATH)/
 	@echo "Build main capy binaries"
-	
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 
@@ -321,16 +353,16 @@ build:
 	$(MAKE) PREFIX=$(PREFIX) stage-2
 	@echo "Build complete: runtime and bootstrap stages 0-2"
 
-build-runtime:
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+build-runtime: $(RUST_PORTABLE_STAMP)
+	cp $(RUST_PORTABLE_CACHE_DIR)/libcapy.* $(TARGET_PATH)/
 
-build-runtime-fhs: 
-	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
+build-runtime-fhs: $(RUST_FHS_STAMP)
+	cp $(RUST_FHS_CACHE_DIR)/libcapy.* $(TARGET_PATH)/
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full  -lcapy -Wl,-rpath,$(RPATH_FHS)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_FHS)
 
-build-runtime-portable: 
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+build-runtime-portable: $(RUST_PORTABLE_STAMP)
+	cp $(RUST_PORTABLE_CACHE_DIR)/libcapy.* $(TARGET_PATH)/
 	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
 
