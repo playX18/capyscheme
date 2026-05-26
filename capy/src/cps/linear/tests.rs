@@ -1,6 +1,6 @@
 use crate::{
     cps::{
-        linear::{CodeId, linearize},
+        linear::{CodeId, Terminator, linearize},
         reify::reify,
         term::{Atom, Expression, Func, Term},
     },
@@ -8,7 +8,7 @@ use crate::{
     rsgc::{Gc, alloc::Array, cell::Lock},
     runtime::{
         Context, Scheme,
-        value::Symbol,
+        value::{Symbol, Value, init_symbols},
         vm::exceptions::RaiseKind,
     },
 };
@@ -20,7 +20,10 @@ fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let scm = Scheme::new_uninit();
-    scm.enter(f);
+    scm.enter(|ctx| {
+        init_symbols(*ctx);
+        f(ctx)
+    });
 }
 
 fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {

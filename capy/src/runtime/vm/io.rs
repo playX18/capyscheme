@@ -6,6 +6,10 @@ use crate::static_symbols;
 use mmtk::util::options::PlanSelector;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 static_symbols!(
     SYM_INPUT = "input"
     SYM_OUTPUT = "output"
@@ -13,6 +17,34 @@ static_symbols!(
     SYM_BINARY = "binary"
     SYM_TEXTUAL = "textual"
 );
+
+static TERM_SIGWINCH_VERSION: AtomicU64 = AtomicU64::new(0);
+static TERM_RAW_MODE_STATE: Mutex<Option<(i32, libc::termios)>> = Mutex::new(None);
+
+extern "C" fn term_sigwinch_handler(_: libc::c_int) {
+    TERM_SIGWINCH_VERSION.fetch_add(1, Ordering::Relaxed);
+}
+
+fn term_io_error<'gc, R: TryIntoValues<'gc>>(
+    nctx: NativeCallContext<'_, 'gc, R>,
+    operation: IoOperation,
+    who: &'static str,
+    irritant: Value<'gc>,
+) -> NativeCallReturn<'gc> {
+    let err = std::io::Error::last_os_error();
+    let msg = err.to_string();
+    nctx.raise_io_error(err, operation, who, &msg, irritant)
+}
+
+unsafe fn open_tty_raw_fd() -> Result<i32, std::io::Error> {
+    let path = CString::new("/dev/tty").expect("static tty path");
+    let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(fd)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoOperation {
@@ -537,6 +569,159 @@ pub mod io_ops {
         }
     }
 
+    #[scheme(name = "term/isatty?")]
+    pub fn term_isatty(fd: i32) -> bool {
+        unsafe { nctx.return_(libc::isatty(fd) == 1) }
+    }
+
+    #[scheme(name = "term/open-tty")]
+    pub fn term_open_tty(readable: bool, writable: bool) -> i32 {
+        let flags = if readable && writable {
+            libc::O_RDWR
+        } else if writable {
+            libc::O_WRONLY
+        } else {
+            libc::O_RDONLY
+        } | libc::O_CLOEXEC;
+
+        unsafe {
+            let path = CString::new("/dev/tty").expect("static tty path");
+            let ret = libc::open(path.as_ptr(), flags);
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "term/open-tty",
+                    &msg,
+                    Value::new(false),
+                );
+            }
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "term/close-fd")]
+    pub fn term_close_fd(fd: i32) -> i32 {
+        unsafe {
+            let ret = libc::close(fd);
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Close,
+                    "term/close-fd",
+                    &msg,
+                    fd.into(),
+                );
+            }
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "term/pipe")]
+    pub fn term_pipe() -> Value<'gc> {
+        unsafe {
+            let mut fds = [0i32; 2];
+            let ret = libc::pipe(fds.as_mut_ptr());
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Open,
+                    "term/pipe",
+                    &msg,
+                    Value::new(false),
+                );
+            }
+
+            let ctx = nctx.ctx;
+            let list = Value::cons(
+                ctx,
+                fds[0].into(),
+                Value::cons(ctx, fds[1].into(), Value::null()),
+            );
+            nctx.return_(list)
+        }
+    }
+
+    #[scheme(name = "term/get-flags")]
+    pub fn term_get_flags(fd: i32) -> i32 {
+        unsafe {
+            let ret = libc::fcntl(fd, libc::F_GETFL);
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Stat,
+                    "term/get-flags",
+                    &msg,
+                    fd.into(),
+                );
+            }
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "term/set-flags!")]
+    pub fn term_set_flags(fd: i32, flags: i32) -> i32 {
+        unsafe {
+            let ret = libc::fcntl(fd, libc::F_SETFL, flags);
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Stat,
+                    "term/set-flags!",
+                    &msg,
+                    fd.into(),
+                );
+            }
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "term/nonblocking!")]
+    pub fn term_nonblocking(fd: i32, enabled: bool) -> bool {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Stat,
+                    "term/nonblocking!",
+                    &msg,
+                    fd.into(),
+                );
+            }
+
+            let new_flags = if enabled {
+                flags | libc::O_NONBLOCK
+            } else {
+                flags & !libc::O_NONBLOCK
+            };
+            if libc::fcntl(fd, libc::F_SETFL, new_flags) < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Stat,
+                    "term/nonblocking!",
+                    &msg,
+                    fd.into(),
+                );
+            }
+            nctx.return_(true)
+        }
+    }
+
     #[scheme(name = "io/read")]
     pub fn io_read(fd: i32, buf: Gc<'gc, ByteVector>, from: usize, nbytes: usize) -> isize {
         if from + nbytes > buf.len() {
@@ -559,6 +744,47 @@ pub mod io_ops {
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(from) as *mut libc::c_void;
             let ret = libc::read(fd, ptr, nbytes);
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "term/read-fd")]
+    pub fn term_read_fd(fd: i32, buf: Gc<'gc, ByteVector>, start: usize, count: usize) -> isize {
+        if start + count > buf.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "term/read-fd",
+                "buffer too small for read",
+                None,
+                None,
+                4,
+                &[
+                    fd.into(),
+                    buf.into(),
+                    start.into_value(ctx),
+                    count.into_value(ctx),
+                ],
+            );
+        }
+
+        unsafe {
+            let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(start) as *mut libc::c_void;
+            let ret = libc::read(fd, ptr, count);
+            if ret < 0 {
+                let errno = errno::errno().0;
+                if errno == libc::EAGAIN || errno == libc::EWOULDBLOCK {
+                    return nctx.return_(0);
+                }
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Read,
+                    "term/read-fd",
+                    &msg,
+                    fd.into(),
+                );
+            }
             nctx.return_(ret)
         }
     }
@@ -586,6 +812,194 @@ pub mod io_ops {
             let ptr = buf.as_slice().as_ptr().add(from) as *mut libc::c_void;
             let ret = libc::write(fd, ptr, nbytes);
             nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "term/write-fd")]
+    pub fn term_write_fd(fd: i32, buf: Gc<'gc, ByteVector>, start: usize, count: usize) -> isize {
+        if start + count > buf.len() {
+            let ctx = nctx.ctx;
+            return nctx.wrong_argument_violation(
+                "term/write-fd",
+                "buffer too small for write",
+                None,
+                None,
+                4,
+                &[
+                    fd.into(),
+                    buf.into(),
+                    start.into_value(ctx),
+                    count.into_value(ctx),
+                ],
+            );
+        }
+
+        unsafe {
+            let ptr = buf.as_slice().as_ptr().add(start) as *const libc::c_void;
+            let ret = libc::write(fd, ptr, count);
+            if ret < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Write,
+                    "term/write-fd",
+                    &msg,
+                    fd.into(),
+                );
+            }
+            nctx.return_(ret)
+        }
+    }
+
+    #[scheme(name = "term/sigwinch-version")]
+    pub fn term_sigwinch_version() -> u64 {
+        nctx.return_(TERM_SIGWINCH_VERSION.load(Ordering::Relaxed))
+    }
+
+    #[scheme(name = "term/install-sigwinch-handler!")]
+    pub fn term_install_sigwinch_handler() -> bool {
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = term_sigwinch_handler as *const () as usize;
+            action.sa_flags = 0;
+            libc::sigemptyset(&mut action.sa_mask);
+
+            if libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut()) < 0 {
+                let err = std::io::Error::last_os_error();
+                let msg = err.to_string();
+                return nctx.raise_io_error(
+                    err,
+                    IoOperation::Stat,
+                    "term/install-sigwinch-handler!",
+                    &msg,
+                    Value::new(false),
+                );
+            }
+            nctx.return_(true)
+        }
+    }
+
+    #[scheme(name = "term/enable-raw-mode!")]
+    pub fn term_enable_raw_mode() -> bool {
+        let mut state = TERM_RAW_MODE_STATE.lock().expect("raw mode mutex poisoned");
+        if state.is_some() {
+            return nctx.return_(true);
+        }
+
+        unsafe {
+            let fd = match open_tty_raw_fd() {
+                Ok(fd) => fd,
+                Err(err) => {
+                    let msg = err.to_string();
+                    return nctx.raise_io_error(
+                        err,
+                        IoOperation::Open,
+                        "term/enable-raw-mode!",
+                        &msg,
+                        Value::new(false),
+                    );
+                }
+            };
+
+            let mut saved: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(fd, &mut saved) < 0 {
+                let _ = libc::close(fd);
+                return term_io_error(
+                    nctx,
+                    IoOperation::Stat,
+                    "term/enable-raw-mode!",
+                    fd.into(),
+                );
+            }
+
+            let mut raw = saved;
+            libc::cfmakeraw(&mut raw);
+            if libc::tcsetattr(fd, libc::TCSANOW, &raw) < 0 {
+                let _ = libc::close(fd);
+                return term_io_error(
+                    nctx,
+                    IoOperation::Stat,
+                    "term/enable-raw-mode!",
+                    fd.into(),
+                );
+            }
+
+            *state = Some((fd, saved));
+            nctx.return_(true)
+        }
+    }
+
+    #[scheme(name = "term/disable-raw-mode!")]
+    pub fn term_disable_raw_mode() -> bool {
+        let mut state = TERM_RAW_MODE_STATE.lock().expect("raw mode mutex poisoned");
+        let Some((fd, saved)) = *state else {
+            return nctx.return_(true);
+        };
+
+        unsafe {
+            if libc::tcsetattr(fd, libc::TCSANOW, &saved) < 0 {
+                return term_io_error(
+                    nctx,
+                    IoOperation::Stat,
+                    "term/disable-raw-mode!",
+                    fd.into(),
+                );
+            }
+
+            if libc::close(fd) < 0 {
+                return term_io_error(
+                    nctx,
+                    IoOperation::Close,
+                    "term/disable-raw-mode!",
+                    fd.into(),
+                );
+            }
+        }
+
+        *state = None;
+        nctx.return_(true)
+    }
+
+    #[scheme(name = "term/raw-mode-enabled?")]
+    pub fn term_raw_mode_enabled() -> bool {
+        nctx.return_(TERM_RAW_MODE_STATE
+            .lock()
+            .expect("raw mode mutex poisoned")
+            .is_some())
+    }
+
+    #[scheme(name = "term/terminal-size-list")]
+    pub fn term_terminal_size_list() -> Value<'gc> {
+        unsafe {
+            let tty_fd = {
+                let path = CString::new("/dev/tty").expect("static tty path");
+                let fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+                if fd < 0 { None } else { Some(fd) }
+            };
+            let fd = tty_fd.unwrap_or(1);
+
+            let mut size: libc::winsize = std::mem::zeroed();
+            let result = libc::ioctl(fd, libc::TIOCGWINSZ, &mut size);
+            if let Some(opened_fd) = tty_fd {
+                let _ = libc::close(opened_fd);
+            }
+            if result < 0 {
+                return term_io_error(
+                    nctx,
+                    IoOperation::Stat,
+                    "term/terminal-size-list",
+                    fd.into(),
+                );
+            }
+
+            let ctx = nctx.ctx;
+            let mut result = Value::null();
+            result = Value::cons(ctx, (size.ws_ypixel as i32).into(), result);
+            result = Value::cons(ctx, (size.ws_xpixel as i32).into(), result);
+            result = Value::cons(ctx, (size.ws_row as i32).into(), result);
+            result = Value::cons(ctx, (size.ws_col as i32).into(), result);
+            nctx.return_(result)
         }
     }
 
@@ -1421,6 +1835,34 @@ pub fn init_io<'gc>(ctx: Context<'gc>) {
     io_ops::register(ctx);
 
     let module = ctx.module("capy").expect("'capy' module should exist");
+
+    macro_rules! export_term_primitive {
+        ($name: literal, $make_static: ident) => {{
+            let closure = io_ops::$make_static(ctx);
+            module.define_rs(ctx, $name, closure);
+            module.export_one(ctx, ctx.intern($name));
+        }};
+    }
+
+    export_term_primitive!("term/isatty?", make_static_closure_term_isatty);
+    export_term_primitive!("term/open-tty", make_static_closure_term_open_tty);
+    export_term_primitive!("term/close-fd", make_static_closure_term_close_fd);
+    export_term_primitive!("term/pipe", make_static_closure_term_pipe);
+    export_term_primitive!("term/get-flags", make_static_closure_term_get_flags);
+    export_term_primitive!("term/set-flags!", make_static_closure_term_set_flags);
+    export_term_primitive!("term/nonblocking!", make_static_closure_term_nonblocking);
+    export_term_primitive!("term/read-fd", make_static_closure_term_read_fd);
+    export_term_primitive!("term/write-fd", make_static_closure_term_write_fd);
+    export_term_primitive!("term/sigwinch-version", make_static_closure_term_sigwinch_version);
+    export_term_primitive!(
+        "term/install-sigwinch-handler!",
+        make_static_closure_term_install_sigwinch_handler
+    );
+    export_term_primitive!("term/enable-raw-mode!", make_static_closure_term_enable_raw_mode);
+    export_term_primitive!("term/disable-raw-mode!", make_static_closure_term_disable_raw_mode);
+    export_term_primitive!("term/raw-mode-enabled?", make_static_closure_term_raw_mode_enabled);
+    export_term_primitive!("term/terminal-size-list", make_static_closure_term_terminal_size_list);
+
     let host_features_tab = HashTable::new(*ctx, HashTableType::Eq, 64, 0.80);
     module.define(ctx, ctx.intern("*host-features*"), host_features_tab.into());
 
