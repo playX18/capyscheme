@@ -23,6 +23,7 @@
     rope-find
     rope-rfind)
   (import (rnrs)
+    (only (capy) call-with-output-string)
     (srfi 8)
     (core control)
     (core optargs)
@@ -84,7 +85,7 @@
       [else
         (rope-map
           (lambda (leaf)
-            (write-string (leaf-string leaf) port))
+            (display (leaf-string leaf) port))
           rope)]))
 
   (define (rope->list rope)

@@ -1637,7 +1637,7 @@
                         #`(#,loop (cddr #,argvar) #,@tmps)]
                       [(eq? restvar #f)
                         #`(begin
-                           (fprintf (current-error-port) "unknown keyword ~s at ~a~%" (car #,argvar) (syntax-sourcev stx))
+                           (fprintf (current-error-port) "unknown keyword ~s~%" (car #,argvar))
                            (#,loop (cddr #,argvar) #,@tmps))]
                       [else
                         #`(#,loop

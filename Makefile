@@ -141,6 +141,7 @@ CORE_SRCS := \
 	lib/core/struct.scm \
 	lib/core/unicode.scm \
 	lib/core/repl.scm \
+	lib/core/fancy-repl.scm \
 	lib/core/io/assistants.scm \
 	lib/core/io/process.scm \
 	lib/core/foreign.scm \
@@ -181,6 +182,17 @@ CAPY_SRCS_SLS := \
 	lib/capy/session.sls \
 	lib/capy/deque.sls \
 	lib/capy/channel.sls \
+	lib/capy/term/private/ansi.sls \
+	lib/capy/term/command.sls \
+	lib/capy/term/style.sls \
+	lib/capy/term/event-parser.sls \
+	lib/capy/term/event.sls \
+	lib/capy/term/terminal.sls \
+	lib/capy/term/cursor.sls \
+	lib/capy/term/clipboard.sls \
+	lib/capy/term/tty.sls \
+	lib/capy/term/line.sls \
+	lib/capy/term.sls \
 	lib/capy/generator.sls \
 	lib/capy/future.sls \
 	lib/capy/binary-heap.sls \
@@ -271,7 +283,7 @@ CAPY_OUTS  = $(patsubst lib/capy/%.sls,$(OUT)/capy/%.$(DYNLIB_EXT),$(CAPY_SRCS_S
 SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(DYNLIB_EXT),$(SRFI_SRCS))
 R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(DYNLIB_EXT),$(R7RS_SRCS))
 
-.PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable install-scm stage-0 stage-1 stage-2 \
+.PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable install-scm test stage-0 stage-1 stage-2 \
 	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-srfi compile-r7rs \
 	install-portable dist-portable install install-cross dist-deb dist-rpm
 
@@ -325,6 +337,39 @@ build-runtime-portable:
 install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
+
+CAPY ?= stage-0/capy
+
+test:
+	@set -euo pipefail; \
+	if [ "$(CAPY)" = "stage-0/capy" ] && [ ! -x "$(CAPY)" ]; then \
+		$(MAKE) stage-0; \
+	fi; \
+	if [ ! -x "$(CAPY)" ]; then \
+		echo "CAPY executable not found: $(CAPY)" >&2; \
+		echo "Run 'make stage-0' or set CAPY=/path/to/capy" >&2; \
+		exit 1; \
+	fi; \
+	status=0; \
+	count=0; \
+	for test in $$(find tests/lib -type f -name '*.scm' | sort); do \
+		count=$$((count + 1)); \
+		log=$$(mktemp); \
+		echo "Running $$test"; \
+		if ! $(CAPY_ENV) $(CAPY) -L lib --fresh-auto-compile -s "$$test" > "$$log" 2>&1; then \
+			status=1; \
+		fi; \
+		cat "$$log"; \
+		if grep -Eq "unexpected failures|unexpected successes" "$$log"; then \
+			status=1; \
+		fi; \
+		rm -f "$$log"; \
+	done; \
+	if [ "$$count" -eq 0 ]; then \
+		echo "No tests found under tests/lib" >&2; \
+		exit 1; \
+	fi; \
+	exit "$$status"
 
 compile-psyntax:
 	$(call require_var,BIN)
