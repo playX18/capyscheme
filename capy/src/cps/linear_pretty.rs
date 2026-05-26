@@ -379,7 +379,7 @@ mod tests {
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Context, Scheme,
-            value::{Symbol, Value},
+            value::{Symbol, Value, init_symbols},
         },
     };
 
@@ -390,7 +390,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let scm = Scheme::new_uninit();
-        scm.enter(f);
+        scm.enter(|ctx| {
+            init_symbols(*ctx);
+            f(ctx)
+        });
     }
 
     fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {

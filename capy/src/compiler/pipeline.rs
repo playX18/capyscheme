@@ -258,12 +258,11 @@ mod tests {
             let rendered = render_lcps_dump(&linear);
 
             assert!(rendered.contains("(linear-program"));
-            assert!(rendered.contains("(slot-allocations"));
-            assert!(rendered.contains("(nlocals 2)"));
-            assert!(rendered.contains("(%v0 arg0"));
-            assert!(rendered.contains("(%v1 local0"));
-            assert!(rendered.contains("(block0 terminator tail-call local1 1)"));
-            assert!(rendered.contains("(parallel-copy-tmps"));
+            assert!(rendered.contains("(procedure function"));
+            assert!(rendered.contains("(binding %v10000)"));
+            assert!(rendered.contains("(params %v0)"));
+            assert!(rendered.contains("(prim-call %v1 car %v0)"));
+            assert!(rendered.contains("(tail-call %v1 %v0)"));
         });
     }
 }

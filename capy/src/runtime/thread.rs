@@ -987,11 +987,9 @@ impl Scheme {
         let scm = Self {
             mutator: {
                 let m = Mutator::new(|mc| {
-                    if should_init {
-                        init_weak_sets(mc);
-                        init_weak_tables(mc);
-                        init_symbols(mc);
-                    }
+                    init_weak_sets(mc);
+                    init_weak_tables(mc);
+                    init_symbols(mc);
 
                     let state = State::new(mc, ThreadObject::new(mc, None));
                     mc.init_state(state);
@@ -1024,11 +1022,9 @@ impl Scheme {
         let scm = Self {
             mutator: {
                 let m = Mutator::new(|mc| {
-                    if should_init {
-                        init_weak_sets(mc);
-                        init_weak_tables(mc);
-                        init_symbols(mc);
-                    }
+                    init_weak_sets(mc);
+                    init_weak_tables(mc);
+                    init_symbols(mc);
 
                     let state = State::new(mc, ThreadObject::new(mc, None));
                     mc.init_state(state);
