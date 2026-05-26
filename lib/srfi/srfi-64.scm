@@ -744,8 +744,8 @@
   (define (test-compare test-name comparator expected actual . line-info)
     (let* ((r (test-runner-get))
            (line (if (or (null? line-info) (not (car line-info)))
-                   '()
-                   (car line-info))))
+                  '()
+                  (car line-info))))
       (test-result-alist! r
         (if test-name
           (cons (cons 'test-name test-name) line)

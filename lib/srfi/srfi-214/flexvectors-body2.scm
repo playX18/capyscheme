@@ -78,7 +78,7 @@
          (xv (list->vector xs))
          (xvlen (vector-length xv))
          (v (let lp ((v (vec fv)))
-              (if (< (+ len xvlen) (vector-length v)) v (lp (grow! fv))))))
+             (if (< (+ len xvlen) (vector-length v)) v (lp (grow! fv))))))
     (assume (<= 0 i len))
     (vector-copy! v (+ i xvlen) v i len)
     (vector-copy! v i xv 0 xvlen)
@@ -179,9 +179,9 @@
               (set-flexvector-length! fv j)
               fv)
             ((apply pred?
-                    i
-                    (vector-ref v i)
-                    (map (lambda (fv) (flexvector-ref fv i)) fvs))
+                i
+                (vector-ref v i)
+                (map (lambda (fv) (flexvector-ref fv i)) fvs))
               (unless (= i j) (vector-set! v j (vector-ref v i)))
               (lp (+ i 1) (+ j 1)))
             (else
@@ -192,7 +192,7 @@
     ((fv)
       (assume (flexvector? fv))
       (%make-flexvector (vector-copy (vec fv))
-                        (flexvector-length fv)))
+        (flexvector-length fv)))
     ((fv start)
       (assume (flexvector? fv))
       (flexvector-copy fv start (flexvector-length fv)))
@@ -216,7 +216,7 @@
       (let* ((vf (vec from))
              (lt (+ (flexvector-length to) (- end start)))
              (vt (let lp ((v (vec to)))
-                   (if (< lt (vector-length v)) v (lp (grow! to))))))
+                  (if (< lt (vector-length v)) v (lp (grow! to))))))
         (vector-copy! vt at vf start end)
         (set-flexvector-length! to
           (max (flexvector-length to) (+ at (- end start))))))))

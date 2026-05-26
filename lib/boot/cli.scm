@@ -53,7 +53,7 @@
           (eval `(begin
                   ,@(reverse out)
                   ,(if interactive?
-                    `((@ (core repl) read-eval-print-loop))
+                    `((@ (core fancy-repl) read-eval-print-loop))
                     '(exit 0)))))))
     (define (run)
       (with-exception-handler

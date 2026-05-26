@@ -32,10 +32,10 @@
         [(null? xs) out]
         [(string=? out "") (loop (cdr xs) (param->string (car xs)))]
         [else (loop (cdr xs)
-                    (string-append out ";" (param->string (car xs))))])))
+               (string-append out ";" (param->string (car xs))))])))
 
   (define (osc-escape s)
     (list->string
       (filter (lambda (ch)
-                (not (or (char=? ch bel-char) (char=? ch esc-char))))
-              (string->list s)))))
+               (not (or (char=? ch bel-char) (char=? ch esc-char))))
+        (string->list s)))))

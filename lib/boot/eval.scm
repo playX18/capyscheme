@@ -35,8 +35,8 @@
           [(null? exps) (values (join (reverse out)) (current-module) (current-module))]
           [else
             (let ([exp (%runtime-stats-timed-psyntax
-                         (lambda ()
-                           (macroexpand (car exps) 'c '(compile load eval))))])
+                        (lambda ()
+                          (macroexpand (car exps) 'c '(compile load eval))))])
               (lp (cdr exps) (cons exp out)))])))))
 
 (define (compiled-file-name file)

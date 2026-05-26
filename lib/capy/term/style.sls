@@ -1,19 +1,39 @@
 (library (capy term style)
   (export rgb rgb? rgb-r rgb-g rgb-b
-          ansi-color ansi-color? ansi-color-n
-          make-content-style content-style? content-style-foreground
-          content-style-background content-style-underline-color
-          content-style-attributes
-          styled-content? styled-content-text styled-content-style
-          style with-style stylize
-          set-foreground-color set-background-color set-underline-color
-          set-colors reset-color set-attribute set-attributes set-style
-          print print-styled-content start-hyperlink end-hyperlink
-          available-color-count force-color-output! color-output-forced?)
+    ansi-color
+    ansi-color?
+    ansi-color-n
+    make-content-style
+    content-style?
+    content-style-foreground
+    content-style-background
+    content-style-underline-color
+    content-style-attributes
+    styled-content?
+    styled-content-text
+    styled-content-style
+    style
+    with-style
+    stylize
+    set-foreground-color
+    set-background-color
+    set-underline-color
+    set-colors
+    reset-color
+    set-attribute
+    set-attributes
+    set-style
+    print
+    print-styled-content
+    start-hyperlink
+    end-hyperlink
+    available-color-count
+    force-color-output!
+    color-output-forced?)
   (import (rnrs)
-          (only (capy) getenv keyword->symbol)
-          (capy term private ansi)
-          (capy term command))
+    (only (capy) getenv define*)
+    (capy term private ansi)
+    (capy term command))
 
   (define-record-type (rgb make-rgb rgb?)
     (fields
@@ -50,19 +70,8 @@
       (assertion-violation 'ansi-color "expected integer in u8 range" n))
     (make-ansi-color n))
 
-  (define (make-content-style . args)
-    (let loop ([args args] [foreground #f] [background #f] [underline #f] [attributes '()])
-      (cond
-        [(null? args) (%make-content-style foreground background underline attributes)]
-        [(null? (cdr args))
-         (assertion-violation 'make-content-style "keyword missing value" (car args))]
-        [else
-          (case (keyword->symbol (car args))
-            [(foreground) (loop (cddr args) (cadr args) background underline attributes)]
-            [(background) (loop (cddr args) foreground (cadr args) underline attributes)]
-            [(underline-color) (loop (cddr args) foreground background (cadr args) attributes)]
-            [(attributes) (loop (cddr args) foreground background underline (cadr args))]
-            [else (assertion-violation 'make-content-style "unknown keyword" (car args))])])))
+  (define* (make-content-style #:key (foreground #f) (background #f) (underline-color #f) (attributes '()))
+    (%make-content-style foreground background underline-color attributes))
 
   (define (command name body)
     (make-command name (lambda () body)))
@@ -96,10 +105,10 @@
   (define (color-params who color normal-base bright-base reset-code extended-base)
     (cond
       [(symbol? color)
-       (let ([code (base-color-code color (= normal-base 30) bright-base normal-base reset-code)])
-         (if code
-           (list code)
-           (assertion-violation who "unknown color" color)))]
+        (let ([code (base-color-code color (= normal-base 30) bright-base normal-base reset-code)])
+          (if code
+            (list code)
+            (assertion-violation who "unknown color" color)))]
       [(ansi-color? color) (list extended-base 5 (ansi-color-n color))]
       [(rgb? color) (list extended-base 2 (rgb-r color) (rgb-g color) (rgb-b color))]
       [else (assertion-violation who "unknown color" color)]))
@@ -169,7 +178,7 @@
 
   (define (set-colors foreground background)
     (command 'set-colors (sgr (append (foreground-params foreground)
-                                      (background-params background)))))
+                               (background-params background)))))
 
   (define (reset-color)
     (command 'reset-color (sgr '(0))))
@@ -185,9 +194,9 @@
 
   (define (print text)
     (command 'print
-             (if (string? text)
-               text
-               (assertion-violation 'print "expected string" text))))
+      (if (string? text)
+        text
+        (assertion-violation 'print "expected string" text))))
 
   (define (style text)
     (make-styled-content text (make-content-style)))
@@ -199,23 +208,41 @@
     (define (apply-spec spec foreground background attributes)
       (cond
         [(and (symbol? spec)
-              (> (string-length (symbol->string spec)) 3)
-              (string=? (substring (symbol->string spec) 0 3) "on-"))
-         (values foreground
-                 (string->symbol (substring (symbol->string spec) 3 (string-length (symbol->string spec))))
-                 attributes)]
+            (> (string-length (symbol->string spec)) 3)
+            (string=? (substring (symbol->string spec) 0 3) "on-"))
+          (values foreground
+            (string->symbol (substring (symbol->string spec) 3 (string-length (symbol->string spec))))
+            attributes)]
         [(memq spec '(bold dim italic underlined double-underlined undercurled underdotted
-                           underdashed slow-blink rapid-blink reverse hidden crossed-out
-                           fraktur no-bold normal-intensity no-italic no-underline no-blink
-                           no-reverse no-hidden not-crossed-out framed encircled over-lined
-                           not-framed-or-encircled not-over-lined))
-         (values foreground background (append attributes (list spec)))]
+                      underdashed
+                      slow-blink
+                      rapid-blink
+                      reverse
+                      hidden
+                      crossed-out
+                      fraktur
+                      no-bold
+                      normal-intensity
+                      no-italic
+                      no-underline
+                      no-blink
+                      no-reverse
+                      no-hidden
+                      not-crossed-out
+                      framed
+                      encircled
+                      over-lined
+                      not-framed-or-encircled
+                      not-over-lined))
+          (values foreground background (append attributes (list spec)))]
         [else (values spec background attributes)]))
     (let loop ([specs specs] [foreground #f] [background #f] [attributes '()])
       (if (null? specs)
         (with-style text (make-content-style #:foreground foreground
-                                             #:background background
-                                             #:attributes attributes))
+                          #:background
+                          background
+                          #:attributes
+                          attributes))
         (call-with-values
           (lambda () (apply-spec (car specs) foreground background attributes))
           (lambda (next-foreground next-background next-attributes)
@@ -226,15 +253,15 @@
       (assertion-violation 'print-styled-content "expected styled content" content))
     (let* ([params (style->params (styled-content-style content))]
            [body (if (null? params)
-                   (styled-content-text content)
-                   (string-append (sgr params) (styled-content-text content) (sgr '(0))))])
+                  (styled-content-text content)
+                  (string-append (sgr params) (styled-content-text content) (sgr '(0))))])
       (command 'print-styled-content body)))
 
   (define (start-hyperlink uri)
     (unless (string? uri)
       (assertion-violation 'start-hyperlink "expected string uri" uri))
     (command 'start-hyperlink
-             (string-append esc "]8;;" (osc-escape uri) esc "\\")))
+      (string-append esc "]8;;" (osc-escape uri) esc "\\")))
 
   (define (end-hyperlink)
     (command 'end-hyperlink (string-append esc "]8;;" esc "\\")))
@@ -253,13 +280,13 @@
           [term (or (getenv "TERM") "")])
       (cond
         [(or (string-contains? colorterm "24bit")
-             (string-contains? colorterm "truecolor")
-             (string-contains? term "24bit")
-             (string-contains? term "truecolor"))
-         65535]
+            (string-contains? colorterm "truecolor")
+            (string-contains? term "24bit")
+            (string-contains? term "truecolor"))
+          65535]
         [(or (string-contains? colorterm "256")
-             (string-contains? term "256"))
-         256]
+            (string-contains? term "256"))
+          256]
         [else 8])))
 
   (define (force-color-output! enabled)

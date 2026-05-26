@@ -1,7 +1,12 @@
 (library (capy term command)
   (export make-command command? command-name command->string
-          queue-command queue-commands execute-command execute-commands
-          begin-synchronized-update end-synchronized-update with-synchronized-update)
+    queue-command
+    queue-commands
+    execute-command
+    execute-commands
+    begin-synchronized-update
+    end-synchronized-update
+    with-synchronized-update)
   (import (rnrs) (capy term private ansi))
 
   (define-record-type (<command> %make-command command?)
@@ -16,8 +21,8 @@
         [(procedure? renderer) renderer]
         [(string? renderer) (lambda () renderer)]
         [else (assertion-violation 'make-command
-                "expected command renderer procedure or string"
-                renderer)])))
+               "expected command renderer procedure or string"
+               renderer)])))
 
   (define (command->string cmd)
     (unless (command? cmd)
