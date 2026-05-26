@@ -1,19 +1,33 @@
 (library (capy term terminal)
   (export disable-line-wrap enable-line-wrap
-          enter-alternate-screen leave-alternate-screen
-          scroll-up scroll-down clear terminal-clear set-size set-title
-          begin-synchronized-update end-synchronized-update
-          enable-raw-mode! disable-raw-mode! raw-mode-enabled?
-          terminal-size terminal-window-size window-size? window-size-columns
-          window-size-rows window-size-width window-size-height)
+    enter-alternate-screen
+    leave-alternate-screen
+    scroll-up
+    scroll-down
+    clear
+    terminal-clear
+    set-size
+    set-title
+    begin-synchronized-update
+    end-synchronized-update
+    enable-raw-mode!
+    disable-raw-mode!
+    raw-mode-enabled?
+    terminal-size
+    terminal-window-size
+    window-size?
+    window-size-columns
+    window-size-rows
+    window-size-width
+    window-size-height)
   (import (rnrs)
-          (rename (capy)
-            (term/enable-raw-mode! raw-enable-raw-mode!)
-            (term/disable-raw-mode! raw-disable-raw-mode!)
-            (term/raw-mode-enabled? raw-raw-mode-enabled?)
-            (term/terminal-size-list raw-terminal-size-list))
-          (capy term private ansi)
-          (capy term command))
+    (rename (capy)
+      (term/enable-raw-mode! raw-enable-raw-mode!)
+      (term/disable-raw-mode! raw-disable-raw-mode!)
+      (term/raw-mode-enabled? raw-raw-mode-enabled?)
+      (term/terminal-size-list raw-terminal-size-list))
+    (capy term private ansi)
+    (capy term command))
 
   (define-record-type (window-size make-window-size window-size?)
     (fields
@@ -63,11 +77,11 @@
 
   (define (set-size columns rows)
     (command 'set-size
-             (csi (string-append "8;"
-                                 (count-string 'set-size rows)
-                                 ";"
-                                 (count-string 'set-size columns)
-                                 "t"))))
+      (csi (string-append "8;"
+            (count-string 'set-size rows)
+            ";"
+            (count-string 'set-size columns)
+            "t"))))
 
   (define (set-title title)
     (unless (string? title)

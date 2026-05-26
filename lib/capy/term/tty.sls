@@ -1,10 +1,10 @@
 (library (capy term tty)
   (export tty? ansi-supported? open-tty-input-fd open-tty-output-fd open-tty-fd)
   (import (rnrs)
-          (only (capy) getenv)
-          (rename (capy)
-            (term/isatty? raw-isatty?)
-            (term/open-tty raw-open-tty)))
+    (only (capy) getenv)
+    (rename (capy)
+      (term/isatty? raw-isatty?)
+      (term/open-tty raw-open-tty)))
 
   (define (source->fd who source)
     (cond

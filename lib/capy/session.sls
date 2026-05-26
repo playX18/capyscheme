@@ -61,7 +61,7 @@
         (do ((modules modules (cdr modules))
              (data data (if (first? (car modules))
                          (rec (traverse (car modules))
-                              (fold-module (extract (car modules)) data))
+                           (fold-module (extract (car modules)) data))
                          data)))
           ((null? modules) data)))
       (rec (init-thunk) init)))

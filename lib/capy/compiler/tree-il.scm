@@ -14,7 +14,7 @@
     (define ops (if (null? ops?) '() (car ops?)))
     (define denoise-lexicals?
       (or (memq 'denoise-lexicals? ops)
-          (memq 'strip-numeric-suffixes? ops)))
+        (memq 'strip-numeric-suffixes? ops)))
     (define use-case? (memq 'use-case? ops))
 
     (define (atom? x) (not (or (pair? x) (vector? x))))
@@ -176,8 +176,8 @@
 
     (define (readable-name->symbol identity readable-name)
       (let ((datum (if (syntax? readable-name)
-                     (syntax-expression readable-name)
-                     readable-name)))
+                    (syntax-expression readable-name)
+                    readable-name)))
         (clean-symbol
           (cond
             [(symbol? datum) datum]
@@ -216,8 +216,8 @@
             (let* ((base (readable-name->symbol identity readable-name))
                    (alias (fresh-alias base used)))
               (values alias
-                      (cons (cons identity alias) env)
-                      (cons alias used)))))))
+                (cons (cons identity alias) env)
+                (cons alias used)))))))
 
     (define (allocate-aliases identities readable-names env used)
       (let loop ((identities identities)
@@ -230,10 +230,10 @@
           (receive (alias env used)
             (allocate-alias (car identities) (car readable-names) env used)
             (loop (cdr identities)
-                  (cdr readable-names)
-                  (cons alias aliases)
-                  env
-                  used)))))
+              (cdr readable-names)
+              (cons alias aliases)
+              env
+              used)))))
 
     (define (formal-readable-name readable-names)
       (if (pair? readable-names)
@@ -252,9 +252,9 @@
               (values (cons alias tail) env used)))]
         [else
           (allocate-alias identities
-                          (formal-readable-name readable-names)
-                          env
-                          used)]))
+            (formal-readable-name readable-names)
+            env
+            used)]))
 
     (define (convert-let*-bindings identities readable-names expressions env used)
       (let recur ((identities identities)
@@ -270,12 +270,12 @@
             (receive (alias env used)
               (allocate-alias (car identities) (car readable-names) env used)
               (recur (cdr identities)
-                     (cdr readable-names)
-                     (cdr expressions)
-                     (cons alias aliases)
-                     (cons expression converted)
-                     env
-                     used))))))
+                (cdr readable-names)
+                (cdr expressions)
+                (cons alias aliases)
+                (cons expression converted)
+                env
+                used))))))
 
     (unless (term? t)
       (error 'tree-il->scheme "not a term" t))
@@ -398,7 +398,7 @@
           (if (not denoise-lexicals?)
             (let ((vars (receive-vars t))
                   (consumer (loop (receive-consumer t) env used)))
-            `(receive
+              `(receive
                 ,vars
                 ,producer
                 ,consumer))

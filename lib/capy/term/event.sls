@@ -1,30 +1,56 @@
 (library (capy term event)
   (export focus-gained-event focus-lost-event key-event mouse-event paste-event resize-event
-          focus-gained-event? focus-lost-event? key-event? mouse-event? paste-event? resize-event?
-          key-event-code key-event-modifiers key-event-kind key-event-state
-          mouse-event-kind mouse-event-column mouse-event-row mouse-event-modifiers
-          resize-event-columns resize-event-rows
-          key-press-event? key-release-event? key-repeat-event?
-          event-key event-mouse event-paste event-resize
-          function-key? key-char media-key? modifier-key?
-          enable-mouse-capture disable-mouse-capture
-          enable-focus-change disable-focus-change
-          enable-bracketed-paste disable-bracketed-paste
-          push-keyboard-enhancement-flags pop-keyboard-enhancement-flags
-          poll-event read-event try-read-event)
+    focus-gained-event?
+    focus-lost-event?
+    key-event?
+    mouse-event?
+    paste-event?
+    resize-event?
+    key-event-code
+    key-event-modifiers
+    key-event-kind
+    key-event-state
+    mouse-event-kind
+    mouse-event-column
+    mouse-event-row
+    mouse-event-modifiers
+    resize-event-columns
+    resize-event-rows
+    key-press-event?
+    key-release-event?
+    key-repeat-event?
+    event-key
+    event-mouse
+    event-paste
+    event-resize
+    function-key?
+    key-char
+    media-key?
+    modifier-key?
+    enable-mouse-capture
+    disable-mouse-capture
+    enable-focus-change
+    disable-focus-change
+    enable-bracketed-paste
+    disable-bracketed-paste
+    push-keyboard-enhancement-flags
+    pop-keyboard-enhancement-flags
+    poll-event
+    read-event
+    try-read-event)
   (import (rnrs)
-          (rename (capy)
-            (term/open-tty raw-open-tty)
-            (term/read-fd raw-read-fd)
-            (term/nonblocking! raw-nonblocking!)
-            (term/raw-mode-enabled? raw-mode-enabled?)
-            (term/sigwinch-version raw-sigwinch-version)
-            (term/install-sigwinch-handler! raw-install-sigwinch-handler!)
-            (term/terminal-size-list raw-terminal-size-list)
-            (syscall:pollinput raw-pollinput))
-          (capy term private ansi)
-          (capy term command)
-          (capy term event-parser))
+    (rename (capy)
+      (term/open-tty raw-open-tty)
+      (term/read-fd raw-read-fd)
+      (term/nonblocking! raw-nonblocking!)
+      (term/raw-mode-enabled? raw-mode-enabled?)
+      (term/sigwinch-version raw-sigwinch-version)
+      (term/install-sigwinch-handler! raw-install-sigwinch-handler!)
+      (term/terminal-size-list raw-terminal-size-list)
+      (syscall:pollinput raw-pollinput))
+    (capy term private ansi)
+    (capy term command)
+    (capy term event-parser))
 
   (define (focus-gained-event)
     '(focus-gained))
@@ -136,11 +162,11 @@
 
   (define (enable-mouse-capture)
     (command 'enable-mouse-capture
-             (string-append (csi "?1000h") (csi "?1002h") (csi "?1015h") (csi "?1006h"))))
+      (string-append (csi "?1000h") (csi "?1002h") (csi "?1015h") (csi "?1006h"))))
 
   (define (disable-mouse-capture)
     (command 'disable-mouse-capture
-             (string-append (csi "?1006l") (csi "?1015l") (csi "?1002l") (csi "?1000l"))))
+      (string-append (csi "?1006l") (csi "?1015l") (csi "?1002l") (csi "?1000l"))))
 
   (define (enable-focus-change)
     (command 'enable-focus-change (csi "?1004h")))
@@ -162,13 +188,14 @@
       [(report-all-keys-as-escape-codes) 8]
       [(report-associated-text) 16]
       [else (assertion-violation 'push-keyboard-enhancement-flags
-              "unknown keyboard enhancement flag" flag)]))
+             "unknown keyboard enhancement flag"
+             flag)]))
 
   (define (push-keyboard-enhancement-flags flags)
     (command 'push-keyboard-enhancement-flags
-             (csi (string-append ">"
-                                 (number->string (apply + (map enhancement-flag-bit flags)))
-                                 "u"))))
+      (csi (string-append ">"
+            (number->string (apply + (map enhancement-flag-bit flags)))
+            "u"))))
 
   (define (pop-keyboard-enhancement-flags)
     (command 'pop-keyboard-enhancement-flags (csi "<u")))
@@ -193,8 +220,8 @@
     (ensure-resize-handler!)
     (let ([version (raw-sigwinch-version)])
       (when (and last-sigwinch-version
-                 (not (= version last-sigwinch-version))
-                 (not pending-resize-event))
+             (not (= version last-sigwinch-version))
+             (not pending-resize-event))
         (set! last-sigwinch-version version)
         (set! pending-resize-event (read-terminal-resize-event)))
       pending-resize-event))
@@ -208,10 +235,10 @@
   (define (source->fd source)
     (cond
       [(not source)
-       (unless default-event-fd
-         (set! default-event-fd (raw-open-tty #t #f))
-         (raw-nonblocking! default-event-fd #t))
-       default-event-fd]
+        (unless default-event-fd
+          (set! default-event-fd (raw-open-tty #t #f))
+          (raw-nonblocking! default-event-fd #t))
+        default-event-fd]
       [(integer? source) source]
       [(port? source) (port-fileno source)]
       [else (assertion-violation 'source->fd "expected fd or port" source)]))
@@ -223,8 +250,8 @@
   (define (set-fd-buffer! fd bytes)
     (let ([cell (assv fd event-buffers)])
       (if cell
-          (set-cdr! cell bytes)
-          (set! event-buffers (cons (cons fd bytes) event-buffers)))))
+        (set-cdr! cell bytes)
+        (set! event-buffers (cons (cons fd bytes) event-buffers)))))
 
   (define (bytevector-append a b)
     (let* ([a-len (bytevector-length a)]
@@ -252,11 +279,11 @@
     (let ([buf (make-bytevector 4096)])
       (let ([n (raw-read-fd fd buf 0 4096)])
         (if (> n 0)
-            (let ([chunk (make-bytevector n)])
-              (bytevector-copy! buf 0 chunk 0 n)
-              (set-fd-buffer! fd (bytevector-append (fd-buffer fd) chunk))
-              #t)
-            #f))))
+          (let ([chunk (make-bytevector n)])
+            (bytevector-copy! buf 0 chunk 0 n)
+            (set-fd-buffer! fd (bytevector-append (fd-buffer fd) chunk))
+            #t)
+          #f))))
 
   (define (parse-buffer fd input-available?)
     (call-with-values
@@ -264,11 +291,11 @@
       (lambda (status event consumed)
         (cond
           [(eq? status 'complete)
-           (set-fd-buffer! fd (bytevector-drop (fd-buffer fd) consumed))
-           event]
+            (set-fd-buffer! fd (bytevector-drop (fd-buffer fd) consumed))
+            event]
           [(eq? status 'invalid)
-           (set-fd-buffer! fd (bytevector-drop (fd-buffer fd) consumed))
-           #f]
+            (set-fd-buffer! fd (bytevector-drop (fd-buffer fd) consumed))
+            #f]
           [else #f]))))
 
   (define (poll-event . args)
@@ -276,36 +303,36 @@
            [source (if (or (null? args) (null? (cdr args))) #f (cadr args))]
            [fd (source->fd source)])
       (or (and (update-resize-event!) #t)
-          (and (> (bytevector-length (fd-buffer fd)) 0)
-               (parse-buffer fd (fd-ready? fd 0))
-               #t)
-          (and (fd-ready? fd timeout-ms)
-               (begin
-                 (read-available! fd)
-                 #t)))))
+        (and (> (bytevector-length (fd-buffer fd)) 0)
+          (parse-buffer fd (fd-ready? fd 0))
+          #t)
+        (and (fd-ready? fd timeout-ms)
+          (begin
+            (read-available! fd)
+            #t)))))
 
   (define (read-event . args)
     (let* ([source (if (null? args) #f (car args))]
            [fd (source->fd source)])
       (let loop ()
         (let ([event (or (take-resize-event!)
-                         (and (> (bytevector-length (fd-buffer fd)) 0)
-                              (parse-buffer fd (fd-ready? fd 0))))])
+                      (and (> (bytevector-length (fd-buffer fd)) 0)
+                        (parse-buffer fd (fd-ready? fd 0))))])
           (if event
-              event
-              (begin
-                (unless (read-available! fd)
-                  (fd-ready? fd #f)
-                  (read-available! fd))
-                (loop)))))))
+            event
+            (begin
+              (unless (read-available! fd)
+                (fd-ready? fd #f)
+                (read-available! fd))
+              (loop)))))))
 
   (define (try-read-event . args)
     (let* ([source (if (null? args) #f (car args))]
            [fd (source->fd source)])
       (or (take-resize-event!)
-          (and (> (bytevector-length (fd-buffer fd)) 0)
-               (parse-buffer fd (fd-ready? fd 0)))
-          (and (fd-ready? fd 0)
-               (begin
-                 (read-available! fd)
-                 (parse-buffer fd (fd-ready? fd 0))))))))
+        (and (> (bytevector-length (fd-buffer fd)) 0)
+          (parse-buffer fd (fd-ready? fd 0)))
+        (and (fd-ready? fd 0)
+          (begin
+            (read-available! fd)
+            (parse-buffer fd (fd-ready? fd 0))))))))

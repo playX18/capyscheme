@@ -1427,7 +1427,7 @@
 
           (let* ((cset (cond ((char-set? criterion) criterion)
                         ((char? criterion) (char-set criterion))
-                        (else (error "string-delete criterion not predicate, char or char-set" criterion)))) 
+                        (else (error "string-delete criterion not predicate, char or char-set" criterion))))
                  (len (string-fold (lambda (c i) (if (char-set-contains? cset c)
                                                   (+ i 1)
                                                   i))

@@ -175,7 +175,11 @@
   (define (special-subsequent? c)
     (case c
       ((#\! #\$ #\% #\& #\* #\/ #\: #\< #\= #\> #\? #\^ #\_ #\~
-        #\+ #\- #\. #\@) #t)
+          #\+
+          #\-
+          #\.
+          #\@)
+        #t)
       (else #f)))
   (define (get-identifier p initial-char pipe-quoted?)
     (let lp ((chars (if initial-char (list initial-char) '())))
@@ -249,7 +253,7 @@
                ;; everywhere, should use a number lexer.
                (let* ((str (list->string (reverse chars)))
                       (num (or (fast-decimal-integer str)
-                             (string->number str))))
+                            (string->number str))))
                  (cond (num
                         (values 'value num))
                    ((and (memq (reader-mode p) '(rnrs r7rs))

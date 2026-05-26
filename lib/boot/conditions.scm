@@ -170,10 +170,10 @@
                   (format p "~a: " (vector-ref f* i))
                   (let ([x ((record-accessor rtd i) c)])
                     (cond
-                       [(and (eq? rtd (record-type-rtd &syntax)) (eqv? i 0))
-                         (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
-                       [(and (eq? rtd (record-type-rtd &syntax)) (eqv? i 1))
-                         (values)]
+                      [(and (eq? rtd (record-type-rtd &syntax)) (eqv? i 0))
+                        (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
+                      [(and (eq? rtd (record-type-rtd &syntax)) (eqv? i 1))
+                        (values)]
                       [(and (eq? rtd (record-type-rtd &irritants))
                           (pair? x)
                           (list? x))

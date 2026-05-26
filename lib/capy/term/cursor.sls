@@ -1,9 +1,18 @@
 (library (capy term cursor)
   (export move-to move-to-next-line move-to-previous-line move-to-column move-to-row
-          move-up move-right move-down move-left
-          save-position restore-position hide-cursor show-cursor
-          enable-blinking disable-blinking set-cursor-style
-          cursor-move-to cursor-position)
+    move-up
+    move-right
+    move-down
+    move-left
+    save-position
+    restore-position
+    hide-cursor
+    show-cursor
+    enable-blinking
+    disable-blinking
+    set-cursor-style
+    cursor-move-to
+    cursor-position)
   (import (rnrs) (capy term private ansi) (capy term command) (capy term event))
 
   (define (command name body)
@@ -17,10 +26,10 @@
 
   (define (move-to column row)
     (command 'move-to
-             (csi (string-append (position-string 'move-to row)
-                                 ";"
-                                 (position-string 'move-to column)
-                                 "H"))))
+      (csi (string-append (position-string 'move-to row)
+            ";"
+            (position-string 'move-to column)
+            "H"))))
 
   (define cursor-move-to move-to)
 
@@ -79,17 +88,17 @@
 
   (define (set-cursor-style style)
     (command 'set-cursor-style
-             (csi (string-append (number->string (cursor-style-code style)) " q"))))
+      (csi (string-append (number->string (cursor-style-code style)) " q"))))
 
   (define (poll-source timeout source)
     (if source
-        (poll-event timeout source)
-        (poll-event timeout)))
+      (poll-event timeout source)
+      (poll-event timeout)))
 
   (define (read-source source)
     (if source
-        (read-event source)
-        (read-event)))
+      (read-event source)
+      (read-event)))
 
   (define (cursor-position-event? event)
     (and (pair? event) (eq? (car event) 'cursor-position)))
@@ -97,18 +106,18 @@
   (define (cursor-position . args)
     (let* ([source (if (null? args) #f (car args))]
            [port (if (or (null? args) (null? (cdr args)))
-                     (current-output-port)
-                     (cadr args))]
+                  (current-output-port)
+                  (cadr args))]
            [timeout (if (or (null? args) (null? (cdr args)) (null? (cddr args)))
-                        2000
-                        (caddr args))])
+                     2000
+                     (caddr args))])
       (display (csi "6n") port)
       (flush-output-port port)
       (let loop ([remaining timeout])
         (if (poll-source remaining source)
-            (let ([event (read-source source)])
-              (if (cursor-position-event? event)
-                  (values (cadr event) (caddr event))
-                  (loop 0)))
-            (assertion-violation 'cursor-position
-              "timed out waiting for cursor position"))))))
+          (let ([event (read-source source)])
+            (if (cursor-position-event? event)
+              (values (cadr event) (caddr event))
+              (loop 0)))
+          (assertion-violation 'cursor-position
+            "timed out waiting for cursor position"))))))

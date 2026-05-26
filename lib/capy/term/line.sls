@@ -5,18 +5,20 @@
     line-state-history-index
     line-state-completer
     line-state-renderer
+    line-state-continuation?
     line-state-result
     make-line-editor
     line-editor?
     line-editor-history
     line-editor-completer
     line-editor-renderer
+    line-editor-continuation?
     line-completion-menu
     line-editor-add-history!
     line-edit-step
     read-line/edit)
   (import (rnrs)
-    (only (capy) keyword->symbol call-with-output-string)
+    (only (capy) call-with-output-string define*)
     (capy term command)
     (capy term cursor)
     (capy term style)
@@ -32,53 +34,48 @@
       (immutable history-index line-state-history-index)
       (immutable completer line-state-completer)
       (immutable renderer line-state-renderer)
+      (immutable continuation? line-state-continuation?)
       (immutable completion line-state-completion)
       (immutable result line-state-result)))
 
-  (define (make-line-state prompt buffer cursor history history-index completer . maybe-result)
-    (let loop ([args maybe-result]
-               [result #f]
-               [renderer (lambda (buffer cursor) buffer)]
-               [completion #f])
-      (cond
-        [(null? args)
-          (%make-line-state prompt
+  (define* (make-line-state
+            prompt
             buffer
             cursor
             history
             history-index
             completer
-            renderer
-            completion
-            result)]
-        [(eq? (car args) #:renderer)
-          (if (null? (cdr args))
-            (assertion-violation 'make-line-state "keyword missing value" (car args))
-            (loop (cddr args) result (cadr args) completion))]
-        [(eq? (car args) #:completion)
-          (if (null? (cdr args))
-            (assertion-violation 'make-line-state "keyword missing value" (car args))
-            (loop (cddr args) result renderer (cadr args)))]
-        [else (loop (cdr args) (car args) renderer completion)])))
+            #:key
+            (renderer (lambda (buffer cursor) buffer))
+            (continuation? (lambda (buffer cursor) #t))
+            (completion #f))
+
+    (%make-line-state prompt
+      buffer
+      cursor
+      history
+      history-index
+      completer
+      renderer
+      continuation?
+      completion
+      result))
 
   (define-record-type (<line-editor> %make-line-editor line-editor?)
     (fields
       (mutable history line-editor-history set-line-editor-history!)
       (mutable completer line-editor-completer set-line-editor-completer!)
-      (mutable renderer line-editor-renderer set-line-editor-renderer!)))
+      (mutable renderer line-editor-renderer set-line-editor-renderer!)
+      (mutable continuation? line-editor-continuation? set-line-editor-continuation?!)))
 
-  (define (make-line-editor . args)
-    (let loop ([args args] [history '()] [completer #f] [renderer (lambda (buffer cursor) buffer)])
-      (cond
-        [(null? args) (%make-line-editor history completer renderer)]
-        [(null? (cdr args))
-          (assertion-violation 'make-line-editor "keyword missing value" (car args))]
-        [else
-          (case (keyword->symbol (car args))
-            [(history) (loop (cddr args) (cadr args) completer renderer)]
-            [(completer) (loop (cddr args) history (cadr args) renderer)]
-            [(renderer) (loop (cddr args) history completer (cadr args))]
-            [else (assertion-violation 'make-line-editor "unknown keyword" (car args))])])))
+  (define* (make-line-editor
+            #:key
+            (history '())
+            (completer #f)
+            (renderer (lambda (buffer cursor) buffer))
+            (continuation? (lambda (buffer cursor) #t)))
+
+    (%make-line-editor history completer renderer continuation?))
 
   (define (line-editor-add-history! editor line)
     (when (and (string? line) (> (string-length line) 0))
@@ -92,6 +89,7 @@
       history-index
       (line-state-completer state)
       (line-state-renderer state)
+      (line-state-continuation? state)
       (if (null? maybe-completion) #f (car maybe-completion))
       result))
 
@@ -131,6 +129,60 @@
            [index (max 0 (- (line-state-history-index state) 1))]
            [text (history-ref/default history index "")])
       (state-like state text (string-length text) index #f)))
+
+  (define (line-start text cursor)
+    (let loop ([index cursor])
+      (cond
+        [(zero? index) 0]
+        [(char=? (string-ref text (- index 1)) #\newline) index]
+        [else (loop (- index 1))])))
+
+  (define (line-end text cursor)
+    (let ([n (string-length text)])
+      (let loop ([index cursor])
+        (cond
+          [(= index n) n]
+          [(char=? (string-ref text index) #\newline) index]
+          [else (loop (+ index 1))]))))
+
+  (define (line-index text cursor)
+    (let loop ([index 0] [row 0])
+      (cond
+        [(= index cursor) row]
+        [(char=? (string-ref text index) #\newline)
+          (loop (+ index 1) (+ row 1))]
+        [else (loop (+ index 1) row)])))
+
+  (define (line-column text cursor)
+    (- cursor (line-start text cursor)))
+
+  (define (multiline-buffer? text)
+    (let loop ([index 0])
+      (cond
+        [(= index (string-length text)) #f]
+        [(char=? (string-ref text index) #\newline) #t]
+        [else (loop (+ index 1))])))
+
+  (define (cursor-up-line text cursor)
+    (let ([start (line-start text cursor)])
+      (if (zero? start)
+        cursor
+        (let* ([column (line-column text cursor)]
+               [previous-end (- start 1)]
+               [previous-start (line-start text previous-end)]
+               [previous-length (- previous-end previous-start)])
+          (+ previous-start (min column previous-length))))))
+
+  (define (cursor-down-line text cursor)
+    (let* ([end (line-end text cursor)]
+           [n (string-length text)])
+      (if (= end n)
+        cursor
+        (let* ([column (line-column text cursor)]
+               [next-start (+ end 1)]
+               [next-end (line-end text next-start)]
+               [next-length (- next-end next-start)])
+          (+ next-start (min column next-length))))))
 
   (define (identifier-char? ch)
     (not (or (char-whitespace? ch)
@@ -211,6 +263,26 @@
                   matches
                   0))))))))
 
+  (define (completion-trigger-position? text cursor)
+    (and (> cursor 0)
+      (identifier-char? (string-ref text (- cursor 1)))
+      (or (= cursor (string-length text))
+        (not (identifier-char? (string-ref text cursor))))))
+
+  (define (shift-enter? event)
+    (memq 'shift (key-modifiers event)))
+
+  (define (enter-accepts? state event)
+    (let ([buffer (line-state-buffer state)]
+          [cursor (line-state-cursor state)])
+      (or (shift-enter? event)
+        (not (multiline-buffer? buffer))
+        (= cursor (string-length buffer)))))
+
+  (define (insert-newline state buffer cursor)
+    (let ([next (string-insert buffer cursor #\newline)])
+      (values (state-like state next (+ cursor 1) 0 #f) 'continue)))
+
   (define (line-edit-step state event)
     (let* ([buffer (line-state-buffer state)]
            [cursor (line-state-cursor state)]
@@ -219,7 +291,11 @@
       (cond
         [(not (key-event? event)) (values state 'continue)]
         [(or (equal? code 'enter) (equal? code 'return))
-          (values (state-like state buffer cursor 0 buffer) 'accept)]
+          (if ((line-state-continuation? state) buffer cursor)
+            (insert-newline state buffer cursor)
+            (if (enter-accepts? state event)
+              (values (state-like state buffer cursor 0 buffer) 'accept)
+              (insert-newline state buffer cursor)))]
         [(control-char? event #\c)
           (values (state-like state buffer cursor 0 #f) 'abort)]
         [(and (control-char? event #\d) (= n 0))
@@ -241,9 +317,19 @@
         [(equal? code 'end)
           (values (state-like state buffer n 0 #f) 'continue)]
         [(equal? code 'up)
-          (values (history-up state) 'continue)]
+          (let ([next-cursor (cursor-up-line buffer cursor)])
+            (if (= next-cursor cursor)
+              (if (multiline-buffer? buffer)
+                (values state 'continue)
+                (values (history-up state) 'continue))
+              (values (state-like state buffer next-cursor 0 #f) 'continue)))]
         [(equal? code 'down)
-          (values (history-down state) 'continue)]
+          (let ([next-cursor (cursor-down-line buffer cursor)])
+            (if (= next-cursor cursor)
+              (if (multiline-buffer? buffer)
+                (values state 'continue)
+                (values (history-down state) 'continue))
+              (values (state-like state buffer next-cursor 0 #f) 'continue)))]
         [(equal? code 'backspace)
           (if (= cursor 0)
             (values state 'continue)
@@ -255,24 +341,124 @@
             (values (state-like state (string-delete buffer cursor) cursor 0 #f)
               'continue))]
         [(equal? code 'tab)
-          (complete-line state)]
+          (if (and (line-state-completer state)
+               (or (line-state-completion state)
+                 (completion-trigger-position? buffer cursor)))
+            (complete-line state)
+            (let ([next (string-insert buffer cursor #\tab)])
+              (values (state-like state next (+ cursor 1) 0 #f) 'continue)))]
         [(and (pair? code) (eq? (car code) 'char) (not (memq 'control (key-modifiers event))))
           (let ([next (string-insert buffer cursor (cadr code))])
             (values (state-like state next (+ cursor 1) 0 #f) 'continue))]
         [else (values state 'continue)])))
 
-  (define (redraw-line port state)
+  (define (count-lines text)
+    (let loop ([index 0] [lines 1])
+      (cond
+        [(= index (string-length text)) lines]
+        [(char=? (string-ref text index) #\newline)
+          (loop (+ index 1) (+ lines 1))]
+        [else (loop (+ index 1) lines)])))
+
+  (define (ansi-final-byte? ch)
+    (and (char<=? #\@ ch) (char<=? ch #\~)))
+
+  (define (visible-string-length text)
+    (let ([n (string-length text)])
+      (let loop ([index 0] [len 0])
+        (cond
+          [(= index n) len]
+          [(char=? (string-ref text index) #\x1b)
+            (let ([next (+ index 1)])
+              (cond
+                [(= next n) len]
+                [(char=? (string-ref text next) #\[)
+                  (let scan-csi ([j (+ next 1)])
+                    (cond
+                      [(= j n) len]
+                      [(ansi-final-byte? (string-ref text j))
+                        (loop (+ j 1) len)]
+                      [else (scan-csi (+ j 1))]))]
+                [(char=? (string-ref text next) #\])
+                  (let scan-osc ([j (+ next 1)])
+                    (cond
+                      [(= j n) len]
+                      [(char=? (string-ref text j) #\x07)
+                        (loop (+ j 1) len)]
+                      [else (scan-osc (+ j 1))]))]
+                [else (loop (+ next 1) len)]))]
+          [else (loop (+ index 1) (+ len 1))]))))
+
+  (define tab-width 8)
+
+  (define (next-tab-stop column)
+    (+ column (- tab-width (mod column tab-width))))
+
+  (define (buffer-display-column text start end base-column)
+    (let loop ([index start] [column base-column])
+      (cond
+        [(= index end) column]
+        [(char=? (string-ref text index) #\tab)
+          (loop (+ index 1) (next-tab-stop column))]
+        [else (loop (+ index 1) (+ column 1))])))
+
+  (define (display-column state cursor)
+    (let* ([buffer (line-state-buffer state)]
+           [start (line-start buffer cursor)]
+           [base (if (zero? (line-index buffer cursor))
+                  (visible-string-length (line-state-prompt state))
+                  0)])
+      (buffer-display-column buffer start cursor base)))
+
+  (define (move-to-render-start port state)
+    (let ([row (line-index (line-state-buffer state)
+                (line-state-cursor state))])
+      (when (> row 0)
+        (queue-command port (move-up row))))
+    (display "\r" port))
+
+  (define (clear-rendered-lines port state)
+    (let ([lines (count-lines (line-state-buffer state))])
+      (let loop ([index 0])
+        (queue-command port (clear 'current-line))
+        (when (< (+ index 1) lines)
+          (queue-command port (move-down 1))
+          (display "\r" port)
+          (loop (+ index 1))))
+      (when (> lines 1)
+        (queue-command port (move-up (- lines 1)))))
+    (display "\r" port))
+
+  (define (move-to-input-cursor port state)
+    (let* ([buffer (line-state-buffer state)]
+           [end-row (line-index buffer (string-length buffer))]
+           [cursor-row (line-index buffer (line-state-cursor state))]
+           [target-column (display-column state (line-state-cursor state))])
+      (when (> (- end-row cursor-row) 0)
+        (queue-command port (move-up (- end-row cursor-row))))
+      (queue-command port (move-to-column target-column))))
+
+  (define (display-rendered-input port text)
+    (let loop ([index 0])
+      (when (< index (string-length text))
+        (let ([ch (string-ref text index)])
+          (when (char=? ch #\newline)
+            (display "\r" port))
+          (display ch port)
+          (loop (+ index 1))))))
+
+  (define (redraw-line port state . maybe-previous)
+    (unless (null? maybe-previous)
+      (move-to-render-start port (car maybe-previous))
+      (clear-rendered-lines port (car maybe-previous)))
     (display "\r" port)
     (queue-command port (clear 'current-line))
     (display (line-state-prompt state) port)
-    (display ((line-state-renderer state)
-              (line-state-buffer state)
-              (line-state-cursor state))
-      port)
-    (let ([delta (- (string-length (line-state-buffer state))
-                  (line-state-cursor state))])
-      (when (> delta 0)
-        (queue-command port (move-left delta))))
+    (display-rendered-input port
+      ((line-state-renderer state)
+        (line-state-buffer state)
+        (line-state-cursor state)))
+    (move-to-input-cursor port state)
     (flush-output-port port))
 
   (define (clear-transient-completion-line port)
@@ -290,18 +476,34 @@
   (define (redraw-line/completions port state matches active-index)
     (redraw-line port state)
     (queue-command port (save-position))
-    (queue-command port (move-down 1))
+    (move-to-input-end port state)
+    (newline port)
     (display "\r" port)
     (queue-command port (clear 'current-line))
+    (queue-command port (disable-line-wrap))
     (display (line-completion-menu matches active-index) port)
+    (queue-command port (enable-line-wrap))
     (queue-command port (restore-position))
     (flush-output-port port))
 
   (define (move-to-input-end port state)
-    (let ([delta (- (string-length (line-state-buffer state))
-                    (line-state-cursor state))])
-      (when (> delta 0)
-        (queue-command port (move-right delta)))))
+    (let* ([buffer (line-state-buffer state)]
+           [cursor (line-state-cursor state)]
+           [end (string-length buffer)])
+      (if (= (line-index buffer cursor) (line-index buffer end))
+        (let ([delta (- end cursor)])
+          (when (> delta 0)
+            (queue-command port (move-right delta))))
+        (move-to-input-cursor port
+          (state-like state
+            buffer
+            end
+            (line-state-history-index state)
+            (line-state-result state)
+            (line-state-completion state))))))
+
+  (define (finish-input-line port)
+    (display "\r\n" port))
 
   (define (read-line/edit editor . args)
     (let* ([prompt (if (null? args) "> " (car args))]
@@ -315,7 +517,9 @@
                    (line-editor-completer editor)
                    #f
                    #:renderer
-                   (line-editor-renderer editor))]
+                   (line-editor-renderer editor)
+                   #:continuation?
+                   (line-editor-continuation? editor))]
            [manage-raw? (not source)]
            [was-raw? (and manage-raw? (raw-mode-enabled?))])
       (dynamic-wind
@@ -332,20 +536,20 @@
                     [(eq? status 'accept)
                       (clear-completion-line-if-visible port state)
                       (move-to-input-end port next)
-                      (newline port)
+                      (finish-input-line port)
                       (line-editor-add-history! editor (line-state-result next))
                       (line-state-result next)]
                     [(or (eq? status 'abort) (eq? status 'eof))
                       (clear-completion-line-if-visible port state)
                       (move-to-input-end port next)
-                      (newline port)
+                      (finish-input-line port)
                       #f]
                     [(and (pair? status) (eq? (car status) 'completions))
                       (redraw-line/completions port next (cadr status) (caddr status))
                       (loop next)]
                     [else
                       (clear-completion-line-if-visible port state)
-                      (redraw-line port next)
+                      (redraw-line port next state)
                       (loop next)]))))))
         (lambda ()
           (when (and manage-raw? (not was-raw?)) (disable-raw-mode!)))))))

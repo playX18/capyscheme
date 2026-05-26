@@ -15,15 +15,15 @@
     list->deque
     deque-append!)
   (import (rnrs)
-          (core struct)
-          (only (scheme base) vector-copy)
-          (only (scheme r5rs) modulo)
-          (only (capy) register-tuple-printer! print))
+    (core struct)
+    (only (scheme base) vector-copy)
+    (only (scheme r5rs) modulo)
+    (only (capy) register-tuple-printer! print))
 
-  (define-struct %deque 
+  (define-struct %deque
     (buf head len))
 
-  (register-tuple-printer! 
+  (register-tuple-printer!
     'type:%deque
     (lambda (obj port quote?)
       (display "#<deque " port)
@@ -37,11 +37,10 @@
             (loop (+ i 1)))))
       (display ">" port)))
 
-
   (define (make-deque capacity)
     (let ((initial-capacity (if (>= capacity 1)
-                                capacity
-                                8)))
+                             capacity
+                             8)))
       (make-%deque (make-vector initial-capacity) 0 0)))
 
   (define (deque . args)
@@ -56,10 +55,10 @@
            (new-buf (make-vector new-cap)))
       ;; Copy elements linearly to the new buffer
       (do ((i 0 (+ i 1)))
-          ((= i (deque-len dq)))
+        ((= i (deque-len dq)))
         (vector-set! new-buf i
-                     (vector-ref old-buf
-                                 (modulo (+ (deque-head dq) i) old-cap))))
+          (vector-ref old-buf
+            (modulo (+ (deque-head dq) i) old-cap))))
       (deque-buf-set! dq new-buf)
       (deque-head-set! dq 0)))
   (define (deque-capacity dq)
@@ -77,7 +76,7 @@
            (tail-index (modulo (+ head len) cap)))
       (vector-set! buf tail-index value)
       (%deque-len-set! dq (+ len 1))))
-  
+
   (define (deque-push-front! dq value)
     (when (= (%deque-len dq) (deque-capacity dq))
       (grow! dq))
@@ -89,11 +88,11 @@
       (vector-set! buf new-head value)
       (%deque-head-set! dq new-head)
       (%deque-len-set! dq (+ len 1))))
-  
+
   (define (deque-pop-back! dq)
     (unless (> (%deque-len dq) 0)
       (error 'deque-pop-back! "empty deque"))
-    
+
     (let* ((buf (%deque-buf dq))
            (head (%deque-head dq))
            (len (%deque-len dq))
@@ -102,11 +101,11 @@
            (value (vector-ref buf tail-index)))
       (%deque-len-set! dq (- len 1))
       value))
-  
+
   (define (deque-pop-front! dq)
     (unless (> (%deque-len dq) 0)
       (error 'deque-pop-front! "empty deque"))
-    
+
     (let* ((buf (%deque-buf dq))
            (head (%deque-head dq))
            (len (%deque-len dq))
@@ -116,7 +115,7 @@
       (%deque-head-set! dq new-head)
       (%deque-len-set! dq (- len 1))
       value))
-  
+
   (define (deque-ref dq index)
     (unless (and (>= index 0) (< index (%deque-len dq)))
       (error 'deque-ref "index out of bounds"))
@@ -125,7 +124,7 @@
            (cap (vector-length buf))
            (real-index (modulo (+ head index) cap)))
       (vector-ref buf real-index)))
-  
+
   (define (deque-set! dq index value)
     (unless (and (>= index 0) (< index (%deque-len dq)))
       (error 'deque-set! "index out of bounds"))
@@ -134,7 +133,7 @@
            (cap (vector-length buf))
            (real-index (modulo (+ head index) cap)))
       (vector-set! buf real-index value)))
-      
+
   (define (deque->vector dq)
     (let* ((buf (%deque-buf dq))
            (head (%deque-head dq))
@@ -142,16 +141,16 @@
            (cap (vector-length buf))
            (result (make-vector len)))
       (do ((i 0 (+ i 1)))
-          ((= i len) result)
+        ((= i len) result)
         (vector-set! result i
-                     (vector-ref buf
-                                 (modulo (+ head i) cap))))))
+          (vector-ref buf
+            (modulo (+ head i) cap))))))
 
   (define (vector->deque vec)
     (let* ((len (vector-length vec))
            (dq (make-deque len)))
       (do ((i 0 (+ i 1)))
-          ((= i len) dq)
+        ((= i len) dq)
         (deque-push-back! dq (vector-ref vec i)))))
 
   (define (list->deque lst)
@@ -161,6 +160,5 @@
 
   (define (deque-append! dq1 dq2)
     (do ((i 0 (+ i 1)))
-        ((= i (deque-length dq2)))
+      ((= i (deque-length dq2)))
       (deque-push-back! dq1 (deque-ref dq2 i)))))
-
