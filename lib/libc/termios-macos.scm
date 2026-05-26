@@ -295,11 +295,11 @@
 
 ; begin decls
 (define tcgetattr 
-    (let ([proc (foreign-library-function 
-                    #f 
+    (let ([proc (foreign-library-function
+                    #f
                     "tcgetattr"
-                    int
-                    `(,int *))])
+                    #:return int
+                    #:arguments `(,int *))])
         (lambda (fd)
             (let* ([bv (make-bytevector/nonmoving sizeof-termios 0)]
                     [ret (proc fd (bytevector->pointer bv))])
@@ -307,11 +307,11 @@
                     (read-termios bv)
                     (error 'tcgetattr "tcgetattr failed" ret))))))
 (define tcsetattr 
-    (let ([proc (foreign-library-function 
+    (let ([proc (foreign-library-function
                     #f
                     "tcsetattr"
-                    int 
-                    `(,int ,int *))])
+                    #:return int 
+                    #:arguments `(,int ,int *))])
         (lambda (fd actions termios)
             (define bv (make-bytevector/nonmoving sizeof-termios))
 
@@ -329,11 +329,11 @@
                 (unspecified)))))
 
 (define tcdrain 
-    (let ([proc (foreign-library-function 
+    (let ([proc (foreign-library-function
                     #f
                     "tcdrain"
-                    int
-                    `(,int))])
+                    #:return int
+                    #:arguments `(,int))])
         (lambda (fd)
             (let ([ret (proc fd)])
                 (unless (zero? ret)
@@ -341,11 +341,11 @@
                 (unspecified)))))
 
 (define tcflow 
-    (let ([proc (foreign-library-function 
+    (let ([proc (foreign-library-function
                     #f
                     "tcflow"
-                    int
-                    `(,int ,int))])
+                    #:return int
+                    #:arguments `(,int ,int))])
         (lambda (fd action)
             (let ([ret (proc fd action)])
                 (unless (zero? ret)
@@ -353,11 +353,11 @@
                 (unspecified)))))
 
 (define tcflush 
-    (let ([proc (foreign-library-function 
+    (let ([proc (foreign-library-function
                     #f
                     "tcflush"
-                    int
-                    `(,int ,int))])
+                    #:return int
+                    #:arguments `(,int ,int))])
         (lambda (fd queue)
             (let ([ret (proc fd queue)])
                 (unless (zero? ret)
@@ -365,11 +365,11 @@
                 (unspecified)))))
 
 (define tcsendbreak 
-    (let ([proc (foreign-library-function 
+    (let ([proc (foreign-library-function
                     #f
                     "tcsendbreak"
-                    int
-                    `(,int ,int))])
+                    #:return int
+                    #:arguments `(,int ,int))])
         (lambda (fd duration)
             (let ([ret (proc fd duration)])
                 (unless (zero? ret)
