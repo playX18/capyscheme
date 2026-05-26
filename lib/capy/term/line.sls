@@ -47,7 +47,7 @@
             completer
             #:key
             (renderer (lambda (buffer cursor) buffer))
-            (continuation? (lambda (buffer cursor) #t))
+            (continuation? (lambda (buffer cursor) #f))
             (completion #f))
 
     (%make-line-state prompt
@@ -59,7 +59,7 @@
       renderer
       continuation?
       completion
-      result))
+      #f))
 
   (define-record-type (<line-editor> %make-line-editor line-editor?)
     (fields
@@ -73,7 +73,7 @@
             (history '())
             (completer #f)
             (renderer (lambda (buffer cursor) buffer))
-            (continuation? (lambda (buffer cursor) #t)))
+            (continuation? (lambda (buffer cursor) #f)))
 
     (%make-line-editor history completer renderer continuation?))
 
@@ -515,7 +515,6 @@
                    (line-editor-history editor)
                    0
                    (line-editor-completer editor)
-                   #f
                    #:renderer
                    (line-editor-renderer editor)
                    #:continuation?
