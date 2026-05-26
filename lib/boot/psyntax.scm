@@ -1690,7 +1690,7 @@
             (let ((when-list (parse-when-list e #'(x ...))))
               (case when-list 
                 ((eval) (expand-sequence #'(e1 e2 ...) r w s mod))
-                (else (expand-void))))]))
+                (else (make-void #f))))]))
       ((eq? type 'begin-form)
         (syntax-case e () 
           [(_ e1 e2 ...)
