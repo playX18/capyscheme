@@ -2,6 +2,7 @@
   (export read-eval-print-loop current-exception-printer default-exception-printer)
 
   (import (capy)
+    (core control)
     (core parameters)
     (core exceptions))
 
