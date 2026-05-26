@@ -289,7 +289,7 @@
            [n (string-length buffer)]
            [code (key-code event)])
       (cond
-        [(not (key-event? event)) (values state 'continue)]
+        [(not (key-event? event)) (values state 'ignore)]
         [(or (equal? code 'enter) (equal? code 'return))
           (if ((line-state-continuation? state) buffer cursor)
             (insert-newline state buffer cursor)
@@ -448,6 +448,7 @@
           (loop (+ index 1))))))
 
   (define (redraw-line port state . maybe-previous)
+    (queue-command port (begin-synchronized-update))
     (unless (null? maybe-previous)
       (move-to-render-start port (car maybe-previous))
       (clear-rendered-lines port (car maybe-previous)))
@@ -459,6 +460,7 @@
         (line-state-buffer state)
         (line-state-cursor state)))
     (move-to-input-cursor port state)
+    (queue-command port (end-synchronized-update))
     (flush-output-port port))
 
   (define (clear-transient-completion-line port)
@@ -524,6 +526,7 @@
       (dynamic-wind
         (lambda ()
           (when (and manage-raw? (not was-raw?)) (enable-raw-mode!))
+          (queue-command port (set-cursor-style 'steady-bar))
           (redraw-line port state))
         (lambda ()
           (let loop ([state state])
@@ -546,9 +549,13 @@
                     [(and (pair? status) (eq? (car status) 'completions))
                       (redraw-line/completions port next (cadr status) (caddr status))
                       (loop next)]
+                    [(eq? status 'ignore)
+                      (loop next)]
                     [else
                       (clear-completion-line-if-visible port state)
                       (redraw-line port next state)
                       (loop next)]))))))
         (lambda ()
+          (queue-command port (set-cursor-style 'default-user-shape))
+          (flush-output-port port)
           (when (and manage-raw? (not was-raw?)) (disable-raw-mode!)))))))
