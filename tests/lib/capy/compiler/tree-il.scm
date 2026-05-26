@@ -118,8 +118,8 @@
                (make-constant src 42))
              (make-toplevel-ref src module-name 'private-value))))
     (test-equal
-      "private declarative toplevel define becomes lexical letrec"
-      '(letrec ((private-value (quote 42)))
+      "private declarative toplevel define becomes lexical letrec*"
+      '(letrec* ((private-value (quote 42)))
          private-value)
       (tree-il->scheme
         (letrectify term #:seal-private-bindings? #t)
