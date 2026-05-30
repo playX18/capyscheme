@@ -549,6 +549,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .builder
             .ins()
             .iadd_imm(cursor, OBJECT_REF_OFFSET as i64);
+        self.emit_set_vo_bit(object);
         self.builder.ins().jump(merge, &[BlockArg::Value(object)]);
     }
 

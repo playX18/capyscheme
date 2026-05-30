@@ -6,7 +6,13 @@ use mmtk::vm::SlotVisitor;
 use crate::CAN_PIN_OBJECTS;
 use crate::rsgc::ObjectSlot;
 use crate::rsgc::collection::{Visitor, VisitorKind};
-use crate::rsgc::{mm::MemoryManager, object::GCObject, sync::thread::Thread, traits::Trace};
+use crate::rsgc::{
+    conservative::scan_conservative_native_stack,
+    mm::MemoryManager,
+    object::GCObject,
+    sync::thread::Thread,
+    traits::Trace,
+};
 pub struct RustScanning;
 
 impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
@@ -64,6 +70,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
                 factory.create_process_pinning_roots_work(visitor.pinned_roots);
             }
             factory.create_process_roots_work(sv.set.into_iter().collect());
+            scan_conservative_native_stack(thread, &mut factory);
 
             return;
         };
@@ -81,6 +88,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
             }
 
             factory.create_process_roots_work(sv.set.into_iter().collect());
+            scan_conservative_native_stack(thread, &mut factory);
         }
     }
 

@@ -20,6 +20,7 @@ pub mod alloc;
 pub mod barrier;
 pub mod cell;
 pub mod collection;
+pub mod conservative;
 pub mod finalizer;
 pub mod global;
 pub(crate) mod heuristics;
@@ -28,6 +29,7 @@ pub(crate) mod logging;
 pub mod mm;
 pub mod mutator;
 pub mod object;
+pub mod plans;
 pub mod ptr;
 pub mod scanning;
 pub mod sync;
@@ -63,11 +65,16 @@ impl GarbageCollector {
             (mmtk::memory_manager::starting_heap_address() - 4096, 3)
         };
 
+        plans::validate_plan(*mmtk.options.plan);
+
         match *mmtk.options.plan {
-            PlanSelector::Immix | PlanSelector::MarkSweep | PlanSelector::StickyImmix => {
+            PlanSelector::Immix
+            | PlanSelector::MarkSweep
+            | PlanSelector::StickyImmix
+            | PlanSelector::ConcurrentImmix => {
                 CAN_PIN_OBJECTS.store(true, std::sync::atomic::Ordering::Relaxed)
             }
-            _ => (),
+            _ => {}
         }
 
         BASE.store(heap_base.as_usize(), std::sync::atomic::Ordering::Relaxed);
@@ -120,6 +127,9 @@ pub use global::*;
 pub use ptr::*;
 pub use traits::Trace;
 pub use weak::*;
+
+pub use conservative::is_mmtk_heap_object;
+pub use plans::{ALLOWED_GC_PLAN_NAMES, is_allowed_plan, validate_plan};
 
 use crate::CAN_PIN_OBJECTS;
 

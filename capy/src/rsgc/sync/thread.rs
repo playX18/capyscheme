@@ -150,6 +150,25 @@ impl Thread {
         self.heap_shift
     }
 
+    pub(crate) fn stack_bounds(&self) -> (Address, Address) {
+        let data = self.native_data();
+        (data.stack_low, data.stack_high)
+    }
+
+    pub(crate) fn gc_scan_sp(&self) -> Address {
+        unsafe {
+            Address::from_usize(self.native_data().gc_scan_sp.load(Ordering::Relaxed))
+        }
+    }
+
+    pub(crate) fn record_gc_scan_sp(&self) {
+        if let Some(sp) = current_stack_pointer() {
+            self.native_data()
+                .gc_scan_sp
+                .store(sp.as_usize(), Ordering::Relaxed);
+        }
+    }
+
     pub fn active_mutator_context(&self) -> bool {
         self.status_word.read::<ActiveMutatorContext>()
     }
@@ -224,6 +243,7 @@ impl Thread {
         debug_assert!(!self.is_about_to_terminate());
         let id = self.id();
 
+        self.record_gc_scan_sp();
         self.status_word.update_synchronized::<IsBlocking>(true);
 
         let mut had_really_blocked = false;
@@ -546,6 +566,9 @@ impl Thread {
                 max_non_los_default_alloc_bytes: 0,
                 alloc_fastpath: AllocFastPath::None,
                 state: UnsafeCell::new(MaybeUninit::uninit()),
+                stack_low: Address::ZERO,
+                stack_high: Address::ZERO,
+                gc_scan_sp: AtomicUsize::new(0),
             }),
             index_in_thread_list: AtomicUsize::new(usize::MAX),
         });
@@ -593,6 +616,10 @@ impl Thread {
 
         this.set_active_mutator_context(true);
         this.native_data_mut().mutator = Some(mutator);
+        let (stack_low, stack_high) = query_stack_bounds();
+        this.native_data_mut().stack_low = stack_low;
+        this.native_data_mut().stack_high = stack_high;
+        this.record_gc_scan_sp();
         gc.threads.add_thread(this.clone());
         this.status_word
             .update::<ThreadStateField>(ThreadState::InNative);
@@ -673,6 +700,9 @@ pub struct ThreadNativeData {
     pub(crate) max_non_los_default_alloc_bytes: usize,
     pub(crate) alloc_fastpath: AllocFastPath,
     pub(crate) state: UnsafeCell<MaybeUninit<State<'static>>>,
+    pub(crate) stack_low: Address,
+    pub(crate) stack_high: Address,
+    pub(crate) gc_scan_sp: AtomicUsize,
 }
 
 thread_local! {
@@ -704,6 +734,40 @@ pub(crate) fn deinit_current_thread() {
         let thread = unsafe { Arc::from_raw(thread) };
         drop(thread);
     })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn current_stack_pointer() -> Option<Address> {
+    // SAFETY: reads the stack pointer register only.
+    unsafe {
+        let sp: usize;
+        core::arch::asm!("mov {sp}, rsp", sp = out(reg) sp);
+        Some(Address::from_usize(sp))
+    }
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn current_stack_pointer() -> Option<Address> {
+    None
+}
+
+fn query_stack_bounds() -> (Address, Address) {
+    unsafe {
+        let mut attr = std::mem::MaybeUninit::uninit();
+        if libc::pthread_getattr_np(libc::pthread_self(), attr.as_mut_ptr()) != 0 {
+            return (Address::ZERO, Address::ZERO);
+        }
+        let mut attr = attr.assume_init();
+        let mut stackaddr: *mut libc::c_void = std::ptr::null_mut();
+        let mut stacksize: usize = 0;
+        if libc::pthread_attr_getstack(&attr, &mut stackaddr, &mut stacksize) != 0 {
+            libc::pthread_attr_destroy(&mut attr);
+            return (Address::ZERO, Address::ZERO);
+        }
+        libc::pthread_attr_destroy(&mut attr);
+        let low = Address::from_ptr(stackaddr);
+        (low, low + stacksize)
+    }
 }
 
 pub trait BlockAdapter: Send + Sync {

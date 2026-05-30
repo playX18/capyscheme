@@ -84,10 +84,10 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
     };
 
     let plan = match *crate::GarbageCollector::get().mmtk.get_options().plan {
-        PlanSelector::Immix | PlanSelector::MarkSweep | PlanSelector::SemiSpace => "regular",
+        PlanSelector::Immix | PlanSelector::MarkSweep => "regular",
         PlanSelector::ConcurrentImmix => "conc",
-        PlanSelector::GenImmix | PlanSelector::GenCopy | PlanSelector::StickyImmix => "gen",
-        _ => todo!(),
+        PlanSelector::StickyImmix => "gen",
+        _ => unreachable!("GC plan validated at startup"),
     };
 
     if cache_dir != FALLBACK_DIR {

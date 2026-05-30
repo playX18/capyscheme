@@ -71,7 +71,7 @@ endif
 PORTABLE ?= 1
 
 # Environment used when invoking capyc to compile libraries (mirrors Justfile defaults)
-MMTK_PLAN ?= GenImmix
+MMTK_PLAN ?= StickyImmix
 XDG_CACHE_HOME = stage-0/cache
 CAPY_LOAD_PATH ?= ./lib
 CAPY_ENV = \

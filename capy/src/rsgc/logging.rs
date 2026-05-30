@@ -81,6 +81,8 @@ pub(crate) fn mmtk_builder() -> MMTKBuilder {
         builder.options.count_live_bytes_in_gc.set(true);
     }
 
+    super::plans::validate_plan(*builder.options.plan);
+
     builder
 }
 

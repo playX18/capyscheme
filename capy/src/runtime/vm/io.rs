@@ -2060,12 +2060,7 @@ unsafe impl<'gc> Trace for SendOperation<'gc> {
                 visitor.pin_root(self.bv.to_object_reference());
             }
 
-            _ => {
-                // TODO: This can move the pointers and invalidate them. We solve this
-                // by allocating on non-moving heap for these types when using GenImmix/GenCopy/Semispace.
-                visitor.trace(&mut self.sock);
-                visitor.trace(&mut self.bv);
-            }
+            _ => unreachable!("GC plan validated at startup"),
         }
     }
 

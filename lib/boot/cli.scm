@@ -179,9 +179,9 @@
     (argparser-add-separator! parser "Garbage collection options:")
     (add-option! parser
       "gc-plan"
-      (defaults-to '("GenImmix"))
+      (defaults-to '("StickyImmix"))
       (value-help "PLAN")
-      (help "Select the MMTK GC plan"))
+      (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, or Immix)"))
     (add-option! parser
       "gc-trigger"
       (defaults-to '("Delegated"))
@@ -365,9 +365,9 @@
   (argparser-add-separator! parser "Garbage collection options:")
   (add-option! parser
     "gc-plan"
-    (defaults-to "GenImmix")
+    (defaults-to "StickyImmix")
     (value-help "PLAN")
-    (help "Select the MMTK GC plan"))
+    (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, or Immix)"))
   (add-option! parser
     "gc-trigger"
     (defaults-to "Delegated")
