@@ -48,7 +48,6 @@ static SHIFT: AtomicU32 = AtomicU32::new(0);
 
 impl GarbageCollector {
     fn new(mmtk: MMTKBuilder) -> Self {
-        sync::signal::install_yieldpoint_signal_handler();
         let this = Self {
             finalizers: Finalizers::new(),
             weak: WeakProcessingState::new(),

@@ -15,11 +15,7 @@ pub(crate) fn scan_conservative_native_stack(
     thread: &Thread,
     factory: &mut impl RootsWorkFactory<crate::rsgc::ObjectSlot>,
 ) {
-    let context = thread.platform_thread_context();
-    let scan_sp = context
-        .as_ref()
-        .map(|context| context.stack_pointer())
-        .unwrap_or_else(|| thread.gc_scan_sp());
+    let scan_sp = thread.gc_scan_sp();
     if scan_sp.is_zero() {
         return;
     }
@@ -39,16 +35,21 @@ pub(crate) fn scan_conservative_native_stack(
 
     let mut pinning_roots = Vec::new();
 
-    if let Some(context) = &context {
-        for word in context.register_words() {
-            scan_word_for_root(*word, heap_start, heap_end, &mut pinning_roots);
-        }
-    }
-
     let mut word_addr = scan_start;
     while word_addr < stack_high {
         let word = unsafe { word_addr.load::<usize>() };
-        scan_word_for_root(word, heap_start, heap_end, &mut pinning_roots);
+        if word != 0 && word % mmtk::util::ObjectReference::ALIGNMENT == 0 {
+            let addr = unsafe { Address::from_usize(word) };
+            if addr >= heap_start && addr < heap_end {
+                if let Some(obj) = is_mmtk_heap_object(addr) {
+                    pinning_roots.push(obj);
+                } else if let Some(obj) =
+                    mmtk::memory_manager::find_object_from_internal_pointer(addr, 64)
+                {
+                    pinning_roots.push(obj);
+                }
+            }
+        }
         word_addr += mmtk::util::ObjectReference::ALIGNMENT;
     }
 
@@ -56,24 +57,5 @@ pub(crate) fn scan_conservative_native_stack(
         pinning_roots.sort_unstable();
         pinning_roots.dedup();
         factory.create_process_pinning_roots_work(pinning_roots);
-    }
-}
-
-fn scan_word_for_root(
-    word: usize,
-    heap_start: Address,
-    heap_end: Address,
-    pinning_roots: &mut Vec<ObjectReference>,
-) {
-    if word != 0 && word % mmtk::util::ObjectReference::ALIGNMENT == 0 {
-        let addr = unsafe { Address::from_usize(word) };
-        if addr >= heap_start && addr < heap_end {
-            if let Some(obj) = is_mmtk_heap_object(addr) {
-                pinning_roots.push(obj);
-            } else if let Some(obj) = mmtk::memory_manager::find_object_from_internal_pointer(addr, 64)
-            {
-                pinning_roots.push(obj);
-            }
-        }
     }
 }

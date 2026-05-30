@@ -18,12 +18,12 @@ use std::{
     ptr::NonNull,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 
-use super::{monitor::MonitorGuard, safepoint::YieldpointPage};
+use super::monitor::MonitorGuard;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -117,7 +117,6 @@ type ThreadStateInitialized = BitField<u64, bool, { ActiveMutatorContext::NEXT_B
 pub struct Thread {
     native_data: UnsafeCell<ThreadNativeData>,
     pub(crate) take_yieldpoint: AtomicI32,
-    yieldpoint_page: YieldpointPage,
     yieldpoints_enabled_count: AtomicI32,
     id: AtomicU64,
     status_word: AtomicBitfieldContainer<u64>,
@@ -129,8 +128,6 @@ pub struct Thread {
 
 impl Thread {
     pub const TAKE_YIELDPOINT_OFFSET: usize = std::mem::offset_of!(Self, take_yieldpoint);
-    pub const YIELDPOINT_PAGE_OFFSET: usize =
-        std::mem::offset_of!(Self, yieldpoint_page) + std::mem::offset_of!(YieldpointPage, address);
     pub const NATIVE_DATA_OFFSET: usize = std::mem::offset_of!(Self, native_data);
     pub const RT_STATE_OFFSET: usize =
         Self::NATIVE_DATA_OFFSET + std::mem::offset_of!(ThreadNativeData, state);
@@ -162,65 +159,12 @@ impl Thread {
         unsafe { Address::from_usize(self.native_data().gc_scan_sp.load(Ordering::Relaxed)) }
     }
 
-    pub(crate) fn platform_thread_context(
-        &self,
-    ) -> Option<crate::rsgc::sync::safepoint::PlatformThreadContext> {
-        if !self.native_data().platform_context_valid.load(Ordering::Relaxed) {
-            return None;
-        }
-
-        Some(unsafe { *self.native_data().platform_context.get() })
-    }
-
-    pub(crate) fn record_platform_thread_context(
-        &self,
-        context: crate::rsgc::sync::safepoint::PlatformThreadContext,
-    ) {
-        unsafe {
-            *self.native_data().platform_context.get() = context;
-        }
-        self.native_data()
-            .gc_scan_sp
-            .store(context.stack_pointer().as_usize(), Ordering::Relaxed);
-        self.native_data()
-            .platform_context_valid
-            .store(true, Ordering::Relaxed);
-    }
-
     pub(crate) fn record_gc_scan_sp(&self) {
         if let Some(sp) = current_stack_pointer() {
             self.native_data()
                 .gc_scan_sp
                 .store(sp.as_usize(), Ordering::Relaxed);
-            self.native_data()
-                .platform_context_valid
-                .store(false, Ordering::Relaxed);
         }
-    }
-
-    pub(crate) fn is_yieldpoint_page_fault(&self, addr: Address) -> bool {
-        self.yieldpoint_page.contains(addr)
-    }
-
-    fn arm_yieldpoint_page(&self) {
-        self.yieldpoint_page.protect();
-    }
-
-    fn disarm_yieldpoint_page(&self) {
-        self.yieldpoint_page.unprotect();
-    }
-
-    pub(crate) fn handle_yieldpoint_fault(
-        context: crate::rsgc::sync::safepoint::PlatformThreadContext,
-    ) {
-        let thread = current_thread();
-        thread.record_platform_thread_context(context);
-        thread.disarm_yieldpoint_page();
-        Self::yieldpoint();
-    }
-
-    pub(crate) fn try_current<'a>() -> Option<&'a Thread> {
-        THREAD.with(|t| *t.borrow())
     }
 
     pub fn active_mutator_context(&self) -> bool {
@@ -349,7 +293,6 @@ impl Thread {
             thread
                 .status_word
                 .update_synchronized::<AtYieldpoint>(false);
-            thread.disarm_yieldpoint_page();
             thread.take_yieldpoint.store(0, Ordering::Relaxed);
             return;
         }
@@ -357,7 +300,6 @@ impl Thread {
         let mut guard = thread.monitor.lock();
 
         if thread.take_yieldpoint() != 0 {
-            thread.disarm_yieldpoint_page();
             thread.take_yieldpoint.store(0, Ordering::Relaxed);
             thread.check_block(&mut guard);
         }
@@ -473,7 +415,6 @@ impl Thread {
             result = ThreadState::Terminated;
         } else {
             self.take_yieldpoint.store(1, Ordering::Relaxed);
-            self.arm_yieldpoint_page();
             let new_state = self.set_blocked_exec_status();
             result = new_state;
 
@@ -609,7 +550,6 @@ impl Thread {
             heap_shift,
             id: AtomicU64::new(0),
             take_yieldpoint: AtomicI32::new(0),
-            yieldpoint_page: YieldpointPage::new(),
             yieldpoints_enabled_count: AtomicI32::new(1),
             status_word: AtomicBitfieldContainer::new(
                 ThreadStateField::encode(ThreadState::New)
@@ -627,10 +567,6 @@ impl Thread {
                 stack_low: Address::ZERO,
                 stack_high: Address::ZERO,
                 gc_scan_sp: AtomicUsize::new(0),
-                platform_context: UnsafeCell::new(
-                    crate::rsgc::sync::safepoint::PlatformThreadContext::empty(),
-                ),
-                platform_context_valid: AtomicBool::new(false),
             }),
             index_in_thread_list: AtomicUsize::new(usize::MAX),
         });
@@ -765,9 +701,6 @@ pub struct ThreadNativeData {
     pub(crate) stack_low: Address,
     pub(crate) stack_high: Address,
     pub(crate) gc_scan_sp: AtomicUsize,
-    pub(crate) platform_context:
-        UnsafeCell<crate::rsgc::sync::safepoint::PlatformThreadContext>,
-    pub(crate) platform_context_valid: AtomicBool,
 }
 
 thread_local! {
