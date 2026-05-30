@@ -16,9 +16,12 @@ use crate::{
 use mmtk::{
     AllocationSemantics, BarrierSelector, MutatorContext,
     util::{
+        Address,
         alloc::{AllocatorSelector, BumpAllocator, ImmixAllocator},
         conversions::raw_align_up,
-        metadata::side_metadata::global_side_metadata_vm_base_address,
+        metadata::side_metadata::{
+            global_side_metadata_vm_base_address, vo_bit_side_metadata_addr,
+        },
     },
 };
 use parking_lot::{Mutex, Once};
@@ -36,6 +39,26 @@ use std::{
 };
 
 pub static GLOBAL_SIDE_METADATA_BASE_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+pub static VO_BIT_SIDE_METADATA_BASE_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+
+#[inline(always)]
+pub(crate) fn vo_bit_side_metadata_base() -> Address {
+    unsafe {
+        Address::from_usize(VO_BIT_SIDE_METADATA_BASE_ADDRESS.load(Ordering::Relaxed))
+    }
+}
+
+/// Set the valid-object (VO) bit for a heap object reference address.
+#[inline(always)]
+pub(crate) unsafe fn set_vo_bit_for_object_ref(object_ref: Address) {
+    let base = vo_bit_side_metadata_base();
+    let meta_addr = base + (object_ref.as_usize() >> 6);
+    let shift = (object_ref.as_usize() >> 3) & 0b111;
+    let byte_val = unsafe { meta_addr.load::<u8>() };
+    unsafe {
+        meta_addr.store::<u8>(byte_val | (1 << shift));
+    }
+}
 
 pub trait Rootable<'a> {
     type Root: ?Sized + 'a;
@@ -146,6 +169,10 @@ where
 
             GLOBAL_SIDE_METADATA_BASE_ADDRESS.store(
                 global_side_metadata_vm_base_address().as_usize(),
+                Ordering::Relaxed,
+            );
+            VO_BIT_SIDE_METADATA_BASE_ADDRESS.store(
+                vo_bit_side_metadata_addr().as_usize(),
                 Ordering::Relaxed,
             );
 
@@ -778,7 +805,9 @@ impl<'gc> Mutation<'gc> {
                 );
                 if !object_start.is_zero() {
                     object_start.store(HeapObjectHeader::new(info));
-                    return GCObject::from(object_start + OBJECT_REF_OFFSET);
+                    let object_ref = object_start + OBJECT_REF_OFFSET;
+                    set_vo_bit_for_object_ref(object_ref);
+                    return GCObject::from(object_ref);
                 }
 
                 return self.raw_allocate_slow_with_info(size, alignment, info, semantics);
@@ -882,7 +911,9 @@ impl<'gc> Mutation<'gc> {
 
                 let object_start = lab.allocate(size + size_of::<HeapObjectHeader>(), alignment, 0);
                 if !object_start.is_zero() {
-                    return GCObject::from(object_start + OBJECT_REF_OFFSET);
+                    let object_ref = object_start + OBJECT_REF_OFFSET;
+                    set_vo_bit_for_object_ref(object_ref);
+                    return GCObject::from(object_ref);
                 }
 
                 return self.raw_allocate_slow_uninit(size, alignment, semantics);

@@ -586,6 +586,43 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
+    pub fn emit_set_vo_bit(&mut self, object_ref: ir::Value) {
+        let vo_bit_side_metadata =
+            self.import_data(self.module_builder.vo_bit_side_metadata_base_address);
+        let meta_base_address = self
+            .builder
+            .ins()
+            .global_value(types::I64, vo_bit_side_metadata);
+        let meta_base_address = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            meta_base_address,
+            0,
+        );
+        let shifted_addr = self.builder.ins().ushr_imm(object_ref, 6);
+        let meta_addr = self.builder.ins().iadd(meta_base_address, shifted_addr);
+        let shift = self.builder.ins().ushr_imm(object_ref, 3);
+        let shift = self.builder.ins().band_imm(shift, 0b111);
+
+        let byte_val = self.builder.ins().load(
+            types::I8,
+            ir::MemFlags::trusted().with_can_move(),
+            meta_addr,
+            0,
+        );
+        let byte_i64 = self.builder.ins().uextend(types::I64, byte_val);
+        let one = self.builder.ins().iconst(types::I64, 1);
+        let mask = self.builder.ins().ishl(one, shift);
+        let new_byte_i64 = self.builder.ins().bor(byte_i64, mask);
+        let new_byte = self.builder.ins().ireduce(types::I8, new_byte_i64);
+        self.builder.ins().store(
+            ir::MemFlags::trusted(),
+            new_byte,
+            meta_addr,
+            0,
+        );
+    }
+
     pub fn pre_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {
         let _ = (src, offset, target);
 

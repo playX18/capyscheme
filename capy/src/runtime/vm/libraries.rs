@@ -1,6 +1,8 @@
 //! Collection of loaded shared libraries
 
-use mmtk::util::metadata::side_metadata::global_side_metadata_vm_base_address;
+use mmtk::util::metadata::side_metadata::{
+    global_side_metadata_vm_base_address, vo_bit_side_metadata_addr,
+};
 
 use crate::rsgc::{Global, Trace, mmtk::util::Address, sync::monitor::Monitor};
 use crate::runtime::{
@@ -14,7 +16,7 @@ pub struct SchemeLibrary<'gc> {
     pub library: *mut (),
     pub path: std::path::PathBuf,
     pub entrypoint: Value<'gc>,
-    pub init_fn: extern "C-unwind" fn(Context<'gc>, usize) -> Value<'gc>,
+    pub init_fn: extern "C-unwind" fn(Context<'gc>, usize, usize) -> Value<'gc>,
     pub fbase: Address,
 
     pub globals: &'static [*mut Value<'static>],
@@ -107,7 +109,7 @@ impl<'gc> SchemeLibrary<'gc> {
                     format!("Failed to find symbol capy_module_init: {}", err_str),
                 ));
             }
-            let module_init: extern "C-unwind" fn(Context<'gc>, usize) -> Value<'gc> =
+            let module_init: extern "C-unwind" fn(Context<'gc>, usize, usize) -> Value<'gc> =
                 std::mem::transmute(sym);
 
             let mut dladdr: MaybeUninit<libc::Dl_info> = MaybeUninit::uninit();
@@ -123,7 +125,11 @@ impl<'gc> SchemeLibrary<'gc> {
             let fbase = Address::from_ptr(dladdr.dli_fbase);
 
             let entrypoint = if initialize {
-                module_init(ctx, global_side_metadata_vm_base_address().as_usize())
+                module_init(
+                    ctx,
+                    global_side_metadata_vm_base_address().as_usize(),
+                    vo_bit_side_metadata_addr().as_usize(),
+                )
             } else {
                 Value::new(false)
             };

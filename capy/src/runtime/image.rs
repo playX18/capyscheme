@@ -187,18 +187,11 @@ pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AllowedGC {
-    /// Allow only to enable generational GC plans:
-    /// - StickyImmix
-    /// - GenImmix
-    /// - GenCopy
+    /// Allow only StickyImmix.
     Generational,
-    /// Allow only to enable concurrent GC plans:
-    /// - ConcurrentImmix
+    /// Allow only ConcurrentImmix.
     Concurrent,
-    /// Allow only to enable regular GC plans:
-    /// - MarkSweep
-    /// - Immix
-    /// - SemiSpace
+    /// Allow only MarkSweep and Immix.
     Regular,
 }
 
@@ -206,14 +199,11 @@ impl AllowedGC {
     pub fn adjust_mmtk_options(&self, opts: &mut Options) {
         match self {
             AllowedGC::Generational => {
-                if !matches!(
-                    *opts.plan,
-                    PlanSelector::StickyImmix | PlanSelector::GenImmix | PlanSelector::GenCopy
-                ) {
+                if !matches!(*opts.plan, PlanSelector::StickyImmix) {
                     println!(
-                        ";; WARN: The loaded heap image only allows generational GC plans. Switching to GenImmix plan."
+                        ";; WARN: The loaded heap image only allows StickyImmix. Switching to StickyImmix plan."
                     );
-                    opts.plan.set(PlanSelector::GenImmix);
+                    opts.plan.set(PlanSelector::StickyImmix);
                 }
             }
 
@@ -227,17 +217,15 @@ impl AllowedGC {
             }
 
             AllowedGC::Regular => {
-                if !matches!(
-                    *opts.plan,
-                    PlanSelector::MarkSweep | PlanSelector::Immix | PlanSelector::SemiSpace
-                ) {
+                if !matches!(*opts.plan, PlanSelector::MarkSweep | PlanSelector::Immix) {
                     println!(
-                        ";; WARN: The loaded heap image only allows regular GC plans. Switching to Immix plan."
+                        ";; WARN: The loaded heap image only allows MarkSweep or Immix. Switching to Immix plan."
                     );
                     opts.plan.set(PlanSelector::Immix);
                 }
             }
         }
+        crate::rsgc::plans::validate_plan(*opts.plan);
     }
 }
 
