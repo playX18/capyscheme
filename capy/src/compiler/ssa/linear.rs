@@ -219,31 +219,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     fn overflow_base_from_argc(&mut self, argc: ir::Value) -> ir::Value {
         let state = self.state_ptr();
-        let overflow_count = self
-            .builder
-            .ins()
-            .iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        let has_overflow = self.builder.ins().icmp_imm(
-            IntCC::UnsignedGreaterThan,
-            argc,
-            REGISTER_ARG_COUNT as i64,
-        );
-        let overflow_count = self
-            .builder
-            .ins()
-            .select(has_overflow, overflow_count, zero);
-        let overflow_bytes = self
-            .builder
-            .ins()
-            .imul_imm(overflow_count, std::mem::size_of::<Value>() as i64);
-        let runstack = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack) as i32,
-        );
-        self.builder.ins().isub(runstack, overflow_bytes)
+        super::overflow_base_from_argc(&mut self.builder, state, argc)
     }
 
     fn raw_arg_at(
@@ -1842,7 +1818,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         let yieldpoint = self.builder.ins().load(
             types::I32,
-            ir::MemFlags::trusted().with_can_move(),
+            ir::MemFlags::trusted(),
             thread,
             Thread::TAKE_YIELDPOINT_OFFSET as i32,
         );

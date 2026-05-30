@@ -62,6 +62,33 @@ pub struct RegisterCallArgs {
     pub overflow: ir::Value,
 }
 
+pub(crate) fn overflow_base_from_argc(
+    builder: &mut FunctionBuilder<'_>,
+    state: ir::Value,
+    argc: ir::Value,
+) -> ir::Value {
+    let overflow_count = builder
+        .ins()
+        .iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
+    let zero = builder.ins().iconst(types::I64, 0);
+    let has_overflow = builder.ins().icmp_imm(
+        ir::condcodes::IntCC::UnsignedGreaterThan,
+        argc,
+        REGISTER_ARG_COUNT as i64,
+    );
+    let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
+    let overflow_bytes = builder
+        .ins()
+        .imul_imm(overflow_count, size_of::<Value>() as i64);
+    let runstack = builder.ins().load(
+        types::I64,
+        ir::MemFlags::trusted().with_can_move(),
+        state,
+        offset_of!(State, runstack) as i32,
+    );
+    builder.ins().isub(runstack, overflow_bytes)
+}
+
 pub(crate) fn compiled_scheme_signature() -> ir::Signature {
     let mut sig = ir::Signature::new(CallConv::Tail);
     for _ in 0..COMPILED_ENTRY_ARG_COUNT {
@@ -371,26 +398,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let ctx = builder.ins().get_pinned_reg(types::I64);
         let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
-        let overflow_count = builder
-            .ins()
-            .iadd_imm(actual_argc, -(REGISTER_ARG_COUNT as i64));
-        let zero = builder.ins().iconst(types::I64, 0);
-        let has_overflow = builder.ins().icmp_imm(
-            ir::condcodes::IntCC::UnsignedGreaterThan,
-            actual_argc,
-            REGISTER_ARG_COUNT as i64,
-        );
-        let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
-        let overflow_bytes = builder
-            .ins()
-            .imul_imm(overflow_count, size_of::<Value>() as i64);
-        let runstack = builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack) as i32,
-        );
-        let overflow = builder.ins().isub(runstack, overflow_bytes);
+        let overflow = overflow_base_from_argc(&mut builder, state, actual_argc);
         builder.ins().store(
             ir::MemFlags::trusted().with_can_move(),
             overflow,
@@ -496,24 +504,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
             let ctx = builder.ins().get_pinned_reg(types::I64);
             let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
-            let overflow_count = builder.ins().iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
-            let zero = builder.ins().iconst(types::I64, 0);
-            let has_overflow = builder.ins().icmp_imm(
-                ir::condcodes::IntCC::UnsignedGreaterThan,
-                argc,
-                REGISTER_ARG_COUNT as i64,
-            );
-            let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
-            let overflow_bytes = builder
-                .ins()
-                .imul_imm(overflow_count, size_of::<Value>() as i64);
-            let runstack = builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                state,
-                offset_of!(State, runstack) as i32,
-            );
-            let overflow = builder.ins().isub(runstack, overflow_bytes);
+            let overflow = overflow_base_from_argc(&mut builder, state, argc);
             let from = builder.ins().iconst(types::I64, 1);
             let condition = builder.ins().call(
                 thunks.raise_condition_regs,

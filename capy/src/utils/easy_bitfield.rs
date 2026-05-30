@@ -314,14 +314,6 @@ impl<T: bytemuck::NoUninit + FromPrimitive + ToPrimitive + PrimInt> AtomicBitfie
         }
     }
 
-    /// Update container according to bitfield `B`. Does atomic store under the hood
-    pub fn update_synchronized<B: BitFieldTrait<T>>(&self, value: B::Type) {
-        self.0.store(
-            B::update(value, self.0.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
-    }
-
     /// Conditional update of storage container according to bitfield `B`.
     ///
     /// This is equivalent of CAS for bitfields.

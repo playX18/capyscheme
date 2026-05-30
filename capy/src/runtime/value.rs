@@ -166,7 +166,12 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn from_f64(f: f64) -> Self {
-        Self::from_raw_i64((f.to_bits() as i64).wrapping_add(Self::DOUBLE_ENCODE_OFFSET as i64))
+        let bits = if f.is_nan() {
+            pure_nan::PURE_NAN_BITS
+        } else {
+            f.to_bits()
+        };
+        Self::from_raw_i64((bits as i64).wrapping_add(Self::DOUBLE_ENCODE_OFFSET as i64))
     }
 
     pub fn from_bool(b: bool) -> Self {
@@ -247,13 +252,13 @@ impl<'gc> Value<'gc> {
 
     pub fn is_char(self) -> bool {
         self.raw_i64() & Self::CHAR_MASK == Self::CHAR_TAG
+            && char::from_u32((self.raw_i64() >> 16) as u32).is_some()
     }
 
     pub fn char(self) -> char {
         debug_assert!(self.is_char());
-        // SAFETY: Values with `is_char()` were created via `from_char()`, which stores a valid
-        // `char` (a Unicode scalar value) shifted left by 16 bits. Reversing the shift recovers it.
-        unsafe { char::from_u32_unchecked((self.raw_i64() >> 16) as i32 as u32) }
+        char::from_u32((self.raw_i64() >> 16) as u32)
+            .expect("char value must contain a valid Unicode scalar")
     }
 
     pub fn is_null(self) -> bool {
@@ -761,6 +766,37 @@ impl<'gc> std::fmt::Display for Value<'gc> {
 impl<'gc> fmt::Debug for Value<'gc> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Value, pure_nan};
+
+    #[test]
+    fn from_f64_canonicalizes_nan_payloads() {
+        let payloads = [
+            pure_nan::PURE_NAN_BITS,
+            0x7ff8000000000001,
+            0x7ff0000000000001,
+            0xfff8000000000001,
+        ];
+
+        for bits in payloads {
+            let value = Value::from_f64(f64::from_bits(bits));
+
+            assert!(value.is_flonum());
+            assert_eq!(value.as_flonum().to_bits(), pure_nan::PURE_NAN_BITS);
+        }
+    }
+
+    #[test]
+    fn is_char_rejects_invalid_scalar_payloads() {
+        let surrogate = Value::from_raw_i64((0xd800_i64 << 16) | Value::CHAR_TAG);
+        let above_scalar_range = Value::from_raw_i64((0x110000_i64 << 16) | Value::CHAR_TAG);
+
+        assert!(!surrogate.is_char());
+        assert!(!above_scalar_range.is_char());
     }
 }
 

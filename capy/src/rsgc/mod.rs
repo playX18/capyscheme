@@ -8,6 +8,7 @@ pub use mmtk;
 use finalizer::Finalizers;
 use mm::MemoryManager;
 use mmtk::util::Address;
+use mmtk::util::options::PlanSelector;
 pub use mmtk::{MMTK, MMTKBuilder};
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicU32;
@@ -47,7 +48,7 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 static SHIFT: AtomicU32 = AtomicU32::new(0);
 
 impl GarbageCollector {
-    fn new(mmtk: MMTKBuilder) -> Self {
+    fn new(mut mmtk: MMTKBuilder) -> Self {
         let this = Self {
             finalizers: Finalizers::new(),
             weak: WeakProcessingState::new(),
@@ -63,8 +64,9 @@ impl GarbageCollector {
         } else {
             (mmtk::memory_manager::starting_heap_address() - 4096, 3)
         };
-
-        plans::validate_plan(*mmtk.options.plan);
+        if !plans::is_allowed_plan(*mmtk.options.plan) {
+            mmtk.options.plan.set(PlanSelector::StickyImmix);
+        }
 
         BASE.store(heap_base.as_usize(), std::sync::atomic::Ordering::Relaxed);
         SHIFT.store(heap_shift, std::sync::atomic::Ordering::Relaxed);
@@ -118,7 +120,7 @@ pub use traits::Trace;
 pub use weak::*;
 
 pub use conservative::is_mmtk_heap_object;
-pub use plans::{ALLOWED_GC_PLAN_NAMES, is_allowed_plan, validate_plan};
+pub use plans::{ALLOWED_GC_PLAN_NAMES, is_allowed_plan};
 
 pub fn compressed_heap_base() -> Address {
     unsafe { Address::from_usize(BASE.load(std::sync::atomic::Ordering::Relaxed)) }

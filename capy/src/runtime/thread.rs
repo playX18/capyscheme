@@ -238,48 +238,13 @@ impl<'gc> Context<'gc> {
         retk: Option<Value<'gc>>,
     ) {
         let state = self.state();
-        let overflow = state.runstack.get().to_mut_ptr::<Value>();
-        let mut argc = 0usize;
+        let packed = pack_call_args(state, rands, retk);
 
         state.call_data.clear();
-
-        if let Some(retk) = retk {
-            state.call_data.set_arg(argc, retk);
-            argc += 1;
+        for (index, arg) in packed.regs.iter().copied().enumerate() {
+            state.call_data.set_arg(index, arg);
         }
-
-        for rand in rands {
-            if argc < REGISTER_ARG_COUNT {
-                state.call_data.set_arg(argc, rand);
-            } else {
-                let overflow_index = argc - REGISTER_ARG_COUNT;
-                unsafe {
-                    let slot = overflow.add(overflow_index);
-                    if Address::from_ptr(slot) >= state.runstack_end {
-                        panic!(
-                            "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
-                            Address::from_ptr(slot),
-                            state.runstack_end,
-                            argc + 1,
-                            (state.runstack_end - state.runstack_start) / size_of::<Value>()
-                        );
-                    }
-                    if Address::from_ptr(slot) < state.runstack_start {
-                        panic!("runstack underflow");
-                    }
-                    *slot = rand;
-                }
-            }
-            argc += 1;
-        }
-
-        let overflow_count = argc.saturating_sub(REGISTER_ARG_COUNT);
-        unsafe {
-            state
-                .runstack
-                .set(Address::from_ptr(overflow.add(overflow_count)));
-        }
-        state.call_data.argc.set(argc);
+        state.call_data.argc.set(packed.argc);
         state.call_data.rator.set(rator);
     }
 
@@ -288,49 +253,8 @@ impl<'gc> Context<'gc> {
         rands: impl IntoIterator<Item = Value<'gc>>,
         retk: Option<Value<'gc>>,
     ) -> (usize, [Value<'gc>; REGISTER_ARG_COUNT]) {
-        let state = self.state();
-        let overflow = state.runstack.get().to_mut_ptr::<Value>();
-        let mut regs = [Value::undefined(); REGISTER_ARG_COUNT];
-        let mut argc = 0usize;
-
-        if let Some(retk) = retk {
-            regs[argc] = retk;
-            argc += 1;
-        }
-
-        for rand in rands {
-            if argc < REGISTER_ARG_COUNT {
-                regs[argc] = rand;
-            } else {
-                let overflow_index = argc - REGISTER_ARG_COUNT;
-                unsafe {
-                    let slot = overflow.add(overflow_index);
-                    if Address::from_ptr(slot) >= state.runstack_end {
-                        panic!(
-                            "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
-                            Address::from_ptr(slot),
-                            state.runstack_end,
-                            argc + 1,
-                            (state.runstack_end - state.runstack_start) / size_of::<Value>()
-                        );
-                    }
-                    if Address::from_ptr(slot) < state.runstack_start {
-                        panic!("runstack underflow");
-                    }
-                    *slot = rand;
-                }
-            }
-            argc += 1;
-        }
-
-        let overflow_count = argc.saturating_sub(REGISTER_ARG_COUNT);
-        unsafe {
-            state
-                .runstack
-                .set(Address::from_ptr(overflow.add(overflow_count)));
-        }
-
-        (argc, regs)
+        let packed = pack_call_args(self.state(), rands, retk);
+        (packed.argc, packed.regs)
     }
 
     pub fn module(self, name: &str) -> Option<Gc<'gc, Module<'gc>>> {
@@ -536,6 +460,60 @@ impl<'gc> CallData<'gc> {
             self.set_arg(index, Value::undefined());
         }
     }
+}
+
+struct PackedCallArgs<'gc> {
+    argc: usize,
+    regs: [Value<'gc>; REGISTER_ARG_COUNT],
+}
+
+fn pack_call_args<'gc>(
+    state: &State<'gc>,
+    rands: impl IntoIterator<Item = Value<'gc>>,
+    retk: Option<Value<'gc>>,
+) -> PackedCallArgs<'gc> {
+    let overflow = state.runstack.get().to_mut_ptr::<Value>();
+    let mut regs = [Value::undefined(); REGISTER_ARG_COUNT];
+    let mut argc = 0usize;
+
+    if let Some(retk) = retk {
+        regs[argc] = retk;
+        argc += 1;
+    }
+
+    for rand in rands {
+        if argc < REGISTER_ARG_COUNT {
+            regs[argc] = rand;
+        } else {
+            let overflow_index = argc - REGISTER_ARG_COUNT;
+            unsafe {
+                let slot = overflow.add(overflow_index);
+                if Address::from_ptr(slot) >= state.runstack_end {
+                    panic!(
+                        "runstack overflow: {} >= {}, too many arguments: {}, can fit: {}",
+                        Address::from_ptr(slot),
+                        state.runstack_end,
+                        argc + 1,
+                        (state.runstack_end - state.runstack_start) / size_of::<Value>()
+                    );
+                }
+                if Address::from_ptr(slot) < state.runstack_start {
+                    panic!("runstack underflow");
+                }
+                *slot = rand;
+            }
+        }
+        argc += 1;
+    }
+
+    let overflow_count = argc.saturating_sub(REGISTER_ARG_COUNT);
+    unsafe {
+        state
+            .runstack
+            .set(Address::from_ptr(overflow.add(overflow_count)));
+    }
+
+    PackedCallArgs { argc, regs }
 }
 
 #[repr(C)]
@@ -976,3 +954,114 @@ fn make_fresh_runstack() -> (Address, Address) {
 }
 
 pub(crate) static SCM_INITIALIZED: Once = Once::new();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mmtk::vm::SlotVisitor;
+
+    #[derive(Default)]
+    struct RecordingSlotVisitor {
+        slots: Vec<crate::rsgc::ObjectSlot>,
+    }
+
+    impl SlotVisitor<crate::rsgc::ObjectSlot> for RecordingSlotVisitor {
+        fn visit_slot(&mut self, slot: crate::rsgc::ObjectSlot) {
+            self.slots.push(slot);
+        }
+    }
+
+    fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
+        Scheme::new_uninit().enter(f);
+    }
+
+    fn overflow_values<'gc>(state: &State<'gc>, count: usize) -> Vec<Value<'gc>> {
+        unsafe {
+            std::slice::from_raw_parts(state.runstack_start.to_ptr::<Value>(), count).to_vec()
+        }
+    }
+
+    #[test]
+    fn pack_call_args_handles_zero_args_without_advancing_runstack() {
+        with_ctx(|ctx| {
+            let state = ctx.state();
+            let start = state.runstack.get();
+
+            let packed = pack_call_args(state, [], None);
+
+            assert_eq!(packed.argc, 0);
+            assert_eq!(packed.regs, [Value::undefined(); REGISTER_ARG_COUNT]);
+            assert_eq!(state.runstack.get(), start);
+        });
+    }
+
+    #[test]
+    fn pack_call_args_keeps_four_args_in_registers() {
+        with_ctx(|ctx| {
+            let state = ctx.state();
+            let start = state.runstack.get();
+            let args = [1, 2, 3, 4].map(Value::new);
+
+            let packed = pack_call_args(state, args, None);
+
+            assert_eq!(packed.argc, 4);
+            assert_eq!(packed.regs, args);
+            assert_eq!(state.runstack.get(), start);
+        });
+    }
+
+    #[test]
+    fn pack_call_args_treats_retk_as_first_arg_and_spills_overflow() {
+        with_ctx(|ctx| {
+            let state = ctx.state();
+            let retk = Value::new(99);
+            let args = [1, 2, 3, 4, 5].map(Value::new);
+
+            let packed = pack_call_args(state, args, Some(retk));
+
+            assert_eq!(packed.argc, 6);
+            assert_eq!(packed.regs, [retk, args[0], args[1], args[2]]);
+            assert_eq!(overflow_values(state, 2), vec![args[3], args[4]]);
+            assert_eq!(
+                state.runstack.get(),
+                state.runstack_start + 2 * size_of::<Value>()
+            );
+        });
+    }
+
+    #[test]
+    fn gc_save_traces_and_pins_compiled_entry_roots() {
+        with_ctx(|ctx| {
+            let rator = ctx.str("saved-rator");
+            let arg0 = ctx.str("saved-arg0");
+            let arg1 = ctx.str("saved-arg1");
+
+            ctx.state()
+                .gc_save
+                .save_entry(rator, 2, [arg0, arg1, Value::undefined(), Value::undefined()]);
+
+            let mut slot_visitor = RecordingSlotVisitor::default();
+            let mut visitor = unsafe {
+                crate::rsgc::collection::Visitor::new(
+                    crate::rsgc::collection::VisitorKind::Slot(&mut slot_visitor),
+                    None,
+                )
+            };
+
+            let gc_save = std::ptr::addr_of!(ctx.state().gc_save).cast_mut();
+            unsafe {
+                (*gc_save).trace(&mut visitor);
+            }
+
+            let pinned = visitor.pinned_roots.clone();
+            drop(visitor);
+
+            assert!(slot_visitor.slots.len() >= 3);
+            assert!(pinned.contains(&rator.as_cell_raw().to_objref().unwrap()));
+            assert!(pinned.contains(&arg0.as_cell_raw().to_objref().unwrap()));
+            assert!(pinned.contains(&arg1.as_cell_raw().to_objref().unwrap()));
+
+            ctx.state().gc_save.clear();
+        });
+    }
+}

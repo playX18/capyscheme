@@ -2747,7 +2747,7 @@ fn emit_minus<'gc, 'a, 'f>(
 fn emit_negate<'gc, 'a, 'f>(ssa: &mut SSABuilder<'gc, 'a, 'f>, a: ir::Value) -> ir::Value {
     ssa.inline_unary_op(
         a,
-        |ssa, val| {
+        |ssa, val, slow| {
             let zero = ssa.builder.ins().iconst(types::I32, 0);
             let (result, ovf) = ssa.builder.ins().ssub_overflow(zero, val);
             let succ = ssa.builder.create_block();
@@ -2755,7 +2755,7 @@ fn emit_negate<'gc, 'a, 'f>(ssa: &mut SSABuilder<'gc, 'a, 'f>, a: ir::Value) -> 
             ssa.builder.append_block_param(succ, types::I32);
             ssa.builder
                 .ins()
-                .brif(ovf, succ, &[], succ, &[BlockArg::Value(result)]);
+                .brif(ovf, slow, &[], succ, &[BlockArg::Value(result)]);
             ssa.builder.switch_to_block(succ);
             ssa.builder.block_params(succ)[0]
         },

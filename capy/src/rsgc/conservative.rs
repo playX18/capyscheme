@@ -15,6 +15,10 @@ pub(crate) fn scan_conservative_native_stack(
     thread: &Thread,
     factory: &mut impl RootsWorkFactory<crate::rsgc::ObjectSlot>,
 ) {
+    // Compiled entry yieldpoints save their ABI roots in State::gc_save before
+    // blocking. This native stack scan is only the conservative fallback for
+    // Rust/native frames and compiler spills between the recorded SP and stack
+    // high bound.
     let scan_sp = thread.gc_scan_sp();
     if scan_sp.is_zero() {
         return;

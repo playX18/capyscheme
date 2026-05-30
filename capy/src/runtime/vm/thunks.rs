@@ -743,6 +743,9 @@ thunks! {
         arg2: Value<'gc>,
         arg3: Value<'gc>
     ) -> () {
+        // Entry yieldpoints run before argument loading. Save the ABI roots so
+        // GC does not rely on machine registers being visible to conservative
+        // stack scanning while this thunk blocks.
         ctx.state()
             .gc_save
             .save_entry(rator, argc, [arg0, arg1, arg2, arg3]);

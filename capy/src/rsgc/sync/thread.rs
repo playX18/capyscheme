@@ -98,8 +98,7 @@ impl FromBitfield<u64> for ThreadState {
 
 type ThreadStateField = BitField<u64, ThreadState, 0, 3, false>;
 type IsBlocking = BitField<u64, bool, { ThreadStateField::NEXT_BIT }, 1, false>;
-type YieldpointRequestPending = BitField<u64, bool, { IsBlocking::NEXT_BIT }, 1, false>;
-type AtYieldpoint = BitField<u64, bool, { YieldpointRequestPending::NEXT_BIT }, 1, false>;
+type AtYieldpoint = BitField<u64, bool, { IsBlocking::NEXT_BIT }, 1, false>;
 type SoftHandshakeRequested = BitField<u64, bool, { AtYieldpoint::NEXT_BIT }, 1, false>;
 type ShouldSuspend = BitField<u64, bool, { SoftHandshakeRequested::NEXT_BIT }, 1, false>;
 type IsSuspended = BitField<u64, bool, { ShouldSuspend::NEXT_BIT }, 1, false>;
@@ -117,7 +116,6 @@ type ThreadStateInitialized = BitField<u64, bool, { ActiveMutatorContext::NEXT_B
 pub struct Thread {
     native_data: UnsafeCell<ThreadNativeData>,
     pub(crate) take_yieldpoint: AtomicI32,
-    yieldpoints_enabled_count: AtomicI32,
     id: AtomicU64,
     status_word: AtomicBitfieldContainer<u64>,
     monitor: Monitor<()>,
@@ -160,11 +158,10 @@ impl Thread {
     }
 
     pub(crate) fn record_gc_scan_sp(&self) {
-        if let Some(sp) = current_stack_pointer() {
-            self.native_data()
-                .gc_scan_sp
-                .store(sp.as_usize(), Ordering::Relaxed);
-        }
+        let sp = current_stack_pointer();
+        self.native_data()
+            .gc_scan_sp
+            .store(sp.as_usize(), Ordering::Relaxed);
     }
 
     pub fn active_mutator_context(&self) -> bool {
@@ -242,7 +239,7 @@ impl Thread {
         let id = self.id();
 
         self.record_gc_scan_sp();
-        self.status_word.update_synchronized::<IsBlocking>(true);
+        self.status_word.update::<IsBlocking>(true);
 
         let mut had_really_blocked = false;
 
@@ -268,34 +265,18 @@ impl Thread {
 
         self.status_word
             .update::<ThreadStateField>(ThreadState::Mutating);
-        self.status_word.update_synchronized::<IsBlocking>(false);
-    }
-
-    pub fn yieldpoints_enabled(&self) -> bool {
-        self.yieldpoints_enabled_count.load(Ordering::Relaxed) == 1
+        self.status_word.update::<IsBlocking>(false);
     }
 
     #[inline(never)]
     pub fn yieldpoint() {
         let thread = current_thread();
 
-        let was_at_yieldpoint = thread.status_word.read::<AtYieldpoint>();
-        thread.status_word.update_synchronized::<AtYieldpoint>(true);
-
-        if !thread.yieldpoints_enabled() {
-            if !was_at_yieldpoint {
-                log::debug!("Thread #{} is deferring yield", thread.id());
-            }
-
-            thread
-                .status_word
-                .update_synchronized::<YieldpointRequestPending>(true);
-            thread
-                .status_word
-                .update_synchronized::<AtYieldpoint>(false);
-            thread.take_yieldpoint.store(0, Ordering::Relaxed);
-            return;
-        }
+        // Compiled code may call this only through the yieldpoint thunk, which
+        // first saves the compiled entry ABI roots in State::gc_save. Overflow
+        // arguments are already rooted by the runstack. Do not add direct
+        // compiled calls here without preserving that invariant.
+        thread.status_word.update::<AtYieldpoint>(true);
 
         let mut guard = thread.monitor.lock();
 
@@ -308,13 +289,13 @@ impl Thread {
 
         thread
             .status_word
-            .update_synchronized::<AtYieldpoint>(false);
+            .update::<AtYieldpoint>(false);
     }
 
     fn enter_native_blocked(&self) {
         let guard = self.monitor.lock();
         self.status_word
-            .update_synchronized::<ThreadStateField>(ThreadState::InNative);
+            .update::<ThreadStateField>(ThreadState::InNative);
         self.acknowledge_block_requests(&guard);
         drop(guard);
     }
@@ -550,7 +531,6 @@ impl Thread {
             heap_shift,
             id: AtomicU64::new(0),
             take_yieldpoint: AtomicI32::new(0),
-            yieldpoints_enabled_count: AtomicI32::new(1),
             status_word: AtomicBitfieldContainer::new(
                 ThreadStateField::encode(ThreadState::New)
                     | ActiveMutatorContext::encode(for_mutator),
@@ -735,18 +715,41 @@ pub(crate) fn deinit_current_thread() {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn current_stack_pointer() -> Option<Address> {
+fn current_stack_pointer() -> Address {
     // SAFETY: reads the stack pointer register only.
     unsafe {
         let sp: usize;
         core::arch::asm!("mov {sp}, rsp", sp = out(reg) sp);
-        Some(Address::from_usize(sp))
+        Address::from_usize(sp)
     }
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn current_stack_pointer() -> Option<Address> {
-    None
+#[cfg(target_arch = "aarch64")]
+fn current_stack_pointer() -> Address {
+    // SAFETY: reads the stack pointer register only.
+    unsafe {
+        let sp: usize;
+        core::arch::asm!("mov {sp}, sp", sp = out(reg) sp);
+        Address::from_usize(sp)
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn current_stack_pointer() -> Address {
+    // SAFETY: reads the stack pointer register only.
+    unsafe {
+        let sp: usize;
+        core::arch::asm!("mv {sp}, sp", sp = out(reg) sp);
+        Address::from_usize(sp)
+    }
+}
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+#[inline(never)]
+fn current_stack_pointer() -> Address {
+    let mut addr = std::ptr::null_mut::<u8>();
+    addr = &mut addr as *mut *mut u8 as *mut u8;
+    Address::from_ptr(addr)
 }
 
 fn query_stack_bounds() -> (Address, Address) {

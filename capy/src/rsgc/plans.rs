@@ -13,10 +13,3 @@ pub fn is_allowed_plan(plan: PlanSelector) -> bool {
             | PlanSelector::Immix
     )
 }
-
-pub fn validate_plan(plan: PlanSelector) {
-    assert!(
-        is_allowed_plan(plan),
-        "Unsupported GC plan {plan:?}. Capy supports only: StickyImmix, ConcurrentImmix, MarkSweep, Immix."
-    );
-}

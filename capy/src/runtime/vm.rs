@@ -75,8 +75,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     if !rator.is::<Closure>() {
         return VMResult::Err(rator);
     }
-    let old_runstack = ctx.state().runstack.get();
-    let nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
+    let guard = NestedSchemeCallGuard::new(ctx);
 
     let (argc, regs) = ctx.prepare_scheme_call_args(args, Some(retk));
 
@@ -94,8 +93,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
         let val = trampoline(ctx, rator, argc, regs[0], regs[1], regs[2], regs[3], f);
-        ctx.state().nest_level.store(nest_level, Ordering::Relaxed);
-        ctx.state().runstack.set(old_runstack);
+        drop(guard);
 
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
@@ -113,8 +111,7 @@ pub unsafe extern "C" fn continue_to<'gc>(
     if !cont.is::<Closure>() {
         return VMResult::Err(cont);
     }
-    let old_runstack = ctx.state().runstack.get();
-    let nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
+    let guard = NestedSchemeCallGuard::new(ctx);
 
     let (argc, regs) = ctx.prepare_scheme_call_args(args, None);
 
@@ -132,13 +129,40 @@ pub unsafe extern "C" fn continue_to<'gc>(
         ) -> NativeReturn<'gc> = std::mem::transmute(f);
 
         let val = trampoline(ctx, cont, argc, regs[0], regs[1], regs[2], regs[3], f);
-        ctx.state().nest_level.store(nest_level, Ordering::Relaxed);
-        ctx.state().runstack.set(old_runstack);
+        drop(guard);
         match val.code {
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
             ReturnCode::ReturnErr => VMResult::Err(val.value),
             ReturnCode::ReturnOk => VMResult::Ok(val.value),
         }
+    }
+}
+
+struct NestedSchemeCallGuard<'gc> {
+    ctx: Context<'gc>,
+    old_runstack: mmtk::util::Address,
+    old_nest_level: usize,
+}
+
+impl<'gc> NestedSchemeCallGuard<'gc> {
+    fn new(ctx: Context<'gc>) -> Self {
+        let old_runstack = ctx.state().runstack.get();
+        let old_nest_level = ctx.state().nest_level.fetch_add(1, Ordering::Relaxed);
+        Self {
+            ctx,
+            old_runstack,
+            old_nest_level,
+        }
+    }
+}
+
+impl Drop for NestedSchemeCallGuard<'_> {
+    fn drop(&mut self) {
+        self.ctx
+            .state()
+            .nest_level
+            .store(self.old_nest_level, Ordering::Relaxed);
+        self.ctx.state().runstack.set(self.old_runstack);
     }
 }
 
@@ -864,5 +888,33 @@ pub struct NativeCallReturn<'gc> {
 impl<'gc> NativeCallReturn<'gc> {
     pub fn into_inner(self) -> NativeReturn<'gc> {
         self.ret
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+    use std::{mem::size_of, panic::AssertUnwindSafe};
+
+    #[test]
+    fn nested_scheme_call_guard_restores_state_on_unwind() {
+        Scheme::new_uninit().enter(|ctx| {
+            let old_runstack = ctx.state().runstack.get();
+            assert_eq!(ctx.nest_level(), 0);
+
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let _guard = NestedSchemeCallGuard::new(ctx);
+                ctx.state()
+                    .runstack
+                    .set(old_runstack + size_of::<Value>());
+                assert_eq!(ctx.nest_level(), 1);
+                panic!("force unwind across nested Scheme call state");
+            }));
+
+            assert!(result.is_err());
+            assert_eq!(ctx.nest_level(), 0);
+            assert_eq!(ctx.state().runstack.get(), old_runstack);
+        });
     }
 }
