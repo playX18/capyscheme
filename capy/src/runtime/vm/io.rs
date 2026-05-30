@@ -900,24 +900,14 @@ pub mod io_ops {
             let mut saved: libc::termios = std::mem::zeroed();
             if libc::tcgetattr(fd, &mut saved) < 0 {
                 let _ = libc::close(fd);
-                return term_io_error(
-                    nctx,
-                    IoOperation::Stat,
-                    "term/enable-raw-mode!",
-                    fd.into(),
-                );
+                return term_io_error(nctx, IoOperation::Stat, "term/enable-raw-mode!", fd.into());
             }
 
             let mut raw = saved;
             libc::cfmakeraw(&mut raw);
             if libc::tcsetattr(fd, libc::TCSANOW, &raw) < 0 {
                 let _ = libc::close(fd);
-                return term_io_error(
-                    nctx,
-                    IoOperation::Stat,
-                    "term/enable-raw-mode!",
-                    fd.into(),
-                );
+                return term_io_error(nctx, IoOperation::Stat, "term/enable-raw-mode!", fd.into());
             }
 
             *state = Some((fd, saved));
@@ -934,12 +924,7 @@ pub mod io_ops {
 
         unsafe {
             if libc::tcsetattr(fd, libc::TCSANOW, &saved) < 0 {
-                return term_io_error(
-                    nctx,
-                    IoOperation::Stat,
-                    "term/disable-raw-mode!",
-                    fd.into(),
-                );
+                return term_io_error(nctx, IoOperation::Stat, "term/disable-raw-mode!", fd.into());
             }
 
             if libc::close(fd) < 0 {
@@ -958,10 +943,12 @@ pub mod io_ops {
 
     #[scheme(name = "term/raw-mode-enabled?")]
     pub fn term_raw_mode_enabled() -> bool {
-        nctx.return_(TERM_RAW_MODE_STATE
-            .lock()
-            .expect("raw mode mutex poisoned")
-            .is_some())
+        nctx.return_(
+            TERM_RAW_MODE_STATE
+                .lock()
+                .expect("raw mode mutex poisoned")
+                .is_some(),
+        )
     }
 
     #[scheme(name = "term/terminal-size-list")]
@@ -1807,7 +1794,11 @@ pub mod io_ops {
                     collected.push((event.key, event_to_flags(event)));
                 }
             }
-            (res.is_ok(), res.err().and_then(|e| e.raw_os_error()), collected)
+            (
+                res.is_ok(),
+                res.err().and_then(|e| e.raw_os_error()),
+                collected,
+            )
         });
 
         let (ok, os_error, events) = wait_outcome;
@@ -1823,7 +1814,11 @@ pub mod io_ops {
             nctx.return_(ls)
         } else {
             let err = os_error.unwrap_or(i32::MAX);
-            nctx.raise_error("poller-wait", "failed to wait for events", &[err.into_value(ctx)])
+            nctx.raise_error(
+                "poller-wait",
+                "failed to wait for events",
+                &[err.into_value(ctx)],
+            )
         }
     }
 
@@ -1844,7 +1839,6 @@ pub mod io_ops {
             }
         }
     }
-
 }
 
 pub fn init_io<'gc>(ctx: Context<'gc>) {
@@ -1869,15 +1863,30 @@ pub fn init_io<'gc>(ctx: Context<'gc>) {
     export_term_primitive!("term/nonblocking!", make_static_closure_term_nonblocking);
     export_term_primitive!("term/read-fd", make_static_closure_term_read_fd);
     export_term_primitive!("term/write-fd", make_static_closure_term_write_fd);
-    export_term_primitive!("term/sigwinch-version", make_static_closure_term_sigwinch_version);
+    export_term_primitive!(
+        "term/sigwinch-version",
+        make_static_closure_term_sigwinch_version
+    );
     export_term_primitive!(
         "term/install-sigwinch-handler!",
         make_static_closure_term_install_sigwinch_handler
     );
-    export_term_primitive!("term/enable-raw-mode!", make_static_closure_term_enable_raw_mode);
-    export_term_primitive!("term/disable-raw-mode!", make_static_closure_term_disable_raw_mode);
-    export_term_primitive!("term/raw-mode-enabled?", make_static_closure_term_raw_mode_enabled);
-    export_term_primitive!("term/terminal-size-list", make_static_closure_term_terminal_size_list);
+    export_term_primitive!(
+        "term/enable-raw-mode!",
+        make_static_closure_term_enable_raw_mode
+    );
+    export_term_primitive!(
+        "term/disable-raw-mode!",
+        make_static_closure_term_disable_raw_mode
+    );
+    export_term_primitive!(
+        "term/raw-mode-enabled?",
+        make_static_closure_term_raw_mode_enabled
+    );
+    export_term_primitive!(
+        "term/terminal-size-list",
+        make_static_closure_term_terminal_size_list
+    );
 
     let host_features_tab = HashTable::new(*ctx, HashTableType::Eq, 64, 0.80);
     module.define(ctx, ctx.intern("*host-features*"), host_features_tab.into());
@@ -1987,13 +1996,7 @@ fn blocking_poll_read(fd: i32) {
     unsafe {
         let mut readfs = [rustix::event::FdSetElement::default(); 1];
         rustix::event::fd_set_insert(&mut readfs, fd);
-        let _ = rustix::event::select(
-            readfs.len() as _,
-            Some(&mut readfs),
-            None,
-            None,
-            None,
-        );
+        let _ = rustix::event::select(readfs.len() as _, Some(&mut readfs), None, None, None);
     }
 }
 
@@ -2001,13 +2004,7 @@ fn blocking_poll_write(fd: i32) {
     unsafe {
         let mut writefs = [rustix::event::FdSetElement::default(); 1];
         rustix::event::fd_set_insert(&mut writefs, fd);
-        let _ = rustix::event::select(
-            writefs.len() as _,
-            None,
-            Some(&mut writefs),
-            None,
-            None,
-        );
+        let _ = rustix::event::select(writefs.len() as _, None, Some(&mut writefs), None, None);
     }
 }
 

@@ -3,13 +3,11 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
-use crate::{
-    rsgc::{
-        Trace,
-        finalizer::FinalizerQueue,
-        mmtk::util::{Address, ObjectReference},
-        object::{GCObject, HeapTypeInfo, VTableOf},
-    },
+use crate::rsgc::{
+    Trace,
+    finalizer::FinalizerQueue,
+    mmtk::util::{Address, ObjectReference},
+    object::{GCObject, HeapTypeInfo, VTableOf},
 };
 use crate::{
     global,
@@ -1497,4 +1495,3 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
     define(ctx, "RTLD_GLOBAL", Value::new(libc::RTLD_GLOBAL as i32));
     define(ctx, "RTLD_LOCAL", Value::new(libc::RTLD_LOCAL as i32));
 }
-

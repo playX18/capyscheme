@@ -156,9 +156,7 @@ impl Thread {
     }
 
     pub(crate) fn gc_scan_sp(&self) -> Address {
-        unsafe {
-            Address::from_usize(self.native_data().gc_scan_sp.load(Ordering::Relaxed))
-        }
+        unsafe { Address::from_usize(self.native_data().gc_scan_sp.load(Ordering::Relaxed)) }
     }
 
     pub(crate) fn record_gc_scan_sp(&self) {

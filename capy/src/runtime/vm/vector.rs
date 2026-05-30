@@ -204,10 +204,7 @@ pub mod vector_ops {
 
     #[scheme(name = "make-bytevector")]
     pub fn make_bytevector(nelems: usize, init: Option<i16>) -> Value<'gc> {
-        let v = ByteVector::new::<false>(
-            *nctx.ctx, nelems,
-            true, //CAN_PIN_OBJECTS.load(std::sync::atomic::Ordering::Relaxed),
-        );
+        let v = ByteVector::new::<false>(*nctx.ctx, nelems, true);
         if let Some(init) = init {
             if init >= i8::MIN as i16 && init <= u8::MAX as i16 {
                 let byte = (init & 0xff) as u8;

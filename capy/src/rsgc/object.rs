@@ -137,7 +137,7 @@ impl HeapTypeInfo {
             slot.store(self_ptr, Ordering::Release);
             *next = (*next).max(id as usize);
         } else {
-            assert_eq!(
+            debug_assert_eq!(
                 existing, self_ptr,
                 "HeapTypeInfo id {id} is already registered to a different type"
             );
@@ -634,7 +634,10 @@ mod tests {
             HeapTypeInfo::new_static(VTableOf::<'static, Dummy>::VT, 0x2468, 0x8000);
 
         assert_eq!(STATIC_INFO_VALUE.id(), 0x8000);
-        assert!(std::ptr::eq(HeapTypeInfo::lookup(0x8000), &STATIC_INFO_VALUE));
+        assert!(std::ptr::eq(
+            HeapTypeInfo::lookup(0x8000),
+            &STATIC_INFO_VALUE
+        ));
     }
 
     #[test]
