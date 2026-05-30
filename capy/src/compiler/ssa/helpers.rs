@@ -615,12 +615,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let mask = self.builder.ins().ishl(one, shift);
         let new_byte_i64 = self.builder.ins().bor(byte_i64, mask);
         let new_byte = self.builder.ins().ireduce(types::I8, new_byte_i64);
-        self.builder.ins().store(
-            ir::MemFlags::trusted(),
-            new_byte,
-            meta_addr,
-            0,
-        );
+        self.builder
+            .ins()
+            .store(ir::MemFlags::trusted(), new_byte, meta_addr, 0);
     }
 
     pub fn pre_write_barrier(&mut self, src: ir::Value, offset: i32, target: ir::Value) {

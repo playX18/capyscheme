@@ -43,9 +43,7 @@ pub static VO_BIT_SIDE_METADATA_BASE_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 
 #[inline(always)]
 pub(crate) fn vo_bit_side_metadata_base() -> Address {
-    unsafe {
-        Address::from_usize(VO_BIT_SIDE_METADATA_BASE_ADDRESS.load(Ordering::Relaxed))
-    }
+    unsafe { Address::from_usize(VO_BIT_SIDE_METADATA_BASE_ADDRESS.load(Ordering::Relaxed)) }
 }
 
 /// Set the valid-object (VO) bit for a heap object reference address.
@@ -173,10 +171,8 @@ where
                 global_side_metadata_vm_base_address().as_usize(),
                 Ordering::Relaxed,
             );
-            VO_BIT_SIDE_METADATA_BASE_ADDRESS.store(
-                vo_bit_side_metadata_addr().as_usize(),
-                Ordering::Relaxed,
-            );
+            VO_BIT_SIDE_METADATA_BASE_ADDRESS
+                .store(vo_bit_side_metadata_addr().as_usize(), Ordering::Relaxed);
 
             #[cfg(feature = "bootstrap")]
             {
@@ -268,9 +264,7 @@ pub fn user_collect_garbage() -> bool {
         &crate::rsgc::GarbageCollector::get().mmtk,
         current_thread().to_mutator_thread(),
     );
-    current_thread()
-        .take_yieldpoint
-        .store(0, Ordering::Relaxed);
+    current_thread().take_yieldpoint.store(0, Ordering::Relaxed);
     drop(guard);
     Thread::enter_native();
 

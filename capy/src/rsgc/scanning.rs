@@ -1,18 +1,11 @@
-use std::collections::HashSet;
-use std::sync::atomic::Ordering;
-
-use mmtk::vm::SlotVisitor;
-
-use crate::CAN_PIN_OBJECTS;
 use crate::rsgc::ObjectSlot;
 use crate::rsgc::collection::{Visitor, VisitorKind};
 use crate::rsgc::{
-    conservative::scan_conservative_native_stack,
-    mm::MemoryManager,
-    object::GCObject,
-    sync::thread::Thread,
-    traits::Trace,
+    conservative::scan_conservative_native_stack, mm::MemoryManager, object::GCObject,
+    sync::thread::Thread, traits::Trace,
 };
+use mmtk::vm::SlotVisitor;
+use std::collections::HashSet;
 pub struct RustScanning;
 
 impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
@@ -66,9 +59,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         }
 
         let Some(mut state) = thread.native_data_mut().mutator_state else {
-            if CAN_PIN_OBJECTS.load(Ordering::Relaxed) {
-                factory.create_process_pinning_roots_work(visitor.pinned_roots);
-            }
+            factory.create_process_pinning_roots_work(visitor.pinned_roots);
             factory.create_process_roots_work(sv.set.into_iter().collect());
             scan_conservative_native_stack(thread, &mut factory);
 
@@ -83,10 +74,8 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
                     .weak
                     .add_root_with_weak_ref(&mut state.as_mut().root as *mut dyn Trace);
             }
-            if CAN_PIN_OBJECTS.load(Ordering::Relaxed) {
-                factory.create_process_pinning_roots_work(visitor.pinned_roots);
-            }
 
+            factory.create_process_pinning_roots_work(visitor.pinned_roots);
             factory.create_process_roots_work(sv.set.into_iter().collect());
             scan_conservative_native_stack(thread, &mut factory);
         }

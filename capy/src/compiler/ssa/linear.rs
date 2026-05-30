@@ -1590,7 +1590,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
                 self.builder.switch_to_block(kcons);
                 self.linear_branch_target(procedure, consequent);
-
             }
             Terminator::Switch {
                 kind,

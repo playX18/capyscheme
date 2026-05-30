@@ -27,8 +27,8 @@ use crate::{
         fasl::FASLReader,
         modules::{Module, Variable},
         value::{
-            Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, Str,
-            Symbol, Tuple, Value, Vector,
+            Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, Str, Symbol, Tuple,
+            Value, Vector,
         },
         vm::{
             VMResult, call_scheme,

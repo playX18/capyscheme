@@ -1,10 +1,6 @@
-use std::sync::atomic::Ordering;
-
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::RootsWorkFactory;
 
-use crate::CAN_PIN_OBJECTS;
-use crate::rsgc::ObjectSlot;
 use crate::rsgc::sync::thread::Thread;
 
 /// Check if `addr` is a valid MMTk heap object reference (requires VO bit).
@@ -37,9 +33,7 @@ pub(crate) fn scan_conservative_native_stack(
     let heap_start = mmtk::memory_manager::starting_heap_address();
     let heap_end = mmtk::memory_manager::last_heap_address();
 
-    let can_pin = CAN_PIN_OBJECTS.load(Ordering::Relaxed);
     let mut pinning_roots = Vec::new();
-    let mut root_slots = Vec::new();
 
     let mut word_addr = scan_start;
     while word_addr < stack_high {
@@ -47,31 +41,21 @@ pub(crate) fn scan_conservative_native_stack(
         if word != 0 && word % mmtk::util::ObjectReference::ALIGNMENT == 0 {
             let addr = unsafe { Address::from_usize(word) };
             if addr >= heap_start && addr < heap_end {
-                if can_pin {
-                    if let Some(obj) = is_mmtk_heap_object(addr) {
-                        pinning_roots.push(obj);
-                    } else if let Some(obj) =
-                        mmtk::memory_manager::find_object_from_internal_pointer(addr, 64)
-                    {
-                        pinning_roots.push(obj);
-                    }
-                } else if is_mmtk_heap_object(addr).is_some() {
-                    root_slots.push(ObjectSlot::from_address(word_addr));
+                if let Some(obj) = is_mmtk_heap_object(addr) {
+                    pinning_roots.push(obj);
+                } else if let Some(obj) =
+                    mmtk::memory_manager::find_object_from_internal_pointer(addr, 64)
+                {
+                    pinning_roots.push(obj);
                 }
             }
         }
         word_addr += mmtk::util::ObjectReference::ALIGNMENT;
     }
 
-    if can_pin && !pinning_roots.is_empty() {
+    if !pinning_roots.is_empty() {
         pinning_roots.sort_unstable();
         pinning_roots.dedup();
         factory.create_process_pinning_roots_work(pinning_roots);
-    }
-
-    if !can_pin && !root_slots.is_empty() {
-        root_slots.sort_unstable();
-        root_slots.dedup();
-        factory.create_process_roots_work(root_slots);
     }
 }

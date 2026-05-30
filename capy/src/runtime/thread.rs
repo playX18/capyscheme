@@ -19,14 +19,11 @@ use crate::{
         modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
-            Closure, NativeReturn, ReturnCode, Str, Symbol, Value, init_symbols,
-            init_weak_sets, init_weak_tables,
+            Closure, NativeReturn, ReturnCode, Str, Symbol, Value, init_symbols, init_weak_sets,
+            init_weak_tables,
         },
         vm::{
-            VMResult, call_scheme,
-            control::ContinuationMarks,
-            debug,
-            load::load_thunk_in_vicinity,
+            VMResult, call_scheme, control::ContinuationMarks, debug, load::load_thunk_in_vicinity,
             threading::ThreadObject,
         },
     },
@@ -607,6 +604,12 @@ unsafe impl<'gc> Trace for CallData<'gc> {
 
 unsafe impl<'gc> Trace for GcSave<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
+        pin_saved_value(self.rator.get(), visitor);
+        pin_saved_value(self.arg0.get(), visitor);
+        pin_saved_value(self.arg1.get(), visitor);
+        pin_saved_value(self.arg2.get(), visitor);
+        pin_saved_value(self.arg3.get(), visitor);
+
         visitor.trace(&mut self.rator);
         visitor.trace(&mut self.arg0);
         visitor.trace(&mut self.arg1);
@@ -615,6 +618,15 @@ unsafe impl<'gc> Trace for GcSave<'gc> {
     }
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
+    }
+}
+
+fn pin_saved_value(value: Value<'_>, visitor: &mut crate::rsgc::collection::Visitor) {
+    if value.is_cell() && !value.is_empty() {
+        let object = unsafe { value.desc.ptr() };
+        if let Some(objref) = object.to_objref() {
+            visitor.pin_root(objref);
+        }
     }
 }
 
@@ -695,7 +707,6 @@ impl<'gc> State<'gc> {
     pub unsafe fn set_current_marks(&self, marks: Value<'gc>) {
         self.current_marks.set(marks);
     }
-
 }
 
 pub struct Scheme {
