@@ -96,8 +96,10 @@ pub type Root<'a, R> = <R as Rootable<'a>>::Root;
 /// thread can only have one mutator at a time. When code is running inside [`mutate`]
 /// or [`new`] calls, the thread is marked as "in managed" state and access to GC objects is allowed.
 ///
-/// GC cycle can only occur after all mutators are outside of `mutate` call so users of RSGC are supposed
-/// to periodically yield from heap mutation.
+/// GC may occur at explicit safepoints while inside `mutate`, such as compiler-emitted
+/// yieldpoints that call [`Thread::yieldpoint`](crate::rsgc::sync::thread::Thread::yieldpoint).
+/// Native code outside compiled safepoints should call [`Mutator::yieldpoint`] when
+/// [`take_yieldpoint`](Mutation::take_yieldpoint) indicates a pending GC request.
 pub struct Mutator<R>
 where
     R: for<'a> Rootable<'a>,
@@ -219,10 +221,12 @@ where
     /// Mutate the GC heap. Accepts a callback which receives a handle
     /// to current `Mutation` and a reference to the root, and can return any non GCed value.
     ///
-    /// Callback may mutate any part of the GC heap, but no GC will take place during this method.
+    /// Callback may mutate any part of the GC heap. GC can run at explicit safepoints
+    /// while the callback is active (for example compiler-emitted yieldpoints).
     ///
-    /// Note that callback is responsible for periodically invoking [`take_yieldpoint()`](Mutation::take_yieldpoint) on `Mutation`
-    /// and yielding if GC is required.
+    /// Native code that is not at a safepoint should poll
+    /// [`take_yieldpoint()`](Mutation::take_yieldpoint) and call [`Mutator::yieldpoint`]
+    /// when a GC request is pending.
     #[inline]
     pub fn mutate<F, T>(&self, f: F) -> T
     where
@@ -248,19 +252,29 @@ where
     }
 
     pub fn collect_garbage(&self) -> bool {
-        static COLLECT_LOCK: Mutex<()> = Mutex::new(());
-        let guard = COLLECT_LOCK.lock();
-        Thread::leave_native();
-        let did_run = mmtk::memory_manager::handle_user_collection_request(
-            &crate::rsgc::GarbageCollector::get().mmtk,
-            current_thread().to_mutator_thread(),
-        );
-        current_thread().take_yieldpoint.store(0, Ordering::Relaxed);
-        drop(guard);
-        Thread::enter_native();
-
-        did_run
+        user_collect_garbage()
     }
+}
+
+/// Run a user-requested GC collection while the thread is in native code.
+///
+/// The caller must have already transitioned the thread out of the mutating world
+/// (for example via [`Thread::enter_native`](crate::rsgc::sync::thread::Thread::enter_native)).
+pub fn user_collect_garbage() -> bool {
+    static COLLECT_LOCK: Mutex<()> = Mutex::new(());
+    let guard = COLLECT_LOCK.lock();
+    Thread::leave_native();
+    let did_run = mmtk::memory_manager::handle_user_collection_request(
+        &crate::rsgc::GarbageCollector::get().mmtk,
+        current_thread().to_mutator_thread(),
+    );
+    current_thread()
+        .take_yieldpoint
+        .store(0, Ordering::Relaxed);
+    drop(guard);
+    Thread::enter_native();
+
+    did_run
 }
 
 impl<R> Drop for Mutator<R>

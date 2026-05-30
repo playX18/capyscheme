@@ -1,9 +1,6 @@
-use crate::prelude::port::Socket;
 use crate::prelude::*;
 use crate::rsgc::object::{HeapTypeInfo, VTableOf};
-use crate::runtime::{AfterBlockingOperationCallback, BlockingOperationWithReturn};
 use crate::static_symbols;
-use mmtk::util::options::PlanSelector;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
 use std::sync::{
@@ -58,8 +55,6 @@ pub enum IoOperation {
 }
 #[scheme(path=capy)]
 pub mod io_ops {
-
-    use crate::runtime::PollOperation;
 
     #[scheme(name = "usleep")]
     pub fn usleep(microseconds: u64) -> bool {
@@ -1166,15 +1161,17 @@ pub mod io_ops {
             );
         }
 
-        unsafe {
-            let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
-            let ret = libc::read(fd, ptr, nbytes);
-            if ret == -1
-                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+        loop {
+            let ret = unsafe {
+                let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
+                libc::read(fd, ptr, nbytes)
+            };
+            if ret != -1
+                || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.perform(PollOperation::Read(fd));
+                return nctx.return_(ret);
             }
-            nctx.return_(ret)
+            nctx.ctx.outside_gc_world(|| blocking_poll_read(fd));
         }
     }
 
@@ -1192,34 +1189,36 @@ pub mod io_ops {
             );
         }
 
-        unsafe {
-            let ptr = buf.as_slice().as_ptr().wrapping_add(offset) as *const libc::c_void;
-            let ret = libc::write(fd, ptr, nbytes);
-            if ret == -1
-                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+        loop {
+            let ret = unsafe {
+                let ptr = buf.as_slice().as_ptr().wrapping_add(offset) as *const libc::c_void;
+                libc::write(fd, ptr, nbytes)
+            };
+            if ret != -1
+                || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.perform(PollOperation::Write(fd));
+                return nctx.return_(ret);
             }
-            nctx.return_(ret)
+            nctx.ctx.outside_gc_world(|| blocking_poll_write(fd));
         }
     }
 
     #[scheme(name = "syscall:lseek")]
     pub fn syscall_lseek(fd: i32, offset: i64, whence: i32) -> i64 {
-        unsafe {
-            let whence = match whence {
-                0 => libc::SEEK_SET,
-                1 => libc::SEEK_CUR,
-                2 => libc::SEEK_END,
-                _ => return nctx.return_(-1),
-            };
-            let ret = libc::lseek(fd, offset, whence);
-            if ret == -1
-                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+        let whence = match whence {
+            0 => libc::SEEK_SET,
+            1 => libc::SEEK_CUR,
+            2 => libc::SEEK_END,
+            _ => return nctx.return_(-1),
+        };
+        loop {
+            let ret = unsafe { libc::lseek(fd, offset, whence) };
+            if ret != -1
+                || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.perform(PollOperation::Write(fd));
+                return nctx.return_(ret);
             }
-            nctx.return_(ret)
+            nctx.ctx.outside_gc_world(|| blocking_poll_write(fd));
         }
     }
 
@@ -1332,15 +1331,17 @@ pub mod io_ops {
             );
         }
 
-        unsafe {
-            let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
-            let ret = libc::recv(fd, ptr, nbytes, flags);
-            if ret == -1
-                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+        loop {
+            let ret = unsafe {
+                let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
+                libc::recv(fd, ptr, nbytes, flags)
+            };
+            if ret != -1
+                || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.perform(PollOperation::Read(fd));
+                return nctx.return_(ret);
             }
-            nctx.return_(ret)
+            nctx.ctx.outside_gc_world(|| blocking_poll_read(fd));
         }
     }
 
@@ -1358,15 +1359,17 @@ pub mod io_ops {
             );
         }
 
-        unsafe {
-            let ptr = buf.as_slice().as_ptr() as *const libc::c_void;
-            let ret = libc::send(fd, ptr, nbytes, flags);
-            if ret == -1
-                && (errno::errno().0 == libc::EAGAIN || errno::errno().0 == libc::EWOULDBLOCK)
+        loop {
+            let ret = unsafe {
+                let ptr = buf.as_slice().as_ptr() as *const libc::c_void;
+                libc::send(fd, ptr, nbytes, flags)
+            };
+            if ret != -1
+                || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
             {
-                return nctx.perform(PollOperation::Write(fd));
+                return nctx.return_(ret);
             }
-            nctx.return_(ret)
+            nctx.ctx.outside_gc_world(|| blocking_poll_write(fd));
         }
     }
 
@@ -1790,10 +1793,38 @@ pub mod io_ops {
 
     #[scheme(name = "poller-wait")]
     /// Waits for at least one I/O event and returns a list of events.
-    pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> () {
-        let k = make_closure_poller_wait_k(ctx, [nctx.retk]);
-        let operation = PollerOperation { poller, timeout };
-        nctx.perform_returning_to(k.into(), operation)
+    pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> Value<'gc> {
+        let ctx = nctx.ctx;
+        let timeout = timeout.map(|t| std::time::Duration::from_micros(t));
+        let poller_ptr = Gc::as_ptr(poller);
+        let wait_outcome = ctx.outside_gc_world(|| {
+            let poller = unsafe { &*poller_ptr };
+            let mut events = polling::Events::new();
+            let res = poller.inner.wait(&mut events, timeout);
+            let mut collected = Vec::new();
+            if res.is_ok() {
+                for event in events.iter() {
+                    collected.push((event.key, event_to_flags(event)));
+                }
+            }
+            (res.is_ok(), res.err().and_then(|e| e.raw_os_error()), collected)
+        });
+
+        let (ok, os_error, events) = wait_outcome;
+        if ok {
+            let mut ls = Value::null();
+            for (key, flags) in events {
+                ls = Value::cons(
+                    ctx,
+                    Value::cons(ctx, key.into_value(ctx), flags.into_value(ctx)),
+                    ls,
+                );
+            }
+            nctx.return_(ls)
+        } else {
+            let err = os_error.unwrap_or(i32::MAX);
+            nctx.raise_error("poller-wait", "failed to wait for events", &[err.into_value(ctx)])
+        }
     }
 
     #[scheme(name = "poller-notify")]
@@ -1814,21 +1845,6 @@ pub mod io_ops {
         }
     }
 
-    #[scheme(continuation, name = "${ poller-wait/k }")]
-    #[allow(non_snake_case)]
-    fn poller_wait_k(succ: bool, arg: Value<'gc>) -> Value<'gc> {
-        // [0] = <native-proc>
-        // [1] = retk
-        let retk = nctx.rator().downcast::<Closure>()[1].get();
-
-        nctx.retk = retk;
-
-        if succ {
-            nctx.return_(arg)
-        } else {
-            nctx.raise_error("poller-wait", "failed to wait for events", &[arg])
-        }
-    }
 }
 
 pub fn init_io<'gc>(ctx: Context<'gc>) {
@@ -1967,56 +1983,31 @@ pub const ELEVEL: i32 = 0x02;
 pub const EEDGE: i32 = 0x04;
 pub const EEDGEONESHOT: i32 = 0x08;
 
-pub struct PollerOperation<'gc> {
-    poller: Gc<'gc, Poller>,
-    timeout: Option<u64>,
+fn blocking_poll_read(fd: i32) {
+    unsafe {
+        let mut readfs = [rustix::event::FdSetElement::default(); 1];
+        rustix::event::fd_set_insert(&mut readfs, fd);
+        let _ = rustix::event::select(
+            readfs.len() as _,
+            Some(&mut readfs),
+            None,
+            None,
+            None,
+        );
+    }
 }
 
-unsafe impl<'gc> Trace for PollerOperation<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut Visitor) {
-        visitor.trace(&mut self.poller);
-    }
-
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-impl<'gc> BlockingOperationWithReturn<'gc> for PollerOperation<'gc> {
-    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce() -> AfterBlockingOperationCallback> {
-        let timeout = self
-            .timeout
-            .map(|t| std::time::Duration::from_micros(t as u64));
-        let ptr = Gc::as_ptr(self.poller);
-
-        Box::new(move || unsafe {
-            let poller = &*ptr;
-            let mut events = polling::Events::new();
-            let res = poller.inner.wait(&mut events, timeout);
-
-            Box::new(move |ctx, args: &mut Vec<Value<'_>>| {
-                // now return to Scheme code by building correct args to our `retk`.
-
-                args.push(Value::new(res.is_ok()));
-                match res {
-                    Ok(_) => {
-                        let mut ls = Value::null();
-                        for event in events.iter() {
-                            let key = event.key;
-                            let flags = event_to_flags(event);
-                            ls = Value::cons(
-                                ctx,
-                                Value::cons(ctx, key.into_value(ctx), flags.into_value(ctx)),
-                                ls,
-                            );
-                        }
-                        args.push(ls);
-                    }
-
-                    Err(err) => args.push(err.raw_os_error().unwrap_or(i32::MAX).into()),
-                }
-            })
-        })
+fn blocking_poll_write(fd: i32) {
+    unsafe {
+        let mut writefs = [rustix::event::FdSetElement::default(); 1];
+        rustix::event::fd_set_insert(&mut writefs, fd);
+        let _ = rustix::event::select(
+            writefs.len() as _,
+            None,
+            Some(&mut writefs),
+            None,
+            None,
+        );
     }
 }
 
@@ -2039,53 +2030,4 @@ fn event_to_flags(ev: polling::Event) -> i32 {
         flags |= EERROR;
     }
     flags
-}
-
-pub struct SendOperation<'gc> {
-    sock: Gc<'gc, Socket>,
-    bv: Gc<'gc, ByteVector>,
-    flags: i32,
-}
-
-unsafe impl<'gc> Trace for SendOperation<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut Visitor) {
-        let gc = crate::rsgc::GarbageCollector::get();
-        let opts = gc.mmtk.get_options();
-        match *opts.plan {
-            PlanSelector::MarkSweep
-            | PlanSelector::StickyImmix
-            | PlanSelector::Immix
-            | PlanSelector::ConcurrentImmix => {
-                visitor.pin_root(self.sock.to_object_reference());
-                visitor.pin_root(self.bv.to_object_reference());
-            }
-
-            _ => unreachable!("GC plan validated at startup"),
-        }
-    }
-
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-impl<'gc> BlockingOperationWithReturn<'gc> for SendOperation<'gc> {
-    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce() -> AfterBlockingOperationCallback> {
-        let sock = Gc::as_ptr(self.sock);
-        let bv = Gc::as_ptr(self.bv);
-        let flags = self.flags;
-
-        Box::new(move || unsafe {
-            let sock = &*sock;
-            let bv = &*bv;
-            let res = libc::send(
-                sock.fd,
-                bv.as_ptr() as _,
-                bv.len() as _,
-                flags as libc::c_int,
-            );
-
-            Box::new(move |ctx, args: &mut Vec<Value<'_>>| args.push(res.into_value(ctx)))
-        })
-    }
 }

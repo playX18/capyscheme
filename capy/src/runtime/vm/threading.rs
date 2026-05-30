@@ -11,7 +11,7 @@ use crate::rsgc::{
     object::{HeapTypeInfo, VTableOf},
     sync::thread::current_thread as current_runtime_thread,
 };
-use crate::runtime::{BlockingOperation, Scheme, YieldReason};
+use crate::runtime::Scheme;
 
 #[repr(C)]
 pub struct Condition {
@@ -285,10 +285,23 @@ pub mod threading_ops {
         }
 
         if block {
-            return nctx.yield_and_return(
-                YieldReason::Operation(Box::new(MutexAcquireOperation { mutex: mutex_obj })),
-                &[Value::new(true)],
-            );
+            let mutex_ptr = NonNull::from(&*mutex_obj);
+            nctx.ctx.outside_gc_world(|| {
+                let mutex_obj = unsafe { mutex_ptr.as_ref() };
+                match &mutex_obj.mutex {
+                    MutexKind::Reentrant(mutex) => {
+                        let _guard = mutex.lock();
+                        mutex_obj.mark_acquired();
+                        std::mem::forget(_guard);
+                    }
+                    MutexKind::Regular(mutex) => {
+                        let _guard = mutex.lock();
+                        mutex_obj.mark_acquired();
+                        std::mem::forget(_guard);
+                    }
+                }
+            });
+            return nctx.return_(true);
         } else {
             match &mutex_obj.mutex {
                 MutexKind::Reentrant(mutex) => {
@@ -402,60 +415,10 @@ pub mod threading_ops {
                 &[condition_obj.into(), mutex_obj.into()],
             );
         }
-        nctx.yield_and_return(
-            YieldReason::Operation(Box::new(ConditionWaitOperation {
-                condition: condition_obj,
-                mutex: mutex_obj,
-            })),
-            &[Value::undefined()],
-        )
-    }
-}
-
-pub(crate) fn init_threading<'gc>(ctx: Context<'gc>) {
-    threading_ops::register(ctx);
-}
-
-#[derive(Trace)]
-pub struct MutexAcquireOperation<'gc> {
-    pub mutex: Gc<'gc, Mutex>,
-}
-
-impl<'gc> BlockingOperation<'gc> for MutexAcquireOperation<'gc> {
-    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
-        let mutex_obj = NonNull::from(&*self.mutex);
-
-        Box::new(move || {
-            let mutex_obj = unsafe { mutex_obj.as_ref() };
-            match &mutex_obj.mutex {
-                MutexKind::Reentrant(mutex) => {
-                    let _guard = mutex.lock();
-                    mutex_obj.mark_acquired();
-                    std::mem::forget(_guard);
-                }
-                MutexKind::Regular(mutex) => {
-                    let _guard = mutex.lock();
-                    mutex_obj.mark_acquired();
-                    std::mem::forget(_guard);
-                }
-            }
-        })
-    }
-}
-
-#[derive(Trace)]
-pub struct ConditionWaitOperation<'gc> {
-    pub condition: Gc<'gc, Condition>,
-    pub mutex: Gc<'gc, Mutex>,
-}
-
-impl<'gc> BlockingOperation<'gc> for ConditionWaitOperation<'gc> {
-    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
-        let condition = NonNull::from(&self.condition.cond);
-        let mutex_obj = NonNull::from(&*self.mutex);
-
-        Box::new(move || {
-            let mutex_obj = unsafe { mutex_obj.as_ref() };
+        let condition = NonNull::from(&condition_obj.cond);
+        let mutex_ptr = NonNull::from(&*mutex_obj);
+        nctx.ctx.outside_gc_world(|| {
+            let mutex_obj = unsafe { mutex_ptr.as_ref() };
             match &mutex_obj.mutex {
                 MutexKind::Regular(mutex) => unsafe {
                     assert!(mutex_obj.begin_condition_wait());
@@ -466,6 +429,11 @@ impl<'gc> BlockingOperation<'gc> for ConditionWaitOperation<'gc> {
                 },
                 _ => panic!("Only regular mutex can be used with condition waiting"),
             }
-        })
+        });
+        nctx.return_(Value::undefined())
     }
+}
+
+pub(crate) fn init_threading<'gc>(ctx: Context<'gc>) {
+    threading_ops::register(ctx);
 }

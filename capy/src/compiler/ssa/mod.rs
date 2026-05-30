@@ -91,7 +91,6 @@ pub struct ModuleBuilder<'gc> {
     pub code_block_for_cont: HashMap<ContRef<'gc>, DataId>,
     pub code_block_for_func: HashMap<FuncRef<'gc>, DataId>,
     pub raise_trampolines: Vec<FuncId>,
-    pub yieldpoint_trampoline: FuncId,
     pub raise_to_exception_handler_trampoline: FuncId,
     pub wrong_arity_trampoline: FuncId,
     pub import_data: HashMap<&'static str, DataId>,
@@ -136,9 +135,6 @@ impl<'gc> ModuleBuilder<'gc> {
                     .expect("failed to declare raise trampoline")
             })
             .collect();
-        let yieldpoint_trampoline = module
-            .declare_function("capy_yieldpoint", Linkage::Local, &raise_sig)
-            .expect("failed to declare yieldpoint trampoline");
         let raise_to_exception_handler_trampoline = module
             .declare_function(
                 "capy_raise_to_exception_handler",
@@ -174,7 +170,6 @@ impl<'gc> ModuleBuilder<'gc> {
             code_block_for_cont: HashMap::new(),
             code_block_for_func: HashMap::new(),
             raise_trampolines,
-            yieldpoint_trampoline,
             raise_to_exception_handler_trampoline,
             wrong_arity_trampoline,
             global_side_metadata_base_address,
@@ -223,7 +218,6 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let mut context = self.module.make_context();
         let mut fctx = FunctionBuilderContext::new();
-        self.define_yieldpoint_trampoline(&mut context, &mut fctx);
         self.define_raise_to_exception_handler_trampoline(&mut context, &mut fctx);
         self.define_wrong_arity_trampoline(&mut context, &mut fctx);
         self.define_raise_trampolines(&mut context, &mut fctx);
@@ -285,64 +279,6 @@ impl<'gc> ModuleBuilder<'gc> {
         }
 
         self.initialize_constants(&mut context, &mut fctx);
-    }
-
-    fn define_yieldpoint_trampoline(
-        &mut self,
-        context: &mut cranelift_codegen::Context,
-        fctx: &mut FunctionBuilderContext,
-    ) {
-        context.func.signature = compiled_scheme_signature();
-        let mut builder = FunctionBuilder::new(&mut context.func, fctx);
-        let thunks = ImportedThunks::new(&self.thunks, &mut builder.func, &mut self.module);
-
-        let entry = builder.create_block();
-        builder.append_block_params_for_function_params(entry);
-        builder.switch_to_block(entry);
-
-        let rator = builder.block_params(entry)[0];
-        let argc = builder.block_params(entry)[1];
-        let arg0 = builder.block_params(entry)[2];
-        let arg1 = builder.block_params(entry)[3];
-        let arg2 = builder.block_params(entry)[4];
-        let arg3 = builder.block_params(entry)[5];
-
-        let ctx = builder.ins().get_pinned_reg(types::I64);
-        let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
-        let overflow_count = builder.ins().iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
-        let zero = builder.ins().iconst(types::I64, 0);
-        let has_overflow = builder.ins().icmp_imm(
-            ir::condcodes::IntCC::UnsignedGreaterThan,
-            argc,
-            REGISTER_ARG_COUNT as i64,
-        );
-        let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
-        let overflow_bytes = builder
-            .ins()
-            .imul_imm(overflow_count, size_of::<Value>() as i64);
-        let runstack = builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            state,
-            offset_of!(State, runstack) as i32,
-        );
-        let overflow = builder.ins().isub(runstack, overflow_bytes);
-        let saved_call = builder.ins().call(
-            thunks.yieldpoint_regs,
-            &[ctx, rator, argc, arg0, arg1, arg2, arg3, overflow],
-        );
-        let saved_call = builder.inst_results(saved_call)[0];
-        let code = builder
-            .ins()
-            .iconst(types::I64, crate::runtime::value::ReturnCode::Yield as i64);
-        builder.ins().return_(&[code, saved_call]);
-        builder.seal_all_blocks();
-        builder.finalize();
-
-        self.module
-            .define_function(self.yieldpoint_trampoline, context)
-            .expect("failed to define yieldpoint trampoline");
-        self.module.clear_context(context);
     }
 
     fn define_raise_to_exception_handler_trampoline(
@@ -1533,16 +1469,7 @@ mod tests {
             assert!(
                 !module_builder
                     .raise_trampolines
-                    .contains(&module_builder.yieldpoint_trampoline)
-            );
-            assert!(
-                !module_builder
-                    .raise_trampolines
                     .contains(&module_builder.raise_to_exception_handler_trampoline)
-            );
-            assert_ne!(
-                module_builder.yieldpoint_trampoline,
-                module_builder.raise_to_exception_handler_trampoline
             );
             assert!(
                 !module_builder
