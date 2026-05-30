@@ -1832,39 +1832,20 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
     pub fn check_yield(
         &mut self,
-        rator: ir::Value,
-        argc: ir::Value,
-        args: [ir::Value; REGISTER_ARG_COUNT],
+        _rator: ir::Value,
+        _argc: ir::Value,
+        _args: [ir::Value; REGISTER_ARG_COUNT],
     ) {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
-
-        let thread = ctx;
-
-        let yieldpoint = self.builder.ins().load(
-            types::I32,
-            ir::MemFlags::trusted().with_can_move(),
-            thread,
-            Thread::TAKE_YIELDPOINT_OFFSET as i32,
+        let yieldpoint_page = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted(),
+            ctx,
+            Thread::YIELDPOINT_PAGE_OFFSET as i32,
         );
-        let on_yieldpoint = self.builder.create_block();
-        let on_no_yieldpoint = self.builder.create_block();
-        self.builder.func.layout.set_cold(on_yieldpoint);
-
-        let take_yieldpoint = self.builder.ins().icmp_imm(IntCC::NotEqual, yieldpoint, 0);
-
         self.builder
             .ins()
-            .brif(take_yieldpoint, on_yieldpoint, &[], on_no_yieldpoint, &[]);
-        self.builder.switch_to_block(on_yieldpoint);
-        {
-            let ctx = self.builder.ins().get_pinned_reg(types::I64);
-            self.builder.ins().call(
-                self.thunks.yieldpoint_block,
-                &[ctx, rator, argc, args[0], args[1], args[2], args[3]],
-            );
-            self.builder.ins().jump(on_no_yieldpoint, &[]);
-        }
-        self.builder.switch_to_block(on_no_yieldpoint);
+            .load(types::I8, ir::MemFlags::trusted(), yieldpoint_page, 0);
     }
 }
 
