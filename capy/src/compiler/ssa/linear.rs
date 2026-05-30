@@ -1859,31 +1859,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(on_yieldpoint);
         {
             let ctx = self.builder.ins().get_pinned_reg(types::I64);
-
-            let nest_level = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                ctx,
-                (Context::OFFSET_OF_STATE + offset_of!(State, nest_level)) as i32,
+            self.builder.ins().call(
+                self.thunks.yieldpoint_block,
+                &[ctx, rator, argc, args[0], args[1], args[2], args[3]],
             );
-
-            let is_nested = self
-                .builder
-                .ins()
-                .icmp_imm(IntCC::UnsignedGreaterThan, nest_level, 1);
-            let on_not_nested = self.builder.create_block();
-            self.builder
-                .ins()
-                .brif(is_nested, on_no_yieldpoint, &[], on_not_nested, &[]);
-            self.builder.switch_to_block(on_not_nested);
-            self.builder.func.layout.set_cold(on_not_nested);
-            let target = self.module_builder.module.declare_func_in_func(
-                self.module_builder.yieldpoint_trampoline,
-                &mut self.builder.func,
-            );
-            self.builder
-                .ins()
-                .return_call(target, &[rator, argc, args[0], args[1], args[2], args[3]]);
+            self.builder.ins().jump(on_no_yieldpoint, &[]);
         }
         self.builder.switch_to_block(on_no_yieldpoint);
     }

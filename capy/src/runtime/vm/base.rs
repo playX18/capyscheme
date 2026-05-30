@@ -27,8 +27,6 @@ pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
 
 #[scheme(path=capy)]
 pub mod base_ops {
-    use crate::runtime::YieldReason;
-
     #[scheme(name = "implementation-version")]
     pub fn implementation_version() -> Value<'gc> {
         let version = env!("CARGO_PKG_VERSION");
@@ -504,7 +502,11 @@ pub mod base_ops {
 
     #[scheme(name = "collect-garbage")]
     pub fn collect_garbage() -> Value<'gc> {
-        nctx.yield_and_return(YieldReason::CollectGarbage, &[Value::new(true)])
+        let ctx = nctx.ctx;
+        ctx.outside_gc_world(|| {
+            let _ = crate::rsgc::mutator::user_collect_garbage();
+        });
+        nctx.return_(Value::new(true))
     }
 }
 

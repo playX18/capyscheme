@@ -212,7 +212,6 @@ mod dl_ops {
                 nctx.return_(Ok(v))
             }
             VMResult::Err(e) => nctx.return_(Err(e)),
-            _ => todo!(),
         }
     }
 }

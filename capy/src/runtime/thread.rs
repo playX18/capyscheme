@@ -6,6 +6,7 @@ use crate::{
         GarbageCollector, Gc, Mutation, Mutator, Trace,
         barrier::{self},
         mmtk::util::Address,
+        sync::thread::Thread,
     },
     runtime::stats::ThreadStats,
 };
@@ -18,21 +19,20 @@ use crate::{
         modules::{Module, ModuleRef, resolve_module},
         prelude::VariableRef,
         value::{
-            Closure, NativeReturn, ReturnCode, SavedCall, Str, Symbol, Value, init_symbols,
+            Closure, NativeReturn, ReturnCode, Str, Symbol, Value, init_symbols,
             init_weak_sets, init_weak_tables,
         },
         vm::{
-            VMResult, call_scheme, call_scheme_with_k, continue_to,
+            VMResult, call_scheme,
             control::ContinuationMarks,
             debug,
             load::load_thunk_in_vicinity,
-            threading::{Condition, Mutex, MutexKind, ThreadObject},
+            threading::ThreadObject,
         },
     },
 };
 use std::{
     cell::{Cell, UnsafeCell},
-    ptr::NonNull,
     sync::{Once, atomic::AtomicUsize},
 };
 
@@ -101,10 +101,6 @@ impl<'gc> Context<'gc> {
         )
     }
 
-    pub fn has_suspended_call(self) -> bool {
-        self.state().saved_call.get().is_some()
-    }
-
     pub fn keyword(self, s: &str) -> Gc<'gc, Keyword<'gc>> {
         let sym = self.intern(s);
         let globals = self.globals().keyword_map.get().downcast::<HashTable>();
@@ -167,44 +163,33 @@ impl<'gc> Context<'gc> {
             .register_static_cont_closure(self, proc, meta)
     }
 
-    pub fn resume_suspended_call_wargs(
-        self,
-        args: impl IntoIterator<Item = Value<'gc>>,
-    ) -> VMResult<'gc> {
-        let call = self
-            .state()
-            .saved_call
-            .replace(None)
-            .expect("No suspended call");
-        self.state().runstack.set(self.state().runstack_start);
+    /// Run `f` outside the GC-mutating world.
+    ///
+    /// Preparation that needs `Context`, allocation, or tracing must happen before calling
+    /// this function. The closure must not capture GC handles or interior pointers into
+    /// movable objects.
+    pub fn outside_gc_world<T>(self, f: impl FnOnce() -> T) -> T {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
 
-        if call.from_procedure {
-            let retk = call.rands[0];
+        struct OutsideGcGuard;
 
-            call_scheme_with_k(self, retk, call.rator, args.into_iter())
-        } else {
-            // SAFETY: `continue_to` requires a valid closure and matching arg iterator.
-            // `call.rator` was stored from a prior scheme call; the GC keeps it alive.
-            unsafe { continue_to(self, call.rator, args.into_iter()) }
+        impl Drop for OutsideGcGuard {
+            fn drop(&mut self) {
+                Thread::leave_native();
+            }
         }
-    }
 
-    pub fn resume_suspended_call(self) -> VMResult<'gc> {
-        let call = self
-            .state()
-            .saved_call
-            .replace(None)
-            .expect("No suspended call");
-        self.state().runstack.set(self.state().runstack_start);
+        self.state().stats.start_blocking();
+        Thread::enter_native();
+        let result = {
+            let _guard = OutsideGcGuard;
+            catch_unwind(AssertUnwindSafe(f))
+        };
+        self.state().stats.end_blocking();
 
-        if call.from_procedure {
-            let retk = call.rands[0];
-
-            call_scheme_with_k(self, retk, call.rator, call.rands[1..].iter().copied())
-        } else {
-            // SAFETY: Same as above — `call.rator` and `call.rands` are traced by the GC
-            // and remain valid through the saved_call mechanism.
-            unsafe { continue_to(self, call.rator, call.rands[..].iter().copied()) }
+        match result {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
         }
     }
 
@@ -502,20 +487,13 @@ pub struct State<'gc> {
     pub(crate) runstack: Cell<Address>,
     pub(crate) runstack_start: Address,
     pub(crate) runstack_end: Address,
-    /// Nest level of this thread. If it's larger than 1, it means
-    /// that this thread is currently having 2 or more nested calls into Scheme.
-    ///
-    /// In that case, some operations (primarily GC) won't be allowed.
+    /// Nest level of nested calls into Scheme from native code.
     pub(crate) nest_level: AtomicUsize,
     pub(crate) gc_save: GcSave<'gc>,
     pub(crate) call_data: CallData<'gc>,
-    pub(crate) saved_call: Cell<Option<Gc<'gc, SavedCall<'gc>>>>,
     pub(crate) shadow_stack: UnsafeCell<debug::ShadowStack<'gc>>,
     pub(crate) last_ret_addr: Cell<Address>,
     pub(crate) thread_object: Gc<'gc, ThreadObject<'gc>>,
-    pub(crate) yield_reason: UnsafeCell<Option<YieldReason<'gc>>>,
-    /// Accumulator field which is used to pass yield interest
-    /// to Rust code.
     pub(crate) accumulator: Cell<Value<'gc>>,
     pub(crate) current_marks: Cell<Value<'gc>>,
     pub(crate) winders: Cell<Value<'gc>>,
@@ -565,6 +543,7 @@ impl<'gc> CallData<'gc> {
 
 #[repr(C)]
 pub struct GcSave<'gc> {
+    pub rator: Cell<Value<'gc>>,
     pub argc: Cell<usize>,
     pub arg0: Cell<Value<'gc>>,
     pub arg1: Cell<Value<'gc>>,
@@ -575,6 +554,7 @@ pub struct GcSave<'gc> {
 impl<'gc> GcSave<'gc> {
     fn new() -> Self {
         Self {
+            rator: Cell::new(Value::undefined()),
             argc: Cell::new(0),
             arg0: Cell::new(Value::undefined()),
             arg1: Cell::new(Value::undefined()),
@@ -589,6 +569,25 @@ impl<'gc> GcSave<'gc> {
         self.arg1.set(args[1]);
         self.arg2.set(args[2]);
         self.arg3.set(args[3]);
+    }
+
+    pub(crate) fn save_entry(
+        &self,
+        rator: Value<'gc>,
+        argc: usize,
+        args: [Value<'gc>; REGISTER_ARG_COUNT],
+    ) {
+        self.rator.set(rator);
+        self.save(argc, args);
+    }
+
+    pub(crate) fn clear(&self) {
+        self.rator.set(Value::undefined());
+        self.argc.set(0);
+        self.arg0.set(Value::undefined());
+        self.arg1.set(Value::undefined());
+        self.arg2.set(Value::undefined());
+        self.arg3.set(Value::undefined());
     }
 }
 
@@ -608,6 +607,7 @@ unsafe impl<'gc> Trace for CallData<'gc> {
 
 unsafe impl<'gc> Trace for GcSave<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
+        visitor.trace(&mut self.rator);
         visitor.trace(&mut self.arg0);
         visitor.trace(&mut self.arg1);
         visitor.trace(&mut self.arg2);
@@ -653,19 +653,8 @@ unsafe impl Trace for State<'_> {
             });
         }
 
-        if let Some(saved_call) = self.saved_call.get_mut() {
-            visitor.trace(saved_call);
-        }
-
         visitor.trace(&mut self.thread_object);
         visitor.trace(&mut self.accumulator);
-        unsafe {
-            // SAFETY: `yield_reason` UnsafeCell accessed during stop-the-world GC tracing.
-            match &mut *self.yield_reason.get() {
-                Some(reason) => visitor.trace(reason),
-                None => {}
-            }
-        }
         visitor.trace(&mut self.current_marks);
         visitor.trace(&mut self.winders);
     }
@@ -685,9 +674,7 @@ impl<'gc> State<'gc> {
             runstack_start,
             call_data: CallData::new(),
             last_ret_addr: Cell::new(Address::ZERO),
-            saved_call: Cell::new(None),
             thread_object,
-            yield_reason: UnsafeCell::new(None),
             accumulator: Cell::new(Value::new(false)),
             current_marks: Cell::new(Value::null()),
             winders: Cell::new(Value::null()),
@@ -709,73 +696,6 @@ impl<'gc> State<'gc> {
         self.current_marks.set(marks);
     }
 
-    pub(crate) fn take_yield_reason(&self) -> Option<YieldReason<'gc>> {
-        unsafe { (*self.yield_reason.get()).take() }
-    }
-
-    pub(crate) fn set_yield_reason(&self, reason: YieldReason<'gc>) {
-        unsafe {
-            (*self.yield_reason.get()) = Some(reason);
-        }
-    }
-}
-
-fn pending_from_current_yield<'gc>(ctx: Context<'gc>) -> Yield {
-    let reason_slot = unsafe { &mut *ctx.state().yield_reason.get() };
-
-    match reason_slot {
-        Some(YieldReason::Yieldpoint) => {
-            reason_slot.take();
-            Yield::None
-        }
-
-        Some(YieldReason::Operation(operation)) => {
-            ctx.stats.start_blocking();
-            Yield::Operation(operation.prepare(ctx))
-        }
-
-        Some(YieldReason::OperationWithReturn(operation)) => {
-            ctx.stats.start_blocking();
-            Yield::OperationWithReturn(operation.prepare(ctx))
-        }
-
-        Some(YieldReason::LockMutex(mutex_obj)) => {
-            ctx.stats.start_blocking();
-            let mutex = (*mutex_obj).downcast::<Mutex>();
-            Yield::Lock(PendingLock {
-                mtx: NonNull::from(&*mutex),
-            })
-        }
-
-        Some(YieldReason::WaitCondition { condition, mutex }) => {
-            ctx.stats.start_blocking();
-            let mutex = (*mutex).downcast::<Mutex>();
-            let condition = (*condition).downcast::<Condition>();
-            Yield::Wait(PendingWait {
-                mtx: NonNull::from(&*mutex),
-                condition: NonNull::from(&condition.cond),
-            })
-        }
-
-        Some(YieldReason::CollectGarbage) => {
-            reason_slot.take();
-            Yield::GC
-        }
-
-        Some(YieldReason::PollRead(fd)) => {
-            let fd = *fd;
-            reason_slot.take();
-            Yield::PollRead(fd)
-        }
-
-        Some(YieldReason::PollWrite(fd)) => {
-            let fd = *fd;
-            reason_slot.take();
-            Yield::PollWrite(fd)
-        }
-
-        None => Yield::None,
-    }
 }
 
 pub struct Scheme {
@@ -787,19 +707,13 @@ impl Scheme {
     where
         F: for<'gc> FnOnce(Context<'gc>) -> T,
     {
-        let (result, should_gc) = self.mutator.mutate(|mc, _| {
+        self.mutator.mutate(|mc, _| {
             let ctx = Context { mc };
             let result = f(ctx);
 
             unsafe { (*ctx.state().shadow_stack.get()).clear() };
-            (result, mc.take_yieldpoint() != 0)
-        });
-
-        if should_gc {
-            self.mutator.yieldpoint();
-        }
-
-        result
+            result
+        })
     }
 
     pub fn call_value<PREP, F, R>(&self, prep: PREP, finish: F) -> R
@@ -807,132 +721,19 @@ impl Scheme {
         F: for<'gc> Fn(Context<'gc>, Result<Value<'gc>, Value<'gc>>) -> R,
         PREP: for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>) -> Value<'gc>,
     {
-        let mut result = self.enter(|ctx| {
+        self.enter(|ctx| {
             let mut args = Vec::with_capacity(4);
             ctx.stats.start_execution();
             let rator = prep(ctx, &mut args);
             let run = call_scheme(ctx, rator, args);
             ctx.stats.end_execution();
 
-            match run {
-                VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
-                VMResult::Err(err) => Ok(finish(ctx, Err(err))),
-                VMResult::Yield => Err(pending_from_current_yield(ctx)),
-            }
-        });
-        let mut next: Option<Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>> = None;
-        loop {
-            if let Ok(res) = result {
-                return res;
-            }
-
-            let pending = result.err().unwrap();
-
-            match pending {
-                Yield::None => {
-                    result = self.enter(|ctx| {
-                        let _ = ctx.state().take_yield_reason();
-                        ctx.stats.end_blocking();
-                        if ctx.has_suspended_call() {
-                            ctx.state().stats.start_execution();
-                            let result = if let Some(next) = next.take() {
-                                let mut args = Vec::new();
-                                next(ctx, &mut args);
-
-                                ctx.resume_suspended_call_wargs(args)
-                            } else {
-                                ctx.resume_suspended_call()
-                            };
-
-                            ctx.state().stats.end_execution();
-
-                            match result {
-                                VMResult::Ok(ok) => Ok(finish(ctx, Ok(ok))),
-                                VMResult::Err(err) => Ok(finish(ctx, Err(err))),
-                                VMResult::Yield => Err(pending_from_current_yield(ctx)),
-                            }
-                        } else {
-                            ctx.state().stats.end_blocking();
-                            Ok(finish(ctx, Err(Value::undefined())))
-                        }
-                    });
-                }
-
-                Yield::Operation(op) => {
-                    op();
-
-                    result = Err(Yield::None);
-                    continue; // retry
-                }
-
-                Yield::OperationWithReturn(op) => {
-                    next = Some(op());
-
-                    result = Err(Yield::None);
-                    continue; // retry
-                }
-
-                Yield::Lock(lock) => {
-                    lock.lock();
-
-                    result = Err(Yield::None);
-                    continue; // retry
-                }
-
-                Yield::Wait(wait) => {
-                    wait.wait();
-
-                    result = Err(Yield::None);
-                    continue; // retry
-                }
-
-                Yield::PollRead(fd) => unsafe {
-                    let mut readfs = [rustix::event::FdSetElement::default(); 1];
-                    rustix::event::fd_set_insert(&mut readfs, fd);
-
-                    let res = rustix::event::select(
-                        readfs.len() as _,
-                        Some(&mut readfs),
-                        None,
-                        None,
-                        None,
-                    );
-
-                    match res {
-                        Ok(_) => (),
-                        Err(_) => (),
-                    }
-
-                    result = Err(Yield::None);
-                },
-
-                Yield::PollWrite(fd) => unsafe {
-                    let mut writefs = [rustix::event::FdSetElement::default(); 1];
-                    rustix::event::fd_set_insert(&mut writefs, fd);
-
-                    let res = rustix::event::select(
-                        writefs.len() as _,
-                        None,
-                        Some(&mut writefs),
-                        None,
-                        None,
-                    );
-
-                    match res {
-                        Ok(_) => (),
-                        Err(_) => (),
-                    }
-
-                    result = Err(Yield::None);
-                },
-
-                Yield::GC => {
-                    self.collect_garbage();
-
-                    result = Err(Yield::None);
-                }
-            }
-        }
+            let result = match run {
+                VMResult::Ok(ok) => Ok(ok),
+                VMResult::Err(err) => Err(err),
+            };
+            finish(ctx, result)
+        })
     }
 
     /// Calls `entry_name` in module `mod_name`.
@@ -1087,44 +888,20 @@ impl Scheme {
 
     fn boot(self) -> Self {
         let scm = self;
-        let mut did_yield = scm.enter(|ctx| {
+        scm.enter(|ctx| {
             current_module(ctx).set(ctx, (ctx.globals().root_module()).into());
 
             let thunk = load_thunk_in_vicinity::<true>(ctx, "boot.scm", None::<&str>, false, None)
                 .expect("Failed to load boot.scm");
 
-            let result = call_scheme(ctx, thunk, []);
-
-            match result {
+            match call_scheme(ctx, thunk, []) {
                 VMResult::Ok(_) => {}
                 VMResult::Err(err) => {
                     eprintln!("Failed to boot: {err}");
                     std::process::exit(1);
                 }
-                VMResult::Yield => {
-                    return true;
-                }
             }
-
-            false
         });
-
-        while did_yield {
-            did_yield = scm.enter(|ctx| {
-                if ctx.has_suspended_call() {
-                    match ctx.resume_suspended_call() {
-                        VMResult::Ok(_) => false,
-                        VMResult::Err(err) => {
-                            eprintln!("Failed to boot: {err}");
-                            std::process::exit(1);
-                        }
-                        VMResult::Yield => true,
-                    }
-                } else {
-                    false
-                }
-            })
-        }
 
         scm
     }
@@ -1187,202 +964,4 @@ fn make_fresh_runstack() -> (Address, Address) {
     }
 }
 
-pub enum YieldReason<'gc> {
-    /// Yield occured from a yieldpoint (function entry).
-    ///
-    /// Code has to determine if GC is required or if there's any pending
-    /// interrupts and handle them.
-    Yieldpoint,
-
-    LockMutex(Value<'gc>),
-    WaitCondition {
-        condition: Value<'gc>,
-        mutex: Value<'gc>,
-    },
-
-    PollRead(i32),
-    PollWrite(i32),
-
-    Operation(Box<dyn BlockingOperation<'gc> + 'gc>),
-    OperationWithReturn(Box<dyn BlockingOperationWithReturn<'gc> + 'gc>),
-
-    CollectGarbage,
-}
-
-unsafe impl<'gc> Trace for YieldReason<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
-        match self {
-            YieldReason::LockMutex(mutex) => {
-                visitor.trace(mutex);
-            }
-            YieldReason::WaitCondition { condition, mutex } => {
-                visitor.trace(condition);
-                visitor.trace(mutex);
-            }
-            YieldReason::Operation(op) => {
-                visitor.trace(op.as_mut());
-            }
-            YieldReason::OperationWithReturn(op) => {
-                visitor.trace(op.as_mut());
-            }
-            _ => {}
-        }
-    }
-
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
-        match self {
-            YieldReason::Operation(op) => unsafe {
-                op.process_weak_refs(weak_processor);
-            },
-            YieldReason::OperationWithReturn(op) => unsafe {
-                op.process_weak_refs(weak_processor);
-            },
-            _ => {}
-        }
-    }
-}
-
-pub struct PendingLock {
-    mtx: NonNull<Mutex>,
-}
-
-impl PendingLock {
-    pub fn lock(&self) {
-        unsafe {
-            let mutex_obj = self.mtx.as_ref();
-            match &mutex_obj.mutex {
-                MutexKind::Reentrant(mutex) => {
-                    let guard = mutex.lock();
-                    mutex_obj.mark_acquired();
-                    std::mem::forget(guard);
-                }
-                MutexKind::Regular(mutex) => {
-                    let guard = mutex.lock();
-                    mutex_obj.mark_acquired();
-                    std::mem::forget(guard);
-                }
-            }
-        }
-    }
-}
-
-pub struct PendingWait {
-    mtx: NonNull<Mutex>,
-    condition: NonNull<parking_lot::Condvar>,
-}
-
-impl PendingWait {
-    pub fn wait(&self) {
-        unsafe {
-            let mutex_obj = self.mtx.as_ref();
-            match &mutex_obj.mutex {
-                MutexKind::Reentrant(_) => {
-                    unreachable!("Reentrant mutexes cannot be used with condition variables");
-                }
-                MutexKind::Regular(mutex) => {
-                    assert!(mutex_obj.begin_condition_wait());
-                    let mut guard = mutex.make_guard_unchecked();
-                    self.condition.as_ref().wait(&mut guard);
-                    mutex_obj.finish_condition_wait();
-                    std::mem::forget(guard);
-                }
-            }
-        }
-    }
-}
-
-pub enum Yield {
-    None,
-    Operation(BlockingOperationCallback),
-    OperationWithReturn(
-        Box<dyn FnOnce() -> Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>>,
-    ),
-    Lock(PendingLock),
-    Wait(PendingWait),
-    GC,
-
-    PollRead(i32),
-    PollWrite(i32),
-}
-
 pub(crate) static SCM_INITIALIZED: Once = Once::new();
-
-/// A blocking operation that should run while the thread is blocked.
-///
-/// All operations that might block thread for indefinite time should be run
-/// through this trait to ensure proper GC and mutator state management.
-///
-/// # Notes
-///
-/// Interrupts coming to the thread will be executed after the blocking operations, while
-/// GC can happen during the blocking operation.
-pub trait BlockingOperation<'gc>: Trace {
-    /// Prepare the input for the blocking operation.
-    ///
-    /// Returns callback that is invoked by runtime in the blocking context.
-    fn prepare(&self, ctx: Context<'gc>) -> Box<dyn FnOnce()>;
-}
-
-pub trait BlockingOperationWithReturn<'gc>: Trace {
-    fn prepare(&self, ctx: Context<'gc>) -> Box<dyn FnOnce() -> AfterBlockingOperationCallback>;
-}
-
-pub type BlockingOperationCallback = Box<dyn FnOnce()>;
-
-/// A callback which is executed after [`BlockingOperationWithReturn`] completes. It accepts
-/// two arguments: Scheme context and vector to push return values to.
-pub type AfterBlockingOperationCallback =
-    Box<dyn for<'gc> FnOnce(Context<'gc>, &mut Vec<Value<'gc>>)>;
-
-/// The simplest polling operation: `select` on a single file descriptor.
-///
-/// Does not support timeout, multiple fds, or error handling. Only used to
-/// implement primitive os/read and os/write.
-#[derive(Clone, Copy, Trace, Debug)]
-pub enum PollOperation {
-    Read(i32),
-    Write(i32),
-}
-
-impl<'gc> BlockingOperation<'gc> for PollOperation {
-    fn prepare(&self, _ctx: Context<'gc>) -> Box<dyn FnOnce()> {
-        println!("Preparing poll operation: {:?}", self);
-        match self {
-            PollOperation::Read(fd) => {
-                let fd = *fd;
-                Box::new(move || unsafe {
-                    let readfs = [rustix::event::FdSetElement::default(); 1];
-                    rustix::event::fd_set_insert(&mut readfs.clone(), fd);
-
-                    let res = rustix::event::select(
-                        readfs.len() as _,
-                        Some(&mut readfs.clone()),
-                        None,
-                        None,
-                        None,
-                    );
-
-                    let _ = res;
-                })
-            }
-
-            PollOperation::Write(fd) => {
-                let fd = *fd;
-                Box::new(move || unsafe {
-                    let writefs = [rustix::event::FdSetElement::default(); 1];
-                    rustix::event::fd_set_insert(&mut writefs.clone(), fd);
-
-                    let res = rustix::event::select(
-                        writefs.len() as _,
-                        None,
-                        Some(&mut writefs.clone()),
-                        None,
-                        None,
-                    );
-
-                    let _ = res;
-                })
-            }
-        }
-    }
-}

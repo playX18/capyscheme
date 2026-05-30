@@ -27,7 +27,7 @@ use crate::{
         fasl::FASLReader,
         modules::{Module, Variable},
         value::{
-            Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, SavedCall, Str,
+            Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, Str,
             Symbol, Tuple, Value, Vector,
         },
         vm::{
@@ -39,7 +39,6 @@ use crate::{
 use crate::{
     rsgc::{
         Gc, ObjectSlot,
-        alloc::Array,
         mmtk::{
             AllocationSemantics, MutatorContext,
             util::{Address, ObjectReference},
@@ -735,36 +734,20 @@ thunks! {
         res
     }
 
-    pub fn yieldpoint(
-        ctx: Context<'gc>,
-        rator: Value<'gc>,
-        rands: *const Value<'gc>,
-        num_rands: usize
-    ) -> Gc<'gc, SavedCall<'gc>> {
-
-        ctx.state().runstack.set(ctx.state().runstack_start);
-        let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
-        let arr = Array::from_slice(*ctx, args);
-
-        Gc::new(*ctx, SavedCall { rands: arr, rator, from_procedure: true })
-    }
-
-    pub fn yieldpoint_regs(
+    pub fn yieldpoint_block(
         ctx: Context<'gc>,
         rator: Value<'gc>,
         argc: usize,
         arg0: Value<'gc>,
         arg1: Value<'gc>,
         arg2: Value<'gc>,
-        arg3: Value<'gc>,
-        overflow: *const Value<'gc>
-    ) -> Gc<'gc, SavedCall<'gc>> {
-        save_register_args(ctx, argc, arg0, arg1, arg2, arg3);
-        ctx.state().runstack.set(ctx.state().runstack_start);
-        let args = collect_register_args(argc, arg0, arg1, arg2, arg3, overflow, 0);
-        let arr = Array::from_slice(*ctx, &args);
-
-        Gc::new(*ctx, SavedCall { rands: arr, rator, from_procedure: true })
+        arg3: Value<'gc>
+    ) -> () {
+        ctx.state()
+            .gc_save
+            .save_entry(rator, argc, [arg0, arg1, arg2, arg3]);
+        crate::rsgc::sync::thread::Thread::yieldpoint();
+        ctx.state().gc_save.clear();
     }
 
     pub fn alloc_with_info(
@@ -4212,7 +4195,6 @@ pub fn make_assertion_violation<'gc>(
     match call_scheme(ctx, assertion_violation, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
-        VMResult::Yield => unreachable!(),
     }
 }
 
@@ -4238,7 +4220,6 @@ pub fn make_undefined_violation<'gc>(
     match call_scheme(ctx, undefined_violation, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
-        VMResult::Yield => unreachable!(),
     }
 }
 
@@ -4262,7 +4243,6 @@ pub fn make_error<'gc>(
     match call_scheme(ctx, error, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
-        VMResult::Yield => unreachable!(),
     }
 }
 
@@ -4292,7 +4272,6 @@ pub fn make_io_error<'gc>(
     match call_scheme(ctx, io_error, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
-        VMResult::Yield => unreachable!(),
     }
 }
 
@@ -4314,7 +4293,6 @@ pub fn make_lexical_violation<'gc>(
     match call_scheme(ctx, lexical_violation, args) {
         VMResult::Ok(val) => val,
         VMResult::Err(err) => err,
-        VMResult::Yield => unreachable!(),
     }
 }
 

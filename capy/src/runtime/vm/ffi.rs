@@ -1,18 +1,15 @@
 use std::{
-    cell::Cell,
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, LazyLock, Mutex, atomic::Ordering},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use crate::{
-    CAN_PIN_OBJECTS,
     rsgc::{
         Trace,
         finalizer::FinalizerQueue,
         mmtk::util::{Address, ObjectReference},
         object::{GCObject, HeapTypeInfo, VTableOf},
     },
-    runtime::BlockingOperationWithReturn,
 };
 use crate::{
     global,
@@ -935,18 +932,18 @@ unsafe fn foreign_call<'a, 'gc>(
         ) as *mut ();
 
         if cif.blocking {
-            let ffi_op = FFICallOperation {
-                arg_size,
-                cif,
-                arguments: rands.to_vec(),
-                args: Cell::new(args),
-                data: Cell::new(data),
-                rvalue,
-                target: pointer.cast(),
-            };
-            let retk = nctx.retk;
-            // yield to native, then run ffi_op and only then return to retk.
-            return nctx.perform_returning_to(retk, ffi_op);
+            let raw = cif.cif.as_raw_ptr();
+            let target: *mut () = pointer.cast();
+            let mut args = args;
+            nctx.ctx.outside_gc_world(|| {
+                libffi::raw::ffi_call(
+                    raw,
+                    Some(std::mem::transmute(target)),
+                    rvalue.cast(),
+                    args.as_mut_ptr().cast(),
+                );
+            });
+            return nctx.return_(pack(ctx, (*raw).rtype, rvalue, true));
         }
 
         libffi::raw::ffi_call(
@@ -1501,71 +1498,3 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
     define(ctx, "RTLD_LOCAL", Value::new(libc::RTLD_LOCAL as i32));
 }
 
-// TODO: Shrink this type?
-
-/// A FFI call operation performed by the VM outside of Scheme context.
-pub struct FFICallOperation<'gc> {
-    pub cif: Gc<'gc, CIF<'gc>>,
-    pub arguments: Vec<Value<'gc>>,
-    pub args: Cell<Vec<usize>>,
-    pub arg_size: usize,
-    pub data: Cell<Vec<u8>>,
-
-    pub rvalue: *mut (),
-    pub target: *mut (),
-}
-
-unsafe impl<'gc> Trace for FFICallOperation<'gc> {
-    unsafe fn trace(&mut self, visitor: &mut Visitor) {
-        println!("TRACE FFI");
-        let can_pin = CAN_PIN_OBJECTS.load(Ordering::Relaxed);
-        for argument in self.arguments.iter_mut().filter(|arg| arg.is_cell()) {
-            if can_pin {
-                visitor.pin_root(argument.as_cell_raw().to_objref().unwrap());
-            } else {
-                unsafe { argument.trace(visitor) }
-            }
-        }
-
-        if can_pin {
-            visitor.pin_root(self.cif.to_object_reference());
-        } else {
-            visitor.trace(&mut self.cif);
-        }
-    }
-
-    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
-        let _ = weak_processor;
-    }
-}
-
-impl<'gc> BlockingOperationWithReturn<'gc> for FFICallOperation<'gc> {
-    fn prepare(
-        &self,
-        _ctx: Context<'gc>,
-    ) -> Box<dyn FnOnce() -> crate::runtime::AfterBlockingOperationCallback> {
-        let mut args = self.args.replace(Vec::new());
-        let data = self.data.replace(Vec::new());
-        let rvalue = self.rvalue;
-        let target = self.target;
-        let raw_cif = self.cif.cif.as_raw_ptr();
-        let rtype = unsafe { (*raw_cif).rtype };
-        Box::new(move || unsafe {
-            let data = data;
-            libffi::raw::ffi_call(
-                raw_cif,
-                Some(std::mem::transmute(target)),
-                rvalue.cast(),
-                args.as_mut_ptr().cast(),
-            );
-
-            Box::new(move |ctx, args| {
-                let _ = data;
-
-                let val = pack(ctx, rtype, rvalue, true);
-
-                args.push(val)
-            })
-        })
-    }
-}

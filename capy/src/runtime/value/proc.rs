@@ -3,7 +3,7 @@ use std::{collections::HashMap, ops::Index, sync::LazyLock};
 use crate::{
     IndexWrite, WeakProcessor,
     object::VTable,
-    rsgc::{Global, alloc::ArrayRef, cell::Lock, collection::Visitor, sync::monitor::Monitor},
+    rsgc::{Global, cell::Lock, collection::Visitor, sync::monitor::Monitor},
 };
 use mmtk::AllocationSemantics;
 
@@ -525,7 +525,6 @@ pub static PROCEDURES: LazyLock<Global<crate::Rootable!(Procedures<'_>)>> = Lazy
 pub enum ReturnCode {
     ReturnOk = 0,
     ReturnErr = 1,
-    Yield = 2,
     Continue = 3,
 }
 
@@ -533,17 +532,6 @@ pub enum ReturnCode {
 pub struct NativeReturn<'gc> {
     pub code: ReturnCode,
     pub value: Value<'gc>,
-}
-
-/// A saved call to Scheme code. This type is used to represent a suspended call
-/// to a Scheme function, allowing it to be resumed later. Main user is yielding for GC.
-#[derive(Trace, Clone, Copy)]
-#[collect(no_drop)]
-#[repr(C)]
-pub struct SavedCall<'gc> {
-    pub rator: Value<'gc>,
-    pub from_procedure: bool,
-    pub rands: ArrayRef<'gc, Value<'gc>>,
 }
 
 #[repr(C)]

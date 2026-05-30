@@ -8,17 +8,14 @@ use std::{
 };
 
 use crate::runtime::{
-    BlockingOperationWithReturn, Context, YieldReason,
+    Context,
     value::{
-        Closure, ConversionError, NativeReturn, PROCEDURES, ReturnCode, SavedCall, Str, Symbol,
-        TryIntoValues, TypeCode16, Value, Vector,
+        Closure, ConversionError, NativeReturn, PROCEDURES, ReturnCode, Str, Symbol, TryIntoValues,
+        TypeCode16, Value, Vector,
     },
     vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
 };
-use crate::{
-    rsgc::{Gc, Trace, alloc::Array},
-    runtime::BlockingOperation,
-};
+use crate::rsgc::Trace;
 
 pub mod arith;
 pub mod base;
@@ -104,13 +101,6 @@ pub extern "C" fn call_scheme_with_k<'gc>(
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
             ReturnCode::ReturnErr => VMResult::Err(val.value),
             ReturnCode::ReturnOk => VMResult::Ok(val.value),
-            ReturnCode::Yield => {
-                ctx.state()
-                    .saved_call
-                    .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
-
-                VMResult::Yield
-            }
         }
     }
 }
@@ -148,13 +138,6 @@ pub unsafe extern "C" fn continue_to<'gc>(
             ReturnCode::Continue => unreachable!("cannot continue into native code"),
             ReturnCode::ReturnErr => VMResult::Err(val.value),
             ReturnCode::ReturnOk => VMResult::Ok(val.value),
-            ReturnCode::Yield => {
-                ctx.state()
-                    .saved_call
-                    .set(Some(Gc::from_ptr(val.value.bits() as *const _)));
-
-                VMResult::Yield
-            }
         }
     }
 }
@@ -228,8 +211,6 @@ pub enum VMResult<'gc> {
     Ok(Value<'gc>),
     /// VM executed, but error was thrown.
     Err(Value<'gc>),
-    /// VM execution was suspended. Caller into the VM is responsible for leaving `Scheme::enter` call temporarily.
-    Yield,
 }
 
 impl<'gc> FromResidual<Value<'gc>> for VMResult<'gc> {
@@ -254,7 +235,6 @@ impl<'gc> Try for VMResult<'gc> {
         match self {
             VMResult::Ok(v) => std::ops::ControlFlow::Continue(v),
             VMResult::Err(e) => std::ops::ControlFlow::Break(e),
-            VMResult::Yield => panic!("cannot use `?` operator on `VMResult::Yield`"),
         }
     }
 }
@@ -366,90 +346,6 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             ret: self
                 .ctx
                 .return_call(proc, args.iter().copied(), Some(self.retk)),
-        }
-    }
-
-    /// Yield to unmanaged code and return from procedure.
-    ///
-    /// This call will save call to current return continuation
-    /// with the values you want to return.
-    pub fn yield_and_return(
-        self,
-        reason: YieldReason<'gc>,
-        args: &[Value<'gc>],
-    ) -> NativeCallReturn<'gc> {
-        let args = Array::from_slice(*self.ctx, args);
-        let saved_call = Gc::new(
-            *self.ctx,
-            SavedCall {
-                rator: self.retk,
-                rands: args,
-                from_procedure: false,
-            },
-        );
-
-        self.ctx.state().set_yield_reason(reason);
-
-        NativeCallReturn {
-            ret: NativeReturn {
-                code: ReturnCode::Yield,
-                value: Value::from_raw(saved_call.as_ptr() as _),
-            },
-        }
-    }
-
-    /// Perform blocking operation `op` and call back into the same procedure
-    /// once operation is completed.
-    pub fn perform(self, op: impl BlockingOperation<'gc> + 'static) -> NativeCallReturn<'gc> {
-        self.yield_(YieldReason::Operation(Box::new(op)))
-    }
-
-    pub fn perform_returning_to(
-        self,
-        retk: Value<'gc>,
-        op: impl BlockingOperationWithReturn<'gc> + 'gc,
-    ) -> NativeCallReturn<'gc> {
-        self.ctx
-            .state()
-            .set_yield_reason(YieldReason::OperationWithReturn(Box::new(op)));
-
-        NativeCallReturn {
-            ret: NativeReturn {
-                code: ReturnCode::Yield,
-                value: Value::from_raw(
-                    Gc::new(
-                        *self.ctx,
-                        SavedCall {
-                            rator: retk,
-                            from_procedure: false,
-                            rands: Array::from_slice(*self.ctx, []),
-                        },
-                    )
-                    .as_ptr() as _,
-                ),
-            },
-        }
-    }
-
-    pub fn yield_(self, reason: YieldReason<'gc>) -> NativeCallReturn<'gc> {
-        let args = Array::from_slice(*self.ctx, self.rands());
-        self.ctx.state().set_yield_reason(reason);
-
-        NativeCallReturn {
-            ret: NativeReturn {
-                code: ReturnCode::Yield,
-                value: Value::from_raw(
-                    Gc::new(
-                        *self.ctx,
-                        SavedCall {
-                            rator: self.rator(),
-                            rands: args,
-                            from_procedure: self.is_continuation(),
-                        },
-                    )
-                    .as_ptr() as _,
-                ),
-            },
         }
     }
 
