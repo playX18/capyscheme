@@ -264,7 +264,6 @@ pub fn user_collect_garbage() -> bool {
         &crate::rsgc::GarbageCollector::get().mmtk,
         current_thread().to_mutator_thread(),
     );
-    current_thread().take_yieldpoint.store(0, Ordering::Relaxed);
     drop(guard);
     Thread::enter_native();
 

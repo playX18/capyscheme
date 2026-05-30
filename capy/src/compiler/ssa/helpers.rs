@@ -194,7 +194,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     pub fn inline_unary_op(
         &mut self,
         value: ir::Value,
-        fastpath: impl FnOnce(&mut Self, ir::Value) -> ir::Value,
+        fastpath: impl FnOnce(&mut Self, ir::Value, ir::Block) -> ir::Value,
         slowpath: impl FnOnce(&mut Self, ir::Value) -> ir::Value,
     ) -> ir::Value {
         let mask = self.builder.ins().band_imm(value, Value::NUMBER_TAG as i64);
@@ -216,7 +216,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.switch_to_block(fastpath_bb);
         {
             let value_i32 = self.builder.ins().ireduce(types::I32, value);
-            let res = fastpath(self, value_i32);
+            let res = fastpath(self, value_i32, slowpath_bb);
             let res = self.builder.ins().uextend(types::I64, res);
             let res = self.builder.ins().bor_imm(res, Value::NUMBER_TAG as i64);
             self.builder.ins().jump(join, &[BlockArg::Value(res)]);

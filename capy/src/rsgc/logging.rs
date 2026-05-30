@@ -81,7 +81,12 @@ pub(crate) fn mmtk_builder() -> MMTKBuilder {
         builder.options.count_live_bytes_in_gc.set(true);
     }
 
-    super::plans::validate_plan(*builder.options.plan);
+    if !crate::rsgc::plans::is_allowed_plan(*builder.options.plan) {
+        builder
+            .options
+            .plan
+            .set(mmtk::util::options::PlanSelector::StickyImmix);
+    }
 
     builder
 }

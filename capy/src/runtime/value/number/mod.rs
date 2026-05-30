@@ -820,7 +820,7 @@ impl<'gc> Number<'gc> {
 
     pub fn negate(&self, ctx: Context<'gc>) -> Self {
         match self {
-            Number::Fixnum(i) => Number::Fixnum(-*i),
+            Number::Fixnum(i) => Number::from_i64(ctx, -(*i as i64)),
             Number::Flonum(f) => Number::Flonum(-f),
             Number::BigInt(b) => Self::BigInt(BigInt::negate(*b, ctx)),
             Number::Rational(r) => {

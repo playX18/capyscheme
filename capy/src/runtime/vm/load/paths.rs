@@ -90,15 +90,14 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
         _ => unreachable!("GC plan validated at startup"),
     };
 
-    if cache_dir != FALLBACK_DIR {
-        let path = Path::new(&cache_dir).join(plan);
-        if !path.exists() {
-            std::fs::create_dir_all(&path).expect("Failed to create cache directory");
-        }
-        ctx.globals()
-            .loc_compile_fallback_path()
-            .set(ctx, Str::new(*ctx, path.to_string_lossy(), true).into());
+    let compile_fallback_path = Path::new(&cache_dir).join(plan);
+    if !compile_fallback_path.exists() {
+        std::fs::create_dir_all(&compile_fallback_path).expect("Failed to create cache directory");
     }
+    ctx.globals().loc_compile_fallback_path().set(
+        ctx,
+        Str::new(*ctx, compile_fallback_path.to_string_lossy(), true).into(),
+    );
 
     let mut path = Value::null();
     let mut compiled_path = Value::null();
@@ -191,7 +190,7 @@ pub(super) fn resolve_load_path<'gc>(
     filename: impl AsRef<Path>,
     in_vicinity: Option<impl AsRef<Path>>,
     resolve_relative: bool,
-    _arch: Option<&str>,
+    arch: Option<&str>,
 ) -> Result<Option<ResolvedLoadPath>, Value<'gc>> {
     let filename = filename.as_ref();
     let vicinity = in_vicinity.map(|path| path.as_ref().to_owned());
@@ -259,8 +258,8 @@ pub(super) fn resolve_load_path<'gc>(
         )
     })?;
 
-    let compiled_artifact = freshest_compiled_candidate(ctx, filename, &full_source_path);
-    let build_destination = fallback_artifact(ctx, &full_source_path);
+    let compiled_artifact = freshest_compiled_candidate(ctx, filename, &full_source_path, arch);
+    let build_destination = fallback_artifact(ctx, &full_source_path, arch);
 
     Ok(Some(ResolvedLoadPath::Source {
         source_path,
@@ -271,10 +270,14 @@ pub(super) fn resolve_load_path<'gc>(
 }
 
 pub(super) fn fallback_file_name<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> PathBuf {
-    fallback_artifact(ctx, path).path
+    fallback_artifact(ctx, path, None).path
 }
 
-fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> LoadArtifact {
+fn fallback_artifact<'gc>(
+    ctx: Context<'gc>,
+    path: impl AsRef<Path>,
+    arch: Option<&str>,
+) -> LoadArtifact {
     let path = path.as_ref();
     let fallback = ctx
         .globals()
@@ -282,7 +285,7 @@ fn fallback_artifact<'gc>(ctx: Context<'gc>, path: impl AsRef<Path>) -> LoadArti
         .get()
         .downcast::<Str>()
         .to_string();
-    let fallback = Path::new(&fallback).join(std::env::consts::ARCH);
+    let fallback = Path::new(&fallback).join(target_arch(arch));
     let relative_source = path.strip_prefix("/").unwrap_or(path);
     let kind = artifact_kind_for_policy(get_execution_policy());
     let full_path = fallback
@@ -389,33 +392,49 @@ fn freshest_compiled_candidate<'gc>(
     ctx: Context<'gc>,
     filename: &Path,
     full_source_path: &Path,
+    arch: Option<&str>,
 ) -> Option<LoadArtifact> {
     let source_time = full_source_path
         .metadata()
         .ok()
         .and_then(|metadata| metadata.modified().ok())?;
     let kind = artifact_kind_for_policy(get_execution_policy());
+    let explicit_arch = arch.is_some();
+    let arch = target_arch(arch);
 
     let mut compiled_path = ctx.globals().loc_load_compiled_path().get();
     while compiled_path.is_pair() {
         let next = compiled_path.cdr();
         let dir = PathBuf::from(compiled_path.car().downcast::<Str>().to_string());
-        let candidate = dir.join(filename).with_extension(artifact_extension(kind));
+        let mut candidates = vec![
+            dir.join(arch)
+                .join(filename)
+                .with_extension(artifact_extension(kind)),
+        ];
+        if !explicit_arch {
+            candidates.push(dir.join(filename).with_extension(artifact_extension(kind)));
+        }
 
-        if is_regular_file(&candidate)
-            && let Some(compiled_time) = candidate
-                .metadata()
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-            && compiled_is_fresh(full_source_path, &candidate, source_time, compiled_time)
-        {
-            return Some(LoadArtifact::new(kind, candidate));
+        for candidate in candidates {
+            if is_regular_file(&candidate)
+                && let Some(compiled_time) = candidate
+                    .metadata()
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                && compiled_is_fresh(full_source_path, &candidate, source_time, compiled_time)
+            {
+                return Some(LoadArtifact::new(kind, candidate));
+            }
         }
 
         compiled_path = next;
     }
 
     None
+}
+
+fn target_arch(arch: Option<&str>) -> &str {
+    arch.unwrap_or(std::env::consts::ARCH)
 }
 
 fn is_regular_file(path: &Path) -> bool {
@@ -439,6 +458,71 @@ mod tests {
 
     struct TempDir {
         path: PathBuf,
+    }
+
+    struct EnvGuard {
+        vars: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn unset(vars: &[&'static str]) -> Self {
+            let vars = vars
+                .iter()
+                .map(|var| {
+                    let previous = std::env::var(var).ok();
+                    // SAFETY: load-path tests serialize environment mutation with TEST_LOCK.
+                    unsafe {
+                        std::env::remove_var(var);
+                    }
+                    (*var, previous)
+                })
+                .collect();
+            Self { vars }
+        }
+
+        fn set(var: &'static str, value: &str) -> Self {
+            let previous = std::env::var(var).ok();
+            // SAFETY: load-path tests serialize environment mutation with TEST_LOCK.
+            unsafe {
+                std::env::set_var(var, value);
+            }
+            Self {
+                vars: vec![(var, previous)],
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (var, previous) in self.vars.drain(..) {
+                // SAFETY: load-path tests serialize environment mutation with TEST_LOCK.
+                unsafe {
+                    if let Some(previous) = previous {
+                        std::env::set_var(var, previous);
+                    } else {
+                        std::env::remove_var(var);
+                    }
+                }
+            }
+        }
+    }
+
+    struct CwdGuard {
+        previous: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Self {
+            let previous = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { previous }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
     }
 
     impl TempDir {
@@ -493,6 +577,32 @@ mod tests {
         set_execution_policy(policy);
         let _guard = PolicyGuard(previous);
         f()
+    }
+
+    #[test]
+    fn init_load_path_sets_compile_fallback_without_cache_env() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = EnvGuard::unset(&["XDG_CACHE_HOME", "HOME", "LOCALAPPDATA", "APPDATA"]);
+        let _plan = EnvGuard::set("MMTK_PLAN", "StickyImmix");
+        let temp = TempDir::new();
+        let _cwd = CwdGuard::enter(temp.path());
+        let scm = Scheme::new_uninit();
+
+        scm.enter(|ctx| {
+            if crate::runtime::global::VM_GLOBALS.get().is_none() {
+                crate::runtime::init(ctx);
+            }
+            ctx.globals()
+                .loc_compile_fallback_path()
+                .set(ctx, Value::null());
+
+            init_load_path(ctx);
+
+            let fallback = ctx.globals().loc_compile_fallback_path().get();
+            assert!(fallback.is::<Str>());
+        });
     }
 
     #[test]
@@ -556,6 +666,79 @@ mod tests {
                     temp.path()
                         .join(std::env::consts::ARCH)
                         .join("stdlib/boot")
+                        .with_extension(DYNLIB_EXTENSION)
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn explicit_arch_scopes_compiled_and_fallback_artifacts() {
+        with_policy(ExecutionPolicy::AOT, || {
+            with_ctx(|ctx| {
+                let temp = TempDir::new();
+                let source_dir = temp.path().join("src");
+                let compiled_dir = temp.path().join("compiled");
+                let fallback_dir = temp.path().join("fallback");
+                fs::create_dir_all(&source_dir).unwrap();
+                fs::create_dir_all(compiled_dir.join("riscv64")).unwrap();
+                fs::create_dir_all(compiled_dir.join("x86_64")).unwrap();
+
+                let source = source_dir.join("lib/test.scm");
+                fs::create_dir_all(source.parent().unwrap()).unwrap();
+                fs::write(&source, b"source").unwrap();
+
+                let riscv_compiled = compiled_dir
+                    .join("riscv64/lib/test")
+                    .with_extension(DYNLIB_EXTENSION);
+                fs::create_dir_all(riscv_compiled.parent().unwrap()).unwrap();
+                fs::write(&riscv_compiled, b"riscv").unwrap();
+                std::thread::sleep(Duration::from_millis(20));
+                fs::write(&source, b"newer than riscv").unwrap();
+
+                let x86_compiled = compiled_dir
+                    .join("x86_64/lib/test")
+                    .with_extension(DYNLIB_EXTENSION);
+                fs::create_dir_all(x86_compiled.parent().unwrap()).unwrap();
+                fs::write(&x86_compiled, b"x86").unwrap();
+
+                ctx.globals()
+                    .loc_load_extensions()
+                    .set(ctx, scm_list(ctx, &["scm"]));
+                ctx.globals()
+                    .loc_load_path()
+                    .set(ctx, scm_list(ctx, &[source_dir.to_string_lossy().as_ref()]));
+                ctx.globals().loc_load_compiled_path().set(
+                    ctx,
+                    scm_list(ctx, &[compiled_dir.to_string_lossy().as_ref()]),
+                );
+                ctx.globals().loc_compile_fallback_path().set(
+                    ctx,
+                    Str::new(*ctx, fallback_dir.to_string_lossy(), true).into(),
+                );
+
+                let resolved =
+                    resolve_load_path(ctx, Path::new("lib/test"), None::<&Path>, false, Some("x86_64"))
+                        .unwrap()
+                        .unwrap();
+                let ResolvedLoadPath::Source {
+                    compiled_artifact,
+                    build_destination,
+                    ..
+                } = resolved
+                else {
+                    panic!("expected source resolution");
+                };
+
+                assert_eq!(
+                    compiled_artifact.map(|artifact| artifact.path),
+                    Some(x86_compiled)
+                );
+                assert_eq!(
+                    build_destination.path,
+                    fallback_dir
+                        .join("x86_64")
+                        .join(source.strip_prefix("/").unwrap_or(&source))
                         .with_extension(DYNLIB_EXTENSION)
                 );
             });
