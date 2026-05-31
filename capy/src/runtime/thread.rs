@@ -781,7 +781,9 @@ impl Scheme {
                     init_weak_tables(mc);
                     init_symbols(mc);
 
-                    let state = State::new(mc, ThreadObject::new(mc, None));
+                    let thread_object = ThreadObject::new(mc, None);
+                    thread_object.bind_current_runtime_thread();
+                    let state = State::new(mc, thread_object);
                     mc.init_state(state);
                     ()
                 });
@@ -816,7 +818,9 @@ impl Scheme {
                     init_weak_tables(mc);
                     init_symbols(mc);
 
-                    let state = State::new(mc, ThreadObject::new(mc, None));
+                    let thread_object = ThreadObject::new(mc, None);
+                    thread_object.bind_current_runtime_thread();
+                    let state = State::new(mc, thread_object);
                     mc.init_state(state);
                     ()
                 });
@@ -901,7 +905,9 @@ impl Scheme {
                 let m = Mutator::new(|mc| {
                     // SAFETY: `thread_object_bits` was obtained from `Gc::as_ptr()` on the
                     // parent thread. The GC keeps the object alive via the parent's root set.
-                    let thread_object = unsafe { Gc::from_ptr(thread_object_bits as _) };
+                    let thread_object: Gc<'_, ThreadObject<'_>> =
+                        unsafe { Gc::from_ptr(thread_object_bits as _) };
+                    thread_object.bind_current_runtime_thread();
                     let state = State::new(mc, thread_object);
                     mc.init_state(state);
                     ()

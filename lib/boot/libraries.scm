@@ -1176,6 +1176,9 @@
 
     ;; threading
     fork-thread
+    %thread-interrupt!
+    %call-without-interrupts
+    current-interrupt-level
     thread?
     make-condition
     thread-condition?

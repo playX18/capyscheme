@@ -183,6 +183,11 @@ impl Thread {
         self.take_yieldpoint.load(Ordering::Relaxed)
     }
 
+    pub fn request_yieldpoint(&self) {
+        self.take_yieldpoint.store(1, Ordering::Relaxed);
+        self.monitor.lock().notify_all();
+    }
+
     pub fn get_exec_status(&self) -> ThreadState {
         self.status_word.read::<ThreadStateField>()
     }

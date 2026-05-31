@@ -2087,9 +2087,6 @@
           (raise-continuable (thread-end-exception thread))
           (apply values (thread-end-result thread))))))
 
-  ;; TODO: Implement current-interrupt-level.
-  ;; TODO: Implement mutexes and condition-variables.
-  ;; TODO: Handle blocked threads.
   (define/who thread-interrupt!
     (lambda (thread thunk)
       (unless (thread? thread)

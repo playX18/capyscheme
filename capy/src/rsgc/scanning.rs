@@ -29,15 +29,19 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         _tls: mmtk::util::VMWorkerThread,
         _object: mmtk::util::ObjectReference,
     ) -> bool {
-        true
+        false
     }
 
     fn scan_object_and_trace_edges<OT: mmtk::vm::ObjectTracer>(
         _tls: mmtk::util::VMWorkerThread,
-        _object: mmtk::util::ObjectReference,
-        _object_tracer: &mut OT,
+        object: mmtk::util::ObjectReference,
+        object_tracer: &mut OT,
     ) {
-        todo!()
+        let obj = GCObject::from(object);
+        let header = obj.header();
+        let vt = header.vtable();
+        let mut visitor = unsafe { Visitor::new(VisitorKind::Trace(object_tracer), Some(object)) };
+        (vt.trace)(obj, &mut visitor);
     }
 
     fn notify_initial_thread_scan_complete(_partial_scan: bool, _tls: mmtk::util::VMWorkerThread) {}

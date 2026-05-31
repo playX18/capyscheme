@@ -750,6 +750,7 @@ thunks! {
             .gc_save
             .save_entry(rator, argc, [arg0, arg1, arg2, arg3]);
         crate::rsgc::sync::thread::Thread::yieldpoint();
+        crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
         ctx.state().gc_save.clear();
     }
 

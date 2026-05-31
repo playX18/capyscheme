@@ -518,7 +518,7 @@
       [else #f])))
 
 (define (call-without-interrupts thunk)
-  (thunk))
+  (%call-without-interrupts thunk))
 
 (define mod
   (lambda (x y)

@@ -16,6 +16,7 @@
     mutex-release
     call-with-new-thread
     join-thread
+    thread-interrupt!
     &uncaught-exception
     uncaught-exception?
     uncaught-exception-reason
@@ -25,6 +26,7 @@
   (import
     (rename (core primitives)
       (fork-thread %fork-thread)
+      (%thread-interrupt! %native-thread-interrupt!)
       (thread? %native-thread?)
       (current-thread %native-current-thread))
     (core conditions)
@@ -112,3 +114,10 @@
             [else
               (condition-wait cv mutex)
               (loop)]))))))
+
+  (define (thread-interrupt! thread thunk)
+    (unless (thread? thread)
+      (assertion-violation 'thread-interrupt! "expected a thread" thread))
+    (unless (procedure? thunk)
+      (assertion-violation 'thread-interrupt! "expected a thunk" thunk))
+    (%native-thread-interrupt! (thread-native thread) thunk))
