@@ -438,6 +438,8 @@ impl mmtk::vm::ObjectModel<MemoryManager> for ObjectModel {
         mmtk::vm::VMLocalLOSMarkNurserySpec::in_header(
             LastBitfield::NEXT_BIT as isize + Self::LOCAL_FORWARDING_BITS_SPEC.num_bits() as isize,
         );
+    /// Required for tracing continuation objects.
+    const NEED_VO_BITS_DURING_TRACING: bool = true;
     const OBJECT_REF_OFFSET_LOWER_BOUND: isize = OBJECT_REF_OFFSET;
     const UNIFIED_OBJECT_REFERENCE_ADDRESS: bool = false;
 

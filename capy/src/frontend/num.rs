@@ -108,7 +108,7 @@ impl Number {
         }
     }
 
-    pub fn from_uinteger(digits: &String, radix: u32) -> Self {
+    pub fn from_uinteger(digits: &str, radix: u32) -> Self {
         let value = BigInt::from_str_radix(digits, radix).unwrap();
         Number::ExactInteger(Rc::new(value))
     }
@@ -584,10 +584,8 @@ impl<'a> NumberParser<'a> {
             // Look for '+' or '-' that are not part of scientific notation
             for (i, ch) in s.char_indices().skip(1) {
                 if ch == '+' || ch == '-' {
-                    // Check if this is part of scientific notation (e.g., "1e-6")
-                    // by looking for 'e' or 'E' before the sign
-                    let before_sign = &s[..i];
-                    if before_sign.to_lowercase().contains('e') {
+                    // Check if this is part of scientific notation (e.g., "1e-6").
+                    if s[..i].ends_with(['e', 'E']) {
                         continue; // This is scientific notation, not complex
                     }
                     return true;
@@ -603,10 +601,10 @@ impl<'a> NumberParser<'a> {
         let radix = prefix.radix.base();
 
         // Handle sign
-        let (sign, digits) = if remaining.starts_with('+') {
-            (1, &remaining[1..])
-        } else if remaining.starts_with('-') {
-            (-1, &remaining[1..])
+        let (sign, digits) = if let Some(digits) = remaining.strip_prefix('+') {
+            (1, digits)
+        } else if let Some(digits) = remaining.strip_prefix('-') {
+            (-1, digits)
         } else {
             (1, remaining)
         };
@@ -663,10 +661,10 @@ impl<'a> NumberParser<'a> {
         let denominator_str = parts[1];
 
         // Parse numerator
-        let (num_sign, num_digits) = if numerator_str.starts_with('+') {
-            (1, &numerator_str[1..])
-        } else if numerator_str.starts_with('-') {
-            (-1, &numerator_str[1..])
+        let (num_sign, num_digits) = if let Some(digits) = numerator_str.strip_prefix('+') {
+            (1, digits)
+        } else if let Some(digits) = numerator_str.strip_prefix('-') {
+            (-1, digits)
         } else {
             (1, numerator_str)
         };
@@ -763,6 +761,9 @@ impl<'a> NumberParser<'a> {
         let mut split_pos = None;
         for (i, ch) in remaining.char_indices().skip(1) {
             if ch == '+' || ch == '-' {
+                if remaining[..i].ends_with(['e', 'E']) {
+                    continue;
+                }
                 split_pos = Some(i);
             }
         }
@@ -959,8 +960,8 @@ impl<'a> NumberParser<'a> {
         match radix {
             2 => matches!(ch, '0' | '1'),
             8 => matches!(ch, '0'..='7'),
-            10 => matches!(ch, '0'..='9'),
-            16 => matches!(ch, '0'..='9' | 'a'..='f' | 'A'..='F'),
+            10 => ch.is_ascii_digit(),
+            16 => ch.is_ascii_hexdigit(),
             _ => false,
         }
     }
@@ -1015,7 +1016,7 @@ mod tests {
     #[test]
     fn test_parse_decimals() {
         assert!(
-            matches!(parse_number("3.14"), Ok(Number::InexactReal(f)) if (f - 3.14).abs() < f64::EPSILON)
+            matches!(parse_number("3.125"), Ok(Number::InexactReal(f)) if (f - 3.125).abs() < f64::EPSILON)
         );
         assert!(
             matches!(parse_number("-2.5"), Ok(Number::InexactReal(f)) if (f + 2.5).abs() < f64::EPSILON)
@@ -1072,6 +1073,13 @@ mod tests {
                 imag: 2000.0
             })
         ));
+        assert!(matches!(
+            parse_number("1e3+2e-3i"),
+            Ok(Number::InexactComplex {
+                real: 1000.0,
+                imag
+            }) if (imag - 0.002).abs() < f64::EPSILON
+        ));
     }
 
     #[test]
@@ -1099,8 +1107,8 @@ mod tests {
     fn test_parse_partially_exact_complex() {
         // Test cases that should produce PartiallyExactComplex (real inexact, imag exact)
         assert!(matches!(
-            parse_number("3.14+2i"),
-            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 3.14).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(2)
+            parse_number("3.125+2i"),
+            Ok(Number::PartiallyExactComplex { real, imag }) if (real - 3.125).abs() < f64::EPSILON && imag.as_ref() == &BigInt::from(2)
         ));
 
         assert!(matches!(

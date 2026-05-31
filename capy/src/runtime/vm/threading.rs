@@ -1,6 +1,11 @@
 //! Multi-threading support for CapyScheme.
 
-use std::ptr::NonNull;
+use std::{
+    collections::VecDeque,
+    ptr::NonNull,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use crate::prelude::*;
 use crate::rsgc::{
@@ -9,7 +14,7 @@ use crate::rsgc::{
     cell::Lock,
     mmtk::AllocationSemantics,
     object::{HeapTypeInfo, VTableOf},
-    sync::thread::current_thread as current_runtime_thread,
+    sync::thread::{Thread as RuntimeThread, current_thread as current_runtime_thread},
 };
 use crate::runtime::Scheme;
 
@@ -153,10 +158,16 @@ unsafe impl Tagged for Condition {
     const TYPE_NAME: &'static str = "condition";
 }
 
-#[derive(Trace)]
 #[repr(C)]
 pub struct ThreadObject<'gc> {
     entrypoint: Lock<Option<Value<'gc>>>,
+    pending_interrupts: *mut PendingInterruptQueue,
+    runtime_thread: AtomicUsize,
+    interrupt_level: AtomicUsize,
+}
+
+struct PendingInterruptQueue {
+    queue: parking_lot::Mutex<VecDeque<Value<'static>>>,
 }
 
 static THREAD_OBJECT_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
@@ -171,9 +182,104 @@ impl<'gc> ThreadObject<'gc> {
             mc,
             ThreadObject {
                 entrypoint: Lock::new(entrypoint),
+                pending_interrupts: Box::into_raw(Box::new(PendingInterruptQueue {
+                    queue: parking_lot::Mutex::new(VecDeque::new()),
+                })),
+                runtime_thread: AtomicUsize::new(0),
+                interrupt_level: AtomicUsize::new(0),
             },
             THREAD_OBJECT_INFO,
         )
+    }
+
+    pub(crate) fn bind_current_runtime_thread(&self) {
+        self.runtime_thread.store(
+            current_runtime_thread() as *const RuntimeThread as usize,
+            Ordering::Release,
+        );
+    }
+
+    pub(crate) fn runtime_thread(&self) -> Option<&'static RuntimeThread> {
+        let ptr = self.runtime_thread.load(Ordering::Acquire);
+        if ptr == 0 {
+            None
+        } else {
+            Some(unsafe { &*(ptr as *const RuntimeThread) })
+        }
+    }
+
+    pub(crate) fn request_interrupt_yieldpoint(&self) {
+        if let Some(thread) = self.runtime_thread() {
+            thread.request_yieldpoint();
+        }
+    }
+
+    pub(crate) fn enqueue_interrupt(&self, thunk: Value<'gc>) {
+        let thunk = unsafe { std::mem::transmute::<Value<'gc>, Value<'static>>(thunk) };
+        unsafe { &*self.pending_interrupts }.queue.lock().push_back(thunk);
+        self.request_interrupt_yieldpoint();
+    }
+
+    pub(crate) fn pop_pending_interrupt(&self) -> Option<Value<'gc>> {
+        unsafe { &*self.pending_interrupts }
+            .queue
+            .lock()
+            .pop_front()
+            .map(|value| unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(value) })
+    }
+
+    pub(crate) fn has_pending_interrupts(&self) -> bool {
+        !unsafe { &*self.pending_interrupts }.queue.lock().is_empty()
+    }
+
+    pub(crate) fn mask_interrupts(&self) {
+        self.interrupt_level.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn unmask_interrupts(&self) {
+        let old = self.interrupt_level.fetch_sub(1, Ordering::AcqRel);
+        assert!(old > 0, "interrupt level underflow");
+        if old == 1 && self.has_pending_interrupts() {
+            self.request_interrupt_yieldpoint();
+        }
+    }
+
+    pub(crate) fn interrupt_level(&self) -> usize {
+        self.interrupt_level.load(Ordering::Acquire)
+    }
+}
+
+unsafe impl<'gc> Trace for ThreadObject<'gc> {
+    unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        unsafe {
+            self.entrypoint.trace(visitor);
+            for value in self
+                .pending_interrupts
+                .as_mut()
+                .expect("pending interrupt queue is initialized")
+                .queue
+                .get_mut()
+                .iter_mut()
+            {
+                visitor.trace(value);
+            }
+        }
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        unsafe {
+            self.entrypoint.process_weak_refs(weak_processor);
+            for value in self
+                .pending_interrupts
+                .as_mut()
+                .expect("pending interrupt queue is initialized")
+                .queue
+                .get_mut()
+                .iter_mut()
+            {
+                value.process_weak_refs(weak_processor);
+            }
+        }
     }
 }
 
@@ -181,6 +287,17 @@ unsafe impl<'gc> Tagged for ThreadObject<'gc> {
     const TC8: TypeCode8 = TypeCode8::THREAD;
 
     const TYPE_NAME: &'static str = "thread";
+}
+
+impl Drop for ThreadObject<'_> {
+    fn drop(&mut self) {
+        if !self.pending_interrupts.is_null() {
+            unsafe {
+                drop(Box::from_raw(self.pending_interrupts));
+            }
+            self.pending_interrupts = std::ptr::null_mut();
+        }
+    }
 }
 
 #[scheme(path=capy)]
@@ -242,6 +359,7 @@ pub mod threading_ops {
     #[scheme(name = "current-thread")]
     pub fn current_thread() -> Value<'gc> {
         let thread_obj = nctx.ctx.state().thread_object;
+        thread_obj.bind_current_runtime_thread();
         nctx.return_(thread_obj.into())
     }
 
@@ -286,22 +404,38 @@ pub mod threading_ops {
 
         if block {
             let mutex_ptr = NonNull::from(&*mutex_obj);
-            nctx.ctx.outside_gc_world(|| {
-                let mutex_obj = unsafe { mutex_ptr.as_ref() };
-                match &mutex_obj.mutex {
-                    MutexKind::Reentrant(mutex) => {
-                        let _guard = mutex.lock();
-                        mutex_obj.mark_acquired();
-                        std::mem::forget(_guard);
+            let thread = nctx.ctx.state().thread_object;
+            loop {
+                nctx.ctx.outside_gc_world(|| {
+                    let mutex_obj = unsafe { mutex_ptr.as_ref() };
+                    loop {
+                        match &mutex_obj.mutex {
+                            MutexKind::Reentrant(mutex) => {
+                                if let Some(_guard) = mutex.try_lock() {
+                                    mutex_obj.mark_acquired();
+                                    std::mem::forget(_guard);
+                                    break;
+                                }
+                            }
+                            MutexKind::Regular(mutex) => {
+                                if let Some(_guard) = mutex.try_lock() {
+                                    mutex_obj.mark_acquired();
+                                    std::mem::forget(_guard);
+                                    break;
+                                }
+                            }
+                        }
+                        if thread.has_pending_interrupts() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
                     }
-                    MutexKind::Regular(mutex) => {
-                        let _guard = mutex.lock();
-                        mutex_obj.mark_acquired();
-                        std::mem::forget(_guard);
-                    }
+                });
+                crate::runtime::vm::interrupts::deliver_pending_interrupts(nctx.ctx);
+                if mutex_obj.is_owned_by_current_thread() {
+                    return nctx.return_(true);
                 }
-            });
-            return nctx.return_(true);
+            }
         } else {
             match &mutex_obj.mutex {
                 MutexKind::Reentrant(mutex) => {
@@ -417,19 +551,26 @@ pub mod threading_ops {
         }
         let condition = NonNull::from(&condition_obj.cond);
         let mutex_ptr = NonNull::from(&*mutex_obj);
+        let thread = nctx.ctx.state().thread_object;
         nctx.ctx.outside_gc_world(|| {
             let mutex_obj = unsafe { mutex_ptr.as_ref() };
             match &mutex_obj.mutex {
                 MutexKind::Regular(mutex) => unsafe {
                     assert!(mutex_obj.begin_condition_wait());
                     let mut guard = mutex.make_guard_unchecked();
-                    condition.as_ref().wait(&mut guard);
+                    loop {
+                        let timeout = condition.as_ref().wait_for(&mut guard, Duration::from_millis(10));
+                        if thread.has_pending_interrupts() || !timeout.timed_out() {
+                            break;
+                        }
+                    }
                     mutex_obj.finish_condition_wait();
                     std::mem::forget(guard);
                 },
                 _ => panic!("Only regular mutex can be used with condition waiting"),
             }
         });
+        crate::runtime::vm::interrupts::deliver_pending_interrupts(nctx.ctx);
         nctx.return_(Value::undefined())
     }
 }

@@ -19,6 +19,7 @@ use crate::runtime::{
 
 pub mod arith;
 pub mod base;
+pub mod continuation;
 pub mod control;
 pub mod debug;
 pub mod dl;
@@ -905,9 +906,7 @@ mod tests {
 
             let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 let _guard = NestedSchemeCallGuard::new(ctx);
-                ctx.state()
-                    .runstack
-                    .set(old_runstack + size_of::<Value>());
+                ctx.state().runstack.set(old_runstack + size_of::<Value>());
                 assert_eq!(ctx.nest_level(), 1);
                 panic!("force unwind across nested Scheme call state");
             }));
