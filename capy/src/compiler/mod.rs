@@ -47,8 +47,6 @@ macro_rules! call_signature {
 
 mod artifact;
 mod bootstrap;
-pub mod code_image;
-pub mod code_image_builder;
 pub mod codegen;
 pub mod debuginfo;
 pub mod direct;
@@ -58,7 +56,7 @@ mod pipeline;
 pub mod ssa;
 
 pub use bootstrap::compile_file;
-pub use object::{CompilationOptions, compile_cps_to_code_image};
+pub use object::{CompilationOptions, compile_cps_to_fasl_bytes};
 pub use pipeline::lower_to_cps;
 
 pub(crate) use pipeline::{

@@ -631,8 +631,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             Some(return_cont) => self.var(return_cont),
             None => self.builder.ins().iconst(types::I64, 0),
         };
-        let target =
-            self.load_function_entrypoint(self.module_builder.raise_to_exception_handler_trampoline);
+        let target = self
+            .load_function_entrypoint(self.module_builder.raise_to_exception_handler_trampoline);
         let undefined = self
             .builder
             .ins()

@@ -216,7 +216,10 @@ impl<'gc> ThreadObject<'gc> {
 
     pub(crate) fn enqueue_interrupt(&self, thunk: Value<'gc>) {
         let thunk = unsafe { std::mem::transmute::<Value<'gc>, Value<'static>>(thunk) };
-        unsafe { &*self.pending_interrupts }.queue.lock().push_back(thunk);
+        unsafe { &*self.pending_interrupts }
+            .queue
+            .lock()
+            .push_back(thunk);
         self.request_interrupt_yieldpoint();
     }
 
@@ -559,7 +562,9 @@ pub mod threading_ops {
                     assert!(mutex_obj.begin_condition_wait());
                     let mut guard = mutex.make_guard_unchecked();
                     loop {
-                        let timeout = condition.as_ref().wait_for(&mut guard, Duration::from_millis(10));
+                        let timeout = condition
+                            .as_ref()
+                            .wait_for(&mut guard, Duration::from_millis(10));
                         if thread.has_pending_interrupts() || !timeout.timed_out() {
                             break;
                         }

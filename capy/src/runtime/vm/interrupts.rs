@@ -1,7 +1,7 @@
 //! Support for interrupting Scheme threads.
 
-use crate::{prelude::*, runtime::vm::threading::ThreadObject};
 use super::VMResult;
+use crate::{prelude::*, runtime::vm::threading::ThreadObject};
 
 pub(crate) fn deliver_pending_interrupts<'gc>(ctx: Context<'gc>) {
     let thread = ctx.state().thread_object;
@@ -21,9 +21,16 @@ pub(crate) fn deliver_pending_interrupts<'gc>(ctx: Context<'gc>) {
 #[scheme(path = capy)]
 pub mod interrupt_ops {
     #[scheme(name = "%thread-interrupt!")]
-    pub fn thread_interrupt(thread: Gc<'gc, ThreadObject<'gc>>, thunk: Gc<'gc, Closure<'gc>>) -> Value<'gc> {
+    pub fn thread_interrupt(
+        thread: Gc<'gc, ThreadObject<'gc>>,
+        thunk: Gc<'gc, Closure<'gc>>,
+    ) -> Value<'gc> {
         if thread.runtime_thread().is_none() {
-            return nctx.raise_error("%thread-interrupt!", "thread has not started", &[thread.into()]);
+            return nctx.raise_error(
+                "%thread-interrupt!",
+                "thread has not started",
+                &[thread.into()],
+            );
         }
 
         if Gc::ptr_eq(thread, nctx.ctx.state().thread_object) {
@@ -60,7 +67,9 @@ extern "C-unwind" fn call_without_interrupts_after<'gc>(
     rands: *const Value<'gc>,
     num_rands: usize,
 ) -> NativeReturn<'gc> {
-    let nctx = unsafe { NativeCallContext::<Value>::from_raw(ctx, rator, rands, num_rands, Value::undefined()) };
+    let nctx = unsafe {
+        NativeCallContext::<Value>::from_raw(ctx, rator, rands, num_rands, Value::undefined())
+    };
     let rator = rator.downcast::<Closure>();
     let thread = rator[1].get().downcast::<ThreadObject>();
     let retk = rator[2].get();

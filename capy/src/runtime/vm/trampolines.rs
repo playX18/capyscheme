@@ -10,19 +10,22 @@ use std::{
 };
 
 use crate::compiler::{
-    codegen::{FunctionCompileContext, host_isa},
-    direct::compile_function,
+    codegen::{
+        BackendSymbol, DataSymbolKind, FunctionCompileContext, ImportedSymbolKind, host_isa,
+    },
+    direct::{DirectRelocation, DirectRelocationTarget, compile_function},
 };
 use crate::rsgc::mmtk::util::Address;
 use crate::runtime::{
-    code_image::{RuntimeRelocationSite, apply_runtime_relocation, code_bytes_with_call_stubs_for},
-    code_memory::{CodeMemory, LoadedCodeRef},
+    code_memory::{CodeAllocation, CodeMemory},
+    symbols::{RuntimeData, RuntimeThunk},
 };
 use cranelift::prelude::{
     AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, types,
 };
 use cranelift_codegen::{
     Context,
+    binemit::Reloc,
     ir::{self, Function, UserFuncName},
     isa::CallConv,
 };
@@ -35,11 +38,14 @@ use crate::{
     },
 };
 
+#[cfg(target_arch = "x86_64")]
+const X86_64_ABSOLUTE_JUMP_STUB_LEN: usize = 13;
+
 pub struct Trampolines {
     _memory: Mutex<CodeMemory>,
-    enter_scheme_trampoline: LoadedCodeRef,
-    native_trampoline: LoadedCodeRef,
-    native_continuation_trampoline: LoadedCodeRef,
+    enter_scheme_trampoline: CodeAllocation,
+    native_trampoline: CodeAllocation,
+    native_continuation_trampoline: CodeAllocation,
 
     pub enter_scheme_size: usize,
     pub native_trampoline_size: usize,
@@ -596,24 +602,191 @@ fn compile_trampoline(
     symbol: u32,
     signature: ir::Signature,
     build: fn(&mut FunctionBuilderContext, &mut Context),
-) -> LoadedCodeRef {
+) -> CodeAllocation {
     let mut cache = FunctionCompileContext::new();
     cache.context.func = Function::with_name_signature(UserFuncName::user(0, symbol), signature);
     build(&mut cache.fctx, &mut cache.context);
     let compiled = compile_function(isa, &mut cache).expect("failed to compile trampoline");
-    let relocations = crate::compiler::direct::code_image_relocations(symbol, &compiled.relocs)
-        .expect("failed to encode trampoline relocations");
-    let (bytes, call_stub_offsets) =
-        code_bytes_with_call_stubs_for(symbol, &compiled.bytes, &relocations)
-            .expect("failed to reserve trampoline call stubs");
+    let (bytes, call_stub_offsets) = code_bytes_with_call_stubs(&compiled.bytes, &compiled.relocs)
+        .expect("failed to reserve trampoline call stubs");
     let loaded = memory
         .allocate_copy(&bytes)
         .expect("failed to allocate trampoline code");
-    let site = RuntimeRelocationSite::from_loaded_code(loaded, call_stub_offsets);
-    for reloc in &relocations {
+    let site = TrampolineRelocationSite::from_loaded_code(loaded, call_stub_offsets);
+    for reloc in &compiled.relocs {
         apply_runtime_relocation(memory, &site, reloc).expect("failed to patch trampoline code");
     }
     loaded
+}
+
+struct TrampolineRelocationSite {
+    handle: u32,
+    base: Address,
+    call_stub_offsets: std::collections::HashMap<u32, u32>,
+}
+
+impl TrampolineRelocationSite {
+    fn from_loaded_code(
+        loaded: CodeAllocation,
+        call_stub_offsets: std::collections::HashMap<u32, u32>,
+    ) -> Self {
+        Self {
+            handle: loaded.handle,
+            base: loaded.entrypoint,
+            call_stub_offsets,
+        }
+    }
+}
+
+fn code_bytes_with_call_stubs(
+    input_bytes: &[u8],
+    relocations: &[DirectRelocation],
+) -> std::io::Result<(Vec<u8>, std::collections::HashMap<u32, u32>)> {
+    let mut bytes = input_bytes.to_vec();
+    let mut call_stub_offsets = std::collections::HashMap::new();
+    for reloc in relocations
+        .iter()
+        .filter(|reloc| reloc.kind == Reloc::X86CallPCRel4)
+    {
+        if call_stub_offsets.contains_key(&reloc.offset) {
+            return Err(invalid_data("duplicate call relocation offset"));
+        }
+        let stub_offset =
+            u32::try_from(bytes.len()).map_err(|_| invalid_data("trampoline code is too large"))?;
+        call_stub_offsets.insert(reloc.offset, stub_offset);
+        bytes.extend_from_slice(&empty_absolute_jump_stub()?);
+    }
+    Ok((bytes, call_stub_offsets))
+}
+
+fn apply_runtime_relocation(
+    memory: &mut CodeMemory,
+    site: &TrampolineRelocationSite,
+    reloc: &DirectRelocation,
+) -> std::io::Result<()> {
+    let target = resolve_runtime_relocation_target(reloc.target)?;
+    match reloc.kind {
+        Reloc::Abs8 => {
+            let target = add_i64_to_usize(target.as_usize(), reloc.addend)?;
+            memory.patch(site.handle, reloc.offset as usize, &target.to_le_bytes())
+        }
+        Reloc::X86PCRel4 | Reloc::X86CallPCRel4 => apply_x86_pc_rel4(
+            memory,
+            site,
+            reloc.offset,
+            reloc.kind,
+            target.as_usize(),
+            reloc.addend,
+        ),
+        _ => Err(invalid_data("unsupported trampoline relocation kind")),
+    }
+}
+
+fn resolve_runtime_relocation_target(target: DirectRelocationTarget) -> std::io::Result<Address> {
+    match target {
+        DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { kind, symbol })
+            if kind == DataSymbolKind::RuntimeData =>
+        {
+            RuntimeData::from_id(symbol.index())
+                .map(|data| data.address())
+                .ok_or_else(|| invalid_data("unknown runtime data relocation target"))
+        }
+        DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
+            match kind {
+                ImportedSymbolKind::RuntimeThunk => RuntimeThunk::from_id(symbol.index())
+                    .map(|thunk| thunk.address())
+                    .ok_or_else(|| invalid_data("unknown runtime thunk relocation target")),
+                ImportedSymbolKind::Trampoline => Err(invalid_data(
+                    "trampoline relocation target is not supported here",
+                )),
+            }
+        }
+        DirectRelocationTarget::BackendSymbol(BackendSymbol::Function(_))
+        | DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { .. })
+        | DirectRelocationTarget::FunctionOffset(_) => Err(invalid_data(
+            "runtime relocation target is not supported here",
+        )),
+    }
+}
+
+fn empty_absolute_jump_stub() -> std::io::Result<Vec<u8>> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        Ok(vec![0; X86_64_ABSOLUTE_JUMP_STUB_LEN])
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Err(invalid_data(
+            "call stubs are only supported on x86_64 targets",
+        ))
+    }
+}
+
+fn apply_x86_pc_rel4(
+    memory: &mut CodeMemory,
+    site: &TrampolineRelocationSite,
+    offset: u32,
+    kind: Reloc,
+    target: usize,
+    addend: i64,
+) -> std::io::Result<()> {
+    let patch_address = add_i64_to_usize(site.base.as_usize(), offset as i64)?;
+    let relocated_target = add_i64_to_usize(target, addend)?;
+    if let Some(displacement) = rel32_displacement(patch_address, relocated_target) {
+        return memory.patch(site.handle, offset as usize, &displacement.to_le_bytes());
+    }
+
+    if kind != Reloc::X86CallPCRel4 {
+        return Err(invalid_data("pc-relative relocation target out of range"));
+    }
+
+    let stub_offset = site
+        .call_stub_offsets
+        .get(&offset)
+        .copied()
+        .ok_or_else(|| invalid_data("missing call stub for out-of-range relocation"))?;
+    let stub_address = add_i64_to_usize(site.base.as_usize(), stub_offset as i64)?;
+    let displacement = rel32_displacement(patch_address, add_i64_to_usize(stub_address, addend)?)
+        .ok_or_else(|| invalid_data("call stub relocation target out of range"))?;
+    memory.patch(site.handle, offset as usize, &displacement.to_le_bytes())?;
+    memory.patch(
+        site.handle,
+        stub_offset as usize,
+        &absolute_jump_stub(target)?,
+    )
+}
+
+fn rel32_displacement(patch_address: usize, target: usize) -> Option<i32> {
+    let displacement = target as i128 - patch_address as i128;
+    i32::try_from(displacement).ok()
+}
+
+fn absolute_jump_stub(target: usize) -> std::io::Result<Vec<u8>> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut stub = Vec::with_capacity(X86_64_ABSOLUTE_JUMP_STUB_LEN);
+        // movabs r11, imm64; jmp r11
+        stub.extend_from_slice(&[0x49, 0xbb]);
+        stub.extend_from_slice(&target.to_le_bytes());
+        stub.extend_from_slice(&[0x41, 0xff, 0xe3]);
+        Ok(stub)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = target;
+        Err(invalid_data(
+            "call stubs are only supported on x86_64 targets",
+        ))
+    }
+}
+
+fn add_i64_to_usize(base: usize, addend: i64) -> std::io::Result<usize> {
+    let value = base as i128 + addend as i128;
+    usize::try_from(value).map_err(|_| invalid_data("relocation address overflow"))
+}
+
+fn invalid_data(message: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
 
 unsafe impl Send for Trampolines {}

@@ -18,7 +18,10 @@ const GC_ARGS: &[(&str, &str)] = &[
     ),
     ("--gc-alloc-spike-percent", "CAPY_GC_ALLOC_SPIKE_PERCENT"),
     ("--gc-learning-steps", "CAPY_GC_LEARNING_STEPS"),
-    ("--gc-guaranteed-interval-ms", "CAPY_GC_GUARANTEED_INTERVAL_MS"),
+    (
+        "--gc-guaranteed-interval-ms",
+        "CAPY_GC_GUARANTEED_INTERVAL_MS",
+    ),
 ];
 
 const COMPILER_ENTRY_ARG: &str = "--capy-compiler-entrypoint";
@@ -46,10 +49,7 @@ pub fn run_cli() -> i32 {
 }
 
 fn select_entrypoint(mut args: Vec<OsString>) -> (&'static str, Vec<OsString>) {
-    if args
-        .get(1)
-        .is_some_and(|arg| arg == COMPILER_ENTRY_ARG)
-    {
+    if args.get(1).is_some_and(|arg| arg == COMPILER_ENTRY_ARG) {
         args.remove(1);
         return ("enter-compiler", args);
     }

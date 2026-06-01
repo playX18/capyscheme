@@ -291,9 +291,7 @@ impl Thread {
 
         drop(guard);
 
-        thread
-            .status_word
-            .update::<AtYieldpoint>(false);
+        thread.status_word.update::<AtYieldpoint>(false);
     }
 
     fn enter_native_blocked(&self) {
@@ -747,7 +745,11 @@ fn current_stack_pointer() -> Address {
     }
 }
 
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 #[inline(never)]
 fn current_stack_pointer() -> Address {
     let mut addr = std::ptr::null_mut::<u8>();

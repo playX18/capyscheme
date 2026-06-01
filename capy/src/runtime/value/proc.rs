@@ -542,14 +542,52 @@ pub struct CodeBlock<'gc> {
     pub flags: CodeBlockFlags,
     pub metadata: Lock<Value<'gc>>,
     pub loaded_code_handle: u32,
+    pub loaded_data_base: Address,
+    pub loaded_data_slot_count: u32,
+    pub loaded_data_value_bitmap_word_count: u32,
     code_len: u32,
-    code: [u8; 0],
+    code: [usize; 0],
 }
 
-static CODE_BLOCK_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, CodeBlock<'static>>::VT,
-    TypeCode8::CODE_BLOCK.bits() as u16,
-);
+static CODE_BLOCK_VTABLE: &VTable = &VTable {
+    alignment: align_of::<CodeBlock>(),
+    compute_alignment: None,
+    instance_size: size_of::<CodeBlock>(),
+    compute_size: Some({
+        extern "C" fn compute_code_block_size(obj: GCObject) -> usize {
+            unsafe {
+                let obj = obj.to_address().as_ref::<CodeBlock<'static>>();
+                obj.loaded_data_value_bitmap_word_count as usize * size_of::<usize>()
+            }
+        }
+
+        compute_code_block_size
+    }),
+    trace: {
+        extern "C" fn trace_code_block(obj: GCObject, vis: &mut Visitor) {
+            unsafe {
+                let obj = obj.to_address().as_mut_ref::<CodeBlock<'static>>();
+                obj.trace(vis);
+            }
+        }
+
+        trace_code_block
+    },
+    weak_proc: {
+        extern "C" fn process_weak_code_block(obj: GCObject, weak_processor: &mut WeakProcessor) {
+            unsafe {
+                let obj = obj.to_address().as_mut_ref::<CodeBlock<'static>>();
+                obj.process_weak_refs(weak_processor);
+            }
+        }
+
+        process_weak_code_block
+    },
+    type_name: "code-block",
+};
+
+static CODE_BLOCK_INFO_VALUE: HeapTypeInfo =
+    HeapTypeInfo::new(CODE_BLOCK_VTABLE, TypeCode8::CODE_BLOCK.bits() as u16);
 
 static CODE_BLOCK_VTABLE_BYTECODE: &VTable = &VTable {
     alignment: align_of::<CodeBlock>(),
@@ -614,6 +652,9 @@ impl<'gc> CodeBlock<'gc> {
         is_cont: bool,
         metadata: Value<'gc>,
         loaded_code_handle: u32,
+        loaded_data_base: Address,
+        loaded_data_slot_count: u32,
+        loaded_data_value_bitmap_word_count: u32,
     ) -> Gc<'gc, Self> {
         Gc::new_with_info(
             *ctx,
@@ -628,8 +669,11 @@ impl<'gc> CodeBlock<'gc> {
                 },
                 metadata: Lock::new(Self::normalize_metadata(metadata)),
                 loaded_code_handle,
+                loaded_data_base,
+                loaded_data_slot_count,
+                loaded_data_value_bitmap_word_count,
                 code_len: 0,
-                code: [0; 0],
+                code: [],
             },
             CODE_BLOCK_INFO,
         )
@@ -650,6 +694,9 @@ impl<'gc> CodeBlock<'gc> {
             is_cont,
             metadata,
             0,
+            Address::ZERO,
+            0,
+            0,
         )
     }
 
@@ -667,6 +714,9 @@ impl<'gc> CodeBlock<'gc> {
             arity,
             is_cont,
             metadata,
+            0,
+            Address::ZERO,
+            0,
             0,
         )
     }
@@ -687,7 +737,63 @@ impl<'gc> CodeBlock<'gc> {
             is_cont,
             metadata,
             loaded_code_handle,
+            Address::ZERO,
+            0,
+            0,
         )
+    }
+
+    pub fn new_loaded_with_data(
+        ctx: Context<'gc>,
+        entrypoint: Address,
+        arity: CodeArity,
+        is_cont: bool,
+        metadata: Value<'gc>,
+        loaded_code_handle: u32,
+        loaded_data_base: Address,
+        loaded_data_slot_count: u32,
+        loaded_data_value_bitmap: &[usize],
+    ) -> Gc<'gc, Self> {
+        unsafe {
+            let word_count = u32::try_from(loaded_data_value_bitmap.len())
+                .expect("loaded code block value bitmap is too large");
+            let bitmap_size = loaded_data_value_bitmap
+                .len()
+                .checked_mul(size_of::<usize>())
+                .expect("loaded code block value bitmap is too large");
+            let size = size_of::<Self>()
+                .checked_add(bitmap_size)
+                .expect("loaded code block is too large");
+            let alloc = ctx.raw_allocate_with_info(
+                size,
+                align_of::<Self>(),
+                CODE_BLOCK_INFO,
+                AllocationSemantics::Default,
+            );
+            let this = alloc.to_address().as_mut_ref::<Self>();
+            this.entrypoint = entrypoint;
+            this.kind = CodeBlockKind::Loaded;
+            this.arity = arity;
+            this.flags = if is_cont {
+                CodeBlockFlags::CONTINUATION
+            } else {
+                CodeBlockFlags::empty()
+            };
+            this.metadata = Lock::new(Self::normalize_metadata(metadata));
+            this.loaded_code_handle = loaded_code_handle;
+            this.loaded_data_base = loaded_data_base;
+            this.loaded_data_slot_count = loaded_data_slot_count;
+            this.loaded_data_value_bitmap_word_count = word_count;
+            this.code_len = 0;
+            if !loaded_data_value_bitmap.is_empty() {
+                std::ptr::copy_nonoverlapping(
+                    loaded_data_value_bitmap.as_ptr(),
+                    this.code.as_mut_ptr(),
+                    loaded_data_value_bitmap.len(),
+                );
+            }
+            Gc::from_gcobj(alloc)
+        }
     }
 
     pub fn new_bytecode(
@@ -715,18 +821,31 @@ impl<'gc> CodeBlock<'gc> {
             };
             this.metadata = Lock::new(metadata);
             this.loaded_code_handle = 0;
+            this.loaded_data_base = Address::ZERO;
+            this.loaded_data_slot_count = 0;
+            this.loaded_data_value_bitmap_word_count = 0;
             this.code_len = code.len() as u32;
-            std::ptr::copy_nonoverlapping(code.as_ptr(), this.code.as_mut_ptr(), code.len());
+            std::ptr::copy_nonoverlapping(code.as_ptr(), this.code.as_mut_ptr().cast(), code.len());
             Gc::from_gcobj(alloc)
         }
     }
 
     pub fn code(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.code.as_ptr(), self.code_len as usize) }
+        unsafe { std::slice::from_raw_parts(self.code.as_ptr().cast(), self.code_len as usize) }
     }
 
     pub fn code_len(&self) -> usize {
         self.code_len as usize
+    }
+
+    #[cfg(test)]
+    pub(crate) fn loaded_data_value_bitmap(&self) -> &[usize] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.code.as_ptr().cast::<usize>(),
+                self.loaded_data_value_bitmap_word_count as usize,
+            )
+        }
     }
 }
 
@@ -739,6 +858,32 @@ unsafe impl<'gc> Tagged for CodeBlock<'gc> {
 unsafe impl<'gc> Trace for CodeBlock<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         visitor.trace(&mut self.metadata);
+        if !self.loaded_data_base.is_zero() && self.loaded_data_value_bitmap_word_count != 0 {
+            let bitmap = unsafe {
+                std::slice::from_raw_parts(
+                    self.code.as_ptr().cast::<usize>(),
+                    self.loaded_data_value_bitmap_word_count as usize,
+                )
+            };
+            let bits_per_word = usize::BITS as u32;
+            let count = self.loaded_data_slot_count;
+            for index in 0..count {
+                let word_index = (index / bits_per_word) as usize;
+                let bit_index = index % bits_per_word;
+                let Some(word) = bitmap.get(word_index) else {
+                    break;
+                };
+                if (word & (1usize << bit_index)) == 0 {
+                    continue;
+                }
+                let slot = (self.loaded_data_base.as_usize()
+                    + index as usize * std::mem::size_of::<Value<'static>>())
+                    as *mut Value<'static>;
+                unsafe {
+                    visitor.trace(&mut *slot);
+                }
+            }
+        }
         match &mut self.kind {
             CodeBlockKind::AOT
             | CodeBlockKind::NativeProc

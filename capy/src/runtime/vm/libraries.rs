@@ -2,32 +2,32 @@
 
 use crate::rsgc::{Global, Trace, sync::monitor::Monitor};
 use crate::runtime::{
-    code_image::{CompiledCodeImage, LoadedCodeImage},
+    Context,
+    fasl::FASLReader,
     value::Value,
     vm::load::artifact::{LoadArtifact, LoadArtifactKind},
-    Context,
 };
-use std::{fs, sync::LazyLock};
+use std::{fs, io::Cursor, sync::LazyLock};
 
-pub enum LoadedLibrary<'gc> {
-    CodeImage(LoadedCodeImage<'gc>),
+pub enum Library<'gc> {
+    Fasl(Value<'gc>),
 }
 
-unsafe impl<'gc> Trace for LoadedLibrary<'gc> {
+unsafe impl<'gc> Trace for Library<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         match self {
-            Self::CodeImage(image) => unsafe { image.trace(visitor) },
+            Self::Fasl(value) => unsafe { value.trace(visitor) },
         }
     }
 
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         match self {
-            Self::CodeImage(image) => unsafe { image.process_weak_refs(weak_processor) },
+            Self::Fasl(value) => unsafe { value.process_weak_refs(weak_processor) },
         }
     }
 }
 
-impl<'gc> LoadedLibrary<'gc> {
+impl<'gc> Library<'gc> {
     fn load(
         ctx: Context<'gc>,
         artifact: &LoadArtifact,
@@ -40,21 +40,16 @@ impl<'gc> LoadedLibrary<'gc> {
             )),
             LoadArtifactKind::FaslCode => {
                 let bytes = fs::read(&artifact.path)?;
-                let image = CompiledCodeImage::decode(&bytes)?;
-                let image = LoadedCodeImage::load(ctx, image)?;
-                let entrypoint = if initialize {
-                    image.entry_closure()
-                } else {
-                    Value::new(false)
-                };
-                Ok((Self::CodeImage(image), entrypoint))
+                let value = FASLReader::new(ctx, Cursor::new(bytes)).read()?;
+                let entrypoint = if initialize { value } else { Value::new(false) };
+                Ok((Self::Fasl(value), entrypoint))
             }
         }
     }
 }
 
 pub struct LibraryCollection<'gc> {
-    pub libs: Monitor<Vec<LoadedLibrary<'gc>>>,
+    pub libs: Monitor<Vec<Library<'gc>>>,
 }
 
 unsafe impl<'gc> Trace for LibraryCollection<'gc> {
@@ -81,7 +76,7 @@ impl<'gc> LibraryCollection<'gc> {
         artifact: &LoadArtifact,
         ctx: Context<'gc>,
     ) -> std::io::Result<Value<'gc>> {
-        let (lib, entrypoint) = LoadedLibrary::load(ctx, artifact, true)?;
+        let (lib, entrypoint) = Library::load(ctx, artifact, true)?;
         self.libs.lock().push(lib);
         Ok(entrypoint)
     }
@@ -89,7 +84,7 @@ impl<'gc> LibraryCollection<'gc> {
     #[allow(dead_code)]
     pub(crate) fn for_each_library<F>(&self, mut f: F)
     where
-        F: FnMut(&LoadedLibrary<'gc>),
+        F: FnMut(&Library<'gc>),
     {
         let libs = self.libs.lock();
         for lib in libs.iter() {
@@ -105,55 +100,56 @@ pub static LIBRARY_COLLECTION: LazyLock<Global<crate::Rootable!(LibraryCollectio
 mod tests {
     use super::*;
     use crate::runtime::{
-        code_image::{CodeEntry, CODE_IMAGE_VERSION},
-        value::Closure,
         Scheme,
+        fasl::{FASLWriter, FaslClosureSpec, FaslCodeBlockSpec},
+        value::{Closure, Value},
     };
     use std::sync::Mutex;
 
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
-    fn library_collection_loads_fasl_code_image_directly() {
+    fn library_collection_loads_unified_fasl_value() {
         let _guard = TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let scm = Scheme::new_uninit();
         scm.enter(|ctx| {
-            let image = CompiledCodeImage {
-                version: CODE_IMAGE_VERSION,
-                target_triple: target_lexicon::Triple::host().to_string(),
-                constants_fasl: Vec::new(),
-                code: vec![CodeEntry {
-                    id: 1,
-                    name: "entry".to_string(),
-                    bytes: vec![0xc3],
-                    entry_offset: 0,
-                    arity: 0,
+            let mut bytes = Vec::new();
+            FASLWriter::new(ctx, &mut bytes)
+                .write_loaded_closure(&FaslClosureSpec {
+                    code: FaslCodeBlockSpec {
+                        bytes: &[0xc3],
+                        entry_offset: 0,
+                        arity: 0,
+                        is_cont: false,
+                        metadata: Value::new(false),
+                        relocations: &[],
+                    },
+                    free: &[],
                     is_cont: false,
-                    metadata_constant: None,
-                }],
-                data_slots: Vec::new(),
-                relocations: Vec::new(),
-                entry_code_id: 1,
-                entry_is_cont: false,
-            };
-            let bytes = image.encode().expect("encode code image");
-            let path = std::env::temp_dir()
-                .join(format!("capy-test-code-image-{}.fasl", std::process::id()));
-            fs::write(&path, bytes).expect("write code image");
+                })
+                .expect("write unified FASL");
+            let path = std::env::temp_dir().join(format!(
+                "capy-test-unified-fasl-{}.fasl",
+                std::process::id()
+            ));
+            fs::write(&path, bytes).expect("write unified FASL artifact");
 
             let artifact = LoadArtifact::new(LoadArtifactKind::FaslCode, &path);
             let libs = LibraryCollection::new();
-            let entry = libs.load(&artifact, ctx).expect("load code image artifact");
-            fs::remove_file(&path).expect("remove code image");
+            let entry = libs
+                .load(&artifact, ctx)
+                .expect("load unified FASL artifact");
+            fs::remove_file(&path).expect("remove unified FASL artifact");
 
             assert!(entry.is::<Closure>());
             let mut loaded_count = 0;
             libs.for_each_library(|lib| {
-                if matches!(lib, LoadedLibrary::CodeImage(_)) {
-                    loaded_count += 1;
-                }
+                let Library::Fasl(value) = lib;
+                loaded_count += 1;
+                assert!(value.is::<Closure>());
             });
             assert_eq!(loaded_count, 1);
         });

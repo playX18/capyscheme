@@ -1,11 +1,6 @@
 use cranelift_codegen::{FinalizedRelocTarget, binemit::Reloc, entity::PrimaryMap, ir};
 
-use crate::{
-    compiler::codegen::{
-        BackendSymbol, DataSymbolKind, FunctionCompileContext, ImportedSymbolKind,
-    },
-    runtime::code_image::{Relocation, RelocationKind, RelocationTarget},
-};
+use crate::compiler::codegen::{BackendSymbol, FunctionCompileContext};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectCompiledFunction {
@@ -25,69 +20,6 @@ pub struct DirectRelocation {
 pub enum DirectRelocationTarget {
     BackendSymbol(BackendSymbol),
     FunctionOffset(u32),
-}
-
-pub fn code_image_relocations(
-    code_id: u32,
-    relocs: &[DirectRelocation],
-) -> Result<Vec<Relocation>, String> {
-    relocs
-        .iter()
-        .map(|reloc| {
-            Ok(Relocation {
-                code_id,
-                offset: reloc.offset,
-                kind: code_image_relocation_kind(reloc.kind)?,
-                target: code_image_relocation_target(reloc.target)?,
-                addend: reloc.addend,
-            })
-        })
-        .collect()
-}
-
-fn code_image_relocation_kind(kind: Reloc) -> Result<RelocationKind, String> {
-    match kind {
-        Reloc::Abs8 => Ok(RelocationKind::Abs8),
-        Reloc::X86PCRel4 => Ok(RelocationKind::X86PcRel4),
-        Reloc::X86CallPCRel4 => Ok(RelocationKind::X86CallPcRel4),
-        _ => Err(format!("unsupported code image relocation kind: {kind:?}")),
-    }
-}
-
-fn code_image_relocation_target(
-    target: DirectRelocationTarget,
-) -> Result<RelocationTarget, String> {
-    match target {
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Function(symbol)) => {
-            Ok(RelocationTarget::Code {
-                code_id: symbol.index(),
-            })
-        }
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { kind, symbol }) => {
-            if kind == DataSymbolKind::RuntimeData {
-                Ok(RelocationTarget::RuntimeData {
-                    data_id: symbol.index(),
-                })
-            } else {
-                Ok(RelocationTarget::DataSlot {
-                    slot_id: symbol.index(),
-                })
-            }
-        }
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
-            match kind {
-                ImportedSymbolKind::RuntimeThunk => Ok(RelocationTarget::RuntimeThunk {
-                    thunk_id: symbol.index(),
-                }),
-                ImportedSymbolKind::Trampoline => {
-                    Err("trampoline relocations are not supported in code images yet".to_string())
-                }
-            }
-        }
-        DirectRelocationTarget::FunctionOffset(offset) => Err(format!(
-            "function-offset relocation target {offset} cannot be encoded in code image"
-        )),
-    }
 }
 
 pub fn compile_function(
@@ -220,18 +152,13 @@ mod tests {
                 .iter()
                 .any(|reloc| { reloc.target == DirectRelocationTarget::BackendSymbol(target) })
         );
-        code_image_relocations(0, &compiled.relocs)
-            .expect("runtime thunk call relocation should be supported by the loader");
     }
 
     #[test]
-    fn direct_relocations_encode_runtime_thunk_ids_without_names() {
+    fn direct_relocations_preserve_runtime_thunk_ids_without_names() {
         use crate::{
             compiler::codegen::{BackendSymbol, ImportedSymbol, ImportedSymbolKind},
-            runtime::{
-                code_image::{RelocationKind, RelocationTarget},
-                vm::thunks::RuntimeThunk,
-            },
+            runtime::vm::thunks::RuntimeThunk,
         };
 
         let thunk_id = RuntimeThunk::Thunk_wrong_number_of_args.id();
@@ -245,16 +172,12 @@ mod tests {
             }),
         }];
 
-        let encoded = code_image_relocations(3, &relocs).expect("encode code image relocations");
-
-        assert_eq!(encoded.len(), 1);
-        assert_eq!(encoded[0].code_id, 3);
-        assert_eq!(encoded[0].offset, 17);
-        assert_eq!(encoded[0].kind, RelocationKind::X86CallPcRel4);
         assert_eq!(
-            encoded[0].target,
-            RelocationTarget::RuntimeThunk { thunk_id }
+            relocs[0].target,
+            DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported {
+                kind: ImportedSymbolKind::RuntimeThunk,
+                symbol: ImportedSymbol::new(thunk_id),
+            })
         );
-        assert_eq!(encoded[0].addend, -4);
     }
 }

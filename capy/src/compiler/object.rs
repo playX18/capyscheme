@@ -1,6 +1,5 @@
 use crate::compiler::ssa::ModuleBuilder;
 use crate::cps::{linear::linearize, reify, term::FuncRef};
-use crate::runtime::code_image::CompiledCodeImage;
 use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::{
     Context,
@@ -19,22 +18,22 @@ impl Default for CompilationOptions {
     }
 }
 
-pub fn compile_cps_to_code_image<'gc>(
+pub fn compile_cps_to_fasl_bytes<'gc>(
     ctx: Context<'gc>,
     cps: FuncRef<'gc>,
     opts: CompilationOptions,
-) -> Result<CompiledCodeImage, Value<'gc>> {
+) -> Result<Vec<u8>, Value<'gc>> {
     let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
     let reify_info = reify(ctx, cps);
     let linear = linearize(&reify_info);
 
     let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
     module_builder.stacktraces = opts.backtraces;
-    module_builder.compile_code_image().map_err(|err| {
+    module_builder.compile_loaded_fasl_bytes().map_err(|err| {
         make_io_error(
             ctx,
             "compile",
-            Str::new(*ctx, format!("Cannot compile FASL code image: {err}"), true).into(),
+            Str::new(*ctx, format!("Cannot compile unified FASL: {err}"), true).into(),
             &[],
         )
     })

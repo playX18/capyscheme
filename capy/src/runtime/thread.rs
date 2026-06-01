@@ -1041,9 +1041,11 @@ mod tests {
             let arg0 = ctx.str("saved-arg0");
             let arg1 = ctx.str("saved-arg1");
 
-            ctx.state()
-                .gc_save
-                .save_entry(rator, 2, [arg0, arg1, Value::undefined(), Value::undefined()]);
+            ctx.state().gc_save.save_entry(
+                rator,
+                2,
+                [arg0, arg1, Value::undefined(), Value::undefined()],
+            );
 
             let mut slot_visitor = RecordingSlotVisitor::default();
             let mut visitor = unsafe {
