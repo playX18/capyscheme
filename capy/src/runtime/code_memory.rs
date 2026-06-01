@@ -18,6 +18,12 @@ pub struct CodeAllocation {
     pub size: usize,
 }
 
+/// Manages JIT-allocated executable memory for compiled code blocks.
+///
+/// Instruction-cache coherency after code writes/patches is handled by
+/// `asmkit::core::jit_allocator::JitAllocator`, which manages the underlying
+/// memory mappings (including any necessary `mprotect` + icache flush on
+/// architectures that require explicit flushing, e.g., AArch64).
 pub struct CodeMemory {
     allocator: Box<JitAllocator>,
     spans: Vec<Span>,

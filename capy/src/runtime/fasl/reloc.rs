@@ -2,7 +2,7 @@ use std::io::{self, Read, Write};
 
 use asmkit::core::buffer::Reloc as AsmkitReloc;
 
-use crate::runtime::fasl::{
+use super::{
     FASL_RELOC_ABS_WORD, FASL_RELOC_ASMKIT, FASL_RELOC_CACHE_CELL, FASL_RELOC_CODE_ENTRY,
     FASL_RELOC_DATA_SLOT, FASL_RELOC_RUNTIME_DATA, FASL_RELOC_RUNTIME_THUNK,
     FASL_RELOC_SIDE_METADATA,
