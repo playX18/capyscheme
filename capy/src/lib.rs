@@ -18,6 +18,7 @@
 //! CapyScheme: R6RS/R7RS Scheme compiler and runtime.
 
 pub mod api;
+pub mod bin_support;
 pub mod compiler;
 pub mod cps;
 pub mod expander;

@@ -541,6 +541,7 @@ pub struct CodeBlock<'gc> {
     pub arity: CodeArity,
     pub flags: CodeBlockFlags,
     pub metadata: Lock<Value<'gc>>,
+    pub loaded_code_handle: u32,
     code_len: u32,
     code: [u8; 0],
 }
@@ -612,6 +613,7 @@ impl<'gc> CodeBlock<'gc> {
         arity: CodeArity,
         is_cont: bool,
         metadata: Value<'gc>,
+        loaded_code_handle: u32,
     ) -> Gc<'gc, Self> {
         Gc::new_with_info(
             *ctx,
@@ -625,6 +627,7 @@ impl<'gc> CodeBlock<'gc> {
                     CodeBlockFlags::empty()
                 },
                 metadata: Lock::new(Self::normalize_metadata(metadata)),
+                loaded_code_handle,
                 code_len: 0,
                 code: [0; 0],
             },
@@ -646,6 +649,7 @@ impl<'gc> CodeBlock<'gc> {
             arity,
             is_cont,
             metadata,
+            0,
         )
     }
 
@@ -663,6 +667,26 @@ impl<'gc> CodeBlock<'gc> {
             arity,
             is_cont,
             metadata,
+            0,
+        )
+    }
+
+    pub fn new_loaded(
+        ctx: Context<'gc>,
+        entrypoint: Address,
+        arity: CodeArity,
+        is_cont: bool,
+        metadata: Value<'gc>,
+        loaded_code_handle: u32,
+    ) -> Gc<'gc, Self> {
+        Self::new_inner(
+            ctx,
+            entrypoint,
+            CodeBlockKind::Loaded,
+            arity,
+            is_cont,
+            metadata,
+            loaded_code_handle,
         )
     }
 
@@ -682,8 +706,16 @@ impl<'gc> CodeBlock<'gc> {
             let alloc = ctx.raw_allocate_with_info(size, alignment, info, semantics);
             let this = alloc.to_address().as_mut_ref::<Self>();
             this.entrypoint = entrypoint;
+            this.kind = CodeBlockKind::Bytecode;
             this.arity = arity;
+            this.flags = if _is_cont {
+                CodeBlockFlags::CONTINUATION
+            } else {
+                CodeBlockFlags::empty()
+            };
             this.metadata = Lock::new(metadata);
+            this.loaded_code_handle = 0;
+            this.code_len = code.len() as u32;
             std::ptr::copy_nonoverlapping(code.as_ptr(), this.code.as_mut_ptr(), code.len());
             Gc::from_gcobj(alloc)
         }
@@ -708,7 +740,10 @@ unsafe impl<'gc> Trace for CodeBlock<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         visitor.trace(&mut self.metadata);
         match &mut self.kind {
-            CodeBlockKind::AOT | CodeBlockKind::NativeProc => {}
+            CodeBlockKind::AOT
+            | CodeBlockKind::NativeProc
+            | CodeBlockKind::Loaded
+            | CodeBlockKind::Bytecode => {}
         }
     }
 
@@ -750,6 +785,8 @@ bitflags::bitflags! {
 pub enum CodeBlockKind {
     AOT,
     NativeProc,
+    Loaded,
+    Bytecode,
 }
 
 #[cfg(test)]
@@ -840,6 +877,48 @@ mod tests {
             assert!(closure.code_block.metadata.get().is_null());
             assert!(closure[0].get().is::<NativeProc>());
             assert_eq!(closure[1].get(), Value::new(true));
+        });
+    }
+
+    #[test]
+    fn loaded_code_block_records_owner_handle_and_continuation_flag() {
+        with_ctx(|ctx| {
+            let metadata = Value::cons(ctx, ctx.intern("name"), ctx.str("loaded"));
+            let code_block = CodeBlock::new_loaded(
+                ctx,
+                Address::from_ptr(test_native_proc as *const ()),
+                CodeArity::new(2),
+                true,
+                metadata,
+                99,
+            );
+
+            assert!(matches!(code_block.kind, CodeBlockKind::Loaded));
+            assert_eq!(code_block.loaded_code_handle, 99);
+            assert!(code_block.flags.contains(CodeBlockFlags::CONTINUATION));
+            assert_eq!(code_block.arity.fixed_arity(), 2);
+            assert_eq!(code_block.metadata.get(), metadata);
+        });
+    }
+
+    #[test]
+    fn bytecode_code_block_initializes_kind_flags_and_code_len() {
+        with_ctx(|ctx| {
+            let code = [1, 2, 3, 4];
+            let code_block = CodeBlock::new_bytecode(
+                ctx,
+                Address::ZERO,
+                CodeArity::variadic(1),
+                true,
+                Value::new(false),
+                &code,
+            );
+
+            assert!(matches!(code_block.kind, CodeBlockKind::Bytecode));
+            assert!(code_block.flags.contains(CodeBlockFlags::CONTINUATION));
+            assert_eq!(code_block.code_len(), code.len());
+            assert_eq!(code_block.code(), code);
+            assert_eq!(code_block.metadata.get(), Value::new(false));
         });
     }
 }

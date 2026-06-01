@@ -24,11 +24,8 @@ pretty.workspace = true
 hashlink.workspace = true
 petgraph.workspace = true
 libc.workspace = true
-cranelift-jit.workspace = true
 cranelift.workspace = true
 cranelift-codegen.workspace = true
-cranelift-module.workspace = true
-cranelift-object.workspace = true
 log.workspace = true
 gimli.workspace = true
 target-lexicon.workspace = true
@@ -61,15 +58,9 @@ serde.workspace = true
 version = "15.1.0"
 package = "im-rc"
 
-[lib]
-crate-type = ["cdylib"]
-
 [features]
 default = ["portable", "expeditor", "bootstrap"]
 portable = []
 aslr = []
 expeditor = []
 bootstrap = ["tree-sitter", "tree-sitter-scheme", "num-bigint"]
-
-[build-dependencies]
-cbindgen = "*"

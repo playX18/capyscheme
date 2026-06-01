@@ -39,7 +39,6 @@
 - *(ssa)* Inline allocation - ([1fd7b1b](https://codeberg.org/playXE/capy/commit/1fd7b1b2845547cacbdd03ca5fcd7aa74c4ccd91))
 - *(tests)* Use srfi-64 test runner for racket/r6rs test suite - ([0ca56c9](https://codeberg.org/playXE/capy/commit/0ca56c9ed305d6528c9c56be31d37a483dd74fba))
 - *(vscode)* Add Capy Scheme LSP extension - ([180ec16](https://codeberg.org/playXE/capy/commit/180ec160da7aa46f8b6c981d6a59961ef96e036f))
-- Thread interrupts - ([d7c5768](https://codeberg.org/playXE/capy/commit/d7c5768c276294cc8f11861a351a1a02121de33e))
 - Add fault-driven yieldpoints - ([f8d63cd](https://codeberg.org/playXE/capy/commit/f8d63cda3e270380594cca098107be47531216ac))
 - Direct style advancements - ([675d0a7](https://codeberg.org/playXE/capy/commit/675d0a7f3eae3554e1c39764b4f4ed6c0c2b9171))
 - Conservative stack scanning - ([96ce46d](https://codeberg.org/playXE/capy/commit/96ce46dc9d9bcae80d9050278f7aa9245157e9f7))

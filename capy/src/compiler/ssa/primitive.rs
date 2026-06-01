@@ -1426,9 +1426,7 @@ prim!(
         };
 
         let cell = ssa.module_builder.intern_cache_cell(cache_key);
-        let cell = ssa.import_data(cell);
-        let addr = ssa.builder.ins().global_value(types::I64, cell);
-        PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::new(), addr, 0))
+        PrimValue::Value(ssa.load_data_value(cell))
     },
 
     "cache-set!" => cache_set(ssa, args, _h) {
@@ -1441,9 +1439,7 @@ prim!(
         let value = ssa.atom(args[1]);
 
         let cell = ssa.module_builder.intern_cache_cell(cache_key);
-        let cell = ssa.import_data(cell);
-        let addr = ssa.builder.ins().global_value(types::I64, cell);
-        ssa.builder.ins().store(ir::MemFlags::new(), value, addr, 0);
+        ssa.store_data_value(cell, value);
         PrimValue::Value(ssa.builder.ins().iconst(types::I64, Value::undefined().bits() as i64))
     },
 

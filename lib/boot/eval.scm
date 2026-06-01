@@ -96,7 +96,7 @@
 ;; Compile `filename` and put output into `compiled-path`.
 ;; Env is a module where the file is being compiled.
 ;; load-thunk? indicates whether to return a thunk to initialize compiled
-;; file (dlopen it) or just compile and return. If its #f use load-thunk-in-vicinity
+;; file or just compile and return. If its #f use load-thunk-in-vicinity
 (define (compile-file filename compiled-path env load-thunk?)
   ((%%file-compiler) filename compiled-path env load-thunk?))
 

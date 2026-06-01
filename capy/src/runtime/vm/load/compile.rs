@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::compiler::{CompilationOptions, compile_cps_to_shared_object, compile_file};
+use crate::compiler::{CompilationOptions, compile_cps_to_code_image, compile_file};
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
@@ -219,8 +219,43 @@ pub(super) fn compile_cps_to_destination<'gc>(
     destination: &LoadArtifact,
 ) -> Result<(), Value<'gc>> {
     match destination.kind {
-        LoadArtifactKind::SharedObject => {
-            compile_cps_to_shared_object(ctx, cps, options, &destination.path)
+        LoadArtifactKind::SharedObject => Err(make_io_error(
+            ctx,
+            "compile",
+            Str::new(
+                *ctx,
+                "Shared-object Scheme artifacts are no longer produced by the compiler",
+                true,
+            )
+            .into(),
+            &[],
+        )),
+        LoadArtifactKind::FaslCode => {
+            let image = compile_cps_to_code_image(ctx, cps, options)?;
+            let bytes = image.encode().map_err(|err| {
+                make_io_error(
+                    ctx,
+                    "compile",
+                    Str::new(*ctx, format!("Cannot encode FASL code image: {err}"), true).into(),
+                    &[],
+                )
+            })?;
+            std::fs::write(&destination.path, bytes).map_err(|err| {
+                make_io_error(
+                    ctx,
+                    "compile",
+                    Str::new(
+                        *ctx,
+                        format!(
+                            "Cannot write FASL code image '{}': {err}",
+                            destination.path.display()
+                        ),
+                        true,
+                    )
+                    .into(),
+                    &[],
+                )
+            })
         }
     }
 }

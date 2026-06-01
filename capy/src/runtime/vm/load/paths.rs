@@ -447,7 +447,7 @@ fn is_regular_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::artifact::DYNLIB_EXTENSION;
+    use super::super::artifact::FASL_CODE_EXTENSION;
     use super::*;
     use crate::runtime::vm::load::policy::{ExecutionPolicy, set_execution_policy};
     use crate::runtime::{Context, Scheme};
@@ -666,7 +666,7 @@ mod tests {
                     temp.path()
                         .join(std::env::consts::ARCH)
                         .join("stdlib/boot")
-                        .with_extension(DYNLIB_EXTENSION)
+                        .with_extension(FASL_CODE_EXTENSION)
                 );
             });
         });
@@ -690,7 +690,7 @@ mod tests {
 
                 let riscv_compiled = compiled_dir
                     .join("riscv64/lib/test")
-                    .with_extension(DYNLIB_EXTENSION);
+                    .with_extension(FASL_CODE_EXTENSION);
                 fs::create_dir_all(riscv_compiled.parent().unwrap()).unwrap();
                 fs::write(&riscv_compiled, b"riscv").unwrap();
                 std::thread::sleep(Duration::from_millis(20));
@@ -698,7 +698,7 @@ mod tests {
 
                 let x86_compiled = compiled_dir
                     .join("x86_64/lib/test")
-                    .with_extension(DYNLIB_EXTENSION);
+                    .with_extension(FASL_CODE_EXTENSION);
                 fs::create_dir_all(x86_compiled.parent().unwrap()).unwrap();
                 fs::write(&x86_compiled, b"x86").unwrap();
 
@@ -739,7 +739,7 @@ mod tests {
                     fallback_dir
                         .join("x86_64")
                         .join(source.strip_prefix("/").unwrap_or(&source))
-                        .with_extension(DYNLIB_EXTENSION)
+                        .with_extension(FASL_CODE_EXTENSION)
                 );
             });
         });
@@ -761,7 +761,7 @@ mod tests {
 
                 let compiled = compiled_dir
                     .join("lib/test")
-                    .with_extension(DYNLIB_EXTENSION);
+                    .with_extension(FASL_CODE_EXTENSION);
                 fs::write(&compiled, b"compiled").unwrap();
                 std::thread::sleep(Duration::from_millis(20));
                 fs::write(&source, b"new").unwrap();

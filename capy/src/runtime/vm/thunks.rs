@@ -66,55 +66,87 @@ macro_rules! thunks {
             $v extern "C-unwind" fn $name<$gl>($($arg: $t),*) -> $ret $b
         )*
 
-        pub struct Thunks {
-            $(
-                pub $name: cranelift_module::FuncId
-            ),*
-        }
-
         pub struct ImportedThunks {
             $(
                 pub $name: cranelift_codegen::ir::entities::FuncRef
             ),*
         }
 
-        impl Thunks {
-            pub fn new<$gl, M: cranelift_module::Module>(
-                module: &mut M,
-            ) -> Self {
-                let callconv = cranelift_codegen::isa::CallConv::SystemV;
-                let mut sig = cranelift_codegen::ir::Signature::new(callconv);
+        paste::paste! {
+            #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+            #[allow(non_camel_case_types)]
+            #[repr(u32)]
+            pub enum RuntimeThunk {
                 $(
-                    $(
-                        for ty in < $t as compiler::PrimType>::clif_type() {
-                            sig.params.push(cranelift_codegen::ir::AbiParam::new(ty));
-                        }
-                    )*
-
-                    for ty in <$ret as compiler::PrimType>::clif_type() {
-                        sig.returns.push(cranelift_codegen::ir::AbiParam::new(ty));
-                    }
-
-                    let $name = module.declare_function(concat!("capy_thunks_", stringify!($name)), cranelift_module::Linkage::Import, &sig).unwrap();
-                    sig.clear(callconv);
+                    [<Thunk_ $name>],
                 )*
+            }
 
-                Self {
-                    $($name),*
+            impl RuntimeThunk {
+                pub const ALL: &'static [Self] = &[
+                    $(
+                        Self::[<Thunk_ $name>],
+                    )*
+                ];
+
+                pub fn id(self) -> u32 {
+                    self as u32
                 }
 
+                pub fn from_id(id: u32) -> Option<Self> {
+                    match id {
+                        $(
+                            x if x == Self::[<Thunk_ $name>] as u32 => {
+                                Some(Self::[<Thunk_ $name>])
+                            }
+                        )*
+                        _ => None,
+                    }
+                }
+
+                pub fn address(self) -> Address {
+                    match self {
+                        $(
+                            Self::[<Thunk_ $name>] => Address::from_ptr($name as *const ()),
+                        )*
+                    }
+                }
             }
         }
 
         impl ImportedThunks {
-            pub fn new<M: cranelift_module::Module>(
-                thunks: &Thunks,
+            pub fn new_direct<$gl>(
                 function: &mut cranelift_codegen::ir::function::Function,
-                module: &mut M,
             ) -> Self {
-                $(
-                    let $name = module.declare_func_in_func(thunks.$name, function);
-                )*
+                let callconv = cranelift_codegen::isa::CallConv::SystemV;
+                let mut sig = cranelift_codegen::ir::Signature::new(callconv);
+                paste::paste! {
+                    $(
+                        $(
+                            for ty in < $t as compiler::PrimType>::clif_type() {
+                                sig.params.push(cranelift_codegen::ir::AbiParam::new(ty));
+                            }
+                        )*
+
+                        for ty in <$ret as compiler::PrimType>::clif_type() {
+                            sig.returns.push(cranelift_codegen::ir::AbiParam::new(ty));
+                        }
+
+                        let sig_ref = function.import_signature(sig.clone());
+                        let $name = crate::compiler::codegen::declare_backend_function_import(
+                            function,
+                            crate::compiler::codegen::BackendSymbol::Imported {
+                                kind: crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk,
+                                symbol: crate::compiler::codegen::ImportedSymbol::new(
+                                    RuntimeThunk::[<Thunk_ $name>].id(),
+                                ),
+                            },
+                            sig_ref,
+                            false,
+                        );
+                        sig.clear(callconv);
+                    )*
+                }
 
                 Self {
                     $($name),*
@@ -4320,5 +4352,34 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
         } else {
             module.into()
         },
+    }
+}
+
+#[cfg(test)]
+mod runtime_thunk_import_tests {
+    use super::*;
+
+    #[test]
+    fn direct_imported_thunks_use_runtime_thunk_ids() {
+        let mut function = cranelift_codegen::ir::Function::new();
+        let imported = ImportedThunks::new_direct(&mut function);
+
+        let func = &function.dfg.ext_funcs[imported.wrong_number_of_args];
+        let cranelift_codegen::ir::ExternalName::User(name_ref) = func.name else {
+            panic!("direct thunk import should use a user external name");
+        };
+        let symbol = crate::compiler::codegen::BackendSymbol::from_user_external_name(
+            function.params.user_named_funcs()[name_ref].clone(),
+        );
+
+        assert_eq!(
+            symbol,
+            Some(crate::compiler::codegen::BackendSymbol::Imported {
+                kind: crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk,
+                symbol: crate::compiler::codegen::ImportedSymbol::new(
+                    RuntimeThunk::Thunk_wrong_number_of_args.id(),
+                ),
+            })
+        );
     }
 }

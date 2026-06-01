@@ -2,7 +2,7 @@
 #
 # Usage examples:
 #   make build                 # build runtime + bootstrap stages 0/1/2
-#   make build-runtime         # build capy + capy/capyc C launchers
+#   make build-runtime         # build the static Rust capy launcher
 #   make stage-0
 #   make stage-1
 #   make stage-2
@@ -29,8 +29,6 @@ HOST_TARGET := $(shell rustc --print host-tuple)
 TARGET_DIR  := target/$(TARGET)
 TARGET_PATH := $(TARGET_DIR)/$(PROFILE)
 
-CC ?= clang
-
 # Compile psyntax during stage-0 creation. By default set to 0 as
 # it's not strictly needed for bootstrapping unless you change
 # psyntax.scm.
@@ -47,16 +45,10 @@ endif
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 DYNLIB_EXT := dylib
-RPATH_PORTABLE := @loader_path/
-RPATH_FHS := ${PREFIX}/lib/
 else ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
 DYNLIB_EXT := dll
-RPATH_PORTABLE := "\$$ORIGIN/"
-RPATH_FHS := ${PREFIX}/lib/
 else
 DYNLIB_EXT := so
-RPATH_PORTABLE := "\$$ORIGIN/"
-RPATH_FHS := ${PREFIX}/lib/
 endif
 
 ARCH := $(shell rustc -vV | awk '/^host:/ {print $$2}' | cut -d- -f1)
@@ -77,9 +69,7 @@ CAPY_LOAD_PATH ?= ./lib
 CAPY_ENV = \
 	MMTK_PLAN="$(MMTK_PLAN)" \
 	XDG_CACHE_HOME="$(XDG_CACHE_HOME)" \
-	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)" \
-	LD_LIBRARY_PATH="$(TARGET_PATH)" \
-	DYLD_FALLBACK_LIBRARY_PATH="$(TARGET_PATH)"
+	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)"
 
 
 BOOT_SRCS := \
@@ -301,16 +291,17 @@ install-cross:
 		echo "Using cargo, no need to install cross"; \
 	fi
 
-# Build the Rust library and the C launcher binaries.
+# Build the static Rust launcher.
 build-runtime-bootstrap:
 	@echo "Version: $(VERSION)"
 	@echo "Target path: $(TARGET_PATH)"
 	@echo "Building CapyScheme with profile '$(PROFILE)' for target '$(TARGET)'"
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable,bootstrap
-	@echo "Build main capy binaries"
-	
-	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
-	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable,bootstrap
+	@echo "Build main capy launcher"
+	mkdir -p bin
+	cp $(TARGET_PATH)/capy bin/capy
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > bin/capyc
+	chmod +x bin/capyc
 
 
 # Aggregate build: runtime + full bootstrap chain.
@@ -322,17 +313,25 @@ build:
 	@echo "Build complete: runtime and bootstrap stages 0-2"
 
 build-runtime:
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable --no-default-features
+	mkdir -p bin
+	cp $(TARGET_PATH)/capy bin/capy
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > bin/capyc
+	chmod +x bin/capyc
 
 build-runtime-fhs: 
-	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy
-	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full  -lcapy -Wl,-rpath,$(RPATH_FHS)
-	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_FHS)
+	CAPY_SYSROOT=$(PREFIX) $(CARGO_BIN) build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy --bin capy
+	mkdir -p bin
+	cp $(TARGET_PATH)/capy bin/capy-full
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy-full" --capy-compiler-entrypoint "$$@"' > bin/capyc-full
+	chmod +x bin/capyc-full
 
 build-runtime-portable: 
-	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --features portable --no-default-features
-	$(CC) bin/capy.c  -L$(TARGET_PATH) -o bin/capy-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
-	$(CC) bin/capyc.c -L$(TARGET_PATH) -o bin/capyc-full -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
+	$(CARGO_BIN) build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable --no-default-features
+	mkdir -p bin
+	cp $(TARGET_PATH)/capy bin/capy-full
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy-full" --capy-compiler-entrypoint "$$@"' > bin/capyc-full
+	chmod +x bin/capyc-full
 
 install-scm:
 	mkdir -p $(PREFIX)/capy/$(VERSION)
@@ -381,19 +380,18 @@ compile-psyntax:
 stage-0: build-runtime-bootstrap
 	@echo "Creating stage-0 CapyScheme"
 	mkdir -p stage-0
+	cp $(TARGET_PATH)/capy stage-0/capy
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > stage-0/capyc
+	chmod +x stage-0/capyc
 	
-	$(CC) bin/capy.c  -L$(TARGET_PATH) -o stage-0/capy  -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
-	$(CC) bin/capyc.c -L$(TARGET_PATH) -o stage-0/capyc -lcapy -Wl,-rpath,$(RPATH_PORTABLE)
-	cp $(TARGET_PATH)/libcapy.* stage-0/
-	
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c 42
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c 42
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
 ifeq ($(COMPILE_PSYNTAX),1)
-	MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib LD_LIBRARY_PATH=stage-0/ DYLD_FALLBACK_LIBRARY_PATH=$(TARGET_PATH) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
+	MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
 endif
 	
 
@@ -537,9 +535,9 @@ install-portable: build build-runtime-portable
 	mkdir -p $(PREFIX)/capy/$(VERSION)/extensions
 	rsync --checksum -r lib $(PREFIX)/capy/$(VERSION)
 	cp bin/capy-full $(PREFIX)/capy/$(VERSION)/capy 
-	cp bin/capyc-full $(PREFIX)/capy/$(VERSION)/capyc
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > $(PREFIX)/capy/$(VERSION)/capyc
+	chmod +x $(PREFIX)/capy/$(VERSION)/capyc
 	ln -sf $(PREFIX)/capy/$(VERSION)/capy $(PREFIX)/capy/$(VERSION)/capy-$(VERSION)
-	cp $(TARGET_PATH)/libcapy.* $(PREFIX)/capy/$(VERSION)/
 	cp -r stage-2/compiled $(PREFIX)/capy/$(VERSION)/
 	@echo "CapyScheme installed to $(PREFIX)/capy/$(VERSION)"
 	@echo "Add $(PREFIX)/capy/$(VERSION) to your PATH to use CapyScheme"
@@ -561,8 +559,8 @@ dist-portable: build build-runtime-portable
 	mkdir -p "$$stage_install_dir/extensions"; \
 	rsync --checksum -r lib "$$stage_install_dir"; \
 	cp bin/capy-full "$$stage_install_dir/capy"; \
-	cp bin/capyc-full "$$stage_install_dir/capyc"; \
-	cp $(TARGET_PATH)/libcapy.* "$$stage_install_dir/"; \
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$$stage_install_dir/capyc"; \
+	chmod +x "$$stage_install_dir/capyc"; \
 	cp -r stage-2/compiled "$$stage_install_dir/"; \
 	cp LICENSE "$$stage_install_dir/"; \
 	cp CHANGELOG.md "$$stage_install_dir/"; \
@@ -579,8 +577,8 @@ install: build
 	mkdir -p "$(PREFIX)/share/capy"; \
 	cp -r lib "$(PREFIX)/share/capy/"; \
 	cp bin/capy-full "$(PREFIX)/bin/capy"; \
-	cp bin/capyc-full "$(PREFIX)/bin/capyc"; \
-	cp $(TARGET_PATH)/libcapy.* "$(PREFIX)/lib/"; \
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PREFIX)/bin/capyc"; \
+	chmod +x "$(PREFIX)/bin/capyc"; \
 	cp -r stage-2/compiled "$(PREFIX)/lib/capy/"; \
 	echo "Installation complete."
 
@@ -609,8 +607,8 @@ dist-deb: build
 	rm -rf "$(PKG_ROOT)/deb"
 	mkdir -p "$(PKG_ROOT)/deb/root/usr/bin" "$(PKG_ROOT)/deb/root/usr/lib" "$(PKG_ROOT)/deb/root/usr/lib/capy" "$(PKG_ROOT)/deb/root/usr/share/capy" "$(PKG_ROOT)/deb/DEBIAN" "$(DIST_DIR)"
 	cp bin/capy-full "$(PKG_ROOT)/deb/root/usr/bin/capy"
-	cp bin/capyc-full "$(PKG_ROOT)/deb/root/usr/bin/capyc"
-	cp $(TARGET_PATH)/libcapy.* "$(PKG_ROOT)/deb/root/usr/lib/"
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PKG_ROOT)/deb/root/usr/bin/capyc"
+	chmod +x "$(PKG_ROOT)/deb/root/usr/bin/capyc"
 	cp -r stage-2/compiled "$(PKG_ROOT)/deb/root/usr/lib/capy/"
 	cp -r lib "$(PKG_ROOT)/deb/root/usr/share/capy/"
 	installed_size_kb=$$(du -sk "$(PKG_ROOT)/deb/root/usr" | awk '{print $$1}'); \
@@ -649,8 +647,8 @@ dist-rpm: build
 		"$(PKG_ROOT)/rpm/rpmbuild/SPECS" "$(PKG_ROOT)/rpm/rpmbuild/SOURCES" "$(PKG_ROOT)/rpm/rpmbuild/BUILD" "$(PKG_ROOT)/rpm/rpmbuild/BUILDROOT" \
 		"$(PKG_ROOT)/rpm/rpmbuild/RPMS" "$(PKG_ROOT)/rpm/rpmbuild/SRPMS" "$(PKG_ROOT)/rpm/rpmbuild/RPMDB" "$(DIST_DIR)"
 	cp bin/capy-full "$(PKG_ROOT)/rpm/root/usr/bin/capy"
-	cp bin/capyc-full "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
-	cp $(TARGET_PATH)/libcapy.* "$(PKG_ROOT)/rpm/root/usr/lib/"
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
+	chmod +x "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
 	cp -r stage-2/compiled "$(PKG_ROOT)/rpm/root/usr/lib/capy/"
 	cp -r lib "$(PKG_ROOT)/rpm/root/usr/share/capy/"
 	rm -rf "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"
@@ -686,7 +684,6 @@ dist-rpm: build
 		"%files" \
 		"/usr/bin/capy" \
 		"/usr/bin/capyc" \
-		"/usr/lib/libcapy.*" \
 		"/usr/lib/capy/compiled" \
 		"/usr/share/capy/lib" \
 		"" \

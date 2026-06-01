@@ -47,17 +47,20 @@ macro_rules! call_signature {
 
 mod artifact;
 mod bootstrap;
+pub mod code_image;
+pub mod code_image_builder;
+pub mod codegen;
 pub mod debuginfo;
+pub mod direct;
 pub mod linkutils;
 mod object;
 mod pipeline;
 pub mod ssa;
 
 pub use bootstrap::compile_file;
-pub use object::{CompilationOptions, compile_cps_to_object, link_object_product};
+pub use object::{CompilationOptions, compile_cps_to_code_image};
 pub use pipeline::lower_to_cps;
 
-pub(crate) use object::compile_cps_to_shared_object;
 pub(crate) use pipeline::{
     DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, lower_expanded_to_cps,
 };
