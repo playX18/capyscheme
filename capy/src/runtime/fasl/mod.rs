@@ -66,6 +66,8 @@ pub const FASL_RELOC_RUNTIME_THUNK: u8 = 4;
 pub const FASL_RELOC_RUNTIME_DATA: u8 = 5;
 pub const FASL_RELOC_SIDE_METADATA: u8 = 6;
 pub const FASL_RELOC_CACHE_CELL: u8 = 7;
+pub const FASL_RELOC_CRANELIFT: u8 = 8;
+pub const FASL_RELOC_CRANELIFT_DATA_SLOT: u8 = 9;
 
 /// Reference to an object.
 pub const FASL_TAG_REF: u8 = 0xFF;
@@ -75,8 +77,7 @@ pub const FASL_TAG_REF_INIT: u8 = 0xFE;
 pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
 /// Current FASL file format version.
 pub const FASL_VERSION: u32 = 1;
-/// Machine type for x86_64 (placeholder until multi-arch support).
-pub const FASL_MACHINE_TYPE: u32 = 0;
+
 pub struct FaslCodeBlockSpec<'a, 'gc> {
     pub bytes: &'a [u8],
     pub entry_offset: u32,

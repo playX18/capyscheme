@@ -1,11 +1,12 @@
 use std::io::{self, Read, Write};
 
 use asmkit::core::buffer::Reloc as AsmkitReloc;
+use cranelift_codegen::binemit::Reloc as CraneliftReloc;
 
 use super::{
     FASL_RELOC_ABS_WORD, FASL_RELOC_ASMKIT, FASL_RELOC_CACHE_CELL, FASL_RELOC_CODE_ENTRY,
-    FASL_RELOC_DATA_SLOT, FASL_RELOC_RUNTIME_DATA, FASL_RELOC_RUNTIME_THUNK,
-    FASL_RELOC_SIDE_METADATA,
+    FASL_RELOC_CRANELIFT, FASL_RELOC_CRANELIFT_DATA_SLOT, FASL_RELOC_DATA_SLOT,
+    FASL_RELOC_RUNTIME_DATA, FASL_RELOC_RUNTIME_THUNK, FASL_RELOC_SIDE_METADATA,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub struct FaslRelocation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FaslRelocKind {
     Asmkit(AsmkitReloc),
+    Cranelift(CraneliftReloc),
+    CraneliftDataSlot(CraneliftReloc),
     AbsWord,
     CodeEntry,
     DataSlotAddress,
@@ -67,6 +70,14 @@ impl FaslRelocKind {
                 write_u8(out, FASL_RELOC_ASMKIT)?;
                 write_u8(out, asmkit_reloc_to_tag(*reloc))
             }
+            Self::Cranelift(reloc) => {
+                write_u8(out, FASL_RELOC_CRANELIFT)?;
+                write_u8(out, cranelift_reloc_to_tag(*reloc))
+            }
+            Self::CraneliftDataSlot(reloc) => {
+                write_u8(out, FASL_RELOC_CRANELIFT_DATA_SLOT)?;
+                write_u8(out, cranelift_reloc_to_tag(*reloc))
+            }
             Self::AbsWord => write_u8(out, FASL_RELOC_ABS_WORD),
             Self::CodeEntry => write_u8(out, FASL_RELOC_CODE_ENTRY),
             Self::DataSlotAddress => write_u8(out, FASL_RELOC_DATA_SLOT),
@@ -80,6 +91,10 @@ impl FaslRelocKind {
     fn decode(input: &mut impl Read) -> io::Result<Self> {
         match read_u8(input)? {
             FASL_RELOC_ASMKIT => Ok(Self::Asmkit(asmkit_reloc_from_tag(read_u8(input)?)?)),
+            FASL_RELOC_CRANELIFT => Ok(Self::Cranelift(cranelift_reloc_from_tag(read_u8(input)?)?)),
+            FASL_RELOC_CRANELIFT_DATA_SLOT => Ok(Self::CraneliftDataSlot(
+                cranelift_reloc_from_tag(read_u8(input)?)?,
+            )),
             FASL_RELOC_ABS_WORD => Ok(Self::AbsWord),
             FASL_RELOC_CODE_ENTRY => Ok(Self::CodeEntry),
             FASL_RELOC_DATA_SLOT => Ok(Self::DataSlotAddress),
@@ -89,6 +104,81 @@ impl FaslRelocKind {
             FASL_RELOC_CACHE_CELL => Ok(Self::CacheCell),
             _ => Err(invalid_data("invalid FASL relocation kind")),
         }
+    }
+}
+
+fn cranelift_reloc_to_tag(reloc: CraneliftReloc) -> u8 {
+    match reloc {
+        CraneliftReloc::Abs4 => 0,
+        CraneliftReloc::Abs8 => 1,
+        CraneliftReloc::X86PCRel4 => 2,
+        CraneliftReloc::X86CallPCRel4 => 3,
+        CraneliftReloc::X86CallPLTRel4 => 4,
+        CraneliftReloc::X86GOTPCRel4 => 5,
+        CraneliftReloc::X86SecRel => 6,
+        CraneliftReloc::Arm32Call => 7,
+        CraneliftReloc::Arm64Call => 8,
+        CraneliftReloc::S390xPCRel32Dbl => 9,
+        CraneliftReloc::S390xPLTRel32Dbl => 10,
+        CraneliftReloc::ElfX86_64TlsGd => 11,
+        CraneliftReloc::MachOX86_64Tlv => 12,
+        CraneliftReloc::MachOAarch64TlsAdrPage21 => 13,
+        CraneliftReloc::MachOAarch64TlsAdrPageOff12 => 14,
+        CraneliftReloc::Aarch64TlsDescAdrPage21 => 15,
+        CraneliftReloc::Aarch64TlsDescLd64Lo12 => 16,
+        CraneliftReloc::Aarch64TlsDescAddLo12 => 17,
+        CraneliftReloc::Aarch64TlsDescCall => 18,
+        CraneliftReloc::Aarch64AdrGotPage21 => 19,
+        CraneliftReloc::Aarch64AdrPrelPgHi21 => 20,
+        CraneliftReloc::Aarch64AddAbsLo12Nc => 21,
+        CraneliftReloc::Aarch64Ld64GotLo12Nc => 22,
+        CraneliftReloc::RiscvCallPlt => 23,
+        CraneliftReloc::RiscvTlsGdHi20 => 24,
+        CraneliftReloc::RiscvPCRelLo12I => 25,
+        CraneliftReloc::RiscvGotHi20 => 26,
+        CraneliftReloc::RiscvPCRelHi20 => 27,
+        CraneliftReloc::S390xTlsGd64 => 28,
+        CraneliftReloc::S390xTlsGdCall => 29,
+        CraneliftReloc::PulleyPcRel => 30,
+        CraneliftReloc::PulleyCallIndirectHost => 31,
+    }
+}
+
+fn cranelift_reloc_from_tag(tag: u8) -> io::Result<CraneliftReloc> {
+    match tag {
+        0 => Ok(CraneliftReloc::Abs4),
+        1 => Ok(CraneliftReloc::Abs8),
+        2 => Ok(CraneliftReloc::X86PCRel4),
+        3 => Ok(CraneliftReloc::X86CallPCRel4),
+        4 => Ok(CraneliftReloc::X86CallPLTRel4),
+        5 => Ok(CraneliftReloc::X86GOTPCRel4),
+        6 => Ok(CraneliftReloc::X86SecRel),
+        7 => Ok(CraneliftReloc::Arm32Call),
+        8 => Ok(CraneliftReloc::Arm64Call),
+        9 => Ok(CraneliftReloc::S390xPCRel32Dbl),
+        10 => Ok(CraneliftReloc::S390xPLTRel32Dbl),
+        11 => Ok(CraneliftReloc::ElfX86_64TlsGd),
+        12 => Ok(CraneliftReloc::MachOX86_64Tlv),
+        13 => Ok(CraneliftReloc::MachOAarch64TlsAdrPage21),
+        14 => Ok(CraneliftReloc::MachOAarch64TlsAdrPageOff12),
+        15 => Ok(CraneliftReloc::Aarch64TlsDescAdrPage21),
+        16 => Ok(CraneliftReloc::Aarch64TlsDescLd64Lo12),
+        17 => Ok(CraneliftReloc::Aarch64TlsDescAddLo12),
+        18 => Ok(CraneliftReloc::Aarch64TlsDescCall),
+        19 => Ok(CraneliftReloc::Aarch64AdrGotPage21),
+        20 => Ok(CraneliftReloc::Aarch64AdrPrelPgHi21),
+        21 => Ok(CraneliftReloc::Aarch64AddAbsLo12Nc),
+        22 => Ok(CraneliftReloc::Aarch64Ld64GotLo12Nc),
+        23 => Ok(CraneliftReloc::RiscvCallPlt),
+        24 => Ok(CraneliftReloc::RiscvTlsGdHi20),
+        25 => Ok(CraneliftReloc::RiscvPCRelLo12I),
+        26 => Ok(CraneliftReloc::RiscvGotHi20),
+        27 => Ok(CraneliftReloc::RiscvPCRelHi20),
+        28 => Ok(CraneliftReloc::S390xTlsGd64),
+        29 => Ok(CraneliftReloc::S390xTlsGdCall),
+        30 => Ok(CraneliftReloc::PulleyPcRel),
+        31 => Ok(CraneliftReloc::PulleyCallIndirectHost),
+        _ => Err(invalid_data("invalid Cranelift relocation tag")),
     }
 }
 

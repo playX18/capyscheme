@@ -11,25 +11,21 @@ use crate::rsgc::mmtk::util::Address;
 use crate::runtime::{
     Context,
     value::{
-        BigInt, ByteVector, Complex, HashTable, HashTableType,
-        IntoValue, Keyword, Rational, Str, Symbol, Tuple, Value, Vector,
+        BigInt, ByteVector, Complex, HashTable, HashTableType, IntoValue, Keyword, Rational, Str,
+        Symbol, Tuple, Value, Vector,
     },
     vm::syntax::Syntax,
 };
 
 use super::{
-    FASL_MAGIC, FASL_VERSION, FASL_MACHINE_TYPE,
-    FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE,
-    FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_ENTRY,
-    FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF,
-    FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD,
-    FASL_TAG_LOOKUP, FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL,
-    FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL,
-    FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNCOMPRESSED,
-    FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_VECTOR,
-    FASL_SITUATION_VISIT_REVISIT,
-    FaslClosureSpec, FaslCodeBlockSpec, FaslProgramSpec,
-    checked_u32_len,
+    FASL_MAGIC, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR,
+    FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST,
+    FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
+    FASL_TAG_GRAPH_DEF, FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD,
+    FASL_TAG_LOOKUP, FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF,
+    FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE,
+    FASL_TAG_UNCOMPRESSED, FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_VECTOR, FASL_VERSION,
+    FaslClosureSpec, FaslCodeBlockSpec, FaslProgramSpec, checked_u32_len,
 };
 
 pub struct FASLWriter<'gc, W: Write> {
@@ -322,8 +318,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
 
     pub fn put_header(&mut self) -> io::Result<()> {
         self.writer.write_all(FASL_MAGIC)?;
-        self.put32(FASL_VERSION)?;
-        self.put32(FASL_MACHINE_TYPE)
+        self.put32(FASL_VERSION)
     }
 
     pub fn put_lites(&mut self) -> io::Result<()> {
