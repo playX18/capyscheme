@@ -6,6 +6,7 @@ use crate::rsgc::{
     sync::thread::Thread,
 };
 
+use crate::compiler::codegen::{DataSymbol, FunctionSymbol};
 use crate::{
     compiler::ssa::{
         LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
@@ -30,7 +31,6 @@ use crate::{
 use cranelift::frontend::Switch;
 use cranelift::prelude::{InstBuilder, IntCC, types};
 use cranelift_codegen::ir::{self, BlockArg};
-use cranelift_module::{DataId, Linkage, Module};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Callee {
@@ -40,9 +40,9 @@ pub enum Callee {
         target: ir::Value,
         closure: ir::Value,
     },
-    /// Callee is a direct function reference, and a direct tail-call can be performed.
+    /// Callee is known locally and loaded from a far-safe pointer slot.
     Direct {
-        target: ir::FuncRef,
+        target: ir::Value,
         closure: ir::Value,
     },
 
@@ -59,12 +59,12 @@ pub(crate) enum AllocInfoPreset {
 }
 
 impl AllocInfoPreset {
-    const fn info_symbol(self) -> &'static str {
+    pub(crate) const fn runtime_data(self) -> crate::runtime::symbols::RuntimeData {
         match self {
-            Self::Pair => "PAIR_INFO_STATIC",
-            Self::ClosureProc => "CLOSURE_PROC_INFO_STATIC",
-            Self::ClosureK => "CLOSURE_K_INFO_STATIC",
-            Self::MutableVector => "MUTABLE_VECTOR_INFO_STATIC",
+            Self::Pair => crate::runtime::symbols::RuntimeData::PairInfo,
+            Self::ClosureProc => crate::runtime::symbols::RuntimeData::ClosureProcInfo,
+            Self::ClosureK => crate::runtime::symbols::RuntimeData::ClosureKInfo,
+            Self::MutableVector => crate::runtime::symbols::RuntimeData::MutableVectorInfo,
         }
     }
 
@@ -88,6 +88,29 @@ impl AllocInfoPreset {
 
     const fn header_word(self) -> u64 {
         self.type_bits() as u64 | ((self.info_id() as u64) << 16)
+    }
+}
+
+#[cfg(test)]
+mod alloc_info_preset_tests {
+    use super::*;
+    use crate::runtime::symbols::RuntimeData;
+
+    #[test]
+    fn allocation_info_presets_have_runtime_data_ids() {
+        assert_eq!(AllocInfoPreset::Pair.runtime_data(), RuntimeData::PairInfo);
+        assert_eq!(
+            AllocInfoPreset::ClosureProc.runtime_data(),
+            RuntimeData::ClosureProcInfo
+        );
+        assert_eq!(
+            AllocInfoPreset::ClosureK.runtime_data(),
+            RuntimeData::ClosureKInfo
+        );
+        assert_eq!(
+            AllocInfoPreset::MutableVector.runtime_data(),
+            RuntimeData::MutableVectorInfo
+        );
     }
 }
 
@@ -147,41 +170,49 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    pub fn import_static(&mut self, name: &'static str, typ: ir::Type) -> ir::Value {
-        let data_id = *self
+    pub fn import_runtime_data(
+        &mut self,
+        data: crate::runtime::symbols::RuntimeData,
+        typ: ir::Type,
+    ) -> ir::Value {
+        let data = self
             .module_builder
-            .import_data
-            .entry(name)
-            .or_insert_with(|| {
-                self.module_builder
-                    .module
-                    .declare_data(name, Linkage::Import, false, false)
-                    .expect("failed to declare imported data symbol")
-            });
-        let data = self.import_data(data_id);
-
+            .declare_runtime_data_in_func(data, &mut self.builder.func);
         self.builder.ins().global_value(typ, data)
     }
 
-    pub fn import_data(&mut self, data: DataId) -> ir::GlobalValue {
+    pub fn import_data(&mut self, data: DataSymbol) -> ir::GlobalValue {
         self.data_imports
             .entry(data)
             .or_insert_with(|| {
-                let gv = self
-                    .module_builder
-                    .module
-                    .declare_data_in_func(data, &mut self.builder.func);
-                gv
+                self.module_builder
+                    .declare_data_in_func(data, &mut self.builder.func)
             })
             .clone()
     }
 
-    fn load_data_value(&mut self, data: DataId) -> ir::Value {
+    pub(crate) fn data_slot_address(&mut self, data: DataSymbol) -> ir::Value {
         let global_value = self.import_data(data);
-        let addr = self.builder.ins().global_value(types::I64, global_value);
+        self.builder.ins().global_value(types::I64, global_value)
+    }
+
+    pub(crate) fn load_data_value(&mut self, data: DataSymbol) -> ir::Value {
+        let addr = self.data_slot_address(data);
         self.builder
             .ins()
             .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0)
+    }
+
+    pub(crate) fn store_data_value(&mut self, data: DataSymbol, value: ir::Value) {
+        let addr = self.data_slot_address(data);
+        self.builder
+            .ins()
+            .store(ir::MemFlags::trusted().with_can_move(), value, addr, 0);
+    }
+
+    fn load_function_entrypoint(&mut self, function: FunctionSymbol) -> ir::Value {
+        let slot = self.module_builder.declare_function_pointer_slot(function);
+        self.load_data_value(slot)
     }
 
     pub fn var(&mut self, var: LVarRef<'gc>) -> ir::Value {
@@ -274,15 +305,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .builder
             .ins()
             .iconst(types::I64, Value::new(expected as i32).bits() as i64);
-        let target = self.module_builder.module.declare_func_in_func(
-            self.module_builder.wrong_arity_trampoline,
-            &mut self.builder.func,
-        );
+        let target = self.load_function_entrypoint(self.module_builder.wrong_arity_trampoline);
         let undefined = self
             .builder
             .ins()
             .iconst(types::I64, Value::undefined().bits() as i64);
-        self.builder.ins().return_call(
+        self.builder.ins().return_call_indirect(
+            self.sig_call,
             target,
             &[
                 self.rator,
@@ -384,7 +413,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         con_alloc_size: usize,
         var_alloc_size: Option<ir::Value>,
     ) -> ir::Value {
-        let info = self.import_static(preset.info_symbol(), types::I64);
+        let info = self.import_runtime_data(preset.runtime_data(), types::I64);
         self.alloc_with_info_inner(info, Some(preset), con_alloc_size, var_alloc_size)
     }
 
@@ -602,15 +631,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             Some(return_cont) => self.var(return_cont),
             None => self.builder.ins().iconst(types::I64, 0),
         };
-        let target = self.module_builder.module.declare_func_in_func(
-            self.module_builder.raise_to_exception_handler_trampoline,
-            &mut self.builder.func,
-        );
+        let target =
+            self.load_function_entrypoint(self.module_builder.raise_to_exception_handler_trampoline);
         let undefined = self
             .builder
             .ins()
             .iconst(types::I64, Value::undefined().bits() as i64);
-        self.builder.ins().return_call(
+        self.builder.ins().return_call_indirect(
+            self.sig_call,
             target,
             &[err, undefined, retk, undefined, undefined, undefined],
         )
@@ -1067,7 +1095,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn code_block_data(&self, code: CodeId<'gc>) -> DataId {
+    fn code_block_data(&self, code: CodeId<'gc>) -> DataSymbol {
         match code {
             CodeId::Function(func) => self.module_builder.code_block_for_func[&func],
             CodeId::Continuation(cont) => self.module_builder.code_block_for_cont[&cont],
@@ -1132,12 +1160,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     panic!("invalid cache-ref: expected constant cache key, got {cache_key:?}");
                 };
                 let cell = self.module_builder.intern_cache_cell(*cache_key);
-                let cell = self.import_data(cell);
-                let addr = self.builder.ins().global_value(types::I64, cell);
-                let value = self
-                    .builder
-                    .ins()
-                    .load(types::I64, ir::MemFlags::new(), addr, 0);
+                let value = self.load_data_value(cell);
                 self.bind_linear_var(*dst, VarDef::Value(value));
             }
             Instruction::CacheSet {
@@ -1152,11 +1175,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 };
                 let value = self.linear_atom(*value);
                 let cell = self.module_builder.intern_cache_cell(*cache_key);
-                let cell = self.import_data(cell);
-                let addr = self.builder.ins().global_value(types::I64, cell);
-                self.builder
-                    .ins()
-                    .store(ir::MemFlags::new(), value, addr, 0);
+                self.store_data_value(cell, value);
                 let undefined = self
                     .builder
                     .ins()
@@ -1271,16 +1290,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             }
 
             if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
-                && let Some(func_id) = self.module_builder.func_for_func.get(func)
+                && let Some(func_id) = self.module_builder.func_for_func.get(func).copied()
             {
-                let func_id = *func_id;
                 let closure = self.linear_atom(callee);
-                let func_ref = self
-                    .module_builder
-                    .module
-                    .declare_func_in_func(func_id, &mut self.builder.func);
                 return Callee::Direct {
-                    target: func_ref,
+                    target: self.load_function_entrypoint(func_id),
                     closure,
                 };
             }
@@ -1313,16 +1327,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         if let LinearAtom::Local(var_id) = callee
             && let Some(var) = self.linear_source(var_id)
             && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
-            && let Some(func_id) = self.module_builder.func_for_cont.get(cont)
+            && let Some(func_id) = self.module_builder.func_for_cont.get(cont).copied()
         {
-            let func_id = *func_id;
             let closure = self.linear_atom(callee);
-            let func_ref = self
-                .module_builder
-                .module
-                .declare_func_in_func(func_id, &mut self.builder.func);
             return Callee::Direct {
-                target: func_ref,
+                target: self.load_function_entrypoint(func_id),
                 closure,
             };
         }
@@ -1422,12 +1431,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .collect::<Vec<_>>();
         let call_args = self.prepare_call_args(&rands);
         let trampoline_id = self.module_builder.raise_trampolines[args.len()];
-        let target = self
-            .module_builder
-            .module
-            .declare_func_in_func(trampoline_id, &mut self.builder.func);
+        let target = self.load_function_entrypoint(trampoline_id);
         let values = self.call_values(code, call_args);
-        self.builder.ins().return_call(target, &values);
+        self.builder
+            .ins()
+            .return_call_indirect(self.sig_call, target, &values);
     }
 
     fn emit_callee_jump(&mut self, callee: Callee, call_args: RegisterCallArgs) {
@@ -1439,7 +1447,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             }
             Callee::Direct { target, closure } => {
                 let values = self.call_values(closure, call_args);
-                self.builder.ins().return_call(target, &values);
+                self.builder
+                    .ins()
+                    .return_call_indirect(self.sig_call, target, &values);
             }
             Callee::SelfRec(block) => {
                 let block_args = self.call_block_args(self.rator, call_args);

@@ -110,7 +110,6 @@ type IsAboutToTerminate = BitField<u64, bool, { IsBlockedForGC::NEXT_BIT }, 1, f
 type ActiveMutatorContext = BitField<u64, bool, { IsAboutToTerminate::NEXT_BIT }, 1, false>;
 type ThreadStateInitialized = BitField<u64, bool, { ActiveMutatorContext::NEXT_BIT }, 1, false>;
 
-/// cbindgen:ignore
 #[repr(C)]
 #[derive()]
 pub struct Thread {
@@ -673,7 +672,6 @@ pub enum AllocFastPath {
     None,
 }
 
-/// cbindgen:ignore
 #[repr(C)]
 pub struct ThreadNativeData {
     pub(crate) lab: LocalAllocationBuffer,
@@ -826,7 +824,6 @@ impl BlockAdapter for GCBlockAdapter {
     }
 }
 
-/// cbindgen:ignore
 pub struct ThreadManager {
     threads: Mutex<Vec<Arc<Thread>>>,
     handshake_threads: Mutex<Vec<Arc<Thread>>>,

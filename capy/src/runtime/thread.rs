@@ -36,7 +36,6 @@ use std::{
 pub(crate) const REGISTER_ARG_COUNT: usize = 4;
 pub(crate) const COMPILED_ENTRY_ARG_COUNT: usize = REGISTER_ARG_COUNT + 2;
 
-/// cbindgen:ignore
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Context<'gc> {
@@ -750,7 +749,7 @@ impl Scheme {
         self.mutator.collect_garbage();
     }
 
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let mut should_init = false;
 
         // if VM is not initialized yet, we need to run init code

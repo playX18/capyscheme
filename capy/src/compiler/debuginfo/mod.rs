@@ -1,3 +1,5 @@
+#![allow(dead_code, private_bounds)]
+
 use std::collections::HashMap;
 
 use crate::cps::ReifyInfo;
@@ -8,7 +10,6 @@ use cranelift_codegen::binemit::CodeOffset;
 use cranelift_codegen::ir::{Endianness, SourceLoc, ValueLabel};
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::{LabelValueLoc, MachSrcLoc};
-use cranelift_module::FuncId;
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, Expression, FileId, LineProgram, LineString,
     Range, RangeList, Sections, UnitEntryId, Writer,
@@ -304,7 +305,8 @@ impl<'gc> DebugContext<'gc> {
         })
     }
 
-    pub(crate) fn emit(&mut self, product: &mut ObjectProduct) {
+    #[allow(dead_code)]
+    pub(crate) fn emit_sections<T: WriteDebugInfo>(&mut self, product: &mut T) {
         let unit_range_list_id = self.dwarf.unit.ranges.add(self.unit_range_list.clone());
         let root = self.dwarf.unit.root();
         let root = self.dwarf.unit.get_mut(root);
@@ -342,7 +344,7 @@ impl<'gc> FunctionDebugContext<'gc> {
     pub(crate) fn create_debug_lines(
         &mut self,
         debug_context: &mut DebugContext<'gc>,
-        func_id: FuncId,
+        func_id: u32,
         context: &cranelift_codegen::Context,
         isa: &dyn TargetIsa,
     ) -> CodeOffset {
@@ -550,7 +552,7 @@ impl<'gc> FunctionDebugContext<'gc> {
     pub(crate) fn finalize(
         mut self,
         debug_context: &mut DebugContext<'gc>,
-        func_id: FuncId,
+        func_id: u32,
         context: &cranelift_codegen::Context,
 
         isa: &dyn TargetIsa,
@@ -570,28 +572,21 @@ impl<'gc> FunctionDebugContext<'gc> {
     }
 }
 
-fn address_for_func(func_id: FuncId) -> Address {
-    let symbol = func_id.as_u32();
-
+fn address_for_func(func_id: u32) -> Address {
     Address::Symbol {
-        symbol: symbol as usize,
+        symbol: func_id as usize,
         addend: 0,
     }
 }
 
-fn address_for_func_at(func_id: FuncId, addend: i64) -> Address {
-    let symbol = func_id.as_u32();
-
+fn address_for_func_at(func_id: u32, addend: i64) -> Address {
     Address::Symbol {
-        symbol: symbol as usize,
+        symbol: func_id as usize,
         addend,
     }
 }
 
-use cranelift_object::ObjectProduct;
 use gimli::SectionId;
-use object::write::{Relocation, StandardSegment};
-use object::{RelocationEncoding, RelocationFlags, SectionKind};
 
 pub(super) trait WriteDebugInfo {
     type SectionId: Copy;
@@ -758,85 +753,5 @@ impl Writer for WriterRelocate {
                 _ => Err(gimli::write::Error::UnsupportedPointerEncoding(eh_pe)),
             },
         }
-    }
-}
-
-impl WriteDebugInfo for ObjectProduct {
-    type SectionId = (object::write::SectionId, object::write::SymbolId);
-
-    fn add_debug_section(
-        &mut self,
-        id: SectionId,
-        data: Vec<u8>,
-    ) -> (object::write::SectionId, object::write::SymbolId) {
-        let name = if self.object.format() == object::BinaryFormat::MachO {
-            id.name().replace('.', "__") // machO expects __debug_info instead of .debug_info
-        } else {
-            id.name().to_string()
-        }
-        .into_bytes();
-
-        let segment = self.object.segment_name(StandardSegment::Debug).to_vec();
-        // FIXME use SHT_X86_64_UNWIND for .eh_frame
-        let section_id = self.object.add_section(
-            segment,
-            name,
-            if id == SectionId::DebugStr || id == SectionId::DebugLineStr {
-                SectionKind::DebugString
-            } else if id == SectionId::EhFrame {
-                SectionKind::ReadOnlyData
-            } else {
-                SectionKind::Debug
-            },
-        );
-        self.object
-            .section_mut(section_id)
-            .set_data(data, if id == SectionId::EhFrame { 8 } else { 1 });
-        let symbol_id = self.object.section_symbol(section_id);
-        (section_id, symbol_id)
-    }
-
-    fn add_debug_reloc(
-        &mut self,
-        section_map: &HashMap<SectionId, Self::SectionId>,
-        from: &Self::SectionId,
-        reloc: &DebugReloc,
-    ) {
-        let (symbol, symbol_offset) = match reloc.name {
-            DebugRelocName::Section(id) => (
-                section_map
-                    .get(&id)
-                    .expect("debug section should exist in section map")
-                    .1,
-                0,
-            ),
-            DebugRelocName::Symbol(id) => {
-                let id = id.try_into().expect("debug symbol id should fit in u32");
-                let symbol_id = if id & 1 << 31 == 0 {
-                    self.function_symbol(FuncId::from_u32(id))
-                } else {
-                    todo!()
-                };
-                self.object
-                    .symbol_section_and_offset(symbol_id)
-                    .unwrap_or((symbol_id, 0))
-            }
-        };
-        self.object
-            .add_relocation(
-                from.0,
-                Relocation {
-                    offset: u64::from(reloc.offset),
-                    symbol,
-                    flags: RelocationFlags::Generic {
-                        kind: reloc.kind,
-                        encoding: RelocationEncoding::Generic,
-                        size: reloc.size * 8,
-                    },
-                    addend: i64::try_from(symbol_offset).expect("symbol offset should fit in i64")
-                        + reloc.addend,
-                },
-            )
-            .expect("failed to add debug relocation");
     }
 }

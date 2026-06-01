@@ -1,11 +1,14 @@
 //! Runtime system: value representation, virtual machine, modules, and thread management.
 
 pub mod fasl;
+pub mod code_image;
+pub mod code_memory;
 pub mod fluids;
 pub mod global;
 pub mod libs;
 pub mod modules;
 pub mod stats;
+pub mod symbols;
 pub mod thread;
 pub mod value;
 pub mod vm;

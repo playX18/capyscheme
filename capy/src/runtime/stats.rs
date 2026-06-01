@@ -104,7 +104,9 @@ pub(crate) enum CompilationBreakdownPhase {
     Psyntax,
     Lowering,
     Cranelift,
+    #[allow(dead_code)]
     ObjectEmit,
+    #[allow(dead_code)]
     Link,
 }
 

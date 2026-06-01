@@ -287,7 +287,6 @@ where
     }
 }
 
-/// cbindgen:ignore
 #[derive(Copy, Clone)]
 #[repr(transparent)]
 pub struct Mutation<'gc> {

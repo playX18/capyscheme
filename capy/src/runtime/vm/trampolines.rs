@@ -1,7 +1,7 @@
 //! Trampolines from Scheme to Rust code and vice-versa.
 //!
-//! We use cranelift-jit to generate them due to the fact that "tail" calling convention of Cranelift
-//! is not ABI stable and we can't write trampolines using `global_asm!` because of that.
+//! We generate these with Cranelift because the "tail" calling convention is
+//! not ABI stable and we can't write trampolines using `global_asm!`.
 
 use crate::runtime::{CallData, value::ReturnCode};
 use std::{
@@ -9,17 +9,23 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use crate::compiler::{
+    codegen::{FunctionCompileContext, host_isa},
+    direct::compile_function,
+};
 use crate::rsgc::mmtk::util::Address;
+use crate::runtime::{
+    code_image::{RuntimeRelocationSite, apply_runtime_relocation, code_bytes_with_call_stubs_for},
+    code_memory::{CodeMemory, LoadedCodeRef},
+};
 use cranelift::prelude::{
     AbiParam, FunctionBuilder, FunctionBuilderContext, InstBuilder, MemFlags, types,
 };
 use cranelift_codegen::{
     Context,
-    ir::{self},
+    ir::{self, Function, UserFuncName},
     isa::CallConv,
 };
-use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{FuncId, Linkage, Module, default_libcall_names};
 
 use crate::{
     call_signature,
@@ -30,10 +36,10 @@ use crate::{
 };
 
 pub struct Trampolines {
-    module: Mutex<JITModule>,
-    enter_scheme_trampoline: FuncId,
-    native_trampoline: FuncId,
-    native_continuation_trampoline: FuncId,
+    _memory: Mutex<CodeMemory>,
+    enter_scheme_trampoline: LoadedCodeRef,
+    native_trampoline: LoadedCodeRef,
+    native_continuation_trampoline: LoadedCodeRef,
 
     pub enter_scheme_size: usize,
     pub native_trampoline_size: usize,
@@ -547,76 +553,67 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
 
 impl Trampolines {
     pub fn new() -> Self {
-        let builder = JITBuilder::with_flags(
-            &[
-                ("opt_level", "speed"),
-                ("preserve_frame_pointers", "true"),
-                ("enable_pinned_reg", "true"),
-            ],
-            default_libcall_names(),
-        )
-        .unwrap();
+        let isa = host_isa();
+        let mut memory = CodeMemory::new();
 
-        let mut module = JITModule::new(builder);
-
-        let mut sig = native_enter_signature();
-
-        let enter_scheme_trampoline = module
-            .declare_function("enter_scheme", Linkage::Export, &sig)
-            .unwrap();
-
-        sig = compiled_tail_signature();
-
-        let native_trampoline = module
-            .declare_function("native_trampoline", Linkage::Export, &sig)
-            .unwrap();
-
-        sig = compiled_tail_signature();
-        let native_continuation_trampoline = module
-            .declare_function("native_continuation_trampoline", Linkage::Export, &sig)
-            .unwrap();
-
-        let mut ctx = module.make_context();
-        let mut fctx = FunctionBuilderContext::new();
-        let enter_scheme_size;
-        let native_trampoline_size;
-        let native_continuation_size;
-        {
-            ctx.func.signature = native_enter_signature();
-            enter_scheme_trampoline_code(&mut fctx, &mut ctx);
-            module
-                .define_function(enter_scheme_trampoline, &mut ctx)
-                .unwrap();
-            enter_scheme_size = ctx.compiled_code().unwrap().code_info().total_size as usize;
-            module.clear_context(&mut ctx);
-            fctx = FunctionBuilderContext::new();
-            ctx.func.signature = compiled_tail_signature();
-            scheme_native_trampoline_code(&mut fctx, &mut ctx);
-            module.define_function(native_trampoline, &mut ctx).unwrap();
-            native_trampoline_size = ctx.compiled_code().unwrap().code_info().total_size as usize;
-            module.clear_context(&mut ctx);
-            fctx = FunctionBuilderContext::new();
-            ctx.func.signature = compiled_tail_signature();
-            scheme_native_continuation_code(&mut fctx, &mut ctx);
-            module
-                .define_function(native_continuation_trampoline, &mut ctx)
-                .unwrap();
-            native_continuation_size = ctx.compiled_code().unwrap().code_info().total_size as usize;
-            module.clear_context(&mut ctx);
-        }
-
-        module.finalize_definitions().unwrap();
+        let enter_scheme_trampoline = compile_trampoline(
+            &mut memory,
+            &*isa,
+            0,
+            native_enter_signature(),
+            enter_scheme_trampoline_code,
+        );
+        let native_trampoline = compile_trampoline(
+            &mut memory,
+            &*isa,
+            1,
+            compiled_tail_signature(),
+            scheme_native_trampoline_code,
+        );
+        let native_continuation_trampoline = compile_trampoline(
+            &mut memory,
+            &*isa,
+            2,
+            compiled_tail_signature(),
+            scheme_native_continuation_code,
+        );
 
         Self {
+            enter_scheme_size: enter_scheme_trampoline.size,
+            native_trampoline_size: native_trampoline.size,
+            native_continuation_trampoline_size: native_continuation_trampoline.size,
             enter_scheme_trampoline,
-            enter_scheme_size,
             native_trampoline,
-            native_trampoline_size,
             native_continuation_trampoline,
-            native_continuation_trampoline_size: native_continuation_size,
-            module: Mutex::new(module),
+            _memory: Mutex::new(memory),
         }
     }
+}
+
+fn compile_trampoline(
+    memory: &mut CodeMemory,
+    isa: &dyn cranelift_codegen::isa::TargetIsa,
+    symbol: u32,
+    signature: ir::Signature,
+    build: fn(&mut FunctionBuilderContext, &mut Context),
+) -> LoadedCodeRef {
+    let mut cache = FunctionCompileContext::new();
+    cache.context.func = Function::with_name_signature(UserFuncName::user(0, symbol), signature);
+    build(&mut cache.fctx, &mut cache.context);
+    let compiled = compile_function(isa, &mut cache).expect("failed to compile trampoline");
+    let relocations = crate::compiler::direct::code_image_relocations(symbol, &compiled.relocs)
+        .expect("failed to encode trampoline relocations");
+    let (bytes, call_stub_offsets) =
+        code_bytes_with_call_stubs_for(symbol, &compiled.bytes, &relocations)
+            .expect("failed to reserve trampoline call stubs");
+    let loaded = memory
+        .allocate_copy(&bytes)
+        .expect("failed to allocate trampoline code");
+    let site = RuntimeRelocationSite::from_loaded_code(loaded, call_stub_offsets);
+    for reloc in &relocations {
+        apply_runtime_relocation(memory, &site, reloc).expect("failed to patch trampoline code");
+    }
+    loaded
 }
 
 unsafe impl Send for Trampolines {}
@@ -624,25 +621,11 @@ unsafe impl Sync for Trampolines {}
 
 pub(crate) static TRAMPOLINES: LazyLock<Trampolines> = LazyLock::new(|| Trampolines::new());
 
-static TRAMPOLINE_INTO_SCHEME: LazyLock<Address> = LazyLock::new(|| {
-    Address::from_ptr(
-        TRAMPOLINES
-            .module
-            .lock()
-            .unwrap()
-            .get_finalized_function(TRAMPOLINES.enter_scheme_trampoline),
-    )
-});
+static TRAMPOLINE_INTO_SCHEME: LazyLock<Address> =
+    LazyLock::new(|| TRAMPOLINES.enter_scheme_trampoline.entrypoint);
 
-static TRAMPOLINE_FROM_SCHEME: LazyLock<Address> = LazyLock::new(|| {
-    Address::from_ptr(
-        TRAMPOLINES
-            .module
-            .lock()
-            .unwrap()
-            .get_finalized_function(TRAMPOLINES.native_trampoline),
-    )
-});
+static TRAMPOLINE_FROM_SCHEME: LazyLock<Address> =
+    LazyLock::new(|| TRAMPOLINES.native_trampoline.entrypoint);
 
 pub fn get_trampoline_into_scheme() -> Address {
     *TRAMPOLINE_INTO_SCHEME
@@ -653,13 +636,45 @@ pub fn get_trampoline_from_scheme() -> Address {
 }
 
 pub fn get_cont_trampoline_from_scheme() -> Address {
-    let addr = Address::from_ptr(
-        TRAMPOLINES
-            .module
-            .lock()
-            .unwrap()
-            .get_finalized_function(TRAMPOLINES.native_continuation_trampoline),
-    );
+    TRAMPOLINES.native_continuation_trampoline.entrypoint
+}
 
-    addr
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{compiler::codegen::declare_runtime_data_symbol, runtime::symbols::RuntimeData};
+
+    fn i64_signature() -> ir::Signature {
+        let mut sig = ir::Signature::new(CallConv::SystemV);
+        sig.returns.push(AbiParam::new(types::I64));
+        sig
+    }
+
+    fn runtime_data_pointer_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
+        let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+        let entry = builder.create_block();
+        builder.switch_to_block(entry);
+        let global = declare_runtime_data_symbol(&mut builder.func, RuntimeData::PairInfo);
+        let address = builder.ins().global_value(types::I64, global);
+        builder.ins().return_(&[address]);
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+
+    #[test]
+    fn compile_trampoline_patches_numeric_runtime_data_relocations() {
+        let isa = host_isa();
+        let mut memory = CodeMemory::new();
+        let loaded = compile_trampoline(
+            &mut memory,
+            &*isa,
+            100,
+            i64_signature(),
+            runtime_data_pointer_code,
+        );
+
+        let f: extern "C" fn() -> usize =
+            unsafe { std::mem::transmute(loaded.entrypoint.as_usize()) };
+        assert_eq!(f(), RuntimeData::PairInfo.address().as_usize());
+    }
 }
