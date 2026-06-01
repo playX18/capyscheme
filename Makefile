@@ -43,13 +43,7 @@ VERSION := $(shell awk -F '"' '/^version\s*=/{print $$2; exit}' capy/Cargo.toml)
 endif
 
 UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-DYNLIB_EXT := dylib
-else ifeq ($(findstring MINGW,$(UNAME_S)),MINGW)
-DYNLIB_EXT := dll
-else
-DYNLIB_EXT := so
-endif
+COMPILED_SCM_EXT := fasl
 
 ARCH := $(shell rustc -vV | awk '/^host:/ {print $$2}' | cut -d- -f1)
 
@@ -159,7 +153,8 @@ RNRS_SRCS := \
 	lib/rnrs/arithmetic/bitwise.scm \
 	lib/rnrs/syntax-case.scm \
 	lib/rnrs/hashtables.scm \
-	lib/rnrs/enums.scm
+	lib/rnrs/enums.scm \
+	lib/rnrs/mutable-pairs.scm
 
 CAPY_SRCS_SLS := \
 	lib/capy/prelims.sls \
@@ -261,20 +256,23 @@ R7RS_SRCS := \
 	lib/scheme/sort.scm \
 	lib/scheme/time.scm \
 	lib/scheme/write.scm
+COMMON_SRCS := \
+	lib/common/pregexp.scm
 
 # Map sources to outputs (given OUT).
 
-BOOT_OUTS  = $(patsubst lib/boot/%.scm,$(OUT)/boot/%.$(DYNLIB_EXT),$(BOOT_SRCS))
-CORE_OUTS  = $(patsubst lib/core/%.scm,$(OUT)/core/%.$(DYNLIB_EXT),$(CORE_SRCS)) $(OUT)/core.$(DYNLIB_EXT)
-RNRS_OUTS  = $(patsubst lib/rnrs/%.scm,$(OUT)/rnrs/%.$(DYNLIB_EXT),$(RNRS_SRCS)) $(OUT)/rnrs.$(DYNLIB_EXT)
-CAPY_OUTS  = $(patsubst lib/capy/%.sls,$(OUT)/capy/%.$(DYNLIB_EXT),$(CAPY_SRCS_SLS)) \
-            $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(DYNLIB_EXT),$(CAPY_SRCS_SCM)) \
-            $(OUT)/capy/args.$(DYNLIB_EXT)
-SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(DYNLIB_EXT),$(SRFI_SRCS))
-R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(DYNLIB_EXT),$(R7RS_SRCS))
+BOOT_OUTS  = $(patsubst lib/boot/%.scm,$(OUT)/boot/%.$(COMPILED_SCM_EXT),$(BOOT_SRCS))
+CORE_OUTS  = $(patsubst lib/core/%.scm,$(OUT)/core/%.$(COMPILED_SCM_EXT),$(CORE_SRCS)) $(OUT)/core.$(COMPILED_SCM_EXT)
+RNRS_OUTS  = $(patsubst lib/rnrs/%.scm,$(OUT)/rnrs/%.$(COMPILED_SCM_EXT),$(RNRS_SRCS)) $(OUT)/rnrs.$(COMPILED_SCM_EXT)
+CAPY_OUTS  = $(patsubst lib/capy/%.sls,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_SRCS_SLS)) \
+            $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_SRCS_SCM)) \
+            $(OUT)/capy/args.$(COMPILED_SCM_EXT)
+SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(COMPILED_SCM_EXT),$(SRFI_SRCS))
+R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(COMPILED_SCM_EXT),$(R7RS_SRCS))
+COMMON_OUTS = $(patsubst lib/common/%.scm,$(OUT)/common/%.$(COMPILED_SCM_EXT),$(COMMON_SRCS))
 
 .PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable install-scm test stage-0 stage-1 stage-2 \
-	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-srfi compile-r7rs \
+	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-srfi compile-r7rs compile-common\
 	install-portable dist-portable install install-cross dist-deb dist-rpm
 
 all: build
@@ -397,7 +395,7 @@ endif
 
 	@echo "Stage-0 CapyScheme created in stage-0/ directory"
 
-compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-cli compile-capy
+compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-cli compile-capy compile-common
 
 stage-1: 
 	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled 
@@ -422,52 +420,52 @@ COMPILER ?=
 OUT ?=
 
 # Boot
-$(OUT)/boot/%.$(DYNLIB_EXT): lib/boot/%.scm
+$(OUT)/boot/%.$(COMPILED_SCM_EXT): lib/boot/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy" -L lib $<
 
 # Core
-$(OUT)/core/%.$(DYNLIB_EXT): lib/core/%.scm
+$(OUT)/core/%.$(COMPILED_SCM_EXT): lib/core/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/core.$(DYNLIB_EXT): lib/core.scm
+$(OUT)/core.$(COMPILED_SCM_EXT): lib/core.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # RNRS
-$(OUT)/rnrs/%.$(DYNLIB_EXT): lib/rnrs/%.scm
+$(OUT)/rnrs/%.$(COMPILED_SCM_EXT): lib/rnrs/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/rnrs.$(DYNLIB_EXT): lib/rnrs.scm
+$(OUT)/rnrs.$(COMPILED_SCM_EXT): lib/rnrs.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # Capy (sls/scm)
-$(OUT)/capy/%.$(DYNLIB_EXT): lib/capy/%.sls
+$(OUT)/capy/%.$(COMPILED_SCM_EXT): lib/capy/%.sls
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/capy/%.$(DYNLIB_EXT): lib/capy/%.scm
+$(OUT)/capy/%.$(COMPILED_SCM_EXT): lib/capy/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/capy/args.$(DYNLIB_EXT): lib/capy/args.sls
+$(OUT)/capy/args.$(COMPILED_SCM_EXT): lib/capy/args.sls
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # SRFI
-$(OUT)/srfi/%.$(DYNLIB_EXT): lib/srfi/%.scm
+$(OUT)/srfi/%.$(COMPILED_SCM_EXT): lib/srfi/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
 # R7RS
-$(OUT)/scheme/%.$(DYNLIB_EXT): lib/scheme/%.scm
+$(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/scheme/%.$(DYNLIB_EXT): lib/scheme/%.sld
+$(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.sld
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
@@ -481,8 +479,8 @@ compile-cli:
 	$(call require_var,OUT)
 	@echo "Compiling CLI"
 	@mkdir -p $(OUT)
-	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot/cli.$(DYNLIB_EXT) -m "capy" -L lib lib/boot/cli.scm
-	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot.$(DYNLIB_EXT) -m "capy" -L lib lib/boot.scm
+	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot/cli.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot/cli.scm
+	$(CAPY_ENV) $(COMPILER) -o $(OUT)/boot.$(COMPILED_SCM_EXT) -m "capy" -L lib lib/boot.scm
 
 compile-boot:
 	$(call require_var,COMPILER)
@@ -525,6 +523,13 @@ compile-r7rs:
 	@echo "Compiling r7rs"
 	@$(MAKE) $(R7RS_OUTS) COMPILER=$(COMPILER) OUT=$(OUT)
 	@echo "R7RS libraries: $(words $(R7RS_SRCS)) files"
+
+compile-common:
+	$(call require_var,COMPILER)
+	$(call require_var,OUT)
+	@echo "Compiling common"
+	@$(MAKE) $(OTHER_OUTS) COMPILER=$(COMPILER) OUT=$(OUT)
+	@echo "Common libraries: $(words $(OTHER_SRCS)) files"
 
 # -------------------------
 # Install / dist
