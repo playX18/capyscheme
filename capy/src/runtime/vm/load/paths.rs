@@ -717,10 +717,15 @@ mod tests {
                     Str::new(*ctx, fallback_dir.to_string_lossy(), true).into(),
                 );
 
-                let resolved =
-                    resolve_load_path(ctx, Path::new("lib/test"), None::<&Path>, false, Some("x86_64"))
-                        .unwrap()
-                        .unwrap();
+                let resolved = resolve_load_path(
+                    ctx,
+                    Path::new("lib/test"),
+                    None::<&Path>,
+                    false,
+                    Some("x86_64"),
+                )
+                .unwrap()
+                .unwrap();
                 let ResolvedLoadPath::Source {
                     compiled_artifact,
                     build_destination,

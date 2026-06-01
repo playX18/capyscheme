@@ -1,16 +1,15 @@
 //! SSA (Static Single Assignment) code generation using Cranelift.
 
+#[cfg(test)]
+use crate::compiler::codegen::declare_backend_function_import;
 use crate::{
     compiler::{
-        code_image_builder::{
-            CodeImageDataSlot, CodeImageFunction, CodeImageMetadata, assemble_code_image,
-        },
         codegen::{
             BackendSymbol, DataSymbol, DataSymbolKind, FunctionCompileContext, FunctionSymbol,
             declare_backend_data_symbol, declare_runtime_data_symbol, host_isa,
         },
         debuginfo::{DebugContext, FunctionDebugContext},
-        direct::compile_function,
+        direct::{DirectRelocation, DirectRelocationTarget, compile_function},
         ssa::primitive::PrimitiveLowerer,
     },
     cps::{
@@ -21,14 +20,15 @@ use crate::{
     expander::core::LVarRef,
     runtime::{
         COMPILED_ENTRY_ARG_COUNT, Context, REGISTER_ARG_COUNT, State,
-        code_image::{CompiledCodeImage, SideMetadataSlotKind},
-        fasl::FASLWriter,
+        fasl::{
+            FASLWriter, FaslCodeBlockSpec, FaslGraphCodeBlockSpec, FaslGraphValueSpec,
+            FaslProgramSpec,
+            reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation, SideMetadataSlotKind},
+        },
         symbols::RuntimeData,
         value::{Closure, Value, ValueEqual, Vector},
     },
 };
-#[cfg(test)]
-use crate::compiler::codegen::declare_backend_function_import;
 
 use cranelift::prelude::{FunctionBuilder, FunctionBuilderContext, InstBuilder, types};
 use cranelift_codegen::{
@@ -38,7 +38,7 @@ use cranelift_codegen::{
 
 use crate::rsgc::Gc;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     mem::{offset_of, size_of},
 };
 
@@ -125,6 +125,68 @@ fn declare_direct_data(next_data_symbol: &mut u32, _name: &str) -> DataSymbol {
     symbol
 }
 
+fn fasl_relocation_from_direct_relocation(
+    relocation: &DirectRelocation,
+    data_slot_targets: &HashMap<u32, FaslRelocTarget>,
+) -> Result<FaslRelocation, String> {
+    if relocation.kind != cranelift_codegen::binemit::Reloc::Abs8 {
+        return Err(format!(
+            "direct relocation is not supported by unified FASL writer yet: {:?}",
+            relocation
+        ));
+    }
+
+    let (kind, target) =
+        match relocation.target {
+            DirectRelocationTarget::BackendSymbol(BackendSymbol::Function(symbol)) => (
+                FaslRelocKind::CodeEntry,
+                FaslRelocTarget::Entry(symbol.index()),
+            ),
+            DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { kind, symbol }) => {
+                if kind == DataSymbolKind::RuntimeData {
+                    (
+                        FaslRelocKind::RuntimeData,
+                        FaslRelocTarget::RuntimeSymbol(symbol.index()),
+                    )
+                } else {
+                    let target = data_slot_targets.get(&symbol.index()).copied().ok_or_else(|| {
+                    format!(
+                        "data slot {} cannot be represented as a unified FASL data slot yet",
+                        symbol.index()
+                    )
+                })?;
+                    (FaslRelocKind::DataSlotAddress, target)
+                }
+            }
+            DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
+                match kind {
+                    crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk => (
+                        FaslRelocKind::RuntimeThunk,
+                        FaslRelocTarget::RuntimeSymbol(symbol.index()),
+                    ),
+                    crate::compiler::codegen::ImportedSymbolKind::Trampoline => {
+                        return Err(
+                            "trampoline relocations are not supported in unified FASL yet"
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+            DirectRelocationTarget::FunctionOffset(offset) => {
+                return Err(format!(
+                    "function-offset relocation target {offset} cannot be encoded in unified FASL"
+                ));
+            }
+        };
+
+    Ok(FaslRelocation {
+        offset: relocation.offset,
+        kind,
+        target,
+        addend: relocation.addend,
+    })
+}
+
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
 pub struct ModuleBuilder<'gc> {
     pub ctx: Context<'gc>,
@@ -158,6 +220,25 @@ pub(crate) struct DeclaredProcedure<'gc> {
     pub procedure: Procedure<'gc>,
     pub function: FunctionSymbol,
     pub name: String,
+}
+
+struct CompiledFaslFunction {
+    symbol: FunctionSymbol,
+    compiled: crate::compiler::direct::DirectCompiledFunction,
+    entry_offset: u32,
+    arity: i32,
+    is_cont: bool,
+    metadata_constant: Option<u32>,
+}
+
+#[derive(Clone, Copy)]
+struct FaslDataSlot {
+    symbol: DataSymbol,
+    kind: DataSymbolKind,
+    constant_index: Option<u32>,
+    code: Option<FunctionSymbol>,
+    pointer_code: Option<u32>,
+    side_metadata: Option<SideMetadataSlotKind>,
 }
 
 impl<'gc> ModuleBuilder<'gc> {
@@ -340,14 +421,14 @@ impl<'gc> ModuleBuilder<'gc> {
         declared
     }
 
-    pub fn compile_code_image(&mut self) -> Result<CompiledCodeImage, String> {
+    pub fn compile_loaded_fasl_bytes(&mut self) -> Result<Vec<u8>, String> {
         let declared_procedures = self.declare_procedures();
         let isa = host_isa();
         let mut cache = FunctionCompileContext::new();
         let mut functions = Vec::with_capacity(declared_procedures.len());
         let mut pending_metadata = Vec::with_capacity(declared_procedures.len());
 
-        self.compile_code_image_trampolines(&*isa, &mut cache, &mut functions)?;
+        self.compile_fasl_trampolines(&*isa, &mut cache, &mut functions)?;
 
         for declared in declared_procedures.iter() {
             cache.context.func = ir::Function::with_name_signature(
@@ -385,9 +466,8 @@ impl<'gc> ModuleBuilder<'gc> {
 
             let compiled = compile_function(&*isa, &mut cache)?;
             pending_metadata.push(metadata);
-            functions.push(CodeImageFunction {
+            functions.push(CompiledFaslFunction {
                 symbol: declared.function,
-                name: declared.name.clone(),
                 compiled,
                 entry_offset: 0,
                 arity,
@@ -397,33 +477,180 @@ impl<'gc> ModuleBuilder<'gc> {
             cache.clear();
         }
 
-        let (constants_fasl, constant_indices) = self.constants_fasl_and_indices();
-        for (function, metadata) in functions.iter_mut().zip(pending_metadata) {
-            function.metadata_constant = self.metadata_constant_index(metadata, &constant_indices);
+        let (_constants_fasl, constant_indices) = self.constants_fasl_and_indices();
+        let constants = self
+            .constants
+            .iter()
+            .map(|(key, symbol)| (key.0, *symbol))
+            .collect::<Vec<_>>();
+        let mut constants_by_index = vec![Value::undefined(); constants.len()];
+        for (value, symbol) in &constants {
+            if let Some(index) = constant_indices.get(symbol) {
+                constants_by_index[*index as usize] = *value;
+            }
         }
-        let data_slots = self.code_image_data_slots(&constant_indices);
+        for (function, metadata) in functions.iter_mut().zip(pending_metadata) {
+            function.metadata_constant = self
+                .intern_constant(metadata)
+                .and_then(|symbol| constant_indices.get(&symbol).copied());
+        }
+        let data_slots = self.fasl_data_slots(&constant_indices);
         let entry_code = self
             .func_for_func
             .get(&self.reify_info.entrypoint)
             .copied()
             .ok_or_else(|| "entry function was not declared".to_string())?;
 
-        assemble_code_image(CodeImageMetadata::for_host(
-            constants_fasl,
-            functions,
-            data_slots,
-            entry_code,
-            false,
-        ))
+        let mut function_ids = HashSet::new();
+        for function in &functions {
+            let code_id = function.symbol.index();
+            if !function_ids.insert(code_id) {
+                return Err(format!("duplicate function symbol id {code_id}"));
+            }
+        }
+        if !function_ids.contains(&entry_code.index()) {
+            return Err(format!(
+                "entry function symbol id {} was not declared",
+                entry_code.index()
+            ));
+        }
+
+        let mut graph_len = function_ids
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let mut value_defs = Vec::new();
+        let mut data_slot_targets = HashMap::new();
+        let mut data_ids = HashSet::new();
+        for slot in &data_slots {
+            let slot_id = slot.symbol.index();
+            if !data_ids.insert(slot_id) {
+                return Err(format!("duplicate data symbol id {slot_id}"));
+            }
+            match slot.kind {
+                DataSymbolKind::CodeBlock => {
+                    let code_id = slot
+                        .code
+                        .ok_or_else(|| {
+                            "code-block data slot requires a function symbol".to_string()
+                        })?
+                        .index();
+                    if !function_ids.contains(&code_id) {
+                        return Err(format!(
+                            "code-block data slot references undeclared function symbol id {code_id}"
+                        ));
+                    }
+                    data_slot_targets.insert(slot_id, FaslRelocTarget::Object(code_id));
+                }
+                DataSymbolKind::Constant => {
+                    let constant_index = slot.constant_index.ok_or_else(|| {
+                        "constant data slot requires a constant index".to_string()
+                    })?;
+                    let value = constants_by_index
+                        .get(constant_index as usize)
+                        .copied()
+                        .ok_or_else(|| "constant data slot index out of bounds".to_string())?;
+                    let index = graph_len;
+                    graph_len = graph_len
+                        .checked_add(1)
+                        .ok_or_else(|| "unified FASL graph is too large".to_string())?;
+                    data_slot_targets.insert(slot_id, FaslRelocTarget::Object(index));
+                    value_defs.push(FaslGraphValueSpec { index, value });
+                }
+                DataSymbolKind::CacheCell => {
+                    let index = graph_len;
+                    graph_len = graph_len
+                        .checked_add(1)
+                        .ok_or_else(|| "unified FASL graph is too large".to_string())?;
+                    data_slot_targets.insert(slot_id, FaslRelocTarget::Object(index));
+                    value_defs.push(FaslGraphValueSpec {
+                        index,
+                        value: Value::new(false),
+                    });
+                }
+                DataSymbolKind::PointerSlot => {
+                    let code_id = slot
+                        .pointer_code
+                        .ok_or_else(|| "pointer data slot requires a code target".to_string())?;
+                    data_slot_targets.insert(slot_id, FaslRelocTarget::Entry(code_id));
+                }
+                DataSymbolKind::SideMetadata => {
+                    let kind = slot.side_metadata.ok_or_else(|| {
+                        "side-metadata data slot requires a side metadata kind".to_string()
+                    })?;
+                    data_slot_targets.insert(slot_id, FaslRelocTarget::SideMetadata(kind));
+                }
+                other => {
+                    return Err(format!(
+                        "data symbol kind {other:?} cannot be represented as a unified FASL data slot"
+                    ));
+                }
+            }
+        }
+
+        let mut converted_relocations = Vec::with_capacity(functions.len());
+        for function in &functions {
+            converted_relocations.push(
+                function
+                    .compiled
+                    .relocs
+                    .iter()
+                    .map(|relocation| {
+                        fasl_relocation_from_direct_relocation(relocation, &data_slot_targets)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+
+        let mut code_defs = Vec::with_capacity(functions.len());
+        for (function, relocations) in functions.iter().zip(converted_relocations.iter()) {
+            let metadata = function
+                .metadata_constant
+                .map(|index| {
+                    constants_by_index
+                        .get(index as usize)
+                        .copied()
+                        .ok_or_else(|| {
+                            "unified FASL metadata constant index out of bounds".to_string()
+                        })
+                })
+                .transpose()?
+                .unwrap_or_else(|| Value::new(false));
+            code_defs.push(FaslGraphCodeBlockSpec {
+                index: function.symbol.index(),
+                code: FaslCodeBlockSpec {
+                    bytes: &function.compiled.bytes,
+                    entry_offset: function.entry_offset,
+                    arity: function.arity,
+                    is_cont: function.is_cont,
+                    metadata,
+                    relocations,
+                },
+            });
+        }
+
+        let mut bytes = Vec::new();
+        FASLWriter::new(self.ctx, &mut bytes)
+            .write_loaded_program(&FaslProgramSpec {
+                graph_len,
+                values: &value_defs,
+                code_blocks: &code_defs,
+                entry_code_index: entry_code.index(),
+                entry_is_cont: false,
+            })
+            .map_err(|err| err.to_string())?;
+        Ok(bytes)
     }
 
-    fn compile_code_image_trampolines(
+    fn compile_fasl_trampolines(
         &mut self,
         isa: &dyn cranelift_codegen::isa::TargetIsa,
         cache: &mut FunctionCompileContext,
-        functions: &mut Vec<CodeImageFunction>,
+        functions: &mut Vec<CompiledFaslFunction>,
     ) -> Result<(), String> {
-        self.compile_code_image_trampoline(
+        self.compile_fasl_trampoline(
             isa,
             cache,
             functions,
@@ -431,7 +658,7 @@ impl<'gc> ModuleBuilder<'gc> {
             "capy_raise_to_exception_handler",
             Self::build_raise_to_exception_handler_trampoline,
         )?;
-        self.compile_code_image_trampoline(
+        self.compile_fasl_trampoline(
             isa,
             cache,
             functions,
@@ -442,7 +669,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let raise_trampolines = self.raise_trampolines.clone();
         for (arity, symbol) in raise_trampolines.into_iter().enumerate() {
-            self.compile_code_image_trampoline(
+            self.compile_fasl_trampoline(
                 isa,
                 cache,
                 functions,
@@ -455,13 +682,13 @@ impl<'gc> ModuleBuilder<'gc> {
         Ok(())
     }
 
-    fn compile_code_image_trampoline(
+    fn compile_fasl_trampoline(
         &mut self,
         isa: &dyn cranelift_codegen::isa::TargetIsa,
         cache: &mut FunctionCompileContext,
-        functions: &mut Vec<CodeImageFunction>,
+        functions: &mut Vec<CompiledFaslFunction>,
         symbol: FunctionSymbol,
-        name: &str,
+        _name: &str,
         build: fn(&mut Self, &mut cranelift_codegen::Context, &mut FunctionBuilderContext),
     ) -> Result<(), String> {
         cache.context.func = ir::Function::with_name_signature(
@@ -470,9 +697,8 @@ impl<'gc> ModuleBuilder<'gc> {
         );
         build(self, &mut cache.context, &mut cache.fctx);
         let compiled = compile_function(isa, cache)?;
-        functions.push(CodeImageFunction {
+        functions.push(CompiledFaslFunction {
             symbol,
-            name: name.to_string(),
             compiled,
             entry_offset: 0,
             arity: 0,
@@ -749,87 +975,73 @@ impl<'gc> ModuleBuilder<'gc> {
         (buf, constant_indices)
     }
 
-    fn metadata_constant_index(
-        &mut self,
-        metadata: Value<'gc>,
-        constant_indices: &HashMap<DataSymbol, u32>,
-    ) -> Option<u32> {
-        self.intern_constant(metadata)
-            .and_then(|symbol| constant_indices.get(&symbol).copied())
-    }
-
-    fn code_image_data_slots(
-        &self,
-        constant_indices: &HashMap<DataSymbol, u32>,
-    ) -> Vec<CodeImageDataSlot> {
+    fn fasl_data_slots(&self, constant_indices: &HashMap<DataSymbol, u32>) -> Vec<FaslDataSlot> {
         let mut slots = Vec::new();
 
         for symbol in self.constants.values().copied() {
-            slots.push(CodeImageDataSlot {
+            slots.push(FaslDataSlot {
                 symbol,
                 kind: DataSymbolKind::Constant,
                 constant_index: constant_indices.get(&symbol).copied(),
                 code: None,
-                pointer_target: None,
+                pointer_code: None,
                 side_metadata: None,
             });
         }
         for symbol in self.cache_cells.values().copied() {
-            slots.push(CodeImageDataSlot {
+            slots.push(FaslDataSlot {
                 symbol,
                 kind: DataSymbolKind::CacheCell,
                 constant_index: None,
                 code: None,
-                pointer_target: None,
+                pointer_code: None,
                 side_metadata: None,
             });
         }
         for (func, symbol) in self.code_block_for_func.iter() {
-            slots.push(CodeImageDataSlot {
+            slots.push(FaslDataSlot {
                 symbol: *symbol,
                 kind: DataSymbolKind::CodeBlock,
                 constant_index: None,
                 code: self.func_for_func.get(func).copied(),
-                pointer_target: None,
+                pointer_code: None,
                 side_metadata: None,
             });
         }
         for (cont, symbol) in self.code_block_for_cont.iter() {
-            slots.push(CodeImageDataSlot {
+            slots.push(FaslDataSlot {
                 symbol: *symbol,
                 kind: DataSymbolKind::CodeBlock,
                 constant_index: None,
                 code: self.func_for_cont.get(cont).copied(),
-                pointer_target: None,
+                pointer_code: None,
                 side_metadata: None,
             });
         }
         for (function, symbol) in self.pointer_slot_for_function.iter() {
-            slots.push(CodeImageDataSlot {
+            slots.push(FaslDataSlot {
                 symbol: *symbol,
                 kind: DataSymbolKind::PointerSlot,
                 constant_index: None,
                 code: None,
-                pointer_target: Some(crate::runtime::code_image::RelocationTarget::Code {
-                    code_id: function.index(),
-                }),
+                pointer_code: Some(function.index()),
                 side_metadata: None,
             });
         }
-        slots.push(CodeImageDataSlot {
+        slots.push(FaslDataSlot {
             symbol: self.global_side_metadata_base_address,
             kind: DataSymbolKind::SideMetadata,
             constant_index: None,
             code: None,
-            pointer_target: None,
+            pointer_code: None,
             side_metadata: Some(SideMetadataSlotKind::Global),
         });
-        slots.push(CodeImageDataSlot {
+        slots.push(FaslDataSlot {
             symbol: self.vo_bit_side_metadata_base_address,
             kind: DataSymbolKind::SideMetadata,
             constant_index: None,
             code: None,
-            pointer_target: None,
+            pointer_code: None,
             side_metadata: Some(SideMetadataSlotKind::VoBit),
         });
 
@@ -1507,8 +1719,8 @@ mod tests {
                 module_builder.raise_to_exception_handler_trampoline
             );
             module_builder
-                .compile_code_image()
-                .expect("compile direct code image");
+                .compile_loaded_fasl_bytes()
+                .expect("compile unified FASL");
         });
     }
 
@@ -1655,91 +1867,40 @@ mod tests {
     }
 
     #[test]
-    fn module_builder_compiles_direct_code_image_for_simple_function() {
+    fn module_builder_compiles_loadable_unified_fasl_for_simple_function() {
         with_ctx(|ctx| {
             let (func, _, _, _) = one_arg_identity_func(ctx);
             let reify_info = reify(ctx, func);
             let linear = linearize(&reify_info);
             let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
 
-            let image = module_builder
-                .compile_code_image()
-                .expect("compile direct code image");
+            let bytes = module_builder
+                .compile_loaded_fasl_bytes()
+                .expect("compile unified FASL");
+            let value = crate::runtime::fasl::FASLReader::new(ctx, std::io::Cursor::new(bytes))
+                .read()
+                .expect("load unified FASL");
 
-            assert_eq!(
-                image.entry_code_id,
-                module_builder.func_for_func[&module_builder.reify_info.entrypoint].index()
-            );
-            assert!(!image.code.is_empty());
-            assert!(image.code.iter().any(|entry| {
-                entry.id == module_builder.raise_to_exception_handler_trampoline.index()
-            }));
-            assert!(
-                image
-                    .code
-                    .iter()
-                    .any(|entry| entry.id == module_builder.wrong_arity_trampoline.index())
-            );
-            for symbol in module_builder.raise_trampolines.iter().copied() {
-                assert!(image.code.iter().any(|entry| entry.id == symbol.index()));
-            }
-            assert!(image.code.iter().all(|entry| !entry.bytes.is_empty()));
-            assert!(image.data_slots.iter().any(|slot| {
-                matches!(
-                    slot.kind,
-                    crate::runtime::code_image::DataSlotKind::CodeBlock { code_id }
-                        if code_id == image.entry_code_id
-                )
-            }));
-            assert!(image.data_slots.iter().any(|slot| {
-                matches!(
-                    slot.kind,
-                    crate::runtime::code_image::DataSlotKind::SideMetadata {
-                        kind: SideMetadataSlotKind::Global
-                    }
-                )
-            }));
+            assert!(value.is::<Closure>());
         });
     }
 
     #[test]
-    fn local_direct_calls_use_pointer_slots() {
+    fn module_builder_compiles_loadable_unified_fasl_for_local_direct_call() {
         with_ctx(|ctx| {
-            let (entry, callee) = local_call_func(ctx);
+            let (entry, _) = local_call_func(ctx);
             let reify_info = reify(ctx, entry);
             let linear = linearize(&reify_info);
             let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
 
-            let image = module_builder
-                .compile_code_image()
-                .expect("compile direct code image");
-            let callee_code_id = module_builder.func_for_func[&callee].index();
-            let pointer_slot = image
-                .data_slots
-                .iter()
-                .find_map(|slot| match slot.kind {
-                    crate::runtime::code_image::DataSlotKind::Pointer {
-                        target:
-                            crate::runtime::code_image::RelocationTarget::Code { code_id },
-                    } if code_id == callee_code_id => Some(slot.id),
-                    _ => None,
-                })
-                .expect("callee entrypoint should have a pointer slot");
+            let bytes = module_builder
+                .compile_loaded_fasl_bytes()
+                .expect("compile unified FASL with pointer and side-metadata data slots");
+            let value = crate::runtime::fasl::FASLReader::new(ctx, std::io::Cursor::new(bytes))
+                .read()
+                .expect("load unified FASL with pointer and side-metadata data slots");
 
-            assert!(image.relocations.iter().any(|reloc| {
-                matches!(
-                    reloc.target,
-                    crate::runtime::code_image::RelocationTarget::DataSlot { slot_id }
-                        if slot_id == pointer_slot
-                )
-            }));
-            assert!(!image.relocations.iter().any(|reloc| {
-                matches!(
-                    reloc.target,
-                    crate::runtime::code_image::RelocationTarget::Code { code_id }
-                        if code_id == callee_code_id
-                )
-            }));
+            assert!(value.is::<Closure>());
         });
     }
 }

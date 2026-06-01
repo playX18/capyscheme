@@ -53,6 +53,7 @@ slotmap = "1.0.7"
 smallvec = "1.15.1"
 regalloc2 = "0.15.0"
 serde.workspace = true
+flate2 = "1.1.9"
 
 [dependencies.im]
 version = "15.1.0"

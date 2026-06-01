@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::compiler::{CompilationOptions, compile_cps_to_code_image, compile_file};
+use crate::compiler::{CompilationOptions, compile_cps_to_fasl_bytes, compile_file};
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
@@ -231,15 +231,7 @@ pub(super) fn compile_cps_to_destination<'gc>(
             &[],
         )),
         LoadArtifactKind::FaslCode => {
-            let image = compile_cps_to_code_image(ctx, cps, options)?;
-            let bytes = image.encode().map_err(|err| {
-                make_io_error(
-                    ctx,
-                    "compile",
-                    Str::new(*ctx, format!("Cannot encode FASL code image: {err}"), true).into(),
-                    &[],
-                )
-            })?;
+            let bytes = compile_cps_to_fasl_bytes(ctx, cps, options)?;
             std::fs::write(&destination.path, bytes).map_err(|err| {
                 make_io_error(
                     ctx,

@@ -278,6 +278,7 @@ dependencies = [
  "easy-bitfield",
  "env_logger",
  "errno",
+ "flate2",
  "gimli",
  "hashlink",
  "hostname",
