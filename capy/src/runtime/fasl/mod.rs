@@ -20,8 +20,6 @@ pub mod writer;
 pub use reader::FASLReader;
 pub use writer::FASLWriter;
 
-// ── tag constants ──────────────────────────────────────────────
-
 pub const FASL_EOF: u8 = 0;
 pub const FASL_TAG_LOOKUP: u8 = 1;
 pub const FASL_TAG_FIXNUM: u8 = 2;
@@ -79,10 +77,6 @@ pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
 pub const FASL_VERSION: u32 = 1;
 /// Machine type for x86_64 (placeholder until multi-arch support).
 pub const FASL_MACHINE_TYPE: u32 = 0;
-
-// ── spec types ──────────────────────────────────────────────────
-
-/// Specification for a code block to be serialized in a FASL file.
 pub struct FaslCodeBlockSpec<'a, 'gc> {
     pub bytes: &'a [u8],
     pub entry_offset: u32,
@@ -92,14 +86,12 @@ pub struct FaslCodeBlockSpec<'a, 'gc> {
     pub relocations: &'a [reloc::FaslRelocation],
 }
 
-/// Specification for a closure to be serialized in a FASL file.
 pub struct FaslClosureSpec<'a, 'gc> {
     pub code: FaslCodeBlockSpec<'a, 'gc>,
     pub free: &'a [crate::runtime::value::Value<'gc>],
     pub is_cont: bool,
 }
 
-/// Specification for a complete program (graph of values + code blocks) to be serialized.
 pub struct FaslProgramSpec<'a, 'gc> {
     pub graph_len: u32,
     pub values: &'a [FaslGraphValueSpec<'gc>],
@@ -108,19 +100,14 @@ pub struct FaslProgramSpec<'a, 'gc> {
     pub entry_is_cont: bool,
 }
 
-/// A named value entry in a FASL program graph.
 pub struct FaslGraphValueSpec<'gc> {
     pub index: u32,
     pub value: crate::runtime::value::Value<'gc>,
 }
-
-/// A named code-block entry in a FASL program graph.
 pub struct FaslGraphCodeBlockSpec<'a, 'gc> {
     pub index: u32,
     pub code: FaslCodeBlockSpec<'a, 'gc>,
 }
-
-// ── shared helpers ──────────────────────────────────────────────
 
 pub(crate) fn checked_u32_len(len: usize) -> io::Result<u32> {
     u32::try_from(len)
