@@ -9,6 +9,7 @@ use mmtk::util::metadata::side_metadata::{
 };
 
 use asmkit::core::buffer::Reloc as AsmkitReloc;
+use cranelift_codegen::binemit::Reloc as CraneliftReloc;
 
 use crate::rsgc::{Gc, mmtk::util::Address};
 
@@ -17,24 +18,21 @@ use crate::runtime::{
     code_memory::{CodeAllocation, runtime_code_memory},
     symbols::{RuntimeData, RuntimeThunk},
     value::{
-        BigInt, ByteVector, Closure, CodeArity, CodeBlock, Complex, HashTable, HashTableType,
-        Pair, Rational, Str, Symbol, Tuple, Value, Vector,
+        BigInt, ByteVector, Closure, CodeArity, CodeBlock, Complex, HashTable, HashTableType, Pair,
+        Rational, Str, Symbol, Tuple, Value, Vector,
     },
     vm::syntax::Syntax,
 };
 
 use super::{
-    FASL_MAGIC, FASL_VERSION,
-    FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE,
-    FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_ENTRY,
-    FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF,
-    FASL_TAG_GRAPH_REF, FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE,
-    FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_LZ4, FASL_TAG_NIL,
-    FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT,
-    FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE,
-    FASL_TAG_UNCOMPRESSED, FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_VECTOR,
-    FASL_SITUATION_VISIT_REVISIT,
-    graph, reloc,
+    FASL_MAGIC, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR,
+    FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST,
+    FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
+    FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE,
+    FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_LZ4, FASL_TAG_NIL, FASL_TAG_PLIST,
+    FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL,
+    FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNCOMPRESSED, FASL_TAG_UNINTERNED_SYMBOL,
+    FASL_TAG_VECTOR, FASL_VERSION, graph, reloc,
 };
 
 fn read_u8_from(input: &mut impl Read) -> io::Result<u8> {
@@ -69,6 +67,7 @@ struct PendingCodeEntryRelocation {
     target_index: u32,
     kind: reloc::FaslRelocKind,
     addend: i64,
+    original_bytes: Vec<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -519,7 +518,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 self.initialize_loaded_data_slots(loaded, &data_slots);
                 self.add_pending_data_slot_fills(loaded, &data_slots)?;
                 self.add_pending_code_entry_slot_fills(loaded, &data_slots)?;
-                self.apply_code_block_relocations(loaded, &relocations, &data_slots)?;
+                self.apply_code_block_relocations(loaded, &bytes, &relocations, &data_slots)?;
                 let code_block = CodeBlock::new_loaded_with_data(
                     self.ctx,
                     loaded.entrypoint + entry_offset,
@@ -579,10 +578,12 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
         if version != FASL_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported FASL version {version} (expected {})", FASL_VERSION),
+                format!(
+                    "unsupported FASL version {version} (expected {})",
+                    FASL_VERSION
+                ),
             ));
         }
-        let _machine_type = self.read32()?;
         Ok(())
     }
 
@@ -763,13 +764,14 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
     fn apply_code_block_relocations(
         &mut self,
         loaded: CodeAllocation,
+        code_bytes: &[u8],
         relocations: &[reloc::FaslRelocation],
         data_slots: &CodeDataSlots<'gc>,
     ) -> io::Result<()> {
         let mut patches = Vec::with_capacity(relocations.len());
         for relocation in relocations {
-            if let Some(patch) =
-                self.resolve_code_block_relocation_patch(loaded, relocation, data_slots)?
+            if let Some(patch) = self
+                .resolve_code_block_relocation_patch(loaded, code_bytes, relocation, data_slots)?
             {
                 patches.push(patch);
             }
@@ -788,6 +790,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
     fn resolve_code_block_relocation_patch(
         &mut self,
         loaded: CodeAllocation,
+        code_bytes: &[u8],
         relocation: &reloc::FaslRelocation,
         data_slots: &CodeDataSlots<'gc>,
     ) -> io::Result<Option<(usize, Vec<u8>)>> {
@@ -829,10 +832,65 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         target_index: index,
                         kind: relocation.kind.clone(),
                         addend: relocation.addend,
+                        original_bytes: relocation_original_bytes(
+                            code_bytes,
+                            offset,
+                            &relocation.kind,
+                        )?
+                        .to_vec(),
                     })?;
                     return Ok(None);
                 }
             },
+            (
+                reloc::FaslRelocKind::Cranelift(_),
+                reloc::FaslRelocTarget::RuntimeSymbol(symbol_id),
+            ) => {
+                if let Some(runtime_data) = RuntimeData::from_id(symbol_id) {
+                    runtime_data.address().as_usize()
+                } else {
+                    RuntimeThunk::from_id(symbol_id)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "unknown FASL runtime symbol",
+                            )
+                        })?
+                        .address()
+                        .as_usize()
+                }
+            }
+            (reloc::FaslRelocKind::Cranelift(_), reloc::FaslRelocTarget::SideMetadata(kind)) => {
+                side_metadata_address(kind)
+            }
+            (reloc::FaslRelocKind::Cranelift(_), reloc::FaslRelocTarget::Object(_)) => {
+                data_slots.slot_rw_address(loaded, relocation.target)?
+            }
+            (reloc::FaslRelocKind::CraneliftDataSlot(_), _) => {
+                data_slots.slot_rw_address(loaded, relocation.target)?
+            }
+            (reloc::FaslRelocKind::Cranelift(_), reloc::FaslRelocTarget::Entry(index)) => {
+                match self.graph_code_block_entrypoint_if_defined(index)? {
+                    Some(entrypoint) => entrypoint,
+                    None => {
+                        self.add_pending_code_entry_relocation(PendingCodeEntryRelocation {
+                            handle: loaded.handle,
+                            base: loaded.entrypoint,
+                            offset,
+                            target_index: index,
+                            kind: relocation.kind.clone(),
+                            addend: relocation.addend,
+                            original_bytes: relocation_original_bytes(
+                                code_bytes,
+                                offset,
+                                &relocation.kind,
+                            )?
+                            .to_vec(),
+                        })?;
+                        return Ok(None);
+                    }
+                }
+            }
             (
                 reloc::FaslRelocKind::RuntimeData | reloc::FaslRelocKind::AbsWord,
                 reloc::FaslRelocTarget::RuntimeSymbol(symbol_id),
@@ -876,6 +934,12 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         target_index: index,
                         kind: relocation.kind.clone(),
                         addend: relocation.addend,
+                        original_bytes: relocation_original_bytes(
+                            code_bytes,
+                            offset,
+                            &relocation.kind,
+                        )?
+                        .to_vec(),
                     })?;
                     return Ok(None);
                 }
@@ -893,6 +957,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             &relocation.kind,
             target_address,
             relocation.addend,
+            relocation_original_bytes(code_bytes, offset, &relocation.kind)?,
         )
         .map(|bytes| Some((offset, bytes)))
     }
@@ -903,7 +968,16 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
     ) -> io::Result<CodeDataSlots<'gc>> {
         let mut slots = CodeDataSlots::default();
         for relocation in relocations {
-            if !matches!(relocation.kind, reloc::FaslRelocKind::DataSlotAddress) {
+            if !matches!(relocation.kind, reloc::FaslRelocKind::DataSlotAddress)
+                && !matches!(relocation.kind, reloc::FaslRelocKind::CraneliftDataSlot(_))
+                && !matches!(
+                    (&relocation.kind, relocation.target),
+                    (
+                        reloc::FaslRelocKind::Cranelift(_),
+                        reloc::FaslRelocTarget::Object(_)
+                    )
+                )
+            {
                 continue;
             }
             let target = relocation.target;
@@ -1123,6 +1197,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 &relocation.kind,
                 target,
                 relocation.addend,
+                &relocation.original_bytes,
             )?;
             patches.push((relocation.handle, relocation.offset, bytes));
         }
@@ -1293,11 +1368,28 @@ fn relocation_patch_bytes(
     kind: &reloc::FaslRelocKind,
     target_address: usize,
     addend: i64,
+    original: &[u8],
 ) -> io::Result<Vec<u8>> {
     match kind {
         reloc::FaslRelocKind::Asmkit(asmkit) => {
             asmkit_relocation_patch_bytes(base, offset, *asmkit, target_address, addend)
         }
+        reloc::FaslRelocKind::Cranelift(cranelift) => cranelift_relocation_patch_bytes(
+            base,
+            offset,
+            *cranelift,
+            target_address,
+            addend,
+            original,
+        ),
+        reloc::FaslRelocKind::CraneliftDataSlot(cranelift) => cranelift_relocation_patch_bytes(
+            base,
+            offset,
+            *cranelift,
+            target_address,
+            addend,
+            original,
+        ),
         reloc::FaslRelocKind::AbsWord
         | reloc::FaslRelocKind::CodeEntry
         | reloc::FaslRelocKind::DataSlotAddress
@@ -1310,6 +1402,141 @@ fn relocation_patch_bytes(
         reloc::FaslRelocKind::CacheCell => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported FASL code block relocation",
+        )),
+    }
+}
+
+fn relocation_original_bytes<'a>(
+    code_bytes: &'a [u8],
+    offset: usize,
+    kind: &reloc::FaslRelocKind,
+) -> io::Result<&'a [u8]> {
+    let width = relocation_patch_width(kind);
+    code_bytes
+        .get(offset..)
+        .and_then(|bytes| bytes.get(..width))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "FASL relocation is out of bounds",
+            )
+        })
+}
+
+fn relocation_patch_width(kind: &reloc::FaslRelocKind) -> usize {
+    match kind {
+        reloc::FaslRelocKind::Cranelift(CraneliftReloc::RiscvCallPlt)
+        | reloc::FaslRelocKind::CraneliftDataSlot(CraneliftReloc::RiscvCallPlt) => 8,
+        reloc::FaslRelocKind::Cranelift(
+            CraneliftReloc::Abs4
+            | CraneliftReloc::X86PCRel4
+            | CraneliftReloc::X86CallPCRel4
+            | CraneliftReloc::X86CallPLTRel4
+            | CraneliftReloc::Arm64Call
+            | CraneliftReloc::Aarch64AdrGotPage21
+            | CraneliftReloc::Aarch64AdrPrelPgHi21
+            | CraneliftReloc::Aarch64AddAbsLo12Nc
+            | CraneliftReloc::Aarch64Ld64GotLo12Nc
+            | CraneliftReloc::MachOAarch64TlsAdrPage21
+            | CraneliftReloc::MachOAarch64TlsAdrPageOff12
+            | CraneliftReloc::Aarch64TlsDescAdrPage21
+            | CraneliftReloc::Aarch64TlsDescLd64Lo12
+            | CraneliftReloc::Aarch64TlsDescAddLo12
+            | CraneliftReloc::RiscvTlsGdHi20
+            | CraneliftReloc::RiscvPCRelLo12I
+            | CraneliftReloc::RiscvGotHi20
+            | CraneliftReloc::RiscvPCRelHi20,
+        )
+        | reloc::FaslRelocKind::CraneliftDataSlot(
+            CraneliftReloc::Abs4
+            | CraneliftReloc::X86PCRel4
+            | CraneliftReloc::X86CallPCRel4
+            | CraneliftReloc::X86CallPLTRel4
+            | CraneliftReloc::Arm64Call
+            | CraneliftReloc::Aarch64AdrGotPage21
+            | CraneliftReloc::Aarch64AdrPrelPgHi21
+            | CraneliftReloc::Aarch64AddAbsLo12Nc
+            | CraneliftReloc::Aarch64Ld64GotLo12Nc
+            | CraneliftReloc::MachOAarch64TlsAdrPage21
+            | CraneliftReloc::MachOAarch64TlsAdrPageOff12
+            | CraneliftReloc::Aarch64TlsDescAdrPage21
+            | CraneliftReloc::Aarch64TlsDescLd64Lo12
+            | CraneliftReloc::Aarch64TlsDescAddLo12
+            | CraneliftReloc::RiscvTlsGdHi20
+            | CraneliftReloc::RiscvPCRelLo12I
+            | CraneliftReloc::RiscvGotHi20
+            | CraneliftReloc::RiscvPCRelHi20,
+        ) => 4,
+        reloc::FaslRelocKind::Asmkit(
+            AsmkitReloc::Abs4
+            | AsmkitReloc::X86PCRel4
+            | AsmkitReloc::X86CallPCRel4
+            | AsmkitReloc::X86CallPLTRel4,
+        ) => 4,
+        reloc::FaslRelocKind::Cranelift(CraneliftReloc::Aarch64TlsDescCall)
+        | reloc::FaslRelocKind::CraneliftDataSlot(CraneliftReloc::Aarch64TlsDescCall) => 0,
+        _ => std::mem::size_of::<usize>(),
+    }
+}
+
+fn cranelift_relocation_patch_bytes(
+    base: Address,
+    offset: usize,
+    kind: CraneliftReloc,
+    target_address: usize,
+    addend: i64,
+    original: &[u8],
+) -> io::Result<Vec<u8>> {
+    match kind {
+        CraneliftReloc::Abs8 => {
+            let target = add_i64_to_usize(target_address, addend)?;
+            Ok(target.to_le_bytes().to_vec())
+        }
+        CraneliftReloc::Abs4 => {
+            let target = add_i64_to_usize(target_address, addend)?;
+            let target = u32::try_from(target).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "FASL Cranelift Abs4 relocation target is out of range",
+                )
+            })?;
+            Ok(target.to_le_bytes().to_vec())
+        }
+        CraneliftReloc::X86PCRel4
+        | CraneliftReloc::X86CallPCRel4
+        | CraneliftReloc::X86CallPLTRel4 => pcrel32_patch(base, offset, target_address, addend),
+        CraneliftReloc::Arm64Call => {
+            arm64_call_patch(base, offset, target_address, addend, original)
+        }
+        CraneliftReloc::Aarch64AdrGotPage21
+        | CraneliftReloc::Aarch64AdrPrelPgHi21
+        | CraneliftReloc::MachOAarch64TlsAdrPage21
+        | CraneliftReloc::Aarch64TlsDescAdrPage21 => {
+            aarch64_page21_patch(base, offset, target_address, addend, original)
+        }
+        CraneliftReloc::Aarch64AddAbsLo12Nc
+        | CraneliftReloc::Aarch64TlsDescAddLo12
+        | CraneliftReloc::MachOAarch64TlsAdrPageOff12 => {
+            aarch64_lo12_patch(target_address, addend, original, 0)
+        }
+        CraneliftReloc::Aarch64Ld64GotLo12Nc | CraneliftReloc::Aarch64TlsDescLd64Lo12 => {
+            aarch64_lo12_patch(target_address, addend, original, 3)
+        }
+        CraneliftReloc::Aarch64TlsDescCall => Ok(Vec::new()),
+        CraneliftReloc::RiscvCallPlt => {
+            riscv_call_plt_patch(base, offset, target_address, addend, original)
+        }
+        CraneliftReloc::RiscvTlsGdHi20
+        | CraneliftReloc::RiscvGotHi20
+        | CraneliftReloc::RiscvPCRelHi20 => {
+            riscv_hi20_patch(base, offset, target_address, addend, original)
+        }
+        CraneliftReloc::RiscvPCRelLo12I => {
+            riscv_lo12_i_patch(base, offset, target_address, addend, original)
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "unsupported FASL Cranelift relocation",
         )),
     }
 }
@@ -1337,27 +1564,219 @@ fn asmkit_relocation_patch_bytes(
             Ok(target.to_le_bytes().to_vec())
         }
         AsmkitReloc::X86PCRel4 | AsmkitReloc::X86CallPCRel4 | AsmkitReloc::X86CallPLTRel4 => {
-            let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL asmkit relocation patch address overflow",
-                )
-            })?;
-            let target = add_i64_to_usize(target_address, addend)?;
-            let displacement = target as i128 - patch_address as i128;
-            let displacement = i32::try_from(displacement).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL asmkit rel32 relocation target is out of range",
-                )
-            })?;
-            Ok(displacement.to_le_bytes().to_vec())
+            pcrel32_patch(base, offset, target_address, addend)
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unsupported FASL asmkit relocation",
         )),
     }
+}
+
+fn pcrel32_patch(
+    base: Address,
+    offset: usize,
+    target_address: usize,
+    addend: i64,
+) -> io::Result<Vec<u8>> {
+    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL relocation patch address overflow",
+        )
+    })?;
+    let target = add_i64_to_usize(target_address, addend)?;
+    let displacement = target as i128 - patch_address as i128;
+    let displacement = i32::try_from(displacement).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL rel32 relocation target is out of range",
+        )
+    })?;
+    Ok(displacement.to_le_bytes().to_vec())
+}
+
+fn arm64_call_patch(
+    base: Address,
+    offset: usize,
+    target_address: usize,
+    addend: i64,
+    original: &[u8],
+) -> io::Result<Vec<u8>> {
+    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL AArch64 call relocation patch address overflow",
+        )
+    })?;
+    let target = add_i64_to_usize(target_address, addend)?;
+    let displacement = target as i128 - patch_address as i128;
+    if displacement % 4 != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL AArch64 call target is not instruction aligned",
+        ));
+    }
+    let immediate = displacement / 4;
+    if !(-(1i128 << 25)..(1i128 << 25)).contains(&immediate) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL AArch64 call relocation target is out of range",
+        ));
+    }
+    let instruction = read_original_u32(original)?;
+    let patched = (instruction & !0x03ff_ffff) | ((immediate as u32) & 0x03ff_ffff);
+    Ok(patched.to_le_bytes().to_vec())
+}
+
+fn aarch64_page21_patch(
+    base: Address,
+    offset: usize,
+    target_address: usize,
+    addend: i64,
+    original: &[u8],
+) -> io::Result<Vec<u8>> {
+    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL AArch64 page relocation patch address overflow",
+        )
+    })?;
+    let target = add_i64_to_usize(target_address, addend)?;
+    let patch_page = (patch_address as i128) & !0xfffi128;
+    let target_page = (target as i128) & !0xfffi128;
+    let page_delta = (target_page - patch_page) >> 12;
+    if !(-(1i128 << 20)..(1i128 << 20)).contains(&page_delta) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL AArch64 page relocation target is out of range",
+        ));
+    }
+    let imm = (page_delta as u32) & 0x1f_ffff;
+    let immlo = imm & 0x3;
+    let immhi = (imm >> 2) & 0x7ffff;
+    let instruction = read_original_u32(original)?;
+    let patched = (instruction & !((0x3 << 29) | (0x7ffff << 5))) | (immlo << 29) | (immhi << 5);
+    Ok(patched.to_le_bytes().to_vec())
+}
+
+fn aarch64_lo12_patch(
+    target_address: usize,
+    addend: i64,
+    original: &[u8],
+    scale_shift: u32,
+) -> io::Result<Vec<u8>> {
+    let target = add_i64_to_usize(target_address, addend)?;
+    let low = (target & 0xfff) as u32;
+    if scale_shift != 0 && (low & ((1 << scale_shift) - 1)) != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL AArch64 low relocation target is not aligned",
+        ));
+    }
+    let immediate = low >> scale_shift;
+    let instruction = read_original_u32(original)?;
+    let patched = (instruction & !(0xfff << 10)) | (immediate << 10);
+    Ok(patched.to_le_bytes().to_vec())
+}
+
+fn riscv_call_plt_patch(
+    base: Address,
+    offset: usize,
+    target_address: usize,
+    addend: i64,
+    original: &[u8],
+) -> io::Result<Vec<u8>> {
+    let delta = riscv_pcrel_delta(base, offset, target_address, addend)?;
+    let hi = riscv_hi20(delta)?;
+    let lo = delta - (hi << 12);
+    let auipc = patch_riscv_u_type(read_original_u32(&original[0..4])?, hi);
+    let jalr = patch_riscv_i_type(read_original_u32(&original[4..8])?, lo)?;
+    let mut bytes = Vec::with_capacity(8);
+    bytes.extend_from_slice(&auipc.to_le_bytes());
+    bytes.extend_from_slice(&jalr.to_le_bytes());
+    Ok(bytes)
+}
+
+fn riscv_hi20_patch(
+    base: Address,
+    offset: usize,
+    target_address: usize,
+    addend: i64,
+    original: &[u8],
+) -> io::Result<Vec<u8>> {
+    let delta = riscv_pcrel_delta(base, offset, target_address, addend)?;
+    let instruction = patch_riscv_u_type(read_original_u32(original)?, riscv_hi20(delta)?);
+    Ok(instruction.to_le_bytes().to_vec())
+}
+
+fn riscv_lo12_i_patch(
+    base: Address,
+    offset: usize,
+    target_address: usize,
+    addend: i64,
+    original: &[u8],
+) -> io::Result<Vec<u8>> {
+    let delta = riscv_pcrel_delta(base, offset, target_address, addend)?;
+    let hi = riscv_hi20(delta)?;
+    let lo = delta - (hi << 12);
+    let instruction = patch_riscv_i_type(read_original_u32(original)?, lo)?;
+    Ok(instruction.to_le_bytes().to_vec())
+}
+
+fn riscv_pcrel_delta(
+    base: Address,
+    offset: usize,
+    target_address: usize,
+    addend: i64,
+) -> io::Result<i128> {
+    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL RISC-V relocation patch address overflow",
+        )
+    })?;
+    let target = add_i64_to_usize(target_address, addend)?;
+    Ok(target as i128 - patch_address as i128)
+}
+
+fn riscv_hi20(delta: i128) -> io::Result<i128> {
+    let hi = (delta + 0x800) >> 12;
+    if !(-(1i128 << 19)..(1i128 << 19)).contains(&hi) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL RISC-V hi20 relocation target is out of range",
+        ));
+    }
+    Ok(hi)
+}
+
+fn patch_riscv_u_type(instruction: u32, hi: i128) -> u32 {
+    (instruction & 0x00000fff) | (((hi as u32) & 0x000f_ffff) << 12)
+}
+
+fn patch_riscv_i_type(instruction: u32, lo: i128) -> io::Result<u32> {
+    if !(-2048..2048).contains(&lo) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "FASL RISC-V lo12 relocation target is out of range",
+        ));
+    }
+    Ok((instruction & 0x000f_ffff) | (((lo as u32) & 0xfff) << 20))
+}
+
+fn read_original_u32(original: &[u8]) -> io::Result<u32> {
+    let bytes: [u8; 4] = original
+        .get(0..4)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "FASL relocation is out of bounds",
+            )
+        })?
+        .try_into()
+        .expect("slice length was checked");
+    Ok(u32::from_le_bytes(bytes))
 }
 
 fn add_i64_to_usize(value: usize, addend: i64) -> io::Result<usize> {
@@ -1384,4 +1803,74 @@ fn add_i64_to_usize(value: usize, addend: i64) -> io::Result<usize> {
             "FASL code block relocation addend overflow",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::fasl::reloc::FaslRelocKind;
+    use cranelift_codegen::binemit::Reloc;
+
+    #[test]
+    fn cranelift_arm64_call_relocation_patches_branch_immediate() {
+        let base = unsafe { Address::from_usize(0x1_0000) };
+        let original = 0x9400_0000u32.to_le_bytes();
+
+        let bytes = relocation_patch_bytes(
+            base,
+            0,
+            &FaslRelocKind::Cranelift(Reloc::Arm64Call),
+            0x1_0040,
+            0,
+            &original,
+        )
+        .expect("patch arm64 call");
+
+        assert_eq!(u32::from_le_bytes(bytes.try_into().unwrap()), 0x9400_0010);
+    }
+
+    #[test]
+    fn cranelift_aarch64_page21_relocation_patches_adrp_immediate() {
+        let base = unsafe { Address::from_usize(0x1_0000) };
+        let original = 0x9000_0000u32.to_le_bytes();
+
+        let bytes = relocation_patch_bytes(
+            base,
+            0,
+            &FaslRelocKind::Cranelift(Reloc::Aarch64AdrPrelPgHi21),
+            0x1_3000,
+            0,
+            &original,
+        )
+        .expect("patch aarch64 adrp");
+
+        assert_eq!(u32::from_le_bytes(bytes.try_into().unwrap()), 0xF000_0000);
+    }
+
+    #[test]
+    fn cranelift_riscv_call_plt_relocation_patches_auipc_jalr_pair() {
+        let base = unsafe { Address::from_usize(0x1_0000) };
+        let mut original = Vec::new();
+        original.extend_from_slice(&0x0000_0097u32.to_le_bytes());
+        original.extend_from_slice(&0x0000_8080u32.to_le_bytes());
+
+        let bytes = relocation_patch_bytes(
+            base,
+            0,
+            &FaslRelocKind::Cranelift(Reloc::RiscvCallPlt),
+            0x1_1804,
+            0,
+            &original,
+        )
+        .expect("patch riscv call");
+
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            0x0000_2097
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            0x8040_8080
+        );
+    }
 }

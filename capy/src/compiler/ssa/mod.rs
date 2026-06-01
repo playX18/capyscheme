@@ -32,6 +32,7 @@ use crate::{
 
 use cranelift::prelude::{FunctionBuilder, FunctionBuilderContext, InstBuilder, types};
 use cranelift_codegen::{
+    binemit::Reloc,
     ir::{self, BlockArg, SourceLoc},
     isa::CallConv,
 };
@@ -129,55 +130,56 @@ fn fasl_relocation_from_direct_relocation(
     relocation: &DirectRelocation,
     data_slot_targets: &HashMap<u32, FaslRelocTarget>,
 ) -> Result<FaslRelocation, String> {
-    if relocation.kind != cranelift_codegen::binemit::Reloc::Abs8 {
-        return Err(format!(
-            "direct relocation is not supported by unified FASL writer yet: {:?}",
-            relocation
-        ));
-    }
+    let (target, abs8_kind) = match relocation.target {
+        DirectRelocationTarget::BackendSymbol(BackendSymbol::Function(symbol)) => (
+            FaslRelocTarget::Entry(symbol.index()),
+            FaslRelocKind::CodeEntry,
+        ),
+        DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { kind, symbol }) => {
+            if kind == DataSymbolKind::RuntimeData {
+                (
+                    FaslRelocTarget::RuntimeSymbol(symbol.index()),
+                    FaslRelocKind::RuntimeData,
+                )
+            } else {
+                (
+                    data_slot_targets.get(&symbol.index()).copied().ok_or_else(|| {
+                        format!(
+                            "data slot {} cannot be represented as a unified FASL data slot yet",
+                            symbol.index()
+                        )
+                    })?,
+                    FaslRelocKind::DataSlotAddress,
+                )
+            }
+        }
+        DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
+            match kind {
+                crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk => (
+                    FaslRelocTarget::RuntimeSymbol(symbol.index()),
+                    FaslRelocKind::RuntimeThunk,
+                ),
+                crate::compiler::codegen::ImportedSymbolKind::Trampoline => {
+                    return Err(
+                        "trampoline relocations are not supported in unified FASL yet".to_string(),
+                    );
+                }
+            }
+        }
+        DirectRelocationTarget::FunctionOffset(offset) => {
+            return Err(format!(
+                "function-offset relocation target {offset} cannot be encoded in unified FASL"
+            ));
+        }
+    };
 
-    let (kind, target) =
-        match relocation.target {
-            DirectRelocationTarget::BackendSymbol(BackendSymbol::Function(symbol)) => (
-                FaslRelocKind::CodeEntry,
-                FaslRelocTarget::Entry(symbol.index()),
-            ),
-            DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { kind, symbol }) => {
-                if kind == DataSymbolKind::RuntimeData {
-                    (
-                        FaslRelocKind::RuntimeData,
-                        FaslRelocTarget::RuntimeSymbol(symbol.index()),
-                    )
-                } else {
-                    let target = data_slot_targets.get(&symbol.index()).copied().ok_or_else(|| {
-                    format!(
-                        "data slot {} cannot be represented as a unified FASL data slot yet",
-                        symbol.index()
-                    )
-                })?;
-                    (FaslRelocKind::DataSlotAddress, target)
-                }
-            }
-            DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
-                match kind {
-                    crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk => (
-                        FaslRelocKind::RuntimeThunk,
-                        FaslRelocTarget::RuntimeSymbol(symbol.index()),
-                    ),
-                    crate::compiler::codegen::ImportedSymbolKind::Trampoline => {
-                        return Err(
-                            "trampoline relocations are not supported in unified FASL yet"
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-            DirectRelocationTarget::FunctionOffset(offset) => {
-                return Err(format!(
-                    "function-offset relocation target {offset} cannot be encoded in unified FASL"
-                ));
-            }
-        };
+    let kind = match relocation.kind {
+        Reloc::Abs8 => abs8_kind,
+        kind if matches!(abs8_kind, FaslRelocKind::DataSlotAddress) => {
+            FaslRelocKind::CraneliftDataSlot(kind)
+        }
+        kind => FaslRelocKind::Cranelift(kind),
+    };
 
     Ok(FaslRelocation {
         offset: relocation.offset,
@@ -1381,6 +1383,69 @@ mod tests {
 
     fn direct_test_function() -> Function {
         Function::with_name_signature(UserFuncName::user(0, 0), compiled_scheme_signature())
+    }
+
+    #[test]
+    fn fasl_relocation_conversion_preserves_non_x86_cranelift_relocations() {
+        use cranelift_codegen::binemit::Reloc;
+
+        let target = BackendSymbol::Function(FunctionSymbol::new(7));
+        for kind in [
+            Reloc::Arm64Call,
+            Reloc::Aarch64AdrPrelPgHi21,
+            Reloc::Aarch64AddAbsLo12Nc,
+            Reloc::RiscvCallPlt,
+            Reloc::RiscvGotHi20,
+            Reloc::RiscvPCRelHi20,
+            Reloc::RiscvPCRelLo12I,
+        ] {
+            let relocation = DirectRelocation {
+                offset: 4,
+                kind,
+                addend: -4,
+                target: DirectRelocationTarget::BackendSymbol(target),
+            };
+
+            assert_eq!(
+                fasl_relocation_from_direct_relocation(&relocation, &HashMap::new())
+                    .expect("convert non-x86 relocation"),
+                FaslRelocation {
+                    offset: 4,
+                    kind: FaslRelocKind::Cranelift(kind),
+                    target: FaslRelocTarget::Entry(7),
+                    addend: -4,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn fasl_relocation_conversion_preserves_non_x86_data_slot_relocations() {
+        use cranelift_codegen::binemit::Reloc;
+
+        let mut data_slot_targets = HashMap::new();
+        data_slot_targets.insert(3, FaslRelocTarget::Entry(11));
+
+        let relocation = DirectRelocation {
+            offset: 4,
+            kind: Reloc::Aarch64AdrPrelPgHi21,
+            addend: 0,
+            target: DirectRelocationTarget::BackendSymbol(BackendSymbol::Data {
+                kind: DataSymbolKind::PointerSlot,
+                symbol: DataSymbol::new(3),
+            }),
+        };
+
+        assert_eq!(
+            fasl_relocation_from_direct_relocation(&relocation, &data_slot_targets)
+                .expect("convert data-slot relocation"),
+            FaslRelocation {
+                offset: 4,
+                kind: FaslRelocKind::CraneliftDataSlot(Reloc::Aarch64AdrPrelPgHi21),
+                target: FaslRelocTarget::Entry(11),
+                addend: 0,
+            }
+        );
     }
 
     #[test]
