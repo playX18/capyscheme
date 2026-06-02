@@ -612,6 +612,10 @@ thunks! {
         module: Value<'gc>,
         name: Value<'gc>
     ) -> ThunkResult<'gc> {
+        let mut module = module;
+        if module == Value::new(false) {
+            module = crate::runtime::modules::current_module(ctx).get(ctx);
+        }
 
         let variable = module.downcast::<Module>().variable(ctx, name);
 

@@ -141,6 +141,19 @@ fn fasl_relocation_from_direct_relocation(
                     FaslRelocTarget::RuntimeSymbol(symbol.index()),
                     FaslRelocKind::RuntimeData,
                 )
+            } else if kind == DataSymbolKind::CacheCell {
+                (
+                    match data_slot_targets.get(&symbol.index()).copied().ok_or_else(|| {
+                        format!(
+                            "data slot {} cannot be represented as a unified FASL data slot yet",
+                            symbol.index()
+                        )
+                    })? {
+                        FaslRelocTarget::Object(index) => FaslRelocTarget::CacheCell(index),
+                        other => other,
+                    },
+                    FaslRelocKind::CacheCell,
+                )
             } else {
                 (
                     data_slot_targets.get(&symbol.index()).copied().ok_or_else(|| {
@@ -175,7 +188,11 @@ fn fasl_relocation_from_direct_relocation(
 
     let kind = match relocation.kind {
         Reloc::Abs8 => abs8_kind,
-        kind if matches!(abs8_kind, FaslRelocKind::DataSlotAddress) => {
+        kind if matches!(
+            abs8_kind,
+            FaslRelocKind::DataSlotAddress | FaslRelocKind::CacheCell
+        ) =>
+        {
             FaslRelocKind::CraneliftDataSlot(kind)
         }
         kind => FaslRelocKind::Cranelift(kind),
@@ -1443,6 +1460,35 @@ mod tests {
                 offset: 4,
                 kind: FaslRelocKind::CraneliftDataSlot(Reloc::Aarch64AdrPrelPgHi21),
                 target: FaslRelocTarget::Entry(11),
+                addend: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn fasl_relocation_conversion_marks_cache_cell_targets() {
+        use cranelift_codegen::binemit::Reloc;
+
+        let mut data_slot_targets = HashMap::new();
+        data_slot_targets.insert(3, FaslRelocTarget::Object(11));
+
+        let relocation = DirectRelocation {
+            offset: 4,
+            kind: Reloc::X86PCRel4,
+            addend: 0,
+            target: DirectRelocationTarget::BackendSymbol(BackendSymbol::Data {
+                kind: DataSymbolKind::CacheCell,
+                symbol: DataSymbol::new(3),
+            }),
+        };
+
+        assert_eq!(
+            fasl_relocation_from_direct_relocation(&relocation, &data_slot_targets)
+                .expect("convert cache-cell relocation"),
+            FaslRelocation {
+                offset: 4,
+                kind: FaslRelocKind::CraneliftDataSlot(Reloc::X86PCRel4),
+                target: FaslRelocTarget::CacheCell(11),
                 addend: 0,
             }
         );

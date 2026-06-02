@@ -17,7 +17,7 @@ use crate::compiler::{
 };
 use crate::rsgc::mmtk::util::Address;
 use crate::runtime::{
-    code_memory::{CodeAllocation, CodeMemory},
+    code_memory::{CodeAllocation, CodeMemory, CodeSpan},
     symbols::{RuntimeData, RuntimeThunk},
 };
 use cranelift::prelude::{
@@ -609,30 +609,32 @@ fn compile_trampoline(
     let compiled = compile_function(isa, &mut cache).expect("failed to compile trampoline");
     let (bytes, call_stub_offsets) = code_bytes_with_call_stubs(&compiled.bytes, &compiled.relocs)
         .expect("failed to reserve trampoline call stubs");
-    let loaded = memory
+    let mut loaded = memory
         .allocate_copy(&bytes)
         .expect("failed to allocate trampoline code");
-    let site = TrampolineRelocationSite::from_loaded_code(loaded, call_stub_offsets);
+    let mut site = TrampolineRelocationSite::from_loaded_code(&mut loaded, call_stub_offsets);
     for reloc in &compiled.relocs {
-        apply_runtime_relocation(memory, &site, reloc).expect("failed to patch trampoline code");
+        apply_runtime_relocation(memory, &mut site, reloc)
+            .expect("failed to patch trampoline code");
     }
     loaded
 }
 
-struct TrampolineRelocationSite {
-    handle: u32,
+struct TrampolineRelocationSite<'a> {
+    span: &'a mut CodeSpan,
     base: Address,
     call_stub_offsets: std::collections::HashMap<u32, u32>,
 }
 
-impl TrampolineRelocationSite {
+impl<'a> TrampolineRelocationSite<'a> {
     fn from_loaded_code(
-        loaded: CodeAllocation,
+        loaded: &'a mut CodeAllocation,
         call_stub_offsets: std::collections::HashMap<u32, u32>,
     ) -> Self {
+        let base = loaded.entrypoint;
         Self {
-            handle: loaded.handle,
-            base: loaded.entrypoint,
+            span: loaded.span_mut(),
+            base,
             call_stub_offsets,
         }
     }
@@ -661,14 +663,14 @@ fn code_bytes_with_call_stubs(
 
 fn apply_runtime_relocation(
     memory: &mut CodeMemory,
-    site: &TrampolineRelocationSite,
+    site: &mut TrampolineRelocationSite<'_>,
     reloc: &DirectRelocation,
 ) -> std::io::Result<()> {
     let target = resolve_runtime_relocation_target(reloc.target)?;
     match reloc.kind {
         Reloc::Abs8 => {
             let target = add_i64_to_usize(target.as_usize(), reloc.addend)?;
-            memory.patch(site.handle, reloc.offset as usize, &target.to_le_bytes())
+            memory.patch(site.span, reloc.offset as usize, &target.to_le_bytes())
         }
         Reloc::X86PCRel4 | Reloc::X86CallPCRel4 => apply_x86_pc_rel4(
             memory,
@@ -724,7 +726,7 @@ fn empty_absolute_jump_stub() -> std::io::Result<Vec<u8>> {
 
 fn apply_x86_pc_rel4(
     memory: &mut CodeMemory,
-    site: &TrampolineRelocationSite,
+    site: &mut TrampolineRelocationSite<'_>,
     offset: u32,
     kind: Reloc,
     target: usize,
@@ -733,7 +735,7 @@ fn apply_x86_pc_rel4(
     let patch_address = add_i64_to_usize(site.base.as_usize(), offset as i64)?;
     let relocated_target = add_i64_to_usize(target, addend)?;
     if let Some(displacement) = rel32_displacement(patch_address, relocated_target) {
-        return memory.patch(site.handle, offset as usize, &displacement.to_le_bytes());
+        return memory.patch(site.span, offset as usize, &displacement.to_le_bytes());
     }
 
     if kind != Reloc::X86CallPCRel4 {
@@ -748,9 +750,9 @@ fn apply_x86_pc_rel4(
     let stub_address = add_i64_to_usize(site.base.as_usize(), stub_offset as i64)?;
     let displacement = rel32_displacement(patch_address, add_i64_to_usize(stub_address, addend)?)
         .ok_or_else(|| invalid_data("call stub relocation target out of range"))?;
-    memory.patch(site.handle, offset as usize, &displacement.to_le_bytes())?;
+    memory.patch(site.span, offset as usize, &displacement.to_le_bytes())?;
     memory.patch(
-        site.handle,
+        site.span,
         stub_offset as usize,
         &absolute_jump_stub(target)?,
     )

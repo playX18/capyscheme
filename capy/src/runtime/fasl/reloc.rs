@@ -35,6 +35,7 @@ pub enum FaslRelocKind {
 pub enum FaslRelocTarget {
     Object(u32),
     Entry(u32),
+    CacheCell(u32),
     RuntimeSymbol(u32),
     SideMetadata(SideMetadataSlotKind),
 }
@@ -107,7 +108,7 @@ impl FaslRelocKind {
     }
 }
 
-fn cranelift_reloc_to_tag(reloc: CraneliftReloc) -> u8 {
+pub(crate) fn cranelift_reloc_to_tag(reloc: CraneliftReloc) -> u8 {
     match reloc {
         CraneliftReloc::Abs4 => 0,
         CraneliftReloc::Abs8 => 1,
@@ -144,7 +145,7 @@ fn cranelift_reloc_to_tag(reloc: CraneliftReloc) -> u8 {
     }
 }
 
-fn cranelift_reloc_from_tag(tag: u8) -> io::Result<CraneliftReloc> {
+pub(crate) fn cranelift_reloc_from_tag(tag: u8) -> io::Result<CraneliftReloc> {
     match tag {
         0 => Ok(CraneliftReloc::Abs4),
         1 => Ok(CraneliftReloc::Abs8),
@@ -193,6 +194,10 @@ impl FaslRelocTarget {
                 write_u8(out, 1)?;
                 write_u32(out, index)
             }
+            Self::CacheCell(index) => {
+                write_u8(out, 4)?;
+                write_u32(out, index)
+            }
             Self::RuntimeSymbol(symbol) => {
                 write_u8(out, 2)?;
                 write_u32(out, symbol)
@@ -212,20 +217,21 @@ impl FaslRelocTarget {
             3 => Ok(Self::SideMetadata(SideMetadataSlotKind::from_tag(
                 read_u8(input)?,
             )?)),
+            4 => Ok(Self::CacheCell(read_u32(input)?)),
             _ => Err(invalid_data("invalid FASL relocation target")),
         }
     }
 }
 
 impl SideMetadataSlotKind {
-    fn to_tag(self) -> u8 {
+    pub(crate) fn to_tag(self) -> u8 {
         match self {
             Self::Global => 0,
             Self::VoBit => 1,
         }
     }
 
-    fn from_tag(tag: u8) -> io::Result<Self> {
+    pub(crate) fn from_tag(tag: u8) -> io::Result<Self> {
         match tag {
             0 => Ok(Self::Global),
             1 => Ok(Self::VoBit),
@@ -234,7 +240,7 @@ impl SideMetadataSlotKind {
     }
 }
 
-fn asmkit_reloc_to_tag(reloc: AsmkitReloc) -> u8 {
+pub(crate) fn asmkit_reloc_to_tag(reloc: AsmkitReloc) -> u8 {
     match reloc {
         AsmkitReloc::Abs4 => 0,
         AsmkitReloc::Abs8 => 1,
@@ -265,7 +271,7 @@ fn asmkit_reloc_to_tag(reloc: AsmkitReloc) -> u8 {
     }
 }
 
-fn asmkit_reloc_from_tag(tag: u8) -> io::Result<AsmkitReloc> {
+pub(crate) fn asmkit_reloc_from_tag(tag: u8) -> io::Result<AsmkitReloc> {
     match tag {
         0 => Ok(AsmkitReloc::Abs4),
         1 => Ok(AsmkitReloc::Abs8),

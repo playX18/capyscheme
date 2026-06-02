@@ -1,15 +1,26 @@
-use std::{collections::HashMap, ops::Index, sync::LazyLock};
+use std::{
+    cell::{Cell, UnsafeCell},
+    collections::{HashMap, VecDeque},
+    io,
+    mem::MaybeUninit,
+    ops::Index,
+    sync::{Arc, LazyLock, Mutex as StdMutex},
+};
 
 use crate::{
     IndexWrite, WeakProcessor,
     object::VTable,
-    rsgc::{Global, cell::Lock, collection::Visitor, sync::monitor::Monitor},
+    rsgc::{
+        Global, cell::Lock, collection::Visitor, finalizer::FinalizerQueue, sync::monitor::Monitor,
+    },
 };
-use mmtk::AllocationSemantics;
+use asmkit::core::jit_allocator::Span;
+use mmtk::{AllocationSemantics, util::ObjectReference};
 
 use crate::rsgc::object::{HeapTypeInfo, builtin_type_ids};
 use crate::runtime::{
     Context,
+    code_memory::CodeSpan,
     vm::trampolines::{get_cont_trampoline_from_scheme, get_trampoline_from_scheme},
 };
 
@@ -535,19 +546,38 @@ pub struct NativeReturn<'gc> {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnlinkedRelocation {
+    pub offset: u32,
+    pub kind_tag: u8,
+    pub target_tag: u8,
+    pub target_payload: u32,
+    pub addend: i64,
+    pub aux_tag: u8,
+}
+
+#[repr(C)]
 pub struct CodeBlock<'gc> {
     pub entrypoint: Address,
     pub kind: CodeBlockKind,
     pub arity: CodeArity,
     pub flags: CodeBlockFlags,
     pub metadata: Lock<Value<'gc>>,
-    pub loaded_code_handle: u32,
+    pub unlinked: Gc<'gc, UnlinkedCodeBlock<'gc>>,
     pub loaded_data_base: Address,
     pub loaded_data_slot_count: u32,
-    pub loaded_data_value_bitmap_word_count: u32,
+    span_initialized: Cell<bool>,
+    span_finalized: Cell<bool>,
+    span_borrowed: Cell<bool>,
+    span: UnsafeCell<MaybeUninit<Span>>,
     code_len: u32,
     code: [usize; 0],
 }
+
+// Finalizer queues move `CodeBlock` object references between GC worker and
+// scheduler threads. The queue only reads the span ownership guard and releases
+// the JIT span through the runtime-wide `CodeMemory` lock.
+unsafe impl<'gc> Send for CodeBlock<'gc> {}
 
 static CODE_BLOCK_VTABLE: &VTable = &VTable {
     alignment: align_of::<CodeBlock>(),
@@ -555,10 +585,8 @@ static CODE_BLOCK_VTABLE: &VTable = &VTable {
     instance_size: size_of::<CodeBlock>(),
     compute_size: Some({
         extern "C" fn compute_code_block_size(obj: GCObject) -> usize {
-            unsafe {
-                let obj = obj.to_address().as_ref::<CodeBlock<'static>>();
-                obj.loaded_data_value_bitmap_word_count as usize * size_of::<usize>()
-            }
+            let _ = obj;
+            0
         }
 
         compute_code_block_size
@@ -635,6 +663,266 @@ pub static CODE_BLOCK_BYTECODE_INFO: &'static HeapTypeInfo = &CODE_BLOCK_BYTECOD
 
 pub static CODE_BLOCK_INFO: &'static HeapTypeInfo = &CODE_BLOCK_INFO_VALUE;
 
+pub struct CodeBlockFinalizerQueue {
+    finalizers: StdMutex<VecDeque<ObjectReference>>,
+}
+
+impl CodeBlockFinalizerQueue {
+    fn new() -> Self {
+        Self {
+            finalizers: StdMutex::new(VecDeque::new()),
+        }
+    }
+
+    fn pop(&self) -> Option<ObjectReference> {
+        self.finalizers.lock().unwrap().pop_front()
+    }
+}
+
+pub static CODE_BLOCK_FINALIZERS: LazyLock<Arc<CodeBlockFinalizerQueue>> =
+    LazyLock::new(|| Arc::new(CodeBlockFinalizerQueue::new()));
+
+unsafe impl FinalizerQueue for CodeBlockFinalizerQueue {
+    fn mark_ready_to_run(&self, object: ObjectReference) {
+        self.finalizers.lock().unwrap().push_back(object);
+    }
+
+    fn schedule(&self) {
+        while let Some(object) = self.pop() {
+            unsafe {
+                let gc_object = GCObject::from(object);
+                let code_block = gc_object.to_address().as_ref::<CodeBlock<'static>>();
+                if let Some(span) = code_block.take_span_for_finalization() {
+                    // A dead CodeBlock can still have return addresses into its
+                    // executable span on native stacks. Consume the owner here so
+                    // the finalizer runs exactly once, but keep the mapping valid
+                    // until the process exits.
+                    std::mem::forget(span);
+                }
+            }
+        }
+    }
+}
+
+#[repr(C)]
+pub struct UnlinkedCodeBlock<'gc> {
+    pub entry_offset: u32,
+    code_len: u32,
+    relocation_count: u32,
+    loaded_data_value_bitmap_word_count: u32,
+    _marker: std::marker::PhantomData<&'gc ()>,
+    payload: [UnlinkedRelocation; 0],
+}
+
+#[derive(Clone, Copy)]
+struct UnlinkedCodeBlockLayout {
+    relocation_offset: usize,
+    bitmap_offset: usize,
+    payload_size: usize,
+}
+
+fn align_payload_offset(offset: usize, alignment: usize) -> Option<usize> {
+    debug_assert!(alignment.is_power_of_two());
+    offset
+        .checked_add(alignment - 1)
+        .map(|offset| offset & !(alignment - 1))
+}
+
+fn unlinked_code_block_layout(
+    code_len: usize,
+    relocation_count: usize,
+    loaded_data_value_bitmap_word_count: usize,
+) -> Option<UnlinkedCodeBlockLayout> {
+    let relocation_offset = align_payload_offset(code_len, align_of::<UnlinkedRelocation>())?;
+    let relocation_size = relocation_count.checked_mul(size_of::<UnlinkedRelocation>())?;
+    let bitmap_offset = align_payload_offset(
+        relocation_offset.checked_add(relocation_size)?,
+        align_of::<usize>(),
+    )?;
+    let bitmap_size = loaded_data_value_bitmap_word_count.checked_mul(size_of::<usize>())?;
+    let payload_size = bitmap_offset.checked_add(bitmap_size)?;
+    Some(UnlinkedCodeBlockLayout {
+        relocation_offset,
+        bitmap_offset,
+        payload_size,
+    })
+}
+
+static UNLINKED_CODE_BLOCK_VTABLE: &VTable = &VTable {
+    alignment: align_of::<UnlinkedCodeBlock>(),
+    compute_alignment: None,
+    instance_size: size_of::<UnlinkedCodeBlock>(),
+    compute_size: Some({
+        extern "C" fn compute_unlinked_code_block_size(obj: GCObject) -> usize {
+            unsafe {
+                let obj = obj.to_address().as_ref::<UnlinkedCodeBlock<'static>>();
+                unlinked_code_block_layout(
+                    obj.code_len as usize,
+                    obj.relocation_count as usize,
+                    obj.loaded_data_value_bitmap_word_count as usize,
+                )
+                .expect("unlinked code block layout is too large")
+                .payload_size
+            }
+        }
+
+        compute_unlinked_code_block_size
+    }),
+    trace: {
+        extern "C" fn trace_unlinked_code_block(obj: GCObject, vis: &mut Visitor) {
+            unsafe {
+                let obj = obj.to_address().as_mut_ref::<UnlinkedCodeBlock<'static>>();
+                obj.trace(vis);
+            }
+        }
+
+        trace_unlinked_code_block
+    },
+    weak_proc: {
+        extern "C" fn process_weak_unlinked_code_block(
+            obj: GCObject,
+            weak_processor: &mut WeakProcessor,
+        ) {
+            unsafe {
+                let obj = obj.to_address().as_mut_ref::<UnlinkedCodeBlock<'static>>();
+                obj.process_weak_refs(weak_processor);
+            }
+        }
+
+        process_weak_unlinked_code_block
+    },
+    type_name: "unlinked-code-block",
+};
+
+static UNLINKED_CODE_BLOCK_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
+    UNLINKED_CODE_BLOCK_VTABLE,
+    TypeCode8::UNLINKED_CODEBLOCK.bits() as u16,
+);
+
+pub static UNLINKED_CODE_BLOCK_INFO: &'static HeapTypeInfo = &UNLINKED_CODE_BLOCK_INFO_VALUE;
+
+impl<'gc> UnlinkedCodeBlock<'gc> {
+    pub fn new(
+        ctx: Context<'gc>,
+        code: &[u8],
+        entry_offset: u32,
+        relocations: &[UnlinkedRelocation],
+        loaded_data_value_bitmap: &[usize],
+    ) -> Gc<'gc, Self> {
+        unsafe {
+            let code_len =
+                u32::try_from(code.len()).expect("unlinked code block code is too large");
+            let relocation_count = u32::try_from(relocations.len())
+                .expect("unlinked code block relocation table is too large");
+            let bitmap_word_count = u32::try_from(loaded_data_value_bitmap.len())
+                .expect("unlinked code block value bitmap is too large");
+            let layout = unlinked_code_block_layout(
+                code.len(),
+                relocations.len(),
+                loaded_data_value_bitmap.len(),
+            )
+            .expect("unlinked code block is too large");
+            let size = size_of::<Self>()
+                .checked_add(layout.payload_size)
+                .expect("unlinked code block is too large");
+
+            let alloc = ctx.raw_allocate_with_info(
+                size,
+                align_of::<Self>(),
+                UNLINKED_CODE_BLOCK_INFO,
+                AllocationSemantics::Default,
+            );
+            let this = alloc.to_address().as_mut_ref::<Self>();
+            this.entry_offset = entry_offset;
+            this.code_len = code_len;
+            this.relocation_count = relocation_count;
+            this.loaded_data_value_bitmap_word_count = bitmap_word_count;
+            this._marker = std::marker::PhantomData;
+
+            let payload = this.payload.as_mut_ptr().cast::<u8>();
+            if !code.is_empty() {
+                std::ptr::copy_nonoverlapping(code.as_ptr(), payload, code.len());
+            }
+            if !relocations.is_empty() {
+                std::ptr::copy_nonoverlapping(
+                    relocations.as_ptr(),
+                    payload
+                        .add(layout.relocation_offset)
+                        .cast::<UnlinkedRelocation>(),
+                    relocations.len(),
+                );
+            }
+            if !loaded_data_value_bitmap.is_empty() {
+                std::ptr::copy_nonoverlapping(
+                    loaded_data_value_bitmap.as_ptr(),
+                    payload.add(layout.bitmap_offset).cast::<usize>(),
+                    loaded_data_value_bitmap.len(),
+                );
+            }
+
+            Gc::from_gcobj(alloc)
+        }
+    }
+
+    pub fn empty(ctx: Context<'gc>) -> Gc<'gc, Self> {
+        Self::new(ctx, &[], 0, &[], &[])
+    }
+
+    pub fn code(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.payload.as_ptr().cast(), self.code_len as usize) }
+    }
+
+    pub fn relocations(&self) -> &[UnlinkedRelocation] {
+        let layout = unlinked_code_block_layout(
+            self.code_len as usize,
+            self.relocation_count as usize,
+            self.loaded_data_value_bitmap_word_count as usize,
+        )
+        .expect("unlinked code block layout is too large");
+        unsafe {
+            std::slice::from_raw_parts(
+                self.payload
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(layout.relocation_offset)
+                    .cast(),
+                self.relocation_count as usize,
+            )
+        }
+    }
+
+    pub fn loaded_data_value_bitmap(&self) -> &[usize] {
+        let layout = unlinked_code_block_layout(
+            self.code_len as usize,
+            self.relocation_count as usize,
+            self.loaded_data_value_bitmap_word_count as usize,
+        )
+        .expect("unlinked code block layout is too large");
+        unsafe {
+            std::slice::from_raw_parts(
+                self.payload
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(layout.bitmap_offset)
+                    .cast(),
+                self.loaded_data_value_bitmap_word_count as usize,
+            )
+        }
+    }
+}
+
+unsafe impl<'gc> Tagged for UnlinkedCodeBlock<'gc> {
+    const TC8: TypeCode8 = TypeCode8::UNLINKED_CODEBLOCK;
+
+    const TYPE_NAME: &'static str = "unlinked-code-block";
+}
+
+unsafe impl<'gc> Trace for UnlinkedCodeBlock<'gc> {
+    unsafe fn trace(&mut self, _visitor: &mut Visitor) {}
+
+    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
+}
+
 impl<'gc> CodeBlock<'gc> {
     fn normalize_metadata(metadata: Value<'gc>) -> Value<'gc> {
         if metadata == Value::new(false) {
@@ -651,11 +939,8 @@ impl<'gc> CodeBlock<'gc> {
         arity: CodeArity,
         is_cont: bool,
         metadata: Value<'gc>,
-        loaded_code_handle: u32,
-        loaded_data_base: Address,
-        loaded_data_slot_count: u32,
-        loaded_data_value_bitmap_word_count: u32,
     ) -> Gc<'gc, Self> {
+        let unlinked = UnlinkedCodeBlock::empty(ctx);
         Gc::new_with_info(
             *ctx,
             Self {
@@ -668,10 +953,13 @@ impl<'gc> CodeBlock<'gc> {
                     CodeBlockFlags::empty()
                 },
                 metadata: Lock::new(Self::normalize_metadata(metadata)),
-                loaded_code_handle,
-                loaded_data_base,
-                loaded_data_slot_count,
-                loaded_data_value_bitmap_word_count,
+                unlinked,
+                loaded_data_base: Address::ZERO,
+                loaded_data_slot_count: 0,
+                span_initialized: Cell::new(false),
+                span_finalized: Cell::new(true),
+                span_borrowed: Cell::new(false),
+                span: UnsafeCell::new(MaybeUninit::uninit()),
                 code_len: 0,
                 code: [],
             },
@@ -693,10 +981,6 @@ impl<'gc> CodeBlock<'gc> {
             arity,
             is_cont,
             metadata,
-            0,
-            Address::ZERO,
-            0,
-            0,
         )
     }
 
@@ -714,10 +998,6 @@ impl<'gc> CodeBlock<'gc> {
             arity,
             is_cont,
             metadata,
-            0,
-            Address::ZERO,
-            0,
-            0,
         )
     }
 
@@ -727,18 +1007,18 @@ impl<'gc> CodeBlock<'gc> {
         arity: CodeArity,
         is_cont: bool,
         metadata: Value<'gc>,
-        loaded_code_handle: u32,
+        unlinked: Gc<'gc, UnlinkedCodeBlock<'gc>>,
+        span: CodeSpan,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(
+        Self::new_loaded_with_data(
             ctx,
             entrypoint,
-            CodeBlockKind::Loaded,
             arity,
             is_cont,
             metadata,
-            loaded_code_handle,
+            unlinked,
+            span,
             Address::ZERO,
-            0,
             0,
         )
     }
@@ -749,51 +1029,38 @@ impl<'gc> CodeBlock<'gc> {
         arity: CodeArity,
         is_cont: bool,
         metadata: Value<'gc>,
-        loaded_code_handle: u32,
+        unlinked: Gc<'gc, UnlinkedCodeBlock<'gc>>,
+        span: CodeSpan,
         loaded_data_base: Address,
         loaded_data_slot_count: u32,
-        loaded_data_value_bitmap: &[usize],
     ) -> Gc<'gc, Self> {
-        unsafe {
-            let word_count = u32::try_from(loaded_data_value_bitmap.len())
-                .expect("loaded code block value bitmap is too large");
-            let bitmap_size = loaded_data_value_bitmap
-                .len()
-                .checked_mul(size_of::<usize>())
-                .expect("loaded code block value bitmap is too large");
-            let size = size_of::<Self>()
-                .checked_add(bitmap_size)
-                .expect("loaded code block is too large");
-            let alloc = ctx.raw_allocate_with_info(
-                size,
-                align_of::<Self>(),
-                CODE_BLOCK_INFO,
-                AllocationSemantics::Default,
-            );
-            let this = alloc.to_address().as_mut_ref::<Self>();
-            this.entrypoint = entrypoint;
-            this.kind = CodeBlockKind::Loaded;
-            this.arity = arity;
-            this.flags = if is_cont {
-                CodeBlockFlags::CONTINUATION
-            } else {
-                CodeBlockFlags::empty()
-            };
-            this.metadata = Lock::new(Self::normalize_metadata(metadata));
-            this.loaded_code_handle = loaded_code_handle;
-            this.loaded_data_base = loaded_data_base;
-            this.loaded_data_slot_count = loaded_data_slot_count;
-            this.loaded_data_value_bitmap_word_count = word_count;
-            this.code_len = 0;
-            if !loaded_data_value_bitmap.is_empty() {
-                std::ptr::copy_nonoverlapping(
-                    loaded_data_value_bitmap.as_ptr(),
-                    this.code.as_mut_ptr(),
-                    loaded_data_value_bitmap.len(),
-                );
-            }
-            Gc::from_gcobj(alloc)
-        }
+        let code_block = Gc::new_with_info(
+            *ctx,
+            Self {
+                entrypoint,
+                kind: CodeBlockKind::Loaded,
+                arity,
+                flags: if is_cont {
+                    CodeBlockFlags::CONTINUATION
+                } else {
+                    CodeBlockFlags::empty()
+                },
+                metadata: Lock::new(Self::normalize_metadata(metadata)),
+                unlinked,
+                loaded_data_base,
+                loaded_data_slot_count,
+                span_initialized: Cell::new(true),
+                span_finalized: Cell::new(false),
+                span_borrowed: Cell::new(false),
+                span: UnsafeCell::new(MaybeUninit::new(span.into_raw())),
+                code_len: 0,
+                code: [],
+            },
+            CODE_BLOCK_INFO,
+        );
+        ctx.finalizers()
+            .register_finalizer(&CODE_BLOCK_FINALIZERS, code_block);
+        code_block
     }
 
     pub fn new_bytecode(
@@ -805,6 +1072,7 @@ impl<'gc> CodeBlock<'gc> {
         code: &[u8],
     ) -> Gc<'gc, Self> {
         unsafe {
+            let unlinked = UnlinkedCodeBlock::empty(ctx);
             let size = size_of::<Self>() + code.len();
             let alignment = align_of::<Self>();
             let info = CODE_BLOCK_BYTECODE_INFO;
@@ -820,10 +1088,13 @@ impl<'gc> CodeBlock<'gc> {
                 CodeBlockFlags::empty()
             };
             this.metadata = Lock::new(metadata);
-            this.loaded_code_handle = 0;
+            this.unlinked = unlinked;
             this.loaded_data_base = Address::ZERO;
             this.loaded_data_slot_count = 0;
-            this.loaded_data_value_bitmap_word_count = 0;
+            this.span_initialized = Cell::new(false);
+            this.span_finalized = Cell::new(true);
+            this.span_borrowed = Cell::new(false);
+            this.span = UnsafeCell::new(MaybeUninit::uninit());
             this.code_len = code.len() as u32;
             std::ptr::copy_nonoverlapping(code.as_ptr(), this.code.as_mut_ptr().cast(), code.len());
             Gc::from_gcobj(alloc)
@@ -840,11 +1111,45 @@ impl<'gc> CodeBlock<'gc> {
 
     #[cfg(test)]
     pub(crate) fn loaded_data_value_bitmap(&self) -> &[usize] {
-        unsafe {
-            std::slice::from_raw_parts(
-                self.code.as_ptr().cast::<usize>(),
-                self.loaded_data_value_bitmap_word_count as usize,
-            )
+        self.unlinked.loaded_data_value_bitmap()
+    }
+
+    pub(crate) fn with_live_span<R>(
+        &self,
+        f: impl FnOnce(&mut Span) -> io::Result<R>,
+    ) -> io::Result<R> {
+        if !self.has_live_span() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "code block has no live code span",
+            ));
+        }
+        if self.span_borrowed.replace(true) {
+            return Err(io::Error::other("code block span is already borrowed"));
+        }
+        struct SpanBorrowGuard<'a>(&'a Cell<bool>);
+        impl Drop for SpanBorrowGuard<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        let _guard = SpanBorrowGuard(&self.span_borrowed);
+        let span = unsafe { &mut *(*self.span.get()).as_mut_ptr() };
+        f(span)
+    }
+
+    pub fn has_live_span(&self) -> bool {
+        self.span_initialized.get() && !self.span_finalized.get()
+    }
+
+    pub unsafe fn take_span_for_finalization(&self) -> Option<CodeSpan> {
+        if self.span_initialized.get() && !self.span_finalized.get() && !self.span_borrowed.get() {
+            self.span_finalized.set(true);
+            Some(CodeSpan::from_raw(unsafe {
+                (*self.span.get()).as_ptr().read()
+            }))
+        } else {
+            None
         }
     }
 }
@@ -858,13 +1163,9 @@ unsafe impl<'gc> Tagged for CodeBlock<'gc> {
 unsafe impl<'gc> Trace for CodeBlock<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         visitor.trace(&mut self.metadata);
-        if !self.loaded_data_base.is_zero() && self.loaded_data_value_bitmap_word_count != 0 {
-            let bitmap = unsafe {
-                std::slice::from_raw_parts(
-                    self.code.as_ptr().cast::<usize>(),
-                    self.loaded_data_value_bitmap_word_count as usize,
-                )
-            };
+        visitor.trace(&mut self.unlinked);
+        if !self.loaded_data_base.is_zero() {
+            let bitmap = self.unlinked.loaded_data_value_bitmap();
             let bits_per_word = usize::BITS as u32;
             let count = self.loaded_data_slot_count;
             for index in 0..count {
@@ -1026,23 +1327,85 @@ mod tests {
     }
 
     #[test]
-    fn loaded_code_block_records_owner_handle_and_continuation_flag() {
+    fn loaded_code_block_owns_span_and_unlinked_code() {
         with_ctx(|ctx| {
+            let mut memory = crate::runtime::code_memory::CodeMemory::new();
+            let loaded = memory.allocate_copy(&[0xc3]).expect("allocate code span");
+            let entrypoint = loaded.entrypoint;
+            let unlinked = UnlinkedCodeBlock::new(ctx, &[0xc3], 0, &[], &[]);
             let metadata = Value::cons(ctx, ctx.intern("name"), ctx.str("loaded"));
-            let code_block = CodeBlock::new_loaded(
+            let code_block = CodeBlock::new_loaded_with_data(
                 ctx,
-                Address::from_ptr(test_native_proc as *const ()),
+                entrypoint,
                 CodeArity::new(2),
                 true,
                 metadata,
-                99,
+                unlinked,
+                loaded.into_span(),
+                Address::ZERO,
+                0,
             );
 
             assert!(matches!(code_block.kind, CodeBlockKind::Loaded));
-            assert_eq!(code_block.loaded_code_handle, 99);
+            assert!(code_block.has_live_span());
+            assert_eq!(code_block.unlinked.code(), [0xc3]);
             assert!(code_block.flags.contains(CodeBlockFlags::CONTINUATION));
             assert_eq!(code_block.arity.fixed_arity(), 2);
             assert_eq!(code_block.metadata.get(), metadata);
+
+            let span = unsafe {
+                code_block
+                    .take_span_for_finalization()
+                    .expect("span is present")
+            };
+            assert!(!code_block.has_live_span());
+            assert!(unsafe { code_block.take_span_for_finalization() }.is_none());
+            memory.release_span(span).expect("release code span");
+        });
+    }
+
+    #[test]
+    fn native_code_block_does_not_initialize_span() {
+        with_ctx(|ctx| {
+            let code_block = CodeBlock::new_native(
+                ctx,
+                Address::from_ptr(test_native_proc as *const ()),
+                CodeArity::new(0),
+                false,
+                Value::new(false),
+            );
+
+            assert!(!code_block.has_live_span());
+            assert!(code_block.unlinked.code().is_empty());
+        });
+    }
+
+    #[test]
+    fn code_block_span_can_be_taken_for_finalization_once() {
+        with_ctx(|ctx| {
+            let mut memory = crate::runtime::code_memory::CodeMemory::new();
+            let loaded = memory.allocate_copy(&[0xc3]).expect("allocate code");
+            let entrypoint = loaded.entrypoint;
+            let unlinked = UnlinkedCodeBlock::new(ctx, &[0xc3], 0, &[], &[]);
+            let code_block = CodeBlock::new_loaded_with_data(
+                ctx,
+                entrypoint,
+                CodeArity::new(0),
+                false,
+                Value::new(false),
+                unlinked,
+                loaded.into_span(),
+                Address::ZERO,
+                0,
+            );
+
+            let span = unsafe {
+                code_block
+                    .take_span_for_finalization()
+                    .expect("span is present")
+            };
+            assert!(unsafe { code_block.take_span_for_finalization() }.is_none());
+            memory.release_span(span).expect("release code span");
         });
     }
 
@@ -1064,6 +1427,39 @@ mod tests {
             assert_eq!(code_block.code_len(), code.len());
             assert_eq!(code_block.code(), code);
             assert_eq!(code_block.metadata.get(), Value::new(false));
+        });
+    }
+
+    #[test]
+    fn unlinked_code_block_preserves_original_code_relocations_and_bitmap() {
+        with_ctx(|ctx| {
+            let code = [0xde, 0xad, 0xbe, 0xef, 0x01];
+            let relocations = [
+                UnlinkedRelocation {
+                    offset: 4,
+                    kind_tag: 1,
+                    target_tag: 2,
+                    target_payload: 3,
+                    addend: -8,
+                    aux_tag: 5,
+                },
+                UnlinkedRelocation {
+                    offset: 12,
+                    kind_tag: 6,
+                    target_tag: 7,
+                    target_payload: 8,
+                    addend: 16,
+                    aux_tag: 9,
+                },
+            ];
+            let bitmap = [0b101usize, usize::MAX];
+
+            let code_block = UnlinkedCodeBlock::new(ctx, &code, 2, &relocations, &bitmap);
+
+            assert_eq!(code_block.entry_offset, 2);
+            assert_eq!(code_block.code(), code);
+            assert_eq!(code_block.relocations(), relocations);
+            assert_eq!(code_block.loaded_data_value_bitmap(), bitmap);
         });
     }
 }

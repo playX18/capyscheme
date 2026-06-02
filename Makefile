@@ -469,6 +469,11 @@ $(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.sld
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
+# Common
+$(OUT)/common/%.$(COMPILED_SCM_EXT): lib/common/%.scm
+	@mkdir -p $(dir $@)
+	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+
 # -------------------------
 # High-level compile targets
 # -------------------------
@@ -528,8 +533,8 @@ compile-common:
 	$(call require_var,COMPILER)
 	$(call require_var,OUT)
 	@echo "Compiling common"
-	@$(MAKE) $(OTHER_OUTS) COMPILER=$(COMPILER) OUT=$(OUT)
-	@echo "Common libraries: $(words $(OTHER_SRCS)) files"
+	@$(MAKE) $(COMMON_OUTS) COMPILER=$(COMPILER) OUT=$(OUT)
+	@echo "Common libraries: $(words $(COMMON_SRCS)) files"
 
 # -------------------------
 # Install / dist
