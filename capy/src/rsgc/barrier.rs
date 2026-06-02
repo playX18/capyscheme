@@ -137,7 +137,7 @@ pub trait Unlock {
 /// # Usage
 ///
 /// ```
-/// # use rsgc::barrier::{field, Write};
+/// # use capy::rsgc::barrier::{field, Write};
 /// struct Container<T> {
 ///     field: T,
 /// }

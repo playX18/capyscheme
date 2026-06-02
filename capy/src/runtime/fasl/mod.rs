@@ -53,6 +53,7 @@ pub const FASL_TAG_LZ4: u8 = 29;
 pub const FASL_TAG_BEGIN: u8 = 30;
 pub const FASL_TAG_GROUP: u8 = 31;
 pub const FASL_TAG_UNCOMPRESSED: u8 = 32;
+pub const FASL_TAG_UNLINKED_CODEBLOCK: u8 = 33;
 
 pub const FASL_SITUATION_VISIT: u8 = 0;
 pub const FASL_SITUATION_REVISIT: u8 = 1;

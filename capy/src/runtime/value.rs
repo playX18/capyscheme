@@ -490,6 +490,7 @@ impl TypeCode8 {
     pub const CODE_BLOCK: Self = Self(75);
 
     pub const CLOSURE2: Self = Self(76);
+    pub const UNLINKED_CODEBLOCK: Self = Self(77);
 
     pub const UNKNOWN: Self = Self(0xFF);
 }
