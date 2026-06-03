@@ -39,6 +39,7 @@
 - *(ssa)* Inline allocation - ([1fd7b1b](https://codeberg.org/playXE/capy/commit/1fd7b1b2845547cacbdd03ca5fcd7aa74c4ccd91))
 - *(tests)* Use srfi-64 test runner for racket/r6rs test suite - ([0ca56c9](https://codeberg.org/playXE/capy/commit/0ca56c9ed305d6528c9c56be31d37a483dd74fba))
 - *(vscode)* Add Capy Scheme LSP extension - ([180ec16](https://codeberg.org/playXE/capy/commit/180ec160da7aa46f8b6c981d6a59961ef96e036f))
+- FASL full encoding - ([702d5ce](https://codeberg.org/playXE/capy/commit/702d5ce2c05b79feb5e7f8767568faddcd619516))
 - FASL compilation instead of ELF/mach-o - ([4eb8e94](https://codeberg.org/playXE/capy/commit/4eb8e94a296091b6cde01ae13dbe3f61cfa55833))
 - Thread interrupts - ([d7c5768](https://codeberg.org/playXE/capy/commit/d7c5768c276294cc8f11861a351a1a02121de33e))
 - Add fault-driven yieldpoints - ([f8d63cd](https://codeberg.org/playXE/capy/commit/f8d63cda3e270380594cca098107be47531216ac))
@@ -97,6 +98,8 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- Simplify fasl - ([77cb2ba](https://codeberg.org/playXE/capy/commit/77cb2ba822ff85d2437494000f14826085ca6c9f))
+- Support FASL boostrap - ([75cbdc7](https://codeberg.org/playXE/capy/commit/75cbdc7301c71abcaad74a47153c46d40e7678ff))
 - Fmt - ([d4fcac4](https://codeberg.org/playXE/capy/commit/d4fcac4e40ec677a89d5cb6356f30f26eca99b25))
 - Remove dead code - ([635aa02](https://codeberg.org/playXE/capy/commit/635aa0211d8a5548c011e2e6dcca060c0eff6e98))
 - Remove bytecode module - ([5eea835](https://codeberg.org/playXE/capy/commit/5eea83549d57aa3a70b5f1e725d2f594ad6162b4))
