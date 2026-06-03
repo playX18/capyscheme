@@ -83,6 +83,7 @@
 (define macroexpand #f)
 (define :ellipsis? #f)
 (define identifier-binding #f)
+(define resolve-r6rs-interface #f)
 (define $sc-define-property! #f)
 (define <variable-transformer>
   (let* ((rtd (make-record-type-descriptor '<variable-transformer> #f #f #f #f '#((immutable proc))))
@@ -1112,6 +1113,417 @@
             (let ((expr (expand head r w mod)))
               (cons expr (lp tail))))))))
 
+  (define (r6rs-import-sym? stx)
+    (symbol? (syntax->datum stx)))
+  (define (r6rs-import-n? stx)
+    (let ((n (syntax->datum stx)))
+      (and (exact-integer? n)
+        (not (negative? n)))))
+  (define (r6rs-import-colon-n? x)
+    (let ((sym (syntax->datum x)))
+      (and (symbol? sym)
+        (let ((str (symbol->string sym)))
+          (and (string-prefix? ":" str)
+            (let ((num (string->number (substring str 1))))
+              (and (exact-integer? num)
+                (not (negative? num)))))))))
+  (define (r6rs-srfi-name? stx)
+    (syntax-case stx (srfi)
+      ((srfi n rest ...)
+        (and (and-map r6rs-import-sym? #'(rest ...))
+          (or (r6rs-import-n? #'n)
+            (r6rs-import-colon-n? #'n))))
+      (_ #f)))
+  (define (r6rs-module-name? stx)
+    (or (r6rs-srfi-name? stx)
+      (syntax-case stx ()
+        ((name name* ...)
+          (and-map r6rs-import-sym? #'(name name* ...)))
+        (_ #f))))
+  (define (make-r6rs-srfi-n context n)
+    (datum->syntax
+      context
+      (string->symbol
+        (string-append
+          "srfi-"
+          (let ((n (syntax->datum n)))
+            (if (symbol? n)
+              (substring (symbol->string n) 1)
+              (number->string n)))))))
+
+  (define (resolve-r6rs-interface* import-spec)
+    (define (make-custom-interface mod)
+      (let ((iface (make-module)))
+        (set-module-kind! iface 'custom-interface)
+        (set-module-name! iface (module-name mod))
+        iface))
+    (define (module-for-each/nonlocal f mod)
+      (define (module-and-uses mod)
+        (let lp ((in (list mod)) (out '()))
+          (cond
+            ((null? in) (reverse out))
+            ((memq (car in) out) (lp (cdr in) out))
+            (else (lp (append (module-uses (car in)) (cdr in))
+                   (cons (car in) out))))))
+      (for-each (lambda (mod)
+                 (module-for-each f mod))
+        (module-and-uses mod)))
+    (syntax-case import-spec (library only except prefix rename srfi)
+      ((library (srfi n rest ... (version ...)))
+        (r6rs-srfi-name? #'(srfi n rest ...))
+        (let ((srfi-n (make-r6rs-srfi-n #'srfi #'n)))
+          (resolve-r6rs-interface*
+            (syntax-case #'(rest ...) ()
+              (()
+                #`(library (srfi #,srfi-n (version ...))))
+              ((name rest ...)
+                #`(library (srfi #,srfi-n rest ... (version ...))))))))
+
+      ((library (name name* ... (version ...)))
+        (and-map r6rs-import-sym? #'(name name* ...))
+        (resolve-interface (syntax->datum #'(name name* ...)) #f '() #f))
+
+      ((library (name name* ...))
+        (and-map r6rs-import-sym? #'(name name* ...))
+        (resolve-r6rs-interface* #'(library (name name* ... ()))))
+
+      ((only import-set identifier ...)
+        (and-map r6rs-import-sym? #'(identifier ...))
+        (let* ((mod (resolve-r6rs-interface* #'import-set))
+               (iface (make-custom-interface mod)))
+          (for-each (lambda (sym)
+                     (module-add! iface sym
+                       (or (module-variable mod sym)
+                         (error 'import (format
+                                         #f
+                                         "no binding '~a' in module ~a"
+                                         sym
+                                         mod
+                                         (module-uses mod)))))
+                     (if (core-hash-ref (module-replacements mod) sym)
+                       (core-hash-put! (module-replacements iface) sym #t)))
+            (syntax->datum #'(identifier ...)))
+          iface))
+
+      ((except import-set identifier ...)
+        (and-map r6rs-import-sym? #'(identifier ...))
+        (let* ((mod (resolve-r6rs-interface* #'import-set))
+               (iface (make-custom-interface mod)))
+          (module-for-each/nonlocal (lambda (sym var)
+                                     (module-add! iface sym var))
+            mod)
+          (for-each (lambda (sym)
+                     (if (not (module-local-variable iface sym))
+                       (error 'import (format #f "no binding '~a' in module ~a ~a" sym mod (module-uses mod))))
+                     (module-remove! iface sym))
+            (syntax->datum #'(identifier ...)))
+          iface))
+
+      ((prefix import-set identifier)
+        (r6rs-import-sym? #'identifier)
+        (let* ((mod (resolve-r6rs-interface* #'import-set))
+               (iface (make-custom-interface mod))
+               (pre (syntax->datum #'identifier)))
+          (module-for-each/nonlocal
+            (lambda (sym var)
+              (let ((sym* (symbol-append pre sym)))
+                (module-add! iface sym* var)
+                (if (core-hash-ref (module-replacements mod) sym)
+                  (core-hash-put! (module-replacements iface) sym* #t))))
+            mod)
+          iface))
+
+      ((rename import-set (from to) ...)
+        (and (and-map r6rs-import-sym? #'(from ...)) (and-map r6rs-import-sym? #'(to ...)))
+        (let* ((mod (resolve-r6rs-interface* #'import-set))
+               (replacements (module-replacements mod))
+               (iface (make-custom-interface mod)))
+          (module-for-each/nonlocal
+            (lambda (sym var) (module-add! iface sym var))
+            mod)
+          (let lp ((in (syntax->datum #'((from . to) ...))) (out '()))
+            (cond
+              ((null? in)
+                (for-each
+                  (lambda (v)
+                    (let ((to (vector-ref v 0))
+                          (replace? (vector-ref v 1))
+                          (var (vector-ref v 2)))
+                      (if (module-local-variable iface to)
+                        (error 'import (format
+                                        #f
+                                        "duplicate binding for '~a' in module ~a (rename uses ~a)"
+                                        to
+                                        mod
+                                        (module-uses mod))))
+
+                      (module-add! iface to var)
+                      (if replace?
+                        (core-hash-put! replacements to #t))))
+                  out)
+
+                iface)
+              (else
+                (let* ((from (caar in))
+                       (to (cdar in))
+                       (var (module-variable mod from))
+                       (replace? (core-hash-ref replacements from)))
+                  (if (not var) (error 'resolve-r6rs-interface
+                                 (format #f "no binding `~a` in module ~a" from mod)))
+                  (module-remove! iface from)
+                  (core-hash-remove! replacements from)
+                  (lp (cdr in) (cons (vector to replace? var) out))))))))
+
+      ((name name* ... (version ...))
+        (r6rs-module-name? #'(name name* ...))
+        (resolve-r6rs-interface* #'(library (name name* ... (version ...)))))
+
+      ((name name* ...)
+        (r6rs-module-name? #'(name name* ...))
+        (resolve-r6rs-interface* #'(library (name name* ... ()))))))
+
+  (define (expand-import-form stx)
+    (define (strip-for import-set)
+      (syntax-case import-set (for)
+        ((for import-set import-level ...)
+          #'import-set)
+        (import-set
+          #'import-set)))
+    (syntax-case stx ()
+      ((_ import-set ...)
+        (with-syntax (((library-reference ...) (map strip-for #'(import-set ...))))
+          #'(eval-when (expand load eval)
+             (let ((iface (resolve-r6rs-interface 'library-reference)))
+              (module-use-interfaces! (current-module) (list iface)))
+             ...
+             (if #f #f))))))
+
+  (define (expand-library-form stx)
+    (define (body-definition-names body)
+      (define (form-definition-names form)
+        (syntax-case form (begin define define-syntax define-syntax-parameter)
+          ((begin form ...)
+            (body-definition-names #'(form ...)))
+          ((define name . _)
+            (identifier? #'name)
+            (list (syntax->datum #'name)))
+          ((define (name . _) . _)
+            (identifier? #'name)
+            (list (syntax->datum #'name)))
+          ((define-syntax name . _)
+            (identifier? #'name)
+            (list (syntax->datum #'name)))
+          ((define-syntax-parameter name . _)
+            (identifier? #'name)
+            (list (syntax->datum #'name)))
+          (_ '())))
+      (let lp ((body body) (names '()))
+        (syntax-case body ()
+          (() names)
+          ((form . rest)
+            (lp #'rest (append (form-definition-names #'form) names))))))
+
+    (define (compute-exports ifaces specs local-definitions)
+      (define (local-definition? sym)
+        (memq sym local-definitions))
+      (define (re-export? sym)
+        (or-map (lambda (iface)
+                 (module-variable iface sym))
+          ifaces))
+      (define (replace? sym)
+        (module-variable the-scm-module sym))
+
+      (let lp ((specs specs) (e '()) (r '()) (x '()))
+        (syntax-case specs (rename)
+          (() (values e r x))
+          (((rename from to) . rest)
+            (and (identifier? #'from)
+              (identifier? #'to))
+            (cond
+              ((local-definition? (syntax->datum #'from))
+                (lp #'rest (cons #'(from . to) e) r x))
+              ((re-export? (syntax->datum #'from))
+                (lp #'rest e (cons #'(from . to) r) x))
+              ((replace? (syntax->datum #'from))
+                (lp #'rest e r (cons #'(from . to) x)))
+              (else
+                (lp #'rest (cons #'(from . to) e) r x))))
+          (((rename (from to) ...) . rest)
+            (and (and-map identifier? #'(from ...))
+              (and-map identifier? #'(to ...)))
+            (let lp2 ((in #'((from . to) ...)) (e e) (r r) (x x))
+              (syntax-case in ()
+                (() (lp #'rest e r x))
+                (((from . to) . in)
+                  (cond
+                    ((local-definition? (syntax->datum #'from))
+                      (lp2 #'in (cons #'(from . to) e) r x))
+                    ((re-export? (syntax->datum #'from))
+                      (lp2 #'in e (cons #'(from . to) r) x))
+                    ((replace? (syntax->datum #'from))
+                      (lp2 #'in e r (cons #'(from . to) x)))
+                    (else
+                      (lp2 #'in (cons #'(from . to) e) r x)))))))
+          ((id . rest)
+            (identifier? #'id)
+            (let ((sym (syntax->datum #'id)))
+              (cond
+                ((local-definition? sym)
+                  (lp #'rest (cons #'id e) r x))
+                ((re-export? sym)
+                  (lp #'rest e (cons #'id r) x))
+                ((replace? sym)
+                  (lp #'rest e r (cons #'id x)))
+                (else
+                  (lp #'rest (cons #'id e) r x))))))))
+    (syntax-case stx (export import srfi)
+      [(_ (srfi n rest ...)
+          (export espec ...)
+          (import ispec ...))
+        (r6rs-srfi-name? #'(srfi n rest ...))
+        (let ((srfi-n (make-r6rs-srfi-n #'srfi #'n)))
+          #`(library (srfi #,srfi-n rest ... ())
+             (export espec ...)
+             (import ispec ...)))]
+      ((_ (srfi n rest ... (version ...))
+          (export espec ...)
+          (import ispec ...)
+          body
+          ...)
+        (r6rs-srfi-name? #'(srfi n rest ...))
+        (let ((srfi-n (make-r6rs-srfi-n #'srfi #'n)))
+          #`(library (srfi #,srfi-n rest ...)
+             (export espec ...)
+             (import ispec ...)
+             body
+             ...)))
+      [(_ (name name* ...)
+          (export espec ...)
+          (import ispec ...)
+          body
+          ...)
+        (r6rs-module-name? #'(name name* ...))
+        #`(library (name name* ... ())
+           (export espec ...)
+           (import ispec ...)
+           body
+           ...)]
+
+      ((_ (name name* ... (version ...))
+          (export espec ...)
+          (import ispec ...)
+          body
+          ...)
+        (r6rs-module-name? #'(name name* ...))
+        (let* ((library-name (syntax->datum #'(name name* ...)))
+               (auto-prelims (if (or (equal? library-name '(capy prelims))
+                                  (equal? library-name '(core)))
+                              #'()
+                              #'((capy prelims)))))
+          (call-with-values
+            (lambda ()
+              (compute-exports
+                (map (lambda (im)
+                      (syntax-case im (for)
+                        ((for import-set import-level ...)
+                          (resolve-r6rs-interface #'import-set))
+                        (import-set (resolve-r6rs-interface #'import-set))))
+                  #'(ispec ...))
+                #'(espec ...)
+                (body-definition-names #'(body ...))))
+            (lambda (exports re-exports replacements)
+              (with-syntax (((prelim-import ...) auto-prelims)
+                            ((e ...) exports)
+                            ((r ...) re-exports)
+                            ((x ...) replacements))
+                #'(begin
+                   (define-pure-module (name name* ...))
+
+                   (export e ...)
+                   (export! x ...)
+                   (import ispec)
+                   ...
+                   (re-export r ...)
+                   (@@ @@ (name name* ...) body)
+                   ...))))))))
+
+  (define (expand-define-library-form stx)
+    (define (handle-includes filenames)
+      (syntax-case filenames ()
+        (() #'())
+        ((filename . filenames)
+          (append (call-with-include-port
+                   #'filename
+                   (lambda (p)
+                     (let lp ()
+                       (let ((x (read-syntax p)))
+                         (if (eof-object? x)
+                           #'()
+                           (cons (datum->syntax #'filename x) (lp)))))))
+            (handle-includes #'filenames)))))
+    (define (handle-cond-expand clauses)
+      (define (has-req? req)
+        (syntax-case req (and or not library)
+          ((and req ...)
+            (and-map has-req? #'(req ...)))
+          ((or req ...)
+            (or-map has-req? #'(req ...)))
+          ((not req)
+            (not (has-req? #'req)))
+          ((library lib-name)
+            (->bool
+              (false-if-exception
+                (resolve-r6rs-interface
+                  (syntax->datum #'lib-name)))))
+          (id
+            (identifier? #'id)
+            (memq (syntax->datum #'id) %cond-expand-features))))
+      (syntax-case clauses (else)
+        (() #'())
+        (((else decl ...))
+          #'(decl ...))
+        (((test decl ...) . clauses)
+          (if (has-req? #'test)
+            #'(decl ...)
+            (handle-cond-expand #'clauses)))))
+    (define (partition-decls decls exports imports code)
+      (syntax-case decls (export import begin include include-ci
+                          include-library-declarations
+                          cond-expand)
+        (() (values exports imports (reverse code)))
+        (((export clause ...) . decls)
+          (partition-decls #'decls (append exports #'(clause ...)) imports code))
+        (((import clause ...) . decls)
+          (partition-decls #'decls exports (append imports #'(clause ...)) code))
+        (((begin expr ...) . decls)
+          (partition-decls #'decls exports imports
+            (cons #'(begin expr ...) code)))
+        (((include filename ...) . decls)
+          (partition-decls #'decls exports imports
+            (cons #'(begin (include filename) ...) code)))
+        (((include-ci filename ...) . decls)
+          (partition-decls #'decls exports imports
+            (cons #'(begin (include-ci filename) ...) code)))
+        (((include-library-declarations filename ...) . decls)
+          (syntax-case (handle-includes #'(filename ...)) ()
+            ((decl ...)
+              (partition-decls #'(decl ... . decls) exports imports code))))
+        (((cond-expand clause ...) . decls)
+          (syntax-case (handle-cond-expand #'(clause ...)) ()
+            ((decl ...)
+              (partition-decls #'(decl ... . decls) exports imports code))))))
+
+    (syntax-case stx ()
+      ((_ name decl ...)
+        (call-with-values (lambda ()
+                           (partition-decls #'(decl ...) '() '() '()))
+          (lambda (exports imports code)
+            #`(library name
+               (export . #,exports)
+               (import . #,imports)
+               .
+               #,code))))))
+
   (define (expand-top-sequence body r w s m essew mod)
     (let* ((r (cons '("placeholder" . (placeholder)) r))
            (ribcage (make-empty-ribcage))
@@ -1241,6 +1653,78 @@
                             mod)
                           '())
                         (else '())))]))
+
+              ((define-module-form)
+                (syntax-case e ()
+                  [(_ (name name* ...) body ...)
+                    (parse
+                      #'((eval-when (expand load eval)
+                          (let ([m ((@@ (capy) define-module*) '(name name* ...))])
+                           (current-module m)))
+                         (@@ @@ (name name* ...) body)
+                         ...)
+                      r w s m essew mod)]))
+
+              ((define-pure-module-form)
+                (syntax-case e ()
+                  [(_ (name name* ...) body ...)
+                    (parse
+                      #'((eval-when (expand load eval)
+                          (let ([m ((@@ (capy) define-module*) '(name name* ...) #t)])
+                           (current-module m)))
+                         (@@ @@ (name name* ...) body)
+                         ...)
+                      r w s m essew mod)]))
+
+              ((export-form)
+                (syntax-case e ()
+                  [(_ name ...)
+                    (parse
+                      #'((eval-when (expand load eval)
+                          (module-export! (current-module) '(name ...))))
+                      r w s m essew mod)]))
+
+              ((re-export-form)
+                (syntax-case e ()
+                  [(_ name ...)
+                    (parse
+                      #'((eval-when (expand load eval)
+                          (module-re-export! (current-module) '(name ...))))
+                      r w s m essew mod)]))
+
+              ((export!-form)
+                (syntax-case e ()
+                  [(_ name ...)
+                    (parse
+                      #'((eval-when (expand load eval)
+                          (module-replace! (current-module) '(name ...))))
+                      r w s m essew mod)]))
+
+              ((export-syntax-form)
+                (syntax-case e ()
+                  [(_ name ...)
+                    (parse #'((export name ...)) r w s m essew mod)]))
+
+              ((re-export-syntax-form)
+                (syntax-case e ()
+                  [(_ name ...)
+                    (parse #'((re-export name ...)) r w s m essew mod)]))
+
+              ((import-form)
+                (parse (list (expand-import-form e)) r w s m essew mod))
+
+              ((library-form)
+                (parse (list (expand-library-form e)) r w s m essew mod))
+
+              ((define-library-form)
+                (parse (list (expand-define-library-form e)) r w s m essew mod))
+
+              ((include-library-declarations-form)
+                (syntax-violation
+                  'include-library-declarations
+                  "use of 'include-library-declarations' outside define-library"
+                  (source-wrap e w s mod)
+                  (source-wrap e w s mod)))
 
               ((define-property-form)
                 (call-with-values
@@ -1521,6 +2005,18 @@
             ((local-syntax) (values 'local-syntax-form fval e e w s mod))
             ((begin) (values 'begin-form #f e e w s mod))
             ((eval-when) (values 'eval-when-form #f e e w s mod))
+            ((define-module) (values 'define-module-form #f e e w s mod))
+            ((define-pure-module) (values 'define-pure-module-form #f e e w s mod))
+            ((export) (values 'export-form #f e e w s mod))
+            ((re-export) (values 're-export-form #f e e w s mod))
+            ((export!) (values 'export!-form #f e e w s mod))
+            ((export-syntax) (values 'export-syntax-form #f e e w s mod))
+            ((re-export-syntax) (values 're-export-syntax-form #f e e w s mod))
+            ((import) (values 'import-form #f e e w s mod))
+            ((library) (values 'library-form #f e e w s mod))
+            ((define-library) (values 'define-library-form #f e e w s mod))
+            ((include-library-declarations)
+              (values 'include-library-declarations-form #f e e w s mod))
             ((define-property)
               (values 'define-property-form #f e e w s mod))
             ((define-syntax)
@@ -2634,6 +3130,7 @@
       (let ((mod (cons 'hygiene (module-name (current-module)))))
         (map (lambda (x) (wrap (gen-var 't) top-wrap mod)) ls))))
   (set! :ellipsis? ellipsis?)
+  (set! resolve-r6rs-interface resolve-r6rs-interface*)
 
   (set! macroexpand (lambda (x . rest)
                      "Expands expression `x` in the context of module `m` or (current-module) if `m` is not given."
@@ -2665,6 +3162,17 @@
   (global-extend 'define 'define '())
   (global-extend 'begin 'begin '())
   (global-extend 'eval-when 'eval-when '())
+  (global-extend 'define-module 'define-module '())
+  (global-extend 'define-pure-module 'define-pure-module '())
+  (global-extend 'export 'export '())
+  (global-extend 're-export 're-export '())
+  (global-extend 'export! 'export! '())
+  (global-extend 'export-syntax 'export-syntax '())
+  (global-extend 're-export-syntax 're-export-syntax '())
+  (global-extend 'import 'import '())
+  (global-extend 'library 'library '())
+  (global-extend 'define-library 'define-library '())
+  (global-extend 'include-library-declarations 'include-library-declarations '())
 
   (global-extend 'core 'with-continuation-mark
     (lambda (e r w s mod)
