@@ -1,17 +1,17 @@
 use super::{
     FASL_SITUATION_VISIT_REVISIT, FASL_TAG_CLOSURE, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF,
-    FASL_TAG_GROUP, FASL_TAG_UNCOMPRESSED, FASL_TAG_UNLINKED_CODEBLOCK, FASLReader,
+    FASL_TAG_GROUP, FASL_TAG_UNCOMPRESSED, FASL_TAG_UNLINKED_CODEBLOCK, FaslReader,
 };
 
 #[test]
 fn fasl_writer_emits_visit_revisit_uncompressed_group() {
-    use super::FASLWriter;
+    use super::FaslWriter;
     use crate::runtime::{Scheme, value::Value};
 
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
-        FASLWriter::new(ctx, &mut bytes)
+        FaslWriter::new(ctx, &mut bytes)
             .write(Value::new(42))
             .expect("write grouped FASL");
 
@@ -30,17 +30,17 @@ fn fasl_writer_emits_visit_revisit_uncompressed_group() {
 
 #[test]
 fn fasl_reader_loads_gzip_wrapped_value() {
-    use super::FASLWriter;
+    use super::FaslWriter;
     use crate::runtime::{Scheme, value::Value};
 
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
-        FASLWriter::new(ctx, &mut bytes)
+        FaslWriter::new(ctx, &mut bytes)
             .write_gzip(Value::new(42))
             .expect("write gzip FASL");
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read gzip FASL");
         assert_eq!(value, Value::new(42));
@@ -49,7 +49,7 @@ fn fasl_reader_loads_gzip_wrapped_value() {
 
 #[test]
 fn fasl_reader_loads_pure_data_fasl_after_version_header() {
-    use super::{FASL_TAG_FIXNUM, FASLReader};
+    use super::{FASL_TAG_FIXNUM, FaslReader};
     use crate::runtime::{Scheme, value::Value};
 
     let scm = Scheme::new_uninit();
@@ -61,7 +61,7 @@ fn fasl_reader_loads_pure_data_fasl_after_version_header() {
         bytes.push(FASL_TAG_FIXNUM);
         bytes.extend_from_slice(&42i32.to_le_bytes());
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read pure data FASL");
         assert_eq!(value, Value::new(42));
@@ -70,75 +70,75 @@ fn fasl_reader_loads_pure_data_fasl_after_version_header() {
 
 #[test]
 fn fasl_relocation_records_roundtrip_all_current_target_families() {
-    use super::reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation, SideMetadataSlotKind};
+    use super::reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot};
     use asmkit::core::buffer::Reloc as AsmkitReloc;
     use cranelift_codegen::binemit::Reloc as CraneliftReloc;
 
     let relocations = vec![
-        FaslRelocation {
+        Relocation {
             offset: 4,
-            kind: FaslRelocKind::Asmkit(AsmkitReloc::X86CallPCRel4),
-            target: FaslRelocTarget::Entry(7),
+            kind: RelocKind::Asmkit(AsmkitReloc::X86CallPCRel4),
+            target: RelocTarget::Entry(7),
             addend: -4,
         },
-        FaslRelocation {
+        Relocation {
             offset: 16,
-            kind: FaslRelocKind::Cranelift(CraneliftReloc::Arm64Call),
-            target: FaslRelocTarget::Entry(8),
+            kind: RelocKind::Cranelift(CraneliftReloc::Arm64Call),
+            target: RelocTarget::Entry(8),
             addend: -4,
         },
-        FaslRelocation {
+        Relocation {
             offset: 20,
-            kind: FaslRelocKind::Cranelift(CraneliftReloc::RiscvCallPlt),
-            target: FaslRelocTarget::Entry(9),
+            kind: RelocKind::Cranelift(CraneliftReloc::RiscvCallPlt),
+            target: RelocTarget::Entry(9),
             addend: 0,
         },
-        FaslRelocation {
+        Relocation {
             offset: 24,
-            kind: FaslRelocKind::CraneliftDataSlot(CraneliftReloc::Aarch64AdrPrelPgHi21),
-            target: FaslRelocTarget::Entry(10),
+            kind: RelocKind::CraneliftDataSlot(CraneliftReloc::Aarch64AdrPrelPgHi21),
+            target: RelocTarget::Entry(10),
             addend: 0,
         },
-        FaslRelocation {
+        Relocation {
             offset: 28,
-            kind: FaslRelocKind::AbsWord,
-            target: FaslRelocTarget::Object(3),
+            kind: RelocKind::AbsWord,
+            target: RelocTarget::Object(3),
             addend: 8,
         },
-        FaslRelocation {
+        Relocation {
             offset: 32,
-            kind: FaslRelocKind::CodeEntry,
-            target: FaslRelocTarget::Entry(5),
+            kind: RelocKind::CodeEntry,
+            target: RelocTarget::Entry(5),
             addend: 0,
         },
-        FaslRelocation {
+        Relocation {
             offset: 36,
-            kind: FaslRelocKind::DataSlotAddress,
-            target: FaslRelocTarget::Object(9),
+            kind: RelocKind::DataSlotAddress,
+            target: RelocTarget::Object(9),
             addend: 16,
         },
-        FaslRelocation {
+        Relocation {
             offset: 40,
-            kind: FaslRelocKind::RuntimeThunk,
-            target: FaslRelocTarget::RuntimeSymbol(11),
+            kind: RelocKind::RuntimeThunk,
+            target: RelocTarget::RuntimeSymbol(11),
             addend: 0,
         },
-        FaslRelocation {
+        Relocation {
             offset: 48,
-            kind: FaslRelocKind::RuntimeData,
-            target: FaslRelocTarget::RuntimeSymbol(12),
+            kind: RelocKind::RuntimeData,
+            target: RelocTarget::RuntimeSymbol(12),
             addend: -8,
         },
-        FaslRelocation {
+        Relocation {
             offset: 56,
-            kind: FaslRelocKind::SideMetadata,
-            target: FaslRelocTarget::SideMetadata(SideMetadataSlotKind::VoBit),
+            kind: RelocKind::SideMetadata,
+            target: RelocTarget::SideMetadata(SideMetadataSlot::VoBit),
             addend: 0,
         },
-        FaslRelocation {
+        Relocation {
             offset: 64,
-            kind: FaslRelocKind::CacheCell,
-            target: FaslRelocTarget::CacheCell(13),
+            kind: RelocKind::CacheCell,
+            target: RelocTarget::CacheCell(13),
             addend: 0,
         },
     ];
@@ -150,17 +150,17 @@ fn fasl_relocation_records_roundtrip_all_current_target_families() {
 
     let mut input = std::io::Cursor::new(encoded.as_slice());
     let decoded = (0..relocations.len())
-        .map(|_| FaslRelocation::decode(&mut input))
+        .map(|_| Relocation::decode(&mut input))
         .collect::<Result<Vec<_>, _>>()
         .expect("decode relocations");
 
     assert_eq!(decoded, relocations);
     assert_eq!(input.position(), encoded.len() as u64);
 
-    let unlinked = super::reader::encode_unlinked_relocations(&relocations)
+    let unlinked = super::reloc::encode_unlinked_relocations(&relocations)
         .expect("encode unlinked relocations");
     let decoded_unlinked =
-        super::reader::decode_unlinked_relocations(&unlinked).expect("decode unlinked relocations");
+        super::reloc::decode_unlinked_relocations(&unlinked).expect("decode unlinked relocations");
     assert_eq!(decoded_unlinked, relocations);
 }
 
@@ -189,7 +189,7 @@ fn put_test_relocatable_code_block(out: &mut Vec<u8>, code: &[u8], entry_offset:
 fn graph_def_and_ref_preserve_shared_objects() {
     use super::{
         FASL_TAG_BVECTOR, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_VECTOR,
-        FASLReader,
+        FaslReader,
     };
     use crate::runtime::{Scheme, value::Vector};
 
@@ -211,7 +211,7 @@ fn graph_def_and_ref_preserve_shared_objects() {
         bytes.push(FASL_TAG_GRAPH_REF);
         put_u32(&mut bytes, 0);
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read graph fasl");
         let vector = value.downcast::<Vector>();
@@ -225,7 +225,7 @@ fn graph_def_and_ref_preserve_shared_objects() {
 #[test]
 fn graph_def_vector_can_reference_itself() {
     use super::{
-        FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_VECTOR, FASLReader,
+        FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_VECTOR, FaslReader,
     };
     use crate::{
         rsgc::Gc,
@@ -247,7 +247,7 @@ fn graph_def_vector_can_reference_itself() {
         bytes.push(FASL_TAG_GRAPH_REF);
         put_u32(&mut bytes, 0);
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read cyclic vector graph");
         let vector = value.downcast::<Vector>();
@@ -258,7 +258,7 @@ fn graph_def_vector_can_reference_itself() {
 
 #[test]
 fn legacy_ref_init_ref_roundtrips_shared_vector_element() {
-    use super::{FASLReader, FASLWriter};
+    use super::{FaslReader, FaslWriter};
     use crate::runtime::{
         Scheme,
         value::{ByteVector, Value, Vector},
@@ -269,11 +269,11 @@ fn legacy_ref_init_ref_roundtrips_shared_vector_element() {
         let shared = Value::new(ByteVector::from_slice(*ctx, &[1, 2, 3], true));
         let vector = Value::new(Vector::from_slice(*ctx, &[shared, shared]));
         let mut bytes = Vec::new();
-        FASLWriter::new(ctx, &mut bytes)
+        FaslWriter::new(ctx, &mut bytes)
             .write(vector)
             .expect("write legacy FASL refs");
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read legacy FASL refs");
         let vector = value.downcast::<Vector>();
@@ -284,7 +284,7 @@ fn legacy_ref_init_ref_roundtrips_shared_vector_element() {
 
 #[test]
 fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
-    use super::{FASLWriter, FaslClosureSpec, FaslCodeBlockSpec};
+    use super::{ClosureSpec, CodeSpec, FaslWriter};
     use crate::runtime::{
         Scheme,
         value::{Closure, CodeBlockKind, Value},
@@ -293,19 +293,11 @@ fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
-        FASLWriter::new(ctx, &mut bytes)
-            .write_loaded_closure(&FaslClosureSpec {
-                code: FaslCodeBlockSpec {
-                    bytes: &[0xc3],
-                    entry_offset: 0,
-                    arity: 0,
-                    is_cont: false,
-                    metadata: Value::new(false),
-                    relocations: &[],
-                },
-                free: &[],
-                is_cont: false,
-            })
+        FaslWriter::new(ctx, &mut bytes)
+            .write_loaded_closure(&ClosureSpec::new(
+                CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]),
+                &[],
+            ))
             .expect("write unified FASL closure");
 
         // header = 12 bytes (magic 8 + version 4)
@@ -318,7 +310,7 @@ fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
         assert_eq!(bytes[37], FASL_TAG_GRAPH_DEF);
         assert_eq!(bytes[42], FASL_TAG_UNLINKED_CODEBLOCK);
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load writer-produced closure");
         let closure = value.downcast::<Closure>();
@@ -341,7 +333,7 @@ fn fasl_reader_decodes_relocatable_code_block_value() {
         put_u32(&mut bytes, 0);
         put_test_relocatable_code_block(&mut bytes, &[0xc3], 0, 0);
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read unlinked code block");
         let unlinked = value.downcast::<RelocatableCodeBlock>();
@@ -384,7 +376,7 @@ fn fasl_reader_reads_zero_relocation_closure_with_code_block() {
         put_u32(&mut bytes, 0); // closure free count
         bytes.push(0); // closure is_cont
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load zero-relocation code closure");
         let closure = value.downcast::<Closure>();
@@ -437,7 +429,7 @@ fn fasl_reader_entry_resolves_graph_defined_code_block() {
         put_u32(&mut bytes, 0); // closure free count
         bytes.push(0); // closure is_cont
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load closure using entry reference");
         let vector = value.downcast::<Vector>();
@@ -469,7 +461,7 @@ fn fasl_reader_reads_code_block_as_value() {
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read code block through normal FASL reader");
         assert!(value.is::<CodeBlock>());
@@ -481,7 +473,7 @@ fn fasl_reader_reads_code_block_as_value() {
 fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation, SideMetadataSlotKind},
+        reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
     };
     use crate::runtime::{Scheme, value::CodeBlock};
     use asmkit::core::buffer::Reloc as AsmkitReloc;
@@ -501,16 +493,16 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
-        FaslRelocation {
+        Relocation {
             offset: 1,
-            kind: FaslRelocKind::Asmkit(AsmkitReloc::Abs8),
-            target: FaslRelocTarget::SideMetadata(SideMetadataSlotKind::Global),
+            kind: RelocKind::Asmkit(AsmkitReloc::Abs8),
+            target: RelocTarget::SideMetadata(SideMetadataSlot::Global),
             addend: 0,
         }
         .encode(&mut bytes)
         .expect("encode relocation");
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load asmkit abs8 relocation");
         let code_block = value.downcast::<CodeBlock>();
@@ -526,7 +518,7 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
 fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation},
+        reloc::{RelocKind, RelocTarget, Relocation},
     };
     use crate::runtime::{
         Scheme,
@@ -565,16 +557,16 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
-        FaslRelocation {
+        Relocation {
             offset: 1,
-            kind: FaslRelocKind::Asmkit(AsmkitReloc::X86PCRel4),
-            target: FaslRelocTarget::Entry(0),
+            kind: RelocKind::Asmkit(AsmkitReloc::X86PCRel4),
+            target: RelocTarget::Entry(0),
             addend: -4,
         }
         .encode(&mut bytes)
         .expect("encode relocation");
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load asmkit rel32 relocation");
         let values = value.downcast::<Vector>();
@@ -593,7 +585,7 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
 fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation},
+        reloc::{RelocKind, RelocTarget, Relocation},
     };
     use crate::runtime::{
         Scheme,
@@ -625,16 +617,16 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
-        FaslRelocation {
+        Relocation {
             offset: 1,
-            kind: FaslRelocKind::DataSlotAddress,
-            target: FaslRelocTarget::Object(0),
+            kind: RelocKind::DataSlotAddress,
+            target: RelocTarget::Object(0),
             addend: 0,
         }
         .encode(&mut bytes)
         .expect("encode relocation");
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load data-slot relocation");
         let values = value.downcast::<Vector>();
@@ -654,7 +646,7 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
 fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation},
+        reloc::{RelocKind, RelocTarget, Relocation},
     };
     use crate::runtime::{
         Scheme,
@@ -682,10 +674,10 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
-        FaslRelocation {
+        Relocation {
             offset: 1,
-            kind: FaslRelocKind::DataSlotAddress,
-            target: FaslRelocTarget::Entry(1),
+            kind: RelocKind::DataSlotAddress,
+            target: RelocTarget::Entry(1),
             addend: 0,
         }
         .encode(&mut bytes)
@@ -701,7 +693,7 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load forward code-entry data-slot relocation");
         let values = value.downcast::<Vector>();
@@ -720,7 +712,7 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
 fn fasl_reader_keeps_raw_data_slots_out_of_value_bitmap() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation, SideMetadataSlotKind},
+        reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
     };
     use crate::runtime::{
         Scheme,
@@ -753,24 +745,24 @@ fn fasl_reader_keeps_raw_data_slots_out_of_value_bitmap() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 2); // relocation count
-        FaslRelocation {
+        Relocation {
             offset: 1,
-            kind: FaslRelocKind::DataSlotAddress,
-            target: FaslRelocTarget::Object(0),
+            kind: RelocKind::DataSlotAddress,
+            target: RelocTarget::Object(0),
             addend: 0,
         }
         .encode(&mut bytes)
         .expect("encode value relocation");
-        FaslRelocation {
+        Relocation {
             offset: 1 + std::mem::size_of::<usize>() as u32,
-            kind: FaslRelocKind::DataSlotAddress,
-            target: FaslRelocTarget::SideMetadata(SideMetadataSlotKind::Global),
+            kind: RelocKind::DataSlotAddress,
+            target: RelocTarget::SideMetadata(SideMetadataSlot::Global),
             addend: 0,
         }
         .encode(&mut bytes)
         .expect("encode raw relocation");
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load mixed data-slot relocations");
         let values = value.downcast::<Vector>();
@@ -785,7 +777,7 @@ fn fasl_reader_keeps_raw_data_slots_out_of_value_bitmap() {
 fn fasl_reader_resolves_forward_data_slot_address_relocation() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation},
+        reloc::{RelocKind, RelocTarget, Relocation},
     };
     use crate::runtime::{
         Scheme,
@@ -813,10 +805,10 @@ fn fasl_reader_resolves_forward_data_slot_address_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
-        FaslRelocation {
+        Relocation {
             offset: 1,
-            kind: FaslRelocKind::DataSlotAddress,
-            target: FaslRelocTarget::Object(1),
+            kind: RelocKind::DataSlotAddress,
+            target: RelocTarget::Object(1),
             addend: 0,
         }
         .encode(&mut bytes)
@@ -826,7 +818,7 @@ fn fasl_reader_resolves_forward_data_slot_address_relocation() {
         bytes.push(FASL_TAG_VECTOR);
         put_u32(&mut bytes, 0); // relocation target object
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load forward data-slot relocation");
         let values = value.downcast::<Vector>();
@@ -845,7 +837,7 @@ fn fasl_reader_resolves_forward_data_slot_address_relocation() {
 fn fasl_reader_resolves_forward_code_entry_relocation() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation},
+        reloc::{RelocKind, RelocTarget, Relocation},
     };
     use crate::runtime::{
         Scheme,
@@ -873,10 +865,10 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
-        FaslRelocation {
+        Relocation {
             offset: 1,
-            kind: FaslRelocKind::CodeEntry,
-            target: FaslRelocTarget::Entry(1),
+            kind: RelocKind::CodeEntry,
+            target: RelocTarget::Entry(1),
             addend: 0,
         }
         .encode(&mut bytes)
@@ -892,7 +884,7 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load forward code-entry relocation");
         let values = value.downcast::<Vector>();
@@ -908,7 +900,7 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
 fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation},
+        reloc::{RelocKind, RelocTarget, Relocation},
     };
     use crate::runtime::{
         Scheme,
@@ -940,17 +932,17 @@ fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
             bytes.push(0); // is_cont
             bytes.push(FASL_TAG_F); // metadata
             put_u32(&mut bytes, 1); // relocation count
-            FaslRelocation {
+            Relocation {
                 offset: 1,
-                kind: FaslRelocKind::CacheCell,
-                target: FaslRelocTarget::CacheCell(0),
+                kind: RelocKind::CacheCell,
+                target: RelocTarget::CacheCell(0),
                 addend: 0,
             }
             .encode(&mut bytes)
             .expect("encode relocation");
         }
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load shared cache-cell relocations");
         let values = value.downcast::<Vector>();
@@ -977,7 +969,7 @@ fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
 fn fasl_reader_accepts_more_than_64_value_data_slots() {
     use super::{
         FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
-        reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation},
+        reloc::{RelocKind, RelocTarget, Relocation},
     };
     use crate::runtime::{
         Scheme,
@@ -1020,17 +1012,17 @@ fn fasl_reader_accepts_more_than_64_value_data_slots() {
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, VALUE_SLOT_COUNT as u32);
         for index in 0..VALUE_SLOT_COUNT {
-            FaslRelocation {
+            Relocation {
                 offset: 1 + (index * std::mem::size_of::<usize>()) as u32,
-                kind: FaslRelocKind::DataSlotAddress,
-                target: FaslRelocTarget::Object(index as u32),
+                kind: RelocKind::DataSlotAddress,
+                target: RelocTarget::Object(index as u32),
                 addend: 0,
             }
             .encode(&mut bytes)
             .expect("encode relocation");
         }
 
-        let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("load data-slot relocations");
         let values = value.downcast::<Vector>();

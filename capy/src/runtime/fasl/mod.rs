@@ -5,20 +5,21 @@
 //!
 //! ## Submodules
 //!
-//! - `writer` — `FASLWriter`: serializes Scheme values and code objects into FASL byte streams
-//! - `reader` — `FASLReader`: deserializes FASL byte streams into live GC objects + JIT code
-//! - `reloc` — `FaslRelocation` / `FaslRelocKind` / `FaslRelocTarget`: relocation records
+//! - `writer` — `FaslWriter`: serializes Scheme values and code objects into FASL byte streams
+//! - `reader` — `FaslReader`: deserializes FASL byte streams into live GC objects + JIT code
+//! - `reloc` — `Relocation` / `RelocKind` / `RelocTarget`: relocation records
 //! - `graph` — `FaslGraphTable`: graph tracking for shared structure and cycles
 
 use std::io;
 
 pub mod graph;
+pub(crate) mod patch;
 pub mod reader;
 pub mod reloc;
 pub mod writer;
 
-pub use reader::FASLReader;
-pub use writer::FASLWriter;
+pub use reader::FaslReader;
+pub use writer::FaslWriter;
 
 pub const FASL_EOF: u8 = 0;
 pub const FASL_TAG_LOOKUP: u8 = 1;
@@ -79,36 +80,97 @@ pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
 /// Current FASL file format version.
 pub const FASL_VERSION: u32 = 1;
 
-pub struct FaslCodeBlockSpec<'a, 'gc> {
+pub struct CodeSpec<'a, 'gc> {
     pub bytes: &'a [u8],
     pub entry_offset: u32,
     pub arity: i32,
     pub is_cont: bool,
     pub metadata: crate::runtime::value::Value<'gc>,
-    pub relocations: &'a [reloc::FaslRelocation],
+    pub relocations: &'a [reloc::Relocation],
 }
 
-pub struct FaslClosureSpec<'a, 'gc> {
-    pub code: FaslCodeBlockSpec<'a, 'gc>,
+impl<'a, 'gc> CodeSpec<'a, 'gc> {
+    pub fn new(
+        bytes: &'a [u8],
+        entry_offset: u32,
+        arity: i32,
+        is_cont: bool,
+        metadata: crate::runtime::value::Value<'gc>,
+        relocations: &'a [reloc::Relocation],
+    ) -> Self {
+        Self {
+            bytes,
+            entry_offset,
+            arity,
+            is_cont,
+            metadata,
+            relocations,
+        }
+    }
+}
+
+pub struct ClosureSpec<'a, 'gc> {
+    pub code: CodeSpec<'a, 'gc>,
     pub free: &'a [crate::runtime::value::Value<'gc>],
     pub is_cont: bool,
 }
 
-pub struct FaslProgramSpec<'a, 'gc> {
+impl<'a, 'gc> ClosureSpec<'a, 'gc> {
+    pub fn new(code: CodeSpec<'a, 'gc>, free: &'a [crate::runtime::value::Value<'gc>]) -> Self {
+        Self {
+            is_cont: code.is_cont,
+            code,
+            free,
+        }
+    }
+}
+
+pub struct ProgramSpec<'a, 'gc> {
     pub graph_len: u32,
-    pub values: &'a [FaslGraphValueSpec<'gc>],
-    pub code_blocks: &'a [FaslGraphCodeBlockSpec<'a, 'gc>],
+    pub values: &'a [GraphValueSpec<'gc>],
+    pub code_blocks: &'a [GraphCodeSpec<'a, 'gc>],
     pub entry_code_index: u32,
     pub entry_is_cont: bool,
 }
 
-pub struct FaslGraphValueSpec<'gc> {
+impl<'a, 'gc> ProgramSpec<'a, 'gc> {
+    pub fn new(
+        graph_len: u32,
+        values: &'a [GraphValueSpec<'gc>],
+        code_blocks: &'a [GraphCodeSpec<'a, 'gc>],
+        entry_code_index: u32,
+        entry_is_cont: bool,
+    ) -> Self {
+        Self {
+            graph_len,
+            values,
+            code_blocks,
+            entry_code_index,
+            entry_is_cont,
+        }
+    }
+}
+
+pub struct GraphValueSpec<'gc> {
     pub index: u32,
     pub value: crate::runtime::value::Value<'gc>,
 }
-pub struct FaslGraphCodeBlockSpec<'a, 'gc> {
+
+impl<'gc> GraphValueSpec<'gc> {
+    pub fn new(index: u32, value: crate::runtime::value::Value<'gc>) -> Self {
+        Self { index, value }
+    }
+}
+
+pub struct GraphCodeSpec<'a, 'gc> {
     pub index: u32,
-    pub code: FaslCodeBlockSpec<'a, 'gc>,
+    pub code: CodeSpec<'a, 'gc>,
+}
+
+impl<'a, 'gc> GraphCodeSpec<'a, 'gc> {
+    pub fn new(index: u32, code: CodeSpec<'a, 'gc>) -> Self {
+        Self { index, code }
+    }
 }
 
 pub(crate) fn checked_u32_len(len: usize) -> io::Result<u32> {

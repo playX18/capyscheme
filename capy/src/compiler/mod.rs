@@ -48,12 +48,14 @@ macro_rules! call_signature {
 mod artifact;
 mod bootstrap;
 pub mod codegen;
+mod cranelift;
 pub mod debuginfo;
 pub mod direct;
 pub mod linkutils;
 mod object;
 mod pipeline;
 pub mod ssa;
+mod symbols;
 
 pub use bootstrap::compile_file;
 pub use object::{CompilationOptions, compile_cps_to_fasl_bytes};

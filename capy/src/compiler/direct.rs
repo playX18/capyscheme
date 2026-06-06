@@ -1,35 +1,35 @@
 use cranelift_codegen::{FinalizedRelocTarget, binemit::Reloc, entity::PrimaryMap, ir};
 
-use crate::compiler::codegen::{BackendSymbol, FunctionCompileContext};
+use crate::compiler::codegen::{CompileContext, Symbol};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DirectCompiledFunction {
+pub struct CompiledFunction {
     pub bytes: Vec<u8>,
-    pub relocs: Vec<DirectRelocation>,
+    pub relocs: Vec<Relocation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DirectRelocation {
+pub struct Relocation {
     pub offset: u32,
     pub kind: Reloc,
     pub addend: i64,
-    pub target: DirectRelocationTarget,
+    pub target: Target,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DirectRelocationTarget {
-    BackendSymbol(BackendSymbol),
+pub enum Target {
+    Symbol(Symbol),
     FunctionOffset(u32),
 }
 
 pub fn compile_function(
     isa: &dyn cranelift_codegen::isa::TargetIsa,
-    cache: &mut FunctionCompileContext,
-) -> Result<DirectCompiledFunction, String> {
-    let user_names = cache.context.func.params.user_named_funcs().clone();
+    cache: &mut CompileContext,
+) -> Result<CompiledFunction, String> {
+    let user_names = cache.ctx.func.params.user_named_funcs().clone();
     let compiled = cache
-        .context
-        .compile(isa, &mut cache.ctrl_plane)
+        .ctx
+        .compile(isa, &mut cache.ctrl)
         .map_err(|err| format!("{err:?}"))?;
     let bytes = compiled.code_buffer().to_vec();
     let relocs = compiled
@@ -38,7 +38,7 @@ pub fn compile_function(
         .iter()
         .map(|reloc| {
             let target = direct_relocation_target(&user_names, &reloc.target)?;
-            Ok(DirectRelocation {
+            Ok(Relocation {
                 offset: reloc.offset,
                 kind: reloc.kind,
                 addend: reloc.addend,
@@ -46,20 +46,20 @@ pub fn compile_function(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(DirectCompiledFunction { bytes, relocs })
+    Ok(CompiledFunction { bytes, relocs })
 }
 
 fn direct_relocation_target(
     user_names: &PrimaryMap<ir::UserExternalNameRef, ir::UserExternalName>,
     target: &FinalizedRelocTarget,
-) -> Result<DirectRelocationTarget, String> {
+) -> Result<Target, String> {
     match target {
-        FinalizedRelocTarget::Func(offset) => Ok(DirectRelocationTarget::FunctionOffset(*offset)),
+        FinalizedRelocTarget::Func(offset) => Ok(Target::FunctionOffset(*offset)),
         FinalizedRelocTarget::ExternalName(ir::ExternalName::User(name_ref)) => {
             let name = user_names[*name_ref].clone();
-            BackendSymbol::from_user_external_name(name)
-                .map(DirectRelocationTarget::BackendSymbol)
-                .ok_or_else(|| "unknown backend symbol namespace in relocation".to_string())
+            Symbol::from_external_name(name)
+                .map(Target::Symbol)
+                .ok_or_else(|| "unknown code symbol namespace in relocation".to_string())
         }
         FinalizedRelocTarget::ExternalName(name) => {
             Err(format!("unsupported external relocation target: {name:?}"))
@@ -84,14 +84,14 @@ mod tests {
     #[test]
     fn direct_compile_trivial_function_produces_code_bytes() {
         let isa = host_isa();
-        let mut cache = FunctionCompileContext::new();
-        cache.context.func = Function::with_name_signature(
+        let mut cache = CompileContext::new();
+        cache.ctx.func = Function::with_name_signature(
             cranelift_codegen::ir::UserFuncName::user(0, 0),
             trivial_i64_signature(),
         );
 
         {
-            let mut builder = FunctionBuilder::new(&mut cache.context.func, &mut cache.fctx);
+            let mut builder = FunctionBuilder::new(&mut cache.ctx.func, &mut cache.builder_ctx);
             let entry = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
@@ -109,31 +109,21 @@ mod tests {
 
     #[test]
     fn direct_compile_preserves_numeric_external_relocation_target() {
-        use crate::compiler::codegen::{
-            BackendSymbol, ImportedSymbol, ImportedSymbolKind, declare_backend_function_import,
-        };
+        use crate::compiler::codegen::{ImportKind, ImportedSymbol, Symbol, declare_function};
 
         let isa = host_isa();
-        let mut cache = FunctionCompileContext::new();
-        cache.context.func = Function::with_name_signature(
+        let mut cache = CompileContext::new();
+        cache.ctx.func = Function::with_name_signature(
             cranelift_codegen::ir::UserFuncName::user(0, 1),
             trivial_i64_signature(),
         );
 
-        let target = BackendSymbol::Imported {
-            kind: ImportedSymbolKind::RuntimeThunk,
-            symbol: ImportedSymbol::new(3),
-        };
+        let target = Symbol::imported(ImportKind::RuntimeThunk, ImportedSymbol::new(3));
 
         {
-            let imported_sig = cache.context.func.import_signature(trivial_i64_signature());
-            let imported = declare_backend_function_import(
-                &mut cache.context.func,
-                target,
-                imported_sig,
-                false,
-            );
-            let mut builder = FunctionBuilder::new(&mut cache.context.func, &mut cache.fctx);
+            let imported_sig = cache.ctx.func.import_signature(trivial_i64_signature());
+            let imported = declare_function(&mut cache.ctx.func, target, imported_sig, false);
+            let mut builder = FunctionBuilder::new(&mut cache.ctx.func, &mut cache.builder_ctx);
             let entry = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
@@ -150,34 +140,34 @@ mod tests {
             compiled
                 .relocs
                 .iter()
-                .any(|reloc| { reloc.target == DirectRelocationTarget::BackendSymbol(target) })
+                .any(|reloc| { reloc.target == Target::Symbol(target) })
         );
     }
 
     #[test]
     fn direct_relocations_preserve_runtime_thunk_ids_without_names() {
         use crate::{
-            compiler::codegen::{BackendSymbol, ImportedSymbol, ImportedSymbolKind},
+            compiler::codegen::{ImportKind, ImportedSymbol, Symbol},
             runtime::vm::thunks::RuntimeThunk,
         };
 
         let thunk_id = RuntimeThunk::Thunk_wrong_number_of_args.id();
-        let relocs = [DirectRelocation {
+        let relocs = [Relocation {
             offset: 17,
             kind: Reloc::X86CallPCRel4,
             addend: -4,
-            target: DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported {
-                kind: ImportedSymbolKind::RuntimeThunk,
-                symbol: ImportedSymbol::new(thunk_id),
-            }),
+            target: Target::Symbol(Symbol::imported(
+                ImportKind::RuntimeThunk,
+                ImportedSymbol::new(thunk_id),
+            )),
         }];
 
         assert_eq!(
             relocs[0].target,
-            DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported {
-                kind: ImportedSymbolKind::RuntimeThunk,
-                symbol: ImportedSymbol::new(thunk_id),
-            })
+            Target::Symbol(Symbol::imported(
+                ImportKind::RuntimeThunk,
+                ImportedSymbol::new(thunk_id),
+            ))
         );
     }
 }
