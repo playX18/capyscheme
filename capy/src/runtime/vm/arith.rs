@@ -307,8 +307,7 @@ mod arith_operations {
         }
 
         let mut acc = x;
-        let mut position = 1;
-        for arg in rest.iter() {
+        for (position, arg) in (1..).zip(rest.iter()) {
             let Some(arg) = arg.number() else {
                 let mut args = Vec::with_capacity(1 + rest.len());
                 args.push(x.into_value(nctx.ctx));
@@ -316,14 +315,13 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "-",
                     "argument must be a number",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(position),
                     args.len(),
                     &args,
                 );
             };
             acc = Number::sub(nctx.ctx, acc, arg);
-            position += 1;
         }
 
         nctx.return_(Ok(acc))
@@ -345,7 +343,7 @@ mod arith_operations {
 
     #[scheme(name = "+")]
     pub fn plus(args: &'gc [Value<'gc>]) -> Result<Number<'gc>, Value<'gc>> {
-        if args.len() == 0 {
+        if args.is_empty() {
             return nctx.return_(Ok(Number::Fixnum(0)));
         }
 
@@ -354,7 +352,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "+",
                     "argument must be a number",
-                    Some(args[0].clone()),
+                    Some(args[0]),
                     Some(0),
                     1,
                     args,
@@ -367,7 +365,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "+",
                 "argument must be a number",
-                Some(args[0].clone()),
+                Some(args[0]),
                 Some(0),
                 args.len(),
                 args,
@@ -379,7 +377,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "+",
                     "argument must be a number",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     args,
@@ -393,7 +391,7 @@ mod arith_operations {
 
     #[scheme(name = "*")]
     pub fn times(args: &'gc [Value<'gc>]) -> Result<Number<'gc>, Value<'gc>> {
-        if args.len() == 0 {
+        if args.is_empty() {
             return nctx.return_(Ok(Number::Fixnum(1)));
         }
 
@@ -402,7 +400,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "*",
                     "argument must be a number",
-                    Some(args[0].clone()),
+                    Some(args[0]),
                     Some(0),
                     1,
                     args,
@@ -415,7 +413,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "*",
                 "argument must be a number",
-                Some(args[0].clone()),
+                Some(args[0]),
                 Some(0),
                 args.len(),
                 args,
@@ -427,7 +425,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "*",
                     "argument must be a number",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     args,
@@ -468,7 +466,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "/",
                     "argument must be a number",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     &args,
@@ -482,7 +480,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "/",
                     "division by zero",
-                    Some(arg.clone()),
+                    Some(arg),
                     Some(1),
                     args.len(),
                     &args,
@@ -989,10 +987,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "=",
                     "argument must be a number",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     rest.len() + 1,
-                    &[w.into_value(ctx)]
+                    [w.into_value(ctx)]
                         .iter()
                         .chain(rest.iter())
                         .cloned()
@@ -1026,10 +1024,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "<",
                     "argument must be a number",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     rest.len() + 1,
-                    &[w.into_value(ctx)]
+                    [w.into_value(ctx)]
                         .iter()
                         .chain(rest.iter())
                         .cloned()
@@ -1064,10 +1062,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "<=",
                     "argument must be a number",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     rest.len() + 1,
-                    &[w.into_value(ctx)]
+                    [w.into_value(ctx)]
                         .iter()
                         .chain(rest.iter())
                         .cloned()
@@ -1102,10 +1100,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     ">",
                     "argument must be a number",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     rest.len() + 1,
-                    &[w.into_value(ctx)]
+                    [w.into_value(ctx)]
                         .iter()
                         .chain(rest.iter())
                         .cloned()
@@ -1140,10 +1138,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     ">=",
                     "argument must be a number",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     rest.len() + 1,
-                    &[w.into_value(ctx)]
+                    [w.into_value(ctx)]
                         .iter()
                         .chain(rest.iter())
                         .cloned()
@@ -1256,10 +1254,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fx=?",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
             let z = z.as_int32();
@@ -1285,10 +1283,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxlogand",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
 
@@ -1378,10 +1376,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxlogior",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
 
@@ -1405,10 +1403,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxlogxor",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
 
@@ -1548,10 +1546,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl=?",
                     "argument must be a flonum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
             let z = z.as_flonum();
@@ -1581,14 +1579,14 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl<?",
                     "argument must be a flonum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
             let z = z.as_flonum();
-            if !(w < z) {
+            if w.partial_cmp(&z) != Some(Ordering::Less) {
                 return nctx.return_(Ok(false));
             }
             w = z;
@@ -1614,14 +1612,14 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl>?",
                     "argument must be a flonum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
             let z = z.as_flonum();
-            if !(w > z) {
+            if w.partial_cmp(&z) != Some(Ordering::Greater) {
                 return nctx.return_(Ok(false));
             }
             w = z;
@@ -1647,14 +1645,14 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl<=?",
                     "argument must be a flonum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
             let z = z.as_flonum();
-            if !(w <= z) {
+            if !matches!(w.partial_cmp(&z), Some(Ordering::Less | Ordering::Equal)) {
                 return nctx.return_(Ok(false));
             }
             w = z;
@@ -1680,14 +1678,14 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl>=?",
                     "argument must be a flonum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
             let z = z.as_flonum();
-            if !(w >= z) {
+            if !matches!(w.partial_cmp(&z), Some(Ordering::Greater | Ordering::Equal)) {
                 return nctx.return_(Ok(false));
             }
             w = z;
@@ -1751,10 +1749,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "flmax",
                     "argument must be a flonum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[max.into_value(ctx), z.clone()],
+                    &[max.into_value(ctx), *z],
                 );
             }
             let z = z.as_flonum();
@@ -1776,10 +1774,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "flmin",
                     "argument must be a flonum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[min.into_value(ctx), z.clone()],
+                    &[min.into_value(ctx), *z],
                 );
             }
             let z = z.as_flonum();
@@ -1793,7 +1791,7 @@ mod arith_operations {
 
     #[scheme(name = "fl+")]
     pub fn fl_plus(args: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
-        if args.len() == 0 {
+        if args.is_empty() {
             return nctx.return_(Ok(0.0));
         }
 
@@ -1802,7 +1800,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl+",
                     "argument must be a flonum",
-                    Some(args[0].clone()),
+                    Some(args[0]),
                     Some(0),
                     1,
                     args,
@@ -1815,7 +1813,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fl+",
                 "argument must be a flonum",
-                Some(args[0].clone()),
+                Some(args[0]),
                 Some(0),
                 args.len(),
                 args,
@@ -1827,7 +1825,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl+",
                     "argument must be a flonum",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     args,
@@ -1852,7 +1850,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fl-",
                 "argument must be a flonum",
-                Some(rest[0].clone()),
+                Some(rest[0]),
                 Some(1),
                 args.len(),
                 &args,
@@ -1867,7 +1865,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl-",
                     "argument must be a flonum",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     &args,
@@ -1881,7 +1879,7 @@ mod arith_operations {
 
     #[scheme(name = "fl*")]
     pub fn fl_times(args: &'gc [Value<'gc>]) -> Result<f64, Value<'gc>> {
-        if args.len() == 0 {
+        if args.is_empty() {
             return nctx.return_(Ok(1.0));
         }
 
@@ -1890,7 +1888,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl*",
                     "argument must be a flonum",
-                    Some(args[0].clone()),
+                    Some(args[0]),
                     Some(0),
                     1,
                     args,
@@ -1903,7 +1901,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fl*",
                 "argument must be a flonum",
-                Some(args[0].clone()),
+                Some(args[0]),
                 Some(0),
                 args.len(),
                 args,
@@ -1915,7 +1913,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl*",
                     "argument must be a flonum",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     args,
@@ -1951,7 +1949,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fl/",
                 "argument must be a flonum",
-                Some(rest[0].clone()),
+                Some(rest[0]),
                 Some(1),
                 args.len(),
                 &args,
@@ -1967,7 +1965,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fl/",
                     "argument must be a flonum",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     &args,
@@ -2122,10 +2120,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "bitwise-and",
                     "argument must be a number",
-                    Some(rest[0].clone()),
+                    Some(rest[0]),
                     Some(1),
                     1,
-                    &[rest[0].clone()],
+                    &[rest[0]],
                 );
             };
 
@@ -2172,10 +2170,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "bitwise-ior",
                     "argument must be a number",
-                    Some(rest[0].clone()),
+                    Some(rest[0]),
                     Some(1),
                     1,
-                    &[rest[0].clone()],
+                    &[rest[0]],
                 );
             };
 
@@ -2235,10 +2233,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "bitwise-xor",
                     "argument must be a number",
-                    Some(rest[0].clone()),
+                    Some(rest[0]),
                     Some(1),
                     1,
-                    &[rest[0].clone()],
+                    &[rest[0]],
                 );
             };
 
@@ -2425,10 +2423,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxmax",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[max.into_value(ctx), z.clone()],
+                    &[max.into_value(ctx), *z],
                 );
             }
             let z = z.as_int32();
@@ -2450,10 +2448,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxmin",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[min.into_value(ctx), z.clone()],
+                    &[min.into_value(ctx), *z],
                 );
             }
             let z = z.as_int32();
@@ -2467,7 +2465,7 @@ mod arith_operations {
 
     #[scheme(name = "fx+")]
     pub fn fx_plus(args: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
-        if args.len() == 0 {
+        if args.is_empty() {
             return nctx.return_(Ok(0));
         }
 
@@ -2476,7 +2474,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fx+",
                     "argument must be a fixnum",
-                    Some(args[0].clone()),
+                    Some(args[0]),
                     Some(0),
                     1,
                     args,
@@ -2489,7 +2487,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fx+",
                 "argument must be a fixnum",
-                Some(args[0].clone()),
+                Some(args[0]),
                 Some(0),
                 args.len(),
                 args,
@@ -2501,7 +2499,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fx+",
                     "argument must be a fixnum",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     args,
@@ -2548,7 +2546,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fx-",
                 "argument must be a fixnum",
-                Some(rest[0].clone()),
+                Some(rest[0]),
                 Some(1),
                 args.len(),
                 &args,
@@ -2577,7 +2575,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fx-",
                     "argument must be a fixnum",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     &args,
@@ -2603,7 +2601,7 @@ mod arith_operations {
 
     #[scheme(name = "fx*")]
     pub fn fx_times(args: &'gc [Value<'gc>]) -> Result<i32, Value<'gc>> {
-        if args.len() == 0 {
+        if args.is_empty() {
             return nctx.return_(Ok(1));
         }
 
@@ -2612,7 +2610,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fx*",
                     "argument must be a fixnum",
-                    Some(args[0].clone()),
+                    Some(args[0]),
                     Some(0),
                     1,
                     args,
@@ -2625,7 +2623,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fx*",
                 "argument must be a fixnum",
-                Some(args[0].clone()),
+                Some(args[0]),
                 Some(0),
                 args.len(),
                 args,
@@ -2637,7 +2635,7 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fx*",
                     "argument must be a fixnum",
-                    Some(arg.clone()),
+                    Some(*arg),
                     Some(1),
                     args.len(),
                     args,
@@ -2733,7 +2731,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fxand",
                 "argument must be a fixnum",
-                Some(rest[0].clone()),
+                Some(rest[0]),
                 Some(0),
                 rest.len(),
                 rest,
@@ -2746,10 +2744,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxand",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
 
@@ -2769,7 +2767,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fxior",
                 "argument must be a fixnum",
-                Some(rest[0].clone()),
+                Some(rest[0]),
                 Some(0),
                 rest.len(),
                 rest,
@@ -2782,10 +2780,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxior",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
 
@@ -2805,7 +2803,7 @@ mod arith_operations {
             return nctx.wrong_argument_violation(
                 "fxxor",
                 "argument must be a fixnum",
-                Some(rest[0].clone()),
+                Some(rest[0]),
                 Some(0),
                 rest.len(),
                 rest,
@@ -2818,10 +2816,10 @@ mod arith_operations {
                 return nctx.wrong_argument_violation(
                     "fxxor",
                     "argument must be a fixnum",
-                    Some(z.clone()),
+                    Some(*z),
                     Some(1),
                     2,
-                    &[w.into_value(ctx), z.clone()],
+                    &[w.into_value(ctx), *z],
                 );
             }
 
@@ -2839,7 +2837,7 @@ mod arith_operations {
 
     #[scheme(name = "fxbit-count")]
     pub fn fxbit_count(w: i32) -> i32 {
-        nctx.return_(ExactInteger::Fixnum(w).bit_count(ctx) as i32)
+        nctx.return_(ExactInteger::Fixnum(w).bit_count(ctx))
     }
 
     #[scheme(name = "fxlength")]
@@ -2860,7 +2858,7 @@ mod arith_operations {
 
     #[scheme(name = "fxbit-set?")]
     pub fn fxbit_setp(w: i32, k: i32) -> Result<bool, Value<'gc>> {
-        if k < 0 || k >= 32 {
+        if !(0..32).contains(&k) {
             let ctx = nctx.ctx;
             let w = w.into_value(ctx);
             let k = k.into_value(ctx);
@@ -2878,7 +2876,7 @@ mod arith_operations {
 
     #[scheme(name = "fxcopy-bit")]
     pub fn fxcopy_bit(fx1: i32, fx2: i32, fx3: i32) -> i32 {
-        if fx2 >= 0 && fx2 < 32 {
+        if (0..32).contains(&fx2) {
             if fx3 == 0 || fx3 == 1 {
                 let mask = 1 << fx2;
                 return nctx.return_((mask & (fx3 << fx2)) | (!mask & fx1));
@@ -2952,7 +2950,7 @@ mod arith_operations {
     pub fn fxarithmetic_shift_left(fx1: i32, fx2: u32) -> i32 {
         let fx1 = fx1 as i64;
         let fx2 = fx2 as i64;
-        if fx2 >= 0 && fx2 < 32 {
+        if (0..32).contains(&fx2) {
             let n = fx1 << fx2;
             if (n >> fx2) == fx1 && (n >= i32::MIN as i64) && (n <= i32::MAX as i64) {
                 return nctx.return_(n as i32);
@@ -2987,7 +2985,7 @@ mod arith_operations {
     #[scheme(name = "fxbit-field")]
     pub fn fxbit_field(fx1: i32, fx2: i32, fx3: i32) -> i32 {
         let ctx = nctx.ctx;
-        if fx2 < 0 || fx2 >= 32 {
+        if !(0..32).contains(&fx2) {
             return nctx.wrong_argument_violation(
                 "fxbit-field",
                 "second argument must be in the range 0 to 31",
@@ -3002,7 +3000,7 @@ mod arith_operations {
             );
         }
 
-        if fx3 < 0 || fx3 >= 32 {
+        if !(0..32).contains(&fx3) {
             return nctx.wrong_argument_violation(
                 "fxbit-field",
                 "third argument must be in the range 0 to 31",
@@ -3034,8 +3032,8 @@ mod arith_operations {
 
     #[scheme(name = "fxcopy-bit-field")]
     pub fn fxcopy_bit_field(to: i32, start: i32, end: i32, from: i32) -> i32 {
-        if start >= 0 && start < 32 {
-            if end >= 0 && end < 32 {
+        if (0..32).contains(&start) {
+            if (0..32).contains(&end) {
                 if start <= end {
                     let mask = if end - start == 32 {
                         !0

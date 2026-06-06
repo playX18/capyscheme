@@ -256,7 +256,7 @@ static DYNAMIC_STATE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, DynamicStateObject<'static>>::VT,
     TypeCode8::DYNAMIC_STATE.bits() as u16,
 );
-pub static DYNAMIC_STATE_INFO: &'static HeapTypeInfo = &DYNAMIC_STATE_INFO_VALUE;
+pub static DYNAMIC_STATE_INFO: &HeapTypeInfo = &DYNAMIC_STATE_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for DynamicStateObject<'gc> {
     const TC8: TypeCode8 = TypeCode8::DYNAMIC_STATE;
@@ -343,13 +343,13 @@ static FLUID_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Fluid<'static>>::VT,
     TypeCode8::FLUID.bits() as u16,
 );
-pub static FLUID_INFO: &'static HeapTypeInfo = &FLUID_INFO_VALUE;
+pub static FLUID_INFO: &HeapTypeInfo = &FLUID_INFO_VALUE;
 
 static THREAD_LOCAL_FLUID_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Fluid<'static>>::VT,
     TypeCode8::FLUID.bits() as u16,
 );
-pub static THREAD_LOCAL_FLUID_INFO: &'static HeapTypeInfo = &THREAD_LOCAL_FLUID_INFO_VALUE;
+pub static THREAD_LOCAL_FLUID_INFO: &HeapTypeInfo = &THREAD_LOCAL_FLUID_INFO_VALUE;
 
 impl<'gc> Fluid<'gc> {
     pub fn new(mc: Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {

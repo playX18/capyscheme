@@ -39,22 +39,21 @@ fn analyze_procs<'gc>(_ctx: Context<'gc>, t: TermRef<'gc>) -> HashMap<LVarRef<'g
     let proc_infos = RefCell::new(HashMap::<LVarRef<'gc>, ProcInfo<'gc>>::new());
 
     t.for_each(|term| match term.kind {
-        TermKind::LRef(var) => match proc_infos.borrow_mut().get_mut(&var) {
-            Some(info) => {
+        TermKind::LRef(var) => {
+            if let Some(info) = proc_infos.borrow_mut().get_mut(&var) {
                 info.refcount += 1;
             }
-            None => {}
-        },
+        }
 
         TermKind::LSet(var, _) => {
             proc_infos.borrow_mut().remove(&var);
         }
 
         TermKind::Call(rator, _rands) => {
-            if let TermKind::LRef(var) = rator.kind {
-                if let Some(info) = proc_infos.borrow_mut().get_mut(&var) {
-                    info.op_refcount += 1;
-                }
+            if let TermKind::LRef(var) = rator.kind
+                && let Some(info) = proc_infos.borrow_mut().get_mut(&var)
+            {
+                info.op_refcount += 1;
             }
         }
 
@@ -118,7 +117,7 @@ fn do_eta_expand<'gc>(
                 .map(|arg| lref(ctx, *arg))
                 .chain(proc.variadic.iter().map(|arg| lref(ctx, *arg)))
                 .collect::<Vec<_>>();
-            let body = if let Some(_) = proc.variadic {
+            let body = if proc.variadic.is_some() {
                 let mut args = args;
                 args.insert(0, lexical);
                 prim_call_term(ctx, sym_apply(ctx).into(), args, lexical.source())
@@ -170,9 +169,7 @@ fn do_eta_reduce<'gc>(ctx: Context<'gc>, proc: ProcRef<'gc>) -> Option<TermRef<'
         && rands.len() >= 2
         && let TermKind::LRef(var) = rands[0].kind
     {
-        let Some(variadic) = proc.variadic else {
-            return None;
-        };
+        let variadic = proc.variadic?;
 
         if rands.len() != proc.args.len() + 2 {
             return None;

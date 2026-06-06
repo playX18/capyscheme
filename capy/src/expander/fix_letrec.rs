@@ -32,7 +32,7 @@ fn compute_ids<'gc>(t: &Term<'gc>) -> Map<LVarRef<'gc>, u32> {
             TermKind::Fix(fix) => {
                 for &var in fix.lhs.iter() {
                     let id = *counter;
-                    map.insert(var.clone(), id);
+                    map.insert(var, id);
                     *counter += 1;
                 }
 
@@ -239,6 +239,13 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                     //    .into_iter()
                     //    .unzip::<_, _, Vec<_>, Vec<_>>();
 
+                    let mut fix_state = FixTermState {
+                        sym_id: &sym_id,
+                        referenced: &referenced,
+                        assigned: &assigned,
+                        compute_free_variables: &mut compute_free_variables,
+                        complex: &complex,
+                    };
                     fix_term(
                         ctx,
                         x.source(),
@@ -246,13 +253,16 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                         &l.lhs,
                         &l.rhs,
                         l.body,
-                        &sym_id,
-                        &referenced,
-                        &assigned,
-                        &mut compute_free_variables,
-                        &complex,
+                        &mut fix_state,
                     )
                 } else {
+                    let mut fix_state = FixTermState {
+                        sym_id: &sym_id,
+                        referenced: &referenced,
+                        assigned: &assigned,
+                        compute_free_variables: &mut compute_free_variables,
+                        complex: &complex,
+                    };
                     fix_term(
                         ctx,
                         x.source(),
@@ -260,15 +270,18 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                         &l.lhs,
                         &l.rhs,
                         l.body,
-                        &sym_id,
-                        &referenced,
-                        &assigned,
-                        &mut compute_free_variables,
-                        &complex,
+                        &mut fix_state,
                     )
                 }
             } else {
                 if l.rhs.iter().any(|x| matches!(x.kind, TermKind::Proc(_))) {
+                    let mut fix_state = FixTermState {
+                        sym_id: &sym_id,
+                        referenced: &referenced,
+                        assigned: &assigned,
+                        compute_free_variables: &mut compute_free_variables,
+                        complex: &complex,
+                    };
                     fix_term(
                         ctx,
                         x.source(),
@@ -276,11 +289,7 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
                         &l.lhs,
                         &l.rhs,
                         l.body,
-                        &sym_id,
-                        &referenced,
-                        &assigned,
-                        &mut compute_free_variables,
-                        &complex,
+                        &mut fix_state,
                     )
                 } else {
                     x
@@ -292,6 +301,14 @@ pub fn fix_letrec<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc> {
     })
 }
 
+struct FixTermState<'a, 'gc, 'fv> {
+    sym_id: &'a Map<LVarRef<'gc>, u32>,
+    referenced: &'a HashSet<LVarRef<'gc>>,
+    assigned: &'a HashSet<LVarRef<'gc>>,
+    compute_free_variables: &'fv mut ComputeFreeVariables<'gc, 'a>,
+    complex: &'a HashSet<u32>,
+}
+
 fn fix_term<'gc>(
     ctx: Context<'gc>,
     src: Value<'gc>,
@@ -299,18 +316,24 @@ fn fix_term<'gc>(
     lhs: &[LVarRef<'gc>],
     rhs: &[TermRef<'gc>],
     body: TermRef<'gc>,
-    sym_id: &Map<LVarRef<'gc>, u32>,
-    referenced: &HashSet<LVarRef<'gc>>,
-    assigned: &HashSet<LVarRef<'gc>>,
-    compute_free_variables: &mut ComputeFreeVariables<'gc, '_>,
-    complex: &HashSet<u32>,
+    state: &mut FixTermState<'_, 'gc, '_>,
 ) -> TermRef<'gc> {
-    let unreferenced = |var: &LVarRef<'gc>| !referenced.contains(var);
-    let unassigned = |var: &LVarRef<'gc>| !assigned.contains(var);
+    let unreferenced = |var: &LVarRef<'gc>| !state.referenced.contains(var);
+    let unassigned = |var: &LVarRef<'gc>| !state.assigned.contains(var);
 
-    let sccs = compute_sccs(lhs, rhs, in_order, sym_id, complex, compute_free_variables);
+    let sccs = compute_sccs(
+        lhs,
+        rhs,
+        in_order,
+        state.sym_id,
+        state.complex,
+        state.compute_free_variables,
+    );
     let mut recursive = |var: &LVarRef<'gc>, rhs: TermRef<'gc>| {
-        compute_free_variables.get(rhs).contains(&sym_id[var])
+        state
+            .compute_free_variables
+            .get(rhs)
+            .contains(&state.sym_id[var])
     };
 
     sccs.iter().rfold(body, |body, scc| {
@@ -319,8 +342,8 @@ fn fix_term<'gc>(
             src,
             scc,
             body,
-            &unreferenced,
-            &unassigned,
+            unreferenced,
+            unassigned,
             &mut recursive,
         )
     })
@@ -511,12 +534,12 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
     }
 
     pub fn get(&mut self, t: TermRef<'gc>) -> Rc<im::HashSet<u32>> {
-        if let Some(fv) = self.fv_cache.get(&(t.as_ref() as *const Term<'gc>)) {
+        if let Some(fv) = self.fv_cache.get(&(t.as_gc_ref() as *const Term<'gc>)) {
             fv.clone()
         } else {
             let fv = Rc::new(self.visit(t));
             self.fv_cache
-                .insert(t.as_ref() as *const Term<'gc>, fv.clone());
+                .insert(t.as_gc_ref() as *const Term<'gc>, fv.clone());
             fv
         }
     }
@@ -563,7 +586,7 @@ impl<'a, 'gc> ComputeFreeVariables<'gc, 'a> {
 
             TermKind::LRef(var) => adjoin(
                 self.sym_id
-                    .get(&var)
+                    .get(var)
                     .copied()
                     .unwrap_or_else(|| panic!("{} not found", var.name)),
                 empty(),

@@ -93,7 +93,15 @@ impl<'gc> LibraryCollection<'gc> {
     }
 }
 
-pub static LIBRARY_COLLECTION: LazyLock<Global<crate::Rootable!(LibraryCollection<'_>)>> =
+impl<'gc> Default for LibraryCollection<'gc> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+type RootedLibraryCollection = crate::Rootable!(LibraryCollection<'_>);
+
+pub static LIBRARY_COLLECTION: LazyLock<Global<RootedLibraryCollection>> =
     LazyLock::new(|| Global::new(LibraryCollection::new()));
 
 #[cfg(test)]

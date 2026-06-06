@@ -19,7 +19,7 @@ pub mod eval_ops {
             );
         }
 
-        if rands.len() == 0 {
+        if rands.is_empty() {
             return nctx.return_call(rator, &[]);
         }
         let fixed = &rands[..rands.len() - 1];
@@ -39,6 +39,6 @@ pub mod eval_ops {
 
     #[scheme(name = "procedure?")]
     pub fn procedure_p(v: Value<'gc>) -> Value<'gc> {
-        nctx.return_((v.is::<Closure>()).into())
+        nctx.return_(Value::new(v.is::<Closure>()))
     }
 }

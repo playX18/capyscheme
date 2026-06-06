@@ -27,7 +27,7 @@ static CONDITION_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Condition>::VT,
     TypeCode8::THREAD_CONDITION.bits() as u16,
 );
-pub static CONDITION_INFO: &'static HeapTypeInfo = &CONDITION_INFO_VALUE;
+pub static CONDITION_INFO: &HeapTypeInfo = &CONDITION_INFO_VALUE;
 
 unsafe impl Trace for Condition {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
@@ -49,7 +49,7 @@ static MUTEX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Mutex>::VT,
     TypeCode8::THREAD_MUTEX.bits() as u16,
 );
-pub static MUTEX_INFO: &'static HeapTypeInfo = &MUTEX_INFO_VALUE;
+pub static MUTEX_INFO: &HeapTypeInfo = &MUTEX_INFO_VALUE;
 
 pub enum MutexKind {
     Reentrant(parking_lot::ReentrantMutex<()>),
@@ -174,7 +174,7 @@ static THREAD_OBJECT_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, ThreadObject<'static>>::VT,
     TypeCode8::THREAD.bits() as u16,
 );
-pub static THREAD_OBJECT_INFO: &'static HeapTypeInfo = &THREAD_OBJECT_INFO_VALUE;
+pub static THREAD_OBJECT_INFO: &HeapTypeInfo = &THREAD_OBJECT_INFO_VALUE;
 
 impl<'gc> ThreadObject<'gc> {
     pub(crate) fn new(mc: Mutation<'gc>, entrypoint: Option<Value<'gc>>) -> Gc<'gc, Self> {
@@ -334,7 +334,6 @@ pub mod threading_ops {
                     |ctx, result| {
                         let _ = ctx;
                         let _ = result;
-                        ()
                     },
                 )
             }));

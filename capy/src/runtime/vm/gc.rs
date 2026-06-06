@@ -15,7 +15,7 @@ static EPHEMERON_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Ephemeron<'static>>::VT,
     TypeCode8::EPHEMERON.bits() as u16,
 );
-pub static EPHEMERON_INFO: &'static HeapTypeInfo = &EPHEMERON_INFO_VALUE;
+pub static EPHEMERON_INFO: &HeapTypeInfo = &EPHEMERON_INFO_VALUE;
 
 unsafe impl<'gc> Trace for Ephemeron<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -32,7 +32,6 @@ unsafe impl<'gc> Trace for Ephemeron<'gc> {
                 if new_ptr.is_null() {
                     self.key = Value::new(false);
                     self.value = Value::new(false);
-                    return;
                 } else {
                     // key is alive: update key and trace the value
                     self.key = Value {
@@ -99,9 +98,9 @@ pub mod gc {
 
         let ephemeron = Ephemeron { key, value };
 
-        let cell = Gc::new_with_info(*ctx, ephemeron, EPHEMERON_INFO);
+        let cell = Value::from(Gc::new_with_info(*ctx, ephemeron, EPHEMERON_INFO));
 
-        nctx.return_(cell.into())
+        nctx.return_(cell)
     }
 
     /// Returns key of the ephemeron. If the key is not reachable, returns #f.
@@ -162,7 +161,8 @@ pub mod gc {
             return nctx.return_(Value::new(false));
         };
 
-        nctx.return_(Str::new(*ctx, snapshot.to_string(), true).into())
+        let report = Value::from(Str::new(*ctx, snapshot.to_string(), true));
+        nctx.return_(report)
     }
 
     #[scheme(name = "%runtime-stats-begin-compilation")]

@@ -66,7 +66,7 @@ static MODULE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Module<'static>>::VT,
     TypeCode8::MODULE.bits() as u16,
 );
-pub static MODULE_INFO: &'static HeapTypeInfo = &MODULE_INFO_VALUE;
+pub static MODULE_INFO: &HeapTypeInfo = &MODULE_INFO_VALUE;
 
 unsafe impl<'gc> Trace for Module<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
@@ -155,12 +155,11 @@ impl<'gc> Module<'gc> {
     }
 
     pub fn is_locally_bound(&self, ctx: Context<'gc>, sym: Value<'gc>) -> bool {
-        self.local_variable(ctx, sym)
-            .map_or(false, |v| v.is_bound())
+        self.local_variable(ctx, sym).is_some_and(|v| v.is_bound())
     }
 
     pub fn is_bound(&self, ctx: Context<'gc>, sym: Value<'gc>) -> bool {
-        self.variable(ctx, sym).map_or(false, |v| v.is_bound())
+        self.variable(ctx, sym).is_some_and(|v| v.is_bound())
     }
 
     pub fn local_binding(&self, ctx: Context<'gc>, sym: Value<'gc>) -> Option<Value<'gc>> {
@@ -345,9 +344,7 @@ impl<'gc> Module<'gc> {
         ctx: Context<'gc>,
         sym: Value<'gc>,
     ) -> Option<Gc<'gc, Self>> {
-        let Some(var) = self.variable(ctx, sym) else {
-            return None;
-        };
+        let var = self.variable(ctx, sym)?;
 
         if let Some(local_var) = self.obarray.get().get(ctx, sym)
             && Gc::ptr_eq(var, local_var.downcast())
@@ -373,7 +370,7 @@ impl<'gc> Module<'gc> {
     pub fn beautify_user_module(self: Gc<'gc, Self>, ctx: Context<'gc>) {
         let interface = self.public_interface.get();
 
-        if interface.map_or(true, |iface| Gc::ptr_eq(iface, self)) {
+        if interface.is_none_or(|iface| Gc::ptr_eq(iface, self)) {
             let interface = Self::new(ctx, 0, Value::null(), Value::new(false));
             let wi = Gc::write(*ctx, interface);
             barrier::field!(wi, Self, name)
@@ -704,7 +701,7 @@ static VARIABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
     TypeCode8::VARIABLE.bits() as u16,
     builtin_type_ids::VARIABLE,
 );
-pub static VARIABLE_INFO: &'static HeapTypeInfo = &VARIABLE_INFO_VALUE;
+pub static VARIABLE_INFO: &HeapTypeInfo = &VARIABLE_INFO_VALUE;
 
 const _: () = {
     assert!(offset_of!(Variable, value) == offset_of!(Boxed, val));
@@ -882,12 +879,12 @@ pub mod module_ops {
 
     #[scheme(name = "module-import-obarray")]
     pub fn module_import_obarray(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
-        nctx.return_(module.import_obarray.clone())
+        nctx.return_(module.import_obarray)
     }
 
     #[scheme(name = "module-submodules")]
     pub fn module_submodules(module: Gc<'gc, Module<'gc>>) -> Gc<'gc, HashTable<'gc>> {
-        nctx.return_(module.submodules.clone())
+        nctx.return_(module.submodules)
     }
 
     #[scheme(name = "module-filename")]
@@ -1118,10 +1115,10 @@ pub mod module_ops {
         module: Gc<'gc, Module<'gc>>,
         name: Value<'gc>,
     ) -> Gc<'gc, Variable<'gc>> {
-        if let Some(var) = module.obarray.get().get(nctx.ctx, name) {
-            if var.is::<Variable>() {
-                return nctx.return_(var.downcast());
-            }
+        if let Some(var) = module.obarray.get().get(nctx.ctx, name)
+            && var.is::<Variable>()
+        {
+            return nctx.return_(var.downcast());
         }
 
         let local_var = Variable::new(nctx.ctx, Value::undefined());

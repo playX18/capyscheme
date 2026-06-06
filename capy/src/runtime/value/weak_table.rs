@@ -1,3 +1,5 @@
+//! Weak mappings and weak hash tables.
+
 use std::{
     cell::Cell,
     hash::Hasher,
@@ -38,7 +40,7 @@ static WEAK_MAPPING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, WeakMapping<'static>>::VT,
     TypeCode8::WEAK_MAPPING.bits() as u16,
 );
-pub static WEAK_MAPPING_INFO: &'static HeapTypeInfo = &WEAK_MAPPING_INFO_VALUE;
+pub static WEAK_MAPPING_INFO: &HeapTypeInfo = &WEAK_MAPPING_INFO_VALUE;
 
 unsafe impl<'gc> Trace for WeakMapping<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {
@@ -67,18 +69,18 @@ unsafe impl<'gc> Tagged for WeakMapping<'gc> {
 }
 
 impl<'gc> WeakMapping<'gc> {
+    /// Allocates a weak mapping from a heap-object key to a value.
     pub fn new(ctx: Context<'gc>, key: Value<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
         assert!(key.is_cell(), "weak-mappings can only have cells as keys");
-        let mapping = Gc::new_with_info(
+
+        Gc::new_with_info(
             *ctx,
             Self {
                 _key: key,
                 _value: value,
             },
             WEAK_MAPPING_INFO,
-        );
-
-        mapping
+        )
     }
 
     pub fn is_broken(&self) -> bool {
@@ -166,7 +168,7 @@ static WEAK_TABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, WeakTable<'static>>::VT,
     TypeCode8::WEAKTABLE.bits() as u16,
 );
-pub static WEAK_TABLE_INFO: &'static HeapTypeInfo = &WEAK_TABLE_INFO_VALUE;
+pub static WEAK_TABLE_INFO: &HeapTypeInfo = &WEAK_TABLE_INFO_VALUE;
 
 unsafe impl<'gc> Trace for WeakTable<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
@@ -201,6 +203,7 @@ fn make_hash<'gc>(key: Value<'gc>) -> u64 {
 }
 
 impl<'gc> WeakTable<'gc> {
+    /// Allocates a weak table with the given capacity and load factor.
     pub fn new(ctx: Mutation<'gc>, initial_capacity: usize, load_factor: f64) -> Gc<'gc, Self> {
         assert!(
             initial_capacity > 0,
@@ -373,7 +376,7 @@ impl<'gc> WeakTable<'gc> {
         }
 
         Self::add_entry(
-            unsafe { &Write::assume(&*guard) },
+            unsafe { Write::assume(&*guard) },
             ctx,
             hash,
             key,
@@ -592,7 +595,9 @@ struct AllWeakTables<'gc> {
 unsafe impl<'gc> Send for AllWeakTables<'gc> {}
 unsafe impl<'gc> Sync for AllWeakTables<'gc> {}
 
-static ALL_WEAK_TABLES: OnceLock<Global<crate::Rootable!(AllWeakTables<'_>)>> = OnceLock::new();
+type RootedWeakTables = crate::Rootable!(AllWeakTables<'_>);
+
+static ALL_WEAK_TABLES: OnceLock<Global<RootedWeakTables>> = OnceLock::new();
 
 unsafe impl<'gc> Trace for AllWeakTables<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {

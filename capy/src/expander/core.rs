@@ -57,7 +57,9 @@ pub struct Denotations<'gc> {
     pub denotation_of_private_ref: Value<'gc>,
 }
 
-static DENOTATIONS: OnceLock<Global<crate::Rootable!(Denotations<'_>)>> = OnceLock::new();
+type RootedDenotations = crate::Rootable!(Denotations<'_>);
+
+static DENOTATIONS: OnceLock<Global<RootedDenotations>> = OnceLock::new();
 
 static_symbols!(
     DENOTATION_OF_DEFINE = "define"
@@ -87,7 +89,7 @@ static_symbols!(
 );
 
 pub fn denotations<'gc>(ctx: Context<'gc>) -> &'gc Denotations<'gc> {
-    &*DENOTATIONS
+    DENOTATIONS
         .get_or_init(|| {
             Global::new(Denotations {
                 denotation_of_do: denotation_of_do(ctx).into(),
@@ -183,7 +185,7 @@ impl<'gc> Frame<'gc> {
 
     pub fn get(&self, name: Value<'gc>) -> Option<LVarRef<'gc>> {
         match self.env.get(&name) {
-            Some(lvar_ref) => Some(lvar_ref.clone()),
+            Some(lvar_ref) => Some(*lvar_ref),
             None => self.up.as_ref().and_then(|up| up.get(name)),
         }
     }
@@ -220,7 +222,7 @@ impl<'gc> LVar<'gc> {
 
 impl<'gc> PartialEq for LVar<'gc> {
     fn eq(&self, other: &Self) -> bool {
-        self as *const Self == other as *const Self
+        std::ptr::eq(self, other)
     }
 }
 
@@ -571,13 +573,13 @@ pub fn seq_from_slice<'gc>(ctx: Context<'gc>, terms: impl AsRef<[TermRef<'gc>]>)
     if terms.is_empty() {
         constant(ctx, Value::undefined())
     } else if terms.len() == 1 {
-        terms[0].clone()
+        terms[0]
     } else if terms.len() == 2 {
-        seq(ctx, terms[0].clone(), terms[1].clone())
+        seq(ctx, terms[0], terms[1])
     } else {
-        let mut term = terms[terms.len() - 1].clone();
+        let mut term = terms[terms.len() - 1];
         for t in terms[..terms.len() - 1].iter().rev() {
-            term = seq(ctx, t.clone(), term);
+            term = seq(ctx, *t, term);
         }
         term
     }
@@ -704,7 +706,7 @@ impl<'gc> std::fmt::Display for CompileError<'gc> {
 pub type Error<'gc> = Box<CompileError<'gc>>;
 
 pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
-    if let Some(_) = program.try_as::<Symbol>() {
+    if program.try_as::<Symbol>().is_some() {
         // TODO: Verify correctness. Rust expander is only used during bootstrapping.
         let module = get_current_module(cenv.ctx).downcast::<Module>();
         let module_name = module.name();
@@ -802,14 +804,12 @@ pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<
             ))
         };
 
-        term.map(|term| {
+        term.inspect(|&term| {
             let termw = Gc::write(*cenv.ctx, term);
 
             barrier::field!(termw, Term, source)
                 .unlock()
                 .set(_source.unwrap_or(Value::new(false)));
-
-            term
         })
     } else {
         Ok(Gc::new(
@@ -895,11 +895,11 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             cenv.new_frame();
 
             for lvar in &params {
-                cenv.extend(lvar.name, lvar.clone());
+                cenv.extend(lvar.name, *lvar);
             }
 
             if let Some(variadic) = &variadic {
-                cenv.extend(variadic.name, variadic.clone());
+                cenv.extend(variadic.name, *variadic);
             }
 
             let mut meta = list!(
@@ -952,13 +952,13 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             // TODO: Verify correctness. Rust expander is only used during bootstrapping.
             let module = get_current_module(cenv.ctx).downcast::<Module>();
             let module_name = module.name();
-            return Ok(define(
+            Ok(define(
                 cenv.ctx,
                 module_name,
                 name,
                 proc_term,
                 syntax_annotation(cenv.ctx, form),
-            ));
+            ))
         }
 
         Define::Simple(name, value) => {
@@ -1115,18 +1115,13 @@ fn expand_and<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
         let test_term = expand(cenv, expr)?;
         let temp_lvar = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "and-tmp").into());
 
-        let if_branch = if_term(
-            cenv.ctx,
-            lref(cenv.ctx, temp_lvar.clone()),
-            result,
-            false_branch,
-        );
+        let if_branch = if_term(cenv.ctx, lref(cenv.ctx, temp_lvar), result, false_branch);
 
         result = let_term(
             cenv.ctx,
             LetStyle::Let,
-            Array::from_slice(*cenv.ctx, &[temp_lvar]),
-            Array::from_slice(*cenv.ctx, &[test_term]),
+            Array::from_slice(*cenv.ctx, [temp_lvar]),
+            Array::from_slice(*cenv.ctx, [test_term]),
             if_branch,
             syntax_annotation(cenv.ctx, form),
         );
@@ -1172,16 +1167,16 @@ fn expand_or<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
 
         let if_branch = if_term(
             cenv.ctx,
-            lref(cenv.ctx, temp_lvar.clone()),
-            lref(cenv.ctx, temp_lvar.clone()),
+            lref(cenv.ctx, temp_lvar),
+            lref(cenv.ctx, temp_lvar),
             result,
         );
 
         result = let_term(
             cenv.ctx,
             LetStyle::Let,
-            Array::from_slice(*cenv.ctx, &[temp_lvar]),
-            Array::from_slice(*cenv.ctx, &[test_term]),
+            Array::from_slice(*cenv.ctx, [temp_lvar]),
+            Array::from_slice(*cenv.ctx, [test_term]),
             if_branch,
             syntax_annotation(cenv.ctx, form),
         );
@@ -1204,11 +1199,11 @@ fn expand_begin<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'
     if seq_.len() == 1 {
         Ok(seq_[0])
     } else if seq_.is_empty() {
-        return Err(Box::new(CompileError {
+        Err(Box::new(CompileError {
             message: "begin requires at least one expression".to_string(),
             irritants: vec![form],
             sourcev: syntax_annotation(cenv.ctx, form),
-        }));
+        }))
     } else {
         Ok(seq_from_slice(cenv.ctx, seq_))
     }
@@ -1229,7 +1224,7 @@ fn expand_body<'gc>(
             return Err(Box::new(CompileError {
                 message: "body cannot be empty".to_string(),
                 irritants: vec![body],
-                sourcev: sourcev,
+                sourcev,
             }));
         }
         let exp = body.car();
@@ -1399,7 +1394,7 @@ fn finalize_body<'gc>(
                 }
                 vars.insert(*var, fresh_lvar(cenv.ctx, *var));
 
-                cenv.extend(*var, vars.get(var).unwrap().clone());
+                cenv.extend(*var, *vars.get(var).unwrap());
             }
         }
     }
@@ -1410,7 +1405,7 @@ fn finalize_body<'gc>(
     for def in defs {
         match def {
             Define::Lambda(name, formals, variadic, def_body) => {
-                let name = vars.get(&name).unwrap().clone();
+                let name = *vars.get(&name).unwrap();
                 let formals = formals
                     .into_iter()
                     .map(|sym| {
@@ -1441,11 +1436,11 @@ fn finalize_body<'gc>(
                 cenv.new_frame();
 
                 for lvar in &formals {
-                    cenv.extend(lvar.name, lvar.clone());
+                    cenv.extend(lvar.name, *lvar);
                 }
 
                 if let Some(variadic) = &variadic {
-                    cenv.extend(variadic.name, variadic.clone());
+                    cenv.extend(variadic.name, *variadic);
                 }
 
                 let body_term = expand_body(cenv, def_body, syntax_annotation(cenv.ctx, def_body))?;
@@ -1475,9 +1470,9 @@ fn finalize_body<'gc>(
             }
 
             Define::Simple(var, val) => {
-                let lvar = vars.get(&var).unwrap().clone();
+                let lvar = *vars.get(&var).unwrap();
 
-                cenv.extend(var, lvar.clone());
+                cenv.extend(var, lvar);
 
                 let val_term = expand(cenv, val)?;
                 lhs.push(lvar);
@@ -1504,17 +1499,17 @@ fn finalize_body<'gc>(
     }
     cenv.pop_frame();
     if terms.is_empty() {
-        return Err(Box::new(CompileError {
+        Err(Box::new(CompileError {
             message: "body cannot be empty".to_string(),
             irritants: vec![body],
             sourcev: syntax_annotation(cenv.ctx, body),
-        }));
+        }))
     } else if terms.len() == 1 && lhs.is_empty() {
         // If there's only one term and no definitions, return it directly
-        return Ok(terms[0].clone());
+        Ok(terms[0])
     } else {
         let seq = if terms.len() == 1 {
-            terms[0].clone()
+            terms[0]
         } else {
             seq_from_slice(cenv.ctx, terms)
         };
@@ -1605,11 +1600,11 @@ fn expand_lambda<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
     cenv.new_frame();
 
     for lvar in &args {
-        cenv.extend(lvar.name, lvar.clone());
+        cenv.extend(lvar.name, *lvar);
     }
 
     if let Some(variadic) = &variadic {
-        cenv.extend(variadic.name, variadic.clone());
+        cenv.extend(variadic.name, *variadic);
     }
 
     let mut meta = list!(
@@ -1707,11 +1702,11 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
         cenv.new_frame();
 
         // Bind the function name
-        cenv.extend(name, name_lvar.clone());
+        cenv.extend(name, name_lvar);
 
         // Bind the parameters
         for (i, lvar) in proc_args.iter().enumerate() {
-            cenv.extend(vars[i], lvar.clone());
+            cenv.extend(vars[i], *lvar);
         }
 
         let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?;
@@ -1746,7 +1741,7 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
         // Create the letrec + call
         let call_term = call_term(
             cenv.ctx,
-            lref(cenv.ctx, name_lvar.clone()),
+            lref(cenv.ctx, name_lvar),
             val_terms,
             syntax_annotation(cenv.ctx, form),
         );
@@ -1779,7 +1774,7 @@ fn expand_let<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
 
         // Bind the variables
         for (i, lvar) in lvars.iter().enumerate() {
-            cenv.extend(vars[i], lvar.clone());
+            cenv.extend(vars[i], *lvar);
         }
 
         let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?;
@@ -1950,11 +1945,11 @@ fn expand_do<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
     cenv.new_frame();
 
     // Bind the loop name
-    cenv.extend(loop_name, loop_lvar.clone());
+    cenv.extend(loop_name, loop_lvar);
 
     // Bind the loop variables
     for (i, lvar) in loop_vars.iter().enumerate() {
-        cenv.extend(vars[i], lvar.clone());
+        cenv.extend(vars[i], *lvar);
     }
 
     // Expand test and result expressions
@@ -1997,7 +1992,7 @@ fn expand_do<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
 
     let loop_call = call_term(
         cenv.ctx,
-        lref(cenv.ctx, loop_lvar.clone()),
+        lref(cenv.ctx, loop_lvar),
         step_terms,
         syntax_annotation(cenv.ctx, form),
     );
@@ -2036,7 +2031,7 @@ fn expand_do<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc>
     // Create the initial call to the loop
     let initial_call = call_term(
         cenv.ctx,
-        lref(cenv.ctx, loop_lvar.clone()),
+        lref(cenv.ctx, loop_lvar),
         init_terms,
         syntax_annotation(cenv.ctx, form),
     );
@@ -2083,7 +2078,7 @@ fn expand_let_star<'gc>(
         let val_term = expand(cenv, val)?;
         val_terms.push(val_term);
         // Bind the variable after expanding its value
-        cenv.extend(vars[i], lvars[i].clone());
+        cenv.extend(vars[i], lvars[i]);
     }
 
     let body_term = expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?;
@@ -2103,8 +2098,8 @@ fn expand_let_star<'gc>(
         result = let_term(
             cenv.ctx,
             LetStyle::Let,
-            Array::from_slice(*cenv.ctx, vec![lvars[i].clone()]),
-            Array::from_slice(*cenv.ctx, vec![val_terms[i].clone()]),
+            Array::from_slice(*cenv.ctx, vec![lvars[i]]),
+            Array::from_slice(*cenv.ctx, vec![val_terms[i]]),
             result,
             syntax_annotation(cenv.ctx, form),
         );
@@ -2137,7 +2132,7 @@ fn expand_letrec<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
 
     // Bind all variables first (before expanding any values)
     for (i, lvar) in lvars.iter().enumerate() {
-        cenv.extend(vars[i], lvar.clone());
+        cenv.extend(vars[i], *lvar);
     }
 
     // Now expand all values in the extended environment
@@ -2179,7 +2174,7 @@ fn expand_receive<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef
 
     cenv.new_frame();
     for lvar in formals.iter().chain(opt_formal.iter()) {
-        cenv.extend(lvar.name, lvar.clone());
+        cenv.extend(lvar.name, *lvar);
     }
 
     let consumer_term = expand(cenv, consumer)?;
@@ -2261,7 +2256,7 @@ fn expand_letrec_star<'gc>(
 
     // Bind all variables first (before expanding any values)
     for (i, lvar) in lvars.iter().enumerate() {
-        cenv.extend(vars[i], lvar.clone());
+        cenv.extend(vars[i], *lvar);
     }
 
     // Expand values sequentially (like let* but with all vars pre-bound)
@@ -2414,9 +2409,9 @@ fn expand_clause<'gc>(
         }
 
         if body.cdr().is_null() {
-            return expand(cenv, body.car());
+            expand(cenv, body.car())
         } else {
-            return expand_body(cenv, body, syntax_annotation(cenv.ctx, form));
+            expand_body(cenv, body, syntax_annotation(cenv.ctx, form))
         }
     } else {
         let test_form = expand(cenv, test)?;
@@ -2442,27 +2437,22 @@ fn expand_clause<'gc>(
             call_term(
                 cenv.ctx,
                 proc_term,
-                vec![lref(cenv.ctx, binding.clone())],
+                vec![lref(cenv.ctx, binding)],
                 syntax_annotation(cenv.ctx, clause),
             )
         } else if body.is_null() {
-            lref(cenv.ctx, binding.clone())
+            lref(cenv.ctx, binding)
         } else {
             //let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
             expand_body(cenv, body, syntax_annotation(cenv.ctx, form))?
         };
 
-        let if_ = if_term(
-            cenv.ctx,
-            lref(cenv.ctx, binding.clone()),
-            lbody,
-            else_branch,
-        );
+        let if_ = if_term(cenv.ctx, lref(cenv.ctx, binding), lbody, else_branch);
         Ok(let_term(
             cenv.ctx,
             LetStyle::Let,
-            Array::from_slice(*cenv.ctx, &[binding]),
-            Array::from_slice(*cenv.ctx, &[test_form]),
+            Array::from_slice(*cenv.ctx, [binding]),
+            Array::from_slice(*cenv.ctx, [test_form]),
             if_,
             syntax_annotation(cenv.ctx, form),
         ))
@@ -2507,7 +2497,7 @@ fn expand_case<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'g
     let key_term = expand(cenv, key_expr)?;
     let key_lvar = fresh_lvar(cenv.ctx, Symbol::from_str(cenv.ctx, "case-key").into());
 
-    let case_body = expand_case_clauses(cenv, form, &clauses, key_lvar.clone())?;
+    let case_body = expand_case_clauses(cenv, form, &clauses, key_lvar)?;
 
     Ok(let_term(
         cenv.ctx,
@@ -2532,7 +2522,7 @@ fn expand_case_clauses<'gc>(
     let clause = clauses[0];
     let rest = &clauses[1..];
 
-    let else_branch = expand_case_clauses(cenv, form, rest, key_lvar.clone())?;
+    let else_branch = expand_case_clauses(cenv, form, rest, key_lvar)?;
 
     let test = clause.car();
     let body = clause.cdr();
@@ -2566,16 +2556,16 @@ fn expand_case_clauses<'gc>(
             return Ok(call_term(
                 cenv.ctx,
                 proc_term,
-                vec![lref(cenv.ctx, key_lvar.clone())],
+                vec![lref(cenv.ctx, key_lvar)],
                 syntax_annotation(cenv.ctx, clause),
             ));
         }
 
         if body.cdr().is_null() {
-            return expand(cenv, body.car());
+            expand(cenv, body.car())
         } else {
             //let begin_form = Value::cons(cenv.ctx, cenv.denotations.denotation_of_begin, body);
-            return expand_body(cenv, body, syntax_annotation(cenv.ctx, form));
+            expand_body(cenv, body, syntax_annotation(cenv.ctx, form))
         }
     } else {
         // Build the test condition: (memv key '(datum1 datum2 ...))
@@ -2589,7 +2579,7 @@ fn expand_case_clauses<'gc>(
             prim_call_term(
                 cenv.ctx,
                 Symbol::from_str(cenv.ctx, "memv").into(),
-                vec![lref(cenv.ctx, key_lvar.clone()), expand(cenv, quoted_test)?],
+                vec![lref(cenv.ctx, key_lvar), expand(cenv, quoted_test)?],
                 syntax_annotation(cenv.ctx, form),
             )
         } else {
@@ -2602,7 +2592,7 @@ fn expand_case_clauses<'gc>(
             prim_call_term(
                 cenv.ctx,
                 Symbol::from_str(cenv.ctx, "eqv?").into(),
-                vec![lref(cenv.ctx, key_lvar.clone()), expand(cenv, quoted_test)?],
+                vec![lref(cenv.ctx, key_lvar), expand(cenv, quoted_test)?],
                 syntax_annotation(cenv.ctx, form),
             )
         };
@@ -2636,7 +2626,7 @@ fn expand_case_clauses<'gc>(
                 let car_call = prim_call_term(
                     cenv.ctx,
                     Symbol::from_str(cenv.ctx, "car").into(),
-                    vec![lref(cenv.ctx, test_result_lvar.clone())],
+                    vec![lref(cenv.ctx, test_result_lvar)],
                     syntax_annotation(cenv.ctx, clause),
                 );
 
@@ -2649,7 +2639,7 @@ fn expand_case_clauses<'gc>(
 
                 let if_branch = if_term(
                     cenv.ctx,
-                    lref(cenv.ctx, test_result_lvar.clone()),
+                    lref(cenv.ctx, test_result_lvar),
                     proc_call,
                     else_branch,
                 );
@@ -2667,7 +2657,7 @@ fn expand_case_clauses<'gc>(
                 call_term(
                     cenv.ctx,
                     proc_term,
-                    vec![lref(cenv.ctx, key_lvar.clone())],
+                    vec![lref(cenv.ctx, key_lvar)],
                     syntax_annotation(cenv.ctx, clause),
                 )
             }
@@ -2926,7 +2916,7 @@ impl<'gc> Term<'gc> {
                     match &current.kind {
                         TermKind::Seq(head, tail) => {
                             terms.push(head.pretty(alloc));
-                            current = &tail;
+                            current = tail;
                         }
                         _ => {
                             terms.push(current.pretty(alloc));
@@ -3105,10 +3095,7 @@ impl<'gc> Term<'gc> {
     }
 
     pub fn is_procedure(&self) -> bool {
-        match &self.kind {
-            TermKind::Proc(_) => true,
-            _ => false,
-        }
+        matches!(&self.kind, TermKind::Proc(_))
     }
 
     pub fn fix(
@@ -3123,8 +3110,8 @@ impl<'gc> Term<'gc> {
             Term {
                 source: Lock::new(source),
                 kind: TermKind::Fix(Fix {
-                    lhs: Array::from_iter(mc, lhs.into_iter()),
-                    rhs: Array::from_iter(mc, rhs.into_iter()),
+                    lhs: Array::from_iter(mc, lhs),
+                    rhs: Array::from_iter(mc, rhs),
                     body,
                 }),
             },
@@ -3145,8 +3132,8 @@ impl<'gc> Term<'gc> {
                 source: Lock::new(source),
                 kind: TermKind::Let(Let {
                     style,
-                    lhs: Array::from_iter(mc, lhs.into_iter()),
-                    rhs: Array::from_iter(mc, rhs.into_iter()),
+                    lhs: Array::from_iter(mc, lhs),
+                    rhs: Array::from_iter(mc, rhs),
                     body,
                 }),
             },
@@ -3196,7 +3183,7 @@ impl<'gc> Term<'gc> {
                 source: Lock::new(src),
                 kind: TermKind::PrimCall(
                     Symbol::from_str(ctx, name).into(),
-                    Array::from_iter(*ctx, args.into_iter()),
+                    Array::from_iter(*ctx, args),
                 ),
             },
         )

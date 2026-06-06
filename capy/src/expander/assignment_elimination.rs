@@ -18,7 +18,7 @@ fn box_ref<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
         sym_variable_ref(ctx).into(),
-        &[lref(ctx, var)],
+        [lref(ctx, var)],
         Value::new(false),
     )
 }
@@ -27,7 +27,7 @@ fn box_set<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>, value: TermRef<'gc>) -> Te
     prim_call_term(
         ctx,
         sym_variable_set(ctx).into(),
-        &[lref(ctx, var), value],
+        [lref(ctx, var), value],
         Value::new(false),
     )
 }
@@ -36,7 +36,7 @@ fn pbox<'gc>(ctx: Context<'gc>, var: LVarRef<'gc>) -> TermRef<'gc> {
     prim_call_term(
         ctx,
         sym_make_variable(ctx).into(),
-        &[lref(ctx, var)],
+        [lref(ctx, var)],
         Value::new(false),
     )
 }
@@ -215,7 +215,7 @@ fn rec<'gc>(
                     source: Lock::new(term.source()),
                     kind: TermKind::Let(Let {
                         style: let_.style,
-                        lhs: let_.lhs.clone(),
+                        lhs: let_.lhs,
                         rhs,
                         body,
                     }),
@@ -281,7 +281,7 @@ fn rec<'gc>(
                 *ctx,
                 Term {
                     source: Lock::new(term.source()),
-                    kind: TermKind::Receive(vars.clone(), *variadic, producer, consumer),
+                    kind: TermKind::Receive(*vars, *variadic, producer, consumer),
                 },
             )
         }
@@ -335,15 +335,14 @@ fn wrap_mutable<'gc>(
 
     let body = rec(ctx, body, substitutions);
 
-    let body = Term::let_(
+    Term::let_(
         *ctx,
         LetStyle::Let,
-        mutated.iter().map(|var| substitutions[var].clone()),
+        mutated.iter().map(|var| substitutions[var]),
         mutated.iter().map(|var| pbox(ctx, *var)),
         body,
         body.source(),
-    );
-    body
+    )
 }
 impl<'gc> Term<'gc> {
     pub fn count_refs(&self) {

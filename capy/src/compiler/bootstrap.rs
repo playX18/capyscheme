@@ -75,7 +75,7 @@ pub fn compile_file<'gc>(
     for expr in program.iter().rev() {
         ls = Value::cons(ctx, *expr, ls);
     }
-    ls = Value::cons(ctx, begin.into(), ls);
+    ls = Value::cons(ctx, begin, ls);
 
     let il = crate::expander::core::expand(&mut env, ls)
         .map_err(|err| make_lexical_violation(ctx, "compile-file", err.to_string()))?;

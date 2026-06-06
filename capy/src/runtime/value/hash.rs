@@ -1,3 +1,5 @@
+//! Hash table values and hash/equality adapters.
+
 use std::{
     cell::Cell,
     hash::{Hash, Hasher},
@@ -18,6 +20,7 @@ use crate::runtime::Context;
 use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, Copy, Trace)]
 #[collect(no_drop)]
+/// Equality and hashing mode for a Scheme hash table.
 pub enum HashTableType<'gc> {
     Eq,
     Eqv,
@@ -87,6 +90,7 @@ impl<'gc> HashTableType<'gc> {
 }
 
 #[repr(C, align(8))]
+/// A Scheme hash table value.
 pub struct HashTable<'gc> {
     pub(crate) inner: Monitor<InnerHashTable<'gc>>,
 }
@@ -95,13 +99,13 @@ static HASHTABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, HashTable<'static>>::VT,
     TypeCode8::HASHTABLE.bits() as u16,
 );
-pub static HASHTABLE_INFO: &'static HeapTypeInfo = &HASHTABLE_INFO_VALUE;
+pub static HASHTABLE_INFO: &HeapTypeInfo = &HASHTABLE_INFO_VALUE;
 
 static IMMUTABLE_HASHTABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, HashTable<'static>>::VT,
     TypeCode16::IMMUTABLE_HASHTABLE.bits(),
 );
-pub static IMMUTABLE_HASHTABLE_INFO: &'static HeapTypeInfo = &IMMUTABLE_HASHTABLE_INFO_VALUE;
+pub static IMMUTABLE_HASHTABLE_INFO: &HeapTypeInfo = &IMMUTABLE_HASHTABLE_INFO_VALUE;
 
 pub type HashTableRef<'gc> = Gc<'gc, HashTable<'gc>>;
 
@@ -119,6 +123,7 @@ unsafe impl<'gc> Trace for HashTable<'gc> {
     }
 }
 
+/// Hash adapter implementing `eqv?` number semantics.
 pub struct EqvHash<'gc>(pub Value<'gc>);
 
 impl<'gc> Hash for EqvHash<'gc> {
@@ -138,6 +143,7 @@ impl<'gc> Hash for EqvHash<'gc> {
     }
 }
 
+/// Hash adapter implementing structural `equal?` semantics.
 pub struct EqualHash<'gc>(pub Value<'gc>);
 
 impl<'gc> Hash for EqualHash<'gc> {
@@ -188,6 +194,7 @@ type MaybeEntry<'gc> = Option<Gc<'gc, Entry<'gc>>>;
 
 #[derive(Trace)]
 #[collect(no_drop)]
+/// Mutable hash table storage guarded by the table monitor.
 pub struct InnerHashTable<'gc> {
     table: Lock<Gc<'gc, Array<Lock<MaybeEntry<'gc>>>>>,
     count: Cell<usize>,
@@ -275,9 +282,11 @@ impl<'gc> HashTable<'gc> {
             );
         }
         let initial_capacity = initial_capacity.min(1);
-        let initial_capacity = (initial_capacity == 0)
-            .then_some(8)
-            .unwrap_or(initial_capacity);
+        let initial_capacity = if initial_capacity == 0 {
+            8
+        } else {
+            initial_capacity
+        };
         if load_factor <= 0.0 {
             panic!("Load factor must be greater than 0.0");
         }
@@ -286,7 +295,7 @@ impl<'gc> HashTable<'gc> {
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        let this = Gc::new_with_info(
+        Gc::new_with_info(
             mc,
             Self {
                 inner: Monitor::new(InnerHashTable {
@@ -299,9 +308,7 @@ impl<'gc> HashTable<'gc> {
                 }),
             },
             HASHTABLE_INFO,
-        );
-
-        this
+        )
     }
 
     pub fn new_immutable(
@@ -329,9 +336,11 @@ impl<'gc> HashTable<'gc> {
             );
         }
         let initial_capacity = initial_capacity.min(1);
-        let initial_capacity = (initial_capacity == 0)
-            .then_some(8)
-            .unwrap_or(initial_capacity);
+        let initial_capacity = if initial_capacity == 0 {
+            8
+        } else {
+            initial_capacity
+        };
         if load_factor <= 0.0 {
             panic!("Load factor must be greater than 0.0");
         }
@@ -340,7 +349,7 @@ impl<'gc> HashTable<'gc> {
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        let this = Gc::new_with_info(
+        Gc::new_with_info(
             mc,
             Self {
                 inner: Monitor::new(InnerHashTable {
@@ -353,9 +362,7 @@ impl<'gc> HashTable<'gc> {
                 }),
             },
             IMMUTABLE_HASHTABLE_INFO,
-        );
-
-        this
+        )
     }
 
     pub fn is_mutable(&self) -> bool {
@@ -461,7 +468,7 @@ impl<'gc> HashTable<'gc> {
         }
 
         Self::add_entry(
-            unsafe { &Write::assume(&*guard) },
+            unsafe { Write::assume(&*guard) },
             ctx,
             hash,
             key,
@@ -517,7 +524,7 @@ impl<'gc> HashTable<'gc> {
     pub fn get(&self, ctx: Context<'gc>, key: impl IntoValue<'gc>) -> Option<Value<'gc>> {
         let key = key.into_value(ctx);
         let guard = self.inner.lock();
-        if guard.table.get().len() == 0 {
+        if guard.table.get().is_empty() {
             return None;
         }
         let hash = guard.typ.hash(key);
@@ -562,7 +569,7 @@ impl<'gc> HashTable<'gc> {
         let default = default(ctx);
 
         Self::add_entry(
-            unsafe { &Write::assume(&*guard) },
+            unsafe { Write::assume(&*guard) },
             ctx,
             hash,
             key,
@@ -636,6 +643,10 @@ impl<'gc> HashTable<'gc> {
 
     pub fn len(&self) -> usize {
         self.inner.lock().count.get()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn copy(self: Gc<'gc, Self>, ctx: Context<'gc>, immutable: bool) -> Gc<'gc, Self> {

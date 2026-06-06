@@ -33,7 +33,7 @@ static ANNOTATION_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Annotation<'static>>::VT,
     TypeCode8::ANNOTATION.bits() as u16,
 );
-pub static ANNOTATION_INFO: &'static HeapTypeInfo = &ANNOTATION_INFO_VALUE;
+pub static ANNOTATION_INFO: &HeapTypeInfo = &ANNOTATION_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for Annotation<'gc> {
     const TC8: TypeCode8 = TypeCode8::ANNOTATION;
@@ -138,7 +138,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                     let mut hex_digits = String::new();
                     let mut terminated = false;
 
-                    while let Some(hex_ch) = chars.next() {
+                    for hex_ch in chars.by_ref() {
                         if hex_ch == ';' {
                             terminated = true;
                             break;
@@ -506,130 +506,122 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("quote node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let quote: Value<'gc> = Symbol::from_str(self.ctx, "quote").into();
-                Ok(self.wrap(node, list!(self.ctx, quote, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, quote, expr)))
             }
 
             "syntax" => {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("syntax node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let syntax: Value<'gc> = Symbol::from_str(self.ctx, "syntax").into();
-                Ok(self.wrap(node, list!(self.ctx, syntax, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, syntax, expr)))
             }
 
             "quasisyntax" => {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("quasisyntax node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let quasisyntax: Value<'gc> = Symbol::from_str(self.ctx, "quasisyntax").into();
-                Ok(self.wrap(node, list!(self.ctx, quasisyntax, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, quasisyntax, expr)))
             }
 
             "unsyntax" => {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("unsyntax node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let unsyntax: Value<'gc> = Symbol::from_str(self.ctx, "unsyntax").into();
-                Ok(self.wrap(node, list!(self.ctx, unsyntax, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, unsyntax, expr)))
             }
 
             "unsyntax_splicing" => {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("unsyntax_splicing node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let unsyntax_splicing: Value<'gc> =
                     Symbol::from_str(self.ctx, "unsyntax-splicing").into();
-                Ok(self.wrap(node, list!(self.ctx, unsyntax_splicing, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, unsyntax_splicing, expr)))
             }
 
             "quasiquote" => {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("quasiquote node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let quasiquote: Value<'gc> = Symbol::from_str(self.ctx, "quasiquote").into();
-                Ok(self.wrap(node, list!(self.ctx, quasiquote, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, quasiquote, expr)))
             }
 
             "unquote" => {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("unquote node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let unquote: Value<'gc> = Symbol::from_str(self.ctx, "unquote").into();
-                Ok(self.wrap(node, list!(self.ctx, unquote, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, unquote, expr)))
             }
 
             "unquote_splicing" => {
                 let mut cursor = node.walk();
                 let child = node
                     .children(&mut cursor)
-                    .skip(1)
-                    .next()
+                    .nth(1)
                     .expect("unquote_splicing node should have a child expression");
 
                 let expr = self.parse_lexeme(&child)?;
 
-                self.annotate(expr, &node);
+                self.annotate(expr, node);
 
                 let unquote_splicing: Value<'gc> =
                     Symbol::from_str(self.ctx, "unquote-splicing").into();
-                Ok(self.wrap(node, list!(self.ctx, unquote_splicing, expr).into()))
+                Ok(self.wrap(node, list!(self.ctx, unquote_splicing, expr)))
             }
 
             "list" => {
@@ -658,14 +650,14 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                             character: 'x',
                         }
                     })?;
-                    let ch = char::from_u32(code_point).ok_or_else(|| {
+                    let ch = char::from_u32(code_point).ok_or({
                         LexicalError::InvalidCharacter {
                             source: src.0,
                             character: 'x',
                         }
                     })?;
 
-                    return Ok(self.wrap(node, Value::new(ch).into()));
+                    return Ok(self.wrap(node, Value::new(ch)));
                 }
 
                 const NAMED_CHARS: &[(&str, char)] = &[
@@ -682,20 +674,17 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 ];
 
                 for (name, character) in NAMED_CHARS {
-                    if let Some(_) = rest.strip_prefix(name) {
-                        return Ok(self.wrap(node, Value::new(*character).into()));
+                    if rest.strip_prefix(name).is_some() {
+                        return Ok(self.wrap(node, Value::new(*character)));
                     }
                 }
 
-                let character =
-                    rest.chars()
-                        .next()
-                        .ok_or_else(|| LexicalError::InvalidCharacter {
-                            source: src.0,
-                            character: ' ',
-                        })?;
+                let character = rest.chars().next().ok_or(LexicalError::InvalidCharacter {
+                    source: src.0,
+                    character: ' ',
+                })?;
 
-                return Ok(self.wrap(node, Value::new(character).into()));
+                Ok(self.wrap(node, Value::new(character)))
             }
 
             "vector" => {
@@ -713,9 +702,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                 Ok(self.wrap(node, bv))
             }
 
-            "directive" => {
-                return Ok(Value::null());
-            }
+            "directive" => Ok(Value::null()),
             "keyword" => {
                 let kw = self.ctx.keyword(&self.text_of(node)[2..]);
                 Ok(self.wrap(node, kw.into()))

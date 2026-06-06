@@ -20,7 +20,7 @@ static CONTINUATION_MARKS_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, ContinuationMarks<'static>>::VT,
     TypeCode8::CMARKS.bits() as u16,
 );
-pub static CONTINUATION_MARKS_INFO: &'static HeapTypeInfo = &CONTINUATION_MARKS_INFO_VALUE;
+pub static CONTINUATION_MARKS_INFO: &HeapTypeInfo = &CONTINUATION_MARKS_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for ContinuationMarks<'gc> {
     const TC8: TypeCode8 = TypeCode8::CMARKS;
@@ -76,7 +76,7 @@ pub(crate) fn push_cframe<'gc>(
         let new_marks = replace_or_add_mark(ctx, first_marks.car(), key, pair);
 
         first_marks.set_car(ctx, new_marks);
-        return cont_closure.into();
+        cont_closure.into()
     } else {
         let new_marks = list!(ctx, pair);
 
@@ -85,7 +85,7 @@ pub(crate) fn push_cframe<'gc>(
             ctx.state().set_current_marks(cframe);
         }
 
-        return cont_closure.into();
+        cont_closure.into()
     }
 }
 

@@ -13,11 +13,9 @@ use crate::{
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     pub fn to_boolean(&mut self, v: ir::Value) -> ir::Value {
-        let cmp = self
-            .builder
+        self.builder
             .ins()
-            .icmp_imm(IntCC::NotEqual, v, Value::new(false).bits() as i64);
-        cmp
+            .icmp_imm(IntCC::NotEqual, v, Value::new(false).bits() as i64)
     }
 
     pub fn cons(&mut self, a: ir::Value, b: ir::Value) -> ir::Value {
@@ -105,21 +103,21 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.append_block_param(join, types::I64);
         self.builder.func.layout.set_cold(slowpath_bb);
 
-        let mask_lhs_i32 = self.builder.ins().band_imm(lhs, Value::NUMBER_TAG as i64);
-        let is_lhs_i32 =
-            self.builder
-                .ins()
-                .icmp_imm(IntCC::Equal, mask_lhs_i32, Value::NUMBER_TAG as i64);
+        let mask_lhs_i32 = self.builder.ins().band_imm(lhs, Value::NUMBER_TAG);
+        let is_lhs_i32 = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, mask_lhs_i32, Value::NUMBER_TAG);
         self.builder
             .ins()
             .brif(is_lhs_i32, check_rhs_i32, &[], slowpath_bb, &[]);
         self.builder.switch_to_block(check_rhs_i32);
 
-        let mask_rhs_i32 = self.builder.ins().band_imm(rhs, Value::NUMBER_TAG as i64);
-        let is_rhs_i32 =
-            self.builder
-                .ins()
-                .icmp_imm(IntCC::Equal, mask_rhs_i32, Value::NUMBER_TAG as i64);
+        let mask_rhs_i32 = self.builder.ins().band_imm(rhs, Value::NUMBER_TAG);
+        let is_rhs_i32 = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, mask_rhs_i32, Value::NUMBER_TAG);
 
         self.builder
             .ins()
@@ -132,7 +130,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
             let res = i32_fastpath(self, lhs_i32, rhs_i32, slowpath_bb);
             let res = self.builder.ins().uextend(types::I64, res);
-            let res = self.builder.ins().bor_imm(res, Value::NUMBER_TAG as i64);
+            let res = self.builder.ins().bor_imm(res, Value::NUMBER_TAG);
             self.builder.ins().jump(join, &[BlockArg::Value(res)]);
         }
         self.builder.switch_to_block(slowpath_bb);
@@ -197,11 +195,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         fastpath: impl FnOnce(&mut Self, ir::Value, ir::Block) -> ir::Value,
         slowpath: impl FnOnce(&mut Self, ir::Value) -> ir::Value,
     ) -> ir::Value {
-        let mask = self.builder.ins().band_imm(value, Value::NUMBER_TAG as i64);
+        let mask = self.builder.ins().band_imm(value, Value::NUMBER_TAG);
         let is_i32 = self
             .builder
             .ins()
-            .icmp_imm(IntCC::Equal, mask, Value::NUMBER_TAG as i64);
+            .icmp_imm(IntCC::Equal, mask, Value::NUMBER_TAG);
 
         let fastpath_bb = self.builder.create_block();
         let slowpath_bb = self.builder.create_block();
@@ -218,7 +216,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let value_i32 = self.builder.ins().ireduce(types::I32, value);
             let res = fastpath(self, value_i32, slowpath_bb);
             let res = self.builder.ins().uextend(types::I64, res);
-            let res = self.builder.ins().bor_imm(res, Value::NUMBER_TAG as i64);
+            let res = self.builder.ins().bor_imm(res, Value::NUMBER_TAG);
             self.builder.ins().jump(join, &[BlockArg::Value(res)]);
         }
         self.builder.switch_to_block(slowpath_bb);
@@ -232,19 +230,19 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn is_int32(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG as i64);
+        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
         self.builder
             .ins()
-            .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG as i64)
+            .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG)
     }
 
     pub fn is_flonum(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG as i64);
+        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
         let not_zero = self.builder.ins().icmp_imm(IntCC::NotEqual, v, 0);
         let not_i32 = self
             .builder
             .ins()
-            .icmp_imm(IntCC::NotEqual, tag, Value::NUMBER_TAG as i64);
+            .icmp_imm(IntCC::NotEqual, tag, Value::NUMBER_TAG);
         self.builder.ins().band(not_i32, not_zero)
     }
 
@@ -297,23 +295,23 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         else_: ir::Block,
         else_args: &[BlockArg],
     ) {
-        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG as i64);
+        let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
         let is_int = self
             .builder
             .ins()
-            .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG as i64);
+            .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG);
         self.builder
             .ins()
             .brif(is_int, then, then_args, else_, else_args);
     }
 
     pub fn is_immediate(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NOT_CELL_MASK as i64);
+        let tag = self.builder.ins().band_imm(v, Value::NOT_CELL_MASK);
         self.builder.ins().icmp_imm(IntCC::NotEqual, tag, 0)
     }
 
     pub fn is_heap_object(&mut self, v: ir::Value) -> ir::Value {
-        let tag = self.builder.ins().band_imm(v, Value::NOT_CELL_MASK as i64);
+        let tag = self.builder.ins().band_imm(v, Value::NOT_CELL_MASK);
         let non_zero = self.builder.ins().icmp_imm(IntCC::NotEqual, v, 0);
         let is_cell = self.builder.ins().icmp_imm(IntCC::Equal, tag, 0);
 

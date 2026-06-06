@@ -1,10 +1,10 @@
 #![allow(
     incomplete_features,
-    clippy::type_complexity,
     internal_features,
-    clippy::new_without_default,
-    clippy::from_over_into,
-    clippy::not_unsafe_ptr_arg_deref
+    dead_code,
+    path_statements,
+    unused_must_use,
+    unused_mut
 )]
 #![feature(
     arbitrary_self_types,

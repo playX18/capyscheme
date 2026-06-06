@@ -19,6 +19,8 @@ use crate::{
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+type RootedFoldingTable = crate::Rootable!(FoldingTable<'_>);
+
 pub struct FoldingTable<'gc> {
     table: HashMap<Value<'gc>, FoldingEntry<'gc>>,
 }
@@ -30,19 +32,19 @@ impl<'gc> FoldingTable<'gc> {
         prim: Value<'gc>,
         args: &[Atom<'gc>],
     ) -> Option<Value<'gc>> {
-        if args.iter().all(|arg| matches!(arg, Atom::Constant(_))) {
-            if let Some(entry) = self.table.get(&prim) {
-                let args = args
-                    .iter()
-                    .map(|arg| match arg {
-                        Atom::Constant(val) => val.clone(),
-                        _ => unreachable!(),
-                    })
-                    .collect::<Vec<_>>();
-                let result = entry.apply(ctx, &args)?;
+        if args.iter().all(|arg| matches!(arg, Atom::Constant(_)))
+            && let Some(entry) = self.table.get(&prim)
+        {
+            let args = args
+                .iter()
+                .map(|arg| match arg {
+                    Atom::Constant(val) => *val,
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            let result = entry.apply(ctx, &args)?;
 
-                return Some(result);
-            }
+            return Some(result);
         }
 
         None
@@ -58,7 +60,7 @@ impl<'gc> FoldingTable<'gc> {
 unsafe impl<'gc> Trace for FoldingTable<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         unsafe {
-            for (val, _) in self.table.iter_mut() {
+            for val in self.table.keys() {
                 // SAFETY: See above — exclusive `&mut self` access makes this const-to-mut cast sound.
                 let val = val as *const Value<'gc> as *mut Value<'gc>;
                 (*val).trace(visitor);
@@ -134,38 +136,38 @@ macro_rules! folding {
 fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
     let mut table = folding!(ctx;
         "zero?" => is_zero(ctx, a) {
-            let Some(a) = a.number() else { return None };
+            let a = a.number()?;
 
             Some(Value::new(a.is_zero()))
         }
         "+" => plus(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some(Number::add(ctx, a, b).into_value(ctx))
         }
 
         "-" => minus(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some(Number::sub(ctx, a, b).into_value(ctx))
         }
 
         "*" => mul(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some(Number::mul(ctx, a, b).into_value(ctx))
         }
 
         "/" => div(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             if b.is_zero() && (b.is_exact() && a.is_exact()) {
                 return None; // Division by zero
@@ -176,40 +178,40 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "=" => eq(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some(Number::equal(ctx, a, b).into_value(ctx))
         }
 
         ">" => gt(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) == Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
 
         "<" => lt(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) == Some(std::cmp::Ordering::Less)).into_value(ctx))
         }
 
         ">=" => ge(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Less)).into_value(ctx))
         }
 
         "<=" => le(ctx, a,b) {
 
-            let Some(a) = a.number() else { return None; };
-            let Some(b) = b.number() else { return None; };
+            let a = a.number()?;
+            let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
@@ -312,7 +314,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         "integer->char" => integer_to_char(ctx, a) {
             if a.is_int32() {
                 let c = a.as_int32();
-                if c >= 0 && c <= 0x10FFFF {
+                if (0..=0x10FFFF).contains(&c) {
                     Some(Value::new(std::char::from_u32(c as u32)?))
                 } else {
                     None
@@ -323,19 +325,11 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "string->symbol" => string_to_symbol(ctx, a) {
-            if let Some(s) = a.try_as::<Str>() {
-                Some(Value::new(Symbol::from_string(ctx, s)))
-            } else {
-                None
-            }
+            a.try_as::<Str>().map(|s| Value::new(Symbol::from_string(ctx, s)))
         }
 
         "symbol->string" => symbol_to_string(ctx, a) {
-            if let Some(sym) = a.try_as::<Symbol>() {
-                Some(Value::new(sym.to_str(*ctx)))
-            } else {
-                None
-            }
+            a.try_as::<Symbol>().map(|sym| Value::new(sym.to_str(*ctx)))
         }
 
         "cons" => cons(ctx, a, b) {
@@ -408,7 +402,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 match n {
                     Number::Fixnum(fix) => Some(Value::from_raw(fix as u64)),
                     Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst constant is too big"))),
-                    Number::Flonum(flonum) => Some(Value::from_raw(flonum.to_bits() as u64)),
+                    Number::Flonum(flonum) => Some(Value::from_raw(flonum.to_bits())),
 
                     _ => panic!("BUG: .iconst called on non-integer value"),
                 }
@@ -421,7 +415,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             if let Some(n) = a.number() {
                 match n {
                     Number::Fixnum(fix) => Some(Value::from_raw((fix & 0xFFFF) as u64)),
-                    Number::BigInt(bignum) => Some(Value::from_raw((bignum.try_as_u64().expect("BUG: .iconst16 constant is too big") & 0xFFFF) as u64)),
+                    Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst16 constant is too big") & 0xFFFF)),
                     _ => panic!("BUG: .iconst16 called on non-integer value"),
                 }
             } else {
@@ -433,7 +427,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             if let Some(n) = a.number() {
                 match n {
                     Number::Fixnum(fix) => Some(Value::from_raw(fix as u32 as u64)),
-                    Number::BigInt(bignum) => Some(Value::from_raw((bignum.try_as_u64().expect("BUG: .iconst32 constant is too big") & 0xFFFFFFFF) as u64)),
+                    Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst32 constant is too big") & 0xFFFFFFFF)),
                     _ => panic!("BUG: .iconst32 called on non-integer value"),
                 }
             } else {
@@ -639,7 +633,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             // `raw_object_reference_write` since this stores a GC-managed reference.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset.as_int32() as isize;
-                addr.store(value.bits() as u64);
+                addr.store(value.bits());
                 let slot = ObjectSlot::from_address(addr);
                 ctx.mutation().raw_object_reference_write(a.as_cell_raw(), slot, GCObject::NULL);
             }
@@ -872,42 +866,42 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "u64+" => u64_add(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64).wrapping_add(b.bits() as u64)))
+            Some(Value::from_raw(a.bits().wrapping_add(b.bits())))
         }
 
         "u64-" => u64_sub(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64).wrapping_sub(b.bits() as u64)))
+            Some(Value::from_raw(a.bits().wrapping_sub(b.bits())))
         }
 
         "u64*" => u64_mul(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64).wrapping_mul(b.bits() as u64)))
+            Some(Value::from_raw(a.bits().wrapping_mul(b.bits())))
         }
 
         "u64/" => u64_div(ctx, a, b) {
-            if b.bits() as u64 == 0 {
+            if b.bits() == 0 {
             return None; // Division by zero
             }
-            Some(Value::from_raw((a.bits() as u64).wrapping_div(b.bits() as u64)))
+            Some(Value::from_raw(a.bits().wrapping_div(b.bits())))
         }
 
         "u64<<" => u64_shl(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64).wrapping_shl(b.bits() as u32)))
+            Some(Value::from_raw(a.bits().wrapping_shl(b.bits() as u32)))
         }
 
         "u64>>" => u64_shr(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64).wrapping_shr(b.bits() as u32)))
+            Some(Value::from_raw(a.bits().wrapping_shr(b.bits() as u32)))
         }
 
         "u64and" => u64_and(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64) & (b.bits() as u64)))
+            Some(Value::from_raw(a.bits() & b.bits()))
         }
 
         "u64or" => u64_or(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64) | (b.bits() as u64)))
+            Some(Value::from_raw(a.bits() | b.bits()))
         }
 
         "u64xor" => u64_xor(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u64) ^ (b.bits() as u64)))
+            Some(Value::from_raw(a.bits() ^ b.bits()))
         }
 
         "u64not" => u64_not(ctx, a) {
@@ -915,39 +909,39 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "u64=" => u64_eq(ctx, a, b) {
-            Some(Value::new((a.bits() as u64) == (b.bits() as u64)))
+            Some(Value::new(a.bits() == b.bits()))
         }
 
         "u64>" => u64_gt(ctx, a, b) {
-            Some(Value::new((a.bits() as u64) > (b.bits() as u64)))
+            Some(Value::new(a.bits() > b.bits()))
         }
 
         "u64<" => u64_lt(ctx, a, b) {
-            Some(Value::new((a.bits() as u64) < (b.bits() as u64)))
+            Some(Value::new(a.bits() < b.bits()))
         }
 
         "u64>=" => u64_ge(ctx, a, b) {
-            Some(Value::new((a.bits() as u64) >= (b.bits() as u64)))
+            Some(Value::new(a.bits() >= b.bits()))
         }
 
         "u64<=" => u64_le(ctx, a, b) {
-            Some(Value::new((a.bits() as u64) <= (b.bits() as u64)))
+            Some(Value::new(a.bits() <= b.bits()))
         }
 
         "u64->u8" => u64_to_u8(ctx, a) {
-            Some(Value::from_raw((a.bits() as u64) as u8 as u64))
+            Some(Value::from_raw(a.bits() as u8 as u64))
         }
 
         "u64->u16" => u64_to_u16(ctx, a) {
-            Some(Value::from_raw((a.bits() as u64) as u16 as u64))
+            Some(Value::from_raw(a.bits() as u16 as u64))
         }
 
         "u64->u32" => u64_to_u32(ctx, a) {
-            Some(Value::from_raw((a.bits() as u64) as u32 as u64))
+            Some(Value::from_raw(a.bits() as u32 as u64))
         }
 
         "u64->u64" => u64_to_u64(ctx, a) {
-            Some(Value::from_raw(a.bits() as u64))
+            Some(Value::from_raw(a.bits()))
         }
 
         "u32->value" => u32_to_value(ctx, a) {
@@ -955,7 +949,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "u64->value" => u64_to_value(ctx, a) {
-            Some(Number::from_u64(ctx, a.bits() as u64).into_value(ctx))
+            Some(Number::from_u64(ctx, a.bits()).into_value(ctx))
         }
 
         "usize->value" => usize_to_value(ctx, a) {
@@ -989,7 +983,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
     table
 }
 
-static FOLDING_TABLE: OnceLock<Global<crate::Rootable!(FoldingTable<'_>)>> = OnceLock::new();
+static FOLDING_TABLE: OnceLock<Global<RootedFoldingTable>> = OnceLock::new();
 
 pub fn folding_table<'gc>(ctx: Context<'gc>) -> &'gc FoldingTable<'gc> {
     FOLDING_TABLE

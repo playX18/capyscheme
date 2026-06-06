@@ -277,7 +277,7 @@ pub fn resolve_primitives<'gc>(
             if let Some(var) = m.variable(ctx, *name)
                 && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
                 && Gc::ptr_eq(var, prim.downcast::<Variable>())
-                && !local_definitions.contains(&name)
+                && !local_definitions.contains(name)
             {
                 Gc::new(
                     *ctx,
@@ -371,7 +371,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_ccm(ctx).into(), &[], src))
+        Some(prim_call_term(ctx, sym_ccm(ctx).into(), [], src))
     }
 
     "$set-attachments!" ex_set_ccm<'gc>(ctx, args, src) {
@@ -419,7 +419,7 @@ primitive_expanders!(
             Term {
                 source: src.into(),
                 kind: TermKind::Receive(
-                    consumer.args.clone(),
+                    consumer.args,
                     consumer.variadic,
                     producer.body,
                     consumer.body,
@@ -482,7 +482,7 @@ primitive_expanders!(
         let len = ls.list_length();
         if len == 1 {
             let v1 = ls.list_ref(0).unwrap();
-            let check = prim_call_term(ctx, sym_eqp(ctx).into(), &[key, constant(ctx, v1)], src);
+            let check = prim_call_term(ctx, sym_eqp(ctx).into(), [key, constant(ctx, v1)], src);
             return Some(if_term(ctx, check, constant(ctx, ls), constant(ctx, Value::new(false))));
         } else if len > 5 {
             // too much elements to check: reify into a normal call
@@ -497,7 +497,7 @@ primitive_expanders!(
             let rest_val = it;
             it = it.cdr();
 
-            let check = prim_call_term(ctx, sym_eqvp(ctx).into(), &[key, constant(ctx, val)], src);
+            let check = prim_call_term(ctx, sym_eqvp(ctx).into(), [key, constant(ctx, val)], src);
             result = if_term(ctx, check, constant(ctx, rest_val), result);
         }
 
@@ -536,7 +536,7 @@ primitive_expanders!(
         let len = ls.list_length();
         if len == 1 {
             let v1 = ls.list_ref(0).unwrap();
-            let check = prim_call_term(ctx, sym_eqp(ctx).into(), &[key, constant(ctx, v1)], src);
+            let check = prim_call_term(ctx, sym_eqp(ctx).into(), [key, constant(ctx, v1)], src);
             return Some(if_term(ctx, check, constant(ctx, ls), constant(ctx, Value::new(false))));
         } else if len > 5 {
             // too much elements to check: reify into a normal call
@@ -551,7 +551,7 @@ primitive_expanders!(
             let rest_val = it;
             it = it.cdr();
 
-            let check = prim_call_term(ctx, sym_eqp(ctx).into(), &[key, constant(ctx, val)], src);
+            let check = prim_call_term(ctx, sym_eqp(ctx).into(), [key, constant(ctx, val)], src);
             result = if_term(ctx, check, constant(ctx, rest_val), result);
         }
 
@@ -1009,7 +1009,7 @@ primitive_expanders!(
 
         let zero = constant(ctx, Value::new(0i32));
 
-        Some(prim_call_term(ctx, sym_number_eq(ctx).into(), &[args[0], zero], src))
+        Some(prim_call_term(ctx, sym_number_eq(ctx).into(), [args[0], zero], src))
     }
 
     "positive?" ex_positive<'gc>(ctx, args, src) {
@@ -1017,7 +1017,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_number_gt(ctx).into(), &[args[0], constant(ctx, Value::new(0i32))], src))
+        Some(prim_call_term(ctx, sym_number_gt(ctx).into(), [args[0], constant(ctx, Value::new(0i32))], src))
     }
 
     "negative?" ex_negative<'gc>(ctx, args, src) {
@@ -1026,7 +1026,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_number_lt(ctx).into(), &[args[0], constant(ctx, Value::new(0i32))], src))
+        Some(prim_call_term(ctx, sym_number_lt(ctx).into(), [args[0], constant(ctx, Value::new(0i32))], src))
     }
 
 
@@ -1046,7 +1046,7 @@ primitive_expanders!(
         // replace with `(= (char->integer arg0) ...)`
         let mut int_args = Vec::with_capacity(args.len());
         for arg in args {
-            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), &[
+            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), [
                 *arg
             ], src));
         }
@@ -1062,7 +1062,7 @@ primitive_expanders!(
         // replace with `(< (char->integer arg0) ...)`
         let mut int_args = Vec::with_capacity(args.len());
         for arg in args {
-            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), &[
+            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), [
                 *arg
             ], src));
         }
@@ -1078,7 +1078,7 @@ primitive_expanders!(
         // replace with `(<= (char->integer arg0) ...)`
         let mut int_args = Vec::with_capacity(args.len());
         for arg in args {
-            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), &[
+            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), [
                 *arg
             ], src));
         }
@@ -1094,7 +1094,7 @@ primitive_expanders!(
         // replace with `(> (char->integer arg0) ...)`
         let mut int_args = Vec::with_capacity(args.len());
         for arg in args {
-            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), &[
+            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), [
                 *arg
             ], src));
         }
@@ -1110,7 +1110,7 @@ primitive_expanders!(
         // replace with `(>= (char->integer arg0) ...)`
         let mut int_args = Vec::with_capacity(args.len());
         for arg in args {
-            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), &[
+            int_args.push(prim_call_term(ctx, sym_char2integer(ctx).into(), [
                 *arg
             ], src));
         }
@@ -1153,7 +1153,7 @@ primitive_expanders!(
         } else {
             let first = args[0];
             let rest = &args[1..];
-            Some(prim_call_term(ctx, sym_cons(ctx).into(), &[first, ex_cons_star(ctx, rest, src)?], src))
+            Some(prim_call_term(ctx, sym_cons(ctx).into(), [first, ex_cons_star(ctx, rest, src)?], src))
         }
     }
 
@@ -1169,7 +1169,7 @@ primitive_expanders!(
 
             let rest = &args[1..];
             // (append x (append ...rest))
-            Some(prim_call_term(ctx, sym_append(ctx).into(), &[x, ex_append(ctx, &rest, src)?], src))
+            Some(prim_call_term(ctx, sym_append(ctx).into(), [x, ex_append(ctx, rest, src)?], src))
         }
     }
 
@@ -1178,7 +1178,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cons(ctx).into(), &[prim_call_term(ctx, sym_cons(ctx).into(), &[args[0], args[1]], src), args[2]], src))
+        Some(prim_call_term(ctx, sym_cons(ctx).into(), [prim_call_term(ctx, sym_cons(ctx).into(), [args[0], args[1]], src), args[2]], src))
     }
 
 
@@ -1220,7 +1220,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src))
     }
 
     "cadr" ex_cadr<'gc>(ctx, args, src) {
@@ -1228,7 +1228,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src))
     }
 
     "cdar" ex_cdar<'gc>(ctx, args, src) {
@@ -1236,7 +1236,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src))
     }
 
     "cddr" ex_cddr<'gc>(ctx, args, src) {
@@ -1244,7 +1244,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src))
     }
 
     "caaar" ex_caaar<'gc>(ctx, args, src) {
@@ -1252,7 +1252,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "caadr" ex_caadr<'gc>(ctx, args, src) {
@@ -1260,7 +1260,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "cadar" ex_cadar<'gc>(ctx, args, src) {
@@ -1268,7 +1268,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "caddr" ex_caddr<'gc>(ctx, args, src) {
@@ -1276,7 +1276,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "cdaar" ex_cdaar<'gc>(ctx, args, src) {
@@ -1284,7 +1284,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "cdadr" ex_cdadr<'gc>(ctx, args, src) {
@@ -1292,7 +1292,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "cddar" ex_cddar<'gc>(ctx, args, src) {
@@ -1300,7 +1300,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "cdddr" ex_cdddr<'gc>(ctx, args, src) {
@@ -1308,7 +1308,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src))
     }
 
     "caaaar" ex_caaaar<'gc>(ctx, args, src) {
@@ -1316,7 +1316,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "caaadr" ex_caaadr<'gc>(ctx, args, src) {
@@ -1324,7 +1324,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "caadar" ex_caadar<'gc>(ctx, args, src) {
@@ -1332,7 +1332,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "caaddr" ex_caaddr<'gc>(ctx, args, src) {
@@ -1340,7 +1340,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cadaar" ex_cadaar<'gc>(ctx, args, src) {
@@ -1348,7 +1348,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cadadr" ex_cadadr<'gc>(ctx, args, src) {
@@ -1356,7 +1356,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "caddar" ex_caddar<'gc>(ctx, args, src) {
@@ -1364,7 +1364,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cadddr" ex_cadddr<'gc>(ctx, args, src) {
@@ -1372,7 +1372,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cdaaar" ex_cdaaar<'gc>(ctx, args, src) {
@@ -1380,7 +1380,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cdaadr" ex_cdaadr<'gc>(ctx, args, src) {
@@ -1388,7 +1388,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cdadar" ex_cdadar<'gc>(ctx, args, src) {
@@ -1396,7 +1396,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cdaddr" ex_cdaddr<'gc>(ctx, args, src) {
@@ -1404,7 +1404,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cddaar" ex_cddaar<'gc>(ctx, args, src) {
@@ -1412,7 +1412,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cddadr" ex_cddadr<'gc>(ctx, args, src) {
@@ -1420,7 +1420,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cdddar" ex_cdddar<'gc>(ctx, args, src) {
@@ -1428,7 +1428,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_car(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_car(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
     "cddddr" ex_cddddr<'gc>(ctx, args, src) {
@@ -1436,7 +1436,7 @@ primitive_expanders!(
             return None;
         }
 
-        Some(prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[prim_call_term(ctx, sym_cdr(ctx).into(), &[args[0]], src)], src)], src)], src))
+        Some(prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [prim_call_term(ctx, sym_cdr(ctx).into(), [args[0]], src)], src)], src)], src))
     }
 
 
@@ -1454,11 +1454,11 @@ primitive_expanders!(
         if args.is_empty() {
             return Some(constant(ctx, Value::null()));
         } else if args.len() == 1 {
-            return Some(prim_call_term(ctx, sym_cons(ctx).into(), &[args[0], constant(ctx, Value::null())], src));
+            return Some(prim_call_term(ctx, sym_cons(ctx).into(), [args[0], constant(ctx, Value::null())], src));
         } else {
             let first = args[0];
             let rest = &args[1..];
-            return Some(prim_call_term(ctx, sym_cons(ctx).into(), &[first, ex_list(ctx, rest, src)?], src));
+            return Some(prim_call_term(ctx, sym_cons(ctx).into(), [first, ex_list(ctx, rest, src)?], src));
         }
     }
 
@@ -1466,10 +1466,10 @@ primitive_expanders!(
         let tmp = fresh_lvar(ctx, Symbol::from_str(ctx, "vec").into());
         let len = args.len() as i32;
 
-        let init = prim_call_term(ctx, sym_make_vector(ctx).into(), &[constant(ctx, Value::new(len)), constant(ctx, Value::new(Value::undefined()))], src);
+        let init = prim_call_term(ctx, sym_make_vector(ctx).into(), [constant(ctx, Value::new(len)), constant(ctx, Value::new(Value::undefined()))], src);
         let mut body = Vec::new();
         for (i, arg) in args.iter().enumerate() {
-            let setv = prim_call_term(ctx, sym_vector_set(ctx).into(), &[lref(ctx, tmp), constant(ctx, Value::new(i as i32)), *arg], src);
+            let setv = prim_call_term(ctx, sym_vector_set(ctx).into(), [lref(ctx, tmp), constant(ctx, Value::new(i as i32)), *arg], src);
             body.push(setv);
         }
 
@@ -1481,8 +1481,8 @@ primitive_expanders!(
             return Some(let_term(
                 ctx,
                 LetStyle::Let,
-                Array::from_slice(*ctx, &[tmp]),
-                Array::from_slice(*ctx, &[init]),
+                Array::from_slice(*ctx, [tmp]),
+                Array::from_slice(*ctx, [init]),
                 seq_from_slice(ctx, body),
                 src,
             ));
@@ -1583,7 +1583,7 @@ primitive_expanders!(
         if args.len() > 1 {
             return None;
         }
-        Some(prim_call_term(ctx, sym_current_module(ctx).into(), &args, src))
+        Some(prim_call_term(ctx, sym_current_module(ctx).into(), args, src))
     }
 
     "define!" ex_define<'gc>(ctx, args, src) {
@@ -1650,7 +1650,7 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
                 let term = f(ctx, args.as_slice(), t.source());
 
                 if let Some(term) = term {
-                    return term;
+                    term
                 } else {
                     // failed expansion: reify primitive into a function call to it instead
                     let module_ref = Gc::new(
@@ -1661,7 +1661,7 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
                         },
                     );
 
-                    return call_term(ctx, module_ref, args.as_slice(), t.source());
+                    call_term(ctx, module_ref, args.as_slice(), t.source())
                 }
             } else {
                 // failed expansion: reify primitive into a function call to it instead
@@ -1673,7 +1673,7 @@ pub fn expand_primitives<'gc>(ctx: Context<'gc>, t: TermRef<'gc>) -> TermRef<'gc
                     },
                 );
 
-                return call_term(ctx, module_ref, args.as_slice(), t.source());
+                call_term(ctx, module_ref, args.as_slice(), t.source())
             }
         }
 
@@ -1797,11 +1797,11 @@ pub fn transitive<'gc>(
     }
 
     if args.len() == 2 {
-        return Some(Term::prims(ctx, op, [args[0], args[1]], src));
+        Some(Term::prims(ctx, op, [args[0], args[1]], src))
     } else {
         let first = args[0];
         let rest = &args[1..];
-        return Some(associate_args(ctx, src, op, first, rest));
+        Some(associate_args(ctx, src, op, first, rest))
     }
 }
 
@@ -1815,7 +1815,7 @@ pub fn associate_args<'gc>(
     let next = &args[1..];
     let arg = args[0];
     if next.is_empty() {
-        return Term::prims(ctx, op, [first_arg, arg], src);
+        Term::prims(ctx, op, [first_arg, arg], src)
     } else {
         associate_args(
             ctx,

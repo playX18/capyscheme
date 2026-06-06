@@ -30,7 +30,7 @@ static SYNTAX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Syntax<'static>>::VT,
     TypeCode8::SYNTAX.bits() as u16,
 );
-pub static SYNTAX_INFO: &'static HeapTypeInfo = &SYNTAX_INFO_VALUE;
+pub static SYNTAX_INFO: &HeapTypeInfo = &SYNTAX_INFO_VALUE;
 
 impl<'gc> Syntax<'gc> {
     pub fn new(
@@ -367,7 +367,7 @@ static SYNTAX_TRANSFORMER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, SyntaxTransformer<'static>>::VT,
     TypeCode8::SYNCLO.bits() as u16,
 );
-pub static SYNTAX_TRANSFORMER_INFO: &'static HeapTypeInfo = &SYNTAX_TRANSFORMER_INFO_VALUE;
+pub static SYNTAX_TRANSFORMER_INFO: &HeapTypeInfo = &SYNTAX_TRANSFORMER_INFO_VALUE;
 
 impl<'gc> SyntaxTransformer<'gc> {
     pub fn new(

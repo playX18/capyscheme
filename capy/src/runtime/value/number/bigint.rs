@@ -1,3 +1,5 @@
+//! Arbitrary-precision integer representation and formatting.
+
 use std::{
     borrow::Cow,
     fmt,
@@ -35,8 +37,13 @@ pub type Digit2X = u128;
 pub type Digit = u64;
 pub type IDigit = i64;
 pub type IDigit2X = i128;
+type RootedBigInt = crate::Rootable!(Gc<'_, BigInt<'_>>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseBigIntError;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+/// Sign of an exact integer.
 pub enum Sign {
     Negative,
     Zero,
@@ -64,6 +71,7 @@ impl Sign {
     }
 }
 #[repr(C, align(8))]
+/// Heap-allocated arbitrary-precision integer.
 pub struct BigInt<'gc> {
     count: u32,
     negative: bool,
@@ -132,7 +140,7 @@ impl<'gc> fmt::Debug for BigInt<'gc> {
 }
 
 impl<'gc> BigInt<'gc> {
-    /// Creates a new BigInt with the given number of words, initialized to zero.
+    /// Allocates a bigint from little-endian machine words.
     ///
     /// # Panics
     ///
@@ -150,7 +158,7 @@ impl<'gc> BigInt<'gc> {
 
         unsafe {
             let layout = std::alloc::Layout::from_size_align_unchecked(
-                std::mem::size_of::<Self>() + words.len() * std::mem::size_of::<Digit>(),
+                std::mem::size_of::<Self>() + std::mem::size_of_val(words),
                 std::mem::align_of::<Self>(),
             );
 
@@ -229,7 +237,7 @@ impl<'gc> BigInt<'gc> {
 
     /// Returns the number of words in this BigInt.
     pub fn num_words(&self) -> usize {
-        self.count() as usize
+        self.count()
     }
 
     /// Returns a slice to the words of this BigInt.
@@ -260,7 +268,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn dup(&self, ctx: Context<'gc>, negative: bool) -> Gc<'gc, Self> {
-        Self::new::<false>(ctx, &**self, negative)
+        Self::new::<false>(ctx, self, negative)
     }
 
     #[cfg(feature = "bootstrap")]
@@ -295,10 +303,7 @@ impl<'gc> BigInt<'gc> {
         }
 
         let (sign, bytes) = num_bigint.to_bytes_be();
-        let negative = match sign {
-            NumSign::Minus => true,
-            _ => false,
-        };
+        let negative = matches!(sign, NumSign::Minus);
 
         let mut words = Vec::new();
         let chunk_size = std::mem::size_of::<Digit>();
@@ -351,7 +356,7 @@ impl<'gc> BigInt<'gc> {
 
 static BIGINT_INFO_VALUE: HeapTypeInfo =
     HeapTypeInfo::new(BigInt::<'static>::VT, TypeCode16::BIG.bits());
-pub static BIGINT_INFO: &'static HeapTypeInfo = &BIGINT_INFO_VALUE;
+pub static BIGINT_INFO: &HeapTypeInfo = &BIGINT_INFO_VALUE;
 
 unsafe impl<'gc> Trace for BigInt<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {}
@@ -369,14 +374,14 @@ impl<'gc> Index<usize> for BigInt<'gc> {
     type Output = Digit;
 
     fn index(&self, index: usize) -> &Self::Output {
-        debug_assert!(index < self.count() as usize);
+        debug_assert!(index < self.count());
         unsafe { &*(self.words.as_ptr().add(index) as *const Digit) }
     }
 }
 
 impl<'gc> IndexMut<usize> for BigInt<'gc> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        debug_assert!(index < self.count() as usize);
+        debug_assert!(index < self.count());
         unsafe { &mut *(self.words.as_mut_ptr().add(index) as *mut Digit) }
     }
 }
@@ -385,8 +390,8 @@ impl<'gc> Index<Range<usize>> for BigInt<'gc> {
     type Output = [Digit];
 
     fn index(&self, range: Range<usize>) -> &Self::Output {
-        assert!(range.start < self.count() as usize);
-        assert!(range.end <= self.count() as usize);
+        assert!(range.start < self.count());
+        assert!(range.end <= self.count());
         unsafe { std::slice::from_raw_parts(self.words.as_ptr().add(range.start), range.len()) }
     }
 }
@@ -395,14 +400,14 @@ impl<'gc> Index<RangeTo<usize>> for BigInt<'gc> {
     type Output = [Digit];
 
     fn index(&self, range: RangeTo<usize>) -> &Self::Output {
-        assert!(range.end <= self.count() as usize);
+        assert!(range.end <= self.count());
         unsafe { std::slice::from_raw_parts(self.words.as_ptr(), range.end) }
     }
 }
 
 impl<'gc> IndexMut<RangeTo<usize>> for BigInt<'gc> {
     fn index_mut(&mut self, range: RangeTo<usize>) -> &mut Self::Output {
-        assert!(range.end <= self.count() as usize);
+        assert!(range.end <= self.count());
         unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr(), range.end) }
     }
 }
@@ -411,14 +416,14 @@ impl<'gc> Index<RangeFrom<usize>> for BigInt<'gc> {
     type Output = [Digit];
 
     fn index(&self, range: RangeFrom<usize>) -> &Self::Output {
-        assert!(range.start < self.count() as usize);
+        assert!(range.start < self.count());
         unsafe { std::slice::from_raw_parts(self.words.as_ptr().add(range.start), self.count()) }
     }
 }
 
 impl<'gc> IndexMut<RangeFrom<usize>> for BigInt<'gc> {
     fn index_mut(&mut self, range: RangeFrom<usize>) -> &mut Self::Output {
-        assert!(range.start < self.count() as usize);
+        assert!(range.start < self.count());
         unsafe {
             std::slice::from_raw_parts_mut(self.words.as_mut_ptr().add(range.start), self.count())
         }
@@ -427,8 +432,8 @@ impl<'gc> IndexMut<RangeFrom<usize>> for BigInt<'gc> {
 
 impl<'gc> IndexMut<Range<usize>> for BigInt<'gc> {
     fn index_mut(&mut self, range: Range<usize>) -> &mut Self::Output {
-        assert!(range.start < self.count() as usize);
-        assert!(range.end <= self.count() as usize);
+        assert!(range.start < self.count());
+        assert!(range.end <= self.count());
         unsafe {
             std::slice::from_raw_parts_mut(self.words.as_mut_ptr().add(range.start), range.len())
         }
@@ -439,13 +444,13 @@ impl<'gc> Deref for BigInt<'gc> {
     type Target = [Digit];
 
     fn deref(&self) -> &Self::Target {
-        unsafe { std::slice::from_raw_parts(self.words.as_ptr(), self.count() as usize) }
+        unsafe { std::slice::from_raw_parts(self.words.as_ptr(), self.count()) }
     }
 }
 
 impl<'gc> DerefMut for BigInt<'gc> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr(), self.count() as usize) }
+        unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr(), self.count()) }
     }
 }
 
@@ -840,7 +845,7 @@ impl<'gc> BigInt<'gc> {
 
         // Make both numbers the same length by padding with zeros
         let max_len = a.count().max(b.count());
-        let half = (max_len + 1) / 2;
+        let half = max_len.div_ceil(2);
 
         // Split numbers: a = a1 * B^half + a0, b = b1 * B^half + b0
         // where B = 2^DIGIT_BIT
@@ -871,7 +876,7 @@ impl<'gc> BigInt<'gc> {
         // Set the correct sign
         let result_negative = a.negative() != b.negative();
         if result.negative() != result_negative {
-            Self::new::<true>(ctx, &*result, result_negative)
+            Self::new::<true>(ctx, &result, result_negative)
         } else {
             result
         }
@@ -884,7 +889,7 @@ impl<'gc> BigInt<'gc> {
         }
 
         let mut result_words = vec![0u64; n];
-        result_words.extend_from_slice(&*num);
+        result_words.extend_from_slice(&num);
 
         Self::new::<true>(ctx, &result_words, num.negative())
     }
@@ -905,22 +910,19 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn zero(ctx: Context<'gc>) -> Gc<'gc, Self> {
-        static ZERO_BIGINT: OnceLock<Global<crate::Rootable!(Gc<'_, BigInt<'_>>)>> =
-            OnceLock::new();
+        static ZERO_BIGINT: OnceLock<Global<RootedBigInt>> = OnceLock::new();
 
         *ZERO_BIGINT
             .get_or_init(|| {
                 let zero = BigInt::new::<false>(ctx, &[0], false);
 
-                let x = Global::new(zero);
-
-                x
+                Global::new(zero)
             })
             .fetch(*ctx)
     }
 
     pub fn one(ctx: Context<'gc>) -> Gc<'gc, Self> {
-        static ONE_BIGINT: OnceLock<Global<crate::Rootable!(Gc<'_, BigInt<'_>>)>> = OnceLock::new();
+        static ONE_BIGINT: OnceLock<Global<RootedBigInt>> = OnceLock::new();
 
         *ONE_BIGINT
             .get_or_init(|| {
@@ -931,7 +933,11 @@ impl<'gc> BigInt<'gc> {
             .fetch(*ctx)
     }
 
-    pub fn parse(ctx: Context<'gc>, str: &str, base: &Base) -> Result<Gc<'gc, Self>, ()> {
+    pub fn parse(
+        ctx: Context<'gc>,
+        str: &str,
+        base: &Base,
+    ) -> Result<Gc<'gc, Self>, ParseBigIntError> {
         let mut negative = false;
         let mut i = 0;
 
@@ -972,7 +978,7 @@ impl<'gc> BigInt<'gc> {
         }
 
         if i != str.len() {
-            return Err(());
+            return Err(ParseBigIntError);
         }
 
         if temp.is_empty() {
@@ -1026,16 +1032,16 @@ impl<'gc> BigInt<'gc> {
         }
 
         let mut res = String::new();
-        let mut res_digits = 0;
-        for (_, &digit) in digits.iter().rev().enumerate() {
-            if res_digits > 0 && group_size > 0 && res_digits % group_size == 0 {
-                if let Some(sep) = group_sep {
-                    res.push_str(sep);
-                }
+        for (res_digits, &digit) in digits.iter().rev().enumerate() {
+            if res_digits > 0
+                && group_size > 0
+                && res_digits % group_size == 0
+                && let Some(sep) = group_sep
+            {
+                res.push_str(sep);
             }
             let ch = base.digit_space.get(digit as usize).copied().unwrap_or('?');
             res.push(ch);
-            res_digits += 1;
         }
 
         if res.is_empty() {
@@ -1106,7 +1112,7 @@ impl<'gc> BigInt<'gc> {
         BigInt::new::<true>(ctx, &words, negative)
     }
 
-    fn mult_sub(approx: Digit, divis: &[Digit], rem: &mut Vec<Digit>, from: usize) {
+    fn mult_sub(approx: Digit, divis: &[Digit], rem: &mut [Digit], from: usize) {
         let mut sum: Digit2X = 0;
         let mut carry = 0;
 
@@ -1125,7 +1131,7 @@ impl<'gc> BigInt<'gc> {
         }
     }
 
-    fn sub_if_possible(divis: &[Digit], rem: &mut Vec<Digit>, from: usize) -> bool {
+    fn sub_if_possible(divis: &[Digit], rem: &mut [Digit], from: usize) -> bool {
         let mut i = divis.len();
         while i > 0 && divis[i - 1] >= rem[from + i - 1] {
             if divis[i - 1] > rem[from + i - 1] {
@@ -1359,7 +1365,7 @@ impl<'gc> BigInt<'gc> {
     }
 
     pub fn random<R: Rng>(ctx: Context<'gc>, rng: &mut R, bitwidth: usize) -> Gc<'gc, Self> {
-        let mut words = vec![0; (bitwidth + DIGIT_BIT - 1) / DIGIT_BIT];
+        let mut words = vec![0; bitwidth.div_ceil(DIGIT_BIT)];
         rng.fill(&mut words[..]);
         Self::new::<true>(ctx, &words, false)
     }
@@ -1367,7 +1373,7 @@ impl<'gc> BigInt<'gc> {
     pub fn is_most_significant_bit_set(words: &[Digit]) -> bool {
         words
             .last()
-            .map_or(false, |&word| word & (1 << (DIGIT_BIT - 1)) != 0)
+            .is_some_and(|&word| word & (1 << (DIGIT_BIT - 1)) != 0)
     }
 
     pub fn twos_complement_size(left: &[Digit], right: &[Digit]) -> usize {
@@ -1611,8 +1617,7 @@ impl<'gc> BigInt<'gc> {
         let swords = shift / DIGIT_BIT;
         let sbits = shift % DIGIT_BIT;
 
-        let mut res = vec![];
-        res.reserve(this.len().saturating_sub(swords));
+        let mut res = Vec::with_capacity(this.len().saturating_sub(swords));
 
         let mut carry = 0;
         let mut i = this.len() as isize - 1;
@@ -2074,7 +2079,7 @@ mod tests {
             let mul = BigInt::times(a, ctx, b);
 
             println!("div: ({q}, {r})");
-            println!("mul: {}", mul.to_string());
+            println!("mul: {}", mul);
 
             assert_eq!(q.to_string(), "9942799");
             assert_eq!(r.to_string(), "1797068403931412326117437881912");

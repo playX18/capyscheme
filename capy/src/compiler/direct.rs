@@ -162,7 +162,7 @@ mod tests {
         };
 
         let thunk_id = RuntimeThunk::Thunk_wrong_number_of_args.id();
-        let relocs = vec![DirectRelocation {
+        let relocs = [DirectRelocation {
             offset: 17,
             kind: Reloc::X86CallPCRel4,
             addend: -4,

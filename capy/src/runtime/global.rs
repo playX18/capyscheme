@@ -18,6 +18,7 @@ use crate::{
 pub trait GlobalValue<'gc>: Trace + IntoValue<'gc> {}
 
 type GlobalMap<'gc> = Vec<Value<'gc>>;
+type RootedGlobalTable = crate::Rootable!(GlobalTable<'_>);
 
 /// A table listing all global variables in the runtime.
 ///
@@ -43,7 +44,7 @@ unsafe impl<'gc> Trace for GlobalTable<'gc> {
 unsafe impl Send for GlobalTable<'_> {}
 unsafe impl Sync for GlobalTable<'_> {}
 
-static GLOBALS: OnceLock<crate::rsgc::Global<crate::Rootable!(GlobalTable<'_>)>> = OnceLock::new();
+static GLOBALS: OnceLock<crate::rsgc::Global<RootedGlobalTable>> = OnceLock::new();
 
 /// Strongly-typed index into the global variable table.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -62,7 +63,7 @@ where
     marker: PhantomData<*const R>,
 }
 
-pub fn globals<'gc>() -> &'static crate::rsgc::Global<crate::Rootable!(GlobalTable<'_>)> {
+pub fn globals() -> &'static crate::rsgc::Global<RootedGlobalTable> {
     GLOBALS.get_or_init(|| {
         crate::rsgc::Global::new(GlobalTable {
             globals: Monitor::new(Vec::with_capacity(128)),
@@ -137,6 +138,12 @@ where
         guard[self.index.0] = value.into_value(ctx);
     }
 
+    /// Construct a global handle from an existing global table index.
+    ///
+    /// # Safety
+    ///
+    /// `index` must refer to an initialized entry in the runtime global table
+    /// for values compatible with `R`.
     pub unsafe fn from_index(index: usize) -> Self {
         Self {
             index: GlobalIndex(index),
@@ -574,7 +581,7 @@ impl<'gc> Globals<'gc> {
         let interesting_primitive_vars = HashTable::new(*ctx, HashTableType::Eq, 128, 0.75);
 
         for_each_prim_name(ctx, |_name_str, name| {
-            let var: Value = root_module.ensure_local_variable(ctx, name.into()).into();
+            let var: Value = root_module.ensure_local_variable(ctx, name).into();
 
             interesting_primitive_vars.put(ctx, name, var);
         });
@@ -677,5 +684,6 @@ impl<'gc> Globals<'gc> {
     }
 }
 
-pub(crate) static VM_GLOBALS: OnceLock<crate::rsgc::Global<crate::Rootable!(Globals<'_>)>> =
-    OnceLock::new();
+type RootedGlobals = crate::Rootable!(Globals<'_>);
+
+pub(crate) static VM_GLOBALS: OnceLock<crate::rsgc::Global<RootedGlobals>> = OnceLock::new();

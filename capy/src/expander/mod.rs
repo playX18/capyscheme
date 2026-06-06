@@ -57,8 +57,9 @@ pub fn syntax_annotation<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> 
     datum_sourcev(ctx, obj)
 }
 
-static SOURCE_PROPERTIES: OnceLock<Global<crate::Rootable!(Gc<'_, WeakTable<'_>>)>> =
-    OnceLock::new();
+type RootedSourceProperties = crate::Rootable!(Gc<'_, WeakTable<'_>>);
+
+static SOURCE_PROPERTIES: OnceLock<Global<RootedSourceProperties>> = OnceLock::new();
 
 pub fn source_properties<'gc>(ctx: Context<'gc>) -> Gc<'gc, WeakTable<'gc>> {
     *SOURCE_PROPERTIES

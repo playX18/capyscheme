@@ -6,7 +6,7 @@
 //! - Constant folding
 //! - Beta reduction
 //! - Rest argument optimization: if rest arguments do not escape a function they belong to,
-//! we can make access to it more efficient by avoiding to allocate a list for them.
+//!   we can make access to it more efficient by avoiding to allocate a list for them.
 
 #![allow(dead_code, unused_variables)]
 
@@ -73,7 +73,7 @@ impl<'gc> State<'gc> {
     fn is_dead(&self, var: LVarRef<'gc>) -> bool {
         self.census
             .get(&var)
-            .map_or(true, |var| var.applied == 0 && var.as_value == 0)
+            .is_none_or(|var| var.applied == 0 && var.as_value == 0)
     }
 
     fn applied_once_with_arity(&self, var: LVarRef<'gc>) -> Option<usize> {
@@ -337,7 +337,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
 }
 
 fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, bool) {
-    stacker::maybe_grow(4 * 1024 * 1024, 1 * 1024 * 1024, || match *term {
+    stacker::maybe_grow(4 * 1024 * 1024, 1024 * 1024, || match *term {
         Term::Let(binding, expr, prev_body) => match expr {
             Expression::PrimCall(prim, prev_args, source) => {
                 /*if state.is_dead(binding)
@@ -350,13 +350,12 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, boo
                     .substitute_atoms(prev_args.iter().copied())
                     .collect::<Vec<_>>();
 
-                if args.iter().all(|arg| matches!(arg, Atom::Constant(_))) {
-                    if let Some(atom) = folding_table(state.ctx).try_fold(state.ctx, prim, &args) {
-                        let state =
-                            state.with_atom_subst(Atom::Local(binding), Atom::Constant(atom));
-                        let (body, _) = shrink_tree(prev_body, state);
-                        return (body, true);
-                    }
+                if args.iter().all(|arg| matches!(arg, Atom::Constant(_)))
+                    && let Some(atom) = folding_table(state.ctx).try_fold(state.ctx, prim, &args)
+                {
+                    let state = state.with_atom_subst(Atom::Local(binding), Atom::Constant(atom));
+                    let (body, _) = shrink_tree(prev_body, state);
+                    return (body, true);
                 }
                 let ctx = state.ctx;
                 let args_changed = !args.iter().zip(prev_args.iter()).all(|(a, b)| a == b);
@@ -589,7 +588,7 @@ fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, boo
                 return (term, false);
             }
 
-            return (Gc::new(*state.ctx, Term::App(fun, retc, args, span)), true);
+            (Gc::new(*state.ctx, Term::App(fun, retc, args, span)), true)
         }
 
         Term::Raise {
@@ -800,7 +799,7 @@ fn copy_t<'gc>(
                 .iter()
                 .map(|c| c.binding().copy(ctx))
                 .collect::<Vec<_>>();
-            let mut subc1 = subc;
+            let subc1 = subc;
 
             for (old, new) in names.iter().zip(names1.iter()) {
                 subc1.insert(*old, *new);
@@ -808,12 +807,12 @@ fn copy_t<'gc>(
 
             let conts = conts
                 .iter()
-                .map(|cont| copy_c(ctx, *cont, subv, &mut subc1))
+                .map(|cont| copy_c(ctx, *cont, subv, subc1))
                 .collect::<Vec<_>>();
 
             let conts = Array::from_slice(*ctx, conts);
 
-            let body = copy_t(ctx, body, subv, &mut subc1);
+            let body = copy_t(ctx, body, subv, subc1);
 
             Gc::new(*ctx, Term::Letk(conts, body))
         }
@@ -1256,31 +1255,31 @@ fn inline_t<'gc>(
             };
             let cnt = state.var_subst(prev_cnt);
 
-            if let Atom::Local(cnt) = state.atom_subst(Atom::Local(cnt)) {
-                if let Some(new_cnt) = state.cenv.get(&cnt).cloned() {
-                    if new_cnt.args().len() == args.len() && new_cnt.variadic().is_none() {
-                        let mut subst = new_cnt
-                            .args()
-                            .iter()
-                            .zip(args.iter())
-                            .map(|(arg, val)| (Atom::Local(*arg), *val))
-                            .collect::<HashMap<_, _>>();
+            if let Atom::Local(cnt) = state.atom_subst(Atom::Local(cnt))
+                && let Some(new_cnt) = state.cenv.get(&cnt).cloned()
+                && new_cnt.args().len() == args.len()
+                && new_cnt.variadic().is_none()
+            {
+                let mut subst = new_cnt
+                    .args()
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(arg, val)| (Atom::Local(*arg), *val))
+                    .collect::<HashMap<_, _>>();
 
-                        let term = copy_t(
-                            state.ctx,
-                            new_cnt.body(),
-                            &mut subst,
-                            &mut HashMap::default(),
-                        );
-                        let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
-                        return RewriteResult {
-                            term,
-                            changed: true,
-                            size,
-                            mentions_tracked_binding,
-                        };
-                    }
-                }
+                let term = copy_t(
+                    state.ctx,
+                    new_cnt.body(),
+                    &mut subst,
+                    &mut HashMap::default(),
+                );
+                let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
+                return RewriteResult {
+                    term,
+                    changed: true,
+                    size,
+                    mentions_tracked_binding,
+                };
             }
 
             let mentions = mentions_tracked_var(tracked_binding, cnt)
@@ -1318,29 +1317,29 @@ fn inline_t<'gc>(
             };
 
             let fun = state.atom_subst(prev_fun);
-            if let Atom::Local(new_fun) = fun {
-                if let Some(func) = state.fenv.get(&new_fun).copied() {
-                    if func.args.len() == args.len() && func.variadic.is_none() {
-                        let mut subv = func
-                            .args
-                            .iter()
-                            .zip(args.iter())
-                            .map(|(arg, val)| (Atom::Local(*arg), *val))
-                            .collect::<HashMap<_, _>>();
+            if let Atom::Local(new_fun) = fun
+                && let Some(func) = state.fenv.get(&new_fun).copied()
+                && func.args.len() == args.len()
+                && func.variadic.is_none()
+            {
+                let mut subv = func
+                    .args
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(arg, val)| (Atom::Local(*arg), *val))
+                    .collect::<HashMap<_, _>>();
 
-                        let mut subc = HashMap::default();
-                        subc.insert(func.return_cont, retc);
+                let mut subc = HashMap::default();
+                subc.insert(func.return_cont, retc);
 
-                        let term = copy_t(state.ctx, func.body(), &mut subv, &mut subc);
-                        let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
-                        return RewriteResult {
-                            term,
-                            changed: true,
-                            size,
-                            mentions_tracked_binding,
-                        };
-                    }
-                }
+                let term = copy_t(state.ctx, func.body(), &mut subv, &mut subc);
+                let (size, mentions_tracked_binding) = term_metadata(term, tracked_binding);
+                return RewriteResult {
+                    term,
+                    changed: true,
+                    size,
+                    mentions_tracked_binding,
+                };
             }
 
             let mentions = mentions_tracked_atom(tracked_binding, fun)

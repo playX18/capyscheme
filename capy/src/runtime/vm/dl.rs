@@ -65,7 +65,7 @@ mod dl_ops {
             return nctx.raise_error(
                 "dlopen",
                 &format!("file: {name}, error: {dlerror}"),
-                &[name.into(), flags.into()],
+                &[name, flags.into()],
             );
         }
         OPEN_HANDLES.lock().insert(
@@ -175,12 +175,12 @@ mod dl_ops {
             };
             return nctx.raise_error(
                 "load-native-extension",
-                &format!("failed to load {}: {}", path.to_string(), dlerror),
+                &format!("failed to load {}: {}", path, dlerror),
                 &[path.into()],
             );
         }
         let init: extern "C-unwind" fn(Context<'gc>) -> VMResult<'gc> = unsafe {
-            let symbol = libc::dlsym(handle, b"capy_register_extension\0".as_ptr() as _);
+            let symbol = libc::dlsym(handle, c"capy_register_extension".as_ptr() as _);
             if symbol.is_null() {
                 let dlerror = {
                     let err_ptr = libc::dlerror();

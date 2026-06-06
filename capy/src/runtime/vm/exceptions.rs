@@ -310,7 +310,7 @@ pub fn make_non_applicable_violation<'gc>(ctx: Context<'gc>, subr: Value<'gc>) -
     make_assertion_violation_value(
         ctx,
         Value::new(false),
-        ctx.str("attempt to call non-procedure").into(),
+        ctx.str("attempt to call non-procedure"),
         &[subr],
     )
 }
@@ -334,12 +334,7 @@ pub fn make_wrong_number_of_arguments_violation<'gc>(
     } else {
         Value::new(false)
     };
-    make_assertion_violation_value(
-        ctx,
-        Value::new(false),
-        ctx.str(&message).into(),
-        &[subr, meta],
-    )
+    make_assertion_violation_value(ctx, Value::new(false), ctx.str(&message), &[subr, meta])
 }
 
 pub fn make_primitive_wrong_number_of_arguments_violation<'gc>(
@@ -404,7 +399,7 @@ pub fn make_raise_condition<'gc>(
             let message = values
                 .get(1)
                 .copied()
-                .unwrap_or_else(|| ctx.str("assertion violation").into());
+                .unwrap_or_else(|| ctx.str("assertion violation"));
             let irritants = values.get(2..).unwrap_or(&[]);
             make_assertion_violation_value(ctx, who, message, irritants)
         }
@@ -431,7 +426,7 @@ pub fn make_raise_condition<'gc>(
             let message = values
                 .get(1)
                 .copied()
-                .unwrap_or_else(|| ctx.str("undefined value").into());
+                .unwrap_or_else(|| ctx.str("undefined value"));
             let irritants = values.get(2..).unwrap_or(&[]);
             let mut cc = ConditionBuilder::new(ctx).undefined();
             if let Some(who) = who

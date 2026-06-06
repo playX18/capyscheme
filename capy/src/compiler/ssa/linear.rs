@@ -91,29 +91,6 @@ impl AllocInfoPreset {
     }
 }
 
-#[cfg(test)]
-mod alloc_info_preset_tests {
-    use super::*;
-    use crate::runtime::symbols::RuntimeData;
-
-    #[test]
-    fn allocation_info_presets_have_runtime_data_ids() {
-        assert_eq!(AllocInfoPreset::Pair.runtime_data(), RuntimeData::PairInfo);
-        assert_eq!(
-            AllocInfoPreset::ClosureProc.runtime_data(),
-            RuntimeData::ClosureProcInfo
-        );
-        assert_eq!(
-            AllocInfoPreset::ClosureK.runtime_data(),
-            RuntimeData::ClosureKInfo
-        );
-        assert_eq!(
-            AllocInfoPreset::MutableVector.runtime_data(),
-            RuntimeData::MutableVectorInfo
-        );
-    }
-}
-
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn target_binding(&self) -> LVarRef<'gc> {
         self.target.sources[&self.target.binding]
@@ -177,18 +154,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     ) -> ir::Value {
         let data = self
             .module_builder
-            .declare_runtime_data_in_func(data, &mut self.builder.func);
+            .declare_runtime_data_in_func(data, self.builder.func);
         self.builder.ins().global_value(typ, data)
     }
 
     pub fn import_data(&mut self, data: DataSymbol) -> ir::GlobalValue {
-        self.data_imports
-            .entry(data)
-            .or_insert_with(|| {
-                self.module_builder
-                    .declare_data_in_func(data, &mut self.builder.func)
-            })
-            .clone()
+        *self.data_imports.entry(data).or_insert_with(|| {
+            self.module_builder
+                .declare_data_in_func(data, self.builder.func)
+        })
     }
 
     pub(crate) fn data_slot_address(&mut self, data: DataSymbol) -> ir::Value {
@@ -687,7 +661,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             );
         }
 
-        if params.len() != 0 {
+        if !params.is_empty() {
             if let Some(rest) = rest {
                 let not_enough = self.builder.ins().icmp_imm(
                     IntCC::UnsignedLessThan,
@@ -1040,7 +1014,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn linear_fixnum_from_usize_value(&mut self, value: ir::Value) -> ir::Value {
         let value = self.ireduce(types::I32, value);
         let value = self.zextend(types::I64, value);
-        self.builder.ins().bor_imm(value, Value::NUMBER_TAG as i64)
+        self.builder.ins().bor_imm(value, Value::NUMBER_TAG)
     }
 
     fn linear_atom(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
@@ -1612,10 +1586,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         let switch_value = match kind {
             SwitchKind::Char | SwitchKind::CharEq => {
-                let mask = self
-                    .builder
-                    .ins()
-                    .iconst(types::I64, Value::CHAR_MASK as i64);
+                let mask = self.builder.ins().iconst(types::I64, Value::CHAR_MASK);
                 let tag = self.builder.ins().iconst(types::I64, Value::CHAR_TAG);
                 let masked = self.builder.ins().band(value, mask);
                 let is_char = self.builder.ins().icmp(IntCC::Equal, masked, tag);
@@ -1858,5 +1829,28 @@ fn switch_case_key(value: SwitchCaseValue<'_>) -> u128 {
     match value {
         SwitchCaseValue::Integer(value) => value as u32 as u128,
         SwitchCaseValue::Symbol { hash, .. } => hash as u128,
+    }
+}
+
+#[cfg(test)]
+mod alloc_info_preset_tests {
+    use super::*;
+    use crate::runtime::symbols::RuntimeData;
+
+    #[test]
+    fn allocation_info_presets_have_runtime_data_ids() {
+        assert_eq!(AllocInfoPreset::Pair.runtime_data(), RuntimeData::PairInfo);
+        assert_eq!(
+            AllocInfoPreset::ClosureProc.runtime_data(),
+            RuntimeData::ClosureProcInfo
+        );
+        assert_eq!(
+            AllocInfoPreset::ClosureK.runtime_data(),
+            RuntimeData::ClosureKInfo
+        );
+        assert_eq!(
+            AllocInfoPreset::MutableVector.runtime_data(),
+            RuntimeData::MutableVectorInfo
+        );
     }
 }

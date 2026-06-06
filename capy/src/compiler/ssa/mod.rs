@@ -454,8 +454,8 @@ impl<'gc> ModuleBuilder<'gc> {
                 ir::UserFuncName::user(0, declared.function.index()),
                 compiled_scheme_signature(),
             );
-            let mut builder = FunctionBuilder::new(&mut cache.context.func, &mut cache.fctx);
-            let thunks = self.import_thunks(&mut builder.func);
+            let builder = FunctionBuilder::new(&mut cache.context.func, &mut cache.fctx);
+            let thunks = self.import_thunks(builder.func);
             let (func_debug_cx, arity, is_cont, metadata) = match declared.procedure.code {
                 CodeId::Function(func) => (
                     self.debug_context.define_function(func, &declared.name),
@@ -735,7 +735,7 @@ impl<'gc> ModuleBuilder<'gc> {
     ) {
         context.func.signature = compiled_scheme_signature();
         let mut builder = FunctionBuilder::new(&mut context.func, fctx);
-        let thunks = self.import_thunks(&mut builder.func);
+        let thunks = self.import_thunks(builder.func);
 
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
@@ -799,7 +799,7 @@ impl<'gc> ModuleBuilder<'gc> {
     ) {
         context.func.signature = compiled_scheme_signature();
         let mut builder = FunctionBuilder::new(&mut context.func, fctx);
-        let thunks = self.import_thunks(&mut builder.func);
+        let thunks = self.import_thunks(builder.func);
 
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
@@ -897,7 +897,7 @@ impl<'gc> ModuleBuilder<'gc> {
     ) {
         context.func.signature = compiled_scheme_signature();
         let mut builder = FunctionBuilder::new(&mut context.func, fctx);
-        let thunks = self.import_thunks(&mut builder.func);
+        let thunks = self.import_thunks(builder.func);
 
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
@@ -1114,7 +1114,7 @@ impl<'gc> ModuleBuilder<'gc> {
     #[cfg(test)]
     fn load_constant(&mut self, builder: &mut FunctionBuilder<'_>, value: Value<'gc>) -> ir::Value {
         if let Some(data_id) = self.intern_constant(value) {
-            let gv = self.declare_data_in_func(data_id, &mut builder.func);
+            let gv = self.declare_data_in_func(data_id, builder.func);
             let addr = builder.ins().global_value(types::I64, gv);
             builder
                 .ins()
@@ -1309,7 +1309,7 @@ mod tests {
             *ctx,
             Term::Continue(
                 retk,
-                Array::from_slice(*ctx, &[Atom::Local(arg)]),
+                Array::from_slice(*ctx, [Atom::Local(arg)]),
                 Value::new(false),
             ),
         );
@@ -1320,7 +1320,7 @@ mod tests {
                 source: Value::new(false),
                 binding: f,
                 return_cont: retk,
-                args: Array::from_slice(*ctx, &[arg]),
+                args: Array::from_slice(*ctx, [arg]),
                 variadic: None,
                 body: Lock::new(body),
                 free_vars: Lock::new(None),
@@ -1340,7 +1340,7 @@ mod tests {
             *ctx,
             Term::Continue(
                 g_retk,
-                Array::from_slice(*ctx, &[Atom::Constant(Value::new(42))]),
+                Array::from_slice(*ctx, [Atom::Constant(Value::new(42))]),
                 Value::new(false),
             ),
         );
@@ -1351,7 +1351,7 @@ mod tests {
                 source: Value::new(false),
                 binding: g,
                 return_cont: g_retk,
-                args: Array::from_slice(*ctx, &[]),
+                args: Array::from_slice(*ctx, []),
                 variadic: None,
                 body: Lock::new(g_body),
                 free_vars: Lock::new(None),
@@ -1361,13 +1361,13 @@ mod tests {
         let body = Gc::new(
             *ctx,
             Term::Fix(
-                Array::from_slice(*ctx, &[g_func]),
+                Array::from_slice(*ctx, [g_func]),
                 Gc::new(
                     *ctx,
                     Term::App(
                         Atom::Local(g),
                         retk,
-                        Array::from_slice(*ctx, &[]),
+                        Array::from_slice(*ctx, []),
                         Value::new(false),
                     ),
                 ),
@@ -1380,7 +1380,7 @@ mod tests {
                 source: Value::new(false),
                 binding: f,
                 return_cont: retk,
-                args: Array::from_slice(*ctx, &[]),
+                args: Array::from_slice(*ctx, []),
                 variadic: None,
                 body: Lock::new(body),
                 free_vars: Lock::new(None),
@@ -1504,7 +1504,7 @@ mod tests {
                 Term::App(
                     Atom::Local(f),
                     retk,
-                    Array::from_slice(*ctx, &[]),
+                    Array::from_slice(*ctx, []),
                     Value::new(false),
                 ),
             );
@@ -1515,7 +1515,7 @@ mod tests {
                     source: Value::new(false),
                     binding: f,
                     return_cont: retk,
-                    args: Array::from_slice(*ctx, &[]),
+                    args: Array::from_slice(*ctx, []),
                     variadic: None,
                     body: Lock::new(body),
                     free_vars: Lock::new(None),
@@ -1536,7 +1536,7 @@ mod tests {
             context.func.signature = compiled_scheme_signature();
             let mut fctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-            let thunks = module_builder.import_thunks(&mut builder.func);
+            let thunks = module_builder.import_thunks(builder.func);
             let func_debug_cx = module_builder
                 .debug_context
                 .define_function(func, "fn0:loop:f");
@@ -1586,7 +1586,7 @@ mod tests {
             context.func.signature = compiled_scheme_signature();
             let mut fctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-            let thunks = module_builder.import_thunks(&mut builder.func);
+            let thunks = module_builder.import_thunks(builder.func);
             let func_debug_cx = module_builder
                 .debug_context
                 .define_function(func, "fn0:identity:f");
@@ -1625,7 +1625,7 @@ mod tests {
             context.func.signature = compiled_scheme_signature();
             let mut fctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-            let thunks = module_builder.import_thunks(&mut builder.func);
+            let thunks = module_builder.import_thunks(builder.func);
             let func_debug_cx = module_builder
                 .debug_context
                 .define_function(func, "fn0:identity:f");
@@ -1665,7 +1665,7 @@ mod tests {
             context.func.signature = compiled_scheme_signature();
             let mut fctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-            let thunks = module_builder.import_thunks(&mut builder.func);
+            let thunks = module_builder.import_thunks(builder.func);
             let func_debug_cx = module_builder
                 .debug_context
                 .define_function(func, "fn0:identity:f");
@@ -1710,7 +1710,7 @@ mod tests {
             context.func.signature = compiled_scheme_signature();
             let mut fctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-            let thunks = module_builder.import_thunks(&mut builder.func);
+            let thunks = module_builder.import_thunks(builder.func);
             let func_debug_cx = module_builder
                 .debug_context
                 .define_function(func, "fn0:identity:f");
@@ -1753,7 +1753,7 @@ mod tests {
             context.func.signature = compiled_scheme_signature();
             let mut fctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut context.func, &mut fctx);
-            let thunks = module_builder.import_thunks(&mut builder.func);
+            let thunks = module_builder.import_thunks(builder.func);
             let func_debug_cx = module_builder
                 .debug_context
                 .define_function(func, "fn0:identity:f");
@@ -1792,7 +1792,7 @@ mod tests {
                 Term::App(
                     Atom::Local(f),
                     retk,
-                    Array::from_slice(*ctx, &[]),
+                    Array::from_slice(*ctx, []),
                     Value::new(false),
                 ),
             );
@@ -1803,7 +1803,7 @@ mod tests {
                     source: Value::new(false),
                     binding: f,
                     return_cont: retk,
-                    args: Array::from_slice(*ctx, &[]),
+                    args: Array::from_slice(*ctx, []),
                     variadic: None,
                     body: Lock::new(body),
                     free_vars: Lock::new(None),

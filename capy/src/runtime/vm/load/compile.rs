@@ -317,10 +317,10 @@ mod tests {
         with_ctx(|ctx| {
             ctx.stats.start_execution();
 
-            let _: Result<(), ()> = (|| {
+            let _: Result<(), ()> = {
                 let _phase = CompilationPhase::new(ctx);
                 Err(())
-            })();
+            };
 
             assert!(ctx.stats.execution_active());
             assert!(!ctx.stats.compilation_active());

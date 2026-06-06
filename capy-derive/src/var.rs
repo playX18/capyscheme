@@ -16,31 +16,6 @@ pub struct Variable {
 }
 
 impl Variable {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        item: syn::ItemStatic,
-        name: syn::LitStr,
-        initializer: syn::Ident,
-        getter: syn::Ident,
-        setter: syn::Ident,
-        module_path: ModulePath,
-        vis: syn::Visibility,
-        init: Box<syn::Expr>,
-        typ: Box<syn::Type>,
-    ) -> Self {
-        Self {
-            item,
-            name,
-            initializer,
-            getter,
-            setter,
-            module_path,
-            vis,
-            init,
-            typ,
-        }
-    }
-
     pub fn register_call(&self) -> proc_macro2::TokenStream {
         let initializer = &self.initializer;
         quote_spanned! {
@@ -134,7 +109,7 @@ pub fn handle(input: Input, item: syn::ItemStatic) -> Result<Variable, syn::Erro
     let vis = item.vis.clone();
     let init = item.expr.clone();
     let typ = item.ty.clone();
-    Ok(Variable::new(
+    Ok(Variable {
         item,
         name,
         initializer,
@@ -144,5 +119,5 @@ pub fn handle(input: Input, item: syn::ItemStatic) -> Result<Variable, syn::Erro
         vis,
         init,
         typ,
-    ))
+    })
 }

@@ -174,7 +174,7 @@ fn put_fasl_header(out: &mut Vec<u8>) {
 }
 
 #[allow(dead_code)]
-fn put_test_unlinked_code_block(out: &mut Vec<u8>, code: &[u8], entry_offset: u32, arity: i32) {
+fn put_test_relocatable_code_block(out: &mut Vec<u8>, code: &[u8], entry_offset: u32, arity: i32) {
     out.push(super::FASL_TAG_UNLINKED_CODEBLOCK);
     put_u32(out, code.len() as u32);
     out.extend_from_slice(code);
@@ -331,20 +331,20 @@ fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
 }
 
 #[test]
-fn fasl_reader_decodes_unlinked_code_block_value() {
-    use crate::runtime::{Scheme, value::UnlinkedCodeBlock};
+fn fasl_reader_decodes_relocatable_code_block_value() {
+    use crate::runtime::{Scheme, value::RelocatableCodeBlock};
 
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
         put_fasl_header(&mut bytes);
         put_u32(&mut bytes, 0);
-        put_test_unlinked_code_block(&mut bytes, &[0xc3], 0, 0);
+        put_test_relocatable_code_block(&mut bytes, &[0xc3], 0, 0);
 
         let value = FASLReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read unlinked code block");
-        let unlinked = value.downcast::<UnlinkedCodeBlock>();
+        let unlinked = value.downcast::<RelocatableCodeBlock>();
         assert_eq!(unlinked.code(), [0xc3]);
         assert_eq!(unlinked.entry_offset, 0);
         assert_eq!(unlinked.relocations(), &[]);

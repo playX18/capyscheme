@@ -84,9 +84,9 @@ impl<'gc> IntoValue<'gc> for ForeignType {
     }
 }
 
-impl<'gc> Into<Value<'gc>> for ForeignType {
-    fn into(self) -> Value<'gc> {
-        Value::new(self as i32)
+impl<'gc> From<ForeignType> for Value<'gc> {
+    fn from(value: ForeignType) -> Self {
+        Value::new(value as i32)
     }
 }
 
@@ -148,7 +148,7 @@ static POINTER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Pointer>::VT,
     TypeCode8::POINTER.bits() as u16,
 );
-pub static POINTER_INFO: &'static HeapTypeInfo = &POINTER_INFO_VALUE;
+pub static POINTER_INFO: &HeapTypeInfo = &POINTER_INFO_VALUE;
 
 pub struct PointerWithFinalizers {
     queue: Mutex<VecDeque<ObjectReference>>,
@@ -161,6 +161,12 @@ impl PointerWithFinalizers {
             queue: Mutex::new(VecDeque::new()),
             finalizers: Mutex::new(BTreeMap::new()),
         }
+    }
+}
+
+impl Default for PointerWithFinalizers {
+    fn default() -> Self {
+        Self::new()
     }
 }
 pub(crate) static POINTERS_WITH_FINALIZERS: LazyLock<Arc<PointerWithFinalizers>> =
@@ -380,13 +386,14 @@ pub mod ffi_ops {
         let mc = *nctx.ctx;
         mc.finalizers()
             .register_finalizer(&POINTERS_WITH_FINALIZERS, p);
-        POINTERS_WITH_FINALIZERS
-            .finalizers
-            .lock()
-            .unwrap()
-            .insert(p.as_gcobj().to_objref().unwrap(), unsafe {
-                std::mem::transmute(finalizer.value())
-            });
+        POINTERS_WITH_FINALIZERS.finalizers.lock().unwrap().insert(
+            p.as_gcobj().to_objref().unwrap(),
+            unsafe {
+                std::mem::transmute::<*mut libc::c_void, extern "C" fn(*mut libc::c_void)>(
+                    finalizer.value(),
+                )
+            },
+        );
         nctx.return_(Value::undefined())
     }
 
@@ -590,14 +597,12 @@ fn parse_ffi_type<'gc>(
     if ftype.is_int32() {
         let t = ftype.as_int32();
         if t < 0 || t > ForeignType::ComplexDouble as i32 {
-            return false;
-        } else if t == ForeignType::Void as i32 && !returnp {
-            return false;
+            false
         } else {
-            return true;
+            !(t == ForeignType::Void as i32 && !returnp)
         }
     } else if ftype == Value::new(sym_asterisk(ctx)) {
-        return true;
+        true
     } else if ftype.is_pair() {
         let len = ftype.list_length();
         if len < 1 {
@@ -612,7 +617,7 @@ fn parse_ffi_type<'gc>(
             typ = typ.cdr();
         }
         *n_structs += 1;
-        return true;
+        true
     } else if ftype.is::<Vector>() {
         let v = ftype.downcast::<Vector>();
         if v.len() != 2 {
@@ -630,9 +635,9 @@ fn parse_ffi_type<'gc>(
             return false;
         }
 
-        return parse_ffi_type(ctx, typ, false, n_structs, n_struct_elems);
+        parse_ffi_type(ctx, typ, false, n_structs, n_struct_elems)
     } else {
-        return false;
+        false
     }
 }
 
@@ -715,7 +720,7 @@ static CIF_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, CIF<'static>>::VT,
     TypeCode8::CIF.bits() as u16,
 );
-pub static CIF_INFO: &'static HeapTypeInfo = &CIF_INFO_VALUE;
+pub static CIF_INFO: &HeapTypeInfo = &CIF_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for CIF<'gc> {
     const TC8: TypeCode8 = TypeCode8::CIF;
@@ -936,7 +941,9 @@ unsafe fn foreign_call<'a, 'gc>(
             nctx.ctx.outside_gc_world(|| {
                 libffi::raw::ffi_call(
                     raw,
-                    Some(std::mem::transmute(target)),
+                    Some(std::mem::transmute::<*mut (), unsafe extern "C" fn()>(
+                        target,
+                    )),
                     rvalue.cast(),
                     args.as_mut_ptr().cast(),
                 );
@@ -946,7 +953,10 @@ unsafe fn foreign_call<'a, 'gc>(
 
         libffi::raw::ffi_call(
             raw,
-            Some(std::mem::transmute(pointer)),
+            Some(std::mem::transmute::<
+                *mut libc::c_void,
+                unsafe extern "C" fn(),
+            >(pointer)),
             rvalue.cast(),
             args.as_mut_ptr().cast(),
         );
@@ -1122,7 +1132,7 @@ unsafe fn unpack<'gc>(
             let n = n.coerce_exact_integer_to_u32();
 
             if return_value {
-                loc.cast::<ffi_arg>().write(n as u32 as ffi_arg);
+                loc.cast::<ffi_arg>().write(n as ffi_arg);
             } else {
                 loc.cast::<u32>().write(val.as_int32() as u32);
             }
@@ -1148,9 +1158,9 @@ unsafe fn unpack<'gc>(
             let n = n.coerce_exact_integer_to_i32();
 
             if return_value {
-                loc.cast::<ffi_arg>().write(n as i32 as ffi_arg);
+                loc.cast::<ffi_arg>().write(n as ffi_arg);
             } else {
-                loc.cast::<i32>().write(n as i32);
+                loc.cast::<i32>().write(n);
             }
         }
 
@@ -1175,9 +1185,9 @@ unsafe fn unpack<'gc>(
             let n = n.coerce_exact_integer_to_u64();
 
             if return_value {
-                loc.cast::<ffi_arg>().write(n as u64 as ffi_arg);
+                loc.cast::<ffi_arg>().write(n as ffi_arg);
             } else {
-                loc.cast::<u64>().write(n as u64);
+                loc.cast::<u64>().write(n);
             }
         }
 
@@ -1201,9 +1211,9 @@ unsafe fn unpack<'gc>(
             let n = n.coerce_exact_integer_to_i64();
 
             if return_value {
-                loc.cast::<ffi_arg>().write(n as i64 as ffi_arg);
+                loc.cast::<ffi_arg>().write(n as ffi_arg);
             } else {
-                loc.cast::<i64>().write(n as i64);
+                loc.cast::<i64>().write(n);
             }
         }
 
@@ -1217,8 +1227,7 @@ unsafe fn unpack<'gc>(
                 ));
             }
             let p = val.downcast::<Pointer>().value();
-            loc.cast::<*mut std::ffi::c_void>()
-                .write(p as *mut std::ffi::c_void);
+            loc.cast::<*mut std::ffi::c_void>().write(p);
         }
 
         if t == type_tag::STRUCT {
@@ -1297,7 +1306,7 @@ unsafe fn pack<'gc>(
             if return_value {
                 return Value::new(loc.cast::<ffi_arg>().read() as i32);
             } else {
-                return Value::new(loc.cast::<i32>().read() as i32);
+                return Value::new(loc.cast::<i32>().read());
             }
         }
 
@@ -1335,7 +1344,7 @@ unsafe fn pack<'gc>(
                 arr.contents().to_mut_ptr(),
                 (*typ).size,
             );
-            let ptr = Pointer::new(arr.contents().to_mut_ptr() as *mut std::ffi::c_void);
+            let ptr = Pointer::new(arr.contents().to_mut_ptr());
             let ptr = Gc::new_with_info(*ctx, ptr, POINTER_INFO);
             // keep bytevector alive as long as pointer is alive.
             ptrs(ctx).put(ctx, ptr, arr);
@@ -1372,7 +1381,7 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
                 Value::new(false),
                 Str::from_str(
                     *ctx,
-                    &format!(
+                    format!(
                         "wrong number of arguments to foreign function, expected {}{}, got {}",
                         if cif.variadic { "at least " } else { "" },
                         cif.nargs,
@@ -1490,8 +1499,8 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
 
     define(ctx, "%null-pointer", nullp);
 
-    define(ctx, "RTLD_LAZY", Value::new(libc::RTLD_LAZY as i32));
-    define(ctx, "RTLD_NOW", Value::new(libc::RTLD_NOW as i32));
-    define(ctx, "RTLD_GLOBAL", Value::new(libc::RTLD_GLOBAL as i32));
-    define(ctx, "RTLD_LOCAL", Value::new(libc::RTLD_LOCAL as i32));
+    define(ctx, "RTLD_LAZY", Value::new(libc::RTLD_LAZY));
+    define(ctx, "RTLD_NOW", Value::new(libc::RTLD_NOW));
+    define(ctx, "RTLD_GLOBAL", Value::new(libc::RTLD_GLOBAL));
+    define(ctx, "RTLD_LOCAL", Value::new(libc::RTLD_LOCAL));
 }

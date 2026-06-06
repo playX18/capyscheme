@@ -67,10 +67,7 @@ pub fn dladdr(addr: Address) -> std::io::Result<DlInfo> {
         let mut dl_info = MaybeUninit::<libc::Dl_info>::uninit();
         let result = libc::dladdr(addr.to_mut_ptr(), dl_info.as_mut_ptr());
         if result == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "dladdr failed",
-            ));
+            return Err(std::io::Error::other("dladdr failed"));
         }
 
         let dl_info = dl_info.assume_init();

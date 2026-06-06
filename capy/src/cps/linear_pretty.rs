@@ -409,7 +409,7 @@ mod tests {
             let closure = ValueId(1);
             let body = Gc::new(
                 *ctx,
-                Term::Continue(retk, Array::from_slice(*ctx, &[]), Value::new(false)),
+                Term::Continue(retk, Array::from_slice(*ctx, []), Value::new(false)),
             );
             let entry = Gc::new(
                 *ctx,
@@ -418,10 +418,10 @@ mod tests {
                     source: Value::new(false),
                     binding,
                     return_cont: retk,
-                    args: Array::from_slice(*ctx, &[]),
+                    args: Array::from_slice(*ctx, []),
                     variadic: None,
                     body: Lock::new(body),
-                    free_vars: Lock::new(Some(Array::from_slice(*ctx, &[]))),
+                    free_vars: Lock::new(Some(Array::from_slice(*ctx, []))),
                     meta: Value::new(false),
                 },
             );

@@ -596,6 +596,12 @@ impl Trampolines {
     }
 }
 
+impl Default for Trampolines {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn compile_trampoline(
     memory: &mut CodeMemory,
     isa: &dyn cranelift_codegen::isa::TargetIsa,
@@ -686,13 +692,12 @@ fn apply_runtime_relocation(
 
 fn resolve_runtime_relocation_target(target: DirectRelocationTarget) -> std::io::Result<Address> {
     match target {
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { kind, symbol })
-            if kind == DataSymbolKind::RuntimeData =>
-        {
-            RuntimeData::from_id(symbol.index())
-                .map(|data| data.address())
-                .ok_or_else(|| invalid_data("unknown runtime data relocation target"))
-        }
+        DirectRelocationTarget::BackendSymbol(BackendSymbol::Data {
+            kind: DataSymbolKind::RuntimeData,
+            symbol,
+        }) => RuntimeData::from_id(symbol.index())
+            .map(|data| data.address())
+            .ok_or_else(|| invalid_data("unknown runtime data relocation target")),
         DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
             match kind {
                 ImportedSymbolKind::RuntimeThunk => RuntimeThunk::from_id(symbol.index())
@@ -794,7 +799,7 @@ fn invalid_data(message: &'static str) -> std::io::Error {
 unsafe impl Send for Trampolines {}
 unsafe impl Sync for Trampolines {}
 
-pub(crate) static TRAMPOLINES: LazyLock<Trampolines> = LazyLock::new(|| Trampolines::new());
+pub(crate) static TRAMPOLINES: LazyLock<Trampolines> = LazyLock::new(Trampolines::new);
 
 static TRAMPOLINE_INTO_SCHEME: LazyLock<Address> =
     LazyLock::new(|| TRAMPOLINES.enter_scheme_trampoline.entrypoint);
@@ -829,7 +834,7 @@ mod tests {
         let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
         let entry = builder.create_block();
         builder.switch_to_block(entry);
-        let global = declare_runtime_data_symbol(&mut builder.func, RuntimeData::PairInfo);
+        let global = declare_runtime_data_symbol(builder.func, RuntimeData::PairInfo);
         let address = builder.ins().global_value(types::I64, global);
         builder.ins().return_(&[address]);
         builder.seal_all_blocks();

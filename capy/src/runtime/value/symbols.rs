@@ -1,3 +1,5 @@
+//! Symbols, interning, and keywords.
+
 use std::{
     borrow::Cow,
     cell::Cell,
@@ -13,6 +15,7 @@ use crate::runtime::{Context, value::*};
 #[derive(Trace)]
 #[collect(no_drop)]
 #[repr(C, align(8))]
+/// A Scheme symbol backed by an immutable string buffer.
 pub struct Symbol<'gc> {
     pub(crate) stringbuf: Gc<'gc, Stringbuf>,
     pub(crate) hash: Cell<u64>,
@@ -23,13 +26,13 @@ static SYMBOL_UNINTERNED_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Symbol<'static>>::VT,
     SYMBOL_TC16_UNINTERNED.bits(),
 );
-pub static SYMBOL_UNINTERNED_INFO: &'static HeapTypeInfo = &SYMBOL_UNINTERNED_INFO_VALUE;
+pub static SYMBOL_UNINTERNED_INFO: &HeapTypeInfo = &SYMBOL_UNINTERNED_INFO_VALUE;
 
 static SYMBOL_INTERNED_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Symbol<'static>>::VT,
     SYMBOL_TC16_INTERNED.bits(),
 );
-pub static SYMBOL_INTERNED_INFO: &'static HeapTypeInfo = &SYMBOL_INTERNED_INFO_VALUE;
+pub static SYMBOL_INTERNED_INFO: &HeapTypeInfo = &SYMBOL_INTERNED_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for Symbol<'gc> {
     const TC16: &'static [super::TypeCode16] = &[SYMBOL_TC16_INTERNED, SYMBOL_TC16_UNINTERNED];
@@ -37,17 +40,19 @@ unsafe impl<'gc> Tagged for Symbol<'gc> {
     const TYPE_NAME: &'static str = "symbol";
 }
 
-pub const SYMBOL_TC16_UNINTERNED: TypeCode16 =
-    TypeCode16(TypeCode8::SYMBOL.bits() as u16 + 0 * 256);
-pub const SYMBOL_TC16_INTERNED: TypeCode16 = TypeCode16(TypeCode8::SYMBOL.bits() as u16 + 1 * 256);
+pub const SYMBOL_TC16_UNINTERNED: TypeCode16 = TypeCode16(TypeCode8::SYMBOL.bits() as u16);
+pub const SYMBOL_TC16_INTERNED: TypeCode16 = TypeCode16(TypeCode8::SYMBOL.bits() as u16 + 256);
 
-pub static SYMBOL_TABLE: OnceLock<Global<crate::Rootable!(Gc<'_, WeakSet<'_>>)>> = OnceLock::new();
+type RootedSymbolTable = crate::Rootable!(Gc<'_, WeakSet<'_>>);
+pub type RootedSymbol = crate::Rootable!(Gc<'_, Symbol<'_>>);
+
+pub static SYMBOL_TABLE: OnceLock<Global<RootedSymbolTable>> = OnceLock::new();
 
 static ONCE: Once = Once::new();
 
 #[allow(dead_code)]
 pub(crate) fn symbol_table<'gc>(mc: Mutation<'gc>) -> Gc<'gc, WeakSet<'gc>> {
-    (*SYMBOL_TABLE.get().unwrap().fetch(mc)).clone()
+    *SYMBOL_TABLE.get().unwrap().fetch(mc)
 }
 
 pub fn init_symbols<'gc>(mc: Mutation<'gc>) {
@@ -105,10 +110,12 @@ fn symbool_lookup_predicate<'gc>(
 }
 
 impl<'gc> Symbol<'gc> {
+    /// Returns this symbol as an immutable string.
     pub fn to_str(&self, mc: Mutation<'gc>) -> Gc<'gc, Str<'gc>> {
         self.substring(mc, 0, self.len())
     }
 
+    /// Interns a string and returns the canonical symbol for its contents.
     pub fn from_string(mc: Context<'gc>, str: Gc<'gc, Str<'gc>>) -> Gc<'gc, Symbol<'gc>> {
         let mut hasher = simplehash::CityHasher64::new();
         str.hash(&mut hasher);
@@ -117,7 +124,7 @@ impl<'gc> Symbol<'gc> {
         let symbol = lookup_interned_symbol(*mc, str.into_value(mc), hash);
 
         if let Some(symbol) = symbol {
-            return symbol.downcast();
+            symbol.downcast()
         } else {
             let symbol = Self::new::<true>(*mc, str, hash, None);
 
@@ -132,6 +139,7 @@ impl<'gc> Symbol<'gc> {
         }
     }
 
+    /// Allocates a fresh uninterned symbol from a string.
     pub fn from_string_uninterned(
         mc: Mutation<'gc>,
         str: Gc<'gc, Str<'gc>>,
@@ -141,16 +149,16 @@ impl<'gc> Symbol<'gc> {
         str.hash(&mut hasher);
         let hash = hasher.finish();
 
-        let this = Self::new::<false>(mc, str, hash, prefix_offset);
-
-        this
+        Self::new::<false>(mc, str, hash, prefix_offset)
     }
 
+    /// Interns a UTF-8 string slice.
     pub fn from_str(mc: Context<'gc>, str: &str) -> Gc<'gc, Symbol<'gc>> {
         let str = Str::new(*mc, str, false);
         Self::from_string(mc, str)
     }
 
+    /// Allocates an uninterned symbol from a UTF-8 string slice.
     pub fn from_str_uninterned(
         mc: Mutation<'gc>,
         str: &str,
@@ -160,6 +168,7 @@ impl<'gc> Symbol<'gc> {
         Self::from_string_uninterned(mc, str, prefix_offset)
     }
 
+    /// Generates a fresh symbol with an optional prefix.
     pub fn gensym(mc: Context<'gc>, prefix: Option<Gc<'gc, Str<'gc>>>) -> Gc<'gc, Symbol<'gc>> {
         static GENSYM_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -311,9 +320,8 @@ macro_rules! static_symbols {
         $(
             $(#[$outer])*
             pub static $name: ::std::sync::OnceLock<
-                $crate::rsgc::global::Global<$crate::Rootable!(
-                    $crate::rsgc::Gc<'_, $crate::runtime::value::Symbol<'_>>
-                )>> = ::std::sync::OnceLock::new();
+                $crate::rsgc::global::Global<$crate::runtime::value::RootedSymbol>
+            > = ::std::sync::OnceLock::new();
             paste::paste! {
                 pub fn [<$name: lower>] <'gc>(mc: $crate::runtime::Context<'gc>) ->
                     $crate::rsgc::Gc<'gc, $crate::runtime::value::Symbol<'gc>>
@@ -325,8 +333,7 @@ macro_rules! static_symbols {
     };
 }
 
-/// keyword type: just a special kind of symbol
-/// that is self-evaluating.
+/// A self-evaluating symbol wrapper.
 #[derive(Trace)]
 #[repr(C)]
 pub struct Keyword<'gc> {
@@ -337,7 +344,7 @@ static KEYWORD_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Keyword<'static>>::VT,
     TypeCode8::KEYWORD.bits() as u16,
 );
-pub static KEYWORD_INFO: &'static HeapTypeInfo = &KEYWORD_INFO_VALUE;
+pub static KEYWORD_INFO: &HeapTypeInfo = &KEYWORD_INFO_VALUE;
 
 unsafe impl<'gc> Tagged for Keyword<'gc> {
     const TC8: TypeCode8 = TypeCode8::KEYWORD;
@@ -345,11 +352,12 @@ unsafe impl<'gc> Tagged for Keyword<'gc> {
 }
 
 impl<'gc> Keyword<'gc> {
+    /// Allocates a keyword for `symbol`.
     pub fn from_symbol(mc: Mutation<'gc>, symbol: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Keyword<'gc>> {
         Gc::new_with_info(mc, Keyword { symbol }, KEYWORD_INFO)
     }
 
     pub fn to_symbol(&self) -> Gc<'gc, Symbol<'gc>> {
-        self.symbol.clone()
+        self.symbol
     }
 }

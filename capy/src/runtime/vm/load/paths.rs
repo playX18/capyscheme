@@ -115,26 +115,26 @@ pub fn init_load_path<'gc>(ctx: Context<'gc>) {
             let stdlib_dir = sysroot_dir.join("lib");
             path = Value::cons(
                 ctx,
-                Str::new(*ctx, &stdlib_dir.to_string_lossy(), true).into(),
+                Str::new(*ctx, stdlib_dir.to_string_lossy(), true).into(),
                 path,
             );
             let compiled_dir = sysroot_dir.join("compiled");
             compiled_path = Value::cons(
                 ctx,
-                Str::new(*ctx, &compiled_dir.to_string_lossy(), true).into(),
+                Str::new(*ctx, compiled_dir.to_string_lossy(), true).into(),
                 compiled_path,
             );
         } else {
             let stdlib_dir = sysroot_dir.join("share").join("capy").join("lib");
             path = Value::cons(
                 ctx,
-                Str::new(*ctx, &stdlib_dir.to_string_lossy(), true).into(),
+                Str::new(*ctx, stdlib_dir.to_string_lossy(), true).into(),
                 path,
             );
             let compiled_dir = sysroot_dir.join("lib").join("capy").join("compiled");
             compiled_path = Value::cons(
                 ctx,
-                Str::new(*ctx, &compiled_dir.to_string_lossy(), true).into(),
+                Str::new(*ctx, compiled_dir.to_string_lossy(), true).into(),
                 compiled_path,
             );
         }
@@ -354,13 +354,13 @@ fn find_existing_candidate<'gc>(
             .cloned();
     }
 
-    if filename.is_relative() && resolve_relative {
-        if let Some(candidate) = candidates
+    if filename.is_relative()
+        && resolve_relative
+        && let Some(candidate) = candidates
             .iter()
             .find(|candidate| is_regular_file(candidate))
-        {
-            return Some(candidate.clone());
-        }
+    {
+        return Some(candidate.clone());
     }
 
     if let Some(vicinity) = vicinity
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn fallback_file_name_uses_arch_scoped_cache_path() {
-        with_policy(ExecutionPolicy::AOT, || {
+        with_policy(ExecutionPolicy::Aot, || {
             with_ctx(|ctx| {
                 let temp = TempDir::new();
                 ctx.globals().loc_compile_fallback_path().set(
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn explicit_arch_scopes_compiled_and_fallback_artifacts() {
-        with_policy(ExecutionPolicy::AOT, || {
+        with_policy(ExecutionPolicy::Aot, || {
             with_ctx(|ctx| {
                 let temp = TempDir::new();
                 let source_dir = temp.path().join("src");
@@ -752,7 +752,7 @@ mod tests {
 
     #[test]
     fn ignores_stale_compiled_artifacts() {
-        with_policy(ExecutionPolicy::AOT, || {
+        with_policy(ExecutionPolicy::Aot, || {
             with_ctx(|ctx| {
                 let temp = TempDir::new();
                 let source_dir = temp.path().join("src");

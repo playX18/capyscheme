@@ -1,3 +1,5 @@
+//! String and string-buffer heap objects.
+
 use crate::runtime::value::*;
 
 use crate::rsgc::{
@@ -9,7 +11,7 @@ use crate::rsgc::{
         AllocationSemantics,
         util::{Address, conversions::raw_align_up},
     },
-    object::{HeapTypeInfo, VTable},
+    object::{HeapTypeInfo, VTable, VTableOf},
 };
 use std::{
     cell::{Cell, UnsafeCell},
@@ -24,18 +26,17 @@ pub(crate) struct Stringbuf {
     data: [UnsafeCell<u8>; 0],
 }
 
-pub const STRINGBUF_TC16_WIDE: TypeCode16 =
-    TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 1 * 256);
+pub const STRINGBUF_TC16_WIDE: TypeCode16 = TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 256);
 pub const STRINGBUF_TC16_NARROW: TypeCode16 =
     TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 2 * 256);
 
 static STRINGBUF_WIDE_INFO_VALUE: HeapTypeInfo =
     HeapTypeInfo::new(Stringbuf::VT, STRINGBUF_TC16_WIDE.bits());
-pub static STRINGBUF_WIDE_INFO: &'static HeapTypeInfo = &STRINGBUF_WIDE_INFO_VALUE;
+pub static STRINGBUF_WIDE_INFO: &HeapTypeInfo = &STRINGBUF_WIDE_INFO_VALUE;
 
 static STRINGBUF_NARROW_INFO_VALUE: HeapTypeInfo =
     HeapTypeInfo::new(Stringbuf::VT, STRINGBUF_TC16_NARROW.bits());
-pub static STRINGBUF_NARROW_INFO: &'static HeapTypeInfo = &STRINGBUF_NARROW_INFO_VALUE;
+pub static STRINGBUF_NARROW_INFO: &HeapTypeInfo = &STRINGBUF_NARROW_INFO_VALUE;
 
 unsafe impl Tagged for Stringbuf {
     const TC16: &[TypeCode16] = &[STRINGBUF_TC16_WIDE, STRINGBUF_TC16_NARROW];
@@ -201,7 +202,9 @@ impl Stringbuf {
     }
 }
 
-static NULL_STRINGBUF: OnceLock<Global<crate::Rootable!(Gc<'_, Stringbuf>)>> = OnceLock::new();
+type RootedStringbuf = crate::Rootable!(Gc<'_, Stringbuf>);
+
+static NULL_STRINGBUF: OnceLock<Global<RootedStringbuf>> = OnceLock::new();
 
 fn null_stringbuf<'gc>(mc: Mutation<'gc>) -> Gc<'gc, Stringbuf> {
     *NULL_STRINGBUF
@@ -211,6 +214,7 @@ fn null_stringbuf<'gc>(mc: Mutation<'gc>) -> Gc<'gc, Stringbuf> {
 
 #[derive(Trace)]
 #[collect(no_drop)]
+/// A Scheme string view over a shared string buffer.
 pub struct Str<'gc> {
     pub(crate) stringbuf: Lock<Gc<'gc, Stringbuf>>,
     pub(crate) start: Cell<usize>,
@@ -221,13 +225,13 @@ static STRING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Str<'static>>::VT,
     TypeCode16::STRING.bits(),
 );
-pub static STRING_INFO: &'static HeapTypeInfo = &STRING_INFO_VALUE;
+pub static STRING_INFO: &HeapTypeInfo = &STRING_INFO_VALUE;
 
 static IMMUTABLE_STRING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Str<'static>>::VT,
     TypeCode16::IMMUTABLE_STRING.bits(),
 );
-pub static IMMUTABLE_STRING_INFO: &'static HeapTypeInfo = &IMMUTABLE_STRING_INFO_VALUE;
+pub static IMMUTABLE_STRING_INFO: &HeapTypeInfo = &IMMUTABLE_STRING_INFO_VALUE;
 
 impl<'gc> Str<'gc> {
     #[doc(hidden)]
@@ -235,11 +239,12 @@ impl<'gc> Str<'gc> {
         self.stringbuf.get().to_object_reference().to_raw_address()
     }
 
+    /// Allocates a mutable string from UTF-8 contents.
     pub fn from_str(mc: Mutation<'gc>, s: impl AsRef<str>) -> Gc<'gc, Self> {
         Self::new(mc, s, false)
     }
 
-    /// Create a new string with the given UTF-8 contents.
+    /// Allocates a string with the given UTF-8 contents.
     pub fn new(mc: Mutation<'gc>, contents: impl AsRef<str>, read_only: bool) -> Gc<'gc, Self> {
         let str = contents.as_ref();
         let is_ascii = str.is_ascii();
@@ -249,7 +254,7 @@ impl<'gc> Str<'gc> {
         } else {
             str.chars().count()
         };
-        let buf = if str.len() == 0 {
+        let buf = if str.is_empty() {
             null_stringbuf(mc)
         } else if is_ascii {
             Stringbuf::new(mc, len, false)
@@ -283,6 +288,7 @@ impl<'gc> Str<'gc> {
         )
     }
 
+    /// Allocates a mutable string by repeating one character.
     pub fn from_char(mc: Mutation<'gc>, c: char, count: usize) -> Gc<'gc, Self> {
         if c as u32 <= 0xff {
             let buf = if count == 0 {
@@ -311,8 +317,8 @@ impl<'gc> Str<'gc> {
                 Stringbuf::new(mc, count, true)
             };
             let chars = buf.wide_chars_mut();
-            for i in 0..count {
-                chars[i] = c;
+            for ch in chars.iter_mut().take(count) {
+                *ch = c;
             }
 
             Gc::new_with_info(
@@ -327,13 +333,14 @@ impl<'gc> Str<'gc> {
         }
     }
 
+    /// Allocates a string backed by a wide character buffer.
     pub fn new_wide(
         mc: Mutation<'gc>,
         contents: impl AsRef<str>,
         read_only: bool,
     ) -> Gc<'gc, Self> {
         let str = contents.as_ref();
-        let buf = if str.len() == 0 {
+        let buf = if str.is_empty() {
             null_stringbuf(mc)
         } else {
             Stringbuf::new(mc, str.chars().count(), true)
@@ -380,9 +387,9 @@ impl<'gc> Str<'gc> {
         };
 
         if len == 0 {
-            return Self::new(mc, "", read_only);
+            Self::new(mc, "", read_only)
         } else if !force_copy && !buf.is_mutable() {
-            return Gc::new_with_info(
+            Gc::new_with_info(
                 mc,
                 Self {
                     stringbuf: Lock::new(buf),
@@ -390,7 +397,7 @@ impl<'gc> Str<'gc> {
                     length: len,
                 },
                 info,
-            );
+            )
         } else {
             let (_new_buf, new_str) = if buf.is_wide() {
                 let new_buf = Stringbuf::new(mc, len, true);
@@ -479,6 +486,10 @@ impl<'gc> Str<'gc> {
 
     pub fn len(&self) -> usize {
         self.length
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn is_narrow(&self) -> bool {
@@ -620,10 +631,9 @@ impl<'gc> Str<'gc> {
 
     pub fn contains_char(&self, c: char) -> bool {
         if self.is_narrow() && c.is_ascii() {
-            self.chars()
-                .map_or(false, |chars| chars.contains(&(c as u8)))
+            self.chars().is_some_and(|chars| chars.contains(&(c as u8)))
         } else {
-            self.wide_chars().map_or(false, |chars| chars.contains(&c))
+            self.wide_chars().is_some_and(|chars| chars.contains(&c))
         }
     }
 
@@ -657,8 +667,6 @@ fn compare_strings<'gc>(
 ) -> Option<std::cmp::Ordering> {
     let mut cstart1;
     let mut cstart2;
-    let cend1;
-    let cend2;
 
     cstart1 = if let Some(s) = start1 {
         if s > s1.length {
@@ -678,7 +686,7 @@ fn compare_strings<'gc>(
         0
     };
 
-    cend1 = if let Some(end1) = end1 {
+    let cend1 = if let Some(end1) = end1 {
         if end1 <= s1.length {
             end1
         } else {
@@ -688,7 +696,7 @@ fn compare_strings<'gc>(
         s1.length
     };
 
-    cend2 = if let Some(end2) = end2 {
+    let cend2 = if let Some(end2) = end2 {
         if end2 <= s2.length {
             end2
         } else {
@@ -730,11 +738,11 @@ fn compare_strings<'gc>(
     }
 
     if cstart1 < cend1 {
-        return Some(std::cmp::Ordering::Greater);
+        Some(std::cmp::Ordering::Greater)
     } else if cstart2 < cend2 {
-        return Some(std::cmp::Ordering::Less);
+        Some(std::cmp::Ordering::Less)
     } else {
-        return Some(std::cmp::Ordering::Equal);
+        Some(std::cmp::Ordering::Equal)
     }
 }
 
@@ -781,7 +789,7 @@ impl<'gc> Eq for Str<'gc> {}
 
 impl<'gc> PartialOrd for Str<'gc> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        compare_strings(false, self, other, None, None, None, None)
+        Some(self.cmp(other))
     }
 }
 
@@ -842,7 +850,7 @@ impl<'gc> Symbol<'gc> {
             SYMBOL_UNINTERNED_INFO
         };
 
-        let symbol = Gc::new_with_info(
+        Gc::new_with_info(
             mc,
             Self {
                 stringbuf: buf,
@@ -850,13 +858,15 @@ impl<'gc> Symbol<'gc> {
                 prefix_offset: prefix_offset.unwrap_or(0),
             },
             info,
-        );
-
-        symbol
+        )
     }
 
     pub fn len(&self) -> usize {
         self.stringbuf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn is_narrow(&self) -> bool {
@@ -886,7 +896,7 @@ impl<'gc> Symbol<'gc> {
     pub fn substring(&self, mc: Mutation<'gc>, start: usize, end: usize) -> Gc<'gc, Str<'gc>> {
         let buf = self.stringbuf;
 
-        let string = Gc::new_with_info(
+        Gc::new_with_info(
             mc,
             Str {
                 stringbuf: Lock::new(buf),
@@ -894,9 +904,7 @@ impl<'gc> Symbol<'gc> {
                 length: end - start,
             },
             IMMUTABLE_STRING_INFO,
-        );
-
-        string
+        )
     }
 
     pub fn get(&self, index: usize) -> Option<char> {

@@ -85,8 +85,8 @@ pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarR
             ..
         } => get_fva(test)
             .into_iter()
-            .chain(Some(consequent).into_iter())
-            .chain(Some(alternative).into_iter())
+            .chain(Some(consequent))
+            .chain(Some(alternative))
             .chain(
                 consequent_args
                     .iter()
@@ -148,5 +148,11 @@ impl<'gc> FreeVars<'gc> {
             conts: HashMap::new(),
             cvals: HashSet::new(),
         }
+    }
+}
+
+impl<'gc> Default for FreeVars<'gc> {
+    fn default() -> Self {
+        Self::new()
     }
 }

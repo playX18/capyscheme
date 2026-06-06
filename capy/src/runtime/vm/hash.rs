@@ -129,7 +129,7 @@ pub mod hash_ops {
     #[scheme(name = "core-hash-size")]
     pub fn hash_size(ht: Gc<'gc, HashTable<'gc>>) -> usize {
         let size = ht.len();
-        nctx.return_(size.into())
+        nctx.return_(size)
     }
 
     #[scheme(name = "core-hash->list")]
@@ -326,22 +326,24 @@ pub mod hash_ops {
             Either::Left(ht) => match ht.typ() {
                 /* if these lookups fail something is seriously messed up */
                 HashTableType::Eq => {
-                    nctx.return_(lookup_bound_public(ctx, module.into(), sym_eq(ctx).into()).value)
+                    nctx.return_(lookup_bound_public(ctx, module, sym_eq(ctx).into()).value)
                 }
                 HashTableType::Eqv => {
-                    nctx.return_(lookup_bound_public(ctx, module.into(), sym_eqv(ctx).into()).value)
+                    nctx.return_(lookup_bound_public(ctx, module, sym_eqv(ctx).into()).value)
                 }
-                HashTableType::Equal => nctx
-                    .return_(lookup_bound_public(ctx, module.into(), sym_equal(ctx).into()).value),
-                HashTableType::String => nctx
-                    .return_(lookup_bound_public(ctx, module.into(), sym_string(ctx).into()).value),
+                HashTableType::Equal => {
+                    nctx.return_(lookup_bound_public(ctx, module, sym_equal(ctx).into()).value)
+                }
+                HashTableType::String => {
+                    nctx.return_(lookup_bound_public(ctx, module, sym_string(ctx).into()).value)
+                }
                 HashTableType::Generic(v) => {
                     let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_EQUIV_FUNC].get();
                     nctx.return_call(handler, &[ht.into()])
                 }
             },
 
-            _ => nctx.return_(lookup_bound_public(ctx, module.into(), sym_eq(ctx).into()).value),
+            _ => nctx.return_(lookup_bound_public(ctx, module, sym_eq(ctx).into()).value),
         }
     }
 
@@ -376,17 +378,15 @@ pub mod hash_ops {
                         let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_SET].get();
                         return nctx.return_call(handler, &[ht.into(), key, value]);
                     }
-                    HashTableType::String => {
-                        if !key.is::<Str>() {
-                            return nctx.wrong_argument_violation(
-                                "core-hash-set!",
-                                "expected a string key",
-                                Some(key),
-                                Some(1),
-                                3,
-                                &[ht.into(), key, value],
-                            );
-                        }
+                    HashTableType::String if !key.is::<Str>() => {
+                        return nctx.wrong_argument_violation(
+                            "core-hash-set!",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            3,
+                            &[ht.into(), key, value],
+                        );
                     }
                     _ => (),
                 }
@@ -434,17 +434,15 @@ pub mod hash_ops {
             HashTableType::Generic(_) => {
                 todo!()
             }
-            HashTableType::String => {
-                if !key.is::<Str>() {
-                    return nctx.wrong_argument_violation(
-                        "core-hash-set",
-                        "expected a string key",
-                        Some(key),
-                        Some(1),
-                        3,
-                        &[ht.into(), key, value],
-                    );
-                }
+            HashTableType::String if !key.is::<Str>() => {
+                return nctx.wrong_argument_violation(
+                    "core-hash-set",
+                    "expected a string key",
+                    Some(key),
+                    Some(1),
+                    3,
+                    &[ht.into(), key, value],
+                );
             }
             _ => (),
         }
@@ -468,17 +466,15 @@ pub mod hash_ops {
                         let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_REF].get();
                         return nctx.return_call(handler, &[ht.into(), key, default]);
                     }
-                    HashTableType::String => {
-                        if !key.is::<Str>() {
-                            return nctx.wrong_argument_violation(
-                                "core-hash-ref",
-                                "expected a string key",
-                                Some(key),
-                                Some(1),
-                                3,
-                                &[ht.into(), key, default],
-                            );
-                        }
+                    HashTableType::String if !key.is::<Str>() => {
+                        return nctx.wrong_argument_violation(
+                            "core-hash-ref",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            3,
+                            &[ht.into(), key, default],
+                        );
                     }
                     _ => (),
                 }
@@ -505,17 +501,15 @@ pub mod hash_ops {
                         let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_DELETE].get();
                         return nctx.return_call(handler, &[ht.into(), key]);
                     }
-                    HashTableType::String => {
-                        if !key.is::<Str>() {
-                            return nctx.wrong_argument_violation(
-                                "core-hash-delete!",
-                                "expected a string key",
-                                Some(key),
-                                Some(1),
-                                2,
-                                &[ht.into(), key],
-                            );
-                        }
+                    HashTableType::String if !key.is::<Str>() => {
+                        return nctx.wrong_argument_violation(
+                            "core-hash-delete!",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            2,
+                            &[ht.into(), key],
+                        );
                     }
                     _ => (),
                 }
@@ -573,7 +567,7 @@ pub mod hash_ops {
         match ht {
             Either::Right(ht) => {
                 let size = ht.len();
-                return nctx.return_(size.into());
+                return nctx.return_(size);
             }
             Either::Left(ht) => {
                 if let HashTableType::Generic(v) = ht.typ() {
@@ -581,7 +575,7 @@ pub mod hash_ops {
                     return nctx.return_call(handler, &[ht.into()]);
                 }
                 let size = ht.len();
-                nctx.return_(size.into())
+                nctx.return_(size)
             }
         }
     }
@@ -598,17 +592,15 @@ pub mod hash_ops {
                         let handler = v.downcast::<Vector>()[HASHTABLE_HANDLER_CONTAINS].get();
                         return nctx.return_call(handler, &[ht.into(), key]);
                     }
-                    HashTableType::String => {
-                        if !key.is::<Str>() {
-                            return nctx.wrong_argument_violation(
-                                "core-hash-contains?",
-                                "expected a string key",
-                                Some(key),
-                                Some(1),
-                                2,
-                                &[ht.into(), key],
-                            );
-                        }
+                    HashTableType::String if !key.is::<Str>() => {
+                        return nctx.wrong_argument_violation(
+                            "core-hash-contains?",
+                            "expected a string key",
+                            Some(key),
+                            Some(1),
+                            2,
+                            &[ht.into(), key],
+                        );
                     }
                     _ => (),
                 }

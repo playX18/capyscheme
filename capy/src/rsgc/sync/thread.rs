@@ -437,6 +437,12 @@ impl Thread {
         drop(guard);
     }
 
+    /// Return the thread's mutator without checking initialization state.
+    ///
+    /// # Safety
+    ///
+    /// The thread must have initialized native data and mutator state, and the
+    /// caller must ensure exclusive mutable access to the mutator.
     pub unsafe fn mutator_unchecked(&self) -> &'static mut Box<Mutator<MemoryManager>> {
         unsafe {
             std::mem::transmute(
@@ -485,9 +491,8 @@ impl Thread {
         unsafe { self.native_data.get().as_ref().unwrap_unchecked() }
     }
 
-    #[allow(clippy::mut_from_ref)]
-    pub(crate) fn native_data_mut(&self) -> &mut ThreadNativeData {
-        unsafe { self.native_data.get().as_mut().unwrap_unchecked() }
+    pub(crate) fn native_data_mut_ptr(&self) -> *mut ThreadNativeData {
+        self.native_data.get()
     }
 
     pub fn is_thread_state_initialized(&self) -> bool {
@@ -497,8 +502,11 @@ impl Thread {
     pub(crate) unsafe fn initialize_state<'gc>(&self, state: State<'gc>) {
         unsafe {
             assert!(!self.is_thread_state_initialized());
-            let state_ptr = self.native_data_mut().state.get();
-            state_ptr.write(MaybeUninit::new(std::mem::transmute(state)));
+            let state_ptr = (*self.native_data_mut_ptr()).state.get();
+            state_ptr.write(MaybeUninit::new(std::mem::transmute::<
+                State<'gc>,
+                State<'static>,
+            >(state)));
             self.status_word.update::<ThreadStateInitialized>(true);
         }
     }
@@ -528,7 +536,8 @@ impl Thread {
         } else {
             (mmtk::memory_manager::starting_heap_address() - 4096, 3)
         };
-        let this = Arc::new(Thread {
+
+        Arc::new(Thread {
             heap_base,
             heap_shift,
             id: AtomicU64::new(0),
@@ -551,9 +560,7 @@ impl Thread {
                 gc_scan_sp: AtomicUsize::new(0),
             }),
             index_in_thread_list: AtomicUsize::new(usize::MAX),
-        });
-
-        this
+        })
     }
 
     /// Returns true if thread is managed by thread subsystem.
@@ -584,10 +591,10 @@ impl Thread {
         let constraints = gc.mmtk.get_plan().constraints();
         let selector =
             mmtk::memory_manager::get_allocator_mapping(&gc.mmtk, AllocationSemantics::Default);
-        this.native_data_mut().max_non_los_default_alloc_bytes =
-            constraints.max_non_los_default_alloc_bytes;
-        this.native_data_mut().barrier_selector = constraints.barrier;
-        this.native_data_mut().alloc_fastpath = match selector {
+        let native_data = unsafe { &mut *this.native_data_mut_ptr() };
+        native_data.max_non_los_default_alloc_bytes = constraints.max_non_los_default_alloc_bytes;
+        native_data.barrier_selector = constraints.barrier;
+        native_data.alloc_fastpath = match selector {
             AllocatorSelector::BumpPointer(_) | AllocatorSelector::Immix(_) => AllocFastPath::TLAB,
             _ => AllocFastPath::None,
         };
@@ -595,10 +602,10 @@ impl Thread {
         let mutator = mmtk::memory_manager::bind_mutator(&gc.mmtk, this.to_mutator_thread());
 
         this.set_active_mutator_context(true);
-        this.native_data_mut().mutator = Some(mutator);
+        native_data.mutator = Some(mutator);
         let (stack_low, stack_high) = query_stack_bounds();
-        this.native_data_mut().stack_low = stack_low;
-        this.native_data_mut().stack_high = stack_high;
+        native_data.stack_low = stack_low;
+        native_data.stack_high = stack_high;
         this.record_gc_scan_sp();
         gc.threads.add_thread(this.clone());
         this.status_word
@@ -614,7 +621,8 @@ impl Thread {
             this.status_word.update::<ActiveMutatorContext>(false);
             guard.notify_all();
 
-            if let Some(mut mutator) = this.native_data_mut().mutator.take() {
+            if let Some(mut mutator) = unsafe { &mut (*this.native_data_mut_ptr()).mutator }.take()
+            {
                 mmtk::memory_manager::destroy_mutator(&mut mutator);
             }
 
@@ -626,7 +634,7 @@ impl Thread {
     }
 
     pub(crate) fn flush_tlab(&self) {
-        let tlab = &mut self.native_data_mut().lab;
+        let tlab = unsafe { &mut (*self.native_data_mut_ptr()).lab };
 
         let (cursor, limit) = tlab.take();
 

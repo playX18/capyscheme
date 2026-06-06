@@ -100,6 +100,11 @@ pub fn scm_set_accumulator<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>) {
 }
 
 /// Free the Scheme thread instance created by [`scm_new()`](scm_new)
+///
+/// # Safety
+///
+/// `scm` must be a non-null handle returned by `scm_new` that has not already
+/// been freed. No other thread may use the handle after this call starts.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_free(scm: ScmRef) {
     // SAFETY: `scm.0` was allocated by `Box::into_raw` in `scm_new`. The caller
@@ -117,6 +122,12 @@ pub type ThreadFn =
 /// New thread is created with a copy of the parent's dynamic state.
 ///
 /// Returns thread-object for the newly created thread.
+///
+/// # Safety
+///
+/// `parent` must refer to a live Scheme context. `init` must be a valid
+/// function pointer and must uphold the runtime's FFI calling conventions for
+/// the supplied `arg`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_fork<'gc>(
     parent: ContextRef<'gc>,
@@ -147,6 +158,11 @@ pub type ScmEnterFn<'gc> =
 ///
 /// This function will set up the necessary runtime state and call the provided
 /// `enter` function with a context reference and the provided argument.
+///
+/// # Safety
+///
+/// `scm` must be a live handle returned by `scm_new`. `enter` must be a valid
+/// function pointer and may not retain the provided context beyond the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_enter<'gc>(
     scm: ScmRef,
@@ -154,12 +170,11 @@ pub unsafe extern "C" fn scm_enter<'gc>(
     arg: *mut std::ffi::c_void,
 ) -> libc::c_int {
     let scheme = &scm.scheme;
-    let res = scheme.enter(|ctx| unsafe {
+
+    scheme.enter(|ctx| unsafe {
         let ctxref = ContextRef(ctx.as_ptr() as _, PhantomData);
         enter(ctxref, arg)
-    });
-
-    res
+    })
 }
 
 /// Given a Scheme context, module name, and variable name,
@@ -176,8 +191,13 @@ pub unsafe extern "C" fn scm_enter<'gc>(
 /// ScmRef scm = scm_new();
 /// scm_enter(scm, my_enter, NULL);
 /// ```
+///
+/// # Safety
+///
+/// `module_name` and `name` must be valid, null-terminated C strings when
+/// non-null. `ctx` must refer to a live Scheme context.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_public_ref<'gc>(
+pub unsafe extern "C" fn scm_public_ref<'gc>(
     ctx: ContextRef<'gc>,
     module_name: *const c_char,
     name: *const c_char,
@@ -207,8 +227,13 @@ pub extern "C" fn scm_public_ref<'gc>(
 /// ScmRef scm = scm_new();
 /// scm_enter(scm, my_enter, NULL);
 /// ```
+///
+/// # Safety
+///
+/// `module_name` and `name` must be valid, null-terminated C strings when
+/// non-null. `ctx` must refer to a live Scheme context.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_private_ref<'gc>(
+pub unsafe extern "C" fn scm_private_ref<'gc>(
     ctx: ContextRef<'gc>,
     module_name: *const c_char,
     name: *const c_char,
@@ -226,8 +251,16 @@ pub extern "C" fn scm_private_ref<'gc>(
 }
 
 /// Intern a symbol with the given name in the Scheme context.
+///
+/// # Safety
+///
+/// `name` must be a valid, null-terminated C string when non-null. `ctx` must
+/// refer to a live Scheme context.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_intern_symbol<'gc>(ctx: ContextRef<'gc>, name: *const c_char) -> Value<'gc> {
+pub unsafe extern "C" fn scm_intern_symbol<'gc>(
+    ctx: ContextRef<'gc>,
+    name: *const c_char,
+) -> Value<'gc> {
     // SAFETY: Caller must pass a valid, null-terminated C string.
     let name = match unsafe { safe_cstr(name) } {
         Some(s) => s,
@@ -237,8 +270,13 @@ pub extern "C" fn scm_intern_symbol<'gc>(ctx: ContextRef<'gc>, name: *const c_ch
 }
 
 /// Create a new Scheme string with the given data in the Scheme context.
+///
+/// # Safety
+///
+/// `data` must be a valid, null-terminated C string when non-null. `ctx` must
+/// refer to a live Scheme context.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_string<'gc>(ctx: ContextRef<'gc>, data: *const c_char) -> Value<'gc> {
+pub unsafe extern "C" fn scm_string<'gc>(ctx: ContextRef<'gc>, data: *const c_char) -> Value<'gc> {
     // SAFETY: Caller must pass a valid, null-terminated C string.
     let data = match unsafe { safe_cstr(data) } {
         Some(s) => s,
@@ -269,6 +307,11 @@ pub extern "C" fn scm_string_utf8_length<'gc>(_ctx: ContextRef<'gc>, value: Valu
 /// `written`, when non-null, receives the required byte length excluding the
 /// trailing NUL. Returns false if `value` is not a string, `buf` is null, or
 /// `capacity` is too small for the UTF-8 bytes plus a trailing NUL.
+///
+/// # Safety
+///
+/// When non-null, `buf` must be valid for writes of `capacity` bytes. When
+/// non-null, `written` must be valid for one `usize` write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_string_to_utf8<'gc>(
     _ctx: ContextRef<'gc>,
@@ -310,6 +353,11 @@ pub extern "C" fn scm_value_utf8_length<'gc>(_ctx: ContextRef<'gc>, value: Value
 }
 
 /// Copy the printed representation of any Scheme value to a UTF-8 buffer.
+///
+/// # Safety
+///
+/// When non-null, `buf` must be valid for writes of `capacity` bytes. When
+/// non-null, `written` must be valid for one `usize` write.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scm_value_to_utf8<'gc>(
     _ctx: ContextRef<'gc>,
@@ -513,8 +561,14 @@ pub type FinishCallFn = for<'gc> extern "C" fn(
 ///
 /// `prepare` is invoked to build the argument list, and `finish` is invoked
 /// with the result (or error) once the call completes.
+///
+/// # Safety
+///
+/// `mod_name` and `func_name` must be valid, null-terminated C strings.
+/// `prepare` and `finish` must be valid function pointers that uphold the C API
+/// calling conventions for their data pointers.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_call(
+pub unsafe extern "C" fn scm_call(
     scm: ScmRef,
     mod_name: *const c_char,
     func_name: *const c_char,
@@ -540,7 +594,7 @@ pub extern "C" fn scm_call(
             |ctx, args| {
                 let mut ls = Value::null();
 
-                let _ = prepare(ContextRef(ctx.as_ptr() as _, PhantomData), &mut ls, data1);
+                prepare(ContextRef(ctx.as_ptr() as _, PhantomData), &mut ls, data1);
                 while !ls.is_null() {
                     let next = ls.cdr();
                     args.push(ls.car());
@@ -563,19 +617,19 @@ pub extern "C" fn scm_call(
 ///
 /// `prepare` builds the argument list, and `finish` receives the result or error.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_resume_accumulator<'gc>(
+pub extern "C" fn scm_resume_accumulator(
     scm: ScmRef,
     prepare: PrepareCallFn,
     data1: *mut c_void,
     finish: FinishCallFn,
     data2: *mut c_void,
 ) -> libc::c_int {
-    let x = scm.scheme.call_value(
+    scm.scheme.call_value(
         |ctx, real_args| {
             let acc = ctx.state().accumulator.get();
             let mut args = Value::null();
 
-            let _ = prepare(ContextRef(ctx.as_ptr() as _, PhantomData), &mut args, data1);
+            prepare(ContextRef(ctx.as_ptr() as _, PhantomData), &mut args, data1);
             while !args.is_null() {
                 let next = args.cdr();
                 real_args.push(args.car());
@@ -595,14 +649,17 @@ pub extern "C" fn scm_resume_accumulator<'gc>(
                 data2,
             )
         },
-    );
-
-    x
+    )
 }
 
 /// Load and evaluate a Scheme source file by path. Returns 0 on success, -1 on failure.
+///
+/// # Safety
+///
+/// `name` must be a valid, null-terminated C string when non-null. `scm` must
+/// refer to a live Scheme runtime handle.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int {
+pub unsafe extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int {
     // SAFETY: Caller must pass a valid, null-terminated C string.
     let name = match unsafe { safe_cstr(name) } {
         Some(s) => s,
@@ -614,7 +671,7 @@ pub extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int
             load_thunk_in_vicinity::<true>(ctx, &name, None::<String>, true, None)
                 .unwrap_or_else(|_| Value::void())
         },
-        |_, res| matches!(res, Ok(_)),
+        |_, res| res.is_ok(),
     );
 
     if x { 0 } else { -1 }
@@ -632,7 +689,7 @@ pub extern "C" fn scm_program_arguments<'gc>(ctx: ContextRef<'gc>) -> Value<'gc>
 ///
 /// `argv` must point to an array of at least `argc` valid, non-null C strings.
 #[unsafe(no_mangle)]
-pub extern "C" fn scm_program_arguments_init<'gc>(
+pub unsafe extern "C" fn scm_program_arguments_init<'gc>(
     ctx: ContextRef<'gc>,
     argc: usize,
     argv: *const *const c_char,
