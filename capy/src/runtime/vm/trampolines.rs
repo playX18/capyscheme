@@ -10,10 +10,8 @@ use std::{
 };
 
 use crate::compiler::{
-    codegen::{
-        BackendSymbol, DataSymbolKind, FunctionCompileContext, ImportedSymbolKind, host_isa,
-    },
-    direct::{DirectRelocation, DirectRelocationTarget, compile_function},
+    codegen::{CompileContext, DataKind, ImportKind, Symbol, host_isa},
+    direct::{Relocation, Target, compile_function},
 };
 use crate::rsgc::mmtk::util::Address;
 use crate::runtime::{
@@ -609,9 +607,9 @@ fn compile_trampoline(
     signature: ir::Signature,
     build: fn(&mut FunctionBuilderContext, &mut Context),
 ) -> CodeAllocation {
-    let mut cache = FunctionCompileContext::new();
-    cache.context.func = Function::with_name_signature(UserFuncName::user(0, symbol), signature);
-    build(&mut cache.fctx, &mut cache.context);
+    let mut cache = CompileContext::new();
+    cache.ctx.func = Function::with_name_signature(UserFuncName::user(0, symbol), signature);
+    build(&mut cache.builder_ctx, &mut cache.ctx);
     let compiled = compile_function(isa, &mut cache).expect("failed to compile trampoline");
     let (bytes, call_stub_offsets) = code_bytes_with_call_stubs(&compiled.bytes, &compiled.relocs)
         .expect("failed to reserve trampoline call stubs");
@@ -648,7 +646,7 @@ impl<'a> TrampolineRelocationSite<'a> {
 
 fn code_bytes_with_call_stubs(
     input_bytes: &[u8],
-    relocations: &[DirectRelocation],
+    relocations: &[Relocation],
 ) -> std::io::Result<(Vec<u8>, std::collections::HashMap<u32, u32>)> {
     let mut bytes = input_bytes.to_vec();
     let mut call_stub_offsets = std::collections::HashMap::new();
@@ -670,7 +668,7 @@ fn code_bytes_with_call_stubs(
 fn apply_runtime_relocation(
     memory: &mut CodeMemory,
     site: &mut TrampolineRelocationSite<'_>,
-    reloc: &DirectRelocation,
+    reloc: &Relocation,
 ) -> std::io::Result<()> {
     let target = resolve_runtime_relocation_target(reloc.target)?;
     match reloc.kind {
@@ -690,27 +688,25 @@ fn apply_runtime_relocation(
     }
 }
 
-fn resolve_runtime_relocation_target(target: DirectRelocationTarget) -> std::io::Result<Address> {
+fn resolve_runtime_relocation_target(target: Target) -> std::io::Result<Address> {
     match target {
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Data {
-            kind: DataSymbolKind::RuntimeData,
+        Target::Symbol(Symbol::Data {
+            kind: DataKind::RuntimeData,
             symbol,
         }) => RuntimeData::from_id(symbol.index())
             .map(|data| data.address())
             .ok_or_else(|| invalid_data("unknown runtime data relocation target")),
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
-            match kind {
-                ImportedSymbolKind::RuntimeThunk => RuntimeThunk::from_id(symbol.index())
-                    .map(|thunk| thunk.address())
-                    .ok_or_else(|| invalid_data("unknown runtime thunk relocation target")),
-                ImportedSymbolKind::Trampoline => Err(invalid_data(
-                    "trampoline relocation target is not supported here",
-                )),
-            }
-        }
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Function(_))
-        | DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { .. })
-        | DirectRelocationTarget::FunctionOffset(_) => Err(invalid_data(
+        Target::Symbol(Symbol::Imported { kind, symbol }) => match kind {
+            ImportKind::RuntimeThunk => RuntimeThunk::from_id(symbol.index())
+                .map(|thunk| thunk.address())
+                .ok_or_else(|| invalid_data("unknown runtime thunk relocation target")),
+            ImportKind::Trampoline => Err(invalid_data(
+                "trampoline relocation target is not supported here",
+            )),
+        },
+        Target::Symbol(Symbol::Function(_))
+        | Target::Symbol(Symbol::Data { .. })
+        | Target::FunctionOffset(_) => Err(invalid_data(
             "runtime relocation target is not supported here",
         )),
     }
@@ -822,7 +818,7 @@ pub fn get_cont_trampoline_from_scheme() -> Address {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{compiler::codegen::declare_runtime_data_symbol, runtime::symbols::RuntimeData};
+    use crate::{compiler::codegen::declare_runtime_data, runtime::symbols::RuntimeData};
 
     fn i64_signature() -> ir::Signature {
         let mut sig = ir::Signature::new(CallConv::SystemV);
@@ -834,7 +830,7 @@ mod tests {
         let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
         let entry = builder.create_block();
         builder.switch_to_block(entry);
-        let global = declare_runtime_data_symbol(builder.func, RuntimeData::PairInfo);
+        let global = declare_runtime_data(builder.func, RuntimeData::PairInfo);
         let address = builder.ins().global_value(types::I64, global);
         builder.ins().return_(&[address]);
         builder.seal_all_blocks();

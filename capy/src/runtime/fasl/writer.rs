@@ -18,17 +18,17 @@ use crate::runtime::{
 };
 
 use super::{
-    FASL_MAGIC, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR,
-    FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F,
-    FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_GROUP,
-    FASL_TAG_GZIP, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL,
-    FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR,
-    FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNCOMPRESSED,
-    FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION,
-    FaslClosureSpec, FaslCodeBlockSpec, FaslProgramSpec, checked_u32_len,
+    ClosureSpec, CodeSpec, FASL_MAGIC, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN,
+    FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_COMPLEX,
+    FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
+    FASL_TAG_GRAPH_DEF, FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD,
+    FASL_TAG_LOOKUP, FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF,
+    FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE,
+    FASL_TAG_UNCOMPRESSED, FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_UNLINKED_CODEBLOCK,
+    FASL_TAG_VECTOR, FASL_VERSION, ProgramSpec, checked_u32_len,
 };
 
-pub struct FASLWriter<'gc, W: Write> {
+pub struct FaslWriter<'gc, W: Write> {
     pub ctx: Context<'gc>,
     pub writer: BufWriter<W>,
     pub lites: crate::rsgc::Gc<'gc, HashTable<'gc>>,
@@ -37,7 +37,7 @@ pub struct FASLWriter<'gc, W: Write> {
     pub initmap: HashSet<Address>,
 }
 
-impl<'gc, W: Write> FASLWriter<'gc, W> {
+impl<'gc, W: Write> FaslWriter<'gc, W> {
     pub fn put8(&mut self, byte: u8) -> io::Result<()> {
         self.writer.write_all(&[byte])
     }
@@ -400,7 +400,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         Ok(())
     }
 
-    pub fn write_loaded_closure(mut self, spec: &FaslClosureSpec<'_, 'gc>) -> io::Result<()> {
+    pub fn write_loaded_closure(mut self, spec: &ClosureSpec<'_, 'gc>) -> io::Result<()> {
         self.scan(spec.code.metadata)?;
         for value in spec.free {
             self.scan(*value)?;
@@ -421,7 +421,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         Ok(())
     }
 
-    pub fn write_loaded_program(mut self, spec: &FaslProgramSpec<'_, 'gc>) -> io::Result<()> {
+    pub fn write_loaded_program(mut self, spec: &ProgramSpec<'_, 'gc>) -> io::Result<()> {
         for value in spec.values {
             self.scan(value.value)?;
         }
@@ -457,8 +457,8 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         Ok(())
     }
 
-    fn payload_writer<'a>(&self, writer: &'a mut Vec<u8>) -> FASLWriter<'gc, &'a mut Vec<u8>> {
-        FASLWriter {
+    fn payload_writer<'a>(&self, writer: &'a mut Vec<u8>) -> FaslWriter<'gc, &'a mut Vec<u8>> {
+        FaslWriter {
             ctx: self.ctx,
             writer: BufWriter::new(writer),
             lites: self.lites,
@@ -483,7 +483,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         self.writer.write_all(pcfasl)
     }
 
-    fn put_closure(&mut self, spec: &FaslClosureSpec<'_, 'gc>) -> io::Result<()> {
+    fn put_closure(&mut self, spec: &ClosureSpec<'_, 'gc>) -> io::Result<()> {
         self.put8(FASL_TAG_CLOSURE)?;
         self.put8(FASL_TAG_GRAPH_DEF)?;
         self.put32(0)?;
@@ -503,7 +503,7 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         self.put8(u8::from(is_cont))
     }
 
-    fn put_code_block(&mut self, spec: &FaslCodeBlockSpec<'_, 'gc>) -> io::Result<()> {
+    fn put_code_block(&mut self, spec: &CodeSpec<'_, 'gc>) -> io::Result<()> {
         self.put8(FASL_TAG_UNLINKED_CODEBLOCK)?;
         self.put32(checked_u32_len(spec.bytes.len())?)?;
         self.put_many(spec.bytes)?;

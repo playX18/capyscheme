@@ -3,7 +3,7 @@
 use crate::rsgc::{Global, Trace, sync::monitor::Monitor};
 use crate::runtime::{
     Context,
-    fasl::FASLReader,
+    fasl::FaslReader,
     value::Value,
     vm::load::artifact::{LoadArtifact, LoadArtifactKind},
 };
@@ -40,7 +40,7 @@ impl<'gc> Library<'gc> {
             )),
             LoadArtifactKind::FaslCode => {
                 let bytes = fs::read(&artifact.path)?;
-                let value = FASLReader::new(ctx, Cursor::new(bytes)).read()?;
+                let value = FaslReader::new(ctx, Cursor::new(bytes)).read()?;
                 let entrypoint = if initialize { value } else { Value::new(false) };
                 Ok((Self::Fasl(value), entrypoint))
             }
@@ -109,7 +109,7 @@ mod tests {
     use super::*;
     use crate::runtime::{
         Scheme,
-        fasl::{FASLWriter, FaslClosureSpec, FaslCodeBlockSpec},
+        fasl::{ClosureSpec, CodeSpec, FaslWriter},
         value::{Closure, Value},
     };
     use std::sync::Mutex;
@@ -125,19 +125,11 @@ mod tests {
         let scm = Scheme::new_uninit();
         scm.enter(|ctx| {
             let mut bytes = Vec::new();
-            FASLWriter::new(ctx, &mut bytes)
-                .write_loaded_closure(&FaslClosureSpec {
-                    code: FaslCodeBlockSpec {
-                        bytes: &[0xc3],
-                        entry_offset: 0,
-                        arity: 0,
-                        is_cont: false,
-                        metadata: Value::new(false),
-                        relocations: &[],
-                    },
-                    free: &[],
-                    is_cont: false,
-                })
+            FaslWriter::new(ctx, &mut bytes)
+                .write_loaded_closure(&ClosureSpec::new(
+                    CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]),
+                    &[],
+                ))
                 .expect("write unified FASL");
             let path = std::env::temp_dir().join(format!(
                 "capy-test-unified-fasl-{}.fasl",

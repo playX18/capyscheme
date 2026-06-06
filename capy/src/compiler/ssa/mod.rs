@@ -1,15 +1,15 @@
 //! SSA (Static Single Assignment) code generation using Cranelift.
 
 #[cfg(test)]
-use crate::compiler::codegen::declare_backend_function_import;
+use crate::compiler::codegen::declare_function;
 use crate::{
     compiler::{
         codegen::{
-            BackendSymbol, DataSymbol, DataSymbolKind, FunctionCompileContext, FunctionSymbol,
-            declare_backend_data_symbol, declare_runtime_data_symbol, host_isa,
+            CompileContext, DataKind, DataSymbol, FunctionSymbol, Symbol, declare_data,
+            declare_runtime_data, host_isa,
         },
         debuginfo::{DebugContext, FunctionDebugContext},
-        direct::{DirectRelocation, DirectRelocationTarget, compile_function},
+        direct::{Relocation as DirectRelocation, Target as DirectTarget, compile_function},
         ssa::primitive::PrimitiveLowerer,
     },
     cps::{
@@ -19,28 +19,28 @@ use crate::{
     },
     expander::core::LVarRef,
     runtime::{
-        COMPILED_ENTRY_ARG_COUNT, Context, REGISTER_ARG_COUNT, State,
+        Context, REGISTER_ARG_COUNT, State,
         fasl::{
-            FASLWriter, FaslCodeBlockSpec, FaslGraphCodeBlockSpec, FaslGraphValueSpec,
-            FaslProgramSpec,
-            reloc::{FaslRelocKind, FaslRelocTarget, FaslRelocation, SideMetadataSlotKind},
+            CodeSpec, FaslWriter, GraphCodeSpec, GraphValueSpec, ProgramSpec,
+            reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
         },
         symbols::RuntimeData,
         value::{Closure, Value, ValueEqual, Vector},
     },
 };
 
-use cranelift::prelude::{FunctionBuilder, FunctionBuilderContext, InstBuilder, types};
+use cranelift::prelude::{
+    FunctionBuilder, FunctionBuilderContext, InstBuilder, types as clif_types,
+};
 use cranelift_codegen::{
     binemit::Reloc,
     ir::{self, BlockArg, SourceLoc},
-    isa::CallConv,
 };
 
 use crate::rsgc::Gc;
 use std::{
     collections::{HashMap, HashSet},
-    mem::{offset_of, size_of},
+    mem::offset_of,
 };
 
 use crate::runtime::vm::thunks::*;
@@ -49,66 +49,11 @@ pub mod helpers;
 pub mod linear;
 pub mod primitive;
 pub mod traits;
+mod types;
 
 pub(crate) use linear::AllocInfoPreset;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum VarDef {
-    Value(ir::Value),
-    Comparison(ir::Value),
-}
-
-#[derive(Clone, Copy)]
-pub struct LinearRestSource {
-    pub argc: ir::Value,
-    pub args: [ir::Value; REGISTER_ARG_COUNT],
-    pub overflow: ir::Value,
-    pub first_rest: usize,
-}
-
-#[derive(Clone, Copy)]
-pub struct RegisterCallArgs {
-    pub argc: ir::Value,
-    pub args: [ir::Value; REGISTER_ARG_COUNT],
-    pub overflow: ir::Value,
-}
-
-pub(crate) fn overflow_base_from_argc(
-    builder: &mut FunctionBuilder<'_>,
-    state: ir::Value,
-    argc: ir::Value,
-) -> ir::Value {
-    let overflow_count = builder.ins().iadd_imm(argc, -(REGISTER_ARG_COUNT as i64));
-    let zero = builder.ins().iconst(types::I64, 0);
-    let has_overflow = builder.ins().icmp_imm(
-        ir::condcodes::IntCC::UnsignedGreaterThan,
-        argc,
-        REGISTER_ARG_COUNT as i64,
-    );
-    let overflow_count = builder.ins().select(has_overflow, overflow_count, zero);
-    let overflow_bytes = builder
-        .ins()
-        .imul_imm(overflow_count, size_of::<Value>() as i64);
-    let runstack = builder.ins().load(
-        types::I64,
-        ir::MemFlags::trusted().with_can_move(),
-        state,
-        offset_of!(State, runstack) as i32,
-    );
-    builder.ins().isub(runstack, overflow_bytes)
-}
-
-pub(crate) fn compiled_scheme_signature() -> ir::Signature {
-    let mut sig = ir::Signature::new(CallConv::Tail);
-    for _ in 0..COMPILED_ENTRY_ARG_COUNT {
-        sig.params.push(ir::AbiParam::new(types::I64));
-    }
-    sig.returns.push(ir::AbiParam::new(types::I64));
-    sig.returns.push(ir::AbiParam::new(types::I64));
-    sig
-}
-
-pub(crate) const MAX_RAISE_ARITY: usize = 4;
+pub use types::{LinearRestSource, RegisterCallArgs, VarDef};
+pub(crate) use types::{MAX_RAISE_ARITY, compiled_scheme_signature, overflow_base_from_argc};
 
 fn declare_direct_function(
     next_function_symbol: &mut u32,
@@ -128,20 +73,19 @@ fn declare_direct_data(next_data_symbol: &mut u32, _name: &str) -> DataSymbol {
 
 fn fasl_relocation_from_direct_relocation(
     relocation: &DirectRelocation,
-    data_slot_targets: &HashMap<u32, FaslRelocTarget>,
-) -> Result<FaslRelocation, String> {
+    data_slot_targets: &HashMap<u32, RelocTarget>,
+) -> Result<Relocation, String> {
     let (target, abs8_kind) = match relocation.target {
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Function(symbol)) => (
-            FaslRelocTarget::Entry(symbol.index()),
-            FaslRelocKind::CodeEntry,
-        ),
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Data { kind, symbol }) => {
-            if kind == DataSymbolKind::RuntimeData {
+        DirectTarget::Symbol(Symbol::Function(symbol)) => {
+            (RelocTarget::Entry(symbol.index()), RelocKind::CodeEntry)
+        }
+        DirectTarget::Symbol(Symbol::Data { kind, symbol }) => {
+            if kind == DataKind::RuntimeData {
                 (
-                    FaslRelocTarget::RuntimeSymbol(symbol.index()),
-                    FaslRelocKind::RuntimeData,
+                    RelocTarget::RuntimeSymbol(symbol.index()),
+                    RelocKind::RuntimeData,
                 )
-            } else if kind == DataSymbolKind::CacheCell {
+            } else if kind == DataKind::CacheCell {
                 (
                     match data_slot_targets.get(&symbol.index()).copied().ok_or_else(|| {
                         format!(
@@ -149,10 +93,10 @@ fn fasl_relocation_from_direct_relocation(
                             symbol.index()
                         )
                     })? {
-                        FaslRelocTarget::Object(index) => FaslRelocTarget::CacheCell(index),
+                        RelocTarget::Object(index) => RelocTarget::CacheCell(index),
                         other => other,
                     },
-                    FaslRelocKind::CacheCell,
+                    RelocKind::CacheCell,
                 )
             } else {
                 (
@@ -162,24 +106,22 @@ fn fasl_relocation_from_direct_relocation(
                             symbol.index()
                         )
                     })?,
-                    FaslRelocKind::DataSlotAddress,
+                    RelocKind::DataSlotAddress,
                 )
             }
         }
-        DirectRelocationTarget::BackendSymbol(BackendSymbol::Imported { kind, symbol }) => {
-            match kind {
-                crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk => (
-                    FaslRelocTarget::RuntimeSymbol(symbol.index()),
-                    FaslRelocKind::RuntimeThunk,
-                ),
-                crate::compiler::codegen::ImportedSymbolKind::Trampoline => {
-                    return Err(
-                        "trampoline relocations are not supported in unified FASL yet".to_string(),
-                    );
-                }
+        DirectTarget::Symbol(Symbol::Imported { kind, symbol }) => match kind {
+            crate::compiler::codegen::ImportKind::RuntimeThunk => (
+                RelocTarget::RuntimeSymbol(symbol.index()),
+                RelocKind::RuntimeThunk,
+            ),
+            crate::compiler::codegen::ImportKind::Trampoline => {
+                return Err(
+                    "trampoline relocations are not supported in unified FASL yet".to_string(),
+                );
             }
-        }
-        DirectRelocationTarget::FunctionOffset(offset) => {
+        },
+        DirectTarget::FunctionOffset(offset) => {
             return Err(format!(
                 "function-offset relocation target {offset} cannot be encoded in unified FASL"
             ));
@@ -188,22 +130,18 @@ fn fasl_relocation_from_direct_relocation(
 
     let kind = match relocation.kind {
         Reloc::Abs8 => abs8_kind,
-        kind if matches!(
-            abs8_kind,
-            FaslRelocKind::DataSlotAddress | FaslRelocKind::CacheCell
-        ) =>
-        {
-            FaslRelocKind::CraneliftDataSlot(kind)
+        kind if matches!(abs8_kind, RelocKind::DataSlotAddress | RelocKind::CacheCell) => {
+            RelocKind::CraneliftDataSlot(kind)
         }
-        kind => FaslRelocKind::Cranelift(kind),
+        kind => RelocKind::Cranelift(kind),
     };
 
-    Ok(FaslRelocation {
-        offset: relocation.offset,
+    Ok(Relocation::new(
+        relocation.offset,
         kind,
         target,
-        addend: relocation.addend,
-    })
+        relocation.addend,
+    ))
 }
 
 /// A SSA Builder. Constructs Cranelift module and SSA from single compilation unit.
@@ -216,7 +154,7 @@ pub struct ModuleBuilder<'gc> {
     pub cache_cells: HashMap<ValueEqual<'gc>, DataSymbol>,
 
     next_function_symbol: u32,
-    data_kinds: HashMap<DataSymbol, DataSymbolKind>,
+    data_kinds: HashMap<DataSymbol, DataKind>,
     next_data_symbol: u32,
 
     pub prims: PrimitiveLowerer<'gc>,
@@ -243,7 +181,7 @@ pub(crate) struct DeclaredProcedure<'gc> {
 
 struct CompiledFaslFunction {
     symbol: FunctionSymbol,
-    compiled: crate::compiler::direct::DirectCompiledFunction,
+    compiled: crate::compiler::direct::CompiledFunction,
     entry_offset: u32,
     arity: i32,
     is_cont: bool,
@@ -253,11 +191,64 @@ struct CompiledFaslFunction {
 #[derive(Clone, Copy)]
 struct FaslDataSlot {
     symbol: DataSymbol,
-    kind: DataSymbolKind,
+    kind: DataKind,
     constant_index: Option<u32>,
     code: Option<FunctionSymbol>,
     pointer_code: Option<u32>,
-    side_metadata: Option<SideMetadataSlotKind>,
+    side_metadata: Option<SideMetadataSlot>,
+}
+
+impl FaslDataSlot {
+    fn constant(symbol: DataSymbol, index: Option<u32>) -> Self {
+        Self::new(symbol, DataKind::Constant).with_constant(index)
+    }
+
+    fn cache_cell(symbol: DataSymbol) -> Self {
+        Self::new(symbol, DataKind::CacheCell)
+    }
+
+    fn code(symbol: DataSymbol, function: Option<FunctionSymbol>) -> Self {
+        Self::new(symbol, DataKind::CodeBlock).with_code(function)
+    }
+
+    fn pointer(symbol: DataSymbol, function: FunctionSymbol) -> Self {
+        Self::new(symbol, DataKind::PointerSlot).with_pointer(function.index())
+    }
+
+    fn side_metadata(symbol: DataSymbol, kind: SideMetadataSlot) -> Self {
+        Self::new(symbol, DataKind::SideMetadata).with_side_metadata(kind)
+    }
+
+    fn new(symbol: DataSymbol, kind: DataKind) -> Self {
+        Self {
+            symbol,
+            kind,
+            constant_index: None,
+            code: None,
+            pointer_code: None,
+            side_metadata: None,
+        }
+    }
+
+    fn with_constant(mut self, index: Option<u32>) -> Self {
+        self.constant_index = index;
+        self
+    }
+
+    fn with_code(mut self, function: Option<FunctionSymbol>) -> Self {
+        self.code = function;
+        self
+    }
+
+    fn with_pointer(mut self, function: u32) -> Self {
+        self.pointer_code = Some(function);
+        self
+    }
+
+    fn with_side_metadata(mut self, kind: SideMetadataSlot) -> Self {
+        self.side_metadata = Some(kind);
+        self
+    }
 }
 
 impl<'gc> ModuleBuilder<'gc> {
@@ -270,16 +261,10 @@ impl<'gc> ModuleBuilder<'gc> {
         let mut next_data_symbol = 0;
         let global_side_metadata_base_address =
             declare_direct_data(&mut next_data_symbol, "__GLOBAL_SIDE_METADATA_VM_ADDRESS");
-        data_kinds.insert(
-            global_side_metadata_base_address,
-            DataSymbolKind::SideMetadata,
-        );
+        data_kinds.insert(global_side_metadata_base_address, DataKind::SideMetadata);
         let vo_bit_side_metadata_base_address =
             declare_direct_data(&mut next_data_symbol, "__VO_BIT_SIDE_METADATA_VM_ADDRESS");
-        data_kinds.insert(
-            vo_bit_side_metadata_base_address,
-            DataSymbolKind::SideMetadata,
-        );
+        data_kinds.insert(vo_bit_side_metadata_base_address, DataKind::SideMetadata);
         let raise_sig = compiled_scheme_signature();
         let raise_trampolines = (0..=MAX_RAISE_ARITY)
             .map(|arity| {
@@ -329,18 +314,18 @@ impl<'gc> ModuleBuilder<'gc> {
         declare_direct_function(&mut self.next_function_symbol, name, sig)
     }
 
-    fn declare_data_symbol(&mut self, kind: DataSymbolKind, name: &str) -> DataSymbol {
+    fn declare_data_symbol(&mut self, kind: DataKind, name: &str) -> DataSymbol {
         let symbol = declare_direct_data(&mut self.next_data_symbol, name);
         self.data_kinds.insert(symbol, kind);
         symbol
     }
 
     #[allow(dead_code)]
-    pub(crate) fn data_kind(&self, symbol: DataSymbol) -> DataSymbolKind {
+    pub(crate) fn data_kind(&self, symbol: DataSymbol) -> DataKind {
         self.data_kinds
             .get(&symbol)
             .copied()
-            .expect("data symbol should have a direct backend kind")
+            .expect("data symbol should have a direct data kind")
     }
 
     #[cfg(test)]
@@ -350,7 +335,7 @@ impl<'gc> ModuleBuilder<'gc> {
         function: &mut ir::Function,
     ) -> ir::FuncRef {
         let signature = function.import_signature(compiled_scheme_signature());
-        declare_backend_function_import(function, BackendSymbol::Function(symbol), signature, false)
+        declare_function(function, Symbol::function(symbol), signature, false)
     }
 
     pub(crate) fn declare_data_in_func(
@@ -358,12 +343,9 @@ impl<'gc> ModuleBuilder<'gc> {
         symbol: DataSymbol,
         function: &mut ir::Function,
     ) -> ir::GlobalValue {
-        declare_backend_data_symbol(
+        declare_data(
             function,
-            BackendSymbol::Data {
-                kind: self.data_kind(symbol),
-                symbol,
-            },
+            Symbol::data(self.data_kind(symbol), symbol),
             false,
             false,
         )
@@ -374,10 +356,8 @@ impl<'gc> ModuleBuilder<'gc> {
             return *slot;
         }
 
-        let slot = self.declare_data_symbol(
-            DataSymbolKind::PointerSlot,
-            &format!("codeptr{}", symbol.index()),
-        );
+        let slot =
+            self.declare_data_symbol(DataKind::PointerSlot, &format!("codeptr{}", symbol.index()));
         self.pointer_slot_for_function.insert(symbol, slot);
         slot
     }
@@ -391,7 +371,7 @@ impl<'gc> ModuleBuilder<'gc> {
         data: RuntimeData,
         function: &mut ir::Function,
     ) -> ir::GlobalValue {
-        declare_runtime_data_symbol(function, data)
+        declare_runtime_data(function, data)
     }
 
     pub(crate) fn declare_procedures(&mut self) -> Vec<DeclaredProcedure<'gc>> {
@@ -443,18 +423,18 @@ impl<'gc> ModuleBuilder<'gc> {
     pub fn compile_loaded_fasl_bytes(&mut self) -> Result<Vec<u8>, String> {
         let declared_procedures = self.declare_procedures();
         let isa = host_isa();
-        let mut cache = FunctionCompileContext::new();
+        let mut cache = CompileContext::new();
         let mut functions = Vec::with_capacity(declared_procedures.len());
         let mut pending_metadata = Vec::with_capacity(declared_procedures.len());
 
         self.compile_fasl_trampolines(&*isa, &mut cache, &mut functions)?;
 
         for declared in declared_procedures.iter() {
-            cache.context.func = ir::Function::with_name_signature(
+            cache.ctx.func = ir::Function::with_name_signature(
                 ir::UserFuncName::user(0, declared.function.index()),
                 compiled_scheme_signature(),
             );
-            let builder = FunctionBuilder::new(&mut cache.context.func, &mut cache.fctx);
+            let builder = FunctionBuilder::new(&mut cache.ctx.func, &mut cache.builder_ctx);
             let thunks = self.import_thunks(builder.func);
             let (func_debug_cx, arity, is_cont, metadata) = match declared.procedure.code {
                 CodeId::Function(func) => (
@@ -549,7 +529,7 @@ impl<'gc> ModuleBuilder<'gc> {
                 return Err(format!("duplicate data symbol id {slot_id}"));
             }
             match slot.kind {
-                DataSymbolKind::CodeBlock => {
+                DataKind::CodeBlock => {
                     let code_id = slot
                         .code
                         .ok_or_else(|| {
@@ -561,9 +541,9 @@ impl<'gc> ModuleBuilder<'gc> {
                             "code-block data slot references undeclared function symbol id {code_id}"
                         ));
                     }
-                    data_slot_targets.insert(slot_id, FaslRelocTarget::Object(code_id));
+                    data_slot_targets.insert(slot_id, RelocTarget::Object(code_id));
                 }
-                DataSymbolKind::Constant => {
+                DataKind::Constant => {
                     let constant_index = slot.constant_index.ok_or_else(|| {
                         "constant data slot requires a constant index".to_string()
                     })?;
@@ -575,31 +555,28 @@ impl<'gc> ModuleBuilder<'gc> {
                     graph_len = graph_len
                         .checked_add(1)
                         .ok_or_else(|| "unified FASL graph is too large".to_string())?;
-                    data_slot_targets.insert(slot_id, FaslRelocTarget::Object(index));
-                    value_defs.push(FaslGraphValueSpec { index, value });
+                    data_slot_targets.insert(slot_id, RelocTarget::Object(index));
+                    value_defs.push(GraphValueSpec::new(index, value));
                 }
-                DataSymbolKind::CacheCell => {
+                DataKind::CacheCell => {
                     let index = graph_len;
                     graph_len = graph_len
                         .checked_add(1)
                         .ok_or_else(|| "unified FASL graph is too large".to_string())?;
-                    data_slot_targets.insert(slot_id, FaslRelocTarget::Object(index));
-                    value_defs.push(FaslGraphValueSpec {
-                        index,
-                        value: Value::new(false),
-                    });
+                    data_slot_targets.insert(slot_id, RelocTarget::Object(index));
+                    value_defs.push(GraphValueSpec::new(index, Value::new(false)));
                 }
-                DataSymbolKind::PointerSlot => {
+                DataKind::PointerSlot => {
                     let code_id = slot
                         .pointer_code
                         .ok_or_else(|| "pointer data slot requires a code target".to_string())?;
-                    data_slot_targets.insert(slot_id, FaslRelocTarget::Entry(code_id));
+                    data_slot_targets.insert(slot_id, RelocTarget::Entry(code_id));
                 }
-                DataSymbolKind::SideMetadata => {
+                DataKind::SideMetadata => {
                     let kind = slot.side_metadata.ok_or_else(|| {
                         "side-metadata data slot requires a side metadata kind".to_string()
                     })?;
-                    data_slot_targets.insert(slot_id, FaslRelocTarget::SideMetadata(kind));
+                    data_slot_targets.insert(slot_id, RelocTarget::SideMetadata(kind));
                 }
                 other => {
                     return Err(format!(
@@ -637,28 +614,28 @@ impl<'gc> ModuleBuilder<'gc> {
                 })
                 .transpose()?
                 .unwrap_or_else(|| Value::new(false));
-            code_defs.push(FaslGraphCodeBlockSpec {
-                index: function.symbol.index(),
-                code: FaslCodeBlockSpec {
-                    bytes: &function.compiled.bytes,
-                    entry_offset: function.entry_offset,
-                    arity: function.arity,
-                    is_cont: function.is_cont,
+            code_defs.push(GraphCodeSpec::new(
+                function.symbol.index(),
+                CodeSpec::new(
+                    &function.compiled.bytes,
+                    function.entry_offset,
+                    function.arity,
+                    function.is_cont,
                     metadata,
                     relocations,
-                },
-            });
+                ),
+            ));
         }
 
         let mut bytes = Vec::new();
-        FASLWriter::new(self.ctx, &mut bytes)
-            .write_loaded_program(&FaslProgramSpec {
+        FaslWriter::new(self.ctx, &mut bytes)
+            .write_loaded_program(&ProgramSpec::new(
                 graph_len,
-                values: &value_defs,
-                code_blocks: &code_defs,
-                entry_code_index: entry_code.index(),
-                entry_is_cont: false,
-            })
+                &value_defs,
+                &code_defs,
+                entry_code.index(),
+                false,
+            ))
             .map_err(|err| err.to_string())?;
         Ok(bytes)
     }
@@ -666,7 +643,7 @@ impl<'gc> ModuleBuilder<'gc> {
     fn compile_fasl_trampolines(
         &mut self,
         isa: &dyn cranelift_codegen::isa::TargetIsa,
-        cache: &mut FunctionCompileContext,
+        cache: &mut CompileContext,
         functions: &mut Vec<CompiledFaslFunction>,
     ) -> Result<(), String> {
         self.compile_fasl_trampoline(
@@ -704,17 +681,17 @@ impl<'gc> ModuleBuilder<'gc> {
     fn compile_fasl_trampoline(
         &mut self,
         isa: &dyn cranelift_codegen::isa::TargetIsa,
-        cache: &mut FunctionCompileContext,
+        cache: &mut CompileContext,
         functions: &mut Vec<CompiledFaslFunction>,
         symbol: FunctionSymbol,
         _name: &str,
         build: fn(&mut Self, &mut cranelift_codegen::Context, &mut FunctionBuilderContext),
     ) -> Result<(), String> {
-        cache.context.func = ir::Function::with_name_signature(
+        cache.ctx.func = ir::Function::with_name_signature(
             ir::UserFuncName::user(0, symbol.index()),
             compiled_scheme_signature(),
         );
-        build(self, &mut cache.context, &mut cache.fctx);
+        build(self, &mut cache.ctx, &mut cache.builder_ctx);
         let compiled = compile_function(isa, cache)?;
         functions.push(CompiledFaslFunction {
             symbol,
@@ -743,11 +720,11 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let err = builder.block_params(entry)[0];
         let retk_or_zero = builder.block_params(entry)[2];
-        let ctx = builder.ins().get_pinned_reg(types::I64);
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
 
         let load_default_retk = builder.create_block();
         let got_retk = builder.create_block();
-        builder.append_block_param(got_retk, types::I64);
+        builder.append_block_param(got_retk, clif_types::I64);
         builder.func.layout.set_cold(load_default_retk);
 
         let is_zero = builder
@@ -773,16 +750,16 @@ impl<'gc> ModuleBuilder<'gc> {
         let handler = builder.ins().call(thunks.exception_handler, &[ctx]);
         let handler = builder.inst_results(handler)[0];
         let handler_code = builder.ins().load(
-            types::I64,
+            clif_types::I64,
             ir::MemFlags::trusted().with_can_move(),
             handler,
             offset_of!(Closure, code) as i32,
         );
         let sig_call = builder.import_signature(compiled_scheme_signature());
-        let argc = builder.ins().iconst(types::I64, 2);
+        let argc = builder.ins().iconst(clif_types::I64, 2);
         let undefined = builder
             .ins()
-            .iconst(types::I64, Value::undefined().bits() as i64);
+            .iconst(clif_types::I64, Value::undefined().bits() as i64);
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
@@ -811,7 +788,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let got = builder.block_params(entry)[3];
         let expected = builder.block_params(entry)[4];
 
-        let ctx = builder.ins().get_pinned_reg(types::I64);
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
         let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
         let overflow = overflow_base_from_argc(&mut builder, state, actual_argc);
         builder.ins().store(
@@ -822,14 +799,14 @@ impl<'gc> ModuleBuilder<'gc> {
         );
 
         let code = builder.ins().iconst(
-            types::I64,
+            clif_types::I64,
             crate::runtime::vm::exceptions::RaiseKind::WrongNumberOfArguments.code() as i64,
         );
-        let raise_argc = builder.ins().iconst(types::I64, 4);
+        let raise_argc = builder.ins().iconst(clif_types::I64, 4);
         let undefined = builder
             .ins()
-            .iconst(types::I64, Value::undefined().bits() as i64);
-        let from = builder.ins().iconst(types::I64, 1);
+            .iconst(clif_types::I64, Value::undefined().bits() as i64);
+        let from = builder.ins().iconst(clif_types::I64, 1);
         let condition = builder.ins().call(
             thunks.raise_condition_regs,
             &[
@@ -848,7 +825,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let load_default_retk = builder.create_block();
         let got_retk = builder.create_block();
-        builder.append_block_param(got_retk, types::I64);
+        builder.append_block_param(got_retk, clif_types::I64);
         builder.func.layout.set_cold(load_default_retk);
 
         let is_zero = builder
@@ -874,13 +851,13 @@ impl<'gc> ModuleBuilder<'gc> {
         let handler = builder.ins().call(thunks.exception_handler, &[ctx]);
         let handler = builder.inst_results(handler)[0];
         let handler_code = builder.ins().load(
-            types::I64,
+            clif_types::I64,
             ir::MemFlags::trusted().with_can_move(),
             handler,
             offset_of!(Closure, code) as i32,
         );
         let sig_call = builder.import_signature(compiled_scheme_signature());
-        let handler_argc = builder.ins().iconst(types::I64, 2);
+        let handler_argc = builder.ins().iconst(clif_types::I64, 2);
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
@@ -910,10 +887,10 @@ impl<'gc> ModuleBuilder<'gc> {
         let arg2 = builder.block_params(entry)[4];
         let arg3 = builder.block_params(entry)[5];
 
-        let ctx = builder.ins().get_pinned_reg(types::I64);
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
         let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
         let overflow = overflow_base_from_argc(&mut builder, state, argc);
-        let from = builder.ins().iconst(types::I64, 1);
+        let from = builder.ins().iconst(clif_types::I64, 1);
         let condition = builder.ins().call(
             thunks.raise_condition_regs,
             &[ctx, code, argc, arg0, arg1, arg2, arg3, overflow, from],
@@ -929,16 +906,16 @@ impl<'gc> ModuleBuilder<'gc> {
         let handler = builder.ins().call(thunks.exception_handler, &[ctx]);
         let handler = builder.inst_results(handler)[0];
         let handler_code = builder.ins().load(
-            types::I64,
+            clif_types::I64,
             ir::MemFlags::trusted().with_can_move(),
             handler,
             offset_of!(Closure, code) as i32,
         );
         let sig_call = builder.import_signature(compiled_scheme_signature());
-        let argc = builder.ins().iconst(types::I64, 2);
+        let argc = builder.ins().iconst(clif_types::I64, 2);
         let undefined = builder
             .ins()
-            .iconst(types::I64, Value::undefined().bits() as i64);
+            .iconst(clif_types::I64, Value::undefined().bits() as i64);
         builder.ins().return_call_indirect(
             sig_call,
             handler_code,
@@ -988,7 +965,7 @@ impl<'gc> ModuleBuilder<'gc> {
         }
 
         let mut buf = Vec::with_capacity(1024);
-        let writer = FASLWriter::new(self.ctx, &mut buf);
+        let writer = FaslWriter::new(self.ctx, &mut buf);
         writer.write(vec.into()).expect("should not fail");
 
         (buf, constant_indices)
@@ -998,71 +975,37 @@ impl<'gc> ModuleBuilder<'gc> {
         let mut slots = Vec::new();
 
         for symbol in self.constants.values().copied() {
-            slots.push(FaslDataSlot {
+            slots.push(FaslDataSlot::constant(
                 symbol,
-                kind: DataSymbolKind::Constant,
-                constant_index: constant_indices.get(&symbol).copied(),
-                code: None,
-                pointer_code: None,
-                side_metadata: None,
-            });
+                constant_indices.get(&symbol).copied(),
+            ));
         }
         for symbol in self.cache_cells.values().copied() {
-            slots.push(FaslDataSlot {
-                symbol,
-                kind: DataSymbolKind::CacheCell,
-                constant_index: None,
-                code: None,
-                pointer_code: None,
-                side_metadata: None,
-            });
+            slots.push(FaslDataSlot::cache_cell(symbol));
         }
         for (func, symbol) in self.code_block_for_func.iter() {
-            slots.push(FaslDataSlot {
-                symbol: *symbol,
-                kind: DataSymbolKind::CodeBlock,
-                constant_index: None,
-                code: self.func_for_func.get(func).copied(),
-                pointer_code: None,
-                side_metadata: None,
-            });
+            slots.push(FaslDataSlot::code(
+                *symbol,
+                self.func_for_func.get(func).copied(),
+            ));
         }
         for (cont, symbol) in self.code_block_for_cont.iter() {
-            slots.push(FaslDataSlot {
-                symbol: *symbol,
-                kind: DataSymbolKind::CodeBlock,
-                constant_index: None,
-                code: self.func_for_cont.get(cont).copied(),
-                pointer_code: None,
-                side_metadata: None,
-            });
+            slots.push(FaslDataSlot::code(
+                *symbol,
+                self.func_for_cont.get(cont).copied(),
+            ));
         }
         for (function, symbol) in self.pointer_slot_for_function.iter() {
-            slots.push(FaslDataSlot {
-                symbol: *symbol,
-                kind: DataSymbolKind::PointerSlot,
-                constant_index: None,
-                code: None,
-                pointer_code: Some(function.index()),
-                side_metadata: None,
-            });
+            slots.push(FaslDataSlot::pointer(*symbol, *function));
         }
-        slots.push(FaslDataSlot {
-            symbol: self.global_side_metadata_base_address,
-            kind: DataSymbolKind::SideMetadata,
-            constant_index: None,
-            code: None,
-            pointer_code: None,
-            side_metadata: Some(SideMetadataSlotKind::Global),
-        });
-        slots.push(FaslDataSlot {
-            symbol: self.vo_bit_side_metadata_base_address,
-            kind: DataSymbolKind::SideMetadata,
-            constant_index: None,
-            code: None,
-            pointer_code: None,
-            side_metadata: Some(SideMetadataSlotKind::VoBit),
-        });
+        slots.push(FaslDataSlot::side_metadata(
+            self.global_side_metadata_base_address,
+            SideMetadataSlot::Global,
+        ));
+        slots.push(FaslDataSlot::side_metadata(
+            self.vo_bit_side_metadata_base_address,
+            SideMetadataSlot::VoBit,
+        ));
 
         slots
     }
@@ -1085,7 +1028,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let name = format!("constant{}", ix);
         // declare data as writable even though not all objects need to be written to. We don't currently have a way of knowing
         // ahead of time if constant will be read-only or not.
-        let data_id = self.declare_data_symbol(DataSymbolKind::Constant, &name);
+        let data_id = self.declare_data_symbol(DataKind::Constant, &name);
 
         self.constants.insert(ValueEqual(obj), data_id);
 
@@ -1100,7 +1043,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let ix = self.cache_cells.len();
         let name = format!("cache_cell{}", ix);
 
-        let data_id = self.declare_data_symbol(DataSymbolKind::CacheCell, &name);
+        let data_id = self.declare_data_symbol(DataKind::CacheCell, &name);
 
         self.cache_cells.insert(ValueEqual(key), data_id);
 
@@ -1108,19 +1051,22 @@ impl<'gc> ModuleBuilder<'gc> {
     }
 
     fn declare_code_block_slot(&mut self, name: &str) -> DataSymbol {
-        self.declare_data_symbol(DataSymbolKind::CodeBlock, name)
+        self.declare_data_symbol(DataKind::CodeBlock, name)
     }
 
     #[cfg(test)]
     fn load_constant(&mut self, builder: &mut FunctionBuilder<'_>, value: Value<'gc>) -> ir::Value {
         if let Some(data_id) = self.intern_constant(value) {
             let gv = self.declare_data_in_func(data_id, builder.func);
-            let addr = builder.ins().global_value(types::I64, gv);
-            builder
-                .ins()
-                .load(types::I64, ir::MemFlags::trusted().with_can_move(), addr, 0)
+            let addr = builder.ins().global_value(clif_types::I64, gv);
+            builder.ins().load(
+                clif_types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                addr,
+                0,
+            )
         } else {
-            builder.ins().iconst(types::I64, value.bits() as i64)
+            builder.ins().iconst(clif_types::I64, value.bits() as i64)
         }
     }
 
@@ -1202,11 +1148,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         let exit_block = builder.create_block();
 
-        builder.append_block_param(exit_block, types::I64); /* code */
-        builder.append_block_param(exit_block, types::I64); /* rator */
-        builder.append_block_param(exit_block, types::I64); /* argc */
+        builder.append_block_param(exit_block, clif_types::I64); /* code */
+        builder.append_block_param(exit_block, clif_types::I64); /* rator */
+        builder.append_block_param(exit_block, clif_types::I64); /* argc */
         for _ in 0..REGISTER_ARG_COUNT {
-            builder.append_block_param(exit_block, types::I64);
+            builder.append_block_param(exit_block, clif_types::I64);
         }
 
         builder.set_val_label(rator, func_debug_cx.internal_variable(0));
@@ -1270,7 +1216,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 mod tests {
     use super::*;
     use crate::{
-        compiler::codegen::{BackendSymbol, DataSymbolKind, ImportedSymbol, ImportedSymbolKind},
+        compiler::codegen::{DataKind, ImportKind, ImportedSymbol, Symbol as CodeSymbol},
         cps::{
             linear::linearize,
             reify,
@@ -1406,7 +1352,7 @@ mod tests {
     fn fasl_relocation_conversion_preserves_non_x86_cranelift_relocations() {
         use cranelift_codegen::binemit::Reloc;
 
-        let target = BackendSymbol::Function(FunctionSymbol::new(7));
+        let target = CodeSymbol::function(FunctionSymbol::new(7));
         for kind in [
             Reloc::Arm64Call,
             Reloc::Aarch64AdrPrelPgHi21,
@@ -1420,16 +1366,16 @@ mod tests {
                 offset: 4,
                 kind,
                 addend: -4,
-                target: DirectRelocationTarget::BackendSymbol(target),
+                target: DirectTarget::Symbol(target),
             };
 
             assert_eq!(
                 fasl_relocation_from_direct_relocation(&relocation, &HashMap::new())
                     .expect("convert non-x86 relocation"),
-                FaslRelocation {
+                Relocation {
                     offset: 4,
-                    kind: FaslRelocKind::Cranelift(kind),
-                    target: FaslRelocTarget::Entry(7),
+                    kind: RelocKind::Cranelift(kind),
+                    target: RelocTarget::Entry(7),
                     addend: -4,
                 }
             );
@@ -1441,25 +1387,25 @@ mod tests {
         use cranelift_codegen::binemit::Reloc;
 
         let mut data_slot_targets = HashMap::new();
-        data_slot_targets.insert(3, FaslRelocTarget::Entry(11));
+        data_slot_targets.insert(3, RelocTarget::Entry(11));
 
         let relocation = DirectRelocation {
             offset: 4,
             kind: Reloc::Aarch64AdrPrelPgHi21,
             addend: 0,
-            target: DirectRelocationTarget::BackendSymbol(BackendSymbol::Data {
-                kind: DataSymbolKind::PointerSlot,
-                symbol: DataSymbol::new(3),
-            }),
+            target: DirectTarget::Symbol(CodeSymbol::data(
+                DataKind::PointerSlot,
+                DataSymbol::new(3),
+            )),
         };
 
         assert_eq!(
             fasl_relocation_from_direct_relocation(&relocation, &data_slot_targets)
                 .expect("convert data-slot relocation"),
-            FaslRelocation {
+            Relocation {
                 offset: 4,
-                kind: FaslRelocKind::CraneliftDataSlot(Reloc::Aarch64AdrPrelPgHi21),
-                target: FaslRelocTarget::Entry(11),
+                kind: RelocKind::CraneliftDataSlot(Reloc::Aarch64AdrPrelPgHi21),
+                target: RelocTarget::Entry(11),
                 addend: 0,
             }
         );
@@ -1470,25 +1416,22 @@ mod tests {
         use cranelift_codegen::binemit::Reloc;
 
         let mut data_slot_targets = HashMap::new();
-        data_slot_targets.insert(3, FaslRelocTarget::Object(11));
+        data_slot_targets.insert(3, RelocTarget::Object(11));
 
         let relocation = DirectRelocation {
             offset: 4,
             kind: Reloc::X86PCRel4,
             addend: 0,
-            target: DirectRelocationTarget::BackendSymbol(BackendSymbol::Data {
-                kind: DataSymbolKind::CacheCell,
-                symbol: DataSymbol::new(3),
-            }),
+            target: DirectTarget::Symbol(CodeSymbol::data(DataKind::CacheCell, DataSymbol::new(3))),
         };
 
         assert_eq!(
             fasl_relocation_from_direct_relocation(&relocation, &data_slot_targets)
                 .expect("convert cache-cell relocation"),
-            FaslRelocation {
+            Relocation {
                 offset: 4,
-                kind: FaslRelocKind::CraneliftDataSlot(Reloc::X86PCRel4),
-                target: FaslRelocTarget::CacheCell(11),
+                kind: RelocKind::CraneliftDataSlot(Reloc::X86PCRel4),
+                target: RelocTarget::CacheCell(11),
                 addend: 0,
             }
         );
@@ -1564,9 +1507,13 @@ mod tests {
         assert!(
             sig.params
                 .iter()
-                .all(|param| param.value_type == types::I64)
+                .all(|param| param.value_type == clif_types::I64)
         );
-        assert!(sig.returns.iter().all(|ret| ret.value_type == types::I64));
+        assert!(
+            sig.returns
+                .iter()
+                .all(|ret| ret.value_type == clif_types::I64)
+        );
     }
 
     #[test]
@@ -1637,7 +1584,7 @@ mod tests {
                 thunks,
                 func_debug_cx,
             );
-            let arg = ssa.builder.ins().iconst(types::I64, 42);
+            let arg = ssa.builder.ins().iconst(clif_types::I64, 42);
             ssa.prepare_call_args(&[arg]);
             let clif = ssa.builder.func.display().to_string();
 
@@ -1678,10 +1625,10 @@ mod tests {
                 func_debug_cx,
             );
             let args = [
-                ssa.builder.ins().iconst(types::I64, 1),
-                ssa.builder.ins().iconst(types::I64, 2),
-                ssa.builder.ins().iconst(types::I64, 3),
-                ssa.builder.ins().iconst(types::I64, 4),
+                ssa.builder.ins().iconst(clif_types::I64, 1),
+                ssa.builder.ins().iconst(clif_types::I64, 2),
+                ssa.builder.ins().iconst(clif_types::I64, 3),
+                ssa.builder.ins().iconst(clif_types::I64, 4),
             ];
             ssa.prepare_call_args(&args);
             let clif = ssa.builder.func.display().to_string();
@@ -1722,7 +1669,7 @@ mod tests {
                 thunks,
                 func_debug_cx,
             );
-            let arg = ssa.builder.ins().iconst(types::I64, 42);
+            let arg = ssa.builder.ins().iconst(clif_types::I64, 42);
             let call_args = ssa.prepare_call_args(&[arg]);
             let clif = ssa.builder.func.display().to_string();
 
@@ -1766,11 +1713,11 @@ mod tests {
                 func_debug_cx,
             );
             let args = [
-                ssa.builder.ins().iconst(types::I64, 1),
-                ssa.builder.ins().iconst(types::I64, 2),
-                ssa.builder.ins().iconst(types::I64, 3),
-                ssa.builder.ins().iconst(types::I64, 4),
-                ssa.builder.ins().iconst(types::I64, 5),
+                ssa.builder.ins().iconst(clif_types::I64, 1),
+                ssa.builder.ins().iconst(clif_types::I64, 2),
+                ssa.builder.ins().iconst(clif_types::I64, 3),
+                ssa.builder.ins().iconst(clif_types::I64, 4),
+                ssa.builder.ins().iconst(clif_types::I64, 5),
             ];
             ssa.prepare_call_args(&args);
             let clif = ssa.builder.func.display().to_string();
@@ -1836,7 +1783,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_import_backend_uses_numeric_function_and_data_symbols() {
+    fn direct_import_uses_numeric_function_and_data_symbols() {
         with_ctx(|ctx| {
             let (func, _, _, _) = one_arg_identity_func(ctx);
             let reify_info = reify(ctx, func);
@@ -1851,12 +1798,10 @@ mod tests {
                 other => panic!("expected user function name, got {other:?}"),
             };
             assert_eq!(
-                BackendSymbol::from_user_external_name(
+                CodeSymbol::from_external_name(
                     function.params.user_named_funcs()[function_name_ref].clone()
                 ),
-                Some(BackendSymbol::Function(
-                    module_builder.wrong_arity_trampoline
-                ))
+                Some(CodeSymbol::function(module_builder.wrong_arity_trampoline))
             );
 
             let global = module_builder.declare_data_in_func(
@@ -1871,19 +1816,19 @@ mod tests {
                 other => panic!("expected symbol global value, got {other:?}"),
             };
             assert_eq!(
-                BackendSymbol::from_user_external_name(
+                CodeSymbol::from_external_name(
                     function.params.user_named_funcs()[global_name_ref].clone()
                 ),
-                Some(BackendSymbol::Data {
-                    kind: DataSymbolKind::SideMetadata,
-                    symbol: module_builder.global_side_metadata_base_address,
-                })
+                Some(CodeSymbol::data(
+                    DataKind::SideMetadata,
+                    module_builder.global_side_metadata_base_address,
+                ))
             );
         });
     }
 
     #[test]
-    fn direct_import_backend_uses_numeric_runtime_data_and_thunks() {
+    fn direct_import_uses_numeric_runtime_data_and_thunks() {
         with_ctx(|ctx| {
             let (func, _, _, _) = one_arg_identity_func(ctx);
             let reify_info = reify(ctx, func);
@@ -1901,10 +1846,10 @@ mod tests {
                 other => panic!("expected symbol global value, got {other:?}"),
             };
             assert_eq!(
-                BackendSymbol::from_user_external_name(
+                CodeSymbol::from_external_name(
                     function.params.user_named_funcs()[global_name_ref].clone()
                 ),
-                Some(crate::compiler::codegen::runtime_data_symbol(
+                Some(crate::compiler::codegen::runtime_data(
                     RuntimeData::PairInfo
                 ))
             );
@@ -1915,13 +1860,13 @@ mod tests {
                 other => panic!("expected user thunk symbol name, got {other:?}"),
             };
             assert_eq!(
-                BackendSymbol::from_user_external_name(
+                CodeSymbol::from_external_name(
                     function.params.user_named_funcs()[thunk_name_ref].clone()
                 ),
-                Some(BackendSymbol::Imported {
-                    kind: ImportedSymbolKind::RuntimeThunk,
-                    symbol: ImportedSymbol::new(RuntimeThunk::Thunk_wrong_number_of_args.id()),
-                })
+                Some(CodeSymbol::imported(
+                    ImportKind::RuntimeThunk,
+                    ImportedSymbol::new(RuntimeThunk::Thunk_wrong_number_of_args.id()),
+                ))
             );
         });
     }
@@ -1966,13 +1911,10 @@ mod tests {
             };
 
             assert_eq!(
-                BackendSymbol::from_user_external_name(
+                CodeSymbol::from_external_name(
                     builder.func.params.user_named_funcs()[name_ref].clone()
                 ),
-                Some(BackendSymbol::Data {
-                    kind: DataSymbolKind::Constant,
-                    symbol,
-                })
+                Some(CodeSymbol::data(DataKind::Constant, symbol))
             );
         });
     }
@@ -1988,7 +1930,7 @@ mod tests {
             let bytes = module_builder
                 .compile_loaded_fasl_bytes()
                 .expect("compile unified FASL");
-            let value = crate::runtime::fasl::FASLReader::new(ctx, std::io::Cursor::new(bytes))
+            let value = crate::runtime::fasl::FaslReader::new(ctx, std::io::Cursor::new(bytes))
                 .read()
                 .expect("load unified FASL");
 
@@ -2007,7 +1949,7 @@ mod tests {
             let bytes = module_builder
                 .compile_loaded_fasl_bytes()
                 .expect("compile unified FASL with pointer and side-metadata data slots");
-            let value = crate::runtime::fasl::FASLReader::new(ctx, std::io::Cursor::new(bytes))
+            let value = crate::runtime::fasl::FaslReader::new(ctx, std::io::Cursor::new(bytes))
                 .read()
                 .expect("load unified FASL with pointer and side-metadata data slots");
 

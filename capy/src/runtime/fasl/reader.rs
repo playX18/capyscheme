@@ -4,12 +4,6 @@ use std::{
 };
 
 use flate2::read::GzDecoder;
-use mmtk::util::metadata::side_metadata::{
-    global_side_metadata_vm_base_address, vo_bit_side_metadata_addr,
-};
-
-use asmkit::core::buffer::Reloc as AsmkitReloc;
-use cranelift_codegen::binemit::Reloc as CraneliftReloc;
 
 use crate::rsgc::{Gc, Global, Trace, Visitor, mmtk::util::Address, sync::monitor::Monitor};
 
@@ -18,25 +12,22 @@ use crate::runtime::{
     code_memory::{CodeAllocation, runtime_code_memory},
     symbols::{RuntimeData, RuntimeThunk},
     value::{
-        BigInt, ByteVector, Closure, CodeArity, CodeBlock, CodeRelocation, Complex, HashTable,
-        HashTableType, LoadedCodeBlockInit, Pair, Rational, RelocatableCodeBlock, Str, Symbol,
-        Tuple, Value, Vector,
+        BigInt, ByteVector, Closure, CodeArity, CodeBlock, Complex, HashTable, HashTableType,
+        LoadedCodeBlockInit, Pair, Rational, RelocatableCodeBlock, Str, Symbol, Tuple, Value,
+        Vector,
     },
     vm::syntax::Syntax,
 };
 
 use super::{
-    FASL_MAGIC, FASL_RELOC_ABS_WORD, FASL_RELOC_ASMKIT, FASL_RELOC_CACHE_CELL,
-    FASL_RELOC_CODE_ENTRY, FASL_RELOC_CRANELIFT, FASL_RELOC_CRANELIFT_DATA_SLOT,
-    FASL_RELOC_DATA_SLOT, FASL_RELOC_RUNTIME_DATA, FASL_RELOC_RUNTIME_THUNK,
-    FASL_RELOC_SIDE_METADATA, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN, FASL_TAG_BIGINT,
-    FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX,
-    FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
+    FASL_MAGIC, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR,
+    FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST,
+    FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
     FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE,
     FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_LZ4, FASL_TAG_NIL, FASL_TAG_PLIST,
     FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL,
     FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNCOMPRESSED, FASL_TAG_UNINTERNED_SYMBOL,
-    FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, graph, reloc,
+    FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, graph, patch, reloc,
 };
 
 fn read_u8_from(input: &mut impl Read) -> io::Result<u8> {
@@ -51,7 +42,7 @@ fn read_u32_from(input: &mut impl Read) -> io::Result<u32> {
     Ok(u32::from_le_bytes(buf))
 }
 
-pub struct FASLReader<'gc, R: io::Read> {
+pub struct FaslReader<'gc, R: io::Read> {
     pub ctx: Context<'gc>,
     pub reader: BufReader<R>,
     pub lites: Gc<'gc, HashTable<'gc>>,
@@ -93,7 +84,7 @@ struct PendingCodeEntryRelocation {
     base: Address,
     offset: usize,
     target_index: u32,
-    kind: reloc::FaslRelocKind,
+    kind: reloc::RelocKind,
     addend: i64,
     original_bytes: Vec<u8>,
 }
@@ -116,131 +107,10 @@ struct ReadCodeBlockSpec<'gc> {
     arity: i32,
     is_cont: bool,
     metadata: Value<'gc>,
-    relocations: Vec<reloc::FaslRelocation>,
+    relocations: Vec<reloc::Relocation>,
 }
 
-const UNLINKED_TARGET_OBJECT: u8 = 0;
-const UNLINKED_TARGET_ENTRY: u8 = 1;
-const UNLINKED_TARGET_RUNTIME_SYMBOL: u8 = 2;
-const UNLINKED_TARGET_SIDE_METADATA: u8 = 3;
-const UNLINKED_TARGET_CACHE_CELL: u8 = 4;
-
-pub(crate) fn encode_unlinked_relocations(
-    relocations: &[reloc::FaslRelocation],
-) -> io::Result<Vec<CodeRelocation>> {
-    relocations
-        .iter()
-        .map(|relocation| {
-            let (kind_tag, aux_tag) = match &relocation.kind {
-                reloc::FaslRelocKind::Asmkit(reloc) => {
-                    (FASL_RELOC_ASMKIT, reloc::asmkit_reloc_to_tag(*reloc))
-                }
-                reloc::FaslRelocKind::Cranelift(reloc) => {
-                    (FASL_RELOC_CRANELIFT, reloc::cranelift_reloc_to_tag(*reloc))
-                }
-                reloc::FaslRelocKind::CraneliftDataSlot(reloc) => (
-                    FASL_RELOC_CRANELIFT_DATA_SLOT,
-                    reloc::cranelift_reloc_to_tag(*reloc),
-                ),
-                reloc::FaslRelocKind::AbsWord => (FASL_RELOC_ABS_WORD, 0),
-                reloc::FaslRelocKind::CodeEntry => (FASL_RELOC_CODE_ENTRY, 0),
-                reloc::FaslRelocKind::DataSlotAddress => (FASL_RELOC_DATA_SLOT, 0),
-                reloc::FaslRelocKind::RuntimeThunk => (FASL_RELOC_RUNTIME_THUNK, 0),
-                reloc::FaslRelocKind::RuntimeData => (FASL_RELOC_RUNTIME_DATA, 0),
-                reloc::FaslRelocKind::SideMetadata => (FASL_RELOC_SIDE_METADATA, 0),
-                reloc::FaslRelocKind::CacheCell => (FASL_RELOC_CACHE_CELL, 0),
-            };
-            let (target_tag, target_payload) = match relocation.target {
-                reloc::FaslRelocTarget::Object(index) => (UNLINKED_TARGET_OBJECT, index),
-                reloc::FaslRelocTarget::Entry(index) => (UNLINKED_TARGET_ENTRY, index),
-                reloc::FaslRelocTarget::CacheCell(index) => (UNLINKED_TARGET_CACHE_CELL, index),
-                reloc::FaslRelocTarget::RuntimeSymbol(symbol) => {
-                    (UNLINKED_TARGET_RUNTIME_SYMBOL, symbol)
-                }
-                reloc::FaslRelocTarget::SideMetadata(kind) => {
-                    (UNLINKED_TARGET_SIDE_METADATA, kind.to_tag() as u32)
-                }
-            };
-            Ok(CodeRelocation {
-                offset: relocation.offset,
-                kind_tag,
-                target_tag,
-                target_payload,
-                addend: relocation.addend,
-                aux_tag,
-            })
-        })
-        .collect()
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn decode_unlinked_relocations(
-    relocations: &[CodeRelocation],
-) -> io::Result<Vec<reloc::FaslRelocation>> {
-    relocations
-        .iter()
-        .map(|relocation| {
-            let kind = match relocation.kind_tag {
-                FASL_RELOC_ASMKIT => {
-                    reloc::FaslRelocKind::Asmkit(reloc::asmkit_reloc_from_tag(relocation.aux_tag)?)
-                }
-                FASL_RELOC_CRANELIFT => reloc::FaslRelocKind::Cranelift(
-                    reloc::cranelift_reloc_from_tag(relocation.aux_tag)?,
-                ),
-                FASL_RELOC_CRANELIFT_DATA_SLOT => reloc::FaslRelocKind::CraneliftDataSlot(
-                    reloc::cranelift_reloc_from_tag(relocation.aux_tag)?,
-                ),
-                FASL_RELOC_ABS_WORD => reloc::FaslRelocKind::AbsWord,
-                FASL_RELOC_CODE_ENTRY => reloc::FaslRelocKind::CodeEntry,
-                FASL_RELOC_DATA_SLOT => reloc::FaslRelocKind::DataSlotAddress,
-                FASL_RELOC_RUNTIME_THUNK => reloc::FaslRelocKind::RuntimeThunk,
-                FASL_RELOC_RUNTIME_DATA => reloc::FaslRelocKind::RuntimeData,
-                FASL_RELOC_SIDE_METADATA => reloc::FaslRelocKind::SideMetadata,
-                FASL_RELOC_CACHE_CELL => reloc::FaslRelocKind::CacheCell,
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid unlinked relocation kind tag",
-                    ));
-                }
-            };
-            let target = match relocation.target_tag {
-                UNLINKED_TARGET_OBJECT => reloc::FaslRelocTarget::Object(relocation.target_payload),
-                UNLINKED_TARGET_ENTRY => reloc::FaslRelocTarget::Entry(relocation.target_payload),
-                UNLINKED_TARGET_CACHE_CELL => {
-                    reloc::FaslRelocTarget::CacheCell(relocation.target_payload)
-                }
-                UNLINKED_TARGET_RUNTIME_SYMBOL => {
-                    reloc::FaslRelocTarget::RuntimeSymbol(relocation.target_payload)
-                }
-                UNLINKED_TARGET_SIDE_METADATA => {
-                    reloc::FaslRelocTarget::SideMetadata(reloc::SideMetadataSlotKind::from_tag(
-                        u8::try_from(relocation.target_payload).map_err(|_| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "invalid unlinked side metadata tag",
-                            )
-                        })?,
-                    )?)
-                }
-                _ => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "invalid unlinked relocation target tag",
-                    ));
-                }
-            };
-            Ok(reloc::FaslRelocation {
-                offset: relocation.offset,
-                kind,
-                target,
-                addend: relocation.addend,
-            })
-        })
-        .collect()
-}
-
-impl<'gc, R: io::Read> FASLReader<'gc, R> {
+impl<'gc, R: io::Read> FaslReader<'gc, R> {
     pub fn read8(&mut self) -> io::Result<u8> {
         let mut buf = [0; 1];
         self.reader.read_exact(&mut buf)?;
@@ -739,7 +609,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
         let relocation_count = self.read32()?;
         let mut relocations = Vec::with_capacity(relocation_count as usize);
         for _ in 0..relocation_count {
-            relocations.push(reloc::FaslRelocation::decode(&mut self.reader)?);
+            relocations.push(reloc::Relocation::decode(&mut self.reader)?);
         }
         Ok(ReadCodeBlockSpec {
             bytes,
@@ -754,7 +624,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
     fn read_relocatable_code_block(&mut self) -> io::Result<Gc<'gc, RelocatableCodeBlock<'gc>>> {
         let spec = self.read_code_block_spec()?;
         let data_slots = self.collect_code_block_data_slots(None, &spec.relocations)?;
-        let encoded = encode_unlinked_relocations(&spec.relocations)?;
+        let encoded = reloc::encode_unlinked_relocations(&spec.relocations)?;
         let unlinked = RelocatableCodeBlock::new(
             self.ctx,
             &spec.bytes,
@@ -780,7 +650,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             self.initialize_loaded_data_slots(&loaded, &data_slots);
             self.add_pending_data_slot_fills(&loaded, &data_slots)?;
             self.add_pending_code_entry_slot_fills(&loaded, &data_slots)?;
-            let encoded = encode_unlinked_relocations(&spec.relocations)?;
+            let encoded = reloc::encode_unlinked_relocations(&spec.relocations)?;
             let unlinked = RelocatableCodeBlock::new(
                 self.ctx,
                 &spec.bytes,
@@ -937,7 +807,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             ));
         }
 
-        let mut reader = FASLReader::new(self.ctx, Cursor::new(payload));
+        let mut reader = FaslReader::new(self.ctx, Cursor::new(payload));
         reader.lites = self.lites;
         reader.keep_value(Value::from(reader.lites));
         let value = reader.read_value()?;
@@ -1055,7 +925,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
         code_block: Gc<'gc, CodeBlock<'gc>>,
         loaded: &CodeAllocation,
         code_bytes: &[u8],
-        relocations: &[reloc::FaslRelocation],
+        relocations: &[reloc::Relocation],
         data_slots: &CodeDataSlots<'gc>,
     ) -> io::Result<()> {
         let mut patches = Vec::with_capacity(relocations.len());
@@ -1087,7 +957,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
         source_index: Option<u32>,
         loaded: &CodeAllocation,
         code_bytes: &[u8],
-        relocation: &reloc::FaslRelocation,
+        relocation: &reloc::Relocation,
         data_slots: &CodeDataSlots<'gc>,
     ) -> io::Result<Option<(usize, Vec<u8>)>> {
         let offset = usize::try_from(relocation.offset).map_err(|_| {
@@ -1097,7 +967,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             )
         })?;
         let target_address = match (&relocation.kind, relocation.target) {
-            (reloc::FaslRelocKind::Asmkit(_), reloc::FaslRelocTarget::RuntimeSymbol(symbol_id)) => {
+            (reloc::RelocKind::Asmkit(_), reloc::RelocTarget::RuntimeSymbol(symbol_id)) => {
                 if let Some(runtime_data) = RuntimeData::from_id(symbol_id) {
                     runtime_data.address().as_usize()
                 } else {
@@ -1112,12 +982,12 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         .as_usize()
                 }
             }
-            (reloc::FaslRelocKind::Asmkit(_), reloc::FaslRelocTarget::SideMetadata(kind)) => {
-                side_metadata_address(kind)
+            (reloc::RelocKind::Asmkit(_), reloc::RelocTarget::SideMetadata(kind)) => {
+                patch::side_metadata_address(kind)
             }
             (
-                reloc::FaslRelocKind::Asmkit(_),
-                reloc::FaslRelocTarget::Entry(index) | reloc::FaslRelocTarget::Object(index),
+                reloc::RelocKind::Asmkit(_),
+                reloc::RelocTarget::Entry(index) | reloc::RelocTarget::Object(index),
             ) => match self.graph_code_block_entrypoint_if_defined(index)? {
                 Some(entrypoint) => entrypoint,
                 None => {
@@ -1134,7 +1004,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         target_index: index,
                         kind: relocation.kind.clone(),
                         addend: relocation.addend,
-                        original_bytes: relocation_original_bytes(
+                        original_bytes: patch::relocation_original_bytes(
                             code_bytes,
                             offset,
                             &relocation.kind,
@@ -1144,10 +1014,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     return Ok(None);
                 }
             },
-            (
-                reloc::FaslRelocKind::Cranelift(_),
-                reloc::FaslRelocTarget::RuntimeSymbol(symbol_id),
-            ) => {
+            (reloc::RelocKind::Cranelift(_), reloc::RelocTarget::RuntimeSymbol(symbol_id)) => {
                 if let Some(runtime_data) = RuntimeData::from_id(symbol_id) {
                     runtime_data.address().as_usize()
                 } else {
@@ -1162,17 +1029,17 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         .as_usize()
                 }
             }
-            (reloc::FaslRelocKind::Cranelift(_), reloc::FaslRelocTarget::SideMetadata(kind)) => {
-                side_metadata_address(kind)
+            (reloc::RelocKind::Cranelift(_), reloc::RelocTarget::SideMetadata(kind)) => {
+                patch::side_metadata_address(kind)
             }
             (
-                reloc::FaslRelocKind::Cranelift(_),
-                reloc::FaslRelocTarget::Object(_) | reloc::FaslRelocTarget::CacheCell(_),
+                reloc::RelocKind::Cranelift(_),
+                reloc::RelocTarget::Object(_) | reloc::RelocTarget::CacheCell(_),
             ) => data_slots.slot_rw_address(loaded, relocation.target)?,
-            (reloc::FaslRelocKind::CraneliftDataSlot(_), _) => {
+            (reloc::RelocKind::CraneliftDataSlot(_), _) => {
                 data_slots.slot_rw_address(loaded, relocation.target)?
             }
-            (reloc::FaslRelocKind::Cranelift(_), reloc::FaslRelocTarget::Entry(index)) => {
+            (reloc::RelocKind::Cranelift(_), reloc::RelocTarget::Entry(index)) => {
                 match self.graph_code_block_entrypoint_if_defined(index)? {
                     Some(entrypoint) => entrypoint,
                     None => {
@@ -1189,7 +1056,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                             target_index: index,
                             kind: relocation.kind.clone(),
                             addend: relocation.addend,
-                            original_bytes: relocation_original_bytes(
+                            original_bytes: patch::relocation_original_bytes(
                                 code_bytes,
                                 offset,
                                 &relocation.kind,
@@ -1201,8 +1068,8 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 }
             }
             (
-                reloc::FaslRelocKind::RuntimeData | reloc::FaslRelocKind::AbsWord,
-                reloc::FaslRelocTarget::RuntimeSymbol(symbol_id),
+                reloc::RelocKind::RuntimeData | reloc::RelocKind::AbsWord,
+                reloc::RelocTarget::RuntimeSymbol(symbol_id),
             ) => {
                 let runtime_data = RuntimeData::from_id(symbol_id).ok_or_else(|| {
                     io::Error::new(
@@ -1212,10 +1079,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 })?;
                 runtime_data.address().as_usize()
             }
-            (
-                reloc::FaslRelocKind::RuntimeThunk,
-                reloc::FaslRelocTarget::RuntimeSymbol(symbol_id),
-            ) => {
+            (reloc::RelocKind::RuntimeThunk, reloc::RelocTarget::RuntimeSymbol(symbol_id)) => {
                 let runtime_thunk = RuntimeThunk::from_id(symbol_id).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
@@ -1224,18 +1088,16 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 })?;
                 runtime_thunk.address().as_usize()
             }
-            (reloc::FaslRelocKind::SideMetadata, reloc::FaslRelocTarget::SideMetadata(kind)) => {
-                side_metadata_address(kind)
+            (reloc::RelocKind::SideMetadata, reloc::RelocTarget::SideMetadata(kind)) => {
+                patch::side_metadata_address(kind)
             }
-            (reloc::FaslRelocKind::DataSlotAddress, target) => {
+            (reloc::RelocKind::DataSlotAddress, target) => {
                 data_slots.slot_rw_address(loaded, target)?
             }
-            (reloc::FaslRelocKind::CacheCell, target) => {
-                data_slots.slot_rw_address(loaded, target)?
-            }
+            (reloc::RelocKind::CacheCell, target) => data_slots.slot_rw_address(loaded, target)?,
             (
-                reloc::FaslRelocKind::CodeEntry,
-                reloc::FaslRelocTarget::Entry(index) | reloc::FaslRelocTarget::Object(index),
+                reloc::RelocKind::CodeEntry,
+                reloc::RelocTarget::Entry(index) | reloc::RelocTarget::Object(index),
             ) => match self.graph_code_block_entrypoint_if_defined(index)? {
                 Some(entrypoint) => entrypoint,
                 None => {
@@ -1252,7 +1114,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         target_index: index,
                         kind: relocation.kind.clone(),
                         addend: relocation.addend,
-                        original_bytes: relocation_original_bytes(
+                        original_bytes: patch::relocation_original_bytes(
                             code_bytes,
                             offset,
                             &relocation.kind,
@@ -1269,13 +1131,13 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 ));
             }
         };
-        relocation_patch_bytes(
+        patch::relocation_patch_bytes(
             loaded.entrypoint,
             offset,
             &relocation.kind,
             target_address,
             relocation.addend,
-            relocation_original_bytes(code_bytes, offset, &relocation.kind)?,
+            patch::relocation_original_bytes(code_bytes, offset, &relocation.kind)?,
         )
         .map(|bytes| Some((offset, bytes)))
     }
@@ -1283,12 +1145,12 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
     fn collect_code_block_data_slots(
         &mut self,
         source_index: Option<u32>,
-        relocations: &[reloc::FaslRelocation],
+        relocations: &[reloc::Relocation],
     ) -> io::Result<CodeDataSlots<'gc>> {
         let mut slots = CodeDataSlots::default();
         for relocation in relocations {
             if let Some(index) = code_entry_keepalive_index(relocation) {
-                let target = reloc::FaslRelocTarget::Object(index);
+                let target = reloc::RelocTarget::Object(index);
                 match slots.indices.entry(target) {
                     Entry::Occupied(_) => {}
                     Entry::Vacant(_) => {
@@ -1301,8 +1163,8 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 }
             }
 
-            if matches!(relocation.target, reloc::FaslRelocTarget::CacheCell(_)) {
-                let reloc::FaslRelocTarget::CacheCell(index) = relocation.target else {
+            if matches!(relocation.target, reloc::RelocTarget::CacheCell(_)) {
+                let reloc::RelocTarget::CacheCell(index) = relocation.target else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "FASL cache-cell relocation target is not an object",
@@ -1318,44 +1180,43 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 let _ = source_index;
             }
 
-            if !matches!(relocation.kind, reloc::FaslRelocKind::DataSlotAddress)
-                && !matches!(relocation.kind, reloc::FaslRelocKind::CacheCell)
-                && !matches!(relocation.kind, reloc::FaslRelocKind::CraneliftDataSlot(_))
+            if !matches!(relocation.kind, reloc::RelocKind::DataSlotAddress)
+                && !matches!(relocation.kind, reloc::RelocKind::CacheCell)
+                && !matches!(relocation.kind, reloc::RelocKind::CraneliftDataSlot(_))
                 && !matches!(
                     (&relocation.kind, relocation.target),
                     (
-                        reloc::FaslRelocKind::Cranelift(_),
-                        reloc::FaslRelocTarget::Object(_) | reloc::FaslRelocTarget::CacheCell(_)
+                        reloc::RelocKind::Cranelift(_),
+                        reloc::RelocTarget::Object(_) | reloc::RelocTarget::CacheCell(_)
                     )
                 )
             {
                 continue;
             }
             let target = relocation.target;
-            let is_local_cache_cell = matches!(target, reloc::FaslRelocTarget::CacheCell(_));
+            let is_local_cache_cell = matches!(target, reloc::RelocTarget::CacheCell(_));
             if slots.indices.contains_key(&target) {
                 continue;
             }
             match target {
-                reloc::FaslRelocTarget::Object(index)
-                | reloc::FaslRelocTarget::CacheCell(index) => {
+                reloc::RelocTarget::Object(index) | reloc::RelocTarget::CacheCell(index) => {
                     if let Some(value) = self.graph_value_optional(index)? {
                         slots.push_value(target, value)?;
                     } else {
                         slots.push_pending_value(target, index)?;
                     }
                 }
-                reloc::FaslRelocTarget::Entry(index) => {
+                reloc::RelocTarget::Entry(index) => {
                     if let Some(entrypoint) = self.graph_code_block_entrypoint_if_defined(index)? {
                         slots.push_raw(target, entrypoint)?;
                     } else {
                         slots.push_pending_entry(target, index)?;
                     }
                 }
-                reloc::FaslRelocTarget::SideMetadata(kind) => {
-                    slots.push_raw(target, side_metadata_address(kind))?;
+                reloc::RelocTarget::SideMetadata(kind) => {
+                    slots.push_raw(target, patch::side_metadata_address(kind))?;
                 }
-                reloc::FaslRelocTarget::RuntimeSymbol(_) => {
+                reloc::RelocTarget::RuntimeSymbol(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "FASL runtime-symbol data slots are not supported",
@@ -1363,7 +1224,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 }
             }
             if is_local_cache_cell {
-                let reloc::FaslRelocTarget::CacheCell(index) = target else {
+                let reloc::RelocTarget::CacheCell(index) = target else {
                     unreachable!("cache-cell relocation target was validated above");
                 };
                 slots.local_cache_indices.push(index);
@@ -1393,8 +1254,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             return Ok(());
         };
         for graph_index in &data_slots.local_cache_indices {
-            let slot_index =
-                data_slots.slot_index(reloc::FaslRelocTarget::CacheCell(*graph_index))?;
+            let slot_index = data_slots.slot_index(reloc::RelocTarget::CacheCell(*graph_index))?;
             shared.entry(*graph_index).or_insert(SharedCacheSlot {
                 address: loaded.data_rw_base + slot_index * std::mem::size_of::<Value<'gc>>(),
                 owner: Value::from(code_block),
@@ -1462,7 +1322,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 )
             })?;
         for code_index in &data_slots.pending_entry_indices {
-            let target = reloc::FaslRelocTarget::Entry(*code_index);
+            let target = reloc::RelocTarget::Entry(*code_index);
             let slot_index = data_slots.slot_index(target)?;
             pending.push(PendingCodeEntrySlotFill {
                 target_index: *code_index,
@@ -1562,7 +1422,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                     "FASL code entry relocation source is not a code block",
                 )
             })?;
-            let bytes = relocation_patch_bytes(
+            let bytes = patch::relocation_patch_bytes(
                 relocation.base,
                 relocation.offset,
                 &relocation.kind,
@@ -1639,17 +1499,17 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
     }
 }
 
-fn code_entry_keepalive_index(relocation: &reloc::FaslRelocation) -> Option<u32> {
+fn code_entry_keepalive_index(relocation: &reloc::Relocation) -> Option<u32> {
     match (&relocation.kind, relocation.target) {
         (
-            reloc::FaslRelocKind::Asmkit(_) | reloc::FaslRelocKind::CodeEntry,
-            reloc::FaslRelocTarget::Entry(index) | reloc::FaslRelocTarget::Object(index),
+            reloc::RelocKind::Asmkit(_) | reloc::RelocKind::CodeEntry,
+            reloc::RelocTarget::Entry(index) | reloc::RelocTarget::Object(index),
         ) => Some(index),
         (
-            reloc::FaslRelocKind::Cranelift(_)
-            | reloc::FaslRelocKind::DataSlotAddress
-            | reloc::FaslRelocKind::CraneliftDataSlot(_),
-            reloc::FaslRelocTarget::Entry(index),
+            reloc::RelocKind::Cranelift(_)
+            | reloc::RelocKind::DataSlotAddress
+            | reloc::RelocKind::CraneliftDataSlot(_),
+            reloc::RelocTarget::Entry(index),
         ) => Some(index),
         _ => None,
     }
@@ -1672,17 +1532,17 @@ impl CodeDataSlot<'_> {
 
 #[derive(Default)]
 struct CodeDataSlots<'gc> {
-    indices: HashMap<reloc::FaslRelocTarget, usize>,
-    external_addresses: HashMap<reloc::FaslRelocTarget, Address>,
+    indices: HashMap<reloc::RelocTarget, usize>,
+    external_addresses: HashMap<reloc::RelocTarget, Address>,
     slots: Vec<CodeDataSlot<'gc>>,
     value_bitmap: Vec<usize>,
-    pending_value_indices: Vec<(reloc::FaslRelocTarget, u32)>,
+    pending_value_indices: Vec<(reloc::RelocTarget, u32)>,
     pending_entry_indices: Vec<u32>,
     local_cache_indices: Vec<u32>,
 }
 
 impl<'gc> CodeDataSlots<'gc> {
-    fn push_value(&mut self, target: reloc::FaslRelocTarget, value: Value<'gc>) -> io::Result<()> {
+    fn push_value(&mut self, target: reloc::RelocTarget, value: Value<'gc>) -> io::Result<()> {
         let slot_index = self.slots.len();
         let word_index = slot_index / usize::BITS as usize;
         if self.value_bitmap.len() <= word_index {
@@ -1704,7 +1564,7 @@ impl<'gc> CodeDataSlots<'gc> {
         self.value_bitmap[word_index] |= 1usize << (slot_index % usize::BITS as usize);
     }
 
-    fn push_raw(&mut self, target: reloc::FaslRelocTarget, word: usize) -> io::Result<()> {
+    fn push_raw(&mut self, target: reloc::RelocTarget, word: usize) -> io::Result<()> {
         let slot_index = self.slots.len();
         self.indices.insert(target, slot_index);
         self.slots.push(CodeDataSlot::Raw(word));
@@ -1713,7 +1573,7 @@ impl<'gc> CodeDataSlots<'gc> {
 
     fn push_pending_value(
         &mut self,
-        target: reloc::FaslRelocTarget,
+        target: reloc::RelocTarget,
         graph_index: u32,
     ) -> io::Result<()> {
         self.push_value(target, Value::undefined())?;
@@ -1723,7 +1583,7 @@ impl<'gc> CodeDataSlots<'gc> {
 
     fn push_pending_entry(
         &mut self,
-        target: reloc::FaslRelocTarget,
+        target: reloc::RelocTarget,
         code_index: u32,
     ) -> io::Result<()> {
         self.push_raw(target, 0)?;
@@ -1731,7 +1591,7 @@ impl<'gc> CodeDataSlots<'gc> {
         Ok(())
     }
 
-    fn slot_index(&self, target: reloc::FaslRelocTarget) -> io::Result<usize> {
+    fn slot_index(&self, target: reloc::RelocTarget) -> io::Result<usize> {
         self.indices.get(&target).copied().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1743,529 +1603,12 @@ impl<'gc> CodeDataSlots<'gc> {
     fn slot_rw_address(
         &self,
         loaded: &CodeAllocation,
-        target: reloc::FaslRelocTarget,
+        target: reloc::RelocTarget,
     ) -> io::Result<usize> {
         if let Some(address) = self.external_addresses.get(&target) {
             return Ok(address.as_usize());
         }
         let slot_index = self.slot_index(target)?;
         Ok(loaded.data_rw_base.as_usize() + slot_index * std::mem::size_of::<Value<'gc>>())
-    }
-}
-
-fn side_metadata_address(kind: reloc::SideMetadataSlotKind) -> usize {
-    match kind {
-        reloc::SideMetadataSlotKind::Global => global_side_metadata_vm_base_address().as_usize(),
-        reloc::SideMetadataSlotKind::VoBit => vo_bit_side_metadata_addr().as_usize(),
-    }
-}
-
-fn relocation_patch_bytes(
-    base: Address,
-    offset: usize,
-    kind: &reloc::FaslRelocKind,
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-) -> io::Result<Vec<u8>> {
-    match kind {
-        reloc::FaslRelocKind::Asmkit(asmkit) => {
-            asmkit_relocation_patch_bytes(base, offset, *asmkit, target_address, addend)
-        }
-        reloc::FaslRelocKind::Cranelift(cranelift) => cranelift_relocation_patch_bytes(
-            base,
-            offset,
-            *cranelift,
-            target_address,
-            addend,
-            original,
-        ),
-        reloc::FaslRelocKind::CraneliftDataSlot(cranelift) => cranelift_relocation_patch_bytes(
-            base,
-            offset,
-            *cranelift,
-            target_address,
-            addend,
-            original,
-        ),
-        reloc::FaslRelocKind::AbsWord
-        | reloc::FaslRelocKind::CodeEntry
-        | reloc::FaslRelocKind::DataSlotAddress
-        | reloc::FaslRelocKind::CacheCell
-        | reloc::FaslRelocKind::RuntimeThunk
-        | reloc::FaslRelocKind::RuntimeData
-        | reloc::FaslRelocKind::SideMetadata => {
-            let target = add_i64_to_usize(target_address, addend)?;
-            Ok(target.to_le_bytes().to_vec())
-        }
-    }
-}
-
-fn relocation_original_bytes<'a>(
-    code_bytes: &'a [u8],
-    offset: usize,
-    kind: &reloc::FaslRelocKind,
-) -> io::Result<&'a [u8]> {
-    let width = relocation_patch_width(kind);
-    code_bytes
-        .get(offset..)
-        .and_then(|bytes| bytes.get(..width))
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL relocation is out of bounds",
-            )
-        })
-}
-
-fn relocation_patch_width(kind: &reloc::FaslRelocKind) -> usize {
-    match kind {
-        reloc::FaslRelocKind::Cranelift(CraneliftReloc::RiscvCallPlt)
-        | reloc::FaslRelocKind::CraneliftDataSlot(CraneliftReloc::RiscvCallPlt) => 8,
-        reloc::FaslRelocKind::Cranelift(
-            CraneliftReloc::Abs4
-            | CraneliftReloc::X86PCRel4
-            | CraneliftReloc::X86CallPCRel4
-            | CraneliftReloc::X86CallPLTRel4
-            | CraneliftReloc::Arm64Call
-            | CraneliftReloc::Aarch64AdrGotPage21
-            | CraneliftReloc::Aarch64AdrPrelPgHi21
-            | CraneliftReloc::Aarch64AddAbsLo12Nc
-            | CraneliftReloc::Aarch64Ld64GotLo12Nc
-            | CraneliftReloc::MachOAarch64TlsAdrPage21
-            | CraneliftReloc::MachOAarch64TlsAdrPageOff12
-            | CraneliftReloc::Aarch64TlsDescAdrPage21
-            | CraneliftReloc::Aarch64TlsDescLd64Lo12
-            | CraneliftReloc::Aarch64TlsDescAddLo12
-            | CraneliftReloc::RiscvTlsGdHi20
-            | CraneliftReloc::RiscvPCRelLo12I
-            | CraneliftReloc::RiscvGotHi20
-            | CraneliftReloc::RiscvPCRelHi20,
-        )
-        | reloc::FaslRelocKind::CraneliftDataSlot(
-            CraneliftReloc::Abs4
-            | CraneliftReloc::X86PCRel4
-            | CraneliftReloc::X86CallPCRel4
-            | CraneliftReloc::X86CallPLTRel4
-            | CraneliftReloc::Arm64Call
-            | CraneliftReloc::Aarch64AdrGotPage21
-            | CraneliftReloc::Aarch64AdrPrelPgHi21
-            | CraneliftReloc::Aarch64AddAbsLo12Nc
-            | CraneliftReloc::Aarch64Ld64GotLo12Nc
-            | CraneliftReloc::MachOAarch64TlsAdrPage21
-            | CraneliftReloc::MachOAarch64TlsAdrPageOff12
-            | CraneliftReloc::Aarch64TlsDescAdrPage21
-            | CraneliftReloc::Aarch64TlsDescLd64Lo12
-            | CraneliftReloc::Aarch64TlsDescAddLo12
-            | CraneliftReloc::RiscvTlsGdHi20
-            | CraneliftReloc::RiscvPCRelLo12I
-            | CraneliftReloc::RiscvGotHi20
-            | CraneliftReloc::RiscvPCRelHi20,
-        ) => 4,
-        reloc::FaslRelocKind::Asmkit(
-            AsmkitReloc::Abs4
-            | AsmkitReloc::X86PCRel4
-            | AsmkitReloc::X86CallPCRel4
-            | AsmkitReloc::X86CallPLTRel4,
-        ) => 4,
-        reloc::FaslRelocKind::Cranelift(CraneliftReloc::Aarch64TlsDescCall)
-        | reloc::FaslRelocKind::CraneliftDataSlot(CraneliftReloc::Aarch64TlsDescCall) => 0,
-        _ => std::mem::size_of::<usize>(),
-    }
-}
-
-fn cranelift_relocation_patch_bytes(
-    base: Address,
-    offset: usize,
-    kind: CraneliftReloc,
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-) -> io::Result<Vec<u8>> {
-    match kind {
-        CraneliftReloc::Abs8 => {
-            let target = add_i64_to_usize(target_address, addend)?;
-            Ok(target.to_le_bytes().to_vec())
-        }
-        CraneliftReloc::Abs4 => {
-            let target = add_i64_to_usize(target_address, addend)?;
-            let target = u32::try_from(target).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL Cranelift Abs4 relocation target is out of range",
-                )
-            })?;
-            Ok(target.to_le_bytes().to_vec())
-        }
-        CraneliftReloc::X86PCRel4
-        | CraneliftReloc::X86CallPCRel4
-        | CraneliftReloc::X86CallPLTRel4 => pcrel32_patch(base, offset, target_address, addend),
-        CraneliftReloc::Arm64Call => {
-            arm64_call_patch(base, offset, target_address, addend, original)
-        }
-        CraneliftReloc::Aarch64AdrGotPage21
-        | CraneliftReloc::Aarch64AdrPrelPgHi21
-        | CraneliftReloc::MachOAarch64TlsAdrPage21
-        | CraneliftReloc::Aarch64TlsDescAdrPage21 => {
-            aarch64_page21_patch(base, offset, target_address, addend, original)
-        }
-        CraneliftReloc::Aarch64AddAbsLo12Nc
-        | CraneliftReloc::Aarch64TlsDescAddLo12
-        | CraneliftReloc::MachOAarch64TlsAdrPageOff12 => {
-            aarch64_lo12_patch(target_address, addend, original, 0)
-        }
-        CraneliftReloc::Aarch64Ld64GotLo12Nc | CraneliftReloc::Aarch64TlsDescLd64Lo12 => {
-            aarch64_lo12_patch(target_address, addend, original, 3)
-        }
-        CraneliftReloc::Aarch64TlsDescCall => Ok(Vec::new()),
-        CraneliftReloc::RiscvCallPlt => {
-            riscv_call_plt_patch(base, offset, target_address, addend, original)
-        }
-        CraneliftReloc::RiscvTlsGdHi20
-        | CraneliftReloc::RiscvGotHi20
-        | CraneliftReloc::RiscvPCRelHi20 => {
-            riscv_hi20_patch(base, offset, target_address, addend, original)
-        }
-        CraneliftReloc::RiscvPCRelLo12I => {
-            riscv_lo12_i_patch(base, offset, target_address, addend, original)
-        }
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unsupported FASL Cranelift relocation",
-        )),
-    }
-}
-
-fn asmkit_relocation_patch_bytes(
-    base: Address,
-    offset: usize,
-    kind: AsmkitReloc,
-    target_address: usize,
-    addend: i64,
-) -> io::Result<Vec<u8>> {
-    match kind {
-        AsmkitReloc::Abs8 | AsmkitReloc::RiscvAbs8 => {
-            let target = add_i64_to_usize(target_address, addend)?;
-            Ok(target.to_le_bytes().to_vec())
-        }
-        AsmkitReloc::Abs4 => {
-            let target = add_i64_to_usize(target_address, addend)?;
-            let target = u32::try_from(target).map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "FASL asmkit Abs4 relocation target is out of range",
-                )
-            })?;
-            Ok(target.to_le_bytes().to_vec())
-        }
-        AsmkitReloc::X86PCRel4 | AsmkitReloc::X86CallPCRel4 | AsmkitReloc::X86CallPLTRel4 => {
-            pcrel32_patch(base, offset, target_address, addend)
-        }
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unsupported FASL asmkit relocation",
-        )),
-    }
-}
-
-fn pcrel32_patch(
-    base: Address,
-    offset: usize,
-    target_address: usize,
-    addend: i64,
-) -> io::Result<Vec<u8>> {
-    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL relocation patch address overflow",
-        )
-    })?;
-    let target = add_i64_to_usize(target_address, addend)?;
-    let displacement = target as i128 - patch_address as i128;
-    let displacement = i32::try_from(displacement).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL rel32 relocation target is out of range",
-        )
-    })?;
-    Ok(displacement.to_le_bytes().to_vec())
-}
-
-fn arm64_call_patch(
-    base: Address,
-    offset: usize,
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-) -> io::Result<Vec<u8>> {
-    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL AArch64 call relocation patch address overflow",
-        )
-    })?;
-    let target = add_i64_to_usize(target_address, addend)?;
-    let displacement = target as i128 - patch_address as i128;
-    if displacement % 4 != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL AArch64 call target is not instruction aligned",
-        ));
-    }
-    let immediate = displacement / 4;
-    if !(-(1i128 << 25)..(1i128 << 25)).contains(&immediate) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL AArch64 call relocation target is out of range",
-        ));
-    }
-    let instruction = read_original_u32(original)?;
-    let patched = (instruction & !0x03ff_ffff) | ((immediate as u32) & 0x03ff_ffff);
-    Ok(patched.to_le_bytes().to_vec())
-}
-
-fn aarch64_page21_patch(
-    base: Address,
-    offset: usize,
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-) -> io::Result<Vec<u8>> {
-    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL AArch64 page relocation patch address overflow",
-        )
-    })?;
-    let target = add_i64_to_usize(target_address, addend)?;
-    let patch_page = (patch_address as i128) & !0xfffi128;
-    let target_page = (target as i128) & !0xfffi128;
-    let page_delta = (target_page - patch_page) >> 12;
-    if !(-(1i128 << 20)..(1i128 << 20)).contains(&page_delta) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL AArch64 page relocation target is out of range",
-        ));
-    }
-    let imm = (page_delta as u32) & 0x1f_ffff;
-    let immlo = imm & 0x3;
-    let immhi = (imm >> 2) & 0x7ffff;
-    let instruction = read_original_u32(original)?;
-    let patched = (instruction & !((0x3 << 29) | (0x7ffff << 5))) | (immlo << 29) | (immhi << 5);
-    Ok(patched.to_le_bytes().to_vec())
-}
-
-fn aarch64_lo12_patch(
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-    scale_shift: u32,
-) -> io::Result<Vec<u8>> {
-    let target = add_i64_to_usize(target_address, addend)?;
-    let low = (target & 0xfff) as u32;
-    if scale_shift != 0 && (low & ((1 << scale_shift) - 1)) != 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL AArch64 low relocation target is not aligned",
-        ));
-    }
-    let immediate = low >> scale_shift;
-    let instruction = read_original_u32(original)?;
-    let patched = (instruction & !(0xfff << 10)) | (immediate << 10);
-    Ok(patched.to_le_bytes().to_vec())
-}
-
-fn riscv_call_plt_patch(
-    base: Address,
-    offset: usize,
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-) -> io::Result<Vec<u8>> {
-    let delta = riscv_pcrel_delta(base, offset, target_address, addend)?;
-    let hi = riscv_hi20(delta)?;
-    let lo = delta - (hi << 12);
-    let auipc = patch_riscv_u_type(read_original_u32(&original[0..4])?, hi);
-    let jalr = patch_riscv_i_type(read_original_u32(&original[4..8])?, lo)?;
-    let mut bytes = Vec::with_capacity(8);
-    bytes.extend_from_slice(&auipc.to_le_bytes());
-    bytes.extend_from_slice(&jalr.to_le_bytes());
-    Ok(bytes)
-}
-
-fn riscv_hi20_patch(
-    base: Address,
-    offset: usize,
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-) -> io::Result<Vec<u8>> {
-    let delta = riscv_pcrel_delta(base, offset, target_address, addend)?;
-    let instruction = patch_riscv_u_type(read_original_u32(original)?, riscv_hi20(delta)?);
-    Ok(instruction.to_le_bytes().to_vec())
-}
-
-fn riscv_lo12_i_patch(
-    base: Address,
-    offset: usize,
-    target_address: usize,
-    addend: i64,
-    original: &[u8],
-) -> io::Result<Vec<u8>> {
-    let delta = riscv_pcrel_delta(base, offset, target_address, addend)?;
-    let hi = riscv_hi20(delta)?;
-    let lo = delta - (hi << 12);
-    let instruction = patch_riscv_i_type(read_original_u32(original)?, lo)?;
-    Ok(instruction.to_le_bytes().to_vec())
-}
-
-fn riscv_pcrel_delta(
-    base: Address,
-    offset: usize,
-    target_address: usize,
-    addend: i64,
-) -> io::Result<i128> {
-    let patch_address = base.as_usize().checked_add(offset).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL RISC-V relocation patch address overflow",
-        )
-    })?;
-    let target = add_i64_to_usize(target_address, addend)?;
-    Ok(target as i128 - patch_address as i128)
-}
-
-fn riscv_hi20(delta: i128) -> io::Result<i128> {
-    let hi = (delta + 0x800) >> 12;
-    if !(-(1i128 << 19)..(1i128 << 19)).contains(&hi) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL RISC-V hi20 relocation target is out of range",
-        ));
-    }
-    Ok(hi)
-}
-
-fn patch_riscv_u_type(instruction: u32, hi: i128) -> u32 {
-    (instruction & 0x00000fff) | (((hi as u32) & 0x000f_ffff) << 12)
-}
-
-fn patch_riscv_i_type(instruction: u32, lo: i128) -> io::Result<u32> {
-    if !(-2048..2048).contains(&lo) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL RISC-V lo12 relocation target is out of range",
-        ));
-    }
-    Ok((instruction & 0x000f_ffff) | (((lo as u32) & 0xfff) << 20))
-}
-
-fn read_original_u32(original: &[u8]) -> io::Result<u32> {
-    let bytes: [u8; 4] = original
-        .get(0..4)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL relocation is out of bounds",
-            )
-        })?
-        .try_into()
-        .expect("slice length was checked");
-    Ok(u32::from_le_bytes(bytes))
-}
-
-fn add_i64_to_usize(value: usize, addend: i64) -> io::Result<usize> {
-    if addend >= 0 {
-        let addend = usize::try_from(addend).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code block relocation addend is too large",
-            )
-        })?;
-        value.checked_add(addend)
-    } else {
-        let addend = usize::try_from(addend.unsigned_abs()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL code block relocation addend is too small",
-            )
-        })?;
-        value.checked_sub(addend)
-    }
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "FASL code block relocation addend overflow",
-        )
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::fasl::reloc::FaslRelocKind;
-    use cranelift_codegen::binemit::Reloc;
-
-    #[test]
-    fn cranelift_arm64_call_relocation_patches_branch_immediate() {
-        let base = unsafe { Address::from_usize(0x1_0000) };
-        let original = 0x9400_0000u32.to_le_bytes();
-
-        let bytes = relocation_patch_bytes(
-            base,
-            0,
-            &FaslRelocKind::Cranelift(Reloc::Arm64Call),
-            0x1_0040,
-            0,
-            &original,
-        )
-        .expect("patch arm64 call");
-
-        assert_eq!(u32::from_le_bytes(bytes.try_into().unwrap()), 0x9400_0010);
-    }
-
-    #[test]
-    fn cranelift_aarch64_page21_relocation_patches_adrp_immediate() {
-        let base = unsafe { Address::from_usize(0x1_0000) };
-        let original = 0x9000_0000u32.to_le_bytes();
-
-        let bytes = relocation_patch_bytes(
-            base,
-            0,
-            &FaslRelocKind::Cranelift(Reloc::Aarch64AdrPrelPgHi21),
-            0x1_3000,
-            0,
-            &original,
-        )
-        .expect("patch aarch64 adrp");
-
-        assert_eq!(u32::from_le_bytes(bytes.try_into().unwrap()), 0xF000_0000);
-    }
-
-    #[test]
-    fn cranelift_riscv_call_plt_relocation_patches_auipc_jalr_pair() {
-        let base = unsafe { Address::from_usize(0x1_0000) };
-        let mut original = Vec::new();
-        original.extend_from_slice(&0x0000_0097u32.to_le_bytes());
-        original.extend_from_slice(&0x0000_8080u32.to_le_bytes());
-
-        let bytes = relocation_patch_bytes(
-            base,
-            0,
-            &FaslRelocKind::Cranelift(Reloc::RiscvCallPlt),
-            0x1_1804,
-            0,
-            &original,
-        )
-        .expect("patch riscv call");
-
-        assert_eq!(
-            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            0x0000_2097
-        );
-        assert_eq!(
-            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-            0x8040_8080
-        );
     }
 }

@@ -21,7 +21,7 @@ use crate::{
     prelude::ClosureRef,
     runtime::{
         Context, REGISTER_ARG_COUNT,
-        fasl::FASLReader,
+        fasl::FaslReader,
         modules::{Module, Variable},
         value::{
             Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, Str, Symbol, Tuple,
@@ -131,14 +131,14 @@ macro_rules! thunks {
                         }
 
                         let sig_ref = function.import_signature(sig.clone());
-                        let $name = crate::compiler::codegen::declare_backend_function_import(
+                        let $name = crate::compiler::codegen::declare_function(
                             function,
-                            crate::compiler::codegen::BackendSymbol::Imported {
-                                kind: crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk,
-                                symbol: crate::compiler::codegen::ImportedSymbol::new(
+                            crate::compiler::codegen::Symbol::imported(
+                                crate::compiler::codegen::ImportKind::RuntimeThunk,
+                                crate::compiler::codegen::ImportedSymbol::new(
                                     RuntimeThunk::[<Thunk_ $name>].id(),
                                 ),
-                            },
+                            ),
                             sig_ref,
                             false,
                         );
@@ -742,7 +742,7 @@ thunks! {
     ) -> Value<'gc> {
         let data = unsafe { std::slice::from_raw_parts(data, size) };
 
-        let fasl = FASLReader::new(ctx, data);
+        let fasl = FaslReader::new(ctx, data);
 
 
 
@@ -4356,18 +4356,18 @@ mod runtime_thunk_import_tests {
         let cranelift_codegen::ir::ExternalName::User(name_ref) = func.name else {
             panic!("direct thunk import should use a user external name");
         };
-        let symbol = crate::compiler::codegen::BackendSymbol::from_user_external_name(
+        let symbol = crate::compiler::codegen::Symbol::from_external_name(
             function.params.user_named_funcs()[name_ref].clone(),
         );
 
         assert_eq!(
             symbol,
-            Some(crate::compiler::codegen::BackendSymbol::Imported {
-                kind: crate::compiler::codegen::ImportedSymbolKind::RuntimeThunk,
-                symbol: crate::compiler::codegen::ImportedSymbol::new(
+            Some(crate::compiler::codegen::Symbol::imported(
+                crate::compiler::codegen::ImportKind::RuntimeThunk,
+                crate::compiler::codegen::ImportedSymbol::new(
                     RuntimeThunk::Thunk_wrong_number_of_args.id(),
                 ),
-            })
+            ))
         );
     }
 }
