@@ -50,11 +50,10 @@ impl<'gc> ComputeFreeVarResolver<'gc> {
                 self.add_module_lexical(*var, module);
             } else if let TermKind::PrimCall(prim, args) = val.kind
                 && prim == sym_current_module(self.ctx).into()
-                && args.len() == 0
+                && args.is_empty()
+                && module != Value::new(false)
             {
-                if module != Value::new(false) {
-                    self.add_module_lexical(*var, module);
-                }
+                self.add_module_lexical(*var, module);
             }
         }
     }
@@ -366,7 +365,6 @@ pub fn resolve_free_vars<'gc>(ctx: Context<'gc>, exp: TermRef<'gc>) -> TermRef<'
             TermKind::ToplevelSet(module, name, value) => match resolve(ctx, module, name) {
                 Resolved::Local | Resolved::Unknown | Resolved::Duplicate => exp,
                 Resolved::Known(mod_name, var_name) => {
-                    let value = value;
                     module_set(ctx, mod_name, var_name, true, value, sourcev)
                 }
             },

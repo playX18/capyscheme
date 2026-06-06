@@ -10,14 +10,11 @@ use crate::runtime::vm::exceptions::{
     make_raise_condition, make_undefined_violation as undefined_violation,
 };
 use crate::runtime::vm::{default_exception_handler, default_retk as vm_default_retk};
-use crate::{
-    compiler::ssa::{SSABuilder, traits::IntoSSA},
-    runtime::{
-        value::{IntoValue, Number},
-        vm::{
-            control::{CONTINUATION_MARKS_INFO, ContinuationMarks},
-            syntax::Syntax,
-        },
+use crate::runtime::{
+    value::{IntoValue, Number},
+    vm::{
+        control::{CONTINUATION_MARKS_INFO, ContinuationMarks},
+        syntax::Syntax,
     },
 };
 use crate::{
@@ -47,7 +44,6 @@ use crate::{
     },
     runtime::vm::syntax::props_to_sourcev,
 };
-use cranelift_codegen::ir::InstBuilder;
 use std::{alloc::Layout, cmp::Ordering};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -59,9 +55,11 @@ pub struct ThunkResult<'gc> {
 
 macro_rules! thunks {
     ($gl: lifetime: $(
+        $(#[$attr:meta])*
         $v: vis fn $name : ident($($arg: ident : $t: ty),*) -> $ret: ty $b : block
     )*) => {
         $(
+            $(#[$attr])*
             #[unsafe(export_name=concat!("capy_thunks_", stringify!($name)))]
             $v extern "C-unwind" fn $name<$gl>($($arg: $t),*) -> $ret $b
         )*
@@ -114,8 +112,8 @@ macro_rules! thunks {
             }
         }
 
-        impl ImportedThunks {
-            pub fn new_direct<$gl>(
+        impl<$gl> ImportedThunks {
+            pub fn new_direct(
                 function: &mut cranelift_codegen::ir::function::Function,
             ) -> Self {
                 let callconv = cranelift_codegen::isa::CallConv::SystemV;
@@ -153,29 +151,6 @@ macro_rules! thunks {
                 }
             }
         }
-
-        impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
-            thunks! {
-                @generate_ssa $gl, 'gc, 'a, 'f;
-                $(
-                    fn $name ($($arg: $t),*) -> $ret;
-                )*
-        }
-        }
-    };
-
-    (@generate_ssa $l: lifetime, $gc: lifetime, $a: lifetime, $f: lifetime;
-        $(fn $name: ident ($($arg: ident : $t: ty),*) -> $ret: ty;)*
-    ) => {$(
-        paste::paste! {
-            pub fn [<emit_ $name>](&mut self, $($arg: impl IntoSSA<$gc, $a, $f>),*) -> cranelift_codegen::ir::entities::Inst {
-                $(
-                    let $arg = $arg.into_ssa(self);
-                )*
-                let ctx = self.builder.ins().get_pinned_reg(cranelift_codegen::ir::types::I64);
-                self.builder.ins().call(self.thunks.$name, &[ctx, $($arg),*])
-            }
-        })*
     };
 
 }
@@ -320,20 +295,33 @@ pub mod compiler {
     }
 }
 
-fn register_arg<'gc>(
-    index: usize,
+#[derive(Clone, Copy)]
+struct RegisterArgs<'gc> {
     arg0: Value<'gc>,
     arg1: Value<'gc>,
     arg2: Value<'gc>,
     arg3: Value<'gc>,
     overflow: *const Value<'gc>,
-) -> Value<'gc> {
-    match index {
-        0 => arg0,
-        1 => arg1,
-        2 => arg2,
-        3 => arg3,
-        _ => unsafe { *overflow.add(index - REGISTER_ARG_COUNT) },
+}
+
+impl<'gc> RegisterArgs<'gc> {
+    fn get(self, index: usize) -> Value<'gc> {
+        match index {
+            0 => self.arg0,
+            1 => self.arg1,
+            2 => self.arg2,
+            3 => self.arg3,
+            _ => unsafe { *self.overflow.add(index - REGISTER_ARG_COUNT) },
+        }
+    }
+
+    fn collect_from(self, argc: usize, from: usize) -> Vec<Value<'gc>> {
+        (from..argc).map(|index| self.get(index)).collect()
+    }
+
+    fn collect_range(self, argc: usize, from: usize, count: usize) -> Vec<Value<'gc>> {
+        let end = from.saturating_add(count).min(argc);
+        (from..end).map(|index| self.get(index)).collect()
     }
 }
 
@@ -346,25 +334,14 @@ fn collect_register_args<'gc>(
     overflow: *const Value<'gc>,
     from: usize,
 ) -> Vec<Value<'gc>> {
-    (from..argc)
-        .map(|index| register_arg(index, arg0, arg1, arg2, arg3, overflow))
-        .collect()
-}
-
-fn collect_register_arg_range<'gc>(
-    argc: usize,
-    arg0: Value<'gc>,
-    arg1: Value<'gc>,
-    arg2: Value<'gc>,
-    arg3: Value<'gc>,
-    overflow: *const Value<'gc>,
-    from: usize,
-    count: usize,
-) -> Vec<Value<'gc>> {
-    let end = from.saturating_add(count).min(argc);
-    (from..end)
-        .map(|index| register_arg(index, arg0, arg1, arg2, arg3, overflow))
-        .collect()
+    RegisterArgs {
+        arg0,
+        arg1,
+        arg2,
+        arg3,
+        overflow,
+    }
+    .collect_from(argc, from)
 }
 
 fn save_register_args<'gc>(
@@ -442,7 +419,7 @@ fn wrong_number_of_args_impl<'gc>(
 thunks! {
     'gc:
 
-    pub fn wrong_number_of_args(
+    fn wrong_number_of_args(
         ctx: Context<'gc>,
         subr: Value<'gc>,
         got: usize,
@@ -467,20 +444,18 @@ thunks! {
         overflow: *const Value<'gc>,
         from: usize
     ) -> Value<'gc> {
-        let rands = collect_register_arg_range(
-            argc,
+        let rands = RegisterArgs {
             arg0,
             arg1,
             arg2,
             arg3,
             overflow,
-            from,
-            got,
-        );
+        }
+        .collect_range(argc, from, got);
         wrong_number_of_args_impl(ctx, subr, got, expected, &rands)
     }
 
-    pub fn cons_rest(
+    fn cons_rest(
         ctx: Context<'gc>,
         rands: *mut Value<'gc>,
         num_rands: usize,
@@ -489,8 +464,7 @@ thunks! {
          let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
 
         let mut ls = Value::null();
-        if from >= args.len() {
-        }
+        from; args.len();
         for &arg in args[from..].iter().rev() {
             ls = Value::cons(ctx, arg, ls);
         }
@@ -508,9 +482,16 @@ thunks! {
         overflow: *const Value<'gc>,
         from: usize
     ) -> Value<'gc> {
+        let args = RegisterArgs {
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            overflow,
+        };
         let mut ls = Value::null();
         for index in (from..argc).rev() {
-            let arg = register_arg(index, arg0, arg1, arg2, arg3, overflow);
+            let arg = args.get(index);
             ls = Value::cons(ctx, arg, ls);
         }
 
@@ -530,16 +511,14 @@ thunks! {
     ) -> Value<'gc> {
         save_register_args(ctx, argc, arg0, arg1, arg2, arg3);
         let count = argc.saturating_sub(from);
-        let values = collect_register_arg_range(
-            argc,
+        let values = RegisterArgs {
             arg0,
             arg1,
             arg2,
             arg3,
             overflow,
-            from,
-            count,
-        );
+        }
+        .collect_range(argc, from, count);
         make_raise_condition(ctx, code, &values)
     }
 
@@ -589,7 +568,7 @@ thunks! {
             return ThunkResult {
                 code: 1,
                 value:
-                    undefined_violation(ctx, Some(name), &format!("variable not found"), &[name, module]),
+                    undefined_violation(ctx, Some(name), "variable not found", &[name, module]),
             };
         };
 
@@ -624,7 +603,7 @@ thunks! {
 
             return ThunkResult {
                 code: 1,
-                value: undefined_violation(ctx, Some(name), &format!("variable not found"), &[name, module]),
+                value: undefined_violation(ctx, Some(name), "variable not found", &[name, module]),
             };
         };
 
@@ -756,7 +735,7 @@ thunks! {
         )
     }
 
-    pub fn fasl_read_nofail(
+    fn fasl_read_nofail(
         ctx: Context<'gc>,
         data: *const u8,
         size: usize
@@ -765,9 +744,9 @@ thunks! {
 
         let fasl = FASLReader::new(ctx, data);
 
-        let res = fasl.read().expect("failed to read FASL");
 
-        res
+
+        fasl.read().expect("failed to read FASL")
     }
 
     pub fn yieldpoint_block(
@@ -1051,7 +1030,7 @@ thunks! {
         ThunkResult { code: 0, value: num.negate(ctx).into_value(ctx) }
     }
 
-    pub fn debug_trace(ctx: Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize, meta: Value<'gc>) -> () {
+    fn debug_trace(ctx: Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize, meta: Value<'gc>) -> () {
         let ip = unsafe { returnaddress(0) };
         let rands = unsafe { std::slice::from_raw_parts(rands, num_rands).to_vec() };
 
@@ -2189,7 +2168,7 @@ thunks! {
     }
 
     pub fn integerp(ctx: Context<'gc>, v: Value<'gc>) -> bool {
-        v.number().map_or(false, |n| n.is_integer())
+        v.number().is_some_and(|n| n.is_integer())
     }
 
     pub fn exactp(ctx: Context<'gc>, v: Value<'gc>) -> ThunkResult<'gc> {
@@ -4008,7 +3987,7 @@ thunks! {
         }
     }
 
-    pub fn push_dframe(
+    fn push_dframe(
         ctx: Context<'gc>,
         src: Value<'gc>,
         rator: Value<'gc>,
@@ -4032,7 +4011,7 @@ thunks! {
                 info.into(),
                 retk.downcast::<Closure>()
             );
-            rands.write(ck.into());
+            rands.write(ck);
         }
     }
 
@@ -4049,21 +4028,28 @@ thunks! {
     ) -> Value<'gc> {
         assert!(argc > 0, "push_dframe_regs called without a return continuation");
 
-        let retk = register_arg(0, arg0, arg1, arg2, arg3, overflow);
+        let args = RegisterArgs {
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            overflow,
+        };
+        let retk = args.get(0);
         let args = (1..argc).rev().fold(Value::null(), |acc, index| {
-            let arg = register_arg(index, arg0, arg1, arg2, arg3, overflow);
+            let arg = args.get(index);
             Value::cons(ctx, arg, acc)
         });
 
         let info = Vector::from_slice(*ctx, &[src, rator, args]);
         let key = crate::runtime::vm::debug::sym_stacktrace_key(ctx);
-        let ck = crate::runtime::vm::control::push_cframe(
+
+        crate::runtime::vm::control::push_cframe(
             ctx,
             key.into(),
             info.into(),
             retk.downcast::<Closure>(),
-        );
-        ck.into()
+        )
     }
 
     pub fn push_cframe(
@@ -4108,7 +4094,7 @@ thunks! {
         }
         unsafe {
             ctx.state().set_current_marks(
-                marks.downcast::<ContinuationMarks>().cmarks.clone()
+                marks.downcast::<ContinuationMarks>().cmarks
             );
         }
 
@@ -4175,28 +4161,26 @@ thunks! {
 }
 
 #[unsafe(no_mangle)]
-pub(crate) static BOX_VTABLE: &'static VTable = &VTableOf::<Boxed>::VT;
+pub(crate) static BOX_VTABLE: &VTable = VTableOf::<Boxed>::VT;
 #[unsafe(no_mangle)]
-pub(crate) static PAIR_VTABLE: &'static VTable = &VTableOf::<Pair>::VT;
+pub(crate) static PAIR_VTABLE: &VTable = VTableOf::<Pair>::VT;
 #[unsafe(no_mangle)]
-pub(crate) static PAIR_INFO_STATIC: &'static HeapTypeInfo = crate::runtime::value::PAIR_INFO;
+pub(crate) static PAIR_INFO_STATIC: &HeapTypeInfo = crate::runtime::value::PAIR_INFO;
 #[unsafe(no_mangle)]
-pub(crate) static VARIABLE_INFO_STATIC: &'static HeapTypeInfo =
-    crate::runtime::modules::VARIABLE_INFO;
+pub(crate) static VARIABLE_INFO_STATIC: &HeapTypeInfo = crate::runtime::modules::VARIABLE_INFO;
 #[unsafe(no_mangle)]
-pub(crate) static CLOSURE_PROC_INFO_STATIC: &'static HeapTypeInfo =
+pub(crate) static CLOSURE_PROC_INFO_STATIC: &HeapTypeInfo =
     crate::runtime::value::CLOSURE_PROC_INFO;
 #[unsafe(no_mangle)]
-pub(crate) static CLOSURE_K_INFO_STATIC: &'static HeapTypeInfo =
-    crate::runtime::value::CLOSURE_K_INFO;
+pub(crate) static CLOSURE_K_INFO_STATIC: &HeapTypeInfo = crate::runtime::value::CLOSURE_K_INFO;
 #[unsafe(no_mangle)]
-pub(crate) static MUTABLE_VECTOR_INFO_STATIC: &'static HeapTypeInfo =
+pub(crate) static MUTABLE_VECTOR_INFO_STATIC: &HeapTypeInfo =
     crate::runtime::value::MUTABLE_VECTOR_INFO;
 #[unsafe(no_mangle)]
-pub(crate) static IMMUTABLE_VECTOR_INFO_STATIC: &'static HeapTypeInfo =
+pub(crate) static IMMUTABLE_VECTOR_INFO_STATIC: &HeapTypeInfo =
     crate::runtime::value::IMMUTABLE_VECTOR_INFO;
 #[unsafe(no_mangle)]
-pub(crate) static TUPLE_INFO_STATIC: &'static HeapTypeInfo = crate::runtime::value::TUPLE_INFO;
+pub(crate) static TUPLE_INFO_STATIC: &HeapTypeInfo = crate::runtime::value::TUPLE_INFO;
 
 unsafe extern "C" {
     #[link_name = "llvm.returnaddress"]

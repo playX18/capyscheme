@@ -4,11 +4,11 @@ use std::sync::RwLock;
 #[allow(dead_code)]
 pub(crate) enum ExecutionPolicy {
     #[default]
-    AOT,
-    JIT,
+    Aot,
+    Jit,
 }
 
-static EXECUTION_POLICY: RwLock<ExecutionPolicy> = RwLock::new(ExecutionPolicy::AOT);
+static EXECUTION_POLICY: RwLock<ExecutionPolicy> = RwLock::new(ExecutionPolicy::Aot);
 
 pub(crate) fn get_execution_policy() -> ExecutionPolicy {
     *EXECUTION_POLICY

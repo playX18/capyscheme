@@ -453,6 +453,12 @@ impl ThreadStats {
     }
 }
 
+impl Default for ThreadStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct GlobalStats {
     enabled: bool,
     ever_enabled: bool,
@@ -623,6 +629,12 @@ impl GlobalStats {
         }
 
         (self.ever_enabled, snapshot)
+    }
+}
+
+impl Default for GlobalStats {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

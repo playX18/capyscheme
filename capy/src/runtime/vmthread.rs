@@ -25,7 +25,7 @@ pub enum VMThreadTask {
     Shutdown,
 }
 
-pub static VM_THREAD: LazyLock<VmThread> = LazyLock::new(|| VmThread::new());
+pub static VM_THREAD: LazyLock<VmThread> = LazyLock::new(VmThread::new);
 
 /// VM thread that handles execution of various tasks.
 ///
@@ -96,9 +96,10 @@ impl VmThread {
                                         // SAFETY: `mc.thread()` and `VMMutatorThread` are both
                                         // thin wrappers around the same `*mut Thread` pointer.
                                         // The RSGC crate guarantees layout compatibility.
-                                        transmute::<_, crate::rsgc::mmtk::util::VMMutatorThread>(
-                                            mc.thread(),
-                                        )
+                                        transmute::<
+                                            &crate::rsgc::sync::thread::Thread,
+                                            crate::rsgc::mmtk::util::VMMutatorThread,
+                                        >(mc.thread())
                                     },
                                 );
                             });
@@ -147,14 +148,18 @@ impl VmThread {
     }
 }
 
+impl Default for VmThread {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for VmThread {
     fn drop(&mut self) {
-        if self.thread_handle.is_some() {
-            if self.sender.send(VMThreadTask::Shutdown).is_ok() {
-                let guard = self.pair.lock();
-                guard.store(true, Ordering::Relaxed);
-                guard.notify_all();
-            }
+        if self.thread_handle.is_some() && self.sender.send(VMThreadTask::Shutdown).is_ok() {
+            let guard = self.pair.lock();
+            guard.store(true, Ordering::Relaxed);
+            guard.notify_all();
         }
     }
 }

@@ -74,7 +74,7 @@ fn compute_declarative_toplvels<'gc>(
 
     dt.defined.iter().for_each(|((module, name), exp)| {
         if !dt.assigned.contains_key(&(*module, *name))
-            && !dt.dynamic.contains(&name)
+            && !dt.dynamic.contains(name)
             && is_declarative_module(module.0)
         {
             declarative.insert((*module, *name), *exp);
@@ -105,7 +105,7 @@ fn compute_private_toplevels<'gc>(
             exports_macro.insert(module, true);
             return;
         }
-        if exports_macro.get(&module).is_none() {
+        if !exports_macro.contains_key(&module) {
             exports_macro.insert(module, false);
             let i = resolve_module(ctx, module.0, false, false);
             if let Some(m) = i.and_then(|m| m.public_interface.get()) {
@@ -176,7 +176,7 @@ impl<'gc> Letrectify<'gc> {
             let mut tab = HashMap::new();
             declarative.iter().for_each(|(&(module, name), _)| {
                 // println!(";; Declarative toplevel: {}@{}", module.0, name);
-                let boxed = if private.get(&(module, name)).is_none() {
+                let boxed = if !private.contains(&(module, name)) {
                     Some(fresh_lvar(
                         ctx,
                         Str::new(*ctx, format!("{}_boxed_{}", module.0, name).as_str(), true)
@@ -189,7 +189,7 @@ impl<'gc> Letrectify<'gc> {
                     ctx,
                     Str::new(*ctx, format!("{}_{}", module.0, name).as_str(), true).into(),
                 );
-                tab.insert((module.into(), name), (boxed, val));
+                tab.insert((module, name), (boxed, val));
             });
             tab
         };
@@ -241,8 +241,8 @@ impl<'gc> Letrectify<'gc> {
                     source: tail.source.get().into(),
                     kind: TermKind::Let(Let {
                         style: LetStyle::LetRecStar,
-                        rhs: Array::from_slice(*self.ctx, &[val]),
-                        lhs: Array::from_slice(*self.ctx, &[var]),
+                        rhs: Array::from_slice(*self.ctx, [val]),
+                        lhs: Array::from_slice(*self.ctx, [var]),
                         body: tail,
                     }),
                 },
@@ -289,7 +289,7 @@ impl<'gc> Letrectify<'gc> {
                             self.add_binding(
                                 Value::new(false),
                                 mod_var,
-                                prim_call_term(ctx, ctx.intern("current-module"), &[], src),
+                                prim_call_term(ctx, ctx.intern("current-module"), [], src),
                                 tail,
                             )
                         }
@@ -298,7 +298,7 @@ impl<'gc> Letrectify<'gc> {
                             let loc = prim_call_term(
                                 ctx,
                                 ctx.intern("module-ensure-local-variable!"),
-                                &[lref(ctx, *mod_var), constant(ctx, name)],
+                                [lref(ctx, *mod_var), constant(ctx, name)],
                                 src,
                             );
 
@@ -308,7 +308,7 @@ impl<'gc> Letrectify<'gc> {
                             let init = prim_call_term(
                                 ctx,
                                 ctx.intern("variable-set!"),
-                                &[lref(ctx, boxed), val_ref],
+                                [lref(ctx, boxed), val_ref],
                                 src,
                             );
 
@@ -417,20 +417,15 @@ pub fn is_define_module_term<'gc>(
     ctx: Context<'gc>,
     t: TermRef<'gc>,
 ) -> Option<(Value<'gc>, ArrayRef<'gc, TermRef<'gc>>)> {
-    match t.kind {
-        TermKind::Call(rator, args) => {
-            if let TermKind::ModuleRef(module, name, _) = rator.kind
-                && module.r5rs_equal(ctx.globals().capy_module_name())
-                && name == sym_define_module(ctx).into()
-                && args.len() >= 1
-                && let TermKind::Const(mod_name) = args[0].kind
-            {
-                // println!(";; module definition: {}", mod_name);
-                return Some((mod_name, args));
-            }
-        }
-
-        _ => (),
+    if let TermKind::Call(rator, args) = t.kind
+        && let TermKind::ModuleRef(module, name, _) = rator.kind
+        && module.r5rs_equal(ctx.globals().capy_module_name())
+        && name == sym_define_module(ctx).into()
+        && !args.is_empty()
+        && let TermKind::Const(mod_name) = args[0].kind
+    {
+        // println!(";; module definition: {}", mod_name);
+        return Some((mod_name, args));
     }
 
     None

@@ -81,7 +81,10 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
 
-        if let Some(_) = self.reference_map.get(&obj.as_cell_raw().to_address()) {
+        if self
+            .reference_map
+            .contains_key(&obj.as_cell_raw().to_address())
+        {
             return Ok(());
         }
 
@@ -149,10 +152,10 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
         }
 
         println!("{obj}");
-        return Err(io::Error::new(
+        Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Unsupported type for FASL serialization",
-        ));
+        ))
     }
 
     pub fn put(&mut self, obj: Value<'gc>) -> io::Result<()> {
@@ -282,10 +285,10 @@ impl<'gc, W: Write> FASLWriter<'gc, W> {
             return Ok(());
         }
         println!("{obj}");
-        return Err(io::Error::new(
+        Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("Unsupported type for FASL serialization: {}", obj),
-        ));
+        ))
     }
 
     pub fn put_list(&mut self, mut obj: Value<'gc>) -> io::Result<()> {

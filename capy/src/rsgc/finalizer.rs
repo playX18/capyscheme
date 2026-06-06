@@ -111,7 +111,6 @@ impl Finalizers {
     ///
     /// Note that `object` might be registered multiple times, FinalizerQueue implementation
     /// is responsible for handling this.
-
     pub fn register_finalizer<'gc, T, FQ>(&self, queue: &Arc<FQ>, object: Gc<'gc, T>) -> usize
     where
         T: Trace + Send,
@@ -129,7 +128,6 @@ impl Finalizers {
     /// # Panics
     ///
     /// Panics if queue at `index` does not exist.
-
     pub fn finalizer_queue(&self, index: usize) -> Arc<dyn FinalizerQueue> {
         self.0
             .lock()

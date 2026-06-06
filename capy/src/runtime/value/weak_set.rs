@@ -1,3 +1,5 @@
+//! Weak set storage used for intern tables and weak collections.
+
 use std::{
     cell::Cell,
     sync::{Arc, Once, OnceLock},
@@ -91,6 +93,7 @@ impl<'gc> Clone for WeakEntry<'gc> {
 type Entries<'gc> = Gc<'gc, Array<Lock<WeakEntry<'gc>>>>;
 
 #[repr(C, align(8))]
+/// A hash set whose entries do not keep values alive.
 pub struct WeakSet<'gc> {
     pub(crate) inner: Monitor<WeakSetInner<'gc>>,
 }
@@ -99,7 +102,7 @@ static WEAK_SET_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, WeakSet<'static>>::VT,
     TypeCode8::WEAKSET.bits() as u16,
 );
-pub static WEAK_SET_INFO: &'static HeapTypeInfo = &WEAK_SET_INFO_VALUE;
+pub static WEAK_SET_INFO: &HeapTypeInfo = &WEAK_SET_INFO_VALUE;
 
 pub(crate) struct WeakSetInner<'gc> {
     pub(crate) entries: Lock<Entries<'gc>>,
@@ -643,7 +646,9 @@ unsafe impl<'gc> Trace for AllWeakSets<'gc> {
     }
 }
 
-static ALL_WEAK_SETS: OnceLock<Global<crate::Rootable!(AllWeakSets<'_>)>> = OnceLock::new();
+type RootedWeakSets = crate::Rootable!(AllWeakSets<'_>);
+
+static ALL_WEAK_SETS: OnceLock<Global<RootedWeakSets>> = OnceLock::new();
 struct WeakSetNotify;
 
 impl FinalizationNotify for WeakSetNotify {

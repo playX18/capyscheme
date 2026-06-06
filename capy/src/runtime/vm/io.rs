@@ -58,7 +58,7 @@ pub mod io_ops {
 
     #[scheme(name = "usleep")]
     pub fn usleep(microseconds: u64) -> bool {
-        std::thread::sleep(std::time::Duration::from_micros(microseconds as u64));
+        std::thread::sleep(std::time::Duration::from_micros(microseconds));
         nctx.return_(true)
     }
 
@@ -129,11 +129,9 @@ pub mod io_ops {
         match std::fs::read_dir(p) {
             Ok(entries) => {
                 let mut ls = Value::null();
-                for entry in entries {
-                    if let Ok(entry) = entry {
-                        let name = entry.file_name().to_string_lossy().into_owned();
-                        ls = Value::cons(ctx, Str::new(*ctx, &name, true).into(), ls);
-                    }
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    ls = Value::cons(ctx, Str::new(*ctx, &name, true).into(), ls);
                 }
                 ls = ls.list_reverse(ctx);
                 nctx.return_(ls)
@@ -157,7 +155,7 @@ pub mod io_ops {
             Some(path) => match std::env::set_current_dir(path.to_string()) {
                 Ok(()) => {
                     let ctx = nctx.ctx;
-                    nctx.return_(Str::new(*ctx, &path.to_string(), true))
+                    nctx.return_(Str::new(*ctx, path.to_string(), true))
                 }
                 Err(err) => {
                     let error = err.to_string();
@@ -300,17 +298,17 @@ pub mod io_ops {
 
     #[scheme(name = "file-readable?")]
     pub fn file_readable(path: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(rustix::fs::access(&path.to_string(), rustix::fs::Access::READ_OK).is_ok())
+        nctx.return_(rustix::fs::access(path.to_string(), rustix::fs::Access::READ_OK).is_ok())
     }
 
     #[scheme(name = "file-writable?")]
     pub fn file_writable(path: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(rustix::fs::access(&path.to_string(), rustix::fs::Access::WRITE_OK).is_ok())
+        nctx.return_(rustix::fs::access(path.to_string(), rustix::fs::Access::WRITE_OK).is_ok())
     }
 
     #[scheme(name = "file-executable?")]
     pub fn file_executable(path: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(rustix::fs::access(&path.to_string(), rustix::fs::Access::EXEC_OK).is_ok())
+        nctx.return_(rustix::fs::access(path.to_string(), rustix::fs::Access::EXEC_OK).is_ok())
     }
 
     #[scheme(name = "change-file-mode")]
@@ -325,7 +323,7 @@ pub mod io_ops {
                 &[path.into(), mode.into()],
             );
         };
-        match rustix::fs::chmod(&path.to_string(), mode) {
+        match rustix::fs::chmod(path.to_string(), mode) {
             Ok(()) => nctx.return_(true),
             Err(err) => nctx.raise_io_error(
                 std::io::Error::new(err.kind(), "failed to change mode"),
@@ -1113,7 +1111,7 @@ pub mod io_ops {
             newflags |= libc::O_TRUNC;
         }
 
-        if filename.len() == 0 {
+        if filename.is_empty() {
             return nctx.return_(-1);
         }
 
@@ -1782,7 +1780,7 @@ pub mod io_ops {
     /// Waits for at least one I/O event and returns a list of events.
     pub fn poller_wait(poller: Gc<'gc, Poller>, timeout: Option<u64>) -> Value<'gc> {
         let ctx = nctx.ctx;
-        let timeout = timeout.map(|t| std::time::Duration::from_micros(t));
+        let timeout = timeout.map(std::time::Duration::from_micros);
         let poller_ptr = Gc::as_ptr(poller);
         let wait_outcome = ctx.outside_gc_world(|| {
             let poller = unsafe { &*poller_ptr };
@@ -1964,7 +1962,7 @@ static POLLER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     VTableOf::<'static, Poller>::VT,
     TypeCode8::POLLER.bits() as u16,
 );
-pub static POLLER_INFO: &'static HeapTypeInfo = &POLLER_INFO_VALUE;
+pub static POLLER_INFO: &HeapTypeInfo = &POLLER_INFO_VALUE;
 
 unsafe impl Tagged for Poller {
     const TC8: TypeCode8 = TypeCode8::POLLER;

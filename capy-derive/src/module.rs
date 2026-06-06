@@ -200,7 +200,7 @@ impl Module {
                 #(#register_calls)*
                 #(#exports)*
 
-                current_module(ctx).set(ctx, old.into());
+                current_module(ctx).set(ctx, old);
                 module
             }
 

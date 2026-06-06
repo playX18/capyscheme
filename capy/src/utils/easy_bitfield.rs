@@ -36,7 +36,7 @@ use std::{marker::PhantomData, sync::atomic::Ordering};
 ///   easily in bitfield.
 /// - `POSITION`: position of bitfield in storage container, must not be out of bounds.
 /// - `SIZE`: Size of the bitfield, note that if T is u32 and we set size to 16 then only
-/// 16 bits of the 32-bit value will be stored.
+///   16 bits of the 32-bit value will be stored.
 /// - `SIGN_EXTEND`: Whether or not to do sign-extension on decode operation.
 ///
 /// # Example usage

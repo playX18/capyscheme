@@ -105,7 +105,6 @@ where
     state: NonNull<MutatorState<Root<'static, R>>>,
 }
 
-#[allow(clippy::type_complexity)]
 pub(crate) struct MutatorState<R: ?Sized> {
     pub(crate) root: R,
 }
@@ -156,7 +155,7 @@ where
 
         Thread::register(&thread);
 
-        let native_data = thread.native_data_mut();
+        let native_data = unsafe { &mut *thread.native_data_mut_ptr() };
         if native_data.mutator_state.is_some() {
             panic!("Mutator is already registered for thread");
         }
@@ -277,8 +276,7 @@ where
     fn drop(&mut self) {
         Thread::leave_native();
         let thread = current_thread();
-        thread
-            .native_data_mut()
+        unsafe { &mut *thread.native_data_mut_ptr() }
             .mutator_state
             .take()
             .expect("must have state");
@@ -331,6 +329,12 @@ impl<'gc> Mutation<'gc> {
         self.thread as *const _ as *const ()
     }
 
+    /// Reconstruct a mutation handle from a raw thread pointer.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must have been produced by [`Mutation::as_ptr`] for a live thread
+    /// whose lifetime is valid for the returned mutation handle.
     pub unsafe fn from_ptr(ptr: *const ()) -> Self {
         let thread = unsafe { &*(ptr as *const Thread) };
         Mutation { thread }
@@ -433,6 +437,13 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Same as [`raw_allocate_out_of_line`](Self::raw_allocate_out_of_line),
+    /// but installs an explicit heap type descriptor.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
+    /// object that will be written into the returned allocation.
     pub unsafe fn raw_allocate_out_of_line_with_info(
         &self,
         size: usize,
@@ -483,7 +494,7 @@ impl<'gc> Mutation<'gc> {
     ///
     /// This function is safe only if TLAB is flushed *before* call into MMTK API such as [`raw_allocate_slow`](Self::raw_allocate_slow).
     pub unsafe fn flush_tlab(&self) {
-        let tlab = &mut self.thread.native_data_mut().lab;
+        let tlab = unsafe { &mut (*self.thread.native_data_mut_ptr()).lab };
 
         let (cursor, limit) = tlab.take();
 
@@ -527,7 +538,7 @@ impl<'gc> Mutation<'gc> {
     ///
     /// This function is safe only if TLAB is refilled *after* call into MMTKA API such as [`raw_allocate_slow`](Self::raw_allocate_slow).
     pub unsafe fn refill_tlab(&self) {
-        let tlab = &mut self.thread.native_data_mut().lab;
+        let tlab = unsafe { &mut (*self.thread.native_data_mut_ptr()).lab };
 
         let selector = mmtk::memory_manager::get_allocator_mapping(
             &super::GarbageCollector::get().mmtk,
@@ -574,6 +585,13 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Same as [`raw_allocate_slow`](Self::raw_allocate_slow), but installs an
+    /// explicit heap type descriptor.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
+    /// object that will be written into the returned allocation.
     pub unsafe fn raw_allocate_slow_with_info(
         &self,
         size: usize,
@@ -612,6 +630,13 @@ impl<'gc> Mutation<'gc> {
         unsafe { self.raw_allocate_immortal_with_info(size, alignment, gc_only_type_info(vtable)) }
     }
 
+    /// Same as [`raw_allocate_immortal`](Self::raw_allocate_immortal), but
+    /// installs an explicit heap type descriptor.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
+    /// object that will be written into the returned allocation.
     pub unsafe fn raw_allocate_immortal_with_info(
         &self,
         size: usize,
@@ -649,6 +674,13 @@ impl<'gc> Mutation<'gc> {
         unsafe { self.raw_allocate_nonmoving_with_info(size, alignment, gc_only_type_info(vtable)) }
     }
 
+    /// Same as [`raw_allocate_nonmoving`](Self::raw_allocate_nonmoving), but
+    /// installs an explicit heap type descriptor.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
+    /// object that will be written into the returned allocation.
     pub unsafe fn raw_allocate_nonmoving_with_info(
         &self,
         size: usize,
@@ -686,6 +718,13 @@ impl<'gc> Mutation<'gc> {
         unsafe { self.raw_allocate_los_with_info(size, alignment, gc_only_type_info(vtable)) }
     }
 
+    /// Same as [`raw_allocate_los`](Self::raw_allocate_los), but installs an
+    /// explicit heap type descriptor.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
+    /// object that will be written into the returned allocation.
     pub unsafe fn raw_allocate_los_with_info(
         &self,
         size: usize,
@@ -783,6 +822,13 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
+    /// Same as [`raw_allocate`](Self::raw_allocate), but installs an explicit
+    /// heap type descriptor.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
+    /// object that will be written into the returned allocation.
     pub unsafe fn raw_allocate_with_info(
         &self,
         size: usize,
@@ -798,11 +844,11 @@ impl<'gc> Mutation<'gc> {
 
             let alignment = alignment.max(std::mem::size_of::<usize>());
             let size = raw_align_up(size, alignment);
-            debug_assert!(size % alignment == 0);
+            debug_assert!(size.is_multiple_of(alignment));
             if semantics == AllocationSemantics::Default
                 && self.thread.alloc_fastpath() == AllocFastPath::TLAB
             {
-                let lab = &mut self.thread.native_data_mut().lab;
+                let lab = &mut (*self.thread.native_data_mut_ptr()).lab;
 
                 let object_start = lab.allocate(
                     size + size_of::<HeapObjectHeader>(),
@@ -896,6 +942,12 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Allocate raw GC memory without initializing the object header.
+    ///
+    /// # Safety
+    ///
+    /// The caller must initialize the returned memory, including any required
+    /// header fields, before exposing it to tracing, barriers, or Scheme code.
     pub unsafe fn raw_alloc_uninit(
         &self,
         size: usize,
@@ -913,7 +965,7 @@ impl<'gc> Mutation<'gc> {
             if semantics == AllocationSemantics::Default
                 && self.thread.alloc_fastpath() == AllocFastPath::TLAB
             {
-                let lab = &mut self.thread.native_data_mut().lab;
+                let lab = &mut (*self.thread.native_data_mut_ptr()).lab;
 
                 let object_start = lab.allocate(size + size_of::<HeapObjectHeader>(), alignment, 0);
                 if !object_start.is_zero() {
@@ -929,6 +981,11 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Slow-path raw allocation without initializing the object header.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
     pub unsafe fn raw_allocate_slow_uninit(
         &self,
         size: usize,
@@ -951,6 +1008,11 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Out-of-line raw allocation without initializing the object header.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
     pub unsafe fn raw_allocate_out_of_line_uninit(
         &self,
         size: usize,
@@ -1002,6 +1064,11 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Allocate immortal raw memory without initializing the object header.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
     pub unsafe fn raw_allocate_immortal_uninit(&self, size: usize, alignment: usize) -> GCObject {
         unsafe {
             self.flush_tlab();
@@ -1019,6 +1086,11 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
+    /// Allocate non-moving raw memory without initializing the object header.
+    ///
+    /// # Safety
+    ///
+    /// Same as [`raw_alloc_uninit`](Self::raw_alloc_uninit).
     pub unsafe fn raw_allocate_nonmoving_uninit(&self, size: usize, alignment: usize) -> GCObject {
         unsafe {
             self.flush_tlab();
@@ -1040,6 +1112,12 @@ impl<'gc> Mutation<'gc> {
         self.thread.barrier()
     }
 
+    /// Return the current thread with an extended lifetime.
+    ///
+    /// # Safety
+    ///
+    /// The returned reference must not outlive the actual runtime thread, and
+    /// callers must ensure it is not used after the thread has been torn down.
     pub unsafe fn thread_unchecked(&self) -> &'static Thread {
         unsafe { std::mem::transmute(self.thread) }
     }

@@ -16,6 +16,8 @@ pub static LOCALE: LazyLock<icu::locale::Locale> = LazyLock::new(|| {
         .unwrap_or_else(|_| icu::locale::Locale::try_from_str("en-US").unwrap())
 });
 
+type OptionalIndex = Option<usize>;
+
 fn utf16_bom_type(bv: &[u8]) -> Option<Endianness> {
     if bv.len() < 2 {
         return None;
@@ -299,7 +301,7 @@ mod string_ops {
 
     #[scheme(name = "string-append")]
     pub fn string_append(strs: &'gc [Value<'gc>]) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
-        if strs.len() == 0 {
+        if strs.is_empty() {
             let s = Str::new(*nctx.ctx, "", false);
             return nctx.return_(Ok(s));
         }
@@ -329,7 +331,7 @@ mod string_ops {
                     Some(*str),
                     Some(i),
                     strs.len(),
-                    &strs,
+                    strs,
                 );
             }
 
@@ -341,7 +343,7 @@ mod string_ops {
 
     #[scheme(name = "symbol-append")]
     pub fn symbol_append(syms: &'gc [Value<'gc>]) -> Result<Gc<'gc, Symbol<'gc>>, Value<'gc>> {
-        if syms.len() == 0 {
+        if syms.is_empty() {
             let s = Symbol::from_str(nctx.ctx, "");
             return nctx.return_(Ok(s));
         }
@@ -371,7 +373,7 @@ mod string_ops {
                     Some(*sym),
                     Some(i),
                     syms.len(),
-                    &syms,
+                    syms,
                 );
             }
 
@@ -503,12 +505,12 @@ mod string_ops {
 
     #[scheme(name = "string-contains")]
     pub fn string_contains(
-        s1: Gc<'gc, Str<'gc>>,
-        s2: Gc<'gc, Str<'gc>>,
-        start1: Option<usize>,
-        end1: Option<usize>,
-        start2: Option<usize>,
-        end2: Option<usize>,
+        s1: StringRef<'gc>,
+        s2: StringRef<'gc>,
+        start1: OptionalIndex,
+        end1: OptionalIndex,
+        start2: OptionalIndex,
+        end2: OptionalIndex,
     ) -> Value<'gc> {
         let ctx = nctx.ctx;
         let mut cstart1 = if let Some(start1) = start1 {
@@ -620,12 +622,12 @@ mod string_ops {
 
     #[scheme(name = "string-contains-ci")]
     pub fn string_contains_ci(
-        s1: Gc<'gc, Str<'gc>>,
-        s2: Gc<'gc, Str<'gc>>,
-        start1: Option<usize>,
-        end1: Option<usize>,
-        start2: Option<usize>,
-        end2: Option<usize>,
+        s1: StringRef<'gc>,
+        s2: StringRef<'gc>,
+        start1: OptionalIndex,
+        end1: OptionalIndex,
+        start2: OptionalIndex,
+        end2: OptionalIndex,
     ) -> Value<'gc> {
         let ctx = nctx.ctx;
         let mut cstart1 = if let Some(start1) = start1 {
@@ -744,7 +746,7 @@ mod string_ops {
 
     #[scheme(name = "string-null?")]
     pub fn string_null(str: Gc<'gc, Str<'gc>>) -> bool {
-        nctx.return_(str.len() == 0)
+        nctx.return_(str.is_empty())
     }
     #[scheme(name = "string-split")]
     pub fn string_split(str: Gc<'gc, Str<'gc>>, ch: char) -> Value<'gc> {
@@ -828,7 +830,7 @@ mod string_ops {
 
     #[scheme(name = "utf8->string")]
     pub fn utf8_to_string(bytes: Gc<'gc, ByteVector>) -> Result<Gc<'gc, Str<'gc>>, Value<'gc>> {
-        match std::str::from_utf8(&bytes.as_slice()[..]) {
+        match std::str::from_utf8(bytes.as_slice()) {
             Ok(s) => {
                 let str = Str::new(*nctx.ctx, s, false);
                 nctx.return_(Ok(str))
@@ -919,9 +921,7 @@ mod string_ops {
     ) -> Gc<'gc, ByteVector> {
         let endian = if endian == Some(sym_little(ctx).into()) {
             Endianness::Little
-        } else if endian == Some(sym_big(ctx).into()) {
-            Endianness::Big
-        } else if endian.is_none() {
+        } else if endian == Some(sym_big(ctx).into()) || endian.is_none() {
             Endianness::Big // default
         } else {
             return nctx.wrong_argument_violation(
@@ -1182,7 +1182,7 @@ mod string_ops {
 
     #[scheme(name = "char<?")]
     pub fn char_lt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char<?",
                 "at least 1 argument required",
@@ -1233,7 +1233,7 @@ mod string_ops {
 
     #[scheme(name = "char-ci<?")]
     pub fn char_ci_lt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char-ci<?",
                 "at least 1 argument required",
@@ -1286,7 +1286,7 @@ mod string_ops {
 
     #[scheme(name = "char>?")]
     pub fn char_gt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char>?",
                 "at least 1 argument required",
@@ -1337,7 +1337,7 @@ mod string_ops {
 
     #[scheme(name = "char-ci>?")]
     pub fn char_ci_gt(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char-ci>?",
                 "at least 1 argument required",
@@ -1390,7 +1390,7 @@ mod string_ops {
 
     #[scheme(name = "char<=?")]
     pub fn char_le(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char<=?",
                 "at least 1 argument required",
@@ -1440,7 +1440,7 @@ mod string_ops {
 
     #[scheme(name = "char-ci<=?")]
     pub fn char_ci_le(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char-ci<=?",
                 "at least 1 argument required",
@@ -1493,7 +1493,7 @@ mod string_ops {
 
     #[scheme(name = "char>=?")]
     pub fn char_ge(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char>=?",
                 "at least 1 argument required",
@@ -1543,7 +1543,7 @@ mod string_ops {
 
     #[scheme(name = "char-ci>=?")]
     pub fn char_ci_ge(rest: &'gc [Value<'gc>]) -> bool {
-        if rest.len() == 0 {
+        if rest.is_empty() {
             return nctx.wrong_argument_violation(
                 "char-ci>=?",
                 "at least 1 argument required",

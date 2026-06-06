@@ -13,8 +13,6 @@ impl Linker {
     pub fn new() -> std::io::Result<Self> {
         let name = if cfg!(target_os = "macos") {
             "ld64.lld"
-        } else if cfg!(unix) {
-            "ld"
         } else {
             "ld"
         };
@@ -62,9 +60,8 @@ impl Linker {
             .status()?
             .success()
         {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Linker command failed with status"),
+            return Err(std::io::Error::other(
+                "Linker command failed with status".to_string(),
             ));
         }
         if cfg!(target_os = "macos") {
@@ -75,9 +72,8 @@ impl Linker {
                 )
             })?;
             if !Command::new(dsymutil).arg(to).status()?.success() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("dsymutil command failed with status"),
+                return Err(std::io::Error::other(
+                    "dsymutil command failed with status".to_string(),
                 ));
             }
         }

@@ -1,12 +1,10 @@
+//! Equality and structural hashing for Scheme values.
+
 use im::HashMap;
 
 use super::*;
 
 impl<'gc> Value<'gc> {
-    pub fn eq(self, other: Self) -> bool {
-        self.raw_i64() == other.raw_i64()
-    }
-
     pub fn eqv(self, other: Self) -> bool {
         if self.raw_i64() == other.raw_i64() {
             return true;
@@ -15,13 +13,13 @@ impl<'gc> Value<'gc> {
         match (self.number(), other.number()) {
             (Some(a), Some(b)) => {
                 if a.is_exact() && b.is_exact() {
-                    return Number::exact_equal(a, b);
+                    Number::exact_equal(a, b)
                 } else {
                     if b.is_exact() {
                         return false;
                     }
 
-                    return Number::inexact_equal(a, b);
+                    Number::inexact_equal(a, b)
                 }
             }
 
@@ -34,13 +32,11 @@ impl<'gc> Value<'gc> {
             return true;
         }
 
-        if self.is_pair() {
-            if other.is_pair() {
-                if self.car().r5rs_equal(other.car()) {
-                    return self.cdr().r5rs_equal(other.cdr());
-                } else {
-                    return false;
-                }
+        if self.is_pair() && other.is_pair() {
+            if self.car().r5rs_equal(other.car()) {
+                return self.cdr().r5rs_equal(other.cdr());
+            } else {
+                return false;
             }
         }
 

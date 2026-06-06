@@ -222,7 +222,7 @@ impl<'gc, T> Gc<'gc, T> {
                 ObjectSlot::from_address(Address::ZERO),
                 GCObject::NULL,
             );
-            Write::assume(this.as_ref())
+            Write::assume(this.as_gc_ref())
         }
     }
 
@@ -235,8 +235,7 @@ impl<'gc, T> Gc<'gc, T> {
         //    >> compressed_heap_shift() as usize) as u32
     }
 
-    #[allow(clippy::should_implement_trait)]
-    pub fn as_ref(self) -> &'gc T {
+    pub fn as_gc_ref(self) -> &'gc T {
         unsafe { self.ptr.as_ref() }
     }
 }
@@ -285,6 +284,12 @@ impl<'gc, T> NarrowGc<'gc, T> {
         self.ptr.get()
     }
 
+    /// Construct a compressed GC pointer from its raw representation.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be a non-zero compressed pointer produced for the active heap
+    /// configuration and must decompress to a valid object of type `T`.
     pub unsafe fn from_compressed_ptr(ptr: u32) -> Self {
         Self {
             inv: PhantomData,

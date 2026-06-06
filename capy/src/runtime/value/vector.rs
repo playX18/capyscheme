@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_variables)]
 
+//! Vector, bytevector, and tuple heap objects.
+
 use crate::rsgc::{
     Gc, Mutation, WeakProcessor,
     barrier::{AsRefWrite, IndexWrite},
@@ -13,7 +15,13 @@ use std::{mem::offset_of, ops::IndexMut};
 
 use crate::runtime::{Context, value::*};
 
+#[doc(hidden)]
+pub fn vector_value<'gc>(mc: Context<'gc>, value: impl IntoValue<'gc>) -> Value<'gc> {
+    value.into_value(mc)
+}
+
 #[repr(C, align(8))]
+/// A fixed-length Scheme vector of values.
 pub struct Vector<'gc> {
     pub(crate) length: usize,
     pub(crate) data: [Lock<Value<'gc>>; 0],
@@ -28,14 +36,14 @@ static MUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
     TypeCode16::MUTABLE_VECTOR.bits(),
     builtin_type_ids::MUTABLE_VECTOR,
 );
-pub static MUTABLE_VECTOR_INFO: &'static HeapTypeInfo = &MUTABLE_VECTOR_INFO_VALUE;
+pub static MUTABLE_VECTOR_INFO: &HeapTypeInfo = &MUTABLE_VECTOR_INFO_VALUE;
 
 static IMMUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
     Vector::VT,
     TypeCode16::IMMUTABLE_VECTOR.bits(),
     builtin_type_ids::IMMUTABLE_VECTOR,
 );
-pub static IMMUTABLE_VECTOR_INFO: &'static HeapTypeInfo = &IMMUTABLE_VECTOR_INFO_VALUE;
+pub static IMMUTABLE_VECTOR_INFO: &HeapTypeInfo = &IMMUTABLE_VECTOR_INFO_VALUE;
 
 #[inline(never)]
 extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
@@ -71,10 +79,15 @@ impl<'gc> Vector<'gc> {
         self.length
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn is_immutable(&self) -> bool {
         payload_type_bits(self) == TypeCode16::IMMUTABLE_VECTOR.bits()
     }
 
+    /// Allocates a vector with all slots initialized to `fill`.
     pub fn new<const IMMUTABLE: bool>(
         mc: Mutation<'gc>,
         length: usize,
@@ -100,12 +113,11 @@ impl<'gc> Vector<'gc> {
                 vec.data.as_mut_ptr().add(i).write(Lock::new(fill));
             }
 
-            let x = Gc::from_gcobj(alloc);
-
-            x
+            Gc::from_gcobj(alloc)
         }
     }
 
+    /// Allocates a mutable vector initialized from a slice.
     pub fn from_slice(mc: Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
         let vector = Self::new::<false>(mc, length, Value::undefined());
@@ -117,6 +129,12 @@ impl<'gc> Vector<'gc> {
         unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 
+    /// Return the vector contents as a mutable slice without alias checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure exclusive access to the vector contents for the
+    /// duration of the returned borrow.
     pub unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [Value<'gc>] {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
@@ -190,11 +208,9 @@ impl<'gc> IndexMut<usize> for Vector<'gc> {
 #[macro_export]
 macro_rules! vector {
     ($mc: expr, $($value: expr),*) => {{
-        use $crate::runtime::value::IntoValue;
-
         let slice = &[$({
             let value = $value;
-            value.into_value($mc)
+            $crate::runtime::value::vector::vector_value($mc, value)
         }),*];
         let length = slice.len();
         let vector = $crate::runtime::value::Vector::new::<false>(*$mc, length, $crate::runtime::value::Value::unspecified());
@@ -203,11 +219,14 @@ macro_rules! vector {
     }};
 
     ($mc: expr, $value: expr; $count: expr) => {{
-        use $crate::runtime::value::IntoValue;
         let mc = $mc;
         let value = $value;
         let count = $count;
-        let vector = $crate::runtime::value::Vector::new(&$mc, count, value.into_value($mc));
+        let vector = $crate::runtime::value::Vector::new(
+            &$mc,
+            count,
+            $crate::runtime::value::vector::vector_value($mc, value)
+        );
         vector
     }};
 
@@ -216,6 +235,7 @@ macro_rules! vector {
     };
 }
 #[repr(C, align(8))]
+/// A byte-addressable vector backed by owned or mapped memory.
 pub struct ByteVector {
     pub(crate) len: usize,
     pub(crate) contents: Address,
@@ -223,17 +243,17 @@ pub struct ByteVector {
 
 static MUTABLE_BYTEVECTOR_INFO_VALUE: HeapTypeInfo =
     HeapTypeInfo::new(ByteVector::VT, TypeCode16::MUTABLE_BYTEVECTOR.bits());
-pub static MUTABLE_BYTEVECTOR_INFO: &'static HeapTypeInfo = &MUTABLE_BYTEVECTOR_INFO_VALUE;
+pub static MUTABLE_BYTEVECTOR_INFO: &HeapTypeInfo = &MUTABLE_BYTEVECTOR_INFO_VALUE;
 
 static IMMUTABLE_BYTEVECTOR_INFO_VALUE: HeapTypeInfo =
     HeapTypeInfo::new(ByteVector::VT, TypeCode16::IMMUTABLE_BYTEVECTOR.bits());
-pub static IMMUTABLE_BYTEVECTOR_INFO: &'static HeapTypeInfo = &IMMUTABLE_BYTEVECTOR_INFO_VALUE;
+pub static IMMUTABLE_BYTEVECTOR_INFO: &HeapTypeInfo = &IMMUTABLE_BYTEVECTOR_INFO_VALUE;
 
 static MAPPED_BYTEVECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
     ByteVector::MAPPING_VT,
     TypeCode16::MUTABLE_BYTEVECTOR.bits(),
 );
-pub static MAPPED_BYTEVECTOR_INFO: &'static HeapTypeInfo = &MAPPED_BYTEVECTOR_INFO_VALUE;
+pub static MAPPED_BYTEVECTOR_INFO: &HeapTypeInfo = &MAPPED_BYTEVECTOR_INFO_VALUE;
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
@@ -297,19 +317,20 @@ impl ByteVector {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn is_immutable(&self) -> bool {
         payload_type_bits(self) == TypeCode16::IMMUTABLE_BYTEVECTOR.bits()
     }
 
+    /// Allocates an owned bytevector.
     pub fn new<'gc, const IMMUTABLE: bool>(
         mc: Mutation<'gc>,
         length: usize,
         movable: bool,
     ) -> Gc<'gc, Self> {
-        assert!(
-            length <= BYTE_VECTOR_MAX_LENGTH,
-            "Byte vector length exceeds maximum allowed size"
-        );
         let info = if IMMUTABLE {
             IMMUTABLE_BYTEVECTOR_INFO
         } else {
@@ -339,7 +360,7 @@ impl ByteVector {
         }
     }
 
-    /// Allocate a new memory-mapped bytevector. This can be used to represent
+    /// Allocates a memory-mapped bytevector. This can be used to represent
     /// memory from FFI calls or memory-mapped files.
     pub fn new_mapping<'gc>(mc: Mutation<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
         unsafe {
@@ -358,6 +379,7 @@ impl ByteVector {
         }
     }
 
+    /// Allocates a mutable bytevector initialized from a byte slice.
     #[inline(never)]
     pub fn from_slice<'gc>(mc: Mutation<'gc>, slice: &[u8], movable: bool) -> Gc<'gc, Self> {
         let length = slice.len();
@@ -371,11 +393,17 @@ impl ByteVector {
         unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 
-    pub unsafe fn as_slice_mut_unchecked(&self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.contents.to_mut_ptr() as *mut u8, self.len) }
+    /// Return the bytevector contents as a mutable slice without alias checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure exclusive access to the bytevector contents for
+    /// the duration of the returned borrow.
+    pub unsafe fn as_slice_mut_unchecked<'gc>(self: Gc<'gc, Self>) -> &'gc mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.contents.to_mut_ptr(), self.len) }
     }
 
-    pub fn fill(&self, fill: u8) {
+    pub fn fill<'gc>(self: Gc<'gc, Self>, fill: u8) {
         unsafe {
             let slice = self.as_slice_mut_unchecked();
             for byte in slice.iter_mut() {
@@ -385,7 +413,7 @@ impl ByteVector {
     }
 
     #[inline(never)]
-    pub fn copy_from(&self, other: impl AsRef<[u8]>) {
+    pub fn copy_from<'gc>(self: Gc<'gc, Self>, other: impl AsRef<[u8]>) {
         let other_slice = other.as_ref();
         assert!(
             other_slice.len() <= self.len,
@@ -398,13 +426,13 @@ impl ByteVector {
     }
 }
 
-impl<'gc> AsRef<[u8]> for ByteVector {
+impl AsRef<[u8]> for ByteVector {
     fn as_ref(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 }
 
-impl<'gc> Deref for ByteVector {
+impl Deref for ByteVector {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -412,7 +440,7 @@ impl<'gc> Deref for ByteVector {
     }
 }
 
-impl<'gc> Index<usize> for ByteVector {
+impl Index<usize> for ByteVector {
     type Output = u8;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -420,7 +448,7 @@ impl<'gc> Index<usize> for ByteVector {
     }
 }
 
-impl<'gc> Index<core::ops::Range<usize>> for ByteVector {
+impl Index<core::ops::Range<usize>> for ByteVector {
     type Output = [u8];
 
     fn index(&self, index: core::ops::Range<usize>) -> &Self::Output {
@@ -428,7 +456,7 @@ impl<'gc> Index<core::ops::Range<usize>> for ByteVector {
     }
 }
 
-impl<'gc> Index<core::ops::RangeFrom<usize>> for ByteVector {
+impl Index<core::ops::RangeFrom<usize>> for ByteVector {
     type Output = [u8];
 
     fn index(&self, index: core::ops::RangeFrom<usize>) -> &Self::Output {
@@ -436,7 +464,7 @@ impl<'gc> Index<core::ops::RangeFrom<usize>> for ByteVector {
     }
 }
 
-impl<'gc> Index<core::ops::RangeInclusive<usize>> for ByteVector {
+impl Index<core::ops::RangeInclusive<usize>> for ByteVector {
     type Output = [u8];
 
     fn index(&self, index: core::ops::RangeInclusive<usize>) -> &Self::Output {
@@ -444,7 +472,7 @@ impl<'gc> Index<core::ops::RangeInclusive<usize>> for ByteVector {
     }
 }
 
-impl<'gc> Index<core::ops::RangeTo<usize>> for ByteVector {
+impl Index<core::ops::RangeTo<usize>> for ByteVector {
     type Output = [u8];
 
     fn index(&self, index: core::ops::RangeTo<usize>) -> &Self::Output {
@@ -452,7 +480,7 @@ impl<'gc> Index<core::ops::RangeTo<usize>> for ByteVector {
     }
 }
 
-impl<'gc> Index<core::ops::RangeToInclusive<usize>> for ByteVector {
+impl Index<core::ops::RangeToInclusive<usize>> for ByteVector {
     type Output = [u8];
 
     fn index(&self, index: core::ops::RangeToInclusive<usize>) -> &Self::Output {
@@ -460,7 +488,7 @@ impl<'gc> Index<core::ops::RangeToInclusive<usize>> for ByteVector {
     }
 }
 
-impl<'gc> Index<core::ops::RangeFull> for ByteVector {
+impl Index<core::ops::RangeFull> for ByteVector {
     type Output = [u8];
 
     fn index(&self, index: core::ops::RangeFull) -> &Self::Output {
@@ -475,7 +503,7 @@ unsafe impl<'gc> Tagged for Vector<'gc> {
     const TYPE_NAME: &'static str = "vector";
 }
 
-unsafe impl<'gc> Tagged for ByteVector {
+unsafe impl Tagged for ByteVector {
     const ONLY_TC16: bool = false;
     const TC16: &'static [TypeCode16] = &[
         TypeCode16::IMMUTABLE_BYTEVECTOR,
@@ -486,6 +514,7 @@ unsafe impl<'gc> Tagged for ByteVector {
 }
 
 #[repr(C, align(8))]
+/// A fixed-length internal tuple of values.
 pub struct Tuple<'gc> {
     pub(crate) length: usize,
     pub(crate) data: [Lock<Value<'gc>>; 0],
@@ -500,7 +529,7 @@ static TUPLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
     TypeCode8::TUPLE.bits() as u16,
     builtin_type_ids::TUPLE,
 );
-pub static TUPLE_INFO: &'static HeapTypeInfo = &TUPLE_INFO_VALUE;
+pub static TUPLE_INFO: &HeapTypeInfo = &TUPLE_INFO_VALUE;
 
 extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
     unsafe {
@@ -539,6 +568,11 @@ impl<'gc> Tuple<'gc> {
         self.length
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Allocates a tuple with all slots initialized to `init`.
     pub fn new(mc: Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
         unsafe {
             let alloc = mc.raw_allocate_with_info(
@@ -559,6 +593,7 @@ impl<'gc> Tuple<'gc> {
         }
     }
 
+    /// Allocates a tuple initialized from a slice.
     pub fn from_slice(mc: Mutation<'gc>, slice: &[Value<'gc>]) -> Gc<'gc, Self> {
         let length = slice.len();
         let tuple = Self::new(mc, length, Value::new(false));
@@ -570,6 +605,12 @@ impl<'gc> Tuple<'gc> {
         unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 
+    /// Return the tuple contents as a mutable slice without alias checks.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure exclusive access to the tuple contents for the
+    /// duration of the returned borrow.
     pub unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [Value<'gc>] {
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }

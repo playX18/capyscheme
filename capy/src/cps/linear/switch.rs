@@ -71,11 +71,8 @@ fn infer_switch_candidate<'gc>(
     let mut seen_values = HashSet::from([first.value]);
     let mut next = first.next;
 
-    loop {
-        let Some((block, skipped_blocks)) = switch_chain_next_block(&blocks, &predecessors, &next)
-        else {
-            break;
-        };
+    while let Some((block, skipped_blocks)) = switch_chain_next_block(&blocks, predecessors, &next)
+    {
         let Some(node) = blocks
             .get(&block)
             .and_then(|block| switch_node(block, false))

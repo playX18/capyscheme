@@ -62,7 +62,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
             }
         }
 
-        let Some(mut state) = thread.native_data_mut().mutator_state else {
+        let Some(mut state) = unsafe { &mut *thread.native_data_mut_ptr() }.mutator_state else {
             factory.create_process_pinning_roots_work(visitor.pinned_roots);
             factory.create_process_roots_work(sv.set.into_iter().collect());
             scan_conservative_native_stack(thread, &mut factory);

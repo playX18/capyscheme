@@ -120,7 +120,7 @@ impl<'gc> Func<'gc> {
 
 impl<'gc> PartialEq for Func<'gc> {
     fn eq(&self, other: &Self) -> bool {
-        self as *const Self == other as *const Self
+        std::ptr::eq(self, other)
     }
 }
 
@@ -156,7 +156,7 @@ pub struct Cont<'gc> {
 
 impl<'gc> PartialEq for Cont<'gc> {
     fn eq(&self, other: &Self) -> bool {
-        self as *const Self == other as *const Self
+        std::ptr::eq(self, other)
     }
 }
 
@@ -201,7 +201,7 @@ impl<'gc> Cont<'gc> {
             return self;
         }
 
-        let this = Gc::new(
+        Gc::new(
             *ctx,
             Self {
                 meta: self.meta,
@@ -217,13 +217,11 @@ impl<'gc> Cont<'gc> {
                 reified: Cell::new(self.reified.get()),
                 cold: self.cold,
             },
-        );
-
-        this
+        )
     }
 
     pub fn arity_matches(&self, arg_count: usize) -> bool {
-        if let Some(_) = self.variadic {
+        if self.variadic.is_some() {
             arg_count >= self.args.len()
         } else {
             arg_count == self.args.len()
@@ -292,7 +290,7 @@ impl<'gc> Func<'gc> {
     }
 
     pub fn arity_matches(&self, arg_count: usize) -> bool {
-        if let Some(_) = self.variadic {
+        if self.variadic.is_some() {
             arg_count >= self.args.len()
         } else {
             arg_count == self.args.len()
@@ -430,7 +428,7 @@ where
                 if Gc::ptr_eq(nbody, *body) {
                     post(ctx, x)
                 } else {
-                    let nterm = Term::Let(*binding, exp.clone(), nbody);
+                    let nterm = Term::Let(*binding, *exp, nbody);
                     post(ctx, Gc::new(*ctx, nterm))
                 }
             }

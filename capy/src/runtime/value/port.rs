@@ -1,9 +1,12 @@
+//! Port-adjacent socket value types.
+
 use crate::{
     Trace,
     prelude::{Tagged, TypeCode8},
 };
 
 #[repr(C)]
+/// Runtime socket object.
 pub struct Socket {
     pub(crate) addr: libc::sockaddr_storage,
     pub(crate) fd: i32,
@@ -31,6 +34,7 @@ unsafe impl Tagged for Socket {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 
+/// Socket role tracked by the runtime.
 pub enum SocketMode {
     None,
     Server,

@@ -104,6 +104,12 @@ pub extern "C" fn call_scheme_with_k<'gc>(
     }
 }
 
+/// Continue execution by invoking a Scheme continuation.
+///
+/// # Safety
+///
+/// `ctx` must be an active runtime context, `cont` must be a live continuation
+/// value for that context, and `args` must contain values valid in `ctx`.
 pub unsafe extern "C" fn continue_to<'gc>(
     ctx: Context<'gc>,
     cont: Value<'gc>,
@@ -654,12 +660,12 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         filename: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
         let message = if let Some(code) = err.raw_os_error() {
-            Str::from_str(*self.ctx, &format!("{message} ({code})"))
+            Str::from_str(*self.ctx, format!("{message} ({code})"))
         } else {
             Str::from_str(*self.ctx, message)
         }
         .into();
-        let who = if who.len() != 0 {
+        let who = if !who.is_empty() {
             Symbol::from_str(self.ctx, who).into()
         } else {
             Value::new(false)
@@ -674,7 +680,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-does-not-exist-error")
                         .expect("pre boot error");
-                    return self.return_call(error, &[who, message, filename]);
+                    self.return_call(error, &[who, message, filename])
                 }
 
                 Some(libc::EEXIST) => {
@@ -684,7 +690,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-already-exists-error")
                         .expect("pre boot error");
-                    return self.return_call(error, &[who, message, filename]);
+                    self.return_call(error, &[who, message, filename])
                 }
 
                 Some(libc::EROFS) | Some(libc::EISDIR) | Some(libc::ETXTBSY) => {
@@ -694,7 +700,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-is-read-only-error")
                         .expect("pre boot error");
-                    return self.return_call(error, &[who, message, filename]);
+                    self.return_call(error, &[who, message, filename])
                 }
                 Some(libc::EACCES) => {
                     let error = self
@@ -703,7 +709,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-file-protection-error")
                         .expect("pre boot error");
-                    return self.return_call(error, &[who, message, filename]);
+                    self.return_call(error, &[who, message, filename])
                 }
 
                 _ => {
@@ -713,7 +719,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                         .root_module()
                         .get_str(self.ctx, "raise-i/o-error")
                         .expect("pre boot error");
-                    return self.return_call(error, &[who, message, filename]);
+                    self.return_call(error, &[who, message, filename])
                 }
             },
 
@@ -724,7 +730,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-read-error")
                     .expect("pre boot error");
-                return self.return_call(error, &[who, message, filename]);
+                self.return_call(error, &[who, message, filename])
             }
 
             IoOperation::Write => {
@@ -734,7 +740,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-write-error")
                     .expect("pre boot error");
-                return self.return_call(error, &[who, message, filename]);
+                self.return_call(error, &[who, message, filename])
             }
 
             IoOperation::Seek => {
@@ -744,7 +750,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-seek-error")
                     .expect("pre boot error");
-                return self.return_call(error, &[who, message, filename]);
+                self.return_call(error, &[who, message, filename])
             }
             _ => {
                 let error = self
@@ -753,9 +759,9 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
                     .root_module()
                     .get_str(self.ctx, "raise-i/o-error")
                     .expect("pre boot error");
-                return self.return_call(error, &[who, message, filename]);
+                self.return_call(error, &[who, message, filename])
             }
-        };
+        }
     }
 
     pub fn raise_io_filesystem_error(
@@ -767,12 +773,12 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         new_filename: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
         let message = if let Some(code) = err.raw_os_error() {
-            Str::from_str(*self.ctx, &format!("{message} ({code})"))
+            Str::from_str(*self.ctx, format!("{message} ({code})"))
         } else {
             Str::from_str(*self.ctx, message)
         }
         .into();
-        let who = if who.len() != 0 {
+        let who = if !who.is_empty() {
             Symbol::from_str(self.ctx, who).into()
         } else {
             Value::new(false)

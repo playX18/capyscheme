@@ -223,37 +223,34 @@ impl<'gc> Cont<'gc> {
         A: 'a + Clone,
     {
         // (cont <name> (<args...>) . <body>)
-        match self {
-            Cont {
-                name,
-                binding,
-                args,
-                variadic,
-                body,
-                ..
-            } => {
-                let binding_doc = alloc.text(binding.name.to_string());
+        let Cont {
+            name,
+            binding,
+            args,
+            variadic,
+            body,
+            ..
+        } = self;
+        let binding_doc = alloc.text(binding.name.to_string());
 
-                let args = name_and_args(
-                    alloc,
-                    *name,
-                    None,
-                    None,
-                    args.iter().map(|arg| alloc.text(arg.name.to_string())),
-                    variadic.map(|v| alloc.text(v.name.to_string())),
-                );
+        let args = name_and_args(
+            alloc,
+            *name,
+            None,
+            None,
+            args.iter().map(|arg| alloc.text(arg.name.to_string())),
+            variadic.map(|v| alloc.text(v.name.to_string())),
+        );
 
-                (alloc.text("cont")
-                    + alloc.space()
-                    + binding_doc
-                    + alloc.space()
-                    + args
-                    + alloc.hardline()
-                    + body.get().pretty(alloc).indent(2).nest(2))
-                .group()
-                .parens()
-            }
-        }
+        (alloc.text("cont")
+            + alloc.space()
+            + binding_doc
+            + alloc.space()
+            + args
+            + alloc.hardline()
+            + body.get().pretty(alloc).indent(2).nest(2))
+        .group()
+        .parens()
     }
 }
 

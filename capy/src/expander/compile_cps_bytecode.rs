@@ -18,8 +18,13 @@ use crate::runtime::value::Value;
 use crate::{list, with_cps};
 use std::cell::Cell;
 
-pub fn cps_func<'a, 'gc>(
-    builder: &'a mut CPSBuilder<'gc>,
+type ArgContinuation<'a, 'gc> =
+    Box<dyn FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc> + 'a>;
+type ArgsContinuation<'a, 'gc> =
+    Box<dyn FnOnce(&mut CPSBuilder<'gc>, Vec<Atom<'gc>>) -> TermRef<'gc> + 'a>;
+
+pub fn cps_func<'gc>(
+    builder: &mut CPSBuilder<'gc>,
     proc: &Proc<'gc>,
     binding: LVarRef<'gc>,
 ) -> FuncRef<'gc> {
@@ -66,7 +71,7 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
     };
 
     let proc = Proc {
-        args: Array::from_slice(*ctx, &[]),
+        args: Array::from_slice(*ctx, []),
         name: Value::new(false),
         body: form,
         source: form.source(),
@@ -77,9 +82,8 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
     let mut builder = CPSBuilder::new(ctx);
 
     let bind = builder.fresh_variable("toplevel");
-    let func = cps_func(&mut builder, &proc, bind);
 
-    func
+    cps_func(&mut builder, &proc, bind)
 }
 
 pub fn toplevel_box<'gc>(
@@ -295,7 +299,7 @@ fn is_single_valued<'gc>(exp: CoreTermRef<'gc>) -> bool {
 pub fn convert_arg<'gc, 'a>(
     cps: &mut CPSBuilder<'gc>,
     exp: CoreTermRef<'gc>,
-    k: Box<dyn FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc> + 'a>,
+    k: ArgContinuation<'a, 'gc>,
 ) -> TermRef<'gc> {
     let src = exp.source();
     match exp.kind {
@@ -322,7 +326,7 @@ pub fn convert_arg<'gc, 'a>(
 pub fn convert_args<'gc, 'a>(
     cps: &mut CPSBuilder<'gc>,
     exps: &'a [CoreTermRef<'gc>],
-    fk: Box<dyn FnOnce(&mut CPSBuilder<'gc>, Vec<Atom<'gc>>) -> TermRef<'gc> + 'a>,
+    fk: ArgsContinuation<'a, 'gc>,
 ) -> TermRef<'gc> {
     if exps.is_empty() {
         return fk(cps, Vec::new());
@@ -330,7 +334,7 @@ pub fn convert_args<'gc, 'a>(
 
     let exp = exps[0];
     let exps = &exps[1..];
-    if exps.is_empty() {}
+    exps.is_empty();
     convert_arg(
         cps,
         exp,
@@ -470,14 +474,14 @@ pub fn convert<'gc>(
         TermKind::Proc(proc) => {
             if cps.current_topbox_scope.is_some() {
                 let tmp = cps.fresh_variable("proc");
-                let func = cps_func(cps, &proc, tmp);
+                let func = cps_func(cps, proc, tmp);
                 let body = with_cps!(cps;
                     continue k (Atom::Local(tmp)) @ src
                 );
 
                 return Gc::new(
                     *cps.ctx,
-                    Term::Fix(Array::from_slice(*cps.ctx, &[func]), body),
+                    Term::Fix(Array::from_slice(*cps.ctx, [func]), body),
                 );
             }
 
@@ -541,7 +545,7 @@ pub fn convert<'gc>(
             let mut body = convert(cps, let_.body, k);
 
             for (binding, expr) in let_.lhs.iter().zip(let_.rhs.iter()) {
-                let single = Array::from_slice(*cps.ctx, &[*binding]);
+                let single = Array::from_slice(*cps.ctx, [*binding]);
                 if is_single_valued(*expr) {
                     body = with_cps!(cps;
                         letk r#let (single...) @ src = body;
@@ -559,17 +563,10 @@ pub fn convert<'gc>(
         }
 
         TermKind::Seq(head, etail) => {
-            if is_zero_valued(*head) {
-                with_cps!(cps;
-                    letk ktail (&vals) = convert(cps, *etail, k, );
-                    # convert(cps, *head, ktail,)
-                )
-            } else {
-                with_cps!(cps;
-                    letk ktail (&vals) = convert(cps, *etail, k,);
-                    # convert(cps, *head, ktail,)
-                )
-            }
+            with_cps!(cps;
+                letk ktail (&vals) = convert(cps, *etail, k,);
+                # convert(cps, *head, ktail,)
+            )
         }
 
         TermKind::Fix(fix) => {
@@ -578,10 +575,7 @@ pub fn convert<'gc>(
                     .lhs
                     .iter()
                     .zip(fix.rhs.iter())
-                    .map(|(binding, func)| {
-                        let func = cps_func(cps, func, *binding);
-                        func
-                    })
+                    .map(|(binding, func)| cps_func(cps, func, *binding))
                     .collect::<Vec<_>>();
 
                 let body = convert(cps, fix.body, k);
@@ -626,7 +620,7 @@ pub fn convert<'gc>(
 
             Gc::new(
                 *cps.ctx,
-                Term::Letk(Array::from_slice(*cps.ctx, &[consumer_k]), letk_body),
+                Term::Letk(Array::from_slice(*cps.ctx, [consumer_k]), letk_body),
             )
         }
 
@@ -634,7 +628,7 @@ pub fn convert<'gc>(
             let thunk = Gc::new(
                 *cps.ctx,
                 Proc {
-                    args: Array::from_slice(*cps.ctx, &[]),
+                    args: Array::from_slice(*cps.ctx, []),
                     name: Value::new(false),
                     source: src,
                     variadic: None,
@@ -662,7 +656,7 @@ pub fn convert<'gc>(
                 *cps.ctx,
                 crate::expander::core::Term {
                     source: src.into(),
-                    kind: TermKind::Call(mref, Array::from_slice(*cps.ctx, &[*key, *mark, thunk])),
+                    kind: TermKind::Call(mref, Array::from_slice(*cps.ctx, [*key, *mark, thunk])),
                 },
             );
 

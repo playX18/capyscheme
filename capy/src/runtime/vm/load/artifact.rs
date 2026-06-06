@@ -28,7 +28,7 @@ impl LoadArtifact {
 
 pub(crate) fn artifact_kind_for_policy(policy: ExecutionPolicy) -> LoadArtifactKind {
     match policy {
-        ExecutionPolicy::AOT => LoadArtifactKind::FaslCode,
+        ExecutionPolicy::Aot => LoadArtifactKind::FaslCode,
         _ => todo!(),
     }
 }
@@ -56,7 +56,7 @@ mod tests {
     #[test]
     fn aot_policy_uses_fasl_code_artifacts() {
         assert_eq!(
-            artifact_kind_for_policy(ExecutionPolicy::AOT),
+            artifact_kind_for_policy(ExecutionPolicy::Aot),
             LoadArtifactKind::FaslCode
         );
     }

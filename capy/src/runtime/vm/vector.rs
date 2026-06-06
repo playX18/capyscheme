@@ -4,23 +4,11 @@ pub fn init_vectors<'gc>(ctx: Context<'gc>) {
     vector_ops::register(ctx);
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Endianness {
+    #[default]
     Little,
     Big,
-}
-
-impl Default for Endianness {
-    fn default() -> Self {
-        #[cfg(target_endian = "little")]
-        {
-            Endianness::Little
-        }
-        #[cfg(target_endian = "big")]
-        {
-            Endianness::Big
-        }
-    }
 }
 
 static_symbols!(

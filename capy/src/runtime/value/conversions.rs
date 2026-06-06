@@ -1,16 +1,32 @@
+//! Conversion traits between runtime values and Rust native values.
+//!
+//! This module is the shared adapter layer used by native procedures. It
+//! converts Scheme [`Value`] arguments into Rust types, converts Rust return
+//! values back into runtime values, and records enough arity/type information
+//! for native-call error reporting.
+
 use super::*;
 use crate::rsgc::Gc;
 use crate::runtime::Context;
 
+/// An error produced while converting native-call arguments.
 pub enum ConversionError<'gc> {
+    /// An argument had the wrong runtime type.
     TypeMismatch {
+        /// The zero-based argument position where conversion failed.
         pos: usize,
+        /// The human-readable type expected by the converter.
         expected: &'static str,
+        /// The value that could not be converted.
         found: Value<'gc>,
     },
+    /// The argument list did not have the required number of values.
     ArityMismatch {
+        /// The zero-based argument position where arity failed.
         pos: usize,
+        /// The accepted arity at that position.
         expected: Arity,
+        /// The number of values available at that position.
         found: usize,
     },
 }
@@ -57,6 +73,7 @@ impl<'gc> std::fmt::Debug for ConversionError<'gc> {
 }
 
 impl<'gc> ConversionError<'gc> {
+    /// Return this error with its argument position shifted by `offset`.
     pub fn with_appended_pos(self, offset: usize) -> Self {
         match self {
             Self::TypeMismatch {
@@ -79,6 +96,8 @@ impl<'gc> ConversionError<'gc> {
             },
         }
     }
+
+    /// Construct a type-mismatch error at `pos`.
     pub fn type_mismatch(pos: usize, expected: &'static str, found: Value<'gc>) -> Self {
         Self::TypeMismatch {
             pos,
@@ -87,6 +106,7 @@ impl<'gc> ConversionError<'gc> {
         }
     }
 
+    /// Construct an arity-mismatch error at `pos`.
     pub fn arity_mismatch(pos: usize, expected: Arity, found: usize) -> Self {
         Self::ArityMismatch {
             pos,
@@ -95,6 +115,7 @@ impl<'gc> ConversionError<'gc> {
         }
     }
 
+    /// Return the zero-based argument position where conversion failed.
     pub fn pos(&self) -> usize {
         match self {
             Self::TypeMismatch { pos, .. } => *pos,
@@ -103,9 +124,21 @@ impl<'gc> ConversionError<'gc> {
     }
 }
 
+/// A value type that can be identified by the runtime tag bits.
+///
+/// # Safety
+///
+/// Implementors must keep the type codes consistent with the allocation and
+/// downcast layout for the Rust type. An incorrect tag declaration can make
+/// [`Value::downcast`] produce a `Gc<T>` for an object with a different layout.
 pub unsafe trait Tagged {
+    /// Human-readable name used in conversion errors.
     const TYPE_NAME: &'static str;
+
+    /// The compact 8-bit type code for this value type.
     const TC8: TypeCode8;
+
+    /// Extended 16-bit type codes accepted for this value type.
     const TC16: &[TypeCode16] = &[];
 
     /// Set to true when the type can only be encodded as a TC16. In that case
@@ -113,7 +146,9 @@ pub unsafe trait Tagged {
     const ONLY_TC16: bool = false;
 }
 
+/// Converts a Rust value into a runtime [`Value`].
 pub trait IntoValue<'gc> {
+    /// Convert `self` into a value allocated in `mc` when allocation is needed.
     fn into_value(self, mc: Context<'gc>) -> Value<'gc>;
 }
 
@@ -123,7 +158,9 @@ impl<'gc> FromValue<'gc> for Value<'gc> {
     }
 }
 
+/// Converts a Rust value into either a runtime value or a runtime error value.
 pub trait TryIntoValue<'gc> {
+    /// Convert `self`, returning `Err` when the conversion represents a throw.
     fn try_into_value(self, mc: Context<'gc>) -> Result<Value<'gc>, Value<'gc>>;
 }
 /*
@@ -146,8 +183,67 @@ impl<'gc, T: IntoValue<'gc>> TryIntoValue<'gc> for T {
     }
 }
 
+/// Converts one runtime [`Value`] into a Rust type.
 pub trait FromValue<'gc>: Sized {
+    /// Try to convert `value` using `ctx` for conversions that need allocation
+    /// or access to runtime state.
     fn try_from_value(ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>>;
+}
+
+/// Provides a human-readable name for values accepted by a converter.
+pub trait ExpectedValueType {
+    /// Return the type name to use in diagnostics.
+    fn expected_value_type() -> &'static str;
+}
+
+impl<'gc> ExpectedValueType for Value<'gc> {
+    fn expected_value_type() -> &'static str {
+        "value"
+    }
+}
+
+impl ExpectedValueType for char {
+    fn expected_value_type() -> &'static str {
+        "char"
+    }
+}
+
+impl ExpectedValueType for bool {
+    fn expected_value_type() -> &'static str {
+        "value"
+    }
+}
+
+impl ExpectedValueType for () {
+    fn expected_value_type() -> &'static str {
+        "no values"
+    }
+}
+
+impl ExpectedValueType for &str {
+    fn expected_value_type() -> &'static str {
+        "string"
+    }
+}
+
+macro_rules! impl_expected_value_type {
+    ($($ty:ty),* $(,)?) => { $(
+        impl ExpectedValueType for $ty {
+            fn expected_value_type() -> &'static str {
+                stringify!($ty)
+            }
+        }
+    )* };
+}
+
+impl_expected_value_type!(
+    u8, i8, i16, u16, u32, usize, i32, i64, isize, u64, u128, f32, f64,
+);
+
+impl<'gc, T: Tagged> ExpectedValueType for Gc<'gc, T> {
+    fn expected_value_type() -> &'static str {
+        T::TYPE_NAME
+    }
 }
 
 impl<'gc> FromValue<'gc> for char {
@@ -360,23 +456,108 @@ impl<'gc> IntoValue<'gc> for char {
     }
 }
 
+/// The number of values accepted by an argument converter.
 pub struct Arity {
+    /// The minimum number of required values.
     pub min: usize,
+    /// The maximum accepted values, or `None` for a variadic converter.
     pub max: Option<usize>,
 }
 
 impl Arity {
+    /// Return whether `n` is accepted by this arity.
     pub fn is_valid(&self, n: usize) -> bool {
-        n >= self.min && self.max.map_or(true, |max| n <= max)
+        n >= self.min && self.max.is_none_or(|max| n <= max)
     }
 }
 
+/// Converts a slice of runtime values into a typed native argument list.
+pub trait FromNativeArgs<'gc>: Sized {
+    /// Build `Self` from all values in `values`.
+    fn from_native_args(
+        ctx: Context<'gc>,
+        values: &[Value<'gc>],
+    ) -> Result<Self, ConversionError<'gc>>;
+}
+
+impl<'gc, T> FromNativeArgs<'gc> for T
+where
+    T: for<'a> FromValues<'gc, 'a>,
+{
+    fn from_native_args(
+        ctx: Context<'gc>,
+        values: &[Value<'gc>],
+    ) -> Result<Self, ConversionError<'gc>> {
+        if !T::ARITY.is_valid(values.len()) {
+            return Err(ConversionError::arity_mismatch(0, T::ARITY, values.len()));
+        }
+
+        let mut pos = 0;
+        let args = T::from_values(ctx, &mut pos, values)?;
+        if pos == values.len() {
+            Ok(args)
+        } else {
+            Err(ConversionError::arity_mismatch(
+                pos,
+                Arity {
+                    min: 0,
+                    max: Some(0),
+                },
+                values.len() - pos,
+            ))
+        }
+    }
+}
+
+/// Converts a Rust native procedure result into a runtime return record.
+pub trait IntoNativeReturn<'gc> {
+    /// Convert `self` into the return code and value expected by the VM.
+    fn into_native_return(self, ctx: Context<'gc>) -> NativeReturn<'gc>;
+}
+
+impl<'gc, T> IntoNativeReturn<'gc> for T
+where
+    T: TryIntoValue<'gc>,
+{
+    fn into_native_return(self, ctx: Context<'gc>) -> NativeReturn<'gc> {
+        match self.try_into_value(ctx) {
+            Ok(value) => NativeReturn {
+                code: ReturnCode::ReturnOk,
+                value,
+            },
+            Err(value) => NativeReturn {
+                code: ReturnCode::ReturnErr,
+                value,
+            },
+        }
+    }
+}
+
+impl<'gc, T, E> IntoNativeReturn<'gc> for Result<T, E>
+where
+    T: TryIntoValue<'gc>,
+    E: IntoValue<'gc>,
+{
+    fn into_native_return(self, ctx: Context<'gc>) -> NativeReturn<'gc> {
+        match self {
+            Ok(value) => value.into_native_return(ctx),
+            Err(err) => NativeReturn {
+                code: ReturnCode::ReturnErr,
+                value: err.into_value(ctx),
+            },
+        }
+    }
+}
+
+/// Converts zero or more runtime values into a Rust type.
 pub trait FromValues<'gc, 'a>: Sized {
+    /// The number of input values consumed by this converter.
     const ARITY: Arity = Arity {
         min: 1,
         max: Some(1),
     };
 
+    /// Convert values starting at `pos`, advancing `pos` past consumed values.
     fn from_values(
         ctx: Context<'gc>,
         pos: &mut usize,
@@ -421,6 +602,12 @@ impl<'gc, 'a, T: FromValue<'gc>> FromValues<'gc, 'a> for Option<T> {
         } else {
             Ok(None)
         }
+    }
+}
+
+impl<T: ExpectedValueType> ExpectedValueType for Option<T> {
+    fn expected_value_type() -> &'static str {
+        T::expected_value_type()
     }
 }
 
@@ -552,7 +739,9 @@ impl<'gc, 'a> FromValues<'gc, 'a> for &'a [Value<'gc>] {
 
 impl_tuple!(A B C D E F G H I J K L M N O P Q R S T U V W X Y Z AA AB AC AD AE AF AG AH AI AJ AK AL AM AN AO AP AQ AR AS AT AU AV AW AX AY AZ);
 
+/// Converts a Rust return value into one or more runtime values.
 pub trait IntoValues<'gc> {
+    /// Convert `self` into an iterator of returned values.
     fn into_values(self, ctx: Context<'gc>) -> impl Iterator<Item = Value<'gc>>;
 }
 
@@ -562,7 +751,9 @@ impl<'gc, T: IntoValue<'gc>> IntoValues<'gc> for T {
     }
 }
 
+/// Converts a Rust return value into runtime values or a runtime error value.
 pub trait TryIntoValues<'gc> {
+    /// Convert `self`, returning `Err` when the conversion represents a throw.
     fn try_into_values(
         self,
         ctx: Context<'gc>,
@@ -599,8 +790,11 @@ impl<'gc> TryIntoValues<'gc> for &[Value<'gc>] {
     }
 }
 
+/// A typed view over the remaining native-call arguments.
 pub struct RestOf<'a, 'gc, T: FromValue<'gc>> {
+    /// The unconverted remaining values.
     pub rest: &'a [Value<'gc>],
+    /// Marker for the type produced when elements are requested.
     pub _marker: std::marker::PhantomData<T>,
 }
 
@@ -621,6 +815,7 @@ impl<'a, 'gc, T: FromValue<'gc>> FromValues<'gc, 'a> for RestOf<'a, 'gc, T> {
 }
 
 impl<'a, 'gc, T: FromValue<'gc>> RestOf<'a, 'gc, T> {
+    /// Convert the remaining value at `index`.
     pub fn at(&self, ctx: Context<'gc>, index: usize) -> Result<T, ConversionError<'gc>> {
         if let Some(value) = self.rest.get(index) {
             T::try_from_value(ctx, *value).map_err(|e| e.with_appended_pos(index))
@@ -633,6 +828,7 @@ impl<'a, 'gc, T: FromValue<'gc>> RestOf<'a, 'gc, T> {
         }
     }
 
+    /// Iterate over the remaining values, converting each item on demand.
     pub fn iter(
         &self,
         ctx: Context<'gc>,
@@ -643,22 +839,40 @@ impl<'a, 'gc, T: FromValue<'gc>> RestOf<'a, 'gc, T> {
             .map(move |(i, v)| T::try_from_value(ctx, *v).map_err(|e| e.with_appended_pos(i)))
     }
 
+    /// Return the number of remaining values.
     pub fn len(&self) -> usize {
         self.rest.len()
     }
 
+    /// Return the unconverted remaining values.
     pub fn as_slice(&self) -> &'a [Value<'gc>] {
         self.rest
     }
 
+    /// Return whether there are no remaining values.
     pub fn is_empty(&self) -> bool {
         self.rest.is_empty()
     }
 }
 
+impl<'a, 'gc, T: FromValue<'gc> + ExpectedValueType> ExpectedValueType for RestOf<'a, 'gc, T> {
+    fn expected_value_type() -> &'static str {
+        T::expected_value_type()
+    }
+}
+
+/// A value that can be converted as one of two Rust types.
 pub enum Either<L, R> {
+    /// The value converted as the left-hand type.
     Left(L),
+    /// The value converted as the right-hand type.
     Right(R),
+}
+
+impl<L, R> ExpectedValueType for Either<L, R> {
+    fn expected_value_type() -> &'static str {
+        "either"
+    }
 }
 
 impl<'gc, L, R> FromValue<'gc> for Either<L, R>

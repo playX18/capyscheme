@@ -45,7 +45,7 @@ fn prim_call_func<'gc>(ctx: Context<'gc>, name: &str, args: &[LVarRef<'gc>]) -> 
                 *ctx,
                 Term::Continue(
                     retk,
-                    Array::from_slice(*ctx, &[Atom::Local(result)]),
+                    Array::from_slice(*ctx, [Atom::Local(result)]),
                     Value::new(false),
                 ),
             ),
@@ -81,7 +81,7 @@ fn linearize_raise_term_to_raise_terminator() {
                 kind: RaiseKind::AssertionViolation,
                 args: Array::from_slice(
                     *ctx,
-                    &[
+                    [
                         Atom::Constant(who),
                         Atom::Constant(Value::new(false)),
                         Atom::Local(irritant),
@@ -97,7 +97,7 @@ fn linearize_raise_term_to_raise_terminator() {
                 source: Value::new(false),
                 binding: f,
                 return_cont: retk,
-                args: Array::from_slice(*ctx, &[irritant]),
+                args: Array::from_slice(*ctx, [irritant]),
                 variadic: None,
                 body: Lock::new(body),
                 free_vars: Lock::new(None),

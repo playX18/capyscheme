@@ -227,7 +227,7 @@ pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
                 let col = frame.meta.assq(sym_column(ctx).into()).unwrap();
                 format!("{}:{}:{}", filename, line, col)
             } else {
-                format!("<unknown>")
+                "<unknown>".to_string()
             };
 
             let proc_name = if frame.rator.is::<Closure>() {

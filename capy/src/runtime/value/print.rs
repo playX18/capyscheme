@@ -1,3 +1,5 @@
+//! Printer support for Scheme value display and write forms.
+
 use super::*;
 use std::collections::HashMap;
 use std::fmt::Formatter;
@@ -7,6 +9,7 @@ pub struct ValueFmt<'gc, 'a, 'b> {
 }
 
 impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
+    /// Creates a formatter that tracks already-seen compound values.
     pub fn new(fmt: &'b mut Formatter<'a>) -> Self {
         Self {
             table: HashMap::new(),

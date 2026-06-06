@@ -733,7 +733,7 @@ impl<'gc> Term<'gc> {
                         .map(|arg| arg.subst(ctx, subst))
                         .collect::<Vec<_>>();
                     if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
-                        prev_args.clone()
+                        prev_args
                     } else {
                         Array::from_slice(*ctx, args)
                     }
@@ -744,7 +744,7 @@ impl<'gc> Term<'gc> {
                         .map(|arg| arg.subst(ctx, subst))
                         .collect::<Vec<_>>();
                     if args.iter().zip(prev_args.iter()).all(|(a, b)| a == b) {
-                        prev_args.clone()
+                        prev_args
                     } else {
                         Array::from_slice(*ctx, args)
                     }

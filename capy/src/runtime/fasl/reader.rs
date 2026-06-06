@@ -18,8 +18,9 @@ use crate::runtime::{
     code_memory::{CodeAllocation, runtime_code_memory},
     symbols::{RuntimeData, RuntimeThunk},
     value::{
-        BigInt, ByteVector, Closure, CodeArity, CodeBlock, Complex, HashTable, HashTableType, Pair,
-        Rational, Str, Symbol, Tuple, UnlinkedCodeBlock, UnlinkedRelocation, Value, Vector,
+        BigInt, ByteVector, Closure, CodeArity, CodeBlock, CodeRelocation, Complex, HashTable,
+        HashTableType, LoadedCodeBlockInit, Pair, Rational, RelocatableCodeBlock, Str, Symbol,
+        Tuple, Value, Vector,
     },
     vm::syntax::Syntax,
 };
@@ -126,7 +127,7 @@ const UNLINKED_TARGET_CACHE_CELL: u8 = 4;
 
 pub(crate) fn encode_unlinked_relocations(
     relocations: &[reloc::FaslRelocation],
-) -> io::Result<Vec<UnlinkedRelocation>> {
+) -> io::Result<Vec<CodeRelocation>> {
     relocations
         .iter()
         .map(|relocation| {
@@ -160,7 +161,7 @@ pub(crate) fn encode_unlinked_relocations(
                     (UNLINKED_TARGET_SIDE_METADATA, kind.to_tag() as u32)
                 }
             };
-            Ok(UnlinkedRelocation {
+            Ok(CodeRelocation {
                 offset: relocation.offset,
                 kind_tag,
                 target_tag,
@@ -174,7 +175,7 @@ pub(crate) fn encode_unlinked_relocations(
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn decode_unlinked_relocations(
-    relocations: &[UnlinkedRelocation],
+    relocations: &[CodeRelocation],
 ) -> io::Result<Vec<reloc::FaslRelocation>> {
     relocations
         .iter()
@@ -277,9 +278,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                         )
                     })?;
 
-                    let sym = Value::new(Symbol::from_str(self.ctx, str));
-
-                    sym
+                    Value::new(Symbol::from_str(self.ctx, str))
                 }
                 FASL_TAG_UNINTERNED_SYMBOL => {
                     let len = self.read32()? as usize;
@@ -317,7 +316,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 }
             };
 
-            self.lites.put(self.ctx, Value::new(id as i32), key);
+            self.lites.put(self.ctx, Value::new(id), key);
         }
         Ok(())
     }
@@ -342,7 +341,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             _x @ FASL_TAG_F => Ok(Value::new(false)),
             _x @ FASL_TAG_NIL => Ok(Value::null()),
             _x @ FASL_TAG_CHAR => {
-                let value = self.read32()? as u32;
+                let value = self.read32()?;
                 Ok(Value::new(char::from_u32(value).ok_or_else(|| {
                     io::Error::new(io::ErrorKind::InvalidData, "Invalid char value")
                 })?))
@@ -471,12 +470,12 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 let uid = self.read32()? as i32;
 
                 if let Some(value) = self.lites.get(self.ctx, Value::new(uid)) {
-                    return Ok(value);
+                    Ok(value)
                 } else {
-                    return Err(io::Error::new(
+                    Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "Unknown lookup ID",
-                    ));
+                    ))
                 }
             }
 
@@ -653,7 +652,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             }
 
             _x @ FASL_TAG_UNLINKED_CODEBLOCK => {
-                let unlinked = self.read_unlinked_code_block()?;
+                let unlinked = self.read_relocatable_code_block()?;
                 Ok(Value::from(unlinked))
             }
 
@@ -670,12 +669,10 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
                 )))
             }
 
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "Unsupported tag for FASL deserialization",
-                ));
-            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unsupported tag for FASL deserialization",
+            )),
         }
     }
 
@@ -754,11 +751,11 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
         })
     }
 
-    fn read_unlinked_code_block(&mut self) -> io::Result<Gc<'gc, UnlinkedCodeBlock<'gc>>> {
+    fn read_relocatable_code_block(&mut self) -> io::Result<Gc<'gc, RelocatableCodeBlock<'gc>>> {
         let spec = self.read_code_block_spec()?;
         let data_slots = self.collect_code_block_data_slots(None, &spec.relocations)?;
         let encoded = encode_unlinked_relocations(&spec.relocations)?;
-        let unlinked = UnlinkedCodeBlock::new(
+        let unlinked = RelocatableCodeBlock::new(
             self.ctx,
             &spec.bytes,
             spec.entry_offset,
@@ -784,7 +781,7 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             self.add_pending_data_slot_fills(&loaded, &data_slots)?;
             self.add_pending_code_entry_slot_fills(&loaded, &data_slots)?;
             let encoded = encode_unlinked_relocations(&spec.relocations)?;
-            let unlinked = UnlinkedCodeBlock::new(
+            let unlinked = RelocatableCodeBlock::new(
                 self.ctx,
                 &spec.bytes,
                 spec.entry_offset,
@@ -794,16 +791,18 @@ impl<'gc, R: io::Read> FASLReader<'gc, R> {
             self.keep_value(Value::from(unlinked));
             let code_block = CodeBlock::new_loaded_with_data(
                 self.ctx,
-                loaded.entrypoint + spec.entry_offset as usize,
-                CodeArity::new(spec.arity),
-                spec.is_cont,
-                spec.metadata,
-                unlinked,
-                loaded
-                    .take_span()
-                    .ok_or_else(|| io::Error::other("loaded code span has already been moved"))?,
-                loaded.data_rw_base,
-                loaded.data_len as u32,
+                LoadedCodeBlockInit {
+                    entrypoint: loaded.entrypoint + spec.entry_offset as usize,
+                    arity: CodeArity::new(spec.arity),
+                    is_continuation: spec.is_cont,
+                    metadata: spec.metadata,
+                    unlinked,
+                    span: loaded.take_span().ok_or_else(|| {
+                        io::Error::other("loaded code span has already been moved")
+                    })?,
+                    loaded_data_base: loaded.data_rw_base,
+                    loaded_data_slot_count: loaded.data_len as u32,
+                },
             );
             self.keep_value(Value::from(code_block));
             self.register_shared_cache_slots(source_index, code_block, &loaded, &data_slots)?;

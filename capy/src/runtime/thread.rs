@@ -327,7 +327,7 @@ impl<'gc> Context<'gc> {
             );
             barrier::field!(wmodule, Module, public_interface)
                 .unlock()
-                .set(Some(public_interface.into()));
+                .set(Some(public_interface));
         }
         module
     }
@@ -784,7 +784,6 @@ impl Scheme {
                     thread_object.bind_current_runtime_thread();
                     let state = State::new(mc, thread_object);
                     mc.init_state(state);
-                    ()
                 });
                 m.mutate(|mc, _| {
                     if should_init {
@@ -810,9 +809,9 @@ impl Scheme {
             GarbageCollector::init(mmtk_builder);
         });
 
-        let scm = Self {
+        Self {
             mutator: {
-                let m = Mutator::new(|mc| {
+                Mutator::new(|mc| {
                     init_weak_sets(mc);
                     init_weak_tables(mc);
                     init_symbols(mc);
@@ -821,13 +820,9 @@ impl Scheme {
                     thread_object.bind_current_runtime_thread();
                     let state = State::new(mc, thread_object);
                     mc.init_state(state);
-                    ()
-                });
-                m
+                })
             },
-        };
-
-        scm
+        }
     }
 
     /*pub fn from_image(image: &[u8]) -> Self {
@@ -852,7 +847,6 @@ impl Scheme {
                     init_weak_tables(mc);
                     let state = State::new(mc, ThreadObject::new(mc, None));
                     mc.init_state(state);
-                    ()
                 });
                 m
             },
@@ -909,7 +903,6 @@ impl Scheme {
                     thread_object.bind_current_runtime_thread();
                     let state = State::new(mc, thread_object);
                     mc.init_state(state);
-                    ()
                 });
                 m.mutate(|mc, _| {
                     let ctx = Context { mc };
@@ -923,6 +916,12 @@ impl Scheme {
     }
 }
 
+impl Default for Scheme {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'gc> Drop for State<'gc> {
     fn drop(&mut self) {
         // SAFETY: `runstack_start` was allocated in `make_fresh_runstack` with the same
@@ -933,7 +932,7 @@ impl<'gc> Drop for State<'gc> {
                 std::mem::align_of::<Value>(),
             )
             .unwrap();
-            std::alloc::dealloc(self.runstack_start.to_mut_ptr() as *mut u8, layout);
+            std::alloc::dealloc(self.runstack_start.to_mut_ptr(), layout);
         }
     }
 }

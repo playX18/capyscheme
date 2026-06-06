@@ -1413,7 +1413,7 @@ prim!(
         let val = ssa.atom(args[0]);
         let val = ssa.ireduce(types::I32, val);
         let val = ssa.zextend(types::I64, val);
-        let val = ssa.builder.ins().bor_imm(val, Value::NUMBER_TAG as i64);
+        let val = ssa.builder.ins().bor_imm(val, Value::NUMBER_TAG);
         PrimValue::Value(val)
     },
 
@@ -1534,7 +1534,7 @@ prim!(
 
     "current-module" => current_module(ssa, args, _h) {
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-        if let Some(module) = args.get(0) {
+        if let Some(module) = args.first() {
             let module = ssa.atom(*module);
             let call = ssa.builder.ins().call(ssa.thunks.set_current_module, &[ctx, module]);
             PrimValue::Value(ssa.builder.inst_results(call)[0])
@@ -1872,14 +1872,14 @@ prim!(
     "string-length" => string_length(ssa, args, _h) {
         let str = ssa.atom(args[0]);
         let len = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), str, offset_of!(Str, length) as i32);
-        let fixnum = ssa.builder.ins().bor_imm(len, Value::NUMBER_TAG as i64);
+        let fixnum = ssa.builder.ins().bor_imm(len, Value::NUMBER_TAG);
         PrimValue::Value(fixnum)
     },
 
     "boolean?" => is_boolean(ssa, args, _h) {
         let val = ssa.atom(args[0]);
         let mask = ssa.builder.ins().band_imm(val, (!1u64) as i64);
-        PrimValue::Comparison(ssa.builder.ins().icmp_imm(IntCC::Equal, mask, Value::VALUE_FALSE as i64))
+        PrimValue::Comparison(ssa.builder.ins().icmp_imm(IntCC::Equal, mask, Value::VALUE_FALSE))
     },
 
     "symbol?" => is_symbol(ssa, args, _h) {
@@ -1926,8 +1926,8 @@ prim!(
 
     "fixnum?" => is_fixnum(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let mask = ssa.builder.ins().band_imm(val, Value::NUMBER_TAG as i64);
-        let is_inline_num = ssa.builder.ins().icmp_imm(IntCC::Equal, mask, Value::NUMBER_TAG as i64);
+        let mask = ssa.builder.ins().band_imm(val, Value::NUMBER_TAG);
+        let is_inline_num = ssa.builder.ins().icmp_imm(IntCC::Equal, mask, Value::NUMBER_TAG);
 
         PrimValue::Comparison(is_inline_num)
     },
@@ -1958,7 +1958,7 @@ prim!(
 
     "char?" => is_char(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let mask = ssa.builder.ins().iconst(types::I64, Value::CHAR_MASK as i64);
+        let mask = ssa.builder.ins().iconst(types::I64, Value::CHAR_MASK);
         let tag = ssa.builder.ins().iconst(types::I64, Value::CHAR_TAG);
         if ssa.builder.func.dfg.value_type(val) != types::I64 {
             unreachable!()
@@ -1970,7 +1970,7 @@ prim!(
 
     "number?" => is_number(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let mask = ssa.builder.ins().band_imm(val, Value::NUMBER_TAG as i64);
+        let mask = ssa.builder.ins().band_imm(val, Value::NUMBER_TAG);
         let is_inline_num = ssa.builder.ins().icmp_imm(IntCC::NotEqual, mask, 0);
         let succ = ssa.builder.create_block();
         let check_heap = ssa.builder.create_block();
@@ -2066,8 +2066,8 @@ prim!(
 
         let result = ssa.inline_float_unary_op(arg,
             |ssa, val| {
-                let res = ssa.builder.ins().sqrt(val);
-                res
+
+                ssa.builder.ins().sqrt(val)
             },
             |ssa, arg| {
                 let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
@@ -2796,10 +2796,7 @@ fn emit_icmp<'gc, 'a, 'f>(
     let result = ssa.inline_cmp_op(
         a,
         b,
-        |ssa, lhs, rhs, _slow| {
-            let cmp = ssa.builder.ins().icmp(cond, lhs, rhs);
-            cmp
-        },
+        |ssa, lhs, rhs, _slow| ssa.builder.ins().icmp(cond, lhs, rhs),
         |ssa, a, b| {
             let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
             let thunk = match cond {

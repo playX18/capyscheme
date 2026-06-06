@@ -1,3 +1,5 @@
+//! Pair and list operations for Scheme values.
+
 use crate::rsgc::{
     Trace, barrier,
     cell::Lock,
@@ -8,9 +10,15 @@ use std::mem::offset_of;
 use crate::runtime::Context;
 
 use super::*;
+
+#[doc(hidden)]
+pub fn list_value<'gc>(mc: Context<'gc>, value: impl IntoValue<'gc>) -> Value<'gc> {
+    value.into_value(mc)
+}
 #[derive(Trace)]
 #[collect(no_drop)]
 #[repr(C, align(8))]
+/// A Scheme pair containing `car` and `cdr` fields.
 pub struct Pair<'gc> {
     pub car: Lock<Value<'gc>>,
     pub cdr: Lock<Value<'gc>>,
@@ -25,22 +33,23 @@ static PAIR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
     TypeCode8::PAIR.bits() as u16,
     builtin_type_ids::PAIR,
 );
-pub static PAIR_INFO: &'static HeapTypeInfo = &PAIR_INFO_VALUE;
+pub static PAIR_INFO: &HeapTypeInfo = &PAIR_INFO_VALUE;
 
 impl<'gc> Pair<'gc> {
+    /// Allocates a moving pair.
     #[inline(always)]
     pub fn new(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
-        let pair = Gc::new_with_info(
+        Gc::new_with_info(
             *mc,
             Self {
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
             },
             PAIR_INFO,
-        );
-        pair
+        )
     }
 
+    /// Allocates a non-moving pair.
     pub fn new_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
         mc.allocate_with_info(
             Self {
@@ -365,7 +374,6 @@ impl<'gc> Value<'gc> {
             len += 1;
 
             if fast == slow {
-                // Cycle detected
                 return None;
             }
         }
@@ -391,7 +399,6 @@ impl<'gc> Value<'gc> {
             len += 1;
 
             if fast == slow {
-                // Cycle detected
                 return usize::MAX;
             }
         }
@@ -428,7 +435,6 @@ impl<'gc> Value<'gc> {
             slow = slow.cdr();
 
             if fast == slow {
-                // Cycle detected
                 return false;
             }
         }
@@ -457,7 +463,6 @@ impl<'gc> Value<'gc> {
             slow = slow.cdr();
 
             if fast == slow {
-                // Cycle detected
                 return false;
             }
         }
@@ -474,13 +479,10 @@ impl<'gc> Value<'gc> {
 
         let mut current = *self;
         while current.is_pair() {
-            if current.is_immediate() {
-                current = current.cdr();
-                continue;
-            } else if let Some(_) = current.cdr().try_as::<Symbol>() {
-                current = current.cdr();
-                continue;
-            } else if current.cdr().is_null() {
+            if current.is_immediate()
+                || current.cdr().try_as::<Symbol>().is_some()
+                || current.cdr().is_null()
+            {
                 current = current.cdr();
                 continue;
             } else {
@@ -499,11 +501,10 @@ impl<'gc> Value<'gc> {
         let vector = self.downcast::<Vector>();
         for i in 0..vector.len() {
             let elem = vector[i].get();
-            if elem.is_immediate() {
-                continue;
-            } else if let Some(_) = elem.try_as::<Symbol>() {
-                continue;
-            } else if let Some(_) = elem.try_as::<Str>() {
+            if elem.is_immediate()
+                || elem.try_as::<Symbol>().is_some()
+                || elem.try_as::<Str>().is_some()
+            {
                 continue;
             } else {
                 return false;
@@ -533,7 +534,6 @@ impl<'gc> Value<'gc> {
 
     pub fn list_reverse(self, mc: Context<'gc>) -> Value<'gc> {
         if !self.is_list() {
-            // Or handle error appropriately
             return self;
         }
 
@@ -568,7 +568,6 @@ impl<'gc> Value<'gc> {
         let mut new_head = Value::null();
         let mut new_tail = Value::null();
 
-        // Helper to append a value to the new list
         let mut append_to_new_list = |val: Value<'gc>| {
             let new_pair = Pair::new(mc, val, Value::null());
             if new_head.is_null() {
@@ -580,7 +579,6 @@ impl<'gc> Value<'gc> {
             }
         };
 
-        // Copy elements from the original list (self)
         let mut current_original = self;
         while current_original.is_pair() {
             append_to_new_list(current_original.car());
@@ -591,7 +589,6 @@ impl<'gc> Value<'gc> {
             return new_head;
         }
 
-        // Append elements from the iterator
         for val in iter {
             append_to_new_list(val.into_value(mc));
         }
@@ -616,29 +613,32 @@ impl<'gc> Value<'gc> {
     }
 
     #[inline(always)]
+    /// Allocates a pair and returns it as a value.
     pub fn cons(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
         let pair = Pair::new(mc, car, cdr);
         Value::from(pair)
     }
 
     #[inline]
+    /// Allocates a non-moving pair and returns it as a value.
     pub fn cons_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Value<'gc> {
         Pair::new_nonmoving(mc, car, cdr).into()
     }
 
+    /// Constructs a dotted list from the provided arguments.
     pub fn cons_star(mc: Context<'gc>, args: impl AsRef<[Value<'gc>]>) -> Value<'gc> {
         let args = args.as_ref();
 
-        if args.len() == 0 {
-            return Value::null();
+        if args.is_empty() {
+            Value::null()
         } else if args.len() == 1 {
-            return args[0];
+            args[0]
         } else {
             let obj = Self::cons(mc, args[0], Value::null());
             let mut tail = obj;
 
-            for i in 1..args.len() - 1 {
-                let e = Value::cons(mc, args[i], Value::null());
+            for &arg in args.iter().take(args.len() - 1).skip(1) {
+                let e = Value::cons(mc, arg, Value::null());
                 tail.set_cdr(mc, e);
                 tail = e;
             }
@@ -648,6 +648,7 @@ impl<'gc> Value<'gc> {
         }
     }
 
+    /// Constructs an association-list entry and prepends it to `cdr`.
     pub fn acons(
         mc: Context<'gc>,
         key: Value<'gc>,
@@ -833,14 +834,17 @@ macro_rules! list {
     ($mc: expr, $($value: expr),*) => {
 
         {
-            use $crate::runtime::value::IntoValue;
             let mut ls = $crate::runtime::value::Value::null();
             let mc = $mc;
             let mut _last =  $crate::runtime::value::Value::null();
 
             $(
                 let value = $value;
-                let pair =  $crate::runtime::value::Pair::new(mc,value.into_value(mc),  $crate::runtime::value::Value::null());
+                let pair =  $crate::runtime::value::Pair::new(
+                    mc,
+                    $crate::runtime::value::list::list_value(mc, value),
+                    $crate::runtime::value::Value::null()
+                );
                 if _last.is_null() {
                     ls =  $crate::runtime::value::Value::from(pair);
                 } else {
@@ -855,14 +859,17 @@ macro_rules! list {
 
     ($mc: expr, $value: expr; $count: expr) => {
         {
-            use $crate::runtime::value::IntoValue;
             let value = $value;
             let count = $count;
             let mut ls = Value::null();
             let mut last = Value::null();
 
             for _ in 0..count {
-                let pair = Pair::new($mc, value.into_value($mc), Value::null());
+                let pair = Pair::new(
+                    $mc,
+                    $crate::runtime::value::list::list_value($mc, value),
+                    Value::null()
+                );
                 if last.is_null() {
                     ls = Value::from(pair);
                 } else {
@@ -886,6 +893,7 @@ pub struct ListIterator<'gc> {
 }
 
 impl<'gc> ListIterator<'gc> {
+    /// Creates an iterator over the proper prefix of a list.
     pub fn new(list: Value<'gc>) -> Self {
         Self {
             current: list,

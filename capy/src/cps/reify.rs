@@ -51,7 +51,7 @@ pub fn reify<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ReifyInfo<'gc> {
 
     for (_, var) in fv.fvars.iter() {
         for var in var.iter() {
-            let Some(cont) = fv.conts.get(&var) else {
+            let Some(cont) = fv.conts.get(var) else {
                 continue;
             };
 

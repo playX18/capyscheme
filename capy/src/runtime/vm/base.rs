@@ -17,10 +17,10 @@ fluid!(
 
 pub fn scm_log_level<'gc>(ctx: Context<'gc>) -> i32 {
     let log_level = ctx.private_ref("capy", "*log-level*");
-    if let Some(level) = log_level {
-        if level.is_int32() {
-            return level.as_int32();
-        }
+    if let Some(level) = log_level
+        && level.is_int32()
+    {
+        return level.as_int32();
     }
     0
 }
@@ -42,7 +42,7 @@ pub mod base_ops {
             "big"
         };
         let endian = nctx.ctx.intern(endian);
-        nctx.return_(endian.into())
+        nctx.return_(endian)
     }
 
     #[scheme(name = "host-arch")]
@@ -272,7 +272,7 @@ pub mod base_ops {
     pub fn make_uuid() -> Value<'gc> {
         let uuid = uuid::Uuid::new_v4();
         let ctx = nctx.ctx;
-        nctx.return_(Str::new(*ctx, &uuid.to_string(), true).into())
+        nctx.return_(Str::new(*ctx, uuid.to_string(), true).into())
     }
 
     #[scheme(name = "boolean=?")]
@@ -285,7 +285,7 @@ pub mod base_ops {
                     Some(*v),
                     None,
                     rest.len() + 2,
-                    &[Value::new(a), Value::new(b)]
+                    [Value::new(a), Value::new(b)]
                         .iter()
                         .chain(rest)
                         .cloned()
@@ -343,7 +343,7 @@ pub mod base_ops {
                     Some(sym),
                     None,
                     rest.len() + 2,
-                    &[a, b]
+                    [a, b]
                         .iter()
                         .chain(rest)
                         .cloned()
