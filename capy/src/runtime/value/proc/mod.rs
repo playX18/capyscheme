@@ -17,7 +17,7 @@ use std::{
 use asmkit::core::jit_allocator::Span;
 use mmtk::{AllocationSemantics, util::ObjectReference};
 
-use crate::rsgc::object::{HeapTypeInfo, VTableOf, builtin_type_ids};
+use crate::rsgc::object::{AllocationHooks, ClassId, builtin_class_ids, class_header_word};
 use crate::runtime::{
     Context,
     code_memory::CodeSpan,
@@ -25,7 +25,6 @@ use crate::runtime::{
 };
 use crate::{
     IndexWrite, WeakProcessor,
-    object::VTable,
     rsgc::{
         Global, cell::Lock, collection::Visitor, finalizer::FinalizerQueue, sync::monitor::Monitor,
     },

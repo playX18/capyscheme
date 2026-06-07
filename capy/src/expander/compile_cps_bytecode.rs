@@ -3,7 +3,7 @@
 //! Unlike `compile_cps`, this module keeps high-level primitive calls intact.
 //! The bytecode compiler can then map operations like `string?`, `car`, or
 //! `vector-ref` to bytecode instructions without first seeing low-level
-//! expansions such as `%typecode8` checks.
+//! primitive expansions.
 
 use crate::cps::builder::CPSBuilder;
 use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef};

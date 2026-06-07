@@ -1,14 +1,13 @@
 use crate::rsgc::mmtk::BarrierSelector;
-use crate::rsgc::object::OBJECT_HEADER_OFFSET;
 use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
 use std::mem::{offset_of, size_of};
 
 use crate::{
-    compiler::ssa::{AllocInfoPreset, SSABuilder},
+    compiler::ssa::{AllocationHeaderPreset, SSABuilder},
     cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
-    runtime::value::{Pair, TypeCode8, TypeCode16, Value, Vector},
+    runtime::value::{Pair, Value, Vector},
 };
 
 impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
@@ -19,7 +18,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     pub fn cons(&mut self, a: ir::Value, b: ir::Value) -> ir::Value {
-        let pair = self.alloc_with_info_preset(AllocInfoPreset::Pair, size_of::<Pair>(), None);
+        let pair = self.alloc_with_header_word_preset(
+            AllocationHeaderPreset::Pair,
+            size_of::<Pair>(),
+            None,
+        );
         self.builder.ins().store(
             ir::MemFlags::trusted(),
             a,
@@ -318,58 +321,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.ins().band(is_cell, non_zero)
     }
 
-    pub fn is_heap_object_tc8(&mut self, v: ir::Value, tc8: TypeCode8) -> ir::Value {
-        let if_heap_obj = self.builder.create_block();
-        let succ = self.builder.create_block();
-        self.builder.append_block_param(succ, types::I64);
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        let is_cell = self.is_heap_object(v);
-        self.builder
-            .ins()
-            .brif(is_cell, if_heap_obj, &[], succ, &[BlockArg::Value(zero)]);
-        self.builder.switch_to_block(if_heap_obj);
-        {
-            let t =
-                self.builder
-                    .ins()
-                    .load(types::I8, ir::MemFlags::trusted().with_can_move(), v, 0);
-
-            let cmp = self
-                .builder
-                .ins()
-                .icmp_imm(IntCC::Equal, t, tc8.bits() as i64);
-            self.builder.ins().jump(succ, &[BlockArg::Value(cmp)]);
-        }
-        self.builder.switch_to_block(succ);
-        self.builder.block_params(succ)[0]
-    }
-
-    pub fn is_heap_object_tc16(&mut self, v: ir::Value, tc16: TypeCode16) -> ir::Value {
-        let if_heap_obj = self.builder.create_block();
-        let succ = self.builder.create_block();
-        self.builder.append_block_param(succ, types::I64);
-        let zero = self.builder.ins().iconst(types::I64, 0);
-        let is_cell = self.is_heap_object(v);
-        self.builder
-            .ins()
-            .brif(is_cell, if_heap_obj, &[], succ, &[BlockArg::Value(zero)]);
-        self.builder.switch_to_block(if_heap_obj);
-        {
-            let t =
-                self.builder
-                    .ins()
-                    .load(types::I16, ir::MemFlags::trusted().with_can_move(), v, 0);
-
-            let cmp = self
-                .builder
-                .ins()
-                .icmp_imm(IntCC::Equal, t, tc16.bits() as i64);
-            self.builder.ins().jump(succ, &[BlockArg::Value(cmp)]);
-        }
-        self.builder.switch_to_block(succ);
-        self.builder.block_params(succ)[0]
-    }
-
     pub fn as_boolean(&mut self, v: ir::Value) -> ir::Value {
         let tr = self
             .builder
@@ -382,49 +333,27 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.ins().select(v, tr, fs)
     }
 
-    pub fn has_typ8(&mut self, v: ir::Value, typ: u8) -> ir::Value {
-        let check_object = self.builder.create_block();
-        let done = self.builder.create_block();
-        self.builder.append_block_param(done, types::I8);
-
-        let false_ = self.builder.ins().iconst(types::I8, 0);
-        self.branch_if_immediate(v, done, &[BlockArg::Value(false_)], check_object, &[]);
-        self.builder.switch_to_block(check_object);
-        {
-            let tc8 = self.builder.ins().load(
-                types::I8,
-                ir::MemFlags::trusted().with_can_move(),
-                v,
-                OBJECT_HEADER_OFFSET as i32,
-            );
-            let check = self.builder.ins().icmp_imm(IntCC::Equal, tc8, typ as i64);
-            self.builder.ins().jump(done, &[BlockArg::Value(check)]);
-        }
-        self.builder.switch_to_block(done);
-        self.builder.block_params(done)[0]
+    pub fn has_class_id(&mut self, v: ir::Value, class_id: u32) -> ir::Value {
+        let class_id = self.builder.ins().iconst(types::I32, class_id as i64);
+        let call = self
+            .builder
+            .ins()
+            .call(self.thunks.has_class_id, &[v, class_id]);
+        self.builder.inst_results(call)[0]
     }
 
-    pub fn has_typ16(&mut self, v: ir::Value, typ: u16) -> ir::Value {
-        let check_object = self.builder.create_block();
-        let done = self.builder.create_block();
-        self.builder.append_block_param(done, types::I8);
+    pub fn has_any_class_id(&mut self, v: ir::Value, class_ids: &[u32]) -> ir::Value {
+        assert!(
+            !class_ids.is_empty(),
+            "has_any_class_id requires at least one class ID"
+        );
 
-        let false_ = self.builder.ins().iconst(types::I8, 0);
-        self.branch_if_immediate(v, done, &[BlockArg::Value(false_)], check_object, &[]);
-        self.builder.switch_to_block(check_object);
-        {
-            let tc16 = self.builder.ins().load(
-                types::I16,
-                ir::MemFlags::trusted().with_can_move(),
-                v,
-                OBJECT_HEADER_OFFSET as i32,
-            );
-            let check = self.builder.ins().icmp_imm(IntCC::Equal, tc16, typ as i64);
-            self.builder.ins().jump(done, &[BlockArg::Value(check)]);
+        let mut result = self.has_class_id(v, class_ids[0]);
+        for &class_id in &class_ids[1..] {
+            let next = self.has_class_id(v, class_id);
+            result = self.builder.ins().bor(result, next);
         }
-
-        self.builder.switch_to_block(done);
-        self.builder.block_params(done)[0]
+        result
     }
 
     pub fn branch_if_immediate(
@@ -455,34 +384,34 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .brif(is_heap_object, then, then_args, else_, else_args);
     }
 
-    pub fn branch_if_has_typ8(
+    pub fn branch_if_has_class_id(
         &mut self,
         v: ir::Value,
-        typ: u8,
+        class_id: u32,
         then: ir::Block,
         then_args: &[BlockArg],
         else_: ir::Block,
         else_args: &[BlockArg],
     ) {
-        let has_typ = self.has_typ8(v, typ);
+        let has_class_id = self.has_class_id(v, class_id);
         self.builder
             .ins()
-            .brif(has_typ, then, then_args, else_, else_args);
+            .brif(has_class_id, then, then_args, else_, else_args);
     }
 
-    pub fn branch_if_has_typ16(
+    pub fn branch_if_has_any_class_id(
         &mut self,
         v: ir::Value,
-        typ: u16,
+        class_ids: &[u32],
         then: ir::Block,
         then_args: &[BlockArg],
         else_: ir::Block,
         else_args: &[BlockArg],
     ) {
-        let has_typ = self.has_typ16(v, typ);
+        let has_class_id = self.has_any_class_id(v, class_ids);
         self.builder
             .ins()
-            .brif(has_typ, then, then_args, else_, else_args);
+            .brif(has_class_id, then, then_args, else_, else_args);
     }
 
     pub fn handle_thunk_call_result(

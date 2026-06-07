@@ -18,11 +18,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
     ) {
         let mut visitor = unsafe { Visitor::new(VisitorKind::Slot(slot_visitor), Some(object)) };
 
-        let obj = GCObject::from(object);
-        let header = obj.header();
-        let vt = header.vtable();
-
-        (vt.trace)(obj, &mut visitor);
+        GCObject::from(object).trace(&mut visitor);
     }
 
     fn support_slot_enqueuing(
@@ -37,11 +33,8 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         object: mmtk::util::ObjectReference,
         object_tracer: &mut OT,
     ) {
-        let obj = GCObject::from(object);
-        let header = obj.header();
-        let vt = header.vtable();
         let mut visitor = unsafe { Visitor::new(VisitorKind::Trace(object_tracer), Some(object)) };
-        (vt.trace)(obj, &mut visitor);
+        GCObject::from(object).trace(&mut visitor);
     }
 
     fn notify_initial_thread_scan_complete(_partial_scan: bool, _tls: mmtk::util::VMWorkerThread) {}

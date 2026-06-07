@@ -119,6 +119,20 @@ where
         }
     }
 
+    /// Get access to a global root without a mutator token.
+    ///
+    /// # Safety
+    ///
+    /// The caller must not retain references derived from the returned root
+    /// across a GC safepoint or use it to mutate GC-managed fields without the
+    /// normal mutation context and write barriers.
+    pub(crate) unsafe fn fetch_unchecked<'gc>(&self) -> &Root<'gc, R> {
+        unsafe {
+            let root = &*self.root.as_ptr();
+            std::mem::transmute(&root.root)
+        }
+    }
+
     fn inner(&self) -> &GlobalInner<Root<'static, R>> {
         unsafe { &*self.root.as_ptr() }
     }

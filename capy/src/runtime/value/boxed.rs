@@ -3,34 +3,43 @@
 use crate::{
     rsgc::{
         Gc, Trace,
-        object::{HeapTypeInfo, VTableOf},
+        cell::Lock,
+        object::{ClassId, builtin_class_ids, class_header_word},
     },
     runtime::Context,
 };
 
-use super::{Tagged, TypeCode8, Value};
+use super::{ClassTagged, Value};
 
 #[derive(Trace)]
 #[collect(no_drop)]
 /// A single-slot mutable container.
 pub struct Boxed<'gc> {
-    pub val: Value<'gc>,
+    pub val: Lock<Value<'gc>>,
 }
 
-static BOX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Boxed<'static>>::VT,
-    TypeCode8::BOX.bits() as u16,
-);
-pub static BOX_INFO: &HeapTypeInfo = &BOX_INFO_VALUE;
+fn box_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::BOX).unwrap())
+}
 
 impl<'gc> Boxed<'gc> {
     /// Allocates a box containing `val`.
     pub fn new(ctx: Context<'gc>, val: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_info(*ctx, Self { val }, BOX_INFO)
+        Gc::new_with_header_word(
+            *ctx,
+            Self {
+                val: Lock::new(val),
+            },
+            box_header_word(),
+        )
+    }
+
+    pub fn get(&self) -> Value<'gc> {
+        self.val.get()
     }
 }
 
-unsafe impl<'gc> Tagged for Boxed<'gc> {
-    const TC8: TypeCode8 = TypeCode8::BOX;
+unsafe impl<'gc> ClassTagged for Boxed<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::BOX];
     const TYPE_NAME: &'static str = "box";
 }

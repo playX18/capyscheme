@@ -2,11 +2,11 @@ use crate::rsgc::{
     Gc, Mutation, Trace,
     barrier::{IndexWrite, Unlock},
     cell::Lock,
-    object::{HeapTypeInfo, VTableOf},
+    object::{ClassId, builtin_class_ids, class_header_word},
 };
 use crate::runtime::{
     Context,
-    value::{HashTable, Tagged, TypeCode8, Value, WeakTable, payload_info_id},
+    value::{ClassTagged, HashTable, Value, WeakTable},
 };
 use std::{cell::Cell, hash::Hash, ops::Index};
 
@@ -252,14 +252,12 @@ pub struct DynamicStateObject<'gc> {
     pub(crate) saved: Value<'gc>,
 }
 
-static DYNAMIC_STATE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, DynamicStateObject<'static>>::VT,
-    TypeCode8::DYNAMIC_STATE.bits() as u16,
-);
-pub static DYNAMIC_STATE_INFO: &HeapTypeInfo = &DYNAMIC_STATE_INFO_VALUE;
+fn dynamic_state_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::DYNAMIC_STATE).unwrap())
+}
 
-unsafe impl<'gc> Tagged for DynamicStateObject<'gc> {
-    const TC8: TypeCode8 = TypeCode8::DYNAMIC_STATE;
+unsafe impl<'gc> ClassTagged for DynamicStateObject<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::DYNAMIC_STATE];
     const TYPE_NAME: &'static str = "dynamic-state";
 }
 
@@ -337,38 +335,33 @@ impl<'gc> DynamicState<'gc> {
 #[repr(C)]
 pub struct Fluid<'gc> {
     pub(crate) value: Value<'gc>,
+    thread_local: bool,
 }
 
-static FLUID_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Fluid<'static>>::VT,
-    TypeCode8::FLUID.bits() as u16,
-);
-pub static FLUID_INFO: &HeapTypeInfo = &FLUID_INFO_VALUE;
-
-static THREAD_LOCAL_FLUID_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Fluid<'static>>::VT,
-    TypeCode8::FLUID.bits() as u16,
-);
-pub static THREAD_LOCAL_FLUID_INFO: &HeapTypeInfo = &THREAD_LOCAL_FLUID_INFO_VALUE;
+fn fluid_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::FLUID).unwrap())
+}
 
 impl<'gc> Fluid<'gc> {
     pub fn new(mc: Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Self {
                 value: default_value,
+                thread_local: false,
             },
-            FLUID_INFO,
+            fluid_header_word(),
         )
     }
 
     pub fn new_thread_local(mc: Mutation<'gc>, default_value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Self {
                 value: default_value,
+                thread_local: true,
             },
-            THREAD_LOCAL_FLUID_INFO,
+            fluid_header_word(),
         )
     }
 
@@ -433,12 +426,12 @@ impl<'gc> Fluid<'gc> {
     }
 
     pub fn is_thread_local(&self) -> bool {
-        payload_info_id(self) == THREAD_LOCAL_FLUID_INFO.id()
+        self.thread_local
     }
 }
 
-unsafe impl<'gc> Tagged for Fluid<'gc> {
-    const TC8: TypeCode8 = TypeCode8::FLUID;
+unsafe impl<'gc> ClassTagged for Fluid<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::FLUID];
     const TYPE_NAME: &'static str = "fluid";
 }
 
@@ -579,12 +572,12 @@ pub mod fluid_ops {
     #[scheme(name = "current-dynamic-state")]
     pub fn current_dynamic_state() -> Value<'gc> {
         let dynamic_state = nctx.ctx.state().dynamic_state.save(nctx.ctx);
-        let val = Value::from(Gc::new_with_info(
+        let val = Value::from(Gc::new_with_header_word(
             *nctx.ctx,
             DynamicStateObject {
                 saved: dynamic_state,
             },
-            DYNAMIC_STATE_INFO,
+            dynamic_state_header_word(),
         ));
         nctx.return_(val)
     }
@@ -597,10 +590,10 @@ pub mod fluid_ops {
     #[scheme(name = "set-current-dynamic-state!")]
     pub fn set_current_dynamic_state(state_obj: Gc<'gc, DynamicStateObject<'gc>>) -> Value<'gc> {
         let prev = nctx.ctx.state().dynamic_state.save(nctx.ctx);
-        let prev = Value::from(Gc::new_with_info(
+        let prev = Value::from(Gc::new_with_header_word(
             *nctx.ctx,
             DynamicStateObject { saved: prev },
-            DYNAMIC_STATE_INFO,
+            dynamic_state_header_word(),
         ));
         nctx.ctx
             .state()
@@ -612,4 +605,52 @@ pub mod fluid_ops {
 
 pub(crate) fn init_fluids<'gc>(ctx: Context<'gc>) {
     fluid_ops::register(ctx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn thread_local_fluid_state_is_explicit_payload_state() {
+        Scheme::new_uninit().enter(|ctx| {
+            let ordinary = Fluid::new(*ctx, Value::undefined());
+            let thread_local = Fluid::new_thread_local(*ctx, Value::undefined());
+
+            assert!(!ordinary.is_thread_local());
+            assert!(thread_local.is_thread_local());
+            assert_eq!(
+                ordinary.as_gcobj().header().class_id(),
+                thread_local.as_gcobj().header().class_id()
+            );
+        });
+    }
+
+    #[test]
+    fn fluid_and_dynamic_state_allocate_with_class_only_headers() {
+        Scheme::new_uninit().enter(|ctx| {
+            let ordinary = Fluid::new(*ctx, Value::undefined());
+            let thread_local = Fluid::new_thread_local(*ctx, Value::undefined());
+            let dynamic_state = Gc::new_with_header_word(
+                *ctx,
+                DynamicStateObject {
+                    saved: Value::null(),
+                },
+                dynamic_state_header_word(),
+            );
+
+            for fluid in [ordinary, thread_local] {
+                assert_eq!(
+                    fluid.as_gcobj().header().class_id(),
+                    ClassId::new(builtin_class_ids::FLUID).unwrap()
+                );
+            }
+
+            assert_eq!(
+                dynamic_state.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::DYNAMIC_STATE).unwrap()
+            );
+        });
+    }
 }

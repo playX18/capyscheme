@@ -16,7 +16,7 @@ use crate::rsgc::{
     mmtk::util::Address,
     mutator::Mutation,
     object::GCObject,
-    object::{HeapTypeInfo, VTableOf},
+    object::{ClassId, builtin_class_ids, class_header_word},
     sync::monitor::Monitor,
     weak::Weak,
 };
@@ -26,7 +26,7 @@ use crate::runtime::{
     vmthread::{VM_THREAD, VMThreadTask},
 };
 
-use super::{Tagged, TypeCode8, Value};
+use super::{ClassTagged, Value};
 #[repr(C, align(8))]
 #[derive(Debug)]
 pub(crate) struct WeakEntry<'gc> {
@@ -98,11 +98,9 @@ pub struct WeakSet<'gc> {
     pub(crate) inner: Monitor<WeakSetInner<'gc>>,
 }
 
-static WEAK_SET_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, WeakSet<'static>>::VT,
-    TypeCode8::WEAKSET.bits() as u16,
-);
-pub static WEAK_SET_INFO: &HeapTypeInfo = &WEAK_SET_INFO_VALUE;
+fn weak_set_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::WEAK_SET).unwrap())
+}
 
 pub(crate) struct WeakSetInner<'gc> {
     pub(crate) entries: Lock<Entries<'gc>>,
@@ -522,7 +520,7 @@ impl<'gc> WeakSet<'gc> {
 
         let entries = Array::with(mc, n, |_, _| Lock::new(WeakEntry::broken()));
 
-        let weak_set = Gc::new_with_info(
+        let weak_set = Gc::new_with_header_word(
             mc,
             Self {
                 inner: Monitor::new(WeakSetInner {
@@ -535,7 +533,7 @@ impl<'gc> WeakSet<'gc> {
                     min_size_index: Cell::new(i),
                 }),
             },
-            WEAK_SET_INFO,
+            weak_set_header_word(),
         );
 
         ALL_WEAK_SETS
@@ -690,7 +688,7 @@ pub fn init_weak_sets<'gc>(mc: Mutation<'gc>) {
     });
 }
 
-unsafe impl<'gc> Tagged for WeakSet<'gc> {
-    const TC8: super::TypeCode8 = TypeCode8::WEAKSET;
+unsafe impl<'gc> ClassTagged for WeakSet<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::WEAK_SET];
     const TYPE_NAME: &'static str = "#<weak-set>";
 }

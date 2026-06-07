@@ -18,7 +18,7 @@
   (define direction-codes
     '((input . 1) (output . 2) (input/output . 3)))
 
-  (define type-codes
+  (define port-kind-codes
     '((file . 1) (bytevector . 2) (custom . 3)))
 
   (define file-option-codes
@@ -52,7 +52,7 @@
         ((_ type)
          (datum->syntax
           #'k
-          (cond ((assq (syntax->datum (syntax type)) type-codes) => cdr)
+          (cond ((assq (syntax->datum (syntax type)) port-kind-codes) => cdr)
                 (else
                  (syntax-violation 'port-type "invalid port type" x)))))
         (_

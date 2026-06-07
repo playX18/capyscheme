@@ -5,11 +5,12 @@ use crate::expander::core::{
 };
 use crate::rsgc::alloc::array::Array;
 use crate::rsgc::cell::Lock;
+use crate::rsgc::object::builtin_class_ids;
 use crate::rsgc::{Gc, Global, Trace, barrier};
 use crate::runtime::Context;
 use crate::runtime::prelude::*;
+use crate::runtime::value::Value;
 use crate::runtime::value::{Str, Vector};
-use crate::runtime::value::{TypeCode8, Value};
 use crate::runtime::vm::exceptions::RaiseKind;
 use crate::{list, static_symbols, with_cps};
 use std::cell::Cell;
@@ -283,14 +284,17 @@ where
                 have_length(cps, Atom::Local(length))
             }
         );
-        letk check_str_typecode () = with_cps!(cps;
-            let tc8 = #% "%typecode8" (x) @ src;
-            let str_typecode = #% "u8=" (tc8, Value::new(TypeCode8::STRING.bits() as i32)) @ src;
-            if str_typecode => k | not_string
+        letk check_immutable_string () = with_cps!(cps;
+            let is_immutable_string = #% "%class-id?" (x, Value::new(builtin_class_ids::IMMUTABLE_STRING as i32)) @ src;
+            if is_immutable_string => k | not_string
+        );
+        letk check_string () = with_cps!(cps;
+            let is_string = #% "%class-id?" (x, Value::new(builtin_class_ids::STRING as i32)) @ src;
+            if is_string => k | check_immutable_string
         );
 
         let is_immediate = #% "immediate?" (x) @ src;
-        if is_immediate => not_string | check_str_typecode
+        if is_immediate => not_string | check_string
     )
 }
 

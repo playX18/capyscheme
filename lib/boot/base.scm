@@ -1278,3 +1278,1090 @@
   (unless (record-type? typ)
     (assertion-violation 'set-record-type-printer! "Not an record type"))
   (set-rtd-printer! (record-type-rtd typ) printer))
+
+(define (class-slot-definition class slot-name)
+  (let loop ([slots (class-slots class)])
+    (cond
+      [(null? slots) #f]
+      [(eq? (slot-definition-name (car slots)) slot-name) (car slots)]
+      [else (loop (cdr slots))])))
+
+(define (class-slot-accessor class slot-name)
+  (let loop ([accessors (class-accessors class)])
+    (cond
+      [(null? accessors) #f]
+      [(eq? (slot-accessor-name (car accessors)) slot-name) (car accessors)]
+      [else (loop (cdr accessors))])))
+
+(define (slot-ref-using-class class obj slot-name . fallback)
+  (if (not (subclass? (class-of obj) class))
+      (assertion-violation 'slot-ref-using-class
+        "object is not an instance of class"
+        obj
+        class)
+      (let ([accessor (class-slot-accessor class slot-name)])
+        (cond
+          [accessor (slot-ref-using-accessor obj accessor)]
+          [(null? fallback)
+           (assertion-violation 'slot-ref-using-class
+             "class has no slot"
+             class
+             slot-name)]
+          [else (car fallback)]))))
+
+(define (slot-set-using-class! class obj slot-name value)
+  (if (not (subclass? (class-of obj) class))
+      (assertion-violation 'slot-set-using-class!
+        "object is not an instance of class"
+        obj
+        class)
+      (let ([accessor (class-slot-accessor class slot-name)])
+        (if accessor
+            (slot-set-using-accessor! obj accessor value)
+            (assertion-violation 'slot-set-using-class!
+              "class has no slot"
+              class
+              slot-name)))))
+
+(define (slot-bound-using-class? class obj slot-name)
+  (if (not (subclass? (class-of obj) class))
+      (assertion-violation 'slot-bound-using-class?
+        "object is not an instance of class"
+        obj
+        class)
+      (let ([accessor (class-slot-accessor class slot-name)])
+        (if accessor
+            (slot-bound-using-accessor? obj accessor)
+            (assertion-violation 'slot-bound-using-class?
+              "class has no slot"
+              class
+              slot-name)))))
+
+(define (slot-definition-allocation slot)
+  (%slot-definition-allocation slot))
+
+(define (class-slot-allocation-error who class slot-name slot)
+  (assertion-violation who
+    "slot is not class allocated"
+    class
+    slot-name
+    (slot-definition-allocation slot)))
+
+(define (class-slot-missing-error who class slot-name)
+  (assertion-violation who
+    "class has no slot"
+    class
+    slot-name))
+
+(define (class-slot-ref class slot-name)
+  (let ([slot (class-slot-definition class slot-name)])
+    (if slot
+        (if (eq? (slot-definition-allocation slot) #:class)
+            (%class-slot-ref class slot)
+            (class-slot-allocation-error 'class-slot-ref class slot-name slot))
+        (class-slot-missing-error 'class-slot-ref class slot-name))))
+
+(define (class-slot-set! class slot-name value)
+  (let ([slot (class-slot-definition class slot-name)])
+    (if slot
+        (if (eq? (slot-definition-allocation slot) #:class)
+            (%class-slot-set! class slot value)
+            (class-slot-allocation-error 'class-slot-set! class slot-name slot))
+        (class-slot-missing-error 'class-slot-set! class slot-name))))
+
+(define (class-slot-bound? class slot-name)
+  (let ([slot (class-slot-definition class slot-name)])
+    (if slot
+        (if (eq? (slot-definition-allocation slot) #:class)
+            (%class-slot-bound? class slot)
+            (class-slot-allocation-error 'class-slot-bound? class slot-name slot))
+        (class-slot-missing-error 'class-slot-bound? class slot-name))))
+
+(set-setter! class-slot-ref class-slot-set!)
+
+(define (slot-definition-options slot)
+  (list #:allocation (slot-definition-allocation slot)
+        #:init-keyword (slot-definition-init-keyword slot)
+        #:init-value (slot-definition-init-value slot)
+        #:init-thunk (slot-definition-init-thunk slot)
+        #:slot-ref (slot-definition-slot-ref slot)
+        #:slot-set! (slot-definition-slot-set! slot)
+        #:slot-bound? (slot-definition-slot-bound? slot)
+        #:getter (slot-definition-getter slot)
+        #:setter (slot-definition-setter slot)
+        #:accessor (slot-definition-accessor slot)
+        #:initializable (slot-definition-initializable? slot)
+        #:settable (slot-definition-settable? slot)
+        #:immutable (slot-definition-immutable? slot)))
+
+(define (slot-accessor-options accessor)
+  (list #:init-keyword (slot-accessor-init-keyword accessor)
+        #:init-value (slot-accessor-init-value accessor)
+        #:init-thunk (slot-accessor-init-thunk accessor)
+        #:slot-ref (slot-accessor-slot-ref accessor)
+        #:slot-set! (slot-accessor-slot-set! accessor)
+        #:slot-bound? (slot-accessor-slot-bound? accessor)
+        #:getter (slot-accessor-getter accessor)
+        #:setter (slot-accessor-setter accessor)
+        #:accessor (slot-accessor-accessor accessor)
+        #:initializable (slot-accessor-initializable? accessor)
+        #:settable (slot-accessor-settable? accessor)
+        #:immutable (slot-accessor-immutable? accessor)))
+
+(define (%mop-option-name key)
+  (cond
+    [(keyword? key) (keyword->symbol key)]
+    [(symbol? key)
+      (let ([name (symbol->string key)])
+        (if (and (> (string-length name) 0)
+                 (char=? (string-ref name 0) #\:))
+            (string->symbol (substring name 1 (string-length name)))
+            key))]
+    [else key]))
+
+(define (slot-definition-option slot key . default)
+  (let ([name (%mop-option-name key)])
+    (let loop ([options (slot-definition-options slot)])
+      (cond
+        [(null? options)
+         (if (null? default) #f (car default))]
+        [(eq? (%mop-option-name (car options)) name)
+         (cadr options)]
+        [else (loop (cddr options))]))))
+
+(define (slot-accessor-option accessor key . default)
+  (let ([name (%mop-option-name key)])
+    (let loop ([options (slot-accessor-options accessor)])
+      (cond
+        [(null? options)
+         (if (null? default) #f (car default))]
+        [(eq? (%mop-option-name (car options)) name)
+         (cadr options)]
+        [else (loop (cddr options))]))))
+
+(define (generic-options generic)
+  (list #:fallback (generic-fallback generic)
+        #:required-dispatch-arg-count
+        (generic-required-dispatch-arg-count generic)
+        #:sealed (generic-sealed? generic)))
+
+(define (generic-option generic key . default)
+  (let ([name (%mop-option-name key)])
+    (let loop ([options (generic-options generic)])
+      (cond
+        [(null? options)
+         (if (null? default) #f (car default))]
+        [(eq? (%mop-option-name (car options)) name)
+         (cadr options)]
+        [else (loop (cddr options))]))))
+
+(define (method-options method)
+  (list #:generic (method-generic method)
+        #:specializers (method-specializers method)
+        #:required-arg-count (method-required-arg-count method)
+        #:body (method-body method)
+        #:locked (method-locked? method)))
+
+(define (method-option method key . default)
+  (let ([name (%mop-option-name key)])
+    (let loop ([options (method-options method)])
+      (cond
+        [(null? options)
+         (if (null? default) #f (car default))]
+        [(eq? (%mop-option-name (car options)) name)
+         (cadr options)]
+        [else (loop (cddr options))]))))
+
+(define (next-method-options next-method)
+  (list #:generic (next-method-generic next-method)
+        #:methods (next-method-methods next-method)
+        #:args (next-method-args next-method)
+        #:index (next-method-index next-method)
+        #:body (next-method-body next-method)
+        #:has-next? (next-method-has-next? next-method)
+        #:next (next-method-next next-method)))
+
+(define (next-method-option next-method key . default)
+  (let ([name (%mop-option-name key)])
+    (let loop ([options (next-method-options next-method)])
+      (cond
+        [(null? options)
+         (if (null? default) #f (car default))]
+        [(eq? (%mop-option-name (car options)) name)
+         (cadr options)]
+        [else (loop (cddr options))]))))
+
+(define (class-options class)
+  (list #:name (class-name class)
+        #:direct-supers (class-direct-supers class)
+        #:cpl (class-precedence-list class)
+        #:direct-slots (class-direct-slots class)
+        #:slots (class-slots class)
+        #:accessors (class-accessors class)
+        #:initargs (class-initargs class)
+        #:direct-methods (class-direct-methods class)
+        #:direct-subclasses (class-direct-subclasses class)
+        #:applicable (class-applicable? class)
+        #:malleable (class-malleable? class)
+        #:sealed (class-sealed? class)))
+
+(define (class-option class key . default)
+  (let ([name (%mop-option-name key)])
+    (let loop ([options (class-options class)])
+      (cond
+        [(null? options)
+         (if (null? default) #f (car default))]
+        [(eq? (%mop-option-name (car options)) name)
+         (cadr options)]
+        [else (loop (cddr options))]))))
+
+(define (subclass? class super)
+  (let loop ([cpl (class-precedence-list class)])
+    (cond
+      [(null? cpl) #f]
+      [(eq? (car cpl) super) #t]
+      [else (loop (cdr cpl))])))
+
+(define (is-a? obj class)
+  (subclass? (class-of obj) class))
+
+(define (method-applicable-for-classes? method . classes)
+  (and (>= (length classes) (method-required-arg-count method))
+       (let loop ([specializers (method-specializers method)]
+                  [classes classes])
+         (cond
+           [(null? specializers) #t]
+           [(null? classes) #f]
+           [(subclass? (car classes) (car specializers))
+             (loop (cdr specializers) (cdr classes))]
+           [else #f]))))
+
+(define (compute-applicable-methods generic args)
+  (let ([classes (map class-of args)])
+    (filter
+      (lambda (method)
+        (apply method-applicable-for-classes? method classes))
+      (generic-methods generic))))
+
+(define (method-specificity-score method classes)
+  (define unspecialized-distance 1000000000)
+  (define (class-distance class specializer)
+    (let loop ([cpl (class-precedence-list class)]
+               [distance 0])
+      (cond
+        [(null? cpl) #f]
+        [(eq? (car cpl) specializer) distance]
+        [else (loop (cdr cpl) (+ distance 1))])))
+  (and (>= (length classes) (method-required-arg-count method))
+       (let loop ([classes classes]
+                  [specializers (method-specializers method)]
+                  [score '()])
+         (cond
+           [(null? classes)
+            (reverse
+              (cons (- unspecialized-distance
+                       (method-required-arg-count method))
+                    score))]
+           [(null? specializers)
+            (loop (cdr classes)
+                  specializers
+                  (cons unspecialized-distance score))]
+           [else
+            (let ([distance (class-distance (car classes) (car specializers))])
+              (and distance
+                   (loop (cdr classes)
+                         (cdr specializers)
+                         (cons distance score))))]))))
+
+(define (score<? left right)
+  (cond
+    [(null? left) #f]
+    [(null? right) #f]
+    [(< (car left) (car right)) #t]
+    [(> (car left) (car right)) #f]
+    [else (score<? (cdr left) (cdr right))]))
+
+(define (method-more-specific? left right classes)
+  (let ([left-score (method-specificity-score left classes)]
+        [right-score (method-specificity-score right classes)])
+    (and left-score
+         right-score
+         (score<? left-score right-score))))
+
+(define (sort-applicable-methods generic methods args)
+  (let ([classes (map class-of args)])
+    (list-sort
+      (lambda (left right)
+        (method-more-specific? left right classes))
+      methods)))
+
+(define (apply-method generic methods build-next args)
+  (if (null? methods)
+      (apply generic-invoke generic args)
+      (apply (method-body (car methods))
+             (cons (build-next generic methods args) args))))
+
+(define (apply-methods generic methods args)
+  (apply-method generic methods %make-next-method args))
+
+(define (apply-generic generic args)
+  (let ([methods (compute-applicable-methods generic args)])
+    (apply-methods generic
+                   (sort-applicable-methods generic methods args)
+                   args)))
+
+(define (slot-exists? obj slot-name)
+  (slot-exists-using-class? (class-of obj) obj slot-name))
+
+(define (slot-exists-using-class? class obj slot-name)
+  (not (not (class-slot-definition class slot-name))))
+
+(define (slot-push! obj slot-name value)
+  (slot-set! obj slot-name (cons value (slot-ref obj slot-name))))
+
+(define (slot-pop! obj slot-name . default)
+  (if (or (not (slot-exists? obj slot-name))
+          (not (slot-bound? obj slot-name))
+          (not (pair? (slot-ref obj slot-name))))
+      (if (null? default)
+          (assertion-violation 'slot-pop! "slot value is not a pair" obj slot-name)
+          (car default))
+      (let ([value (slot-ref obj slot-name)])
+        (slot-set! obj slot-name (cdr value))
+        (car value))))
+
+(define-for-syntax (%define-class-syntax-list->list form stx)
+  (syntax-case stx ()
+    [() '()]
+    [(head . tail)
+      (cons #'head (%define-class-syntax-list->list form #'tail))]
+    [_ (syntax-violation 'define-class
+         "slot list must be a proper list"
+         form
+         stx)]))
+
+(define-for-syntax (%define-class-colon-symbol? datum)
+  (and (symbol? datum)
+       (let ([name (symbol->string datum)])
+         (and (> (string-length name) 0)
+              (char=? (string-ref name 0) #\:)))))
+
+(define-for-syntax (%define-class-option-name option)
+  (let ([datum (syntax->datum option)])
+    (cond
+      [(keyword? datum) (keyword->symbol datum)]
+      [(%define-class-colon-symbol? datum)
+        (let ([name (symbol->string datum)])
+          (string->symbol (substring name 1 (string-length name))))]
+      [else datum])))
+
+(define-for-syntax (%define-class-runtime-slot-option option)
+  (case (%define-class-option-name option)
+    [(init-value) #'#:init-value]
+    [(init-keyword) #'#:init-keyword]
+    [(init-thunk) #'#:init-thunk]
+    [(slot-ref) #'#:slot-ref]
+    [(slot-set!) #'#:slot-set!]
+    [(slot-bound?) #'#:slot-bound?]
+    [(allocation) #'#:allocation]
+    [(getter) #'#:getter]
+    [(setter) #'#:setter]
+    [(accessor) #'#:accessor]
+    [(immutable) #'#:immutable]
+    [(initializable) #'#:initializable]
+    [(settable) #'#:settable]
+    [else option]))
+
+(define-for-syntax (%define-class-slot-option-pairs form options slot)
+  (syntax-case options ()
+    [() '()]
+    [(option value . rest)
+      (cons (cons #'option #'value)
+            (%define-class-slot-option-pairs form #'rest slot))]
+    [_ (syntax-violation 'define-class
+         "slot options must be keyword/value pairs"
+         form
+         slot)]))
+
+(define-for-syntax (%define-class-option-pairs form options)
+  (syntax-case options ()
+    [() '()]
+    [(option value . rest)
+      (cons (cons #'option #'value)
+            (%define-class-option-pairs form #'rest))]
+    [_ (syntax-violation 'define-class
+         "class options must be keyword/value pairs"
+         form
+         options)]))
+
+(define-for-syntax (%define-class-applicable-option form options)
+  (let loop ([pairs (%define-class-option-pairs form options)]
+             [applicable? #f]
+             [seen? #f])
+    (cond
+      [(null? pairs) applicable?]
+      [else
+        (let ([value (cdar pairs)])
+          (cond
+            [(eq? (%define-class-option-name (caar pairs)) 'applicable)
+              (when seen?
+                (syntax-violation 'define-class
+                  "duplicate #:applicable class option"
+                  form
+                  (caar pairs)))
+              (let ([datum (syntax->datum value)])
+                (unless (boolean? datum)
+                  (syntax-violation 'define-class
+                    "#:applicable class option must be a boolean literal"
+                    form
+                    value))
+                (loop (cdr pairs) datum #t))]
+            [else
+              (syntax-violation 'define-class
+                "unsupported class option"
+                form
+                (caar pairs))]))])))
+
+(define-for-syntax (%define-class-runtime-option-values form options slot)
+  (let loop ([pairs (%define-class-slot-option-pairs form options slot)]
+             [out '()])
+    (cond
+      [(null? pairs) (reverse out)]
+      [else
+        (let ([value (cdar pairs)]
+              [option-name (%define-class-option-name (caar pairs))])
+          (cond
+            [(memq option-name '(getter setter accessor))
+              (loop (cdr pairs)
+                    (cons #`'#,value
+                          (cons (%define-class-runtime-slot-option (caar pairs)) out)))]
+            [(memq option-name '(initform init-form))
+              (loop (cdr pairs)
+                    (cons #`(lambda () #,value)
+                          (cons (datum->syntax (caar pairs) '#:init-thunk)
+                                out)))]
+            [(and (eq? option-name 'allocation)
+                  (%define-class-colon-symbol? (syntax->datum value)))
+              (loop (cdr pairs)
+                    (cons #`'#,value
+                          (cons (%define-class-runtime-slot-option (caar pairs)) out)))]
+            [else
+              (loop (cdr pairs)
+                    (cons value
+                          (cons (%define-class-runtime-slot-option (caar pairs)) out)))]))])))
+
+(define-for-syntax (%process-slot-definition form slot)
+  (syntax-case slot ()
+    [name
+      (identifier? #'name)
+      #''name]
+    [(name option value ...)
+      (identifier? #'name)
+      (with-syntax ([(runtime-option-value ...)
+                      (%define-class-runtime-option-values
+                        form
+                        #'(option value ...)
+                        slot)])
+        #'(list 'name runtime-option-value ...))]
+    [_ (syntax-violation 'define-class
+         "expected a slot name or (slot-name option value ...)"
+         form
+         slot)]))
+
+(define-for-syntax (%define-class-getter-forms class-name slot-name getter-name)
+  (with-syntax ([class-name class-name]
+                [slot-name slot-name]
+                [getter-name getter-name])
+    #'((define-generic getter-name)
+       (define-method (getter-name (obj class-name))
+         (slot-ref obj 'slot-name)))))
+
+(define-for-syntax (%define-class-setter-forms class-name slot-name setter-name)
+  (with-syntax ([class-name class-name]
+                [slot-name slot-name]
+                [setter-name setter-name])
+    #'((define-generic setter-name)
+       (define-method (setter-name (obj class-name) value)
+         (slot-set! obj 'slot-name value)
+         value))))
+
+(define-for-syntax (%define-class-accessor-forms class-name slot-name accessor-name)
+  (with-syntax ([class-name class-name]
+                [slot-name slot-name]
+                [accessor-name accessor-name])
+    #'((define-generic accessor-name)
+       (define-generic (setter accessor-name))
+       (define-method (accessor-name (obj class-name))
+         (slot-ref obj 'slot-name))
+       (define-method ((setter accessor-name) (obj class-name) value)
+         (slot-set! obj 'slot-name value)
+         value))))
+
+(define-for-syntax (%define-class-slot-accessor-forms form class-name slot)
+  (syntax-case slot ()
+    [name
+      (identifier? #'name)
+      '()]
+    [(name option value ...)
+      (identifier? #'name)
+      (let loop ([pairs (%define-class-slot-option-pairs form #'(option value ...) slot)]
+                 [forms '()])
+        (if (null? pairs)
+          (apply append (reverse forms))
+          (let ([target (cdar pairs)])
+            (cond
+              [(eq? (%define-class-option-name (caar pairs)) 'getter)
+                (loop (cdr pairs)
+                      (cons (%define-class-getter-forms class-name #'name target) forms))]
+              [(eq? (%define-class-option-name (caar pairs)) 'setter)
+                (loop (cdr pairs)
+                      (cons (%define-class-setter-forms class-name #'name target) forms))]
+              [(eq? (%define-class-option-name (caar pairs)) 'accessor)
+                (loop (cdr pairs)
+                      (cons (%define-class-accessor-forms class-name #'name target) forms))]
+              [else
+                (loop (cdr pairs) forms)]))))]
+    [_ '()]))
+
+(define-for-syntax (%expand-define-class form name supers slots options)
+  (let* ([slot-list (%define-class-syntax-list->list form slots)]
+         [applicable? (%define-class-applicable-option form options)])
+    (with-syntax ([name name]
+                  [(super ...) supers]
+                  [(slot-spec ...)
+                    (map (lambda (slot) (%process-slot-definition form slot))
+                         slot-list)]
+                  [(accessor-form ...)
+                    (apply append
+                      (map (lambda (slot)
+                             (%define-class-slot-accessor-forms form name slot))
+                           slot-list))]
+                  [(class-var old-class) (generate-temporaries '(class-var old-class))]
+                  [make-class-id
+                    (if applicable? #'make-invocable-class #'make-class)]
+                  [redefine-class-id
+                    (if applicable? #'redefine-invocable-class! #'redefine-class!)]
+                  [applicable-value (datum->syntax form applicable?)])
+      #'(begin
+          (define name
+            (let ([class-var (module-local-variable (current-module) 'name)])
+              (if (and class-var (variable-bound? class-var))
+                (let ([old-class (variable-ref class-var)])
+                  (if (class? old-class)
+                    (redefine-class-id
+                      old-class
+                      'name
+                      (list slot-spec ...)
+                      (list super ...))
+                    (make-class-id 'name (list slot-spec ...) (list super ...))))
+                (make-class-id 'name (list slot-spec ...) (list super ...)))))
+          (class-post-initialize
+            name
+            (list #:name 'name
+                  #:supers (list super ...)
+                  #:slots (list slot-spec ...)
+                  #:applicable applicable-value))
+          accessor-form ...))))
+
+(define-syntax define-class
+  (lambda (form)
+    (syntax-case form ()
+      [(_ name supers slots option ...)
+        (identifier? #'name)
+        (%expand-define-class form #'name #'supers #'slots #'(option ...))]
+      [_ (syntax-violation 'define-class
+           "expected (define-class name supers slots . options)"
+           form)])))
+
+(define-syntax define-generic
+  (lambda (x)
+    (define (colon-symbol? datum)
+      (and (symbol? datum)
+           (let ([name (symbol->string datum)])
+             (and (> (string-length name) 0)
+                  (char=? (string-ref name 0) #\:)))))
+    (define (option-name option)
+      (let ([datum (syntax->datum option)])
+        (cond
+          [(keyword? datum) (keyword->symbol datum)]
+          [(colon-symbol? datum)
+            (let ([name (symbol->string datum)])
+              (string->symbol (substring name 1 (string-length name))))]
+          [else datum])))
+    (define (generic-option-pairs options)
+      (syntax-case options ()
+        [() '()]
+        [(option value . rest)
+          (cons (cons #'option #'value)
+                (generic-option-pairs #'rest))]
+        [_ (syntax-violation 'define-generic
+             "generic options must be keyword/value pairs"
+             x
+             options)]))
+    (define (generic-option-forms generic options)
+      (let loop ([pairs (generic-option-pairs options)]
+                 [forms '()])
+        (if (null? pairs)
+          (apply append (reverse forms))
+          (let ([option (option-name (caar pairs))]
+                [value (cdar pairs)])
+            (case option
+              [(fallback)
+                (loop (cdr pairs)
+                      (cons
+                        (with-syntax ([generic generic]
+                                      [value value])
+                          #'((set-generic-fallback! generic value)))
+                        forms))]
+              [(sealed)
+                (loop (cdr pairs)
+                      (cons
+                        (with-syntax ([generic generic]
+                                      [value value])
+                          #'((when value (generic-seal! generic))))
+                        forms))]
+              [else
+                (syntax-violation 'define-generic
+                  "unsupported generic option"
+                  x
+                  (caar pairs))])))))
+    (define (setter-binding-name name)
+      (datum->syntax name
+        (string->symbol
+          (string-append "setter of " (symbol->string (syntax->datum name))))))
+    (define (expand-setter-generic name required-dispatch-args options)
+      (unless (identifier? name)
+        (syntax-violation 'define-generic "expected a generic identifier" x name))
+      (with-syntax ([getter-id name]
+                    [setter-id (setter-binding-name name)]
+                    [required-dispatch-args required-dispatch-args]
+                    [(option-form ...)
+                      (generic-option-forms (setter-binding-name name) options)])
+        #'(begin
+            (define setter-id (make-generic 'setter-id required-dispatch-args))
+            option-form ...
+            (set-setter! getter-id setter-id))))
+    (define (expand-generic name required-dispatch-args options)
+      (with-syntax ([name name]
+                    [required-dispatch-args required-dispatch-args]
+                    [(option-form ...) (generic-option-forms name options)])
+        #'(begin
+            (define name (make-generic 'name required-dispatch-args))
+            option-form ...)))
+    (syntax-case x (setter)
+      [(_ name)
+        (identifier? #'name)
+        #'(define name (make-generic 'name))]
+      [(_ name option value ...)
+        (and (identifier? #'name)
+             (or (keyword? (syntax->datum #'option))
+                 (colon-symbol? (syntax->datum #'option))))
+        (expand-generic #'name #'1 #'(option value ...))]
+      [(_ (setter name))
+        (expand-setter-generic #'name #'1 #'())]
+      [(_ (setter name) option value ...)
+        (or (keyword? (syntax->datum #'option))
+            (colon-symbol? (syntax->datum #'option)))
+        (expand-setter-generic #'name #'1 #'(option value ...))]
+      [(_ name required-dispatch-args)
+        (identifier? #'name)
+        #'(define name (make-generic 'name required-dispatch-args))]
+      [(_ name required-dispatch-args option value ...)
+        (identifier? #'name)
+        (expand-generic #'name #'required-dispatch-args #'(option value ...))]
+      [(_ (setter name) required-dispatch-args)
+        (expand-setter-generic #'name #'required-dispatch-args #'())]
+      [(_ (setter name) required-dispatch-args option value ...)
+        (expand-setter-generic #'name #'required-dispatch-args #'(option value ...))]
+      [_ (syntax-violation 'define-generic "invalid generic definition" x)])))
+
+(define-syntax define-method
+  (lambda (x)
+    (define (parse-specialized-args args)
+      (let loop ([rest args]
+                 [vars '()]
+                 [specializers '()]
+                 [required 0]
+                 [specialized-prefix? #t])
+        (syntax-case rest ()
+          [()
+            (values (reverse vars) (reverse specializers) required #f #'())]
+          [(keyword . _)
+            (keyword? (syntax->datum #'keyword))
+            (values (reverse vars) (reverse specializers) required #f rest)]
+          [rest-var
+            (identifier? #'rest-var)
+            (values (reverse vars) (reverse specializers) required #'rest-var #'())]
+          [((var class) . more)
+            (identifier? #'var)
+            (if specialized-prefix?
+              (loop #'more
+                    (cons #'var vars)
+                    (cons #'class specializers)
+                    (+ required 1)
+                    #t)
+              (syntax-violation 'define-method
+                "specialized arguments must precede unspecialized arguments"
+                args
+                #'(var class)))]
+          [(var . more)
+            (identifier? #'var)
+            (loop #'more
+                  (cons #'var vars)
+                  specializers
+                  (+ required 1)
+                  #f)]
+          [_ (syntax-violation 'define-method
+               "expected arguments as variables, (variable class), or a rest variable"
+               args)])))
+    (define (generic-expression form generic)
+      (syntax-case generic (setter)
+        [id
+          (identifier? #'id)
+          #'id]
+        [(setter id)
+          (identifier? #'id)
+          #'(setter id)]
+        [_ (syntax-violation 'define-method
+             "expected a generic identifier or (setter identifier)"
+             form
+             generic)]))
+    (define (locked-qualifier? qualifier)
+      (let ([datum (syntax->datum qualifier)])
+        (or (eq? datum '#:locked)
+            (eq? datum ':locked))))
+    (define (colon-symbol? datum)
+      (and (symbol? datum)
+           (let ([name (symbol->string datum)])
+             (and (> (string-length name) 0)
+                  (char=? (string-ref name 0) #\:)))))
+    (define (keyword-qualifier? qualifier)
+      (let ([datum (syntax->datum qualifier)])
+        (or (keyword? datum)
+            (colon-symbol? datum))))
+    (define (unsupported-qualifier form qualifier)
+      (syntax-violation 'define-method
+        "unsupported method qualifier"
+        form
+        qualifier))
+    (define (expand-method form generic args body locked?)
+      (receive (vars specializers required rest-var tail-formals)
+        (parse-specialized-args args)
+        (with-syntax ([generic-id (generic-expression form generic)]
+                      [(var ...) vars]
+                      [(specializer ...) specializers]
+                      [required-count (datum->syntax form required)]
+                      [locked-value locked?]
+                      [next-id (datum->syntax x 'next)]
+                      [next-method-id (datum->syntax x 'next-method)]
+                      [(tail ...) tail-formals]
+                      [(body ...) body])
+          (if rest-var
+            (with-syntax ([rest-id rest-var])
+              #'(add-method! generic-id
+                  (list specializer ...)
+                  required-count
+                  (lambda* (next-id var ... . rest-id)
+                    (let ([next-method-id (lambda () (next-method-invoke next-id))])
+                      body ...))
+                  locked-value))
+            #'(add-method! generic-id
+                (list specializer ...)
+                required-count
+                (lambda* (next-id var ... tail ...)
+                  (let ([next-method-id (lambda () (next-method-invoke next-id))])
+                    body ...))
+                locked-value)))))
+    (syntax-case x ()
+      [(_ (generic . args) qualifier body ...)
+        (keyword-qualifier? #'qualifier)
+        (if (locked-qualifier? #'qualifier)
+            (expand-method x #'generic #'args #'(body ...) #'#t)
+            (unsupported-qualifier x #'qualifier))]
+      [(_ (generic . args) body ...)
+        (expand-method x #'generic #'args #'(body ...) #'#f)]
+      [(_ generic qualifier args body ...)
+        (keyword-qualifier? #'qualifier)
+        (if (locked-qualifier? #'qualifier)
+            (expand-method x #'generic #'args #'(body ...) #'#t)
+            (unsupported-qualifier x #'qualifier))]
+      [(_ generic args body ...)
+        (expand-method x #'generic #'args #'(body ...) #'#f)]
+      [_ (syntax-violation 'define-method "invalid method definition" x)])))
+
+(define <top> (%builtin-class 'top))
+(define <bottom> (%builtin-class 'bottom))
+(define <type> (%builtin-class 'type))
+(define <object> (%builtin-class 'object))
+(define <class> (%builtin-class 'class))
+(define <pair> (%builtin-class 'pair))
+(define <bool> (%builtin-class 'bool))
+(define <null> (%builtin-class 'null))
+(define <eof> (%builtin-class 'eof))
+(define <void> (%builtin-class 'void))
+(define <unspecified> (%builtin-class 'unspecified))
+(define <undefined> (%builtin-class 'undefined))
+(define <number> (%builtin-class 'number))
+(define <fixnum> (%builtin-class 'fixnum))
+(define <flonum> (%builtin-class 'flonum))
+(define <bigint> (%builtin-class 'bigint))
+(define <rational> (%builtin-class 'rational))
+(define <complex> (%builtin-class 'complex))
+(define <symbol> (%builtin-class 'symbol))
+(define <uninterned-symbol> (%builtin-class 'uninterned-symbol))
+(define <keyword> (%builtin-class 'keyword))
+(define <char> (%builtin-class 'char))
+(define <string> (%builtin-class 'string))
+(define <immutable-string> (%builtin-class 'immutable-string))
+(define <stringbuf-wide> (%builtin-class 'stringbuf-wide))
+(define <stringbuf-narrow> (%builtin-class 'stringbuf-narrow))
+(define <bytevector> (%builtin-class 'bytevector))
+(define <immutable-bytevector> (%builtin-class 'immutable-bytevector))
+(define <mapped-bytevector> (%builtin-class 'mapped-bytevector))
+(define <vector> (%builtin-class 'vector))
+(define <immutable-vector> (%builtin-class 'immutable-vector))
+(define <tuple> (%builtin-class 'tuple))
+(define <hash-table> (%builtin-class 'hash-table))
+(define <immutable-hash-table> (%builtin-class 'immutable-hash-table))
+(define <weak-set> (%builtin-class 'weak-set))
+(define <weak-table> (%builtin-class 'weak-table))
+(define <weak-mapping> (%builtin-class 'weak-mapping))
+(define <ephemeron> (%builtin-class 'ephemeron))
+(define <box> (%builtin-class 'box))
+(define <variable> (%builtin-class 'variable))
+(define <fluid> (%builtin-class 'fluid))
+(define <dynamic-state> (%builtin-class 'dynamic-state))
+(define <closure> (%builtin-class 'closure))
+(define <continuation-closure> (%builtin-class 'continuation-closure))
+(define <native-procedure> (%builtin-class 'native-procedure))
+(define <native-continuation> (%builtin-class 'native-continuation))
+(define <code-block> (%builtin-class 'code-block))
+(define <relocatable-code-block> (%builtin-class 'relocatable-code-block))
+(define <module> (%builtin-class 'module))
+(define <environment> (%builtin-class 'environment))
+(define <syntax> (%builtin-class 'syntax))
+(define <syntax-transformer> (%builtin-class 'syntax-transformer))
+(define <port> (%builtin-class 'port))
+(define <socket> (%builtin-class 'socket))
+(define <poller> (%builtin-class 'poller))
+(define <ffi-pointer> (%builtin-class 'ffi-pointer))
+(define <cif> (%builtin-class 'cif))
+(define <thread> (%builtin-class 'thread))
+(define <mutex> (%builtin-class 'mutex))
+(define <condition> (%builtin-class 'condition))
+(define <annotation> (%builtin-class 'annotation))
+(define <continuation-marks> (%builtin-class 'continuation-marks))
+(define <generic> (%builtin-class 'generic))
+(define <method> (%builtin-class 'method))
+(define <next-method> (%builtin-class 'next-method))
+(define <slot-definition> (%builtin-class 'slot-definition))
+(define <slot-accessor> (%builtin-class 'slot-accessor))
+
+(define-generic slot-unbound)
+(define-generic slot-missing)
+
+(define-method (slot-unbound (class <class>) obj slot)
+  (assertion-violation 'slot-unbound
+    "slot is unbound"
+    class
+    slot))
+
+(define-method (slot-missing (class <class>) obj slot . value)
+  (assertion-violation 'slot-missing
+    "class has no slot"
+    class
+    slot))
+
+(define-generic class-post-initialize)
+
+(define-method (class-post-initialize (class <class>) initargs)
+  #f)
+
+(define-generic initialize)
+
+(define-method (initialize obj initargs)
+  obj)
+
+(define-generic make 1)
+
+(define-method (make (class <class>) . initargs)
+  (let ([obj (apply make-instance class initargs)])
+    (initialize
+      (or (and (procedure? obj) (procedure-property obj 'instance)) obj)
+      initargs)
+    obj))
+
+(define describe-details
+  (let ([flag #f])
+    (lambda args
+      (cond
+        [(null? args) flag]
+        [(null? (cdr args))
+          (let ([value (car args)]
+                [old flag])
+            (unless (boolean? value)
+              (assertion-violation
+                'describe-details
+                "expected boolean"
+                value))
+            (set! flag value)
+            old)]
+        [else
+          (assertion-violation
+            'describe-details
+            "expected zero or one argument"
+            args)]))))
+
+(define (%describe-hidden-slot? slot-name)
+  (let ([name (symbol->string slot-name)])
+    (and (> (string-length name) 0)
+         (char=? (string-ref name 0) #\%))))
+
+(define (describe-common obj)
+  (format #t "~s is an instance of class ~a~%" obj (class-name (class-of obj)))
+  (values))
+
+(define-generic describe-slots)
+
+(define-method (describe-slots obj)
+  (let ([slots (class-slots (class-of obj))])
+    (unless (null? slots)
+      (format #t "slots:~%")
+      (for-each
+        (lambda (slot)
+          (let ([name (slot-definition-name slot)])
+            (when (or (describe-details)
+                      (not (%describe-hidden-slot? name)))
+              (format #t "  ~s: " name)
+              (if (slot-bound? obj name)
+                  (write (slot-ref obj name))
+                  (display "#<unbound>"))
+              (newline))))
+        slots)))
+  (values))
+
+(define-generic describe)
+
+(define-method (describe obj)
+  (describe-common obj)
+  (describe-slots obj)
+  (values))
+
+(define-generic x->string)
+
+(define-method (x->string (obj <string>)) obj)
+(define-method (x->string (obj <immutable-string>)) obj)
+(define-method (x->string (obj <number>)) (number->string obj))
+(define-method (x->string (obj <symbol>)) (symbol->string obj))
+(define-method (x->string (obj <uninterned-symbol>)) (symbol->string obj))
+(define-method (x->string (obj <char>)) (string obj))
+
+(define-generic x->number)
+
+(define-method (x->number (obj <number>)) obj)
+(define-method (x->number (obj <string>)) (or (string->number obj) 0))
+(define-method (x->number (obj <immutable-string>)) (or (string->number obj) 0))
+(define-method (x->number (obj <char>)) (char->integer obj))
+(define-method (x->number obj) 0)
+
+(define-generic x->integer)
+
+(define-method (x->integer (obj <fixnum>)) obj)
+(define-method (x->integer (obj <bigint>)) obj)
+(define-method (x->integer (obj <number>))
+  (inexact->exact (round (real-part obj))))
+(define-method (x->integer (obj <char>)) (char->integer obj))
+(define-method (x->integer obj) (x->integer (x->number obj)))
+
+(define-generic ref)
+(define-generic (setter ref))
+
+(define-method (ref (obj <top>) (slot <symbol>))
+  (slot-ref obj slot))
+(define-method (ref (obj <top>) (slot <symbol>) fallback)
+  (if (and (slot-exists? obj slot) (slot-bound? obj slot))
+      (slot-ref obj slot)
+      fallback))
+(define-method ((setter ref) (obj <top>) (slot <symbol>) value)
+  (slot-set! obj slot value))
+
+(define-method (ref (obj <pair>) (index <fixnum>))
+  (list-ref obj index))
+(define-method ((setter ref) (obj <pair>) (index <fixnum>) value)
+  (set-car! (list-tail obj index) value))
+
+(define-method (ref (obj <vector>) (index <fixnum>))
+  (vector-ref obj index))
+(define-method (ref (obj <immutable-vector>) (index <fixnum>))
+  (vector-ref obj index))
+(define-method ((setter ref) (obj <vector>) (index <fixnum>) value)
+  (vector-set! obj index value))
+
+(define-method (ref (obj <string>) (index <fixnum>))
+  (string-ref obj index))
+(define-method (ref (obj <immutable-string>) (index <fixnum>))
+  (string-ref obj index))
+(define-method ((setter ref) (obj <string>) (index <fixnum>) value)
+  (string-set! obj index value))
+
+(define-method (ref (obj <bytevector>) (index <fixnum>))
+  (bytevector-u8-ref obj index))
+(define-method (ref (obj <immutable-bytevector>) (index <fixnum>))
+  (bytevector-u8-ref obj index))
+(define-method (ref (obj <mapped-bytevector>) (index <fixnum>))
+  (bytevector-u8-ref obj index))
+(define-method ((setter ref) (obj <bytevector>) (index <fixnum>) value)
+  (bytevector-u8-set! obj index value))
+
+(define-method (ref (obj <hash-table>) key)
+  (core-hash-ref obj key #f))
+(define-method (ref (obj <hash-table>) key fallback)
+  (core-hash-ref obj key fallback))
+(define-method (ref (obj <immutable-hash-table>) key)
+  (core-hash-ref obj key #f))
+(define-method (ref (obj <immutable-hash-table>) key fallback)
+  (core-hash-ref obj key fallback))
+(define-method ((setter ref) (obj <hash-table>) key value)
+  (core-hash-set! obj key value)
+  value)
+
+(define (%box-ref-field obj field)
+  (case field
+    [(* 0) (unbox obj)]
+    [else
+      (assertion-violation
+        'ref
+        "expected box field '* or 0"
+        field)]))
+
+(define-method (ref (obj <box>) field)
+  (%box-ref-field obj field))
+
+(define-method ((setter ref) (obj <box>) field value)
+  (case field
+    [(* 0)
+      (set-box! obj value)
+      value]
+    [else
+      (assertion-violation
+        'setter-of-ref
+        "expected box field '* or 0"
+        field)]))
+
+(define (~ obj selector . more)
+  (if (null? more)
+      (ref obj selector)
+      (apply ~ (ref obj selector) more)))
+
+(define (%set-~ obj selector . rest)
+  (cond
+    [(null? rest)
+     (assertion-violation 'setter-of-~ "missing value" obj selector)]
+    [(null? (cdr rest))
+     ((setter ref) obj selector (car rest))]
+    [else
+     (apply (setter ~) (ref obj selector) rest)]))
+
+(set-setter! ~ %set-~)
+
+(define ref* ~)

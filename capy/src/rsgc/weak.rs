@@ -263,11 +263,7 @@ impl WeakProcessingState {
             let mut objects_with_weak_refs = self.objects_with_weak_refs.lock();
 
             for obj in objects_with_weak_refs.drain() {
-                let obj = GCObject::from(obj);
-                let header = obj.header();
-                let vt = header.vtable();
-
-                (vt.weak_proc)(obj, &mut weak_processor);
+                GCObject::from(obj).process_weak_refs(&mut weak_processor);
             }
 
             let mut roots = self.roots_with_weak_refs.lock();

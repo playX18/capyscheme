@@ -7,7 +7,7 @@ use crate::{
         Context,
         modules::Variable,
         prelude::*,
-        value::{Closure, Str, Symbol, Tuple, Value},
+        value::{Boxed, Closure, Str, Symbol, Tuple, Value},
     },
 };
 
@@ -303,6 +303,30 @@ pub mod base_ops {
     #[scheme(name = "variable?")]
     pub fn is_variable(v: Value<'gc>) -> Value<'gc> {
         nctx.return_(Value::new(v.is::<Variable>()))
+    }
+
+    #[scheme(name = "box?")]
+    pub fn is_box(v: Value<'gc>) -> bool {
+        nctx.return_(v.is::<Boxed>())
+    }
+
+    #[scheme(name = "box")]
+    pub fn make_box(value: Value<'gc>) -> Gc<'gc, Boxed<'gc>> {
+        let ctx = nctx.ctx;
+        nctx.return_(Boxed::new(ctx, value))
+    }
+
+    #[scheme(name = "unbox")]
+    pub fn unbox(boxed: Gc<'gc, Boxed<'gc>>) -> Value<'gc> {
+        nctx.return_(boxed.get())
+    }
+
+    #[scheme(name = "set-box!")]
+    pub fn set_box(boxed: Gc<'gc, Boxed<'gc>>, value: Value<'gc>) -> Value<'gc> {
+        barrier::field!(Gc::write(*nctx.ctx, boxed), Boxed, val)
+            .unlock()
+            .set(value);
+        nctx.return_(Value::undefined())
     }
 
     #[scheme(name = "symbol=?")]

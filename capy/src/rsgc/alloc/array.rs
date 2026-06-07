@@ -12,7 +12,7 @@ use crate::rsgc::collection::Visitor;
 use crate::rsgc::{
     Gc, Mutation, WeakProcessor,
     barrier::IndexWrite,
-    object::{GCObject, VTable},
+    object::{AllocationHooks, GCObject, gc_only_class_header_word_with_context},
     traits::Trace,
 };
 
@@ -73,7 +73,7 @@ impl<T: Trace> Array<T> {
         size_of::<Array<T>>() + (size_of::<T>() * len) - size_of::<T>()
     }
 
-    pub const VTABLE: &'static VTable = &VTable {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
         type_name: "Array<T>",
         instance_size: 0,
         compute_size: Some(array_size::<T>),
@@ -97,7 +97,14 @@ impl<T: Trace> Array<T> {
         let size = Self::array_size(len);
         let align = align_of::<Self>();
 
-        let alloc = unsafe { mc.raw_allocate(size, align, Self::VTABLE, semantics) };
+        let alloc = unsafe {
+            mc.raw_allocate_with_header_word(
+                size,
+                align,
+                gc_only_class_header_word_with_context(mc.into(), Self::HOOKS),
+                semantics,
+            )
+        };
 
         // SAFETY:
         // - alloc is a valid allocation with zeroed out memory
@@ -279,5 +286,22 @@ impl<T: PartialOrd + Trace> PartialOrd for Array<T> {
 impl<T: Ord + Trace> Ord for Array<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.as_slice().cmp(other.as_slice())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rsgc::object::builtin_class_ids;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn array_allocation_uses_class_only_dynamic_header() {
+        Scheme::new_uninit().enter(|ctx| {
+            let array = Array::with(*ctx, 3, |_, index| index);
+
+            assert_eq!(array.as_slice(), &[0, 1, 2]);
+            assert!(array.as_gcobj().header().class_id().bits() > builtin_class_ids::MAX);
+        });
     }
 }

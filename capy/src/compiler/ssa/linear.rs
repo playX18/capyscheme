@@ -2,7 +2,7 @@ use std::{collections::HashMap, mem::offset_of};
 
 use crate::rsgc::{
     Gc,
-    object::{HeapObjectHeader, HeapTypeInfo, OBJECT_REF_OFFSET, builtin_type_ids},
+    object::{HeapObjectHeader, OBJECT_REF_OFFSET, builtin_class_ids},
     sync::thread::Thread,
 };
 
@@ -24,7 +24,7 @@ use crate::{
     runtime::{
         Context, REGISTER_ARG_COUNT, State,
         value::CodeBlock,
-        value::{Closure, Symbol, Tagged, TypeCode8, TypeCode16, Value},
+        value::{Closure, Symbol, Value},
         vm::exceptions::RaiseKind,
     },
 };
@@ -40,6 +40,12 @@ pub enum Callee {
         target: ir::Value,
         closure: ir::Value,
     },
+    /// Callee is a generic descriptor and should be entered through a shared
+    /// generic application trampoline.
+    Generic {
+        target: ir::Value,
+        generic: ir::Value,
+    },
     /// Callee is known locally and loaded from a far-safe pointer slot.
     Direct {
         target: ir::Value,
@@ -51,43 +57,21 @@ pub enum Callee {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum AllocInfoPreset {
+pub(crate) enum AllocationHeaderPreset {
     Pair,
     ClosureProc,
     ClosureK,
     MutableVector,
 }
 
-impl AllocInfoPreset {
-    pub(crate) const fn runtime_data(self) -> crate::runtime::symbols::RuntimeData {
+impl AllocationHeaderPreset {
+    pub(crate) const fn header_word_runtime_data(self) -> crate::runtime::symbols::RuntimeData {
         match self {
-            Self::Pair => crate::runtime::symbols::RuntimeData::PairInfo,
-            Self::ClosureProc => crate::runtime::symbols::RuntimeData::ClosureProcInfo,
-            Self::ClosureK => crate::runtime::symbols::RuntimeData::ClosureKInfo,
-            Self::MutableVector => crate::runtime::symbols::RuntimeData::MutableVectorInfo,
+            Self::Pair => crate::runtime::symbols::RuntimeData::PairHeaderWord,
+            Self::ClosureProc => crate::runtime::symbols::RuntimeData::ClosureProcHeaderWord,
+            Self::ClosureK => crate::runtime::symbols::RuntimeData::ClosureKHeaderWord,
+            Self::MutableVector => crate::runtime::symbols::RuntimeData::MutableVectorHeaderWord,
         }
-    }
-
-    const fn type_bits(self) -> u16 {
-        match self {
-            Self::Pair => TypeCode8::PAIR.bits() as u16,
-            Self::ClosureProc => TypeCode16::CLOSURE_PROC.bits(),
-            Self::ClosureK => TypeCode16::CLOSURE_K.bits(),
-            Self::MutableVector => TypeCode16::MUTABLE_VECTOR.bits(),
-        }
-    }
-
-    const fn info_id(self) -> u16 {
-        match self {
-            Self::Pair => builtin_type_ids::PAIR,
-            Self::ClosureProc => builtin_type_ids::CLOSURE_PROC,
-            Self::ClosureK => builtin_type_ids::CLOSURE_K,
-            Self::MutableVector => builtin_type_ids::MUTABLE_VECTOR,
-        }
-    }
-
-    const fn header_word(self) -> u64 {
-        self.type_bits() as u64 | ((self.info_id() as u64) << 16)
     }
 }
 
@@ -142,6 +126,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     pub fn closure_from_callee(&mut self, callee: Callee) -> ir::Value {
         match callee {
             Callee::Indirect { closure, .. } => closure,
+            Callee::Generic { generic, .. } => generic,
             Callee::Direct { closure, .. } => closure,
             Callee::SelfRec(_) => self.rator,
         }
@@ -381,30 +366,25 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    pub(crate) fn alloc_with_info_preset(
+    pub(crate) fn alloc_with_header_word_preset(
         &mut self,
-        preset: AllocInfoPreset,
+        preset: AllocationHeaderPreset,
         con_alloc_size: usize,
         var_alloc_size: Option<ir::Value>,
     ) -> ir::Value {
-        let info = self.import_runtime_data(preset.runtime_data(), types::I64);
-        self.alloc_with_info_inner(info, Some(preset), con_alloc_size, var_alloc_size)
+        let header_word = self.import_runtime_data(preset.header_word_runtime_data(), types::I64);
+        self.alloc_with_header_word_inner(header_word, con_alloc_size, var_alloc_size)
     }
 
-    fn alloc_with_info_inner(
+    fn alloc_with_header_word_inner(
         &mut self,
-        info: ir::Value,
-        preset: Option<AllocInfoPreset>,
+        header_word: ir::Value,
         con_alloc_size: usize,
         var_alloc_size: Option<ir::Value>,
     ) -> ir::Value {
         const INLINE_ALLOC_LIMIT: usize = 8 * 1024;
         const HEADER_SIZE: usize = size_of::<HeapObjectHeader>();
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
-        let info =
-            self.builder
-                .ins()
-                .load(types::I64, ir::MemFlags::trusted().with_can_move(), info, 0);
         let slowpath = self.builder.create_block();
         let merge = self.builder.create_block();
         self.builder.append_block_param(merge, types::I64);
@@ -434,17 +414,35 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 .ins()
                 .brif(is_small, fastpath, &[], slowpath, &[]);
             self.builder.switch_to_block(fastpath);
-            self.emit_alloc_with_info_fastpath(ctx, info, preset, payload_size, slowpath, merge);
+            self.emit_alloc_with_header_word_fastpath(
+                ctx,
+                header_word,
+                payload_size,
+                slowpath,
+                merge,
+            );
         } else {
-            self.emit_alloc_with_info_fastpath(ctx, info, preset, payload_size, slowpath, merge);
+            self.emit_alloc_with_header_word_fastpath(
+                ctx,
+                header_word,
+                payload_size,
+                slowpath,
+                merge,
+            );
         }
 
         self.builder.switch_to_block(slowpath);
         {
-            let call = self
-                .builder
-                .ins()
-                .call(self.thunks.alloc_with_info, &[ctx, info, payload_size]);
+            let header_word = self.builder.ins().load(
+                types::I64,
+                ir::MemFlags::trusted().with_can_move(),
+                header_word,
+                0,
+            );
+            let call = self.builder.ins().call(
+                self.thunks.alloc_with_header_word,
+                &[ctx, header_word, payload_size],
+            );
             let value = self.builder.inst_results(call)[0];
             self.builder.ins().jump(merge, &[BlockArg::Value(value)]);
         }
@@ -453,16 +451,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.block_params(merge)[0]
     }
 
-    fn emit_alloc_with_info_fastpath(
+    fn emit_alloc_with_header_word_fastpath(
         &mut self,
         ctx: ir::Value,
-        info: ir::Value,
-        preset: Option<AllocInfoPreset>,
+        header_word_slot: ir::Value,
         payload_size: ir::Value,
         slowpath: ir::Block,
         merge: ir::Block,
     ) {
-        let header_word = preset.map(|preset| preset.header_word());
         let cursor = self.builder.ins().load(
             types::I64,
             ir::MemFlags::trusted(),
@@ -496,31 +492,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             ctx,
             Thread::LAB_OFFSET_CURSOR as i32,
         );
-        let header_word = match header_word {
-            Some(header_word) => self.builder.ins().iconst(types::I64, header_word as i64),
-            None => {
-                let header_type_bits = self.builder.ins().load(
-                    types::I16,
-                    ir::MemFlags::trusted().with_can_move(),
-                    info,
-                    HeapTypeInfo::TYPE_BITS_OFFSET as i32,
-                );
-                let header_info_id = self.builder.ins().load(
-                    types::I16,
-                    ir::MemFlags::trusted().with_can_move(),
-                    info,
-                    HeapTypeInfo::ID_OFFSET as i32,
-                );
-                let header_type_bits = self.builder.ins().uextend(types::I64, header_type_bits);
-                let header_type_bits = self
-                    .builder
-                    .ins()
-                    .band_imm(header_type_bits, u16::MAX as i64);
-                let header_info_id = self.builder.ins().uextend(types::I64, header_info_id);
-                let header_info_id = self.builder.ins().ishl_imm(header_info_id, 16);
-                self.builder.ins().bor(header_type_bits, header_info_id)
-            }
-        };
+        let header_word = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            header_word_slot,
+            0,
+        );
         self.builder
             .ins()
             .store(ir::MemFlags::trusted(), header_word, cursor, 0);
@@ -539,12 +516,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         is_cont: bool,
     ) -> ir::Value {
         let preset = if is_cont {
-            AllocInfoPreset::ClosureK
+            AllocationHeaderPreset::ClosureK
         } else {
-            AllocInfoPreset::ClosureProc
+            AllocationHeaderPreset::ClosureProc
         };
         let size = size_of::<Closure>() + free_count * size_of::<Value>();
-        let closure = self.alloc_with_info_preset(preset, size, None);
+        let closure = self.alloc_with_header_word_preset(preset, size, None);
 
         let entrypoint = self.builder.ins().load(
             types::I64,
@@ -1275,25 +1252,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let callee = self.linear_atom(callee);
-        let get_clos_code = self.builder.create_block();
-        let error = self.builder.create_block();
-        self.builder.func.layout.set_cold(error);
-        self.branch_if_has_typ8(callee, Closure::TC8.bits(), get_clos_code, &[], error, &[]);
-        self.builder.switch_to_block(error);
-        {
-            self.emit_raise(RaiseKind::NonApplicable, &[callee], Value::new(false));
-        }
-
-        self.builder.switch_to_block(get_clos_code);
-        let code = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            callee,
-            offset_of!(Closure, code) as i32,
-        );
-        Callee::Indirect {
-            target: code,
-            closure: callee,
+        let target = self.load_function_entrypoint(self.module_builder.generic_apply_trampoline);
+        Callee::Generic {
+            target,
+            generic: callee,
         }
     }
 
@@ -1311,15 +1273,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let closure = self.linear_atom(callee);
-        let code = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            closure,
-            offset_of!(Closure, code) as i32,
-        );
-        Callee::Indirect {
-            target: code,
-            closure,
+        let target =
+            self.load_function_entrypoint(self.module_builder.generic_tail_apply_trampoline);
+        Callee::Generic {
+            target,
+            generic: closure,
         }
     }
 
@@ -1417,6 +1375,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             Callee::Indirect { target, closure } => {
                 let mut block_args = vec![BlockArg::Value(target)];
                 block_args.extend(self.call_block_args(closure, call_args));
+                self.builder.ins().jump(self.exit_block, &block_args);
+            }
+            Callee::Generic { target, generic } => {
+                let mut block_args = vec![BlockArg::Value(target)];
+                block_args.extend(self.call_block_args(generic, call_args));
                 self.builder.ins().jump(self.exit_block, &block_args);
             }
             Callee::Direct { target, closure } => {
@@ -1606,7 +1569,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.ins().ireduce(types::I32, value)
             }
             SwitchKind::SymbolEq { mask } => {
-                let is_symbol = self.has_typ8(value, TypeCode8::SYMBOL.bits());
+                let is_symbol = self.has_class_id(value, builtin_class_ids::SYMBOL);
                 self.builder
                     .ins()
                     .brif(is_symbol, switch_block, &[], type_miss_block, &[]);
@@ -1833,24 +1796,27 @@ fn switch_case_key(value: SwitchCaseValue<'_>) -> u128 {
 }
 
 #[cfg(test)]
-mod alloc_info_preset_tests {
+mod allocation_header_preset_tests {
     use super::*;
     use crate::runtime::symbols::RuntimeData;
 
     #[test]
-    fn allocation_info_presets_have_runtime_data_ids() {
-        assert_eq!(AllocInfoPreset::Pair.runtime_data(), RuntimeData::PairInfo);
+    fn allocation_header_presets_have_runtime_data_ids() {
         assert_eq!(
-            AllocInfoPreset::ClosureProc.runtime_data(),
-            RuntimeData::ClosureProcInfo
+            AllocationHeaderPreset::Pair.header_word_runtime_data(),
+            RuntimeData::PairHeaderWord
         );
         assert_eq!(
-            AllocInfoPreset::ClosureK.runtime_data(),
-            RuntimeData::ClosureKInfo
+            AllocationHeaderPreset::ClosureProc.header_word_runtime_data(),
+            RuntimeData::ClosureProcHeaderWord
         );
         assert_eq!(
-            AllocInfoPreset::MutableVector.runtime_data(),
-            RuntimeData::MutableVectorInfo
+            AllocationHeaderPreset::ClosureK.header_word_runtime_data(),
+            RuntimeData::ClosureKHeaderWord
+        );
+        assert_eq!(
+            AllocationHeaderPreset::MutableVector.header_word_runtime_data(),
+            RuntimeData::MutableVectorHeaderWord
         );
     }
 }

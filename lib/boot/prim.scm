@@ -407,6 +407,19 @@
           (set-procedure-properties! proc (cons (cons key value) props))))
       (set-procedure-properties! proc (list (cons key value))))))
 
+(define (setter proc)
+  (procedure-property proc 'setter))
+
+(define (set-setter! proc setter-proc)
+  (unless (procedure? proc)
+    (assertion-violation 'set-setter! "not a procedure" proc))
+  (unless (procedure? setter-proc)
+    (assertion-violation 'set-setter! "setter is not a procedure" setter-proc))
+  (set-procedure-property! proc 'setter setter-proc))
+
+(define (has-setter? proc)
+  (and (setter proc) #t))
+
 (define (core-hash-map proc ht)
   (map proc (core-hash->list ht)))
 

@@ -118,7 +118,7 @@ mod tests {
 
         let global = declare_runtime_data(
             &mut function,
-            crate::runtime::symbols::RuntimeData::PairInfo,
+            crate::runtime::symbols::RuntimeData::PairHeaderWord,
         );
         let cranelift_codegen::ir::GlobalValueData::Symbol { name, .. } =
             &function.global_values[global]
@@ -133,7 +133,7 @@ mod tests {
             Symbol::from_external_name(function.params.user_named_funcs()[*name_ref].clone()),
             Some(Symbol::data(
                 DataKind::RuntimeData,
-                DataSymbol::new(crate::runtime::symbols::RuntimeData::PairInfo.id()),
+                DataSymbol::new(crate::runtime::symbols::RuntimeData::PairHeaderWord.id()),
             ))
         );
     }

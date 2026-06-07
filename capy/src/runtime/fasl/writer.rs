@@ -18,15 +18,35 @@ use crate::runtime::{
 };
 
 use super::{
-    ClosureSpec, CodeSpec, FASL_MAGIC, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN,
+    CodeSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC, FASL_TAG_BEGIN,
     FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_COMPLEX,
     FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
-    FASL_TAG_GRAPH_DEF, FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD,
-    FASL_TAG_LOOKUP, FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF,
-    FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE,
-    FASL_TAG_UNCOMPRESSED, FASL_TAG_UNINTERNED_SYMBOL, FASL_TAG_UNLINKED_CODEBLOCK,
-    FASL_TAG_VECTOR, FASL_VERSION, ProgramSpec, checked_u32_len,
+    FASL_TAG_GRAPH_DEF, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL,
+    FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR,
+    FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
+    FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, ProgramSpec, checked_u32_len,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FaslCompression {
+    None,
+    Gzip,
+}
+
+impl FaslCompression {
+    fn tag(self) -> u8 {
+        match self {
+            Self::None => FASL_COMPRESSION_NONE,
+            Self::Gzip => FASL_COMPRESSION_GZIP,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum FaslImage<'a, 'gc> {
+    Value(Value<'gc>),
+    Program(&'a ProgramSpec<'a, 'gc>),
+}
 
 pub struct FaslWriter<'gc, W: Write> {
     pub ctx: Context<'gc>,
@@ -361,99 +381,68 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
         Ok(())
     }
 
-    pub fn write(mut self, obj: Value<'gc>) -> io::Result<()> {
-        self.scan(obj)?;
+    pub fn write(self, obj: Value<'gc>) -> io::Result<()> {
+        self.write_image(FaslImage::Value(obj), FaslCompression::None)
+    }
+
+    pub fn write_image(
+        mut self,
+        image: FaslImage<'_, 'gc>,
+        compression: FaslCompression,
+    ) -> io::Result<()> {
+        match image {
+            FaslImage::Value(value) => self.scan(value)?,
+            FaslImage::Program(spec) => self.scan_program(spec)?,
+        }
         self.put_header()?;
+        self.put8(compression.tag())?;
         self.put_lites()?;
         let mut payload = Vec::new();
         {
             let mut writer = self.payload_writer(&mut payload);
-            writer.put(obj)?;
+            writer.put_image_payload(image)?;
             writer.writer.flush()?;
         }
-        self.put_uncompressed_group(&payload)?;
+        self.put_payload(compression, &payload)?;
         self.writer.flush()?;
         Ok(())
     }
 
-    pub fn write_gzip(mut self, obj: Value<'gc>) -> io::Result<()> {
-        self.scan(obj)?;
-        self.put_header()?;
-        self.put_lites()?;
-        let mut payload = Vec::new();
-        {
-            let mut writer = self.payload_writer(&mut payload);
-            writer.put(obj)?;
-            writer.writer.flush()?;
-        }
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&payload)?;
-        let compressed = encoder.finish()?;
-
-        let mut pcfasl = Vec::new();
-        pcfasl.push(FASL_TAG_GZIP);
-        pcfasl.extend_from_slice(&checked_u32_len(payload.len())?.to_le_bytes());
-        pcfasl.extend_from_slice(&checked_u32_len(compressed.len())?.to_le_bytes());
-        pcfasl.extend_from_slice(&compressed);
-        self.put_group(FASL_SITUATION_VISIT_REVISIT, &pcfasl)?;
-        self.writer.flush()?;
-        Ok(())
-    }
-
-    pub fn write_loaded_closure(mut self, spec: &ClosureSpec<'_, 'gc>) -> io::Result<()> {
-        self.scan(spec.code.metadata)?;
-        for value in spec.free {
-            self.scan(*value)?;
-        }
-        self.put_header()?;
-        self.put_lites()?;
-        let mut payload = Vec::new();
-        {
-            let mut writer = self.payload_writer(&mut payload);
-            writer.put8(FASL_TAG_GRAPH)?;
-            writer.put32(1)?;
-            writer.put32(0)?;
-            writer.put_closure(spec)?;
-            writer.writer.flush()?;
-        }
-        self.put_uncompressed_group(&payload)?;
-        self.writer.flush()?;
-        Ok(())
-    }
-
-    pub fn write_loaded_program(mut self, spec: &ProgramSpec<'_, 'gc>) -> io::Result<()> {
+    fn scan_program(&mut self, spec: &ProgramSpec<'_, 'gc>) -> io::Result<()> {
         for value in spec.values {
             self.scan(value.value)?;
         }
         for code in spec.code_blocks {
             self.scan(code.code.metadata)?;
         }
-        self.put_header()?;
-        self.put_lites()?;
-        let mut payload = Vec::new();
-        {
-            let mut writer = self.payload_writer(&mut payload);
-            writer.put8(FASL_TAG_GRAPH)?;
-            writer.put32(spec.graph_len)?;
-            writer.put32(0)?;
-            let item_count = checked_u32_len(spec.values.len() + spec.code_blocks.len() + 1)?;
-            writer.put8(FASL_TAG_BEGIN)?;
-            writer.put32(item_count)?;
-            for value in spec.values {
-                writer.put8(FASL_TAG_GRAPH_DEF)?;
-                writer.put32(value.index)?;
-                writer.put(value.value)?;
-            }
-            for code in spec.code_blocks {
-                writer.put8(FASL_TAG_GRAPH_DEF)?;
-                writer.put32(code.index)?;
-                writer.put_code_block(&code.code)?;
-            }
-            writer.put_entry_closure(spec.entry_code_index, spec.entry_is_cont)?;
-            writer.writer.flush()?;
+        Ok(())
+    }
+
+    fn put_image_payload(&mut self, image: FaslImage<'_, 'gc>) -> io::Result<()> {
+        match image {
+            FaslImage::Value(value) => self.put(value),
+            FaslImage::Program(spec) => self.put_program(spec),
         }
-        self.put_uncompressed_group(&payload)?;
-        self.writer.flush()?;
+    }
+
+    fn put_program(&mut self, spec: &ProgramSpec<'_, 'gc>) -> io::Result<()> {
+        self.put8(FASL_TAG_GRAPH)?;
+        self.put32(spec.graph_len)?;
+        self.put32(0)?;
+        let item_count = checked_u32_len(spec.values.len() + spec.code_blocks.len() + 1)?;
+        self.put8(FASL_TAG_BEGIN)?;
+        self.put32(item_count)?;
+        for value in spec.values {
+            self.put8(FASL_TAG_GRAPH_DEF)?;
+            self.put32(value.index)?;
+            self.put(value.value)?;
+        }
+        for code in spec.code_blocks {
+            self.put8(FASL_TAG_GRAPH_DEF)?;
+            self.put32(code.index)?;
+            self.put_code_block(&code.code)?;
+        }
+        self.put_entry_closure(spec.entry_code_index, spec.entry_is_cont)?;
         Ok(())
     }
 
@@ -468,31 +457,21 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
         }
     }
 
-    fn put_uncompressed_group(&mut self, payload: &[u8]) -> io::Result<()> {
-        let mut pcfasl = Vec::new();
-        pcfasl.push(FASL_TAG_UNCOMPRESSED);
-        pcfasl.extend_from_slice(&checked_u32_len(payload.len())?.to_le_bytes());
-        pcfasl.extend_from_slice(payload);
-        self.put_group(FASL_SITUATION_VISIT_REVISIT, &pcfasl)
-    }
-
-    fn put_group(&mut self, situation: u8, pcfasl: &[u8]) -> io::Result<()> {
-        self.put8(FASL_TAG_GROUP)?;
-        self.put8(situation)?;
-        self.put32(checked_u32_len(pcfasl.len())?)?;
-        self.writer.write_all(pcfasl)
-    }
-
-    fn put_closure(&mut self, spec: &ClosureSpec<'_, 'gc>) -> io::Result<()> {
-        self.put8(FASL_TAG_CLOSURE)?;
-        self.put8(FASL_TAG_GRAPH_DEF)?;
-        self.put32(0)?;
-        self.put_code_block(&spec.code)?;
-        self.put32(checked_u32_len(spec.free.len())?)?;
-        for value in spec.free {
-            self.put(*value)?;
+    fn put_payload(&mut self, compression: FaslCompression, payload: &[u8]) -> io::Result<()> {
+        self.put32(checked_u32_len(payload.len())?)?;
+        match compression {
+            FaslCompression::None => {
+                self.put32(checked_u32_len(payload.len())?)?;
+                self.put_many(payload)
+            }
+            FaslCompression::Gzip => {
+                let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+                encoder.write_all(payload)?;
+                let compressed = encoder.finish()?;
+                self.put32(checked_u32_len(compressed.len())?)?;
+                self.put_many(compressed)
+            }
         }
-        self.put8(u8::from(spec.is_cont))
     }
 
     fn put_entry_closure(&mut self, entry_code_index: u32, is_cont: bool) -> io::Result<()> {

@@ -124,26 +124,20 @@ impl<'gc> ConversionError<'gc> {
     }
 }
 
-/// A value type that can be identified by the runtime tag bits.
+/// A value type that can be identified by runtime class IDs.
 ///
 /// # Safety
 ///
-/// Implementors must keep the type codes consistent with the allocation and
-/// downcast layout for the Rust type. An incorrect tag declaration can make
-/// [`Value::downcast`] produce a `Gc<T>` for an object with a different layout.
-pub unsafe trait Tagged {
+/// Implementors must keep the class IDs consistent with the allocation and
+/// downcast layout for the Rust type. An incorrect declaration
+/// can make [`Value::downcast`] produce a `Gc<T>` for an object with a different
+/// layout.
+pub unsafe trait ClassTagged {
     /// Human-readable name used in conversion errors.
     const TYPE_NAME: &'static str;
 
-    /// The compact 8-bit type code for this value type.
-    const TC8: TypeCode8;
-
-    /// Extended 16-bit type codes accepted for this value type.
-    const TC16: &[TypeCode16] = &[];
-
-    /// Set to true when the type can only be encodded as a TC16. In that case
-    /// `Value::is` and `Value::downcast` will always check `TC16` and not `TC8`.
-    const ONLY_TC16: bool = false;
+    /// Built-in class IDs accepted for this value type.
+    const CLASS_IDS: &'static [u32];
 }
 
 /// Converts a Rust value into a runtime [`Value`].
@@ -240,7 +234,7 @@ impl_expected_value_type!(
     u8, i8, i16, u16, u32, usize, i32, i64, isize, u64, u128, f32, f64,
 );
 
-impl<'gc, T: Tagged> ExpectedValueType for Gc<'gc, T> {
+impl<'gc, T: ClassTagged> ExpectedValueType for Gc<'gc, T> {
     fn expected_value_type() -> &'static str {
         T::TYPE_NAME
     }
@@ -324,7 +318,7 @@ impl<'gc> FromValue<'gc> for f64 {
     }
 }
 
-impl<'gc, T: Tagged> FromValue<'gc> for Gc<'gc, T> {
+impl<'gc, T: ClassTagged> FromValue<'gc> for Gc<'gc, T> {
     fn try_from_value(_ctx: Context<'gc>, value: Value<'gc>) -> Result<Self, ConversionError<'gc>> {
         if value.is::<T>() {
             Ok(value.downcast::<T>())
@@ -418,7 +412,7 @@ impl<'gc> From<char> for Value<'gc> {
     }
 }
 
-impl<'gc, T: Tagged> IntoValue<'gc> for Gc<'gc, T> {
+impl<'gc, T: ClassTagged> IntoValue<'gc> for Gc<'gc, T> {
     fn into_value(self, _mc: Context<'gc>) -> Value<'gc> {
         Value::from_gc(self)
     }

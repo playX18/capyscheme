@@ -7,7 +7,7 @@ use crate::rsgc::{
     Trace,
     finalizer::FinalizerQueue,
     mmtk::util::{Address, ObjectReference},
-    object::{GCObject, HeapTypeInfo, VTableOf},
+    object::{ClassId, GCObject, builtin_class_ids, class_header_word},
 };
 use crate::{
     global,
@@ -144,11 +144,9 @@ pub struct Pointer {
     pub(crate) value: Address,
 }
 
-static POINTER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Pointer>::VT,
-    TypeCode8::POINTER.bits() as u16,
-);
-pub static POINTER_INFO: &HeapTypeInfo = &POINTER_INFO_VALUE;
+pub(crate) fn pointer_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::POINTER).unwrap())
+}
 
 pub struct PointerWithFinalizers {
     queue: Mutex<VecDeque<ObjectReference>>,
@@ -227,8 +225,8 @@ impl Pointer {
     }
 }
 
-unsafe impl Tagged for Pointer {
-    const TC8: TypeCode8 = TypeCode8::POINTER;
+unsafe impl ClassTagged for Pointer {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::POINTER];
     const TYPE_NAME: &'static str = "pointer";
 }
 
@@ -242,7 +240,7 @@ pub mod ffi_ops {
     #[scheme(name = "make-pointer")]
     pub fn make_pointer(addr: usize) -> Value<'gc> {
         let ptr = Pointer::new(addr as *mut std::ffi::c_void);
-        let ptr = Gc::new_with_info(*nctx.ctx, ptr, POINTER_INFO);
+        let ptr = Gc::new_with_header_word(*nctx.ctx, ptr, pointer_header_word());
         nctx.return_(ptr.into())
     }
 
@@ -260,7 +258,7 @@ pub mod ffi_ops {
     #[scheme(name = "scm->pointer")]
     pub fn value_to_pointer(v: Value<'gc>) -> Gc<'gc, Pointer> {
         let p = Pointer::new(v.bits() as *mut std::ffi::c_void);
-        let p = Gc::new_with_info(*nctx.ctx, p, POINTER_INFO);
+        let p = Gc::new_with_header_word(*nctx.ctx, p, pointer_header_word());
         nctx.return_(p)
     }
 
@@ -307,7 +305,7 @@ pub mod ffi_ops {
 
         let ptr = bv.contents() + offset;
         let p = Pointer::new(ptr.to_mut_ptr());
-        let p = Gc::new_with_info(*nctx.ctx, p, POINTER_INFO);
+        let p = Gc::new_with_header_word(*nctx.ctx, p, pointer_header_word());
         // TODO(Adel): pin bytevector in memory OR move contents to non-moving space.
 
         // create ephemeron to keep the bytevector alive if `p` is alive.
@@ -404,7 +402,7 @@ pub mod ffi_ops {
         }
         let ptr = unsafe { *(p.value() as *const *mut std::ffi::c_void) };
         let new_ptr = Pointer::new(ptr);
-        let new_ptr = Gc::new_with_info(*nctx.ctx, new_ptr, POINTER_INFO);
+        let new_ptr = Gc::new_with_header_word(*nctx.ctx, new_ptr, pointer_header_word());
         nctx.return_(new_ptr)
     }
 
@@ -716,14 +714,12 @@ pub struct CIF<'gc> {
     pub(crate) return_type: Value<'gc>,
 }
 
-static CIF_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, CIF<'static>>::VT,
-    TypeCode8::CIF.bits() as u16,
-);
-pub static CIF_INFO: &HeapTypeInfo = &CIF_INFO_VALUE;
+fn cif_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::CIF).unwrap())
+}
 
-unsafe impl<'gc> Tagged for CIF<'gc> {
-    const TC8: TypeCode8 = TypeCode8::CIF;
+unsafe impl<'gc> ClassTagged for CIF<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CIF];
     const TYPE_NAME: &'static str = "cif";
 }
 
@@ -843,7 +839,7 @@ fn make_cif<'gc>(
         return_type,
     };
 
-    Ok(Gc::new_with_info(*ctx, cif, CIF_INFO))
+    Ok(Gc::new_with_header_word(*ctx, cif, cif_header_word()))
 }
 
 unsafe fn foreign_call<'a, 'gc>(
@@ -1329,10 +1325,10 @@ unsafe fn pack<'gc>(
         }
 
         if t == types::pointer.type_ {
-            return Gc::new_with_info(
+            return Gc::new_with_header_word(
                 *ctx,
                 Pointer::new(loc.cast::<*mut std::ffi::c_void>().read()),
-                POINTER_INFO,
+                pointer_header_word(),
             )
             .into();
         }
@@ -1345,7 +1341,7 @@ unsafe fn pack<'gc>(
                 (*typ).size,
             );
             let ptr = Pointer::new(arr.contents().to_mut_ptr());
-            let ptr = Gc::new_with_info(*ctx, ptr, POINTER_INFO);
+            let ptr = Gc::new_with_header_word(*ctx, ptr, pointer_header_word());
             // keep bytevector alive as long as pointer is alive.
             ptrs(ctx).put(ctx, ptr, arr);
             return ptr.into();
@@ -1495,7 +1491,11 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
         define(ctx, "%ptrdiff_t", ForeignType::Int64);
     }
 
-    let nullp = Gc::new_with_info(*ctx, Pointer::new(std::ptr::null_mut()), POINTER_INFO);
+    let nullp = Gc::new_with_header_word(
+        *ctx,
+        Pointer::new(std::ptr::null_mut()),
+        pointer_header_word(),
+    );
 
     define(ctx, "%null-pointer", nullp);
 
@@ -1503,4 +1503,32 @@ pub(crate) fn init_ffi<'gc>(ctx: Context<'gc>) {
     define(ctx, "RTLD_NOW", Value::new(libc::RTLD_NOW));
     define(ctx, "RTLD_GLOBAL", Value::new(libc::RTLD_GLOBAL));
     define(ctx, "RTLD_LOCAL", Value::new(libc::RTLD_LOCAL));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn pointer_and_cif_allocate_with_class_only_headers() {
+        Scheme::new_uninit().enter(|ctx| {
+            let pointer = Gc::new_with_header_word(
+                *ctx,
+                Pointer::new(std::ptr::null_mut()),
+                pointer_header_word(),
+            );
+            assert_eq!(
+                pointer.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::POINTER).unwrap()
+            );
+
+            let cif = make_cif(ctx, ForeignType::Void.into(), Value::null(), false, false)
+                .expect("make void cif");
+            assert_eq!(
+                cif.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::CIF).unwrap()
+            );
+        });
+    }
 }

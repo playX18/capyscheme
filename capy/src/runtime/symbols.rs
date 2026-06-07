@@ -1,34 +1,31 @@
-use crate::{
-    rsgc::{mmtk::util::Address, object::HeapTypeInfo},
-    runtime::vm::thunks::{
-        CLOSURE_K_INFO_STATIC, CLOSURE_PROC_INFO_STATIC, IMMUTABLE_VECTOR_INFO_STATIC,
-        MUTABLE_VECTOR_INFO_STATIC, PAIR_INFO_STATIC, TUPLE_INFO_STATIC, VARIABLE_INFO_STATIC,
-    },
+use crate::rsgc::{
+    mmtk::util::Address,
+    object::{ClassId, builtin_class_ids, class_header_word},
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use crate::runtime::vm::thunks::RuntimeThunk;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum RuntimeData {
-    PairInfo,
-    VariableInfo,
-    ClosureProcInfo,
-    ClosureKInfo,
-    MutableVectorInfo,
-    ImmutableVectorInfo,
-    TupleInfo,
+    PairHeaderWord = 7,
+    ClosureProcHeaderWord = 8,
+    ClosureKHeaderWord = 9,
+    MutableVectorHeaderWord = 10,
 }
+
+static PAIR_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
+static CLOSURE_PROC_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
+static CLOSURE_K_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
+static MUTABLE_VECTOR_HEADER_WORD: AtomicU64 = AtomicU64::new(0);
 
 impl RuntimeData {
     pub const ALL: &'static [Self] = &[
-        Self::PairInfo,
-        Self::VariableInfo,
-        Self::ClosureProcInfo,
-        Self::ClosureKInfo,
-        Self::MutableVectorInfo,
-        Self::ImmutableVectorInfo,
-        Self::TupleInfo,
+        Self::PairHeaderWord,
+        Self::ClosureProcHeaderWord,
+        Self::ClosureKHeaderWord,
+        Self::MutableVectorHeaderWord,
     ];
 
     pub fn id(self) -> u32 {
@@ -37,32 +34,48 @@ impl RuntimeData {
 
     pub fn from_id(id: u32) -> Option<Self> {
         match id {
-            x if x == Self::PairInfo as u32 => Some(Self::PairInfo),
-            x if x == Self::VariableInfo as u32 => Some(Self::VariableInfo),
-            x if x == Self::ClosureProcInfo as u32 => Some(Self::ClosureProcInfo),
-            x if x == Self::ClosureKInfo as u32 => Some(Self::ClosureKInfo),
-            x if x == Self::MutableVectorInfo as u32 => Some(Self::MutableVectorInfo),
-            x if x == Self::ImmutableVectorInfo as u32 => Some(Self::ImmutableVectorInfo),
-            x if x == Self::TupleInfo as u32 => Some(Self::TupleInfo),
+            x if x == Self::PairHeaderWord as u32 => Some(Self::PairHeaderWord),
+            x if x == Self::ClosureProcHeaderWord as u32 => Some(Self::ClosureProcHeaderWord),
+            x if x == Self::ClosureKHeaderWord as u32 => Some(Self::ClosureKHeaderWord),
+            x if x == Self::MutableVectorHeaderWord as u32 => Some(Self::MutableVectorHeaderWord),
             _ => None,
         }
     }
 
     pub fn address(self) -> Address {
         match self {
-            Self::PairInfo => static_pointer_address(&PAIR_INFO_STATIC),
-            Self::VariableInfo => static_pointer_address(&VARIABLE_INFO_STATIC),
-            Self::ClosureProcInfo => static_pointer_address(&CLOSURE_PROC_INFO_STATIC),
-            Self::ClosureKInfo => static_pointer_address(&CLOSURE_K_INFO_STATIC),
-            Self::MutableVectorInfo => static_pointer_address(&MUTABLE_VECTOR_INFO_STATIC),
-            Self::ImmutableVectorInfo => static_pointer_address(&IMMUTABLE_VECTOR_INFO_STATIC),
-            Self::TupleInfo => static_pointer_address(&TUPLE_INFO_STATIC),
+            Self::PairHeaderWord => static_class_header_word_address(
+                &PAIR_HEADER_WORD,
+                ClassId::new(builtin_class_ids::PAIR).unwrap(),
+            ),
+            Self::ClosureProcHeaderWord => static_class_header_word_address(
+                &CLOSURE_PROC_HEADER_WORD,
+                ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap(),
+            ),
+            Self::ClosureKHeaderWord => static_class_header_word_address(
+                &CLOSURE_K_HEADER_WORD,
+                ClassId::new(builtin_class_ids::CLOSURE_K).unwrap(),
+            ),
+            Self::MutableVectorHeaderWord => static_class_header_word_address(
+                &MUTABLE_VECTOR_HEADER_WORD,
+                ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap(),
+            ),
         }
     }
 }
 
-fn static_pointer_address(symbol: &'static &'static HeapTypeInfo) -> Address {
-    Address::from_ptr(symbol as *const &'static HeapTypeInfo)
+fn static_class_header_word_address(cell: &'static AtomicU64, class_id: ClassId) -> Address {
+    publish_static_header_word(cell, class_header_word(class_id))
+}
+
+fn publish_static_header_word(cell: &'static AtomicU64, header_word: u64) -> Address {
+    let existing = cell.load(Ordering::Acquire);
+    if existing == 0 {
+        cell.store(header_word, Ordering::Release);
+    } else {
+        debug_assert_eq!(existing, header_word);
+    }
+    Address::from_ptr(cell as *const AtomicU64 as *const u64)
 }
 
 #[cfg(test)]
@@ -87,5 +100,33 @@ mod tests {
         }
 
         assert_eq!(RuntimeData::from_id(u32::MAX), None);
+    }
+
+    #[test]
+    fn allocation_header_word_runtime_data_points_to_header_words() {
+        let cases = [
+            (
+                RuntimeData::PairHeaderWord,
+                class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap()),
+            ),
+            (
+                RuntimeData::ClosureProcHeaderWord,
+                class_header_word(ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap()),
+            ),
+            (
+                RuntimeData::ClosureKHeaderWord,
+                class_header_word(ClassId::new(builtin_class_ids::CLOSURE_K).unwrap()),
+            ),
+            (
+                RuntimeData::MutableVectorHeaderWord,
+                class_header_word(ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap()),
+            ),
+        ];
+
+        for (data, expected_header_word) in cases {
+            let header_word = unsafe { data.address().load::<u64>() };
+
+            assert_eq!(header_word, expected_header_word);
+        }
     }
 }

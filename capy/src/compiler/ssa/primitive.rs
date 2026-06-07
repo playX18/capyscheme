@@ -1,5 +1,6 @@
-use super::{AllocInfoPreset, SSABuilder};
+use super::{AllocationHeaderPreset, SSABuilder};
 use crate::cps::term::Atom;
+use crate::rsgc::object::builtin_class_ids;
 use crate::runtime::Context;
 use crate::runtime::State;
 use crate::runtime::modules::Variable;
@@ -1310,10 +1311,16 @@ prim!(
         PrimValue::Value(val)
     },
 
-    "%typecode8" => typecode8(ssa, args, _h) {
+    "%class-id?" => class_idp(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let tc8 = ssa.builder.ins().load(types::I8, ir::MemFlags::trusted().with_can_move(), val, 0);
-        PrimValue::Value(tc8)
+        let Atom::Constant(class_id) = args[1] else {
+            panic!("invalid %class-id?: expected constant class ID, got {:?}", args[1])
+        };
+        let Some(class_id) = class_id.int32() else {
+            panic!("invalid %class-id?: expected fixnum class ID, got {class_id}")
+        };
+
+        PrimValue::Comparison(ssa.has_class_id(val, class_id as u32))
     },
 
     "%refptr" => refptr(ssa, args, _h) {
@@ -1569,13 +1576,16 @@ prim!(
 
     "procedure?" => is_procedure(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_proc = ssa.has_typ8(val, TypeCode8::CLOSURE.bits());
+        let is_proc = ssa.has_any_class_id(
+            val,
+            &[builtin_class_ids::CLOSURE_PROC, builtin_class_ids::CLOSURE_K],
+        );
         PrimValue::Comparison(is_proc)
     },
 
     "variable?" => is_variable(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_variable = ssa.has_typ8(val, TypeCode8::VARIABLE.bits());
+        let is_variable = ssa.has_class_id(val, builtin_class_ids::VARIABLE);
         PrimValue::Comparison(is_variable)
     },
 
@@ -1641,7 +1651,7 @@ prim!(
 
     "pair?" => is_pair(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_pair = ssa.has_typ8(val, TypeCode8::PAIR.bits());
+        let is_pair = ssa.has_class_id(val, builtin_class_ids::PAIR);
         PrimValue::Comparison(is_pair)
     },
 
@@ -1675,21 +1685,35 @@ prim!(
 
     "vector?" => is_vector(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_vector = ssa.has_typ8(val, TypeCode8::VECTOR.bits());
+        let is_vector = ssa.has_any_class_id(
+            val,
+            &[builtin_class_ids::MUTABLE_VECTOR, builtin_class_ids::IMMUTABLE_VECTOR],
+        );
 
         PrimValue::Comparison(is_vector)
     },
 
     "bytevector?" => is_bytevector(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_bv = ssa.has_typ8(val, TypeCode8::BYTEVECTOR.bits());
+        let is_bv = ssa.has_any_class_id(
+            val,
+            &[
+                builtin_class_ids::MUTABLE_BYTEVECTOR,
+                builtin_class_ids::IMMUTABLE_BYTEVECTOR,
+                builtin_class_ids::MAPPED_BYTEVECTOR,
+            ],
+        );
         PrimValue::Comparison(is_bv)
     },
 
     "vector" => vector(ssa, args, _h) {
 
         let size = size_of::<Vector>() as i64 + args.len() as i64 * size_of::<Value>() as i64;
-        let vec = ssa.alloc_with_info_preset(AllocInfoPreset::MutableVector, size as usize, None);
+        let vec = ssa.alloc_with_header_word_preset(
+            AllocationHeaderPreset::MutableVector,
+            size as usize,
+            None,
+        );
         let len = ssa.builder.ins().iconst(types::I64, args.len() as i64);
         ssa.builder.ins().store(ir::MemFlags::trusted(), len, vec, offset_of!(Vector, length) as i32);
         for (i, &arg) in args.iter().enumerate() {
@@ -1749,55 +1773,6 @@ prim!(
     "vector-ref" => vector_ref(ssa, args, _h) {
         let vec = ssa.atom(args[0]);
         let ix = ssa.atom(args[1]);
-
-        /*let check_fixnum = ssa.builder.create_block();
-        let fixnum_ix_block = ssa.builder.create_block();
-        let slowpath = ssa.builder.create_block();
-        let merge = ssa.builder.create_block();
-
-        ssa.builder.append_block_param(merge, types::I64);
-        ssa.branch_if_has_typ8(vec, TypeCode8::VECTOR.bits(), check_fixnum, &[], slowpath, &[]);
-        ssa.builder.switch_to_block(check_fixnum);
-        {
-            let is_int32 = ssa.is_int32(ix);
-            ssa.builder.ins().brif(is_int32, fixnum_ix_block, &[], slowpath, &[]);
-            ssa.builder.switch_to_block(fixnum_ix_block);
-            {
-                let ix = ssa.ireduce(types::I32, ix);
-                let below0 = ssa.builder.ins().icmp_imm(IntCC::SignedLessThan, ix, 0);
-                let check_bounds = ssa.builder.create_block();
-                let in_bounds_block = ssa.builder.create_block();
-
-
-                ssa.builder.ins().brif(below0, slowpath, &[], check_bounds, &[]);
-                ssa.builder.switch_to_block(check_bounds);
-                {
-                    let len = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), vec, offset_of!(Vector, length) as i32);
-                    let ix64 = ssa.zextend(types::I64, ix);
-                    let in_bounds = ssa.builder.ins().icmp(IntCC::UnsignedLessThan, ix64, len);
-                    ssa.builder.ins().brif(in_bounds, in_bounds_block, &[BlockArg::Value(ix64)], slowpath, &[]);
-                    ssa.builder.switch_to_block(in_bounds_block);
-                    {
-                        let ix64 = ssa.builder.block_params(in_bounds_block)[0];
-                        let data_ptr = ssa.builder.ins().iadd_imm(vec, offset_of!(Vector, data) as i64);
-                        let elem_ptr = ssa.builder.ins().iadd(data_ptr, ix64);
-                        let elem = ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), elem_ptr, 0);
-                        ssa.builder.ins().jump(merge, &[BlockArg::Value(elem)]);
-                    }
-                }
-            }
-        }
-        ssa.builder.switch_to_block(slowpath);
-        {
-            ssa.builder.func.layout.set_cold(slowpath);
-            let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
-            let result = ssa.handle_thunk_call_result(ssa.thunks.vector_ref, &[ctx, vec, ix]);
-            ssa.builder.ins().jump(merge, &[BlockArg::Value(result)]);
-        }
-
-        ssa.builder.switch_to_block(merge);
-        let result = ssa.builder.block_params(merge)[0];
-        PrimValue::Value(result)*/
 
         let merge = ssa.builder.create_block();
         ssa.builder.append_block_param(merge, types::I64);
@@ -1866,7 +1841,10 @@ prim!(
     "string?" => is_string(ssa, args, _h) {
         let val = ssa.atom(args[0]);
 
-        PrimValue::Comparison(ssa.has_typ8(val, TypeCode8::STRING.bits()))
+        PrimValue::Comparison(ssa.has_any_class_id(
+            val,
+            &[builtin_class_ids::STRING, builtin_class_ids::IMMUTABLE_STRING],
+        ))
     },
 
     "string-length" => string_length(ssa, args, _h) {
@@ -1884,7 +1862,7 @@ prim!(
 
     "symbol?" => is_symbol(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        PrimValue::Comparison(ssa.has_typ8(val, TypeCode8::SYMBOL.bits()))
+        PrimValue::Comparison(ssa.has_class_id(val, builtin_class_ids::SYMBOL))
     },
 
     "eq?" => is_eq(ssa, args, _h) {
@@ -1979,7 +1957,14 @@ prim!(
         ssa.builder.ins().brif(is_inline_num, succ, &[BlockArg::Value(is_inline_num)], check_heap, &[]);
         ssa.builder.switch_to_block(check_heap);
         {
-            let check = ssa.has_typ8(val, TypeCode8::NUMBER.bits());
+            let check = ssa.has_any_class_id(
+                val,
+                &[
+                    builtin_class_ids::BIGINT,
+                    builtin_class_ids::RATIONAL,
+                    builtin_class_ids::COMPLEX,
+                ],
+            );
             ssa.builder.ins().jump(succ, &[BlockArg::Value(check)]);
         }
 
@@ -2510,7 +2495,7 @@ prim!(
         let not_pair = ssa.builder.create_block();
         ssa.builder.func.layout.set_cold(not_pair);
 
-        ssa.branch_if_has_typ8(pair, TypeCode8::PAIR.bits(), is_pair, &[], not_pair, &[]);
+        ssa.branch_if_has_class_id(pair, builtin_class_ids::PAIR, is_pair, &[], not_pair, &[]);
         ssa.builder.switch_to_block(is_pair);
 
         ssa.builder.switch_to_block(not_pair);
@@ -2527,7 +2512,7 @@ prim!(
         let not_pair = ssa.builder.create_block();
         ssa.builder.func.layout.set_cold(not_pair);
 
-        ssa.branch_if_has_typ8(pair, TypeCode8::PAIR.bits(), is_pair, &[], not_pair, &[]);
+        ssa.branch_if_has_class_id(pair, builtin_class_ids::PAIR, is_pair, &[], not_pair, &[]);
         ssa.builder.switch_to_block(is_pair);
 
         ssa.builder.switch_to_block(not_pair);
@@ -2581,7 +2566,7 @@ prim!(
     "tuple?" => is_tuple(ssa, args, _h) {
         let val = ssa.atom(args[0]);
 
-        let res = ssa.has_typ8(val, TypeCode8::TUPLE.bits());
+        let res = ssa.has_class_id(val, builtin_class_ids::TUPLE);
 
         PrimValue::Comparison(res)
     },
@@ -2846,7 +2831,17 @@ fn ensure_vector<'gc, 'a, 'f>(
 
     ssa.builder.func.layout.set_cold(bb_slow);
 
-    ssa.branch_if_has_typ8(val, TypeCode8::VECTOR.bits(), bb_vector, &[], bb_slow, &[]);
+    ssa.branch_if_has_any_class_id(
+        val,
+        &[
+            builtin_class_ids::MUTABLE_VECTOR,
+            builtin_class_ids::IMMUTABLE_VECTOR,
+        ],
+        bb_vector,
+        &[],
+        bb_slow,
+        &[],
+    );
     ssa.builder.switch_to_block(bb_vector);
     {
         let length = ssa.builder.ins().load(

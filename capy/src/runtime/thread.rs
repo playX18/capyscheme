@@ -88,12 +88,12 @@ impl<'gc> Context<'gc> {
     }
 
     pub fn current_continuation_marks(self) -> Gc<'gc, ContinuationMarks<'gc>> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             *self,
             ContinuationMarks {
                 cmarks: self.state().current_marks(),
             },
-            crate::runtime::vm::control::CONTINUATION_MARKS_INFO,
+            crate::runtime::vm::control::continuation_marks_header_word(),
         )
     }
 

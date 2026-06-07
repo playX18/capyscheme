@@ -8,7 +8,7 @@ use std::{
     sync::{Once, OnceLock, atomic::AtomicU64},
 };
 
-use crate::rsgc::object::{HeapTypeInfo, VTableOf};
+use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::rsgc::{Gc, Global, Mutation};
 use crate::runtime::{Context, value::*};
 
@@ -22,26 +22,13 @@ pub struct Symbol<'gc> {
     pub(crate) prefix_offset: u16,
 }
 
-static SYMBOL_UNINTERNED_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Symbol<'static>>::VT,
-    SYMBOL_TC16_UNINTERNED.bits(),
-);
-pub static SYMBOL_UNINTERNED_INFO: &HeapTypeInfo = &SYMBOL_UNINTERNED_INFO_VALUE;
-
-static SYMBOL_INTERNED_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Symbol<'static>>::VT,
-    SYMBOL_TC16_INTERNED.bits(),
-);
-pub static SYMBOL_INTERNED_INFO: &HeapTypeInfo = &SYMBOL_INTERNED_INFO_VALUE;
-
-unsafe impl<'gc> Tagged for Symbol<'gc> {
-    const TC16: &'static [super::TypeCode16] = &[SYMBOL_TC16_INTERNED, SYMBOL_TC16_UNINTERNED];
-    const TC8: TypeCode8 = TypeCode8::SYMBOL;
+unsafe impl<'gc> ClassTagged for Symbol<'gc> {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::SYMBOL,
+        crate::rsgc::object::builtin_class_ids::UNINTERNED_SYMBOL,
+    ];
     const TYPE_NAME: &'static str = "symbol";
 }
-
-pub const SYMBOL_TC16_UNINTERNED: TypeCode16 = TypeCode16(TypeCode8::SYMBOL.bits() as u16);
-pub const SYMBOL_TC16_INTERNED: TypeCode16 = TypeCode16(TypeCode8::SYMBOL.bits() as u16 + 256);
 
 type RootedSymbolTable = crate::Rootable!(Gc<'_, WeakSet<'_>>);
 pub type RootedSymbol = crate::Rootable!(Gc<'_, Symbol<'_>>);
@@ -193,11 +180,11 @@ impl<'gc> Symbol<'gc> {
     }
 
     pub fn is_interned(&self) -> bool {
-        payload_type_bits(self) == SYMBOL_TC16_INTERNED.bits()
+        payload_class_id(self).bits() == builtin_class_ids::SYMBOL
     }
 
     pub fn is_uninterned(&self) -> bool {
-        payload_type_bits(self) == SYMBOL_TC16_UNINTERNED.bits()
+        payload_class_id(self).bits() == builtin_class_ids::UNINTERNED_SYMBOL
     }
 
     pub fn uninterned_suffix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
@@ -340,21 +327,19 @@ pub struct Keyword<'gc> {
     pub symbol: Gc<'gc, Symbol<'gc>>,
 }
 
-static KEYWORD_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Keyword<'static>>::VT,
-    TypeCode8::KEYWORD.bits() as u16,
-);
-pub static KEYWORD_INFO: &HeapTypeInfo = &KEYWORD_INFO_VALUE;
+fn keyword_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::KEYWORD).unwrap())
+}
 
-unsafe impl<'gc> Tagged for Keyword<'gc> {
-    const TC8: TypeCode8 = TypeCode8::KEYWORD;
+unsafe impl<'gc> ClassTagged for Keyword<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::KEYWORD];
     const TYPE_NAME: &'static str = "keyword";
 }
 
 impl<'gc> Keyword<'gc> {
     /// Allocates a keyword for `symbol`.
     pub fn from_symbol(mc: Mutation<'gc>, symbol: Gc<'gc, Symbol<'gc>>) -> Gc<'gc, Keyword<'gc>> {
-        Gc::new_with_info(mc, Keyword { symbol }, KEYWORD_INFO)
+        Gc::new_with_header_word(mc, Keyword { symbol }, keyword_header_word())
     }
 
     pub fn to_symbol(&self) -> Gc<'gc, Symbol<'gc>> {

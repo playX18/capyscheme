@@ -1,9 +1,6 @@
 //! Port-adjacent socket value types.
 
-use crate::{
-    Trace,
-    prelude::{Tagged, TypeCode8},
-};
+use crate::{Trace, prelude::ClassTagged, rsgc::object::builtin_class_ids};
 
 #[repr(C)]
 /// Runtime socket object.
@@ -27,9 +24,9 @@ unsafe impl Trace for Socket {
     }
 }
 
-unsafe impl Tagged for Socket {
+unsafe impl ClassTagged for Socket {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SOCKET];
     const TYPE_NAME: &'static str = "socket";
-    const TC8: super::TypeCode8 = TypeCode8::SOCKET;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

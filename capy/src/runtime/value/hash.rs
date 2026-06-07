@@ -11,7 +11,7 @@ use crate::rsgc::{
     barrier,
     cell::Lock,
     collection::Visitor,
-    object::{HeapTypeInfo, VTableOf},
+    object::{ClassId, builtin_class_ids, class_header_word},
     sync::monitor::Monitor,
 };
 
@@ -95,17 +95,15 @@ pub struct HashTable<'gc> {
     pub(crate) inner: Monitor<InnerHashTable<'gc>>,
 }
 
-static HASHTABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, HashTable<'static>>::VT,
-    TypeCode8::HASHTABLE.bits() as u16,
-);
-pub static HASHTABLE_INFO: &HeapTypeInfo = &HASHTABLE_INFO_VALUE;
+fn hashtable_header_word(immutable: bool) -> u64 {
+    let class_id = if immutable {
+        builtin_class_ids::IMMUTABLE_HASHTABLE
+    } else {
+        builtin_class_ids::HASHTABLE
+    };
 
-static IMMUTABLE_HASHTABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, HashTable<'static>>::VT,
-    TypeCode16::IMMUTABLE_HASHTABLE.bits(),
-);
-pub static IMMUTABLE_HASHTABLE_INFO: &HeapTypeInfo = &IMMUTABLE_HASHTABLE_INFO_VALUE;
+    class_header_word(ClassId::new(class_id).unwrap())
+}
 
 pub type HashTableRef<'gc> = Gc<'gc, HashTable<'gc>>;
 
@@ -266,7 +264,7 @@ impl<'gc> HashTable<'gc> {
         if let HashTableType::Generic(_) = typ {
             // generic hashtable: no table, handled separately.
             let table = Array::with(mc, 0, |_, _| Lock::new(None));
-            return Gc::new_with_info(
+            return Gc::new_with_header_word(
                 mc,
                 Self {
                     inner: Monitor::new(InnerHashTable {
@@ -278,7 +276,7 @@ impl<'gc> HashTable<'gc> {
                         typ,
                     }),
                 },
-                HASHTABLE_INFO,
+                hashtable_header_word(false),
             );
         }
         let initial_capacity = initial_capacity.min(1);
@@ -295,7 +293,7 @@ impl<'gc> HashTable<'gc> {
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Self {
                 inner: Monitor::new(InnerHashTable {
@@ -307,7 +305,7 @@ impl<'gc> HashTable<'gc> {
                     typ,
                 }),
             },
-            HASHTABLE_INFO,
+            hashtable_header_word(false),
         )
     }
 
@@ -320,7 +318,7 @@ impl<'gc> HashTable<'gc> {
         if let HashTableType::Generic(_) = typ {
             // generic hashtable: no table, handled separately.
             let table = Array::with(mc, 0, |_, _| Lock::new(None));
-            return Gc::new_with_info(
+            return Gc::new_with_header_word(
                 mc,
                 Self {
                     inner: Monitor::new(InnerHashTable {
@@ -332,7 +330,7 @@ impl<'gc> HashTable<'gc> {
                         typ,
                     }),
                 },
-                HASHTABLE_INFO,
+                hashtable_header_word(true),
             );
         }
         let initial_capacity = initial_capacity.min(1);
@@ -349,7 +347,7 @@ impl<'gc> HashTable<'gc> {
 
         let threshold = (initial_capacity as f64 * load_factor).ceil() as usize;
 
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Self {
                 inner: Monitor::new(InnerHashTable {
@@ -361,7 +359,7 @@ impl<'gc> HashTable<'gc> {
                     typ,
                 }),
             },
-            IMMUTABLE_HASHTABLE_INFO,
+            hashtable_header_word(true),
         )
     }
 
@@ -370,7 +368,7 @@ impl<'gc> HashTable<'gc> {
             HashTableType::Generic(_) => {
                 unreachable!()
             }
-            _ => payload_type_bits(self) == TypeCode16::MUTABLE_HASHTABLE.bits(),
+            _ => payload_class_id(self).bits() == builtin_class_ids::HASHTABLE,
         }
     }
 
@@ -718,11 +716,10 @@ impl<'gc> Iterator for HashTableValues<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for HashTable<'gc> {
-    const TC8: TypeCode8 = TypeCode8::HASHTABLE;
-    const TC16: &'static [TypeCode16] = &[
-        TypeCode16::MUTABLE_HASHTABLE,
-        TypeCode16::IMMUTABLE_HASHTABLE,
+unsafe impl<'gc> ClassTagged for HashTable<'gc> {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::HASHTABLE,
+        crate::rsgc::object::builtin_class_ids::IMMUTABLE_HASHTABLE,
     ];
     const TYPE_NAME: &'static str = "#<hashtable>";
 }

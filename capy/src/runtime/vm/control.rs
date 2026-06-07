@@ -7,7 +7,7 @@ use crate::prelude::*;
 use crate::prelude::{ClosureRef, Value};
 use crate::rsgc::{
     Gc, Trace,
-    object::{HeapTypeInfo, VTableOf},
+    object::{ClassId, builtin_class_ids, class_header_word},
 };
 
 #[repr(C)]
@@ -16,14 +16,12 @@ pub struct ContinuationMarks<'gc> {
     pub cmarks: Value<'gc>,
 }
 
-static CONTINUATION_MARKS_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, ContinuationMarks<'static>>::VT,
-    TypeCode8::CMARKS.bits() as u16,
-);
-pub static CONTINUATION_MARKS_INFO: &HeapTypeInfo = &CONTINUATION_MARKS_INFO_VALUE;
+pub(crate) fn continuation_marks_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap())
+}
 
-unsafe impl<'gc> Tagged for ContinuationMarks<'gc> {
-    const TC8: TypeCode8 = TypeCode8::CMARKS;
+unsafe impl<'gc> ClassTagged for ContinuationMarks<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CONTINUATION_MARKS];
 
     const TYPE_NAME: &'static str = "continuation-marks";
 }
@@ -201,4 +199,21 @@ pub mod control_ops {
 
 pub fn init_control<'gc>(ctx: Context<'gc>) {
     control_ops::register(ctx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn continuation_marks_allocate_with_class_only_headers() {
+        Scheme::new_uninit().enter(|ctx| {
+            let marks = ctx.current_continuation_marks();
+            assert_eq!(
+                marks.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap()
+            );
+        });
+    }
 }

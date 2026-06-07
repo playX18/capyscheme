@@ -80,7 +80,8 @@ mod dl_ops {
                 flags,
             },
         );
-        let ptr = Gc::new(*nctx.ctx, Pointer::new(handle as _));
+        let ptr =
+            Gc::new_with_header_word(*nctx.ctx, Pointer::new(handle as _), pointer_header_word());
         nctx.return_(ptr.into())
     }
     #[scheme(name = "dlclose")]
@@ -151,7 +152,8 @@ mod dl_ops {
             );
         }
 
-        let ptr = Gc::new(*nctx.ctx, Pointer::new(sym_ptr as _));
+        let ptr =
+            Gc::new_with_header_word(*nctx.ctx, Pointer::new(sym_ptr as _), pointer_header_word());
         nctx.return_(ptr.into())
     }
 

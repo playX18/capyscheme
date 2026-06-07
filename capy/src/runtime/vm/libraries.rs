@@ -109,7 +109,7 @@ mod tests {
     use super::*;
     use crate::runtime::{
         Scheme,
-        fasl::{ClosureSpec, CodeSpec, FaslWriter},
+        fasl::{CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec, ProgramSpec},
         value::{Closure, Value},
     };
     use std::sync::Mutex;
@@ -125,11 +125,11 @@ mod tests {
         let scm = Scheme::new_uninit();
         scm.enter(|ctx| {
             let mut bytes = Vec::new();
+            let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]);
+            let code_blocks = [GraphCodeSpec::new(0, code)];
+            let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
             FaslWriter::new(ctx, &mut bytes)
-                .write_loaded_closure(&ClosureSpec::new(
-                    CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]),
-                    &[],
-                ))
+                .write_image(FaslImage::Program(&program), FaslCompression::None)
                 .expect("write unified FASL");
             let path = std::env::temp_dir().join(format!(
                 "capy-test-unified-fasl-{}.fasl",

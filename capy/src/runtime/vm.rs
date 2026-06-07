@@ -7,12 +7,12 @@ use std::{
     sync::atomic::Ordering,
 };
 
-use crate::rsgc::Trace;
+use crate::rsgc::{Trace, object::builtin_class_ids};
 use crate::runtime::{
     Context,
     value::{
         Closure, ConversionError, NativeReturn, PROCEDURES, ReturnCode, Str, Symbol, TryIntoValues,
-        TypeCode16, Value, Vector,
+        Value, Vector,
     },
     vm::{io::IoOperation, trampolines::get_trampoline_into_scheme},
 };
@@ -45,6 +45,18 @@ pub mod throw;
 pub mod thunks;
 pub mod trampolines;
 pub mod vector;
+
+fn is_procedure(value: Value<'_>) -> bool {
+    value
+        .class_id()
+        .is_some_and(|id| matches!(id.bits(), builtin_class_ids::CLOSURE_PROC))
+}
+
+fn is_continuation(value: Value<'_>) -> bool {
+    value
+        .class_id()
+        .is_some_and(|id| id.bits() == builtin_class_ids::CLOSURE_K)
+}
 
 /// Perform call into the Scheme code in `rator` with `args`.
 ///
@@ -312,7 +324,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     }
 
     pub fn is_continuation(&self) -> bool {
-        self.rator.has_typ16(TypeCode16::CLOSURE_K)
+        is_continuation(self.rator)
     }
 
     pub fn return_(self, values: R) -> NativeCallReturn<'gc> {
@@ -363,7 +375,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     }
 
     pub fn return_call(self, proc: Value<'gc>, args: &[Value<'gc>]) -> NativeCallReturn<'gc> {
-        if !proc.has_typ16(TypeCode16::CLOSURE_PROC) {
+        if !is_procedure(proc) {
             return self.wrong_argument_violation(
                 "apply",
                 "attempt to call non procedure value",
@@ -406,7 +418,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         cont: Value<'gc>,
         args: &[Value<'gc>],
     ) -> NativeCallReturn<'gc> {
-        if !cont.has_typ16(TypeCode16::CLOSURE_K) {
+        if !is_continuation(cont) {
             return self.wrong_argument_violation(
                 "@continue",
                 "attempt to call non continuation value",
@@ -427,7 +439,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         args: &[Value<'gc>],
         retk: Value<'gc>,
     ) -> NativeCallReturn<'gc> {
-        if !proc.has_typ16(TypeCode16::CLOSURE_PROC) {
+        if !is_procedure(proc) {
             crate::runtime::vm::debug::print_stacktraces_impl(self.ctx);
 
             return self.wrong_argument_violation(
@@ -440,7 +452,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
             );
         }
 
-        if !retk.has_typ16(TypeCode16::CLOSURE_K) {
+        if !is_continuation(retk) {
             return self.wrong_argument_violation(
                 "apply",
                 "expected continuation for return continuation",
@@ -901,8 +913,45 @@ impl<'gc> NativeCallReturn<'gc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rsgc::mmtk::util::Address;
     use crate::runtime::Scheme;
+    use crate::runtime::value::{CodeArity, CodeBlock};
     use std::{mem::size_of, panic::AssertUnwindSafe};
+
+    extern "C-unwind" fn test_proc<'gc>(
+        _ctx: Context<'gc>,
+        _rator: Value<'gc>,
+        _rands: *const Value<'gc>,
+        _num_rands: usize,
+        _retk: Value<'gc>,
+    ) -> NativeReturn<'gc> {
+        NativeReturn {
+            code: ReturnCode::ReturnOk,
+            value: Value::undefined(),
+        }
+    }
+
+    #[test]
+    fn vm_procedure_checks_use_closure_class_ids() {
+        Scheme::new_uninit().enter(|ctx| {
+            let code_block = CodeBlock::new_aot(
+                ctx,
+                Address::from_ptr(test_proc as *const ()),
+                CodeArity::new(0),
+                false,
+                Value::null(),
+            );
+            let proc = Value::from(Closure::new(ctx, code_block, &[], false));
+            let cont = Value::from(Closure::new(ctx, code_block, &[], true));
+
+            assert!(is_procedure(proc));
+            assert!(!is_procedure(cont));
+            assert!(!is_procedure(Value::null()));
+            assert!(is_continuation(cont));
+            assert!(!is_continuation(proc));
+            assert!(!is_continuation(Value::null()));
+        });
+    }
 
     #[test]
     fn nested_scheme_call_guard_restores_state_on_unwind() {

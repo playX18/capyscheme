@@ -4,11 +4,15 @@ pub(crate) fn init_eval<'gc>(ctx: Context<'gc>) {
     eval_ops::register(ctx);
 }
 
+fn is_applicable(value: Value<'_>) -> bool {
+    value.is::<Closure>()
+}
+
 #[scheme(path=capy)]
 pub mod eval_ops {
     #[scheme(name = "apply")]
     pub fn apply(rator: Value<'gc>, rands: &'gc [Value<'gc>]) -> Result<Value<'gc>, Value<'gc>> {
-        if !rator.is::<Closure>() {
+        if !is_applicable(rator) {
             return nctx.wrong_argument_violation(
                 "apply",
                 "attempt to call non-procedure",
@@ -39,6 +43,6 @@ pub mod eval_ops {
 
     #[scheme(name = "procedure?")]
     pub fn procedure_p(v: Value<'gc>) -> Value<'gc> {
-        nctx.return_(Value::new(v.is::<Closure>()))
+        nctx.return_(Value::new(is_applicable(v)))
     }
 }

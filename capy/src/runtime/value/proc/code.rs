@@ -22,40 +22,9 @@ pub struct CodeBlock<'gc> {
 // the JIT span through the runtime-wide `CodeMemory` lock.
 unsafe impl<'gc> Send for CodeBlock<'gc> {}
 
-extern "C" fn fixed_code_block_payload_size(_obj: GCObject) -> usize {
-    0
+fn code_block_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::CODE_BLOCK).unwrap())
 }
-
-extern "C" fn trace_code_block(obj: GCObject, vis: &mut Visitor) {
-    unsafe {
-        obj.to_address()
-            .as_mut_ref::<CodeBlock<'static>>()
-            .trace(vis);
-    }
-}
-
-extern "C" fn process_weak_code_block(obj: GCObject, weak_processor: &mut WeakProcessor) {
-    unsafe {
-        obj.to_address()
-            .as_mut_ref::<CodeBlock<'static>>()
-            .process_weak_refs(weak_processor);
-    }
-}
-
-static CODE_BLOCK_VTABLE: &VTable = &VTable {
-    alignment: align_of::<CodeBlock>(),
-    compute_alignment: None,
-    instance_size: size_of::<CodeBlock>(),
-    compute_size: Some(fixed_code_block_payload_size),
-    trace: trace_code_block,
-    weak_proc: process_weak_code_block,
-    type_name: "code-block",
-};
-
-static CODE_BLOCK_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(CODE_BLOCK_VTABLE, TypeCode8::CODE_BLOCK.bits() as u16);
-
-pub static CODE_BLOCK_INFO: &HeapTypeInfo = &CODE_BLOCK_INFO_VALUE;
 
 pub struct CodeBlockFinalizerQueue {
     finalizers: StdMutex<VecDeque<ObjectReference>>,
@@ -134,7 +103,7 @@ impl<'gc> CodeBlock<'gc> {
             None => (false, true, MaybeUninit::uninit()),
         };
 
-        let code_block = Gc::new_with_info(
+        let code_block = Gc::new_with_header_word(
             *ctx,
             Self {
                 entrypoint: init.entrypoint,
@@ -154,7 +123,7 @@ impl<'gc> CodeBlock<'gc> {
                 span_borrowed: Cell::new(false),
                 span: UnsafeCell::new(span),
             },
-            CODE_BLOCK_INFO,
+            code_block_header_word(),
         );
 
         if code_block.has_live_span() {
@@ -318,8 +287,8 @@ impl<'gc> CodeBlock<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for CodeBlock<'gc> {
-    const TC8: TypeCode8 = TypeCode8::CODE_BLOCK;
+unsafe impl<'gc> ClassTagged for CodeBlock<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::CODE_BLOCK];
 
     const TYPE_NAME: &'static str = "code-block";
 }
@@ -389,6 +358,7 @@ bitflags::bitflags! {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CodeBlockKind {
     AOT,
     NativeProc,

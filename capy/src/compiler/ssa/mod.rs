@@ -18,14 +18,16 @@ use crate::{
         term::{ContRef, FuncRef},
     },
     expander::core::LVarRef,
+    rsgc::object::builtin_class_ids,
     runtime::{
-        Context, REGISTER_ARG_COUNT, State,
+        CallData, Context, REGISTER_ARG_COUNT, State,
         fasl::{
-            CodeSpec, FaslWriter, GraphCodeSpec, GraphValueSpec, ProgramSpec,
+            CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec, GraphValueSpec,
+            ProgramSpec,
             reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
         },
         symbols::RuntimeData,
-        value::{Closure, Value, ValueEqual, Vector},
+        value::{Closure, ReturnCode, Value, ValueEqual},
     },
 };
 
@@ -37,7 +39,6 @@ use cranelift_codegen::{
     ir::{self, BlockArg, SourceLoc},
 };
 
-use crate::rsgc::Gc;
 use std::{
     collections::{HashMap, HashSet},
     mem::offset_of,
@@ -51,7 +52,7 @@ pub mod primitive;
 pub mod traits;
 mod types;
 
-pub(crate) use linear::AllocInfoPreset;
+pub(crate) use linear::AllocationHeaderPreset;
 pub use types::{LinearRestSource, RegisterCallArgs, VarDef};
 pub(crate) use types::{MAX_RAISE_ARITY, compiled_scheme_signature, overflow_base_from_argc};
 
@@ -166,6 +167,8 @@ pub struct ModuleBuilder<'gc> {
     pub raise_trampolines: Vec<FunctionSymbol>,
     pub raise_to_exception_handler_trampoline: FunctionSymbol,
     pub wrong_arity_trampoline: FunctionSymbol,
+    pub generic_apply_trampoline: FunctionSymbol,
+    pub generic_tail_apply_trampoline: FunctionSymbol,
     pub global_side_metadata_base_address: DataSymbol,
     pub vo_bit_side_metadata_base_address: DataSymbol,
 
@@ -285,6 +288,13 @@ impl<'gc> ModuleBuilder<'gc> {
             "capy_raise_wrong_arity",
             &raise_sig,
         );
+        let generic_apply_trampoline =
+            declare_direct_function(&mut next_function_symbol, "capy_generic_apply", &raise_sig);
+        let generic_tail_apply_trampoline = declare_direct_function(
+            &mut next_function_symbol,
+            "capy_generic_tail_apply",
+            &raise_sig,
+        );
         Self {
             debug_context,
             ctx,
@@ -305,6 +315,8 @@ impl<'gc> ModuleBuilder<'gc> {
             raise_trampolines,
             raise_to_exception_handler_trampoline,
             wrong_arity_trampoline,
+            generic_apply_trampoline,
+            generic_tail_apply_trampoline,
             global_side_metadata_base_address,
             vo_bit_side_metadata_base_address,
         }
@@ -476,7 +488,7 @@ impl<'gc> ModuleBuilder<'gc> {
             cache.clear();
         }
 
-        let (_constants_fasl, constant_indices) = self.constants_fasl_and_indices();
+        let constant_indices = self.constant_indices();
         let constants = self
             .constants
             .iter()
@@ -628,14 +640,15 @@ impl<'gc> ModuleBuilder<'gc> {
         }
 
         let mut bytes = Vec::new();
+        let program = ProgramSpec::new(
+            graph_len,
+            &value_defs,
+            &code_defs,
+            entry_code.index(),
+            false,
+        );
         FaslWriter::new(self.ctx, &mut bytes)
-            .write_loaded_program(&ProgramSpec::new(
-                graph_len,
-                &value_defs,
-                &code_defs,
-                entry_code.index(),
-                false,
-            ))
+            .write_image(FaslImage::Program(&program), FaslCompression::Gzip)
             .map_err(|err| err.to_string())?;
         Ok(bytes)
     }
@@ -661,6 +674,22 @@ impl<'gc> ModuleBuilder<'gc> {
             self.wrong_arity_trampoline,
             "capy_raise_wrong_arity",
             Self::build_wrong_arity_trampoline,
+        )?;
+        self.compile_fasl_trampoline(
+            isa,
+            cache,
+            functions,
+            self.generic_apply_trampoline,
+            "capy_generic_apply",
+            Self::build_generic_apply_trampoline,
+        )?;
+        self.compile_fasl_trampoline(
+            isa,
+            cache,
+            functions,
+            self.generic_tail_apply_trampoline,
+            "capy_generic_tail_apply",
+            Self::build_generic_tail_apply_trampoline,
         )?;
 
         let raise_trampolines = self.raise_trampolines.clone();
@@ -925,7 +954,192 @@ impl<'gc> ModuleBuilder<'gc> {
         builder.finalize();
     }
 
-    fn constants_fasl_and_indices(&mut self) -> (Vec<u8>, HashMap<DataSymbol, u32>) {
+    fn build_generic_apply_trampoline(
+        &mut self,
+        context: &mut cranelift_codegen::Context,
+        fctx: &mut FunctionBuilderContext,
+    ) {
+        self.build_generic_apply_trampoline_inner(context, fctx, true);
+    }
+
+    fn build_generic_tail_apply_trampoline(
+        &mut self,
+        context: &mut cranelift_codegen::Context,
+        fctx: &mut FunctionBuilderContext,
+    ) {
+        self.build_generic_apply_trampoline_inner(context, fctx, false);
+    }
+
+    fn build_generic_apply_trampoline_inner(
+        &mut self,
+        context: &mut cranelift_codegen::Context,
+        fctx: &mut FunctionBuilderContext,
+        has_retk: bool,
+    ) {
+        context.func.signature = compiled_scheme_signature();
+        let mut builder = FunctionBuilder::new(&mut context.func, fctx);
+        let thunks = self.import_thunks(builder.func);
+
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+
+        let generic = builder.block_params(entry)[0];
+        let argc = builder.block_params(entry)[1];
+        let arg0 = builder.block_params(entry)[2];
+        let arg1 = builder.block_params(entry)[3];
+        let arg2 = builder.block_params(entry)[4];
+        let arg3 = builder.block_params(entry)[5];
+
+        let ctx = builder.ins().get_pinned_reg(clif_types::I64);
+        let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
+        let closure_proc_id = builder
+            .ins()
+            .iconst(clif_types::I32, builtin_class_ids::CLOSURE_PROC as i64);
+        let closure_proc = builder
+            .ins()
+            .call(thunks.has_class_id, &[generic, closure_proc_id]);
+        let closure_proc = builder.inst_results(closure_proc)[0];
+        let closure_k_id = builder
+            .ins()
+            .iconst(clif_types::I32, builtin_class_ids::CLOSURE_K as i64);
+        let closure_k = builder
+            .ins()
+            .call(thunks.has_class_id, &[generic, closure_k_id]);
+        let closure_k = builder.inst_results(closure_k)[0];
+        let is_closure = builder.ins().bor(closure_proc, closure_k);
+        let closure_call = builder.create_block();
+        let generic_call = builder.create_block();
+        builder
+            .ins()
+            .brif(is_closure, closure_call, &[], generic_call, &[]);
+
+        builder.switch_to_block(closure_call);
+        let code = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            generic,
+            offset_of!(Closure, code) as i32,
+        );
+        let sig_call = builder.import_signature(compiled_scheme_signature());
+        builder.ins().return_call_indirect(
+            sig_call,
+            code,
+            &[generic, argc, arg0, arg1, arg2, arg3],
+        );
+
+        builder.switch_to_block(generic_call);
+        let overflow = overflow_base_from_argc(&mut builder, state, argc);
+        let has_retk = builder
+            .ins()
+            .iconst(clif_types::I8, u8::from(has_retk) as i64);
+        let call = builder.ins().call(
+            thunks.generic_apply_regs,
+            &[
+                ctx, generic, argc, arg0, arg1, arg2, arg3, overflow, has_retk,
+            ],
+        );
+        let code = builder.inst_results(call)[0];
+        let value = builder.inst_results(call)[1];
+
+        let on_ret = builder.create_block();
+        let on_cont = builder.create_block();
+        let is_cont = builder.ins().icmp_imm(
+            ir::condcodes::IntCC::Equal,
+            code,
+            ReturnCode::Continue as i64,
+        );
+        builder.ins().brif(is_cont, on_cont, &[], on_ret, &[]);
+
+        builder.switch_to_block(on_ret);
+        builder.ins().return_(&[code, value]);
+
+        builder.switch_to_block(on_cont);
+        let cdata = offset_of!(State, call_data) as i32;
+        let rator = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            cdata + offset_of!(CallData, rator) as i32,
+        );
+        let argc = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            cdata + offset_of!(CallData, argc) as i32,
+        );
+        let arg0 = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            cdata + offset_of!(CallData, arg0) as i32,
+        );
+        let arg1 = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            cdata + offset_of!(CallData, arg1) as i32,
+        );
+        let arg2 = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            cdata + offset_of!(CallData, arg2) as i32,
+        );
+        let arg3 = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            state,
+            cdata + offset_of!(CallData, arg3) as i32,
+        );
+        let zero = builder.ins().iconst(clif_types::I64, 0);
+        let undefined = builder
+            .ins()
+            .iconst(clif_types::I64, Value::undefined().bits() as i64);
+        builder.ins().store(
+            ir::MemFlags::trusted().with_can_move(),
+            undefined,
+            state,
+            cdata + offset_of!(CallData, rator) as i32,
+        );
+        builder.ins().store(
+            ir::MemFlags::trusted().with_can_move(),
+            zero,
+            state,
+            cdata + offset_of!(CallData, argc) as i32,
+        );
+        for offset in [
+            offset_of!(CallData, arg0),
+            offset_of!(CallData, arg1),
+            offset_of!(CallData, arg2),
+            offset_of!(CallData, arg3),
+        ] {
+            builder.ins().store(
+                ir::MemFlags::trusted().with_can_move(),
+                undefined,
+                state,
+                cdata + offset as i32,
+            );
+        }
+
+        let body_code = builder.ins().load(
+            clif_types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            rator,
+            offset_of!(Closure, code) as i32,
+        );
+        let sig_call = builder.import_signature(compiled_scheme_signature());
+        builder.ins().return_call_indirect(
+            sig_call,
+            body_code,
+            &[rator, argc, arg0, arg1, arg2, arg3],
+        );
+
+        builder.seal_all_blocks();
+        builder.finalize();
+    }
+
+    fn constant_indices(&mut self) -> HashMap<DataSymbol, u32> {
         let funcs = self
             .reify_info
             .functions
@@ -952,23 +1166,11 @@ impl<'gc> ModuleBuilder<'gc> {
             .iter()
             .map(|(key, id)| (key.0, *id))
             .collect::<Vec<_>>();
-        let constant_indices = constants
+        constants
             .iter()
             .enumerate()
             .map(|(index, (_, symbol))| (*symbol, index as u32))
-            .collect::<HashMap<_, _>>();
-
-        let vec = Vector::new::<true>(*self.ctx, constants.len(), Value::undefined());
-        let wvec = Gc::write(*self.ctx, vec);
-        for (i, (val, _)) in constants.iter().enumerate() {
-            wvec[i].unlock().set(*val);
-        }
-
-        let mut buf = Vec::with_capacity(1024);
-        let writer = FaslWriter::new(self.ctx, &mut buf);
-        writer.write(vec.into()).expect("should not fail");
-
-        (buf, constant_indices)
+            .collect::<HashMap<_, _>>()
     }
 
     fn fasl_data_slots(&self, constant_indices: &HashMap<DataSymbol, u32>) -> Vec<FaslDataSlot> {
@@ -1836,8 +2038,8 @@ mod tests {
             let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
 
             let mut function = direct_test_function();
-            let global =
-                module_builder.declare_runtime_data_in_func(RuntimeData::PairInfo, &mut function);
+            let global = module_builder
+                .declare_runtime_data_in_func(RuntimeData::PairHeaderWord, &mut function);
             let global_name_ref = match &function.global_values[global] {
                 ir::GlobalValueData::Symbol { name, .. } => match name {
                     ExternalName::User(name_ref) => *name_ref,
@@ -1850,7 +2052,7 @@ mod tests {
                     function.params.user_named_funcs()[global_name_ref].clone()
                 ),
                 Some(crate::compiler::codegen::runtime_data(
-                    RuntimeData::PairInfo
+                    RuntimeData::PairHeaderWord
                 ))
             );
 

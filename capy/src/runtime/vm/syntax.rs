@@ -1,6 +1,6 @@
 use crate::rsgc::{
     Gc, Trace,
-    object::{HeapTypeInfo, VTableOf},
+    object::{ClassId, builtin_class_ids, class_header_word},
 };
 
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
         Context,
         fluids::Fluid,
         modules::Module,
-        value::{Closure, Pair, Str, Tagged, Tuple, TypeCode8, Value, Vector},
+        value::{ClassTagged, Closure, Pair, Str, Tuple, Value, Vector},
         vm::ffi::Pointer,
     },
 };
@@ -26,11 +26,9 @@ pub struct Syntax<'gc> {
     pub(crate) properties: Value<'gc>,
 }
 
-static SYNTAX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Syntax<'static>>::VT,
-    TypeCode8::SYNTAX.bits() as u16,
-);
-pub static SYNTAX_INFO: &HeapTypeInfo = &SYNTAX_INFO_VALUE;
+fn syntax_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::SYNTAX).unwrap())
+}
 
 impl<'gc> Syntax<'gc> {
     pub fn new(
@@ -41,7 +39,7 @@ impl<'gc> Syntax<'gc> {
         source: Value<'gc>,
         properties: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             *ctx,
             Self {
                 expr,
@@ -50,7 +48,7 @@ impl<'gc> Syntax<'gc> {
                 source,
                 properties,
             },
-            SYNTAX_INFO,
+            syntax_header_word(),
         )
     }
 
@@ -75,8 +73,8 @@ impl<'gc> Syntax<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for Syntax<'gc> {
-    const TC8: TypeCode8 = TypeCode8::SYNTAX;
+unsafe impl<'gc> ClassTagged for Syntax<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SYNTAX];
     const TYPE_NAME: &'static str = "#<syntax>";
 }
 
@@ -363,11 +361,9 @@ pub struct SyntaxTransformer<'gc> {
     pub(crate) binding: Value<'gc>,
 }
 
-static SYNTAX_TRANSFORMER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, SyntaxTransformer<'static>>::VT,
-    TypeCode8::SYNCLO.bits() as u16,
-);
-pub static SYNTAX_TRANSFORMER_INFO: &HeapTypeInfo = &SYNTAX_TRANSFORMER_INFO_VALUE;
+fn syntax_transformer_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::SYNTAX_TRANSFORMER).unwrap())
+}
 
 impl<'gc> SyntaxTransformer<'gc> {
     pub fn new(
@@ -376,7 +372,11 @@ impl<'gc> SyntaxTransformer<'gc> {
         typ: Value<'gc>,
         binding: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_info(*ctx, Self { name, typ, binding }, SYNTAX_TRANSFORMER_INFO)
+        Gc::new_with_header_word(
+            *ctx,
+            Self { name, typ, binding },
+            syntax_transformer_header_word(),
+        )
     }
 
     pub fn name(&self) -> Value<'gc> {
@@ -392,7 +392,38 @@ impl<'gc> SyntaxTransformer<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for SyntaxTransformer<'gc> {
-    const TC8: TypeCode8 = TypeCode8::SYNCLO;
+unsafe impl<'gc> ClassTagged for SyntaxTransformer<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SYNTAX_TRANSFORMER];
     const TYPE_NAME: &'static str = "#<syntax-transformer>";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn syntax_objects_allocate_with_class_only_headers() {
+        Scheme::new_uninit().enter(|ctx| {
+            let syntax = Syntax::new(
+                ctx,
+                Value::undefined(),
+                Value::null(),
+                Value::new(false),
+                Value::new(false),
+                Value::null(),
+            );
+            assert_eq!(
+                syntax.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::SYNTAX).unwrap()
+            );
+
+            let transformer =
+                SyntaxTransformer::new(ctx, Value::undefined(), Value::null(), Value::new(false));
+            assert_eq!(
+                transformer.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::SYNTAX_TRANSFORMER).unwrap()
+            );
+        });
+    }
 }

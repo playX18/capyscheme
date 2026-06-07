@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use crate::rsgc::object::{HeapTypeInfo, VTableOf};
+use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::runtime::stats::{
     CompilationBreakdownPhase, begin_compilation_breakdown, end_compilation_breakdown,
     runtime_stats_enabled as stats_enabled, runtime_stats_snapshot, set_runtime_stats_enabled,
@@ -11,11 +11,34 @@ pub struct Ephemeron<'gc> {
     value: Value<'gc>,
 }
 
-static EPHEMERON_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Ephemeron<'static>>::VT,
-    TypeCode8::EPHEMERON.bits() as u16,
-);
-pub static EPHEMERON_INFO: &HeapTypeInfo = &EPHEMERON_INFO_VALUE;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn ephemeron_allocates_with_class_only_header() {
+        Scheme::new_uninit().enter(|ctx| {
+            let ephemeron = Gc::new_with_header_word(
+                *ctx,
+                Ephemeron {
+                    key: Value::null(),
+                    value: Value::undefined(),
+                },
+                ephemeron_header_word(),
+            );
+
+            assert_eq!(
+                ephemeron.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::EPHEMERON).unwrap()
+            );
+        });
+    }
+}
+
+fn ephemeron_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::EPHEMERON).unwrap())
+}
 
 unsafe impl<'gc> Trace for Ephemeron<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -50,8 +73,8 @@ unsafe impl<'gc> Trace for Ephemeron<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for Ephemeron<'gc> {
-    const TC8: TypeCode8 = TypeCode8::EPHEMERON;
+unsafe impl<'gc> ClassTagged for Ephemeron<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::EPHEMERON];
     const TYPE_NAME: &'static str = "#<ephemeron>";
 }
 
@@ -98,7 +121,11 @@ pub mod gc {
 
         let ephemeron = Ephemeron { key, value };
 
-        let cell = Value::from(Gc::new_with_info(*ctx, ephemeron, EPHEMERON_INFO));
+        let cell = Value::from(Gc::new_with_header_word(
+            *ctx,
+            ephemeron,
+            ephemeron_header_word(),
+        ));
 
         nctx.return_(cell)
     }
