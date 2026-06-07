@@ -28,6 +28,7 @@
 - *(lsp)* Add refactored Rust language server - ([12382c8](https://codeberg.org/playXE/capy/commit/12382c8d29247d2409d7ce9dfd9a097a27fdfed5))
 - *(lsp)* Add Scheme worker analysis - ([689d7aa](https://codeberg.org/playXE/capy/commit/689d7aa581242527135bd060d1343be4f4c59b3b))
 - *(lsp)* Add isolated VM worker launcher - ([36d267b](https://codeberg.org/playXE/capy/commit/36d267b735921bae7da68db6644565f45427b7c8))
+- *(psyntax)* Move library macros to psyntax - ([85cb714](https://codeberg.org/playXE/capy/commit/85cb714c0675e49af5f35c1d89295ac866b11bdb))
 - *(psyntax)* Add default core #%app - ([0c8d46c](https://codeberg.org/playXE/capy/commit/0c8d46c48f3fdf275acdc2a0dad6a034f6416dd7))
 - *(psyntax)* Route calls through implicit #%app - ([4192658](https://codeberg.org/playXE/capy/commit/419265893227c2a8f56a7ecebdce8fee1fcee9a1))
 - *(psyntax)* Define-property - ([1dd6932](https://codeberg.org/playXE/capy/commit/1dd69323e87e691da282e613fb03ed5b8c0cd50c))
@@ -84,6 +85,7 @@
 - *(lsp)* Restart on file changes instead of fighting with autoload - ([67e3cb8](https://codeberg.org/playXE/capy/commit/67e3cb8ae1302353deff8f567a6b01c6a124c5b8))
 - *(lsp)* Invalidate files differently - ([1e1b74c](https://codeberg.org/playXE/capy/commit/1e1b74c0cfd9311fdf0d22532371821e546ac08d))
 - *(runtime)* Better source handling - ([83a33e2](https://codeberg.org/playXE/capy/commit/83a33e2a32f53303269c26fc022291a2b975d3f6))
+- Simplify codegen and fasl - ([51f61c1](https://codeberg.org/playXE/capy/commit/51f61c181dcc766d82773e05f36b54494f3e2546))
 - #!nobacktrace in letrectify and resolve-free-vars - ([7365caa](https://codeberg.org/playXE/capy/commit/7365caa3337836c785ce22cc125e8a728d698b60))
 
 ### 📚 Documentation
@@ -98,6 +100,7 @@
 
 ### ⚙️ Miscellaneous Tasks
 
+- *(clippy)* Remove lint suppressions - ([835a163](https://codeberg.org/playXE/capy/commit/835a16370d6bd3935c34575c8f065a3c9a90a9a4))
 - Simplify fasl - ([77cb2ba](https://codeberg.org/playXE/capy/commit/77cb2ba822ff85d2437494000f14826085ca6c9f))
 - Support FASL boostrap - ([75cbdc7](https://codeberg.org/playXE/capy/commit/75cbdc7301c71abcaad74a47153c46d40e7678ff))
 - Fmt - ([d4fcac4](https://codeberg.org/playXE/capy/commit/d4fcac4e40ec677a89d5cb6356f30f26eca99b25))
