@@ -3,10 +3,7 @@ use crate::{
         ObjectSlot,
         finalizer::Finalizers,
         mm::MemoryManager,
-        object::{
-            GCObject, HeapObjectHeader, HeapTypeInfo, OBJECT_REF_OFFSET, VTable, VTableOf,
-            gc_only_type_info,
-        },
+        object::{AllocationHooksOf, GCObject, HeapObjectHeader, OBJECT_REF_OFFSET},
         ptr::Gc,
         sync::thread::{AllocFastPath, Thread, current_thread, is_current_thread_registed},
         traits::Trace,
@@ -386,113 +383,38 @@ impl<'gc> Mutation<'gc> {
 
     #[inline(always)]
     pub fn allocate<T: 'gc + Trace>(&self, value: T, semantics: AllocationSemantics) -> Gc<'gc, T> {
-        unsafe {
-            let size = size_of::<T>();
-            let align = size_of::<usize>().max(align_of::<T>());
-            let obj =
-                self.raw_allocate_with_info(size, align, VTableOf::<'gc, T>::gc_info(), semantics);
-            obj.to_address().store(value);
-
-            Gc::from_gcobj(obj)
-        }
+        self.allocate_with_header_word(
+            value,
+            AllocationHooksOf::<'gc, T>::class_header_word((*self).into()),
+            semantics,
+        )
     }
 
     #[inline(always)]
-    pub fn allocate_with_info<T: 'gc>(
+    pub fn allocate_with_header_word<T: 'gc>(
         &self,
         value: T,
-        info: &'static HeapTypeInfo,
+        header_word: u64,
         semantics: AllocationSemantics,
     ) -> Gc<'gc, T> {
         unsafe {
             let size = size_of::<T>();
             let align = size_of::<usize>().max(align_of::<T>());
-            let obj = self.raw_allocate_with_info(size, align, info, semantics);
+            let obj = self.raw_allocate_with_header_word(size, align, header_word, semantics);
             obj.to_address().store(value);
 
             Gc::from_gcobj(obj)
         }
     }
 
-    /// Same as [`raw_allocate`] but performs allocation "out of line". That is,
-    /// it always invokes MMTk API for allocation rather than trying to allocate inline using TLAB.
-    ///
-    /// # Safety
-    ///
-    /// Same safety concerns as in [`raw_allocate`](Self::raw_allocate).
-    pub unsafe fn raw_allocate_out_of_line(
-        &self,
-        size: usize,
-        alignment: usize,
-        vtable: &'static VTable,
-        semantics: AllocationSemantics,
-    ) -> GCObject {
-        unsafe {
-            self.raw_allocate_out_of_line_with_info(
-                size,
-                alignment,
-                gc_only_type_info(vtable),
-                semantics,
-            )
-        }
-    }
-
-    /// Same as [`raw_allocate_out_of_line`](Self::raw_allocate_out_of_line),
-    /// but installs an explicit heap type descriptor.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
-    /// object that will be written into the returned allocation.
-    pub unsafe fn raw_allocate_out_of_line_with_info(
-        &self,
-        size: usize,
-        alignment: usize,
-        info: &'static HeapTypeInfo,
-        mut semantics: AllocationSemantics,
-    ) -> GCObject {
-        if semantics == AllocationSemantics::Default
-            && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
-        {
-            semantics = AllocationSemantics::Los;
-        }
-
-        let size = raw_align_up(size, alignment);
-        unsafe {
-            match semantics {
-                AllocationSemantics::Los => self.raw_allocate_los_with_info(size, alignment, info),
-                AllocationSemantics::Immortal => {
-                    self.raw_allocate_immortal_with_info(size, alignment, info)
-                }
-                AllocationSemantics::NonMoving => {
-                    self.raw_allocate_nonmoving_with_info(size, alignment, info)
-                }
-                _ => {
-                    self.flush_tlab();
-                    let object_start = mmtk::memory_manager::alloc_with_options(
-                        self.thread.mutator_unchecked(),
-                        size + size_of::<HeapObjectHeader>(),
-                        alignment,
-                        OBJECT_REF_OFFSET as _,
-                        semantics,
-                        DEFAULT_ALLOC_OPTIONS,
-                    );
-                    self.refill_tlab();
-
-                    object_start.store(HeapObjectHeader::new(info));
-
-                    GCObject::from(object_start + OBJECT_REF_OFFSET)
-                }
-            }
-        }
-    }
-
     /// Flush TLAB and reset it to the initial state. This function must be used before
-    /// calling into MMTk API such as [`raw_allocate_slow`](Self::raw_allocate_slow).
+    /// calling into MMTk API such as
+    /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
     ///
     /// # Safety
     ///
-    /// This function is safe only if TLAB is flushed *before* call into MMTK API such as [`raw_allocate_slow`](Self::raw_allocate_slow).
+    /// This function is safe only if TLAB is flushed *before* call into MMTK API such as
+    /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
     pub unsafe fn flush_tlab(&self) {
         let tlab = unsafe { &mut (*self.thread.native_data_mut_ptr()).lab };
 
@@ -531,12 +453,14 @@ impl<'gc> Mutation<'gc> {
 
     /// Refill TLAB with new memory.
     ///
-    /// This function must be invoked after slowpath calls like `raw_allocate_slow`. Otherwise TLAB
-    /// might contain invalid data and cause memory corruption.
+    /// This function must be invoked after slowpath calls like
+    /// `raw_allocate_slow_with_header_word`. Otherwise TLAB might contain
+    /// invalid data and cause memory corruption.
     ///
     /// # Safety
     ///
-    /// This function is safe only if TLAB is refilled *after* call into MMTKA API such as [`raw_allocate_slow`](Self::raw_allocate_slow).
+    /// This function is safe only if TLAB is refilled *after* call into MMTKA API such as
+    /// [`raw_allocate_slow_with_header_word`](Self::raw_allocate_slow_with_header_word).
     pub unsafe fn refill_tlab(&self) {
         let tlab = unsafe { &mut (*self.thread.native_data_mut_ptr()).lab };
 
@@ -568,35 +492,18 @@ impl<'gc> Mutation<'gc> {
         tlab.rebind(allocator.cursor, allocator.limit);
     }
 
-    /// Slow-path for raw allocation.
+    /// Slow-path raw allocation that installs a precomputed object header word.
     ///
     /// # Safety
     ///
-    /// Same as [`raw_allocate`](Self::raw_allocate).
-    pub unsafe fn raw_allocate_slow(
+    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
+    /// the class ID for the object that will be written into the returned
+    /// allocation.
+    pub unsafe fn raw_allocate_slow_with_header_word(
         &self,
         size: usize,
         alignment: usize,
-        vtable: &'static VTable,
-        semantics: AllocationSemantics,
-    ) -> GCObject {
-        unsafe {
-            self.raw_allocate_slow_with_info(size, alignment, gc_only_type_info(vtable), semantics)
-        }
-    }
-
-    /// Same as [`raw_allocate_slow`](Self::raw_allocate_slow), but installs an
-    /// explicit heap type descriptor.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
-    /// object that will be written into the returned allocation.
-    pub unsafe fn raw_allocate_slow_with_info(
-        &self,
-        size: usize,
-        alignment: usize,
-        info: &'static HeapTypeInfo,
+        header_word: u64,
         semantics: AllocationSemantics,
     ) -> GCObject {
         unsafe {
@@ -611,37 +518,24 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(info));
+            object_start.store(HeapObjectHeader::from_word(header_word));
             GCObject::from(object_start + OBJECT_REF_OFFSET)
         }
     }
 
-    /// Raw allocate memory on the GC heap in Immortal Space.
+    /// Raw allocation in Immortal Space that installs a precomputed object
+    /// header word.
     ///
     /// # Safety
     ///
-    /// Same as [`raw_allocate`](Self::raw_allocate).
-    pub unsafe fn raw_allocate_immortal(
+    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
+    /// the class ID for the object that will be written into the returned
+    /// allocation.
+    pub unsafe fn raw_allocate_immortal_with_header_word(
         &self,
         size: usize,
         alignment: usize,
-        vtable: &'static VTable,
-    ) -> GCObject {
-        unsafe { self.raw_allocate_immortal_with_info(size, alignment, gc_only_type_info(vtable)) }
-    }
-
-    /// Same as [`raw_allocate_immortal`](Self::raw_allocate_immortal), but
-    /// installs an explicit heap type descriptor.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
-    /// object that will be written into the returned allocation.
-    pub unsafe fn raw_allocate_immortal_with_info(
-        &self,
-        size: usize,
-        alignment: usize,
-        info: &'static HeapTypeInfo,
+        header_word: u64,
     ) -> GCObject {
         unsafe {
             self.flush_tlab();
@@ -655,37 +549,24 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(info));
+            object_start.store(HeapObjectHeader::from_word(header_word));
             GCObject::from(object_start + OBJECT_REF_OFFSET)
         }
     }
 
-    /// Raw allocate memory on the GC heap in Non-Moving Space.
+    /// Raw allocation in Non-Moving Space that installs a precomputed object
+    /// header word.
     ///
     /// # Safety
     ///
-    ///  Same as [`raw_allocate`](Self::raw_allocate).
-    pub unsafe fn raw_allocate_nonmoving(
+    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
+    /// the class ID for the object that will be written into the returned
+    /// allocation.
+    pub unsafe fn raw_allocate_nonmoving_with_header_word(
         &self,
         size: usize,
         alignment: usize,
-        vtable: &'static VTable,
-    ) -> GCObject {
-        unsafe { self.raw_allocate_nonmoving_with_info(size, alignment, gc_only_type_info(vtable)) }
-    }
-
-    /// Same as [`raw_allocate_nonmoving`](Self::raw_allocate_nonmoving), but
-    /// installs an explicit heap type descriptor.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
-    /// object that will be written into the returned allocation.
-    pub unsafe fn raw_allocate_nonmoving_with_info(
-        &self,
-        size: usize,
-        alignment: usize,
-        info: &'static HeapTypeInfo,
+        header_word: u64,
     ) -> GCObject {
         unsafe {
             self.flush_tlab();
@@ -699,37 +580,24 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(info));
+            object_start.store(HeapObjectHeader::from_word(header_word));
             GCObject::from(object_start + OBJECT_REF_OFFSET)
         }
     }
 
-    /// Raw allocate memory on the GC heap in Large Object Space (LOS).
+    /// Raw allocation in Large Object Space that installs a precomputed object
+    /// header word.
     ///
     /// # Safety
     ///
-    /// Same as [`raw_allocate`](Self::raw_allocate).
-    pub unsafe fn raw_allocate_los(
+    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
+    /// the class ID for the object that will be written into the returned
+    /// allocation.
+    pub unsafe fn raw_allocate_los_with_header_word(
         &self,
         size: usize,
         alignment: usize,
-        vtable: &'static VTable,
-    ) -> GCObject {
-        unsafe { self.raw_allocate_los_with_info(size, alignment, gc_only_type_info(vtable)) }
-    }
-
-    /// Same as [`raw_allocate_los`](Self::raw_allocate_los), but installs an
-    /// explicit heap type descriptor.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
-    /// object that will be written into the returned allocation.
-    pub unsafe fn raw_allocate_los_with_info(
-        &self,
-        size: usize,
-        alignment: usize,
-        info: &'static HeapTypeInfo,
+        header_word: u64,
     ) -> GCObject {
         unsafe {
             self.flush_tlab();
@@ -743,7 +611,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::new(info));
+            object_start.store(HeapObjectHeader::from_word(header_word));
 
             let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
 
@@ -758,86 +626,37 @@ impl<'gc> Mutation<'gc> {
         }
     }
 
-    pub fn allocate_with_layout<T: 'gc + Trace>(
+    pub fn allocate_with_layout_header_word<T: 'gc + Trace>(
         &self,
         layout: Layout,
-        vtable: &'static VTable,
+        header_word: u64,
         semantics: AllocationSemantics,
     ) -> Gc<'gc, MaybeUninit<T>> {
         unsafe {
             let size = layout.size();
             let align = layout.align();
-            let obj = self.raw_allocate(size, align, vtable, semantics);
+            let obj = self.raw_allocate_with_header_word(size, align, header_word, semantics);
             obj.to_address().store(MaybeUninit::<T>::uninit());
             Gc::from_gcobj(obj)
         }
     }
 
-    pub fn allocate_with_layout_info<T: 'gc + Trace>(
-        &self,
-        layout: Layout,
-        info: &'static HeapTypeInfo,
-        semantics: AllocationSemantics,
-    ) -> Gc<'gc, MaybeUninit<T>> {
-        unsafe {
-            let size = layout.size();
-            let align = layout.align();
-            let obj = self.raw_allocate_with_info(size, align, info, semantics);
-            obj.to_address().store(MaybeUninit::<T>::uninit());
-            Gc::from_gcobj(obj)
-        }
-    }
-
-    /// Allocate memory on GC heap according to `semantics`.
-    ///
-    /// # Parameters
-    ///
-    /// - `size`: size of allocated object
-    /// - `alignment`: alignment of allocated object
-    /// - `vtable`: valid vtable for object to trace the object, compute its size etc.
-    /// - `semantics`: Semantics determine how to allocate the object.
-    ///
-    /// ## Notes
-    ///
-    /// This function attempts to perform fast-path allocation if currently selected MMTk plan allows
-    /// so. Otherwise [`raw_allocate_out_of_line`](Self::raw_allocate_out_of_line) is invoked.
+    #[inline(always)]
+    /// Allocate raw GC memory and install a precomputed object header word.
     ///
     /// # Safety
     ///
-    /// This function is safe only if `vtable` provided will be valid for object which means all the methods
-    /// in vtable are soundly implemented. VTable's derived from [`VTableOf`] should be the safest ones.
-    ///
-    /// - [VTableOf]
-    #[inline(always)]
-    pub unsafe fn raw_allocate(
+    /// Same as [`raw_allocate`](Self::raw_allocate). `header_word` must encode
+    /// the class ID for the object that will be written into the returned
+    /// allocation.
+    pub unsafe fn raw_allocate_with_header_word(
         &self,
         size: usize,
         alignment: usize,
-        vtable: &'static VTable,
-        semantics: AllocationSemantics,
-    ) -> GCObject {
-        unsafe {
-            self.raw_allocate_with_info(size, alignment, gc_only_type_info(vtable), semantics)
-        }
-    }
-
-    #[inline(always)]
-    /// Same as [`raw_allocate`](Self::raw_allocate), but installs an explicit
-    /// heap type descriptor.
-    ///
-    /// # Safety
-    ///
-    /// Same as [`raw_allocate`](Self::raw_allocate). `info` must describe the
-    /// object that will be written into the returned allocation.
-    pub unsafe fn raw_allocate_with_info(
-        &self,
-        size: usize,
-        alignment: usize,
-        info: &'static HeapTypeInfo,
+        header_word: u64,
         mut semantics: AllocationSemantics,
     ) -> GCObject {
         unsafe {
-            // hardcode threshold for LOS allocation. All mmtk plans support at least 8KB TLAB allocation
             if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
                 semantics = AllocationSemantics::Los;
             }
@@ -856,16 +675,82 @@ impl<'gc> Mutation<'gc> {
                     OBJECT_REF_OFFSET as _,
                 );
                 if !object_start.is_zero() {
-                    object_start.store(HeapObjectHeader::new(info));
+                    object_start.store(HeapObjectHeader::from_word(header_word));
                     let object_ref = object_start + OBJECT_REF_OFFSET;
                     set_vo_bit_for_object_ref(object_ref);
                     return GCObject::from(object_ref);
                 }
 
-                return self.raw_allocate_slow_with_info(size, alignment, info, semantics);
+                return self.raw_allocate_out_of_line_with_header_word(
+                    size,
+                    alignment,
+                    header_word,
+                    semantics,
+                );
             }
 
-            self.raw_allocate_out_of_line_with_info(size, alignment, info, semantics)
+            self.raw_allocate_out_of_line_with_header_word(size, alignment, header_word, semantics)
+        }
+    }
+
+    unsafe fn raw_allocate_out_of_line_with_header_word(
+        &self,
+        size: usize,
+        alignment: usize,
+        header_word: u64,
+        mut semantics: AllocationSemantics,
+    ) -> GCObject {
+        if semantics == AllocationSemantics::Default
+            && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
+        {
+            semantics = AllocationSemantics::Los;
+        }
+
+        let size = raw_align_up(size, alignment);
+        unsafe {
+            match semantics {
+                AllocationSemantics::Los => {
+                    self.flush_tlab();
+                    let object_start = mmtk::memory_manager::alloc_slow_with_options(
+                        self.thread.mutator_unchecked(),
+                        size + size_of::<HeapObjectHeader>(),
+                        alignment,
+                        OBJECT_REF_OFFSET as usize,
+                        AllocationSemantics::Los,
+                        DEFAULT_ALLOC_OPTIONS,
+                    );
+                    self.refill_tlab();
+
+                    object_start.store(HeapObjectHeader::from_word(header_word));
+
+                    let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
+
+                    mmtk::memory_manager::post_alloc(
+                        self.thread.mutator_unchecked(),
+                        object.to_objref().unwrap(),
+                        size,
+                        AllocationSemantics::Los,
+                    );
+
+                    object
+                }
+                semantics => {
+                    self.flush_tlab();
+                    let object_start = mmtk::memory_manager::alloc_with_options(
+                        self.thread.mutator_unchecked(),
+                        size + size_of::<HeapObjectHeader>(),
+                        alignment,
+                        OBJECT_REF_OFFSET as _,
+                        semantics,
+                        DEFAULT_ALLOC_OPTIONS,
+                    );
+                    self.refill_tlab();
+
+                    object_start.store(HeapObjectHeader::from_word(header_word));
+
+                    GCObject::from(object_start + OBJECT_REF_OFFSET)
+                }
+            }
         }
     }
 

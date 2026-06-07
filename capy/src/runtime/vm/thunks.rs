@@ -11,11 +11,9 @@ use crate::runtime::vm::exceptions::{
 };
 use crate::runtime::vm::{default_exception_handler, default_retk as vm_default_retk};
 use crate::runtime::{
+    class::{GenericDescriptor, GenericDispatchError},
     value::{IntoValue, Number},
-    vm::{
-        control::{CONTINUATION_MARKS_INFO, ContinuationMarks},
-        syntax::Syntax,
-    },
+    vm::{control::ContinuationMarks, syntax::Syntax},
 };
 use crate::{
     prelude::ClosureRef,
@@ -24,8 +22,8 @@ use crate::{
         fasl::FaslReader,
         modules::{Module, Variable},
         value::{
-            Boxed, ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, Str, Symbol, Tuple,
-            Value, Vector,
+            ByteVector, Closure, CodeArity, CodeBlock, Complex, Pair, ReturnCode, Str, Symbol,
+            Tuple, Value, Vector,
         },
         vm::{
             VMResult, call_scheme,
@@ -40,11 +38,10 @@ use crate::{
             AllocationSemantics, MutatorContext,
             util::{Address, ObjectReference},
         },
-        object::{HeapTypeInfo, VTable, VTableOf},
     },
     runtime::vm::syntax::props_to_sourcev,
 };
-use std::{alloc::Layout, cmp::Ordering};
+use std::cmp::Ordering;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -165,10 +162,7 @@ pub mod compiler {
     };
     use cranelift_codegen::ir;
 
-    use crate::runtime::{
-        value::{TypeCode8, TypeCode16, Value},
-        vm::thunks::ThunkResult,
-    };
+    use crate::runtime::{value::Value, vm::thunks::ThunkResult};
 
     pub trait PrimType {
         fn clif_type() -> impl Iterator<Item = ir::Type>;
@@ -177,18 +171,6 @@ pub mod compiler {
     impl PrimType for ObjectSlot {
         fn clif_type() -> impl Iterator<Item = ir::Type> {
             std::iter::once(ir::types::I64)
-        }
-    }
-
-    impl PrimType for TypeCode8 {
-        fn clif_type() -> impl Iterator<Item = ir::Type> {
-            std::iter::once(ir::types::I8)
-        }
-    }
-
-    impl PrimType for TypeCode16 {
-        fn clif_type() -> impl Iterator<Item = ir::Type> {
-            std::iter::once(ir::types::I16)
         }
     }
 
@@ -225,6 +207,12 @@ pub mod compiler {
     impl PrimType for u16 {
         fn clif_type() -> impl Iterator<Item = ir::Type> {
             std::iter::once(ir::types::I16)
+        }
+    }
+
+    impl PrimType for u32 {
+        fn clif_type() -> impl Iterator<Item = ir::Type> {
+            std::iter::once(ir::types::I32)
         }
     }
 
@@ -498,6 +486,12 @@ thunks! {
         ls
     }
 
+    pub fn has_class_id(value: Value<'gc>, class_id: u32) -> bool {
+        value
+            .class_id()
+            .is_some_and(|actual| actual.bits() == class_id)
+    }
+
     pub fn raise_condition_regs(
         ctx: Context<'gc>,
         code: usize,
@@ -530,7 +524,12 @@ thunks! {
         crate::runtime::vm::debug::print_stacktraces_impl(ctx);
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
-            println!("NON-APPLICABLE {subr}, tc: {} called here:", subr.typ8().bits());
+            match subr.class_id() {
+                Some(class_id) => {
+                    println!("NON-APPLICABLE {subr}, class-id: {} called here:", class_id.bits())
+                }
+                None => println!("NON-APPLICABLE {subr}, class-id: <none> called here:"),
+            }
             println!("{sym:?}");
         });
         make_assertion_violation(
@@ -540,6 +539,63 @@ thunks! {
             &[subr]
         )
 
+    }
+
+    pub fn generic_apply_regs(
+        ctx: Context<'gc>,
+        generic: Value<'gc>,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>,
+        has_retk: u8
+    ) -> ThunkResult<'gc> {
+        save_register_args(ctx, argc, arg0, arg1, arg2, arg3);
+
+        if !generic.is::<GenericDescriptor>() {
+            return ThunkResult {
+                code: ReturnCode::ReturnErr as usize,
+                value: non_applicable(ctx, generic),
+            };
+        }
+
+        let first_arg = usize::from(has_retk != 0);
+        let retk = (has_retk != 0).then_some(arg0);
+        let args = collect_register_args(argc, arg0, arg1, arg2, arg3, overflow, first_arg);
+        let generic_descriptor = generic.downcast::<GenericDescriptor>();
+        match GenericDescriptor::invocation(ctx, generic_descriptor, &args) {
+            Ok(invocation) => {
+                let body = invocation.body();
+                if !body.is::<Closure>() {
+                    return ThunkResult {
+                        code: ReturnCode::ReturnErr as usize,
+                        value: non_applicable(ctx, body),
+                    };
+                }
+
+                let ret = ctx.return_call(body, invocation.args().iter().copied(), retk);
+                ThunkResult {
+                    code: ret.code as usize,
+                    value: ret.value,
+                }
+            }
+            Err(GenericDispatchError::Arity) => {
+                let message = Str::new(*ctx, "not enough dispatch arguments", true);
+                ThunkResult {
+                    code: ReturnCode::ReturnErr as usize,
+                    value: make_assertion_violation(ctx, Value::new(false), message.into(), &[generic]),
+                }
+            }
+            Err(GenericDispatchError::NoApplicableMethod) => {
+                let message = Str::new(*ctx, "no applicable method", true);
+                ThunkResult {
+                    code: ReturnCode::ReturnErr as usize,
+                    value: make_assertion_violation(ctx, Value::new(false), message.into(), &[generic]),
+                }
+            }
+        }
     }
 
     pub fn make_variable(
@@ -767,21 +823,6 @@ thunks! {
         crate::rsgc::sync::thread::Thread::yieldpoint();
         crate::runtime::vm::interrupts::deliver_pending_interrupts(ctx);
         ctx.state().gc_save.clear();
-    }
-
-    pub fn alloc_with_info(
-        ctx: Context<'gc>,
-        info: &'static HeapTypeInfo,
-        size: usize
-    ) -> Value<'gc> {
-        unsafe {
-            let layout = Layout::from_size_align_unchecked(size, 8);
-            let val = ctx
-                .mc
-                .raw_allocate_with_info(size, 8, info, AllocationSemantics::Default);
-
-            Value::from_raw(val.to_address().as_usize() as u64)
-        }
     }
 
     pub fn reverse(ctx: Context<'gc>, list: Value<'gc>) -> Value<'gc> {
@@ -4071,7 +4112,11 @@ thunks! {
     ) -> Value<'gc> {
         let marks = ctx.state().current_marks();
 
-        let obj = Gc::new_with_info(*ctx, ContinuationMarks { cmarks: marks }, CONTINUATION_MARKS_INFO);
+        let obj = Gc::new_with_header_word(
+            *ctx,
+            ContinuationMarks { cmarks: marks },
+            crate::runtime::vm::control::continuation_marks_header_word(),
+        );
 
         obj.into()
     }
@@ -4158,29 +4203,21 @@ thunks! {
             &[val],
         )
     }
-}
 
-#[unsafe(no_mangle)]
-pub(crate) static BOX_VTABLE: &VTable = VTableOf::<Boxed>::VT;
-#[unsafe(no_mangle)]
-pub(crate) static PAIR_VTABLE: &VTable = VTableOf::<Pair>::VT;
-#[unsafe(no_mangle)]
-pub(crate) static PAIR_INFO_STATIC: &HeapTypeInfo = crate::runtime::value::PAIR_INFO;
-#[unsafe(no_mangle)]
-pub(crate) static VARIABLE_INFO_STATIC: &HeapTypeInfo = crate::runtime::modules::VARIABLE_INFO;
-#[unsafe(no_mangle)]
-pub(crate) static CLOSURE_PROC_INFO_STATIC: &HeapTypeInfo =
-    crate::runtime::value::CLOSURE_PROC_INFO;
-#[unsafe(no_mangle)]
-pub(crate) static CLOSURE_K_INFO_STATIC: &HeapTypeInfo = crate::runtime::value::CLOSURE_K_INFO;
-#[unsafe(no_mangle)]
-pub(crate) static MUTABLE_VECTOR_INFO_STATIC: &HeapTypeInfo =
-    crate::runtime::value::MUTABLE_VECTOR_INFO;
-#[unsafe(no_mangle)]
-pub(crate) static IMMUTABLE_VECTOR_INFO_STATIC: &HeapTypeInfo =
-    crate::runtime::value::IMMUTABLE_VECTOR_INFO;
-#[unsafe(no_mangle)]
-pub(crate) static TUPLE_INFO_STATIC: &HeapTypeInfo = crate::runtime::value::TUPLE_INFO;
+    pub fn alloc_with_header_word(
+        ctx: Context<'gc>,
+        header_word: usize,
+        size: usize
+    ) -> Value<'gc> {
+        unsafe {
+            let val = ctx
+                .mc
+                .raw_allocate_with_header_word(size, 8, header_word as u64, AllocationSemantics::Default);
+
+            Value::from_raw(val.to_address().as_usize() as u64)
+        }
+    }
+}
 
 unsafe extern "C" {
     #[link_name = "llvm.returnaddress"]
@@ -4346,6 +4383,10 @@ pub fn resolve_module<'gc>(ctx: Context<'gc>, name: Value<'gc>, public: bool) ->
 #[cfg(test)]
 mod runtime_thunk_import_tests {
     use super::*;
+    use crate::{
+        rsgc::object::builtin_class_ids,
+        runtime::{Scheme, value::Value},
+    };
 
     #[test]
     fn direct_imported_thunks_use_runtime_thunk_ids() {
@@ -4369,5 +4410,17 @@ mod runtime_thunk_import_tests {
                 ),
             ))
         );
+    }
+
+    #[test]
+    fn has_class_id_thunk_uses_value_class_ids() {
+        Scheme::new_uninit().enter(|ctx| {
+            let pair = Value::cons(ctx, Value::new(1), Value::null());
+
+            assert!(has_class_id(pair, builtin_class_ids::PAIR));
+            assert!(!has_class_id(pair, builtin_class_ids::TUPLE));
+            assert!(has_class_id(Value::new(1), builtin_class_ids::FIXNUM));
+            assert!(!has_class_id(Value::null(), builtin_class_ids::PAIR));
+        });
     }
 }

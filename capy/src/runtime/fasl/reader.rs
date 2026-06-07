@@ -20,27 +20,14 @@ use crate::runtime::{
 };
 
 use super::{
-    FASL_MAGIC, FASL_SITUATION_VISIT_REVISIT, FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR,
-    FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST,
-    FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
-    FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_GROUP, FASL_TAG_GZIP, FASL_TAG_IMMEDIATE,
-    FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_LZ4, FASL_TAG_NIL, FASL_TAG_PLIST,
-    FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL,
-    FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNCOMPRESSED, FASL_TAG_UNINTERNED_SYMBOL,
+    FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC, FASL_TAG_BEGIN, FASL_TAG_BIGINT,
+    FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX,
+    FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
+    FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP,
+    FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR,
+    FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
     FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, graph, patch, reloc,
 };
-
-fn read_u8_from(input: &mut impl Read) -> io::Result<u8> {
-    let mut buf = [0; 1];
-    input.read_exact(&mut buf)?;
-    Ok(buf[0])
-}
-
-fn read_u32_from(input: &mut impl Read) -> io::Result<u32> {
-    let mut buf = [0; 4];
-    input.read_exact(&mut buf)?;
-    Ok(u32::from_le_bytes(buf))
-}
 
 pub struct FaslReader<'gc, R: io::Read> {
     pub ctx: Context<'gc>,
@@ -474,30 +461,6 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
                 Ok(value)
             }
 
-            _x @ FASL_TAG_GROUP => {
-                let situation = self.read8()?;
-                if situation != FASL_SITUATION_VISIT_REVISIT {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "FASL visit/revisit split groups are not supported yet",
-                    ));
-                }
-                let group_size = self.read32()? as usize;
-                let mut group = vec![0; group_size];
-                self.reader.read_exact(&mut group)?;
-                self.read_pcfasl_value(group)
-            }
-
-            _x @ FASL_TAG_GZIP => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL gzip wrapper outside group",
-            )),
-
-            _x @ FASL_TAG_LZ4 => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "FASL LZ4 wrapper outside group",
-            )),
-
             _x @ FASL_TAG_ENTRY => {
                 let index = self.read32()?;
                 let graph = self.graph_stack.last().ok_or_else(|| {
@@ -730,8 +693,17 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
 
     pub fn read(mut self) -> io::Result<Value<'gc>> {
         self.read_header()?;
+        let compression = self.read8()?;
         self.read_lites()?;
-        let value = self.read_value()?;
+        let payload = self.read_payload(compression)?;
+        let mut trailing = [0u8; 1];
+        if self.reader.read(&mut trailing)? != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "FASL image has trailing bytes",
+            ));
+        }
+        let value = self.read_payload_value(payload)?;
         self.keep_value(value);
 
         Ok(value)
@@ -760,53 +732,36 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
         self.roots.fetch(*self.ctx).values.lock().push(value);
     }
 
-    fn read_pcfasl_value(&self, group: Vec<u8>) -> io::Result<Value<'gc>> {
-        let mut cursor = Cursor::new(group);
-        let tag = read_u8_from(&mut cursor)?;
-        let payload = match tag {
-            FASL_TAG_UNCOMPRESSED => {
-                let size = read_u32_from(&mut cursor)? as usize;
-                let mut payload = vec![0; size];
-                cursor.read_exact(&mut payload)?;
-                payload
-            }
-            FASL_TAG_GZIP => {
-                let uncompressed_size = read_u32_from(&mut cursor)? as usize;
-                let compressed_size = read_u32_from(&mut cursor)? as usize;
-                let mut compressed = vec![0; compressed_size];
-                cursor.read_exact(&mut compressed)?;
-                let mut decoder = GzDecoder::new(Cursor::new(compressed));
+    fn read_payload(&mut self, compression: u8) -> io::Result<Vec<u8>> {
+        let uncompressed_size = self.read32()? as usize;
+        let stored_size = self.read32()? as usize;
+        let mut stored = vec![0; stored_size];
+        self.reader.read_exact(&mut stored)?;
+        let payload = match compression {
+            FASL_COMPRESSION_NONE => stored,
+            FASL_COMPRESSION_GZIP => {
+                let mut decoder = GzDecoder::new(Cursor::new(stored));
                 let mut payload = Vec::with_capacity(uncompressed_size);
                 decoder.read_to_end(&mut payload)?;
-                if payload.len() != uncompressed_size {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "FASL gzip payload size mismatch",
-                    ));
-                }
                 payload
-            }
-            FASL_TAG_LZ4 => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "FASL LZ4 compression is not supported yet",
-                ));
             }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "unknown FASL payload compression tag",
+                    format!("unknown FASL compression tag {compression}"),
                 ));
             }
         };
-
-        if cursor.position() != cursor.get_ref().len() as u64 {
+        if payload.len() != uncompressed_size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "FASL group has trailing bytes",
+                "FASL payload size mismatch",
             ));
         }
+        Ok(payload)
+    }
 
+    fn read_payload_value(&self, payload: Vec<u8>) -> io::Result<Value<'gc>> {
         let mut reader = FaslReader::new(self.ctx, Cursor::new(payload));
         reader.lites = self.lites;
         reader.keep_value(Value::from(reader.lites));

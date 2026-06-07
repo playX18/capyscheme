@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use crate::rsgc::object::{HeapTypeInfo, VTableOf};
+use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::static_symbols;
 use rustix::fd::AsRawFd;
 use std::ffi::CString;
@@ -1566,7 +1566,7 @@ pub mod io_ops {
                 );
             }
         };
-        let poller = Gc::new_with_info(*ctx, Poller { inner }, POLLER_INFO);
+        let poller = Gc::new_with_header_word(*ctx, Poller { inner }, poller_header_word());
 
         nctx.return_(poller)
     }
@@ -1958,14 +1958,12 @@ pub struct Poller {
     inner: polling::Poller,
 }
 
-static POLLER_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Poller>::VT,
-    TypeCode8::POLLER.bits() as u16,
-);
-pub static POLLER_INFO: &HeapTypeInfo = &POLLER_INFO_VALUE;
+fn poller_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::POLLER).unwrap())
+}
 
-unsafe impl Tagged for Poller {
-    const TC8: TypeCode8 = TypeCode8::POLLER;
+unsafe impl ClassTagged for Poller {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::POLLER];
     const TYPE_NAME: &'static str = "poller";
 }
 
@@ -2025,4 +2023,25 @@ fn event_to_flags(ev: polling::Event) -> i32 {
         flags |= EERROR;
     }
     flags
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn poller_allocates_with_class_only_header() {
+        Scheme::new_uninit().enter(|ctx| {
+            let poller = Poller {
+                inner: polling::Poller::new().expect("create poller"),
+            };
+            let poller = Gc::new_with_header_word(*ctx, poller, poller_header_word());
+
+            assert_eq!(
+                poller.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::POLLER).unwrap()
+            );
+        });
+    }
 }

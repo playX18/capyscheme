@@ -1,15 +1,13 @@
 use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 
-use crate::rsgc::object::{HeapTypeInfo, VTableOf, builtin_type_ids};
+use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
 use crate::{
     fluid, global, list,
     runtime::{
         Context,
-        value::{
-            Boxed, HashTable, HashTableType, IntoValue, Str, Symbol, Tagged, TypeCode8, Value,
-        },
+        value::{Boxed, ClassTagged, HashTable, HashTableType, IntoValue, Str, Symbol, Value},
     },
 };
 
@@ -62,11 +60,9 @@ pub struct Module<'gc> {
     pub environment: Lock<Value<'gc>>,
 }
 
-static MODULE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Module<'static>>::VT,
-    TypeCode8::MODULE.bits() as u16,
-);
-pub static MODULE_INFO: &HeapTypeInfo = &MODULE_INFO_VALUE;
+fn module_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::MODULE).unwrap())
+}
 
 unsafe impl<'gc> Trace for Module<'gc> {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
@@ -99,7 +95,7 @@ impl<'gc> Module<'gc> {
         uses: Value<'gc>,
         binder: impl IntoValue<'gc>,
     ) -> Gc<'gc, Self> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             *ctx,
             Self {
                 obarray: Lock::new(HashTable::new(*ctx, HashTableType::Eq, size, 0.75)),
@@ -124,7 +120,7 @@ impl<'gc> Module<'gc> {
                 ))),
                 environment: Lock::new(Value::new(false)),
             },
-            MODULE_INFO,
+            module_header_word(),
         )
     }
 
@@ -684,8 +680,8 @@ pub fn define_module<'gc>(
 
 static IMPORT_OBARRAY_MUTEX: Monitor<()> = Monitor::new(());
 
-unsafe impl<'gc> Tagged for Module<'gc> {
-    const TC8: TypeCode8 = TypeCode8::MODULE;
+unsafe impl<'gc> ClassTagged for Module<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::MODULE];
     const TYPE_NAME: &'static str = "module";
 }
 
@@ -696,12 +692,9 @@ pub struct Variable<'gc> {
     pub value: Lock<Value<'gc>>,
 }
 
-static VARIABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
-    VTableOf::<'static, Variable<'static>>::VT,
-    TypeCode8::VARIABLE.bits() as u16,
-    builtin_type_ids::VARIABLE,
-);
-pub static VARIABLE_INFO: &HeapTypeInfo = &VARIABLE_INFO_VALUE;
+fn variable_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::VARIABLE).unwrap())
+}
 
 const _: () = {
     assert!(offset_of!(Variable, value) == offset_of!(Boxed, val));
@@ -709,12 +702,12 @@ const _: () = {
 
 impl<'gc> Variable<'gc> {
     pub fn new(ctx: Context<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             *ctx,
             Self {
                 value: Lock::new(value),
             },
-            VARIABLE_INFO,
+            variable_header_word(),
         )
     }
 
@@ -733,8 +726,8 @@ impl<'gc> Variable<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for Variable<'gc> {
-    const TC8: TypeCode8 = TypeCode8::VARIABLE;
+unsafe impl<'gc> ClassTagged for Variable<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::VARIABLE];
     const TYPE_NAME: &'static str = "variable";
 }
 
@@ -1203,4 +1196,27 @@ pub mod module_ops {
 
 pub fn init_modules<'gc>(ctx: Context<'gc>) {
     module_ops::register(ctx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn module_and_variable_allocate_with_class_only_headers() {
+        Scheme::new_uninit().enter(|ctx| {
+            let module = Module::new(ctx, 8, Value::null(), Value::new(false));
+            assert_eq!(
+                module.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::MODULE).unwrap()
+            );
+
+            let variable = Variable::new(ctx, Value::undefined());
+            assert_eq!(
+                variable.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::VARIABLE).unwrap()
+            );
+        });
+    }
 }

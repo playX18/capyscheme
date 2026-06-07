@@ -830,7 +830,7 @@ mod tests {
         let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
         let entry = builder.create_block();
         builder.switch_to_block(entry);
-        let global = declare_runtime_data(builder.func, RuntimeData::PairInfo);
+        let global = declare_runtime_data(builder.func, RuntimeData::PairHeaderWord);
         let address = builder.ins().global_value(types::I64, global);
         builder.ins().return_(&[address]);
         builder.seal_all_blocks();
@@ -851,6 +851,6 @@ mod tests {
 
         let f: extern "C" fn() -> usize =
             unsafe { std::mem::transmute(loaded.entrypoint.as_usize()) };
-        assert_eq!(f(), RuntimeData::PairInfo.address().as_usize());
+        assert_eq!(f(), RuntimeData::PairHeaderWord.address().as_usize());
     }
 }

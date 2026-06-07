@@ -27,35 +27,29 @@ pub struct NativeProc {
     pub proc: Address,
 }
 
-static NATIVE_PROC_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, NativeProc>::VT,
-    TypeCode16::NATIVE_PROC.bits(),
-);
-pub static NATIVE_PROC_INFO: &HeapTypeInfo = &NATIVE_PROC_INFO_VALUE;
+fn native_proc_header_word(is_k: bool) -> u64 {
+    let class_id = if is_k {
+        builtin_class_ids::NATIVE_CONTINUATION
+    } else {
+        builtin_class_ids::NATIVE_PROCEDURE
+    };
 
-static NATIVE_K_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, NativeProc>::VT,
-    TypeCode16::NATIVE_K.bits(),
-);
-pub static NATIVE_K_INFO: &HeapTypeInfo = &NATIVE_K_INFO_VALUE;
+    class_header_word(ClassId::new(class_id).unwrap())
+}
 
 impl NativeProc {
     pub fn new<'gc>(ctx: Context<'gc>, proc: Address, is_k: bool) -> Gc<'gc, Self> {
-        let tc = if is_k {
-            NATIVE_K_INFO
-        } else {
-            NATIVE_PROC_INFO
-        };
-
-        Gc::new_with_info(*ctx, NativeProc { proc }, tc)
+        Gc::new_with_header_word(*ctx, NativeProc { proc }, native_proc_header_word(is_k))
     }
 }
 
 // SAFETY: NativeProc contains no GC-managed fields — `proc` is a raw function pointer.
 // No tracing or weak processing is needed.
-unsafe impl Tagged for NativeProc {
-    const TC8: TypeCode8 = TypeCode8::NATIVE_PROCEDURE;
-    const TC16: &[TypeCode16] = &[TypeCode16::NATIVE_PROC, TypeCode16::NATIVE_K];
+unsafe impl ClassTagged for NativeProc {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::NATIVE_PROCEDURE,
+        crate::rsgc::object::builtin_class_ids::NATIVE_CONTINUATION,
+    ];
     const TYPE_NAME: &'static str = "native-procedure";
 }
 

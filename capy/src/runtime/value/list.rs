@@ -3,7 +3,7 @@
 use crate::rsgc::{
     Trace, barrier,
     cell::Lock,
-    object::{HeapTypeInfo, VTableOf, builtin_type_ids},
+    object::{ClassId, builtin_class_ids, class_header_word},
 };
 use std::mem::offset_of;
 
@@ -28,35 +28,32 @@ const _: () = {
     assert!(offset_of!(Pair<'static>, car) == 0);
 };
 
-static PAIR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
-    VTableOf::<'static, Pair<'static>>::VT,
-    TypeCode8::PAIR.bits() as u16,
-    builtin_type_ids::PAIR,
-);
-pub static PAIR_INFO: &HeapTypeInfo = &PAIR_INFO_VALUE;
+fn pair_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap())
+}
 
 impl<'gc> Pair<'gc> {
     /// Allocates a moving pair.
     #[inline(always)]
     pub fn new(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             *mc,
             Self {
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
             },
-            PAIR_INFO,
+            pair_header_word(),
         )
     }
 
     /// Allocates a non-moving pair.
     pub fn new_nonmoving(mc: Context<'gc>, car: Value<'gc>, cdr: Value<'gc>) -> Gc<'gc, Self> {
-        mc.allocate_with_info(
+        mc.allocate_with_header_word(
             Self {
                 car: Lock::new(car),
                 cdr: Lock::new(cdr),
             },
-            PAIR_INFO,
+            pair_header_word(),
             crate::rsgc::mmtk::AllocationSemantics::NonMoving,
         )
     }
@@ -190,8 +187,8 @@ impl<'gc> Pair<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for Pair<'gc> {
-    const TC8: TypeCode8 = TypeCode8::PAIR;
+unsafe impl<'gc> ClassTagged for Pair<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::PAIR];
     const TYPE_NAME: &'static str = "pair";
 }
 

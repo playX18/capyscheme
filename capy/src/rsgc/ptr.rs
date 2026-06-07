@@ -4,7 +4,7 @@ use crate::rsgc::{
     Weak,
     barrier::{Unlock, Write},
     mutator::Mutation,
-    object::{GCObject, HeapTypeInfo},
+    object::GCObject,
     traits::Trace,
 };
 use mmtk::{
@@ -177,8 +177,8 @@ impl<'gc, T> Gc<'gc, T> {
     }
 
     #[inline]
-    pub fn new_with_info(mc: Mutation<'gc>, value: T, info: &'static HeapTypeInfo) -> Gc<'gc, T> {
-        mc.allocate_with_info(value, info, mmtk::AllocationSemantics::Default)
+    pub fn new_with_header_word(mc: Mutation<'gc>, value: T, header_word: u64) -> Gc<'gc, T> {
+        mc.allocate_with_header_word(value, header_word, mmtk::AllocationSemantics::Default)
     }
 
     pub fn to_object_reference(self) -> ObjectReference {
@@ -385,5 +385,29 @@ impl Slot for ObjectSlot {
 
     fn store(&self, object: ObjectReference) {
         unsafe { self.addr.store(object.to_raw_address().as_usize()) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Trace;
+    use crate::rsgc::object::builtin_class_ids;
+    use crate::runtime::Scheme;
+
+    #[derive(Trace)]
+    #[collect(no_drop)]
+    struct InternalGcOnly {
+        value: usize,
+    }
+
+    #[test]
+    fn default_gc_allocation_uses_class_only_dynamic_header() {
+        Scheme::new_uninit().enter(|ctx| {
+            let object = Gc::new(*ctx, InternalGcOnly { value: 7 });
+
+            assert_eq!(object.value, 7);
+            assert!(object.as_gcobj().header().class_id().bits() > builtin_class_ids::MAX);
+        });
     }
 }

@@ -43,16 +43,87 @@
     -
     ...
     /
+    %builtin-class
+    %class-redefined?
     <
     <=
     =
     =>
     >
     >=
+    ~
+    <annotation>
+    <bigint>
+    <bool>
+    <bottom>
+    <box>
+    <bytevector>
+    <char>
+    <class>
+    <cif>
+    <closure>
+    <complex>
+    <condition>
+    <continuation-closure>
+    <continuation-marks>
+    <code-block>
+    <dynamic-state>
+    <environment>
+    <eof>
+    <ephemeron>
+    <ffi-pointer>
+    <fixnum>
+    <flonum>
+    <fluid>
+    <generic>
+    <hash-table>
+    <immutable-bytevector>
+    <immutable-hash-table>
+    <immutable-string>
+    <immutable-vector>
+    <keyword>
+    <mapped-bytevector>
+    <method>
+    <module>
+    <mutex>
+    <native-continuation>
+    <native-procedure>
+    <next-method>
+    <null>
+    <number>
+    <object>
+    <pair>
+    <poller>
+    <port>
+    <rational>
+    <relocatable-code-block>
+    <slot-accessor>
+    <slot-definition>
+    <socket>
+    <string>
+    <stringbuf-narrow>
+    <stringbuf-wide>
+    <symbol>
+    <syntax>
+    <syntax-transformer>
+    <thread>
+    <top>
+    <tuple>
+    <type>
+    <undefined>
+    <uninterned-symbol>
+    <unspecified>
+    <variable>
+    <vector>
+    <void>
+    <weak-mapping>
+    <weak-set>
+    <weak-table>
     _
     abs
     acos
     acquire-lockfile
+    add-method!
     and
     angle
     append
@@ -90,6 +161,8 @@
     bitwise-xor
     boolean=?
     boolean?
+    box
+    box?
     bound-identifier=?
     break
     buffer-mode?
@@ -209,13 +282,39 @@
     char>=?
     char>?
     char?
+    change-class
     circular-list?
+    class-accessors
+    class-applicable?
+    class-direct-methods
+    class-direct-slots
+    class-direct-subclasses
+    class-direct-supers
+    class-initargs
+    class-malleable?
+    class-name
+    class-of
+    class-option
+    class-options
+    class-post-initialize
+    class-precedence-list
+    class-seal!
+    class-sealed?
+    class-slot-accessor
+    class-slot-bound?
+    class-slot-definition
+    class-slot-ref
+    class-slot-set!
+    class-slots
+    class-unseal!
+    class?
     close-input-port
     close-output-port
     close-port
 
     command-line
     command-line-shift
+    compute-applicable-methods
     compile
     compile-coreform
     complex?
@@ -247,6 +346,7 @@
     create-directory
     create-hard-link
     create-symbolic-link
+    current-class-of
     current-directory
     current-error-port
     current-exception-printer
@@ -258,6 +358,9 @@
     decode-flonum
     decode-microsecond
     define
+    define-class
+    define-generic
+    define-method
     define-property
     define-values
     let-values
@@ -272,6 +375,10 @@
     delay
     delete-file
     denominator
+    describe
+    describe-common
+    describe-details
+    describe-slots
     destructuring-bind
     destructuring-match
     directory-list
@@ -476,8 +583,22 @@
     get-u8
     getenv
     gethostname
+    generic-dispatch
+    generic-fallback
+    generic-invoke
+    generic-methods
+    generic-name
+    generic-next-methods
+    generic-option
+    generic-options
+    generic-required-dispatch-arg-count
+    generic-seal!
+    generic-sealed?
+    generic-unseal!
+    generic?
     greatest-fixnum
     guard
+    has-setter?
     hashtable->alist
     hashtable-clear!
     hashtable-contains?
@@ -521,11 +642,15 @@
     inexact
     inexact->exact
     inexact?
+    initialize
     infinite?
     input-port?
+    instance-slot-ref
+    instance-slot-set!
     integer->char
     integer-valued?
     integer?
+    is-a?
     iota
     irritants-condition?
     lambda
@@ -572,6 +697,7 @@
     make-assertion-violation
     make-bytevector
     make-core-hashtable
+    make-class
     make-custom-binary-input-port
     make-custom-binary-input/output-port
     make-custom-binary-output-port
@@ -630,6 +756,10 @@
     make-weak-hashtable
     make-weak-mapping
     make-who-condition
+    make-generic
+    make-instance
+    make-invocable-class
+    make
     map
     max
     member
@@ -637,6 +767,16 @@
     memq
     memv
     message-condition?
+    method-applicable-for-classes?
+    method-body
+    method-generic
+    method-locked?
+    method-more-specific?
+    method-option
+    method-options
+    method-required-arg-count
+    method-specializers
+    method?
     microsecond
     microsecond->string
     microsecond->utc
@@ -650,6 +790,17 @@
     native-eol-style
     native-transcoder
     negative?
+    next-method-args
+    next-method-body
+    next-method-generic
+    next-method-has-next?
+    next-method-index
+    next-method-invoke
+    next-method-methods
+    next-method-next
+    next-method-option
+    next-method-options
+    next-method?
     newline
     no-infinities-violation?
     no-nans-violation?
@@ -699,6 +850,8 @@
     port?
     positive?
     procedure?
+    procedure-properties
+    procedure-property
     process-environment->alist
     protocol
     put-bytevector
@@ -722,6 +875,10 @@
     real-part
     real-valued?
     real?
+    redefine-class!
+    redefine-invocable-class!
+    ref
+    ref*
     record-accessor
     record-constructor
     record-constructor-descriptor
@@ -757,9 +914,67 @@
     sealed
     serious-condition?
     set!
+    set-box!
     set-car!
     set-cdr!
     set-port-position!
+    set-setter!
+    set-procedure-properties!
+    set-procedure-property!
+    setter
+    slot-accessor-accessor
+    slot-accessor-getter
+    slot-accessor-immutable?
+    slot-accessor-index
+    slot-accessor-init-keyword
+    slot-accessor-init-thunk
+    slot-accessor-init-value
+    slot-accessor-initializable?
+    slot-accessor-name
+    slot-accessor-option
+    slot-accessor-options
+    slot-accessor-owner
+    slot-accessor-settable?
+    slot-accessor-setter
+    slot-accessor-slot-bound?
+    slot-accessor-slot-ref
+    slot-accessor-slot-set!
+    slot-accessor?
+    slot-bound-using-accessor?
+    slot-bound-using-class?
+    slot-bound?
+    slot-definition-accessor
+    slot-definition-allocation
+    slot-definition-getter
+    slot-definition-immutable?
+    slot-definition-index
+    slot-definition-init-keyword
+    slot-definition-init-thunk
+    slot-definition-init-value
+    slot-definition-initializable?
+    slot-definition-name
+    slot-definition-option
+    slot-definition-options
+    slot-definition-owner
+    slot-definition-settable?
+    slot-definition-setter
+    slot-definition-slot-bound?
+    slot-definition-slot-ref
+    slot-definition-slot-set!
+    slot-definition?
+    slot-exists-using-class?
+    slot-exists?
+    slot-initialize-using-accessor!
+    slot-missing
+    slot-pop!
+    slot-push!
+    slot-ref
+    slot-ref-using-accessor
+    slot-ref-using-class
+    slot-set!
+    slot-set-using-accessor!
+    slot-set-using-class!
+    slot-unbound
     set-top-level-value!
     shutdown-output-port
     simple-conditions
@@ -809,6 +1024,8 @@
     string>=?
     string>?
     string?
+    subclass?
+    sort-applicable-methods
     procedure?
     substring
     symbol->string
@@ -843,9 +1060,11 @@
     tuple-ref
     tuple-set!
     tuple?
+    touch-instance!
     u8-list->bytevector
     uint-list->bytevector
     undefined-violation?
+    unbox
     uninterned-symbol?
     unless
     unquote
@@ -889,6 +1108,12 @@
     with-syntax
     write
     write-char
+    x->integer
+    x->number
+    x->string
+    apply-generic
+    apply-method
+    apply-methods
     zero?)
   (import
     (core primitives)

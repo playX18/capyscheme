@@ -1,5 +1,6 @@
 //! Runtime system: value representation, virtual machine, modules, and thread management.
 
+pub mod class;
 pub mod code_memory;
 pub mod fasl;
 pub mod fluids;
@@ -15,7 +16,7 @@ pub mod vmthread;
 
 pub(crate) fn init<'gc>(mc: Context<'gc>) {
     let _ = &*VM_THREAD;
-    init_static_heap_type_infos();
+    class::init_builtin_classes(mc);
 
     VM_GLOBALS
         .set(crate::rsgc::Global::new(global::Globals::new(mc)))
@@ -25,6 +26,7 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
 
     // modules::current_module(mc).set(mc, (modules::root_module(mc)).into());
 
+    class::init_class_ops(mc);
     fluids::init_fluids(mc);
     vm::load::init_load_path(mc);
     vm::load::init_load(mc);
@@ -48,16 +50,6 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::control::init_control(mc);
     vm::gc::gc::register(mc);
     //let _ = crate::expander::primitives::interesting_primitive_vars_loc(mc);
-}
-
-fn init_static_heap_type_infos() {
-    let _ = value::PAIR_INFO.id();
-    let _ = modules::VARIABLE_INFO.id();
-    let _ = value::CLOSURE_PROC_INFO.id();
-    let _ = value::CLOSURE_K_INFO.id();
-    let _ = value::MUTABLE_VECTOR_INFO.id();
-    let _ = value::IMMUTABLE_VECTOR_INFO.id();
-    let _ = value::TUPLE_INFO.id();
 }
 
 use parking_lot::Mutex;

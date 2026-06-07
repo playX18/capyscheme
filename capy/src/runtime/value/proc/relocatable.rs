@@ -57,64 +57,55 @@ fn relocatable_code_block_layout(
     })
 }
 
-static RELOCATABLE_CODE_BLOCK_VTABLE: &VTable = &VTable {
-    alignment: align_of::<RelocatableCodeBlock>(),
-    compute_alignment: None,
-    instance_size: size_of::<RelocatableCodeBlock>(),
-    compute_size: Some({
-        extern "C" fn compute_relocatable_code_block_size(obj: GCObject) -> usize {
-            unsafe {
-                let obj = obj.to_address().as_ref::<RelocatableCodeBlock<'static>>();
-                relocatable_code_block_layout(
-                    obj.code_len as usize,
-                    obj.relocation_count as usize,
-                    obj.loaded_data_value_bitmap_word_count as usize,
-                )
-                .expect("unlinked code block layout is too large")
-                .payload_size
-            }
-        }
+extern "C" fn compute_relocatable_code_block_size(obj: GCObject) -> usize {
+    unsafe {
+        let obj = obj.to_address().as_ref::<RelocatableCodeBlock<'static>>();
+        relocatable_code_block_layout(
+            obj.code_len as usize,
+            obj.relocation_count as usize,
+            obj.loaded_data_value_bitmap_word_count as usize,
+        )
+        .expect("unlinked code block layout is too large")
+        .payload_size
+    }
+}
 
-        compute_relocatable_code_block_size
-    }),
-    trace: {
-        extern "C" fn trace_relocatable_code_block(obj: GCObject, vis: &mut Visitor) {
-            unsafe {
-                let obj = obj
-                    .to_address()
-                    .as_mut_ref::<RelocatableCodeBlock<'static>>();
-                obj.trace(vis);
-            }
-        }
+extern "C" fn trace_relocatable_code_block(obj: GCObject, vis: &mut Visitor) {
+    unsafe {
+        let obj = obj
+            .to_address()
+            .as_mut_ref::<RelocatableCodeBlock<'static>>();
+        obj.trace(vis);
+    }
+}
 
-        trace_relocatable_code_block
-    },
-    weak_proc: {
-        extern "C" fn process_weak_relocatable_code_block(
-            obj: GCObject,
-            weak_processor: &mut WeakProcessor,
-        ) {
-            unsafe {
-                let obj = obj
-                    .to_address()
-                    .as_mut_ref::<RelocatableCodeBlock<'static>>();
-                obj.process_weak_refs(weak_processor);
-            }
-        }
+extern "C" fn process_weak_relocatable_code_block(
+    obj: GCObject,
+    weak_processor: &mut WeakProcessor,
+) {
+    unsafe {
+        let obj = obj
+            .to_address()
+            .as_mut_ref::<RelocatableCodeBlock<'static>>();
+        obj.process_weak_refs(weak_processor);
+    }
+}
 
-        process_weak_relocatable_code_block
-    },
-    type_name: "unlinked-code-block",
-};
-
-static RELOCATABLE_CODE_BLOCK_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    RELOCATABLE_CODE_BLOCK_VTABLE,
-    TypeCode8::UNLINKED_CODEBLOCK.bits() as u16,
-);
-
-pub static RELOCATABLE_CODE_BLOCK_INFO: &HeapTypeInfo = &RELOCATABLE_CODE_BLOCK_INFO_VALUE;
+fn relocatable_code_block_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::RELOCATABLE_CODE_BLOCK).unwrap())
+}
 
 impl<'gc> RelocatableCodeBlock<'gc> {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
+        alignment: align_of::<RelocatableCodeBlock>(),
+        compute_alignment: None,
+        instance_size: size_of::<RelocatableCodeBlock>(),
+        compute_size: Some(compute_relocatable_code_block_size),
+        trace: trace_relocatable_code_block,
+        weak_proc: process_weak_relocatable_code_block,
+        type_name: "unlinked-code-block",
+    };
+
     pub fn new(
         ctx: Context<'gc>,
         code: &[u8],
@@ -139,10 +130,10 @@ impl<'gc> RelocatableCodeBlock<'gc> {
                 .checked_add(layout.payload_size)
                 .expect("unlinked code block is too large");
 
-            let alloc = ctx.raw_allocate_with_info(
+            let alloc = ctx.raw_allocate_with_header_word(
                 size,
                 align_of::<Self>(),
-                RELOCATABLE_CODE_BLOCK_INFO,
+                relocatable_code_block_header_word(),
                 AllocationSemantics::Default,
             );
             let this = alloc.to_address().as_mut_ref::<Self>();
@@ -224,8 +215,9 @@ impl<'gc> RelocatableCodeBlock<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for RelocatableCodeBlock<'gc> {
-    const TC8: TypeCode8 = TypeCode8::UNLINKED_CODEBLOCK;
+unsafe impl<'gc> ClassTagged for RelocatableCodeBlock<'gc> {
+    const CLASS_IDS: &'static [u32] =
+        &[crate::rsgc::object::builtin_class_ids::RELOCATABLE_CODE_BLOCK];
 
     const TYPE_NAME: &'static str = "unlinked-code-block";
 }

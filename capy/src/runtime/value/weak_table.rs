@@ -15,7 +15,7 @@ use crate::rsgc::{
     finalizer::FinalizationNotify,
     global::Global,
     mutator::Mutation,
-    object::{HeapTypeInfo, VTableOf},
+    object::{ClassId, builtin_class_ids, class_header_word},
     sync::monitor::Monitor,
 };
 use simplehash::MurmurHasher64;
@@ -36,11 +36,9 @@ pub struct WeakMapping<'gc> {
     pub(crate) _value: Value<'gc>,
 }
 
-static WEAK_MAPPING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, WeakMapping<'static>>::VT,
-    TypeCode8::WEAK_MAPPING.bits() as u16,
-);
-pub static WEAK_MAPPING_INFO: &HeapTypeInfo = &WEAK_MAPPING_INFO_VALUE;
+fn weak_mapping_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::WEAK_MAPPING).unwrap())
+}
 
 unsafe impl<'gc> Trace for WeakMapping<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {
@@ -63,8 +61,8 @@ unsafe impl<'gc> Trace for WeakMapping<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for WeakMapping<'gc> {
-    const TC8: TypeCode8 = TypeCode8::WEAK_MAPPING;
+unsafe impl<'gc> ClassTagged for WeakMapping<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::WEAK_MAPPING];
     const TYPE_NAME: &'static str = "#<weak-mapping>";
 }
 
@@ -73,13 +71,13 @@ impl<'gc> WeakMapping<'gc> {
     pub fn new(ctx: Context<'gc>, key: Value<'gc>, value: Value<'gc>) -> Gc<'gc, Self> {
         assert!(key.is_cell(), "weak-mappings can only have cells as keys");
 
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             *ctx,
             Self {
                 _key: key,
                 _value: value,
             },
-            WEAK_MAPPING_INFO,
+            weak_mapping_header_word(),
         )
     }
 
@@ -164,11 +162,9 @@ pub struct WeakTable<'gc> {
     inner: Monitor<WeakTableInner<'gc>>,
 }
 
-static WEAK_TABLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, WeakTable<'static>>::VT,
-    TypeCode8::WEAKTABLE.bits() as u16,
-);
-pub static WEAK_TABLE_INFO: &HeapTypeInfo = &WEAK_TABLE_INFO_VALUE;
+fn weak_table_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::WEAK_TABLE).unwrap())
+}
 
 unsafe impl<'gc> Trace for WeakTable<'gc> {
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
@@ -223,12 +219,12 @@ impl<'gc> WeakTable<'gc> {
             mod_count: Cell::new(0),
         };
 
-        let table = Gc::new_with_info(
+        let table = Gc::new_with_header_word(
             ctx,
             Self {
                 inner: Monitor::new(inner),
             },
-            WEAK_TABLE_INFO,
+            weak_table_header_word(),
         );
 
         ALL_WEAK_TABLES
@@ -583,8 +579,8 @@ impl<'gc> WeakTable<'gc> {
 
 pub type WeakTableRef<'gc> = Gc<'gc, WeakTable<'gc>>;
 
-unsafe impl<'gc> Tagged for WeakTable<'gc> {
-    const TC8: TypeCode8 = TypeCode8::WEAKTABLE;
+unsafe impl<'gc> ClassTagged for WeakTable<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::WEAK_TABLE];
     const TYPE_NAME: &'static str = "#<weak-table>";
 }
 

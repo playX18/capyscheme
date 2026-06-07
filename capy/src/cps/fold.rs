@@ -337,15 +337,12 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             Some(Value::cons(ctx, a, b))
         }
 
-        "typecode8" => tc8(ctx, a, b) {
-            /*if a.is_cell() {
-                Some(Value::from_raw(a.typ8().bits() as u64))
-            } else {
-                None
-            }*/
-            let _ = a;
-            let _ = b;
-            return None;
+        "%class-id?" => class_idp(ctx, a, b) {
+            let class_id = b.int32()?;
+            Some(Value::new(
+                a.class_id()
+                    .is_some_and(|actual| actual.bits() == class_id as u32),
+            ))
         }
 
         "immediate?" => is_immediate(ctx, a) {
@@ -375,23 +372,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             but we try to check them here to avoid runtime undefined behavior.
          */
 
-
-        ".typecode8" => typecode8(ctx, a) {
-
-            if a.is_cell() {
-                Some(Value::from_raw(a.typ8().bits() as u64))
-            } else {
-                panic!("BUG: .typecode8 called on non-cell value")
-            }
-        }
-
-        ".typecode16" => typecode16(ctx, a) {
-            if a.is_cell() {
-                Some(Value::from_raw(a.typ16().bits() as u64))
-            } else {
-                panic!("BUG: .typecode16 called on non-cell value")
-            }
-        }
 
         ".is-cell" => is_cell(ctx, a) {
             Some(Value::new(a.is_cell()))

@@ -13,7 +13,7 @@ use crate::rsgc::{
     barrier::{self},
     cell::Lock,
     mmtk::AllocationSemantics,
-    object::{HeapTypeInfo, VTableOf},
+    object::{ClassId, builtin_class_ids, class_header_word},
     sync::thread::{Thread as RuntimeThread, current_thread as current_runtime_thread},
 };
 use crate::runtime::Scheme;
@@ -23,11 +23,9 @@ pub struct Condition {
     pub(crate) cond: parking_lot::Condvar,
 }
 
-static CONDITION_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Condition>::VT,
-    TypeCode8::THREAD_CONDITION.bits() as u16,
-);
-pub static CONDITION_INFO: &HeapTypeInfo = &CONDITION_INFO_VALUE;
+fn condition_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::CONDITION).unwrap())
+}
 
 unsafe impl Trace for Condition {
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
@@ -45,11 +43,9 @@ pub struct Mutex {
     owner: MutexOwnerLock,
 }
 
-static MUTEX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Mutex>::VT,
-    TypeCode8::THREAD_MUTEX.bits() as u16,
-);
-pub static MUTEX_INFO: &HeapTypeInfo = &MUTEX_INFO_VALUE;
+fn mutex_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::MUTEX).unwrap())
+}
 
 pub enum MutexKind {
     Reentrant(parking_lot::ReentrantMutex<()>),
@@ -146,14 +142,14 @@ unsafe impl Trace for Mutex {
     }
 }
 
-unsafe impl Tagged for Mutex {
-    const TC8: TypeCode8 = TypeCode8::THREAD_MUTEX;
+unsafe impl ClassTagged for Mutex {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::MUTEX];
 
     const TYPE_NAME: &'static str = "mutex";
 }
 
-unsafe impl Tagged for Condition {
-    const TC8: TypeCode8 = TypeCode8::THREAD_CONDITION;
+unsafe impl ClassTagged for Condition {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CONDITION];
 
     const TYPE_NAME: &'static str = "condition";
 }
@@ -170,15 +166,13 @@ struct PendingInterruptQueue {
     queue: parking_lot::Mutex<VecDeque<Value<'static>>>,
 }
 
-static THREAD_OBJECT_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, ThreadObject<'static>>::VT,
-    TypeCode8::THREAD.bits() as u16,
-);
-pub static THREAD_OBJECT_INFO: &HeapTypeInfo = &THREAD_OBJECT_INFO_VALUE;
+fn thread_object_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::THREAD).unwrap())
+}
 
 impl<'gc> ThreadObject<'gc> {
     pub(crate) fn new(mc: Mutation<'gc>, entrypoint: Option<Value<'gc>>) -> Gc<'gc, Self> {
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             ThreadObject {
                 entrypoint: Lock::new(entrypoint),
@@ -188,7 +182,7 @@ impl<'gc> ThreadObject<'gc> {
                 runtime_thread: AtomicUsize::new(0),
                 interrupt_level: AtomicUsize::new(0),
             },
-            THREAD_OBJECT_INFO,
+            thread_object_header_word(),
         )
     }
 
@@ -286,8 +280,8 @@ unsafe impl<'gc> Trace for ThreadObject<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for ThreadObject<'gc> {
-    const TC8: TypeCode8 = TypeCode8::THREAD;
+unsafe impl<'gc> ClassTagged for ThreadObject<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::THREAD];
 
     const TYPE_NAME: &'static str = "thread";
 }
@@ -377,9 +371,11 @@ pub mod threading_ops {
             owner: MutexOwnerLock::new(),
         };
         // mutex has to be non-moving so that parking_lot can use its address as a key.
-        let gc_mutex =
-            nctx.ctx
-                .allocate_with_info(mutex, MUTEX_INFO, AllocationSemantics::NonMoving);
+        let gc_mutex = nctx.ctx.allocate_with_header_word(
+            mutex,
+            mutex_header_word(),
+            AllocationSemantics::NonMoving,
+        );
         nctx.return_(gc_mutex.into())
     }
     #[scheme(name = "mutex-acquire")]
@@ -508,9 +504,11 @@ pub mod threading_ops {
         let condition = Condition {
             cond: parking_lot::Condvar::new(),
         };
-        let gc_condition =
-            nctx.ctx
-                .allocate_with_info(condition, CONDITION_INFO, AllocationSemantics::NonMoving);
+        let gc_condition = nctx.ctx.allocate_with_header_word(
+            condition,
+            condition_header_word(),
+            AllocationSemantics::NonMoving,
+        );
         nctx.return_(gc_condition.into())
     }
 
@@ -581,4 +579,46 @@ pub mod threading_ops {
 
 pub(crate) fn init_threading<'gc>(ctx: Context<'gc>) {
     threading_ops::register(ctx);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_sync_objects_allocate_with_class_only_headers() {
+        Scheme::new_uninit().enter(|ctx| {
+            let thread = ThreadObject::new(*ctx, None);
+            assert_eq!(
+                thread.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::THREAD).unwrap()
+            );
+
+            let mutex = Mutex {
+                mutex: MutexKind::Regular(parking_lot::Mutex::new(())),
+                owner: MutexOwnerLock::new(),
+            };
+            let mutex = ctx.allocate_with_header_word(
+                mutex,
+                mutex_header_word(),
+                AllocationSemantics::NonMoving,
+            );
+            assert_eq!(
+                mutex.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::MUTEX).unwrap()
+            );
+
+            let condition = ctx.allocate_with_header_word(
+                Condition {
+                    cond: parking_lot::Condvar::new(),
+                },
+                condition_header_word(),
+                AllocationSemantics::NonMoving,
+            );
+            assert_eq!(
+                condition.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::CONDITION).unwrap()
+            );
+        });
+    }
 }

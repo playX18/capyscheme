@@ -19,13 +19,13 @@ use crate::rsgc::{
     global::Global,
     mmtk::{AllocationSemantics, util::conversions::raw_align_up},
     mutator::Mutation,
-    object::{GCObject, HeapTypeInfo, VTable},
+    object::{AllocationHooks, ClassId, GCObject, builtin_class_ids, class_header_word},
 };
 use rand::Rng;
 
 use crate::runtime::Context;
 
-use crate::runtime::value::{Tagged, TypeCode8, TypeCode16};
+use crate::runtime::value::ClassTagged;
 
 pub const DIGIT_BIT: usize = 64;
 pub const DIGIT_MASK: u64 = u64::MAX;
@@ -35,6 +35,20 @@ const BASE: Digit2X = Digit::MAX as Digit2X + 1;
 
 pub type Digit2X = u128;
 pub type Digit = u64;
+
+extern "C" fn compute_bigint_size(object: GCObject) -> usize {
+    let bigint = unsafe { object.to_address().as_ref::<BigInt<'static>>() };
+    let raw = bigint.num_words() * size_of::<Digit>() + size_of::<BigInt>();
+    raw_align_up(raw, align_of::<BigInt>())
+}
+
+extern "C" fn trace_bigint(_object: GCObject, _visitor: &mut Visitor<'_>) {}
+
+extern "C" fn process_weak_bigint(
+    _object: GCObject,
+    _weak_processor: &mut crate::rsgc::WeakProcessor,
+) {
+}
 pub type IDigit = i64;
 pub type IDigit2X = i128;
 type RootedBigInt = crate::Rootable!(Gc<'_, BigInt<'_>>);
@@ -162,12 +176,11 @@ impl<'gc> BigInt<'gc> {
                 std::mem::align_of::<Self>(),
             );
 
-            let bigint = mc.allocate_with_layout_info::<Self>(
+            let bigint = mc.allocate_with_layout_header_word::<Self>(
                 layout,
-                BIGINT_INFO,
+                bigint_header_word(),
                 AllocationSemantics::Default,
             );
-            //bigint.set_user_header(TypeCode16::BIG.into()); // Set the type code
 
             bigint.as_mut_ptr().write(BigInt {
                 count: words.len() as u32,
@@ -205,9 +218,9 @@ impl<'gc> BigInt<'gc> {
                 std::mem::align_of::<Self>(),
             );
 
-            let bigint = mc.allocate_with_layout_info::<Self>(
+            let bigint = mc.allocate_with_layout_header_word::<Self>(
                 layout,
-                BIGINT_INFO,
+                bigint_header_word(),
                 AllocationSemantics::Default,
             );
 
@@ -325,48 +338,28 @@ impl<'gc> BigInt<'gc> {
         Self::new::<true>(ctx, &words, negative)
     }
 
-    pub const VT: &'static VTable = &VTable {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
         type_name: "BigInt",
         instance_size: 0,
         alignment: align_of::<usize>(),
         compute_alignment: None,
-        compute_size: Some({
-            extern "C" fn sz(object: GCObject) -> usize {
-                let bigint = unsafe { object.to_address().as_ref::<BigInt<'static>>() };
-                // Size of the variable part (the words data)
-                let raw = bigint.num_words() * size_of::<Digit>() + size_of::<BigInt>();
-                raw_align_up(raw, align_of::<BigInt>())
-            }
-            sz
-        }),
-        trace: {
-            extern "C" fn trace(_object: GCObject, _visitor: &mut Visitor<'_>) {}
-            trace
-        },
-        weak_proc: {
-            extern "C" fn weak_proc(
-                _object: GCObject,
-                _weak_processor: &mut crate::rsgc::WeakProcessor,
-            ) {
-            }
-            weak_proc
-        },
+        compute_size: Some(compute_bigint_size),
+        trace: trace_bigint,
+        weak_proc: process_weak_bigint,
     };
 }
 
-static BIGINT_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(BigInt::<'static>::VT, TypeCode16::BIG.bits());
-pub static BIGINT_INFO: &HeapTypeInfo = &BIGINT_INFO_VALUE;
+fn bigint_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::BIGINT).unwrap())
+}
 
 unsafe impl<'gc> Trace for BigInt<'gc> {
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {}
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
-unsafe impl<'gc> Tagged for BigInt<'gc> {
-    const TC8: TypeCode8 = TypeCode8::NUMBER;
-    const TC16: &'static [TypeCode16] = &[TypeCode16::BIG];
-    const ONLY_TC16: bool = true;
+unsafe impl<'gc> ClassTagged for BigInt<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::BIGINT];
     const TYPE_NAME: &'static str = "bigint";
 }
 
@@ -2090,8 +2083,9 @@ mod tests {
         });
     }
 
-    use super::Base;
+    use super::{Base, builtin_class_ids};
     use crate::prelude::BigInt;
+    use crate::rsgc::object::ClassId;
 
     #[test]
     fn test_bigint() {
@@ -2101,6 +2095,20 @@ mod tests {
             let big_int = BigInt::parse(ctx, "2037035976334486086268445688409378161051468393665936250636140449354381299763336706183397376", &Base::DEC)
                 .expect("Failed to parse BigInt");
 
+        });
+    }
+
+    #[test]
+    fn bigint_allocates_with_class_only_header() {
+        let scm = Scheme::new_uninit();
+
+        scm.enter(|ctx| {
+            let bigint = BigInt::from_u64(ctx, u64::MAX);
+
+            assert_eq!(
+                bigint.as_gcobj().header().class_id(),
+                ClassId::new(builtin_class_ids::BIGINT).unwrap()
+            );
         });
     }
 }

@@ -178,6 +178,8 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x.is::<Keyword>() {
             let kw = x.downcast::<Keyword>();
             write!(self.fmt, "{}", kw.symbol)
+        } else if let Some(result) = crate::runtime::class::print_primitive_value(self.fmt, x) {
+            result
         } else {
             write!(self.fmt, "#<unknown {:x}>", x.bits())
         }

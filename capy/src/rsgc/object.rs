@@ -1,16 +1,16 @@
 use crate::rsgc::{collection::Visitor, mm::MemoryManager, traits::Trace, weak::WeakProcessor};
+use crate::runtime::Context;
 use crate::utils::easy_bitfield::{AtomicBitfieldContainer, BitField, BitFieldTrait};
 use core::fmt;
 use mmtk::util::{
     Address, ObjectReference, constants::LOG_BYTES_IN_ADDRESS, conversions::raw_align_up,
 };
 use std::{
+    cell::Cell,
     collections::HashMap,
     marker::PhantomData,
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicPtr, AtomicU16, Ordering},
-    },
+    num::NonZeroU32,
+    sync::{Mutex, OnceLock},
 };
 
 /// Offset from allocation to the actual object
@@ -22,22 +22,84 @@ pub const HASHCODE_BYTES: usize = size_of::<u64>();
 const HASH_UNHASHED: u8 = 0;
 const HASH_HASHED: u8 = 1;
 const HASH_HASHED_AND_MOVED: u8 = 2;
-pub const UNKNOWN_TYPE_BITS: u16 = u16::MAX;
+pub const MAX_CLASS_ID: u32 = (1 << 24) - 1;
+pub const MIN_GC_ONLY_CLASS_ID: u32 = 1 << 23;
 
-pub mod builtin_type_ids {
-    pub const PAIR: u16 = 1;
-    pub const VARIABLE: u16 = 2;
-    pub const CLOSURE_PROC: u16 = 3;
-    pub const CLOSURE_K: u16 = 4;
-    pub const MUTABLE_VECTOR: u16 = 5;
-    pub const IMMUTABLE_VECTOR: u16 = 6;
-    pub const TUPLE: u16 = 7;
-    pub const MAX: u16 = TUPLE;
+pub mod builtin_class_ids {
+    pub const PAIR: u32 = 1;
+    pub const VARIABLE: u32 = 2;
+    pub const CLOSURE_PROC: u32 = 3;
+    pub const CLOSURE_K: u32 = 4;
+    pub const MUTABLE_VECTOR: u32 = 5;
+    pub const IMMUTABLE_VECTOR: u32 = 6;
+    pub const TUPLE: u32 = 7;
+
+    pub const TOP: u32 = 8;
+    pub const BOTTOM: u32 = 9;
+    pub const TYPE: u32 = 10;
+    pub const CLASS: u32 = 11;
+    pub const OBJECT: u32 = 12;
+    pub const BOOL: u32 = 13;
+    pub const CHAR: u32 = 14;
+    pub const NULL: u32 = 15;
+    pub const EOF: u32 = 16;
+    pub const VOID: u32 = 17;
+    pub const UNSPECIFIED: u32 = 18;
+    pub const UNDEFINED: u32 = 19;
+    pub const FIXNUM: u32 = 20;
+    pub const FLONUM: u32 = 21;
+    pub const BIGINT: u32 = 22;
+    pub const RATIONAL: u32 = 23;
+    pub const COMPLEX: u32 = 24;
+    pub const NUMBER: u32 = 25;
+    pub const SYMBOL: u32 = 26;
+    pub const KEYWORD: u32 = 27;
+    pub const STRING: u32 = 28;
+    pub const IMMUTABLE_STRING: u32 = 29;
+    pub const STRINGBUF_WIDE: u32 = 30;
+    pub const STRINGBUF_NARROW: u32 = 31;
+    pub const MUTABLE_BYTEVECTOR: u32 = 32;
+    pub const IMMUTABLE_BYTEVECTOR: u32 = 33;
+    pub const MAPPED_BYTEVECTOR: u32 = 34;
+    pub const HASHTABLE: u32 = 35;
+    pub const IMMUTABLE_HASHTABLE: u32 = 36;
+    pub const WEAK_SET: u32 = 37;
+    pub const WEAK_TABLE: u32 = 38;
+    pub const WEAK_MAPPING: u32 = 39;
+    pub const EPHEMERON: u32 = 40;
+    pub const BOX: u32 = 41;
+    pub const FLUID: u32 = 42;
+    pub const DYNAMIC_STATE: u32 = 43;
+    pub const NATIVE_PROCEDURE: u32 = 44;
+    pub const NATIVE_CONTINUATION: u32 = 45;
+    pub const CODE_BLOCK: u32 = 46;
+    pub const RELOCATABLE_CODE_BLOCK: u32 = 47;
+    pub const MODULE: u32 = 48;
+    pub const ENVIRONMENT: u32 = 49;
+    pub const SYNTAX: u32 = 50;
+    pub const SYNTAX_TRANSFORMER: u32 = 51;
+    pub const PORT: u32 = 52;
+    pub const SOCKET: u32 = 53;
+    pub const POLLER: u32 = 54;
+    pub const POINTER: u32 = 55;
+    pub const CIF: u32 = 56;
+    pub const THREAD: u32 = 57;
+    pub const MUTEX: u32 = 58;
+    pub const CONDITION: u32 = 59;
+    pub const ANNOTATION: u32 = 60;
+    pub const CONTINUATION_MARKS: u32 = 61;
+    pub const UNINTERNED_SYMBOL: u32 = 62;
+    pub const GENERIC: u32 = 63;
+    pub const METHOD: u32 = 64;
+    pub const NEXT_METHOD: u32 = 65;
+    pub const SLOT_DEFINITION: u32 = 66;
+    pub const SLOT_ACCESSOR: u32 = 67;
+
+    pub const MAX: u32 = SLOT_ACCESSOR;
 }
 
-#[derive()]
-#[repr(C)]
-pub struct VTable {
+#[derive(Clone, Copy)]
+pub struct AllocationHooks {
     pub trace: extern "C" fn(GCObject, &mut Visitor),
     pub weak_proc: extern "C" fn(GCObject, &mut WeakProcessor),
     pub instance_size: usize,
@@ -47,124 +109,246 @@ pub struct VTable {
     pub type_name: &'static str,
 }
 
-pub type TypeBits = BitField<u64, u16, 0, 16, false>;
-type InfoIdBits = BitField<u64, u16, { TypeBits::NEXT_BIT }, 16, false>;
+extern "C" fn default_trace<T: Trace>(obj: GCObject, vis: &mut Visitor) {
+    vis.current_object = obj.to_objref();
+
+    unsafe {
+        obj.to_address().as_mut_ref::<T>().trace(vis);
+    }
+}
+
+extern "C" fn default_weak_proc<T: Trace>(obj: GCObject, weak_processor: &mut WeakProcessor) {
+    unsafe {
+        obj.to_address()
+            .as_mut_ref::<T>()
+            .process_weak_refs(weak_processor);
+    }
+}
+
+impl AllocationHooks {
+    fn registry_key(self) -> AllocationHookKey {
+        AllocationHookKey {
+            trace: self.trace as usize,
+            weak_proc: self.weak_proc as usize,
+            instance_size: self.instance_size,
+            compute_size: self.compute_size.map(|compute_size| compute_size as usize),
+            alignment: self.alignment,
+            compute_alignment: self
+                .compute_alignment
+                .map(|compute_alignment| compute_alignment as usize),
+            type_name: self.type_name,
+        }
+    }
+}
+
+/// Allocation hooks for fixed-size traced Rust types.
+///
+/// Types with trailing data, such as arrays, must provide explicit hook records
+/// with dynamic sizing rather than using this helper.
+pub struct AllocationHooksOf<'gc, T: Trace>(PhantomData<&'gc T>);
+
+impl<'gc, T: 'gc + Trace> AllocationHooksOf<'gc, T> {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
+        type_name: std::any::type_name::<T>(),
+        trace: default_trace::<T>,
+        weak_proc: default_weak_proc::<T>,
+        instance_size: size_of::<T>(),
+        alignment: align_of::<T>(),
+        compute_size: None,
+        compute_alignment: None,
+    };
+
+    pub(crate) fn class_header_word(ctx: Context<'gc>) -> u64 {
+        gc_only_class_header_word_with_context(ctx, Self::HOOKS)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct AllocationHookKey {
+    trace: usize,
+    weak_proc: usize,
+    instance_size: usize,
+    compute_size: Option<usize>,
+    alignment: usize,
+    compute_alignment: Option<usize>,
+    type_name: &'static str,
+}
+
+type ClassIdBits = BitField<u64, u32, 0, 24, false>;
 type HashBits = BitField<u64, u8, 57, 2, false>;
 type FinalizationState = BitField<u64, bool, { HashBits::NEXT_BIT }, 1, false>;
 
 type LastBitfield = FinalizationState;
 
-static TYPE_INFO_REGISTRY_LOCK: OnceLock<Mutex<usize>> = OnceLock::new();
-static TYPE_INFO_TABLE: OnceLock<Box<[AtomicPtr<HeapTypeInfo>]>> = OnceLock::new();
-static GC_ONLY_INFO_MAP: OnceLock<Mutex<HashMap<usize, &'static HeapTypeInfo>>> = OnceLock::new();
+static GC_ONLY_CLASS_REGISTRY: OnceLock<Mutex<GcOnlyClassRegistry>> = OnceLock::new();
 
-fn type_info_registry_lock() -> &'static Mutex<usize> {
-    TYPE_INFO_REGISTRY_LOCK.get_or_init(|| Mutex::new(builtin_type_ids::MAX as usize))
+fn gc_only_class_registry() -> &'static Mutex<GcOnlyClassRegistry> {
+    GC_ONLY_CLASS_REGISTRY.get_or_init(|| Mutex::new(GcOnlyClassRegistry::new()))
 }
 
-fn type_info_table() -> &'static [AtomicPtr<HeapTypeInfo>] {
-    TYPE_INFO_TABLE.get_or_init(|| {
-        (0..=(u16::MAX as usize))
-            .map(|_| AtomicPtr::new(std::ptr::null_mut()))
-            .collect::<Vec<_>>()
-            .into_boxed_slice()
-    })
+#[repr(transparent)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ClassId(NonZeroU32);
+
+impl ClassId {
+    pub const MAX_BITS: u32 = MAX_CLASS_ID;
+
+    pub const fn new(id: u32) -> Option<Self> {
+        if id == 0 || id > Self::MAX_BITS {
+            return None;
+        }
+
+        match NonZeroU32::new(id) {
+            Some(id) => Some(Self(id)),
+            None => None,
+        }
+    }
+
+    pub const fn bits(self) -> u32 {
+        self.0.get()
+    }
 }
 
-fn gc_only_info_map() -> &'static Mutex<HashMap<usize, &'static HeapTypeInfo>> {
-    GC_ONLY_INFO_MAP.get_or_init(|| Mutex::new(HashMap::new()))
+unsafe impl Trace for ClassId {
+    unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        let _ = visitor;
+    }
+
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let _ = weak_processor;
+    }
 }
 
-#[repr(C)]
-pub struct HeapTypeInfo {
-    pub vtable: &'static VTable,
-    pub type_bits: u16,
-    id: AtomicU16,
+pub struct GcOnlyClassInfo {
+    class_id: ClassId,
+    hooks: AllocationHooks,
 }
 
-impl HeapTypeInfo {
-    pub const TYPE_BITS_OFFSET: usize = std::mem::offset_of!(Self, type_bits);
-    pub const ID_OFFSET: usize = std::mem::offset_of!(Self, id);
+impl GcOnlyClassInfo {
+    pub fn class_id(&self) -> ClassId {
+        self.class_id
+    }
 
-    pub const fn new(vtable: &'static VTable, type_bits: u16) -> Self {
+    pub fn hooks(&self) -> AllocationHooks {
+        self.hooks
+    }
+}
+
+struct GcOnlyClassRegistry {
+    next_class_id: u32,
+    by_hooks: HashMap<AllocationHookKey, &'static GcOnlyClassInfo>,
+    by_class_id: HashMap<u32, &'static GcOnlyClassInfo>,
+}
+
+impl GcOnlyClassRegistry {
+    fn new() -> Self {
         Self {
-            vtable,
-            type_bits,
-            id: AtomicU16::new(0),
+            next_class_id: MAX_CLASS_ID,
+            by_hooks: HashMap::new(),
+            by_class_id: HashMap::new(),
         }
     }
 
-    pub const fn new_static(vtable: &'static VTable, type_bits: u16, id: u16) -> Self {
-        assert!(id != 0);
-        Self {
-            vtable,
-            type_bits,
-            id: AtomicU16::new(id),
-        }
-    }
-
-    pub fn id(&'static self) -> u16 {
-        let existing = self.id.load(Ordering::Acquire);
-        if existing != 0 {
-            self.register_static_id(existing);
-            return existing;
+    fn get_or_register(&mut self, hooks: AllocationHooks) -> &'static GcOnlyClassInfo {
+        let key = hooks.registry_key();
+        if let Some(info) = self.by_hooks.get(&key) {
+            return info;
         }
 
-        let mut next = type_info_registry_lock().lock().unwrap();
-        let existing = self.id.load(Ordering::Relaxed);
-        if existing != 0 {
-            return existing;
-        }
-
-        *next += 1;
-        let id = u16::try_from(*next).expect("HeapTypeInfo registry exhausted u16::MAX ids");
-        type_info_table()[id as usize].store(self as *const _ as *mut _, Ordering::Release);
-        self.id.store(id, Ordering::Release);
-        id
-    }
-
-    fn register_static_id(&'static self, id: u16) {
-        let slot = &type_info_table()[id as usize];
-        let self_ptr = self as *const _ as *mut _;
-        let existing = slot.load(Ordering::Acquire);
-        if existing == self_ptr {
-            return;
-        }
-
-        let mut next = type_info_registry_lock().lock().unwrap();
-        let existing = slot.load(Ordering::Acquire);
-        if existing.is_null() {
-            slot.store(self_ptr, Ordering::Release);
-            *next = (*next).max(id as usize);
-        } else {
-            debug_assert_eq!(
-                existing, self_ptr,
-                "HeapTypeInfo id {id} is already registered to a different type"
+        let class_id = loop {
+            assert!(
+                self.next_class_id >= MIN_GC_ONLY_CLASS_ID,
+                "GC-only class ID registry exhausted"
             );
-        }
+            let Some(class_id) = ClassId::new(self.next_class_id) else {
+                panic!("GC-only class ID registry exhausted");
+            };
+            self.next_class_id = self
+                .next_class_id
+                .checked_sub(1)
+                .expect("GC-only class ID registry exhausted");
+
+            if self.by_class_id.contains_key(&class_id.bits()) {
+                continue;
+            }
+
+            break class_id;
+        };
+
+        let info = Box::leak(Box::new(GcOnlyClassInfo { class_id, hooks }));
+        self.by_hooks.insert(key, info);
+        self.by_class_id.insert(class_id.bits(), info);
+        info
     }
 
-    pub fn lookup(id: u16) -> &'static Self {
-        assert_ne!(id, 0, "HeapTypeInfo id 0 is reserved");
-        let ptr = type_info_table()[id as usize].load(Ordering::Acquire);
-        assert!(
-            !ptr.is_null(),
-            "HeapTypeInfo id {id} is not registered in the global info table"
-        );
-        unsafe { &*ptr }
+    fn get_by_class_id(&self, id: ClassId) -> Option<&'static GcOnlyClassInfo> {
+        self.by_class_id.get(&id.bits()).copied()
     }
 }
 
-pub fn gc_only_type_info(vtable: &'static VTable) -> &'static HeapTypeInfo {
-    let key = vtable as *const VTable as usize;
-    let mut infos = gc_only_info_map().lock().unwrap();
-    if let Some(info) = infos.get(&key) {
-        return info;
-    }
+pub(crate) fn gc_only_class_info(hooks: AllocationHooks) -> &'static GcOnlyClassInfo {
+    gc_only_class_registry()
+        .lock()
+        .unwrap()
+        .get_or_register(hooks)
+}
 
-    let info = Box::leak(Box::new(HeapTypeInfo::new(vtable, UNKNOWN_TYPE_BITS)));
-    infos.insert(key, info);
-    info
+pub(crate) fn gc_only_class_infos() -> Vec<&'static GcOnlyClassInfo> {
+    gc_only_class_registry()
+        .lock()
+        .unwrap()
+        .by_class_id
+        .values()
+        .copied()
+        .collect()
+}
+
+thread_local! {
+    static MIRRORING_GC_ONLY_CLASS: Cell<bool> = const { Cell::new(false) };
+}
+
+struct GcOnlyClassMirrorGuard;
+
+impl GcOnlyClassMirrorGuard {
+    fn enter() -> Option<Self> {
+        MIRRORING_GC_ONLY_CLASS.with(|mirroring| {
+            if mirroring.get() {
+                return None;
+            }
+
+            mirroring.set(true);
+            Some(Self)
+        })
+    }
+}
+
+impl Drop for GcOnlyClassMirrorGuard {
+    fn drop(&mut self) {
+        MIRRORING_GC_ONLY_CLASS.with(|mirroring| mirroring.set(false));
+    }
+}
+
+pub(crate) fn gc_only_class_header_word_with_context<'gc>(
+    ctx: Context<'gc>,
+    hooks: AllocationHooks,
+) -> u64 {
+    let info = gc_only_class_info(hooks);
+    if let Some(_guard) = GcOnlyClassMirrorGuard::enter() {
+        crate::runtime::class::register_gc_only_class_if_initialized(ctx, info);
+    }
+    class_header_word(info.class_id())
+}
+
+pub(crate) fn gc_only_hooks_for_class_id(id: ClassId) -> Option<AllocationHooks> {
+    gc_only_class_registry()
+        .lock()
+        .unwrap()
+        .get_by_class_id(id)
+        .map(GcOnlyClassInfo::hooks)
+}
+
+pub fn class_header_word(class_id: ClassId) -> u64 {
+    class_id.bits() as u64
 }
 
 pub struct HeapObjectHeader {
@@ -172,11 +356,13 @@ pub struct HeapObjectHeader {
 }
 
 impl HeapObjectHeader {
-    pub fn new(info: &'static HeapTypeInfo) -> Self {
+    pub fn from_class_id(class_id: ClassId) -> Self {
+        Self::from_word(class_header_word(class_id))
+    }
+
+    pub fn from_word(word: u64) -> Self {
         Self {
-            word: AtomicBitfieldContainer::new(
-                TypeBits::encode(info.type_bits) | InfoIdBits::encode(info.id()),
-            ),
+            word: AtomicBitfieldContainer::new(word),
         }
     }
 
@@ -188,20 +374,12 @@ impl HeapObjectHeader {
         self.word.update::<HashBits>(state);
     }
 
-    pub fn type_bits(&self) -> u16 {
-        self.word.read::<TypeBits>()
+    pub fn class_id(&self) -> ClassId {
+        ClassId::new(self.word.read::<ClassIdBits>()).expect("heap object class ID must be nonzero")
     }
 
-    pub fn info_id(&self) -> u16 {
-        self.word.read::<InfoIdBits>()
-    }
-
-    pub fn type_info(&self) -> &'static HeapTypeInfo {
-        HeapTypeInfo::lookup(self.info_id())
-    }
-
-    pub fn vtable(&self) -> &'static VTable {
-        self.type_info().vtable
+    pub(crate) fn set_class_id(&self, class_id: ClassId) {
+        self.word.update::<ClassIdBits>(class_id.bits());
     }
 
     pub fn finalization_state(&self) -> bool {
@@ -269,15 +447,53 @@ impl GCObject {
         unsafe { self.0.offset(-OBJECT_REF_OFFSET).as_ref() }
     }
 
+    pub fn class_id(self) -> ClassId {
+        self.header().class_id()
+    }
+
     pub fn header_address(self) -> Address {
         self.0.offset(-OBJECT_REF_OFFSET)
     }
 
-    pub fn alignment(self) -> usize {
-        let header = self.header();
-        let vt = header.vtable();
+    pub fn trace(self, visitor: &mut Visitor) {
+        if let Some(hooks) =
+            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+        {
+            (hooks.trace())(self, visitor);
+            return;
+        }
 
-        (vt.alignment + vt.compute_alignment.map_or(0, |f| f(self))).min(16)
+        panic!(
+            "missing primitive GC hooks for class id {} while tracing",
+            self.class_id().bits()
+        );
+    }
+
+    pub fn process_weak_refs(self, weak_processor: &mut WeakProcessor) {
+        if let Some(hooks) =
+            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+        {
+            (hooks.weak_proc())(self, weak_processor);
+            return;
+        }
+
+        panic!(
+            "missing primitive GC hooks for class id {} while processing weak refs",
+            self.class_id().bits()
+        );
+    }
+
+    pub fn alignment(self) -> usize {
+        if let Some(hooks) =
+            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+        {
+            return (hooks.alignment() + hooks.compute_alignment().map_or(0, |f| f(self))).min(16);
+        }
+
+        panic!(
+            "missing primitive GC hooks for class id {} while computing alignment",
+            self.class_id().bits()
+        );
     }
 
     pub fn current_size(self) -> usize {
@@ -297,10 +513,18 @@ impl GCObject {
     }
 
     pub fn instance_size(self) -> usize {
-        let header = self.header();
-        let vt = header.vtable();
+        if let Some(hooks) =
+            crate::runtime::class::primitive_layout_hooks_for_class_id(self.class_id())
+        {
+            return hooks.instance_size()
+                + hooks.compute_size().map_or(0, |f| f(self))
+                + size_of::<HeapObjectHeader>();
+        }
 
-        vt.instance_size + vt.compute_size.map_or(0, |f| f(self)) + size_of::<HeapObjectHeader>()
+        panic!(
+            "missing primitive GC hooks for class id {} while computing instance size",
+            self.class_id().bits()
+        );
     }
 
     fn bytes_used(self) -> usize {
@@ -417,8 +641,7 @@ impl ObjectModel {
             to_obj.header().set_hash_state(HASH_HASHED_AND_MOVED);
         }
 
-        debug_assert!(to_obj.header().info_id() != 0);
-        debug_assert_eq!(to_obj.header().info_id(), from_obj.header().info_id());
+        debug_assert_eq!(to_obj.header().class_id(), from_obj.header().class_id());
 
         to_obj
     }
@@ -537,51 +760,6 @@ impl TryFrom<GCObject> for ObjectReference {
     }
 }
 
-/// A marker type to get VTable for specific `T`.
-///
-/// ## Notes
-///
-/// Note that using `VTableOf::<T>::VT` is unsafe in case `T` is a datatype with trailing
-/// data e.g array. It should instead provide its own vtable and constructor functions rather
-/// than using [`Gc::new`](crate::ptr::Gc::new)
-pub struct VTableOf<'gc, T: Trace>(PhantomData<&'gc T>);
-
-impl<'gc, T: 'gc + Trace> VTableOf<'gc, T> {
-    /// A VTable for specific type `T` constructed based on the `Trace` impl and statically known size of `T`.
-    pub const VT: &'static VTable = &VTable {
-        type_name: std::any::type_name::<T>(),
-        trace: {
-            extern "C" fn trace<T: Trace>(obj: GCObject, vis: &mut Visitor) {
-                vis.current_object = obj.to_objref();
-
-                unsafe {
-                    obj.to_address().as_mut_ref::<T>().trace(vis);
-                }
-            }
-
-            trace::<T>
-        },
-
-        weak_proc: {
-            extern "C" fn weak<T: Trace>(obj: GCObject, vis: &mut WeakProcessor) {
-                unsafe {
-                    obj.to_address().as_mut_ref::<T>().process_weak_refs(vis);
-                }
-            }
-
-            weak::<T>
-        },
-        instance_size: size_of::<T>(),
-        alignment: align_of::<T>(),
-        compute_size: None,
-        compute_alignment: None,
-    };
-
-    pub fn gc_info() -> &'static HeapTypeInfo {
-        gc_only_type_info(Self::VT)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,11 +772,6 @@ mod tests {
         unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
     }
 
-    static DUMMY_INFO_VALUE: HeapTypeInfo =
-        HeapTypeInfo::new(VTableOf::<'static, Dummy>::VT, 0x1234);
-    static OTHER_DUMMY_INFO_VALUE: HeapTypeInfo =
-        HeapTypeInfo::new(VTableOf::<'static, Dummy>::VT, 0x5678);
-
     #[test]
     fn heap_header_layout_stays_single_word() {
         assert_eq!(size_of::<HeapObjectHeader>(), 8);
@@ -606,53 +779,87 @@ mod tests {
     }
 
     #[test]
-    fn heap_header_roundtrips_type_bits_and_info() {
-        let header = HeapObjectHeader::new(&DUMMY_INFO_VALUE);
+    fn heap_header_roundtrips_class_id() {
+        let class_id = ClassId::new(builtin_class_ids::CLASS).unwrap();
+        let header = HeapObjectHeader::from_class_id(class_id);
 
-        assert_eq!(header.type_bits(), 0x1234);
-        assert_eq!(header.info_id(), DUMMY_INFO_VALUE.id());
-        assert_eq!(
-            header.vtable().type_name,
-            VTableOf::<'static, Dummy>::VT.type_name
-        );
+        assert_eq!(header.class_id(), class_id);
         assert_eq!(header.hash_state(), HASH_UNHASHED);
         assert!(!header.finalization_state());
     }
 
     #[test]
-    fn heap_type_info_ids_are_stable_and_distinct() {
-        let first = DUMMY_INFO_VALUE.id();
-        let second = DUMMY_INFO_VALUE.id();
-        let other = OTHER_DUMMY_INFO_VALUE.id();
+    fn class_header_word_contains_only_the_class_id() {
+        let class_id = ClassId::new(0x90ab).unwrap();
+        let header_word = class_header_word(class_id);
+        let header = HeapObjectHeader::from_word(header_word);
 
-        assert_eq!(first, second);
-        assert_ne!(first, 0);
-        assert_ne!(first, other);
+        assert_eq!(header_word, u64::from(class_id.bits()));
+        assert_eq!(header.class_id(), class_id);
     }
 
     #[test]
-    fn static_heap_type_info_id_is_registered_for_lookup() {
-        static STATIC_INFO_VALUE: HeapTypeInfo =
-            HeapTypeInfo::new_static(VTableOf::<'static, Dummy>::VT, 0x2468, 0x8000);
-
-        assert_eq!(STATIC_INFO_VALUE.id(), 0x8000);
-        assert!(std::ptr::eq(
-            HeapTypeInfo::lookup(0x8000),
-            &STATIC_INFO_VALUE
-        ));
+    fn class_id_is_nonzero_and_24_bit() {
+        assert!(ClassId::new(0).is_none());
+        assert_eq!(ClassId::new(1).unwrap().bits(), 1);
+        assert_eq!(ClassId::new(MAX_CLASS_ID).unwrap().bits(), MAX_CLASS_ID);
+        assert!(ClassId::new(MAX_CLASS_ID + 1).is_none());
+        assert_eq!(ClassIdBits::NEXT_BIT, 24);
     }
 
     #[test]
-    fn heap_type_info_registration_is_thread_safe() {
-        static CONCURRENT_INFO_VALUE: HeapTypeInfo =
-            HeapTypeInfo::new(VTableOf::<'static, Dummy>::VT, 0x9abc);
+    fn mmtk_side_bits_do_not_overlap_class_id_field() {
+        assert!(ClassIdBits::NEXT_BIT <= HashBits::shift());
+        assert!(ClassIdBits::NEXT_BIT <= FinalizationState::shift());
+        const {
+            assert!(ClassIdBits::NEXT_BIT <= LastBitfield::NEXT_BIT);
+        }
+    }
 
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                scope.spawn(|| {
-                    assert_eq!(CONCURRENT_INFO_VALUE.id(), CONCURRENT_INFO_VALUE.id());
-                });
-            }
-        });
+    #[test]
+    fn object_copy_preserves_class_id() {
+        let bytes = size_of::<HeapObjectHeader>() + size_of::<u64>();
+        let mut from = [0_u64; 2];
+        let mut to = [0_u64; 2];
+        let class_id = ClassId::new(builtin_class_ids::CLASS).unwrap();
+
+        unsafe {
+            from.as_mut_ptr()
+                .cast::<HeapObjectHeader>()
+                .write(HeapObjectHeader::from_class_id(class_id));
+            from.as_mut_ptr()
+                .cast::<u8>()
+                .add(size_of::<HeapObjectHeader>())
+                .cast::<u64>()
+                .write(0xfeed_face_cafe_beef);
+        }
+
+        let from_obj = GCObject::from_address(Address::from_ptr(unsafe {
+            from.as_ptr().cast::<u8>().add(OBJECT_REF_OFFSET as usize)
+        }));
+        let to_start = Address::from_ptr(to.as_mut_ptr());
+        let to_obj = ObjectModel::move_object(from_obj, MoveTarget::ToAddress(to_start), bytes);
+
+        assert_eq!(to_obj.header().class_id(), class_id);
+    }
+
+    #[test]
+    fn gc_only_class_info_publishes_class_only_header_and_hooks() {
+        let hooks = AllocationHooksOf::<'static, Dummy>::HOOKS;
+        let info = gc_only_class_info(hooks);
+        let same = gc_only_class_info(hooks);
+        let header = HeapObjectHeader::from_word(class_header_word(info.class_id()));
+        let registered_hooks = gc_only_hooks_for_class_id(info.class_id()).unwrap();
+
+        assert!(std::ptr::eq(info, same));
+        assert_eq!(header.class_id(), info.class_id());
+        assert_eq!(
+            registered_hooks.type_name,
+            AllocationHooksOf::<'static, Dummy>::HOOKS.type_name
+        );
+        assert_eq!(registered_hooks.instance_size, size_of::<Dummy>());
+        assert_eq!(registered_hooks.alignment, align_of::<Dummy>());
+        assert!(gc_only_hooks_for_class_id(info.class_id()).is_some());
+        assert!(info.class_id().bits() >= MIN_GC_ONLY_CLASS_ID);
     }
 }

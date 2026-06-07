@@ -82,6 +82,7 @@ fn native_closure_keeps_native_proc_in_first_free_slot() {
 
         assert_eq!(closure.code, closure.code_block.entrypoint);
         assert!(closure.code_block.metadata.get().is_null());
+        assert!(closure.is_foreign());
         assert!(closure[0].get().is::<NativeProc>());
         assert_eq!(closure[1].get(), Value::new(true));
     });
@@ -224,5 +225,28 @@ fn relocatable_code_block_preserves_original_code_relocations_and_bitmap() {
         assert_eq!(code_block.code(), code);
         assert_eq!(code_block.relocations(), relocations);
         assert_eq!(code_block.loaded_data_value_bitmap(), bitmap);
+    });
+}
+
+#[test]
+fn code_blocks_allocate_with_class_only_headers() {
+    with_ctx(|ctx| {
+        let unlinked = RelocatableCodeBlock::new(ctx, &[0xc3], 0, &[], &[]);
+        assert_eq!(
+            unlinked.as_gcobj().header().class_id(),
+            ClassId::new(builtin_class_ids::RELOCATABLE_CODE_BLOCK).unwrap()
+        );
+
+        let code_block = CodeBlock::new_native(
+            ctx,
+            Address::from_ptr(test_native_proc as *const ()),
+            CodeArity::new(0),
+            false,
+            Value::new(false),
+        );
+        assert_eq!(
+            code_block.as_gcobj().header().class_id(),
+            ClassId::new(builtin_class_ids::CODE_BLOCK).unwrap()
+        );
     });
 }

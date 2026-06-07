@@ -8,7 +8,7 @@ use crate::rsgc::{
     cell::Lock,
     collection::Visitor,
     mmtk::AllocationSemantics,
-    object::{HeapTypeInfo, VTable, builtin_type_ids},
+    object::{AllocationHooks, ClassId, builtin_class_ids, class_header_word},
 };
 use std::ops::{Deref, DerefMut, Index};
 use std::{mem::offset_of, ops::IndexMut};
@@ -31,19 +31,15 @@ const _: () = {
     assert!(offset_of!(Vector<'static>, length) == 0);
 };
 
-static MUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
-    Vector::VT,
-    TypeCode16::MUTABLE_VECTOR.bits(),
-    builtin_type_ids::MUTABLE_VECTOR,
-);
-pub static MUTABLE_VECTOR_INFO: &HeapTypeInfo = &MUTABLE_VECTOR_INFO_VALUE;
+fn vector_header_word(immutable: bool) -> u64 {
+    let class_id = if immutable {
+        builtin_class_ids::IMMUTABLE_VECTOR
+    } else {
+        builtin_class_ids::MUTABLE_VECTOR
+    };
 
-static IMMUTABLE_VECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
-    Vector::VT,
-    TypeCode16::IMMUTABLE_VECTOR.bits(),
-    builtin_type_ids::IMMUTABLE_VECTOR,
-);
-pub static IMMUTABLE_VECTOR_INFO: &HeapTypeInfo = &IMMUTABLE_VECTOR_INFO_VALUE;
+    class_header_word(ClassId::new(class_id).unwrap())
+}
 
 #[inline(never)]
 extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
@@ -65,7 +61,7 @@ extern "C" fn compute_vector_size(vec: GCObject) -> usize {
 impl<'gc> Vector<'gc> {
     pub const OFFSET_OF_DATA: usize = offset_of!(Vector, data);
 
-    pub const VT: &'static VTable = &VTable {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
         type_name: "Vector",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
@@ -84,7 +80,7 @@ impl<'gc> Vector<'gc> {
     }
 
     pub fn is_immutable(&self) -> bool {
-        payload_type_bits(self) == TypeCode16::IMMUTABLE_VECTOR.bits()
+        payload_class_id(self).bits() == builtin_class_ids::IMMUTABLE_VECTOR
     }
 
     /// Allocates a vector with all slots initialized to `fill`.
@@ -93,17 +89,11 @@ impl<'gc> Vector<'gc> {
         length: usize,
         fill: Value<'gc>,
     ) -> Gc<'gc, Self> {
-        let info = if IMMUTABLE {
-            IMMUTABLE_VECTOR_INFO
-        } else {
-            MUTABLE_VECTOR_INFO
-        };
-
         unsafe {
-            let alloc = mc.raw_allocate_with_info(
+            let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>() + size_of::<Value>() * length,
                 align_of::<Self>(),
-                info,
+                vector_header_word(IMMUTABLE),
                 AllocationSemantics::Default,
             );
 
@@ -241,19 +231,19 @@ pub struct ByteVector {
     pub(crate) contents: Address,
 }
 
-static MUTABLE_BYTEVECTOR_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(ByteVector::VT, TypeCode16::MUTABLE_BYTEVECTOR.bits());
-pub static MUTABLE_BYTEVECTOR_INFO: &HeapTypeInfo = &MUTABLE_BYTEVECTOR_INFO_VALUE;
+fn bytevector_header_word(immutable: bool) -> u64 {
+    let class_id = if immutable {
+        builtin_class_ids::IMMUTABLE_BYTEVECTOR
+    } else {
+        builtin_class_ids::MUTABLE_BYTEVECTOR
+    };
 
-static IMMUTABLE_BYTEVECTOR_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(ByteVector::VT, TypeCode16::IMMUTABLE_BYTEVECTOR.bits());
-pub static IMMUTABLE_BYTEVECTOR_INFO: &HeapTypeInfo = &IMMUTABLE_BYTEVECTOR_INFO_VALUE;
+    class_header_word(ClassId::new(class_id).unwrap())
+}
 
-static MAPPED_BYTEVECTOR_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    ByteVector::MAPPING_VT,
-    TypeCode16::MUTABLE_BYTEVECTOR.bits(),
-);
-pub static MAPPED_BYTEVECTOR_INFO: &HeapTypeInfo = &MAPPED_BYTEVECTOR_INFO_VALUE;
+fn mapped_bytevector_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::MAPPED_BYTEVECTOR).unwrap())
+}
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
@@ -285,7 +275,7 @@ extern "C" fn compute_mapped_byte_vector_size(_: GCObject) -> usize {
 }
 
 impl ByteVector {
-    pub const VT: &'static VTable = &VTable {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
         type_name: "ByteVector",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
@@ -295,7 +285,7 @@ impl ByteVector {
         weak_proc: process_weak_byte_vector,
     };
 
-    pub const MAPPING_VT: &'static VTable = &VTable {
+    pub const MAPPING_HOOKS: AllocationHooks = AllocationHooks {
         type_name: "MappedByteVector",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
@@ -310,7 +300,7 @@ impl ByteVector {
     }
 
     pub fn is_mapping(&self) -> bool {
-        payload_info_id(self) == MAPPED_BYTEVECTOR_INFO.id()
+        payload_class_id(self).bits() == builtin_class_ids::MAPPED_BYTEVECTOR
     }
 
     pub fn len(&self) -> usize {
@@ -322,7 +312,7 @@ impl ByteVector {
     }
 
     pub fn is_immutable(&self) -> bool {
-        payload_type_bits(self) == TypeCode16::IMMUTABLE_BYTEVECTOR.bits()
+        payload_class_id(self).bits() == builtin_class_ids::IMMUTABLE_BYTEVECTOR
     }
 
     /// Allocates an owned bytevector.
@@ -331,12 +321,6 @@ impl ByteVector {
         length: usize,
         movable: bool,
     ) -> Gc<'gc, Self> {
-        let info = if IMMUTABLE {
-            IMMUTABLE_BYTEVECTOR_INFO
-        } else {
-            MUTABLE_BYTEVECTOR_INFO
-        };
-
         let semantics = if movable {
             AllocationSemantics::Default
         } else {
@@ -344,10 +328,10 @@ impl ByteVector {
         };
 
         unsafe {
-            let alloc = mc.raw_allocate_with_info(
+            let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>() + size_of::<u8>() * length,
                 align_of::<Self>(),
-                info,
+                bytevector_header_word(IMMUTABLE),
                 semantics,
             );
 
@@ -364,10 +348,10 @@ impl ByteVector {
     /// memory from FFI calls or memory-mapped files.
     pub fn new_mapping<'gc>(mc: Mutation<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
         unsafe {
-            let alloc = mc.raw_allocate_with_info(
+            let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>(),
                 align_of::<Self>(),
-                MAPPED_BYTEVECTOR_INFO,
+                mapped_bytevector_header_word(),
                 AllocationSemantics::Default,
             );
 
@@ -496,20 +480,20 @@ impl Index<core::ops::RangeFull> for ByteVector {
     }
 }
 
-unsafe impl<'gc> Tagged for Vector<'gc> {
-    const ONLY_TC16: bool = false;
-    const TC16: &'static [TypeCode16] = &[TypeCode16::IMMUTABLE_VECTOR, TypeCode16::MUTABLE_VECTOR];
-    const TC8: TypeCode8 = TypeCode8::VECTOR;
+unsafe impl<'gc> ClassTagged for Vector<'gc> {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::MUTABLE_VECTOR,
+        crate::rsgc::object::builtin_class_ids::IMMUTABLE_VECTOR,
+    ];
     const TYPE_NAME: &'static str = "vector";
 }
 
-unsafe impl Tagged for ByteVector {
-    const ONLY_TC16: bool = false;
-    const TC16: &'static [TypeCode16] = &[
-        TypeCode16::IMMUTABLE_BYTEVECTOR,
-        TypeCode16::MUTABLE_BYTEVECTOR,
+unsafe impl ClassTagged for ByteVector {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::MUTABLE_BYTEVECTOR,
+        crate::rsgc::object::builtin_class_ids::IMMUTABLE_BYTEVECTOR,
+        crate::rsgc::object::builtin_class_ids::MAPPED_BYTEVECTOR,
     ];
-    const TC8: TypeCode8 = TypeCode8::BYTEVECTOR;
     const TYPE_NAME: &'static str = "bytevector";
 }
 
@@ -524,12 +508,9 @@ const _: () = {
     assert!(offset_of!(Tuple<'static>, length) == 0);
 };
 
-static TUPLE_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
-    Tuple::VT,
-    TypeCode8::TUPLE.bits() as u16,
-    builtin_type_ids::TUPLE,
-);
-pub static TUPLE_INFO: &HeapTypeInfo = &TUPLE_INFO_VALUE;
+fn tuple_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::TUPLE).unwrap())
+}
 
 extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
     unsafe {
@@ -543,23 +524,22 @@ extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
 
 extern "C" fn process_weak_tuple(_: GCObject, _: &mut WeakProcessor) {}
 
-unsafe impl<'gc> Tagged for Tuple<'gc> {
-    const TC8: TypeCode8 = TypeCode8::TUPLE;
+extern "C" fn compute_tuple_size(tuple: GCObject) -> usize {
+    unsafe { tuple.to_address().as_ref::<Tuple<'static>>().len() * size_of::<Value>() }
+}
+
+unsafe impl<'gc> ClassTagged for Tuple<'gc> {
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::TUPLE];
     const TYPE_NAME: &'static str = "tuple";
 }
 
 impl<'gc> Tuple<'gc> {
-    pub const VT: &'static VTable = &VTable {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
         type_name: "Tuple",
         instance_size: size_of::<Self>(),
         alignment: align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some({
-            extern "C" fn sz(tuple: GCObject) -> usize {
-                unsafe { tuple.to_address().as_ref::<Tuple<'static>>().len() * size_of::<Value>() }
-            }
-            sz
-        }),
+        compute_size: Some(compute_tuple_size),
         trace: trace_tuple,
         weak_proc: process_weak_tuple,
     };
@@ -575,10 +555,10 @@ impl<'gc> Tuple<'gc> {
     /// Allocates a tuple with all slots initialized to `init`.
     pub fn new(mc: Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
         unsafe {
-            let alloc = mc.raw_allocate_with_info(
+            let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>() + size_of::<Value>() * length,
                 align_of::<Self>(),
-                TUPLE_INFO,
+                tuple_header_word(),
                 AllocationSemantics::Default,
             );
 
@@ -676,3 +656,24 @@ impl<'gc> Index<usize> for Tuple<'gc> {
 
 unsafe impl<'gc> AsRefWrite<[Value<'gc>]> for Tuple<'gc> {}
 unsafe impl<'gc> IndexWrite<usize> for Tuple<'gc> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn bytevector_mapping_uses_class_id() {
+        Scheme::new_uninit().enter(|ctx| {
+            let owned = ByteVector::new::<false>(*ctx, 0, false);
+            let mapped = ByteVector::new_mapping(*ctx, Address::ZERO, 0);
+
+            assert!(!owned.is_mapping());
+            assert!(mapped.is_mapping());
+            assert_eq!(
+                payload_class_id(&*mapped).bits(),
+                builtin_class_ids::MAPPED_BYTEVECTOR
+            );
+        });
+    }
+}

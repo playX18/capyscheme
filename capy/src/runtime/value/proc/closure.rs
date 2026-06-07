@@ -12,27 +12,15 @@ pub struct Closure<'gc> {
     pub free: [Lock<Value<'gc>>; 0],
 }
 
-static CLOSURE_PROC_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
-    CLOSURE_VTABLE,
-    TypeCode16::CLOSURE_PROC.bits(),
-    builtin_type_ids::CLOSURE_PROC,
-);
-pub static CLOSURE_PROC_INFO: &HeapTypeInfo = &CLOSURE_PROC_INFO_VALUE;
+fn closure_header_word(is_cont: bool) -> u64 {
+    let class_id = if is_cont {
+        builtin_class_ids::CLOSURE_K
+    } else {
+        builtin_class_ids::CLOSURE_PROC
+    };
 
-static CLOSURE_K_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new_static(
-    CLOSURE_VTABLE,
-    TypeCode16::CLOSURE_K.bits(),
-    builtin_type_ids::CLOSURE_K,
-);
-pub static CLOSURE_K_INFO: &HeapTypeInfo = &CLOSURE_K_INFO_VALUE;
-
-static CLOSURE_NATIVE_PROC_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_PROC.bits());
-pub static CLOSURE_NATIVE_PROC_INFO: &HeapTypeInfo = &CLOSURE_NATIVE_PROC_INFO_VALUE;
-
-static CLOSURE_NATIVE_K_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(CLOSURE_VTABLE, TypeCode16::CLOSURE_K.bits());
-pub static CLOSURE_NATIVE_K_INFO: &HeapTypeInfo = &CLOSURE_NATIVE_K_INFO_VALUE;
+    class_header_word(ClassId::new(class_id).unwrap())
+}
 
 impl<'gc> Index<usize> for Closure<'gc> {
     type Output = Lock<Value<'gc>>;
@@ -55,7 +43,7 @@ unsafe impl<'gc> IndexWrite<usize> for Closure<'gc> {}
 
 extern "C" fn trace_closure(obj: GCObject, visitor: &mut Visitor) {
     // SAFETY: `obj` is guaranteed by the GC to point to a valid `Closure` allocated with
-    // `CLOSURE_VTABLE`. We iterate exactly `nfree` trailing elements.
+    // a closure class header. We iterate exactly `nfree` trailing elements.
     unsafe {
         let closure = obj.to_address().as_mut_ref::<Closure>();
         visitor.trace(&mut closure.code_block);
@@ -71,14 +59,14 @@ extern "C" fn process_weak(_obj: GCObject, _weak_processor: &mut crate::rsgc::We
 }
 
 extern "C" fn compute_closure_size(obj: GCObject) -> usize {
-    // SAFETY: `obj` is a valid `Closure` allocated by the GC with `CLOSURE_VTABLE`.
+    // SAFETY: `obj` is a valid `Closure` allocated by the GC with a closure class header.
     unsafe {
         let closure = obj.to_address().as_ref::<Closure>();
         size_of::<Value>() * closure.nfree
     }
 }
 
-pub static CLOSURE_VTABLE: &VTable = &VTable {
+pub static CLOSURE_HOOKS: AllocationHooks = AllocationHooks {
     alignment: align_of::<Closure>(),
     compute_alignment: None,
     instance_size: size_of::<Closure>(),
@@ -117,20 +105,9 @@ impl<'gc> Closure<'gc> {
         code_block: Gc<'gc, CodeBlock<'gc>>,
         free: &[Value<'gc>],
         is_cont: bool,
-        is_native: bool,
+        _is_native: bool,
     ) -> Gc<'gc, Self> {
         let meta = code_block.metadata.get();
-        let info = if is_native {
-            if is_cont {
-                CLOSURE_NATIVE_K_INFO
-            } else {
-                CLOSURE_NATIVE_PROC_INFO
-            }
-        } else if is_cont {
-            CLOSURE_K_INFO
-        } else {
-            CLOSURE_PROC_INFO
-        };
 
         /*Gc::new(
             *ctx,
@@ -145,12 +122,13 @@ impl<'gc> Closure<'gc> {
 
         let size = size_of::<Self>() + std::mem::size_of_val(free);
         // SAFETY: We raw-allocate a `Closure` + trailing `free` array via the GC allocator.
-        // The VTable ensures proper tracing. We initialize all fields before returning the Gc handle.
+        // The closure class hooks ensure proper tracing. We initialize all fields before returning
+        // the Gc handle.
         unsafe {
-            let ptr = ctx.raw_allocate_with_info(
+            let ptr = ctx.raw_allocate_with_header_word(
                 size,
                 align_of::<Self>(),
-                info,
+                closure_header_word(is_cont),
                 AllocationSemantics::Default,
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
@@ -220,14 +198,11 @@ impl<'gc> Closure<'gc> {
     }
 }
 
-// SAFETY: Closure stores its type code in the heap header selected at construction time.
-unsafe impl<'gc> Tagged for Closure<'gc> {
-    const TC8: TypeCode8 = TypeCode8::CLOSURE;
-
-    const TC16: &'static [TypeCode16] = &[
-        TypeCode16::CLOSURE_PROC,
-        TypeCode16::CLOSURE_K,
-        TypeCode16::CLOSURE_FOREIGN,
+// SAFETY: Closure stores its class ID in the heap header selected at construction time.
+unsafe impl<'gc> ClassTagged for Closure<'gc> {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::CLOSURE_PROC,
+        crate::rsgc::object::builtin_class_ids::CLOSURE_K,
     ];
 
     const TYPE_NAME: &'static str = "procedure";
@@ -235,7 +210,7 @@ unsafe impl<'gc> Tagged for Closure<'gc> {
 
 impl<'gc> Closure<'gc> {
     pub fn is_continuation(&self) -> bool {
-        payload_type_bits(self) == TypeCode16::CLOSURE_K.bits()
+        payload_class_id(self).bits() == builtin_class_ids::CLOSURE_K
     }
 
     /// Check if this closure is a continuation produced by `call/cc`.
@@ -262,7 +237,6 @@ impl<'gc> Closure<'gc> {
     }
 
     pub fn is_foreign(&self) -> bool {
-        let info_id = payload_info_id(self);
-        info_id == CLOSURE_NATIVE_PROC_INFO.id() || info_id == CLOSURE_NATIVE_K_INFO.id()
+        self.code_block.kind == CodeBlockKind::NativeProc
     }
 }

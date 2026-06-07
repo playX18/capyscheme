@@ -11,7 +11,7 @@ use crate::rsgc::{
         AllocationSemantics,
         util::{Address, conversions::raw_align_up},
     },
-    object::{HeapTypeInfo, VTable, VTableOf},
+    object::{AllocationHooks, ClassId, builtin_class_ids, class_header_word},
 };
 use std::{
     cell::{Cell, UnsafeCell},
@@ -26,21 +26,21 @@ pub(crate) struct Stringbuf {
     data: [UnsafeCell<u8>; 0],
 }
 
-pub const STRINGBUF_TC16_WIDE: TypeCode16 = TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 256);
-pub const STRINGBUF_TC16_NARROW: TypeCode16 =
-    TypeCode16(TypeCode8::STRINGBUF.bits() as u16 + 2 * 256);
+fn stringbuf_header_word(is_wide: bool) -> u64 {
+    let class_id = if is_wide {
+        builtin_class_ids::STRINGBUF_WIDE
+    } else {
+        builtin_class_ids::STRINGBUF_NARROW
+    };
 
-static STRINGBUF_WIDE_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(Stringbuf::VT, STRINGBUF_TC16_WIDE.bits());
-pub static STRINGBUF_WIDE_INFO: &HeapTypeInfo = &STRINGBUF_WIDE_INFO_VALUE;
+    class_header_word(ClassId::new(class_id).unwrap())
+}
 
-static STRINGBUF_NARROW_INFO_VALUE: HeapTypeInfo =
-    HeapTypeInfo::new(Stringbuf::VT, STRINGBUF_TC16_NARROW.bits());
-pub static STRINGBUF_NARROW_INFO: &HeapTypeInfo = &STRINGBUF_NARROW_INFO_VALUE;
-
-unsafe impl Tagged for Stringbuf {
-    const TC16: &[TypeCode16] = &[STRINGBUF_TC16_WIDE, STRINGBUF_TC16_NARROW];
-    const TC8: TypeCode8 = TypeCode8::STRINGBUF;
+unsafe impl ClassTagged for Stringbuf {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::STRINGBUF_WIDE,
+        crate::rsgc::object::builtin_class_ids::STRINGBUF_NARROW,
+    ];
     const TYPE_NAME: &'static str = "#<stringbuf>";
 }
 
@@ -52,36 +52,33 @@ unsafe impl Trace for Stringbuf {
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
+extern "C" fn compute_stringbuf_size(sb: GCObject) -> usize {
+    unsafe {
+        let sb = sb.to_address().as_ref::<Stringbuf>();
+        let raw_size = sb.length
+            * if sb.is_wide() {
+                std::mem::size_of::<char>()
+            } else {
+                1
+            };
+
+        raw_align_up(raw_size, align_of::<Stringbuf>())
+    }
+}
+
+extern "C" fn trace_stringbuf(_: GCObject, _: &mut Visitor) {}
+
+extern "C" fn process_weak_stringbuf(_: GCObject, _: &mut crate::rsgc::WeakProcessor) {}
+
 impl Stringbuf {
-    pub const VT: &'static VTable = &VTable {
+    pub const HOOKS: AllocationHooks = AllocationHooks {
         type_name: "Stringbuf",
         instance_size: size_of::<Self>(),
         alignment: std::mem::align_of::<Self>(),
         compute_alignment: None,
-        compute_size: Some({
-            extern "C" fn sz(sb: GCObject) -> usize {
-                unsafe {
-                    let sb = sb.to_address().as_ref::<Stringbuf>();
-                    let raw_size = sb.length
-                        * if sb.is_wide() {
-                            std::mem::size_of::<char>()
-                        } else {
-                            1
-                        };
-
-                    raw_align_up(raw_size, align_of::<Stringbuf>())
-                }
-            }
-            sz
-        }),
-        trace: {
-            extern "C" fn notrace(_: GCObject, _: &mut Visitor) {}
-            notrace
-        },
-        weak_proc: {
-            extern "C" fn noweak(_: GCObject, _: &mut crate::rsgc::WeakProcessor) {}
-            noweak
-        },
+        compute_size: Some(compute_stringbuf_size),
+        trace: trace_stringbuf,
+        weak_proc: process_weak_stringbuf,
     };
 
     pub fn contents(&self) -> Address {
@@ -89,11 +86,11 @@ impl Stringbuf {
     }
 
     pub(crate) fn is_wide(&self) -> bool {
-        payload_type_bits(self) == STRINGBUF_TC16_WIDE.bits()
+        payload_class_id(self).bits() == builtin_class_ids::STRINGBUF_WIDE
     }
 
     pub(crate) fn is_narrow(&self) -> bool {
-        payload_type_bits(self) == STRINGBUF_TC16_NARROW.bits()
+        payload_class_id(self).bits() == builtin_class_ids::STRINGBUF_NARROW
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -125,16 +122,10 @@ impl Stringbuf {
             std::mem::size_of::<Self>() + length * if is_wide { size_of::<char>() } else { 1 };
         let bytesize_data = length * if is_wide { size_of::<char>() } else { 1 };
         unsafe {
-            let info = if is_wide {
-                STRINGBUF_WIDE_INFO
-            } else {
-                STRINGBUF_NARROW_INFO
-            };
-
-            let stringbuf_ = mc.raw_allocate_with_info(
+            let stringbuf_ = mc.raw_allocate_with_header_word(
                 size,
                 align_of::<Self>(),
-                info,
+                stringbuf_header_word(is_wide),
                 AllocationSemantics::Default,
             );
 
@@ -221,17 +212,15 @@ pub struct Str<'gc> {
     pub(crate) length: usize,
 }
 
-static STRING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Str<'static>>::VT,
-    TypeCode16::STRING.bits(),
-);
-pub static STRING_INFO: &HeapTypeInfo = &STRING_INFO_VALUE;
+fn string_header_word(read_only: bool) -> u64 {
+    let class_id = if read_only {
+        builtin_class_ids::IMMUTABLE_STRING
+    } else {
+        builtin_class_ids::STRING
+    };
 
-static IMMUTABLE_STRING_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Str<'static>>::VT,
-    TypeCode16::IMMUTABLE_STRING.bits(),
-);
-pub static IMMUTABLE_STRING_INFO: &HeapTypeInfo = &IMMUTABLE_STRING_INFO_VALUE;
+    class_header_word(ClassId::new(class_id).unwrap())
+}
 
 impl<'gc> Str<'gc> {
     #[doc(hidden)]
@@ -271,20 +260,14 @@ impl<'gc> Str<'gc> {
                 chars[i] = c;
             }
         }
-        let info = if read_only {
-            IMMUTABLE_STRING_INFO
-        } else {
-            STRING_INFO
-        };
-
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Self {
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
                 length: len,
             },
-            info,
+            string_header_word(read_only),
         )
     }
 
@@ -301,14 +284,14 @@ impl<'gc> Str<'gc> {
                 std::ptr::write_bytes(chars.as_mut_ptr(), c as u8, count);
             }
 
-            Gc::new_with_info(
+            Gc::new_with_header_word(
                 mc,
                 Self {
                     stringbuf: Lock::new(buf),
                     start: Cell::new(0),
                     length: count,
                 },
-                STRING_INFO,
+                string_header_word(false),
             )
         } else {
             let buf = if count == 0 {
@@ -321,14 +304,14 @@ impl<'gc> Str<'gc> {
                 *ch = c;
             }
 
-            Gc::new_with_info(
+            Gc::new_with_header_word(
                 mc,
                 Self {
                     stringbuf: Lock::new(buf),
                     start: Cell::new(0),
                     length: count,
                 },
-                STRING_INFO,
+                string_header_word(false),
             )
         }
     }
@@ -351,20 +334,14 @@ impl<'gc> Str<'gc> {
             chars[i] = c;
         }
 
-        let info = if read_only {
-            IMMUTABLE_STRING_INFO
-        } else {
-            STRING_INFO
-        };
-
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Self {
                 stringbuf: Lock::new(buf),
                 start: Cell::new(0),
                 length: str.len(),
             },
-            info,
+            string_header_word(read_only),
         )
     }
 
@@ -380,23 +357,19 @@ impl<'gc> Str<'gc> {
         let len = end - start;
         let start = this.start.get() + start;
 
-        let info = if read_only {
-            IMMUTABLE_STRING_INFO
-        } else {
-            STRING_INFO
-        };
+        let header_word = string_header_word(read_only);
 
         if len == 0 {
             Self::new(mc, "", read_only)
         } else if !force_copy && !buf.is_mutable() {
-            Gc::new_with_info(
+            Gc::new_with_header_word(
                 mc,
                 Self {
                     stringbuf: Lock::new(buf),
                     start: Cell::new(start),
                     length: len,
                 },
-                info,
+                header_word,
             )
         } else {
             let (_new_buf, new_str) = if buf.is_wide() {
@@ -406,14 +379,14 @@ impl<'gc> Str<'gc> {
                     .copy_from_slice(&buf.wide_chars()[start..start + len]);
                 (
                     new_buf,
-                    Gc::new_with_info(
+                    Gc::new_with_header_word(
                         mc,
                         Self {
                             stringbuf: Lock::new(new_buf),
                             start: Cell::new(0),
                             length: len,
                         },
-                        info,
+                        header_word,
                     ),
                 )
             } else {
@@ -423,14 +396,14 @@ impl<'gc> Str<'gc> {
                     .copy_from_slice(&buf.chars()[start..start + len]);
                 (
                     new_buf,
-                    Gc::new_with_info(
+                    Gc::new_with_header_word(
                         mc,
                         Self {
                             stringbuf: Lock::new(new_buf),
                             start: Cell::new(0),
                             length: len,
                         },
-                        info,
+                        header_word,
                     ),
                 )
             };
@@ -501,7 +474,7 @@ impl<'gc> Str<'gc> {
     }
 
     pub fn is_mutable(&self) -> bool {
-        payload_type_bits(self) == TypeCode16::STRING.bits()
+        payload_class_id(self).bits() == builtin_class_ids::STRING
     }
 
     pub fn data(&self) -> Address {
@@ -650,9 +623,11 @@ impl<'gc> Str<'gc> {
     }
 }
 
-unsafe impl<'gc> Tagged for Str<'gc> {
-    const TC16: &'static [TypeCode16] = &[TypeCode16::STRING, TypeCode16::IMMUTABLE_STRING];
-    const TC8: TypeCode8 = TypeCode8::STRING;
+unsafe impl<'gc> ClassTagged for Str<'gc> {
+    const CLASS_IDS: &'static [u32] = &[
+        crate::rsgc::object::builtin_class_ids::STRING,
+        crate::rsgc::object::builtin_class_ids::IMMUTABLE_STRING,
+    ];
     const TYPE_NAME: &'static str = "string";
 }
 
@@ -829,6 +804,16 @@ impl<'gc> Hash for Str<'gc> {
     }
 }
 
+fn symbol_header_word(interned: bool) -> u64 {
+    let class_id = if interned {
+        builtin_class_ids::SYMBOL
+    } else {
+        builtin_class_ids::UNINTERNED_SYMBOL
+    };
+
+    class_header_word(ClassId::new(class_id).unwrap())
+}
+
 impl<'gc> Symbol<'gc> {
     pub(super) fn new<const INTERNED: bool>(
         mc: Mutation<'gc>,
@@ -844,20 +829,14 @@ impl<'gc> Symbol<'gc> {
             buf = name.stringbuf.get();
         }
 
-        let info = if INTERNED {
-            SYMBOL_INTERNED_INFO
-        } else {
-            SYMBOL_UNINTERNED_INFO
-        };
-
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Self {
                 stringbuf: buf,
                 hash: Cell::new(hash),
                 prefix_offset: prefix_offset.unwrap_or(0),
             },
-            info,
+            symbol_header_word(INTERNED),
         )
     }
 
@@ -896,14 +875,14 @@ impl<'gc> Symbol<'gc> {
     pub fn substring(&self, mc: Mutation<'gc>, start: usize, end: usize) -> Gc<'gc, Str<'gc>> {
         let buf = self.stringbuf;
 
-        Gc::new_with_info(
+        Gc::new_with_header_word(
             mc,
             Str {
                 stringbuf: Lock::new(buf),
                 start: Cell::new(start),
                 length: end - start,
             },
-            IMMUTABLE_STRING_INFO,
+            string_header_word(true),
         )
     }
 
@@ -931,5 +910,31 @@ impl<'gc> Symbol<'gc> {
 impl<'gc> Hash for Symbol<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         state.write_u64(self.hash.get());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Scheme;
+
+    #[test]
+    fn string_buffers_allocate_with_class_only_headers() {
+        Scheme::new_uninit().enter(|ctx| {
+            let narrow = Stringbuf::new(*ctx, 3, false);
+            let wide = Stringbuf::new(*ctx, 3, true);
+
+            let cases = [
+                (narrow, builtin_class_ids::STRINGBUF_NARROW),
+                (wide, builtin_class_ids::STRINGBUF_WIDE),
+            ];
+
+            for (buffer, raw_class_id) in cases {
+                assert_eq!(
+                    buffer.as_gcobj().header().class_id(),
+                    ClassId::new(raw_class_id).unwrap()
+                );
+            }
+        });
     }
 }

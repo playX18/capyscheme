@@ -18,10 +18,10 @@ use std::{
 
 use crate::rsgc::{Gc, Trace, collection::Visitor};
 
-use crate::rsgc::object::{HeapTypeInfo, VTableOf};
+use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::runtime::{Context, value::ConversionError};
 
-use crate::runtime::value::{FromValue, IntoValue, Tagged, TypeCode8, TypeCode16, Value};
+use crate::runtime::value::{ClassTagged, FromValue, IntoValue, Value};
 
 const IEXPT_2N53: i64 = 0x20000000000000;
 const IEXPT_2N52: i64 = 0x10000000000000;
@@ -35,23 +35,19 @@ pub struct Complex<'gc> {
     pub imag: Number<'gc>,
 }
 
-static COMPLEX_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Complex<'static>>::VT,
-    TypeCode16::COMPLEX.bits(),
-);
-pub static COMPLEX_INFO: &HeapTypeInfo = &COMPLEX_INFO_VALUE;
+fn complex_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::COMPLEX).unwrap())
+}
 
 impl<'gc> Complex<'gc> {
     /// Allocates a complex number from real and imaginary parts.
     pub fn new(ctx: Context<'gc>, real: Number<'gc>, imag: Number<'gc>) -> Gc<'gc, Self> {
         let complex = Complex { real, imag };
-        Gc::new_with_info(*ctx, complex, COMPLEX_INFO)
+        Gc::new_with_header_word(*ctx, complex, complex_header_word())
     }
 }
-unsafe impl<'gc> Tagged for Complex<'gc> {
-    const TC8: TypeCode8 = TypeCode8::NUMBER;
-    const TC16: &'static [TypeCode16] = &[TypeCode16::COMPLEX];
-    const ONLY_TC16: bool = true;
+unsafe impl<'gc> ClassTagged for Complex<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::COMPLEX];
     const TYPE_NAME: &'static str = "complex";
 }
 
@@ -64,11 +60,9 @@ pub struct Rational<'gc> {
     pub denominator: Number<'gc>,
 }
 
-static RATIONAL_INFO_VALUE: HeapTypeInfo = HeapTypeInfo::new(
-    VTableOf::<'static, Rational<'static>>::VT,
-    TypeCode16::RATIONAL.bits(),
-);
-pub static RATIONAL_INFO: &HeapTypeInfo = &RATIONAL_INFO_VALUE;
+fn rational_header_word() -> u64 {
+    class_header_word(ClassId::new(builtin_class_ids::RATIONAL).unwrap())
+}
 
 impl<'gc> Rational<'gc> {
     /// Allocates a rational number from numerator and denominator.
@@ -81,14 +75,12 @@ impl<'gc> Rational<'gc> {
             numerator,
             denominator,
         };
-        Gc::new_with_info(*ctx, rational, RATIONAL_INFO)
+        Gc::new_with_header_word(*ctx, rational, rational_header_word())
     }
 }
 
-unsafe impl<'gc> Tagged for Rational<'gc> {
-    const TC8: TypeCode8 = TypeCode8::NUMBER;
-    const TC16: &'static [TypeCode16] = &[TypeCode16::RATIONAL];
-    const ONLY_TC16: bool = true;
+unsafe impl<'gc> ClassTagged for Rational<'gc> {
+    const CLASS_IDS: &'static [u32] = &[builtin_class_ids::RATIONAL];
     const TYPE_NAME: &'static str = "rational";
 }
 

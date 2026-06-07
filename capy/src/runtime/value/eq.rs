@@ -10,6 +10,10 @@ impl<'gc> Value<'gc> {
             return true;
         }
 
+        if let Some(result) = crate::runtime::class::compare_primitive_values(self, other) {
+            return result;
+        }
+
         match (self.number(), other.number()) {
             (Some(a), Some(b)) => {
                 if a.is_exact() && b.is_exact() {
@@ -109,8 +113,8 @@ impl<'gc> Value<'gc> {
         if self.is::<Boxed>() && other.is::<Boxed>() {
             return self
                 .downcast::<Boxed>()
-                .val
-                .r5rs_equal(other.downcast::<Boxed>().val);
+                .get()
+                .r5rs_equal(other.downcast::<Boxed>().get());
         }
 
         if self.is::<Syntax>() && other.is::<Syntax>() {

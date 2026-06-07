@@ -126,14 +126,13 @@ Tree IR is converted to CPS IR using higher-order transform described in [How to
             let x = #%car (x) in
             continue ret(x)
         } in
-        letk (h) check_pair_typecode () =  {
-            let tc8 = #% %typecode8 (h, x) in
-            let pair_typecode = #% u8= (h, tc8, Value::new(TypeCode8::PAIR.bits())) in
-            if pair_typecode => k | not_pair
+        letk (h) check_pair_class () =  {
+            let pair_class = #% %class-id? (h, x, Value::new(PAIR_CLASS_ID)) in
+            if pair_class => k | not_pair
         } in
 
         let is_immediate = #% immediate? (h, x) @ src;
-        if is_immediate => not_pair | check_pair_typecode
+        if is_immediate => not_pair | check_pair_class
 ```
 
 While it does again produce primcall term in CPS form, primcall of `car` in CPS IR directly expands to memory load at specific offset.

@@ -153,7 +153,7 @@ pub enum Primitive {
     S64ToU64,
     S64ToU32,
     S64ToU16,
-    Typecode8,
+    ReservedPrimitive,
     Refptr,
     Ref8,
     Ref16,
@@ -274,6 +274,7 @@ pub enum Primitive {
     Winders,
     MakeSyntax,
     DefaultRetk,
+    ClassIdP,
 }
 
 impl Primitive {
@@ -427,7 +428,7 @@ impl Primitive {
             Primitive::S64ToU64 => "s64->u64",
             Primitive::S64ToU32 => "s64->u32",
             Primitive::S64ToU16 => "s64->u16",
-            Primitive::Typecode8 => "%typecode8",
+            Primitive::ReservedPrimitive => "#%removed-primitive",
             Primitive::Refptr => "%refptr",
             Primitive::Ref8 => "%ref8",
             Primitive::Ref16 => "%ref16",
@@ -548,6 +549,7 @@ impl Primitive {
             Primitive::Winders => "$winders",
             Primitive::MakeSyntax => "make-syntax",
             Primitive::DefaultRetk => "#%default-retk",
+            Primitive::ClassIdP => "%class-id?",
         }
     }
 
@@ -701,7 +703,6 @@ impl Primitive {
             "s64->u64" => Some(Primitive::S64ToU64),
             "s64->u32" => Some(Primitive::S64ToU32),
             "s64->u16" => Some(Primitive::S64ToU16),
-            "%typecode8" => Some(Primitive::Typecode8),
             "%refptr" => Some(Primitive::Refptr),
             "%ref8" => Some(Primitive::Ref8),
             "%ref16" => Some(Primitive::Ref16),
@@ -822,6 +823,7 @@ impl Primitive {
             "$winders" => Some(Primitive::Winders),
             "make-syntax" => Some(Primitive::MakeSyntax),
             "#%default-retk" => Some(Primitive::DefaultRetk),
+            "%class-id?" => Some(Primitive::ClassIdP),
             _ => None,
         }
     }

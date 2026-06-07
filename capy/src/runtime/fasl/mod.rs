@@ -19,7 +19,7 @@ pub mod reloc;
 pub mod writer;
 
 pub use reader::FaslReader;
-pub use writer::FaslWriter;
+pub use writer::{FaslCompression, FaslImage, FaslWriter};
 
 pub const FASL_EOF: u8 = 0;
 pub const FASL_TAG_LOOKUP: u8 = 1;
@@ -49,16 +49,11 @@ pub const FASL_TAG_ENTRY: u8 = 24;
 pub const FASL_TAG_GRAPH: u8 = 25;
 pub const FASL_TAG_GRAPH_DEF: u8 = 26;
 pub const FASL_TAG_GRAPH_REF: u8 = 27;
-pub const FASL_TAG_GZIP: u8 = 28;
-pub const FASL_TAG_LZ4: u8 = 29;
-pub const FASL_TAG_BEGIN: u8 = 30;
-pub const FASL_TAG_GROUP: u8 = 31;
-pub const FASL_TAG_UNCOMPRESSED: u8 = 32;
-pub const FASL_TAG_UNLINKED_CODEBLOCK: u8 = 33;
+pub const FASL_TAG_BEGIN: u8 = 28;
+pub const FASL_TAG_UNLINKED_CODEBLOCK: u8 = 29;
 
-pub const FASL_SITUATION_VISIT: u8 = 0;
-pub const FASL_SITUATION_REVISIT: u8 = 1;
-pub const FASL_SITUATION_VISIT_REVISIT: u8 = 2;
+pub const FASL_COMPRESSION_NONE: u8 = 0;
+pub const FASL_COMPRESSION_GZIP: u8 = 1;
 
 pub const FASL_RELOC_ASMKIT: u8 = 0;
 pub const FASL_RELOC_ABS_WORD: u8 = 1;
@@ -78,7 +73,7 @@ pub const FASL_TAG_REF_INIT: u8 = 0xFE;
 /// FASL file magic bytes.
 pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
 /// Current FASL file format version.
-pub const FASL_VERSION: u32 = 1;
+pub const FASL_VERSION: u32 = 4;
 
 pub struct CodeSpec<'a, 'gc> {
     pub bytes: &'a [u8],
@@ -105,22 +100,6 @@ impl<'a, 'gc> CodeSpec<'a, 'gc> {
             is_cont,
             metadata,
             relocations,
-        }
-    }
-}
-
-pub struct ClosureSpec<'a, 'gc> {
-    pub code: CodeSpec<'a, 'gc>,
-    pub free: &'a [crate::runtime::value::Value<'gc>],
-    pub is_cont: bool,
-}
-
-impl<'a, 'gc> ClosureSpec<'a, 'gc> {
-    pub fn new(code: CodeSpec<'a, 'gc>, free: &'a [crate::runtime::value::Value<'gc>]) -> Self {
-        Self {
-            is_cont: code.is_cont,
-            code,
-            free,
         }
     }
 }
