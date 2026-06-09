@@ -21,10 +21,7 @@ use crate::rsgc::{
     weak::Weak,
 };
 
-use crate::runtime::{
-    value::Symbol,
-    vmthread::{VM_THREAD, VMThreadTask},
-};
+use crate::runtime::value::Symbol;
 
 use super::{ClassTagged, Value};
 #[repr(C, align(8))]
@@ -131,7 +128,11 @@ unsafe impl<'gc> Trace for WeakSet<'gc> {
         visitor.trace(&mut inner.entries);
     }
 
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        let inner = self.inner.get_mut();
+        let entries = inner.entries.get();
+        entries.as_gcobj().process_weak_refs(weak_processor);
+    }
 }
 
 const HASHSET_SIZES: &[usize] = &[
@@ -639,6 +640,10 @@ unsafe impl<'gc> Trace for AllWeakSets<'gc> {
                 return false;
             }
 
+            if let Some(weak_set) = unsafe { weak_set.upgrade_unchecked() } {
+                weak_set.as_gcobj().process_weak_refs(weak_processor);
+            }
+
             true
         });
     }
@@ -652,9 +657,7 @@ struct WeakSetNotify;
 impl FinalizationNotify for WeakSetNotify {
     fn notify_in_processing(&self) {}
 
-    fn schedule(&self) {
-        VM_THREAD.schedule_task(VMThreadTask::VacuumWeakSets);
-    }
+    fn schedule(&self) {}
 }
 
 pub(crate) fn vacuum_weak_sets<'gc>(mc: Mutation<'gc>) {

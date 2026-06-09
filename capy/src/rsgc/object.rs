@@ -10,7 +10,10 @@ use std::{
     collections::HashMap,
     marker::PhantomData,
     num::NonZeroU32,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 /// Offset from allocation to the actual object
@@ -23,7 +26,6 @@ const HASH_UNHASHED: u8 = 0;
 const HASH_HASHED: u8 = 1;
 const HASH_HASHED_AND_MOVED: u8 = 2;
 pub const MAX_CLASS_ID: u32 = (1 << 24) - 1;
-pub const MIN_GC_ONLY_CLASS_ID: u32 = 1 << 23;
 
 pub mod builtin_class_ids {
     pub const PAIR: u32 = 1;
@@ -98,6 +100,8 @@ pub mod builtin_class_ids {
     pub const MAX: u32 = SLOT_ACCESSOR;
 }
 
+static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);
+
 #[derive(Clone, Copy)]
 pub struct AllocationHooks {
     pub trace: extern "C" fn(GCObject, &mut Visitor),
@@ -159,9 +163,15 @@ impl<'gc, T: 'gc + Trace> AllocationHooksOf<'gc, T> {
     };
 
     pub(crate) fn class_header_word(ctx: Context<'gc>) -> u64 {
-        gc_only_class_header_word_with_context(ctx, Self::HOOKS)
+        type_class_header_word::<T>(ctx, Self::HOOKS)
     }
 }
+
+type ClassIdBits = BitField<u64, u32, 0, 24, false>;
+type HashBits = BitField<u64, u8, 57, 2, false>;
+type FinalizationState = BitField<u64, bool, { HashBits::NEXT_BIT }, 1, false>;
+
+type LastBitfield = FinalizationState;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct AllocationHookKey {
@@ -172,18 +182,6 @@ struct AllocationHookKey {
     alignment: usize,
     compute_alignment: Option<usize>,
     type_name: &'static str,
-}
-
-type ClassIdBits = BitField<u64, u32, 0, 24, false>;
-type HashBits = BitField<u64, u8, 57, 2, false>;
-type FinalizationState = BitField<u64, bool, { HashBits::NEXT_BIT }, 1, false>;
-
-type LastBitfield = FinalizationState;
-
-static GC_ONLY_CLASS_REGISTRY: OnceLock<Mutex<GcOnlyClassRegistry>> = OnceLock::new();
-
-fn gc_only_class_registry() -> &'static Mutex<GcOnlyClassRegistry> {
-    GC_ONLY_CLASS_REGISTRY.get_or_init(|| Mutex::new(GcOnlyClassRegistry::new()))
 }
 
 #[repr(transparent)]
@@ -209,6 +207,121 @@ impl ClassId {
     }
 }
 
+pub(crate) fn allocate_class_id() -> ClassId {
+    loop {
+        let raw = NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed);
+        assert!(
+            raw <= MAX_CLASS_ID,
+            "class ID registry exhausted (last attempted id {raw})"
+        );
+        if let Some(id) = ClassId::new(raw) {
+            return id;
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn peek_next_class_id() -> u32 {
+    NEXT_CLASS_ID.load(Ordering::Relaxed)
+}
+
+static PENDING_TYPE_CLASSES: OnceLock<Mutex<HashMap<u32, AllocationHooks>>> = OnceLock::new();
+
+fn pending_type_classes() -> &'static Mutex<HashMap<u32, AllocationHooks>> {
+    PENDING_TYPE_CLASSES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn record_pending_type_class(id: ClassId, hooks: AllocationHooks) {
+    pending_type_classes()
+        .lock()
+        .unwrap()
+        .insert(id.bits(), hooks);
+}
+
+pub(crate) fn drain_pending_type_classes() -> Vec<(ClassId, AllocationHooks)> {
+    pending_type_classes()
+        .lock()
+        .unwrap()
+        .drain()
+        .filter_map(|(bits, hooks)| Some((ClassId::new(bits)?, hooks)))
+        .collect()
+}
+
+pub(crate) fn pending_hooks_for_class_id(id: ClassId) -> Option<AllocationHooks> {
+    pending_type_classes()
+        .lock()
+        .unwrap()
+        .get(&id.bits())
+        .copied()
+}
+
+static TYPE_CLASS_REGISTRY: OnceLock<Mutex<HashMap<AllocationHookKey, ClassId>>> = OnceLock::new();
+
+fn type_class_registry() -> &'static Mutex<HashMap<AllocationHookKey, ClassId>> {
+    TYPE_CLASS_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+thread_local! {
+    static REGISTERING_TYPE_CLASS: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) struct TypeClassRegistrationGuard;
+
+impl TypeClassRegistrationGuard {
+    pub(crate) fn enter() -> Option<Self> {
+        REGISTERING_TYPE_CLASS.with(|registering| {
+            if registering.get() {
+                return None;
+            }
+
+            registering.set(true);
+            Some(Self)
+        })
+    }
+}
+
+impl Drop for TypeClassRegistrationGuard {
+    fn drop(&mut self) {
+        REGISTERING_TYPE_CLASS.with(|registering| registering.set(false));
+    }
+}
+
+fn register_type_class_with_context<'gc>(ctx: Context<'gc>, id: ClassId, hooks: AllocationHooks) {
+    if !crate::runtime::class::class_table_initialized()
+        || crate::runtime::class::is_type_class_registered(id)
+    {
+        return;
+    }
+
+    if let Some(_guard) = TypeClassRegistrationGuard::enter() {
+        crate::runtime::class::register_internal_type_class_if_ready(ctx, id, hooks);
+    } else {
+        record_pending_type_class(id, hooks);
+    }
+}
+
+pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: AllocationHooks) -> u64 {
+    let _ = PhantomData::<fn() -> T>;
+    let key = hooks.registry_key();
+    let id = {
+        let mut registry = type_class_registry().lock().unwrap();
+        if let Some(&id) = registry.get(&key) {
+            id
+        } else {
+            let id = allocate_class_id();
+            registry.insert(key, id);
+            record_pending_type_class(id, hooks);
+            id
+        }
+    };
+    register_type_class_with_context(ctx, id, hooks);
+    class_header_word(id)
+}
+
+pub fn class_header_word(class_id: ClassId) -> u64 {
+    class_id.bits() as u64
+}
+
 unsafe impl Trace for ClassId {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         let _ = visitor;
@@ -217,138 +330,6 @@ unsafe impl Trace for ClassId {
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
         let _ = weak_processor;
     }
-}
-
-pub struct GcOnlyClassInfo {
-    class_id: ClassId,
-    hooks: AllocationHooks,
-}
-
-impl GcOnlyClassInfo {
-    pub fn class_id(&self) -> ClassId {
-        self.class_id
-    }
-
-    pub fn hooks(&self) -> AllocationHooks {
-        self.hooks
-    }
-}
-
-struct GcOnlyClassRegistry {
-    next_class_id: u32,
-    by_hooks: HashMap<AllocationHookKey, &'static GcOnlyClassInfo>,
-    by_class_id: HashMap<u32, &'static GcOnlyClassInfo>,
-}
-
-impl GcOnlyClassRegistry {
-    fn new() -> Self {
-        Self {
-            next_class_id: MAX_CLASS_ID,
-            by_hooks: HashMap::new(),
-            by_class_id: HashMap::new(),
-        }
-    }
-
-    fn get_or_register(&mut self, hooks: AllocationHooks) -> &'static GcOnlyClassInfo {
-        let key = hooks.registry_key();
-        if let Some(info) = self.by_hooks.get(&key) {
-            return info;
-        }
-
-        let class_id = loop {
-            assert!(
-                self.next_class_id >= MIN_GC_ONLY_CLASS_ID,
-                "GC-only class ID registry exhausted"
-            );
-            let Some(class_id) = ClassId::new(self.next_class_id) else {
-                panic!("GC-only class ID registry exhausted");
-            };
-            self.next_class_id = self
-                .next_class_id
-                .checked_sub(1)
-                .expect("GC-only class ID registry exhausted");
-
-            if self.by_class_id.contains_key(&class_id.bits()) {
-                continue;
-            }
-
-            break class_id;
-        };
-
-        let info = Box::leak(Box::new(GcOnlyClassInfo { class_id, hooks }));
-        self.by_hooks.insert(key, info);
-        self.by_class_id.insert(class_id.bits(), info);
-        info
-    }
-
-    fn get_by_class_id(&self, id: ClassId) -> Option<&'static GcOnlyClassInfo> {
-        self.by_class_id.get(&id.bits()).copied()
-    }
-}
-
-pub(crate) fn gc_only_class_info(hooks: AllocationHooks) -> &'static GcOnlyClassInfo {
-    gc_only_class_registry()
-        .lock()
-        .unwrap()
-        .get_or_register(hooks)
-}
-
-pub(crate) fn gc_only_class_infos() -> Vec<&'static GcOnlyClassInfo> {
-    gc_only_class_registry()
-        .lock()
-        .unwrap()
-        .by_class_id
-        .values()
-        .copied()
-        .collect()
-}
-
-thread_local! {
-    static MIRRORING_GC_ONLY_CLASS: Cell<bool> = const { Cell::new(false) };
-}
-
-struct GcOnlyClassMirrorGuard;
-
-impl GcOnlyClassMirrorGuard {
-    fn enter() -> Option<Self> {
-        MIRRORING_GC_ONLY_CLASS.with(|mirroring| {
-            if mirroring.get() {
-                return None;
-            }
-
-            mirroring.set(true);
-            Some(Self)
-        })
-    }
-}
-
-impl Drop for GcOnlyClassMirrorGuard {
-    fn drop(&mut self) {
-        MIRRORING_GC_ONLY_CLASS.with(|mirroring| mirroring.set(false));
-    }
-}
-
-pub(crate) fn gc_only_class_header_word_with_context<'gc>(
-    ctx: Context<'gc>,
-    hooks: AllocationHooks,
-) -> u64 {
-    let info = gc_only_class_info(hooks);
-    if let Some(_guard) = GcOnlyClassMirrorGuard::enter() {
-        crate::runtime::class::register_gc_only_class_if_initialized(ctx, info);
-    }
-    class_header_word(info.class_id())
-}
-
-pub(crate) fn gc_only_hooks_for_class_id(id: ClassId) -> Option<AllocationHooks> {
-    gc_only_class_registry()
-        .lock()
-        .unwrap()
-        .get_by_class_id(id)
-        .map(GcOnlyClassInfo::hooks)
-}
-
-pub fn class_header_word(class_id: ClassId) -> u64 {
-    class_id.bits() as u64
 }
 
 pub struct HeapObjectHeader {
@@ -844,22 +825,24 @@ mod tests {
     }
 
     #[test]
-    fn gc_only_class_info_publishes_class_only_header_and_hooks() {
-        let hooks = AllocationHooksOf::<'static, Dummy>::HOOKS;
-        let info = gc_only_class_info(hooks);
-        let same = gc_only_class_info(hooks);
-        let header = HeapObjectHeader::from_word(class_header_word(info.class_id()));
-        let registered_hooks = gc_only_hooks_for_class_id(info.class_id()).unwrap();
+    fn type_class_header_word_assigns_distinct_ids_per_monomorphization() {
+        crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
+            let hooks_a = AllocationHooksOf::<'static, Dummy>::HOOKS;
+            let hooks_b = AllocationHooksOf::<'static, Dummy2>::HOOKS;
+            let id_a = ClassId::new(type_class_header_word::<Dummy>(ctx, hooks_a) as u32).unwrap();
+            let id_b = ClassId::new(type_class_header_word::<Dummy2>(ctx, hooks_b) as u32).unwrap();
 
-        assert!(std::ptr::eq(info, same));
-        assert_eq!(header.class_id(), info.class_id());
-        assert_eq!(
-            registered_hooks.type_name,
-            AllocationHooksOf::<'static, Dummy>::HOOKS.type_name
-        );
-        assert_eq!(registered_hooks.instance_size, size_of::<Dummy>());
-        assert_eq!(registered_hooks.alignment, align_of::<Dummy>());
-        assert!(gc_only_hooks_for_class_id(info.class_id()).is_some());
-        assert!(info.class_id().bits() >= MIN_GC_ONLY_CLASS_ID);
+            assert_ne!(id_a, id_b);
+            assert!(id_a.bits() > builtin_class_ids::MAX);
+            assert!(id_b.bits() > builtin_class_ids::MAX);
+        });
+    }
+
+    struct Dummy2;
+
+    unsafe impl Trace for Dummy2 {
+        unsafe fn trace(&mut self, _visitor: &mut Visitor) {}
+
+        unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
     }
 }

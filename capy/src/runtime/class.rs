@@ -8,9 +8,9 @@ use crate::rsgc::{
     barrier,
     cell::Lock,
     object::{
-        AllocationHooks, AllocationHooksOf, ClassId, GCObject, GcOnlyClassInfo, MAX_CLASS_ID,
-        MIN_GC_ONLY_CLASS_ID, builtin_class_ids, class_header_word, gc_only_class_infos,
-        gc_only_hooks_for_class_id,
+        AllocationHooks, AllocationHooksOf, ClassId, GCObject, MAX_CLASS_ID, allocate_class_id,
+        builtin_class_ids, class_header_word, drain_pending_type_classes,
+        pending_hooks_for_class_id,
     },
     sync::monitor::Monitor,
     weak::WeakProcessor,
@@ -3049,7 +3049,6 @@ unsafe impl Trace for ClassPage<'_> {
 struct ClassTableInner<'gc> {
     pages: ArrayRef<'gc, Lock<Option<ClassPage<'gc>>>>,
     max_id: u32,
-    next_dynamic_id: u32,
 }
 
 #[derive(Default)]
@@ -3157,6 +3156,18 @@ type RootedClassTable = Rootable!(ClassTable<'_>);
 
 static CLASS_TABLE: OnceLock<GcGlobal<RootedClassTable>> = OnceLock::new();
 
+pub(crate) fn class_table_initialized() -> bool {
+    CLASS_TABLE.get().is_some()
+}
+
+pub(crate) fn is_type_class_registered(id: ClassId) -> bool {
+    let Some(table) = CLASS_TABLE.get() else {
+        return false;
+    };
+    // SAFETY: The class table is a global GC root. This lookup only checks presence.
+    unsafe { table.fetch_unchecked().lookup(id).is_some() }
+}
+
 pub fn init_builtin_classes<'gc>(ctx: Context<'gc>) -> &'gc ClassTable<'gc> {
     CLASS_TABLE
         .get_or_init(|| {
@@ -3167,7 +3178,7 @@ pub fn init_builtin_classes<'gc>(ctx: Context<'gc>) -> &'gc ClassTable<'gc> {
                     .register_builtin(ctx, spec.descriptor(ctx))
                     .expect("built-in class IDs must be unique");
             }
-            mirror_existing_gc_only_classes(ctx, rooted_table);
+            register_pending_type_classes(ctx, rooted_table);
             table
         })
         .fetch(*ctx)
@@ -4882,18 +4893,13 @@ pub fn primitive_layout_hooks_for_class_id(id: ClassId) -> Option<PrimitiveLayou
         return Some(hooks);
     }
 
-    if id.bits() >= MIN_GC_ONLY_CLASS_ID
-        && let Some(hooks) = gc_only_hooks_for_class_id(id)
-    {
-        return Some(PrimitiveLayoutHooks::from_allocation_hooks(hooks));
-    }
-
-    None
+    pending_hooks_for_class_id(id).map(PrimitiveLayoutHooks::from_allocation_hooks)
 }
 
-pub(crate) fn register_gc_only_class_if_initialized<'gc>(
+pub(crate) fn register_internal_type_class_if_ready<'gc>(
     ctx: Context<'gc>,
-    info: &'static GcOnlyClassInfo,
+    id: ClassId,
+    hooks: AllocationHooks,
 ) {
     let Some(table) = CLASS_TABLE.get() else {
         return;
@@ -4901,31 +4907,48 @@ pub(crate) fn register_gc_only_class_if_initialized<'gc>(
 
     // SAFETY: The global class table is a rooted object. This fetch is scoped to
     // inserting a descriptor that carries only copied scalar/function-pointer
-    // hook metadata from the GC-only bootstrap registry.
+    // hook metadata from the type-class bootstrap registry.
     let table = unsafe { table.fetch_unchecked() };
-    mirror_gc_only_class(ctx, table, info);
+    register_internal_type_class(ctx, table, id, hooks);
 }
 
-fn mirror_existing_gc_only_classes<'gc>(ctx: Context<'gc>, table: &ClassTable<'gc>) {
-    for info in gc_only_class_infos() {
-        mirror_gc_only_class(ctx, table, info);
+fn register_pending_type_classes<'gc>(ctx: Context<'gc>, table: &ClassTable<'gc>) {
+    use crate::rsgc::object::{TypeClassRegistrationGuard, record_pending_type_class};
+
+    loop {
+        let pending = drain_pending_type_classes();
+        if pending.is_empty() {
+            break;
+        }
+
+        for (id, hooks) in pending {
+            if table.lookup(id).is_some() {
+                continue;
+            }
+
+            if let Some(_guard) = TypeClassRegistrationGuard::enter() {
+                register_internal_type_class(ctx, table, id, hooks);
+            } else {
+                record_pending_type_class(id, hooks);
+            }
+        }
     }
 }
 
-fn mirror_gc_only_class<'gc>(
+pub(crate) fn register_internal_type_class<'gc>(
     ctx: Context<'gc>,
     table: &ClassTable<'gc>,
-    info: &'static GcOnlyClassInfo,
+    id: ClassId,
+    hooks: AllocationHooks,
 ) {
-    let id = info.class_id();
     if table.lookup(id).is_some() {
         return;
     }
 
-    let hooks = PrimitiveLayoutHooks::from_allocation_hooks(info.hooks());
+    let layout_hooks = PrimitiveLayoutHooks::from_allocation_hooks(hooks);
     table
-        .register_gc_only(ctx, id, info.hooks().type_name, hooks)
-        .expect("GC-only class IDs must be unique while mirroring into class table");
+        .register_internal_type_class(ctx, id, hooks.type_name, layout_hooks)
+        .expect("type class IDs must be unique while registering into class table");
 }
 
 pub fn builtin_class_specs() -> &'static [BuiltinClassSpec] {
@@ -4941,11 +4964,7 @@ impl<'gc> ClassTable<'gc> {
         let page_count = (max_id >> CLASS_TABLE_PAGE_BITS) as usize + 1;
         let pages = Array::with(*ctx, page_count, |_, _| Lock::new(None));
         Self {
-            inner: Monitor::new(ClassTableInner {
-                pages,
-                max_id,
-                next_dynamic_id: 1,
-            }),
+            inner: Monitor::new(ClassTableInner { pages, max_id }),
             redefinition: Monitor::new(ClassRedefinitionState::default()),
         }
     }
@@ -4973,7 +4992,7 @@ impl<'gc> ClassTable<'gc> {
         Ok(())
     }
 
-    pub(crate) fn register_gc_only(
+    pub(crate) fn register_internal_type_class(
         &self,
         ctx: Context<'gc>,
         id: ClassId,
@@ -5461,28 +5480,14 @@ impl<'gc> ClassTableInner<'gc> {
     }
 
     fn next_free_dynamic_id(&mut self) -> Result<ClassId, ClassTableError> {
-        let dynamic_max_id = self.max_id.min(MIN_GC_ONLY_CLASS_ID - 1);
-        if dynamic_max_id == 0 {
+        let id = allocate_class_id();
+        if id.bits() > self.max_id {
             return Err(ClassTableError::Exhausted);
         }
-
-        for raw_id in self.next_dynamic_id.min(dynamic_max_id)..=dynamic_max_id {
-            let id = ClassId::new(raw_id).ok_or(ClassTableError::IdOutOfRange)?;
-            if self.lookup(id).is_none() {
-                self.next_dynamic_id = raw_id + 1;
-                return Ok(id);
-            }
+        if self.lookup(id).is_some() {
+            return Err(ClassTableError::DuplicateId(id));
         }
-
-        for raw_id in 1..self.next_dynamic_id.min(dynamic_max_id + 1) {
-            let id = ClassId::new(raw_id).ok_or(ClassTableError::IdOutOfRange)?;
-            if self.lookup(id).is_none() {
-                self.next_dynamic_id = raw_id + 1;
-                return Ok(id);
-            }
-        }
-
-        Err(ClassTableError::Exhausted)
+        Ok(id)
     }
 }
 
@@ -5914,7 +5919,7 @@ mod tests {
         value: usize,
     }
 
-    struct UnmirroredGcOnlyDummy {
+    struct PendingRegistrationDummy {
         value: usize,
     }
 
@@ -5928,7 +5933,7 @@ mod tests {
         }
     }
 
-    unsafe impl Trace for UnmirroredGcOnlyDummy {
+    unsafe impl Trace for PendingRegistrationDummy {
         unsafe fn trace(&mut self, visitor: &mut Visitor) {
             let _ = visitor;
         }
@@ -6578,7 +6583,7 @@ mod tests {
     #[test]
     fn next_method_descriptors_are_gc_objects() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 512);
+            let table = class_table(ctx);
             let class = table
                 .register_dynamic(ctx, "receiver", ClassCategory::Scheme)
                 .unwrap();
@@ -6615,7 +6620,7 @@ mod tests {
     #[test]
     fn generic_slow_dispatch_selects_most_specific_method() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 512);
+            let table = class_table(ctx);
             let base = table
                 .register_dynamic(ctx, "base", ClassCategory::Scheme)
                 .unwrap();
@@ -6793,7 +6798,7 @@ mod tests {
     #[test]
     fn class_redefinition_preserves_direct_methods_and_clears_generic_cache() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 512);
+            let table = class_table(ctx);
             let class = table
                 .register_dynamic_with_slots(
                     ctx,
@@ -7148,7 +7153,7 @@ mod tests {
     #[test]
     fn generic_add_method_replaces_existing_specializers() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 512);
+            let table = class_table(ctx);
             let class = table
                 .register_dynamic(ctx, "receiver", ClassCategory::Scheme)
                 .unwrap();
@@ -7256,7 +7261,7 @@ mod tests {
     #[test]
     fn generic_dispatch_body_prefers_applicable_method_over_fallback() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 512);
+            let table = class_table(ctx);
             let class = table
                 .register_dynamic(ctx, "receiver", ClassCategory::Scheme)
                 .unwrap();
@@ -7284,7 +7289,7 @@ mod tests {
     #[test]
     fn generic_slow_dispatch_handles_multi_argument_specificity() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 512);
+            let table = class_table(ctx);
             let base = table
                 .register_dynamic(ctx, "base", ClassCategory::Scheme)
                 .unwrap();
@@ -7383,20 +7388,20 @@ mod tests {
     }
 
     #[test]
-    fn gc_only_allocations_are_mirrored_into_rooted_class_table() {
+    fn type_class_allocations_are_registered_in_rooted_class_table() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
             let table = class_table(ctx);
             let value = Gc::new(*ctx, GcOnlyDummy { value: 7 });
             let class_id = value.as_gcobj().class_id();
             let class = table
                 .lookup(class_id)
-                .expect("GC-only allocation should mirror class metadata into class table");
+                .expect("type-class allocation should register class metadata into class table");
             let hooks = class
                 .primitive_layout_hooks()
-                .expect("mirrored GC-only class should carry primitive layout hooks");
+                .expect("registered type class should carry primitive layout hooks");
 
             assert_eq!(value.value, 7);
-            assert!(class_id.bits() >= MIN_GC_ONLY_CLASS_ID);
+            assert!(class_id.bits() > builtin_class_ids::MAX);
             assert_eq!(class.id(), class_id);
             assert_eq!(class.category(), ClassCategory::Internal);
             assert_eq!(
@@ -7412,50 +7417,48 @@ mod tests {
     }
 
     #[test]
-    fn class_table_initialization_mirrors_existing_gc_only_classes() {
+    fn class_table_initialization_registers_pending_type_classes() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let info = crate::rsgc::object::gc_only_class_info(
-                AllocationHooksOf::<'static, GcOnlyDummy>::HOOKS,
-            );
-            let table = ClassTable::with_max_id(ctx, MAX_CLASS_ID);
+            let hooks = AllocationHooksOf::<'static, PendingRegistrationDummy>::HOOKS;
+            let class_id = crate::rsgc::object::allocate_class_id();
+            crate::rsgc::object::record_pending_type_class(class_id, hooks);
+            let table = ClassTable::new(ctx);
 
-            assert!(table.lookup(info.class_id()).is_none());
-            mirror_existing_gc_only_classes(ctx, &table);
+            assert!(table.lookup(class_id).is_none());
+            register_pending_type_classes(ctx, &table);
 
             let class = table
-                .lookup(info.class_id())
-                .expect("pre-existing GC-only hooks should mirror into class table");
+                .lookup(class_id)
+                .expect("pre-existing type classes should register into class table");
             let hooks = class
                 .primitive_layout_hooks()
-                .expect("mirrored GC-only class should carry primitive layout hooks");
+                .expect("registered type class should carry primitive layout hooks");
 
             assert_eq!(class.category(), ClassCategory::Internal);
             assert_eq!(
                 class.name(),
-                AllocationHooksOf::<'static, GcOnlyDummy>::HOOKS.type_name
+                AllocationHooksOf::<'static, PendingRegistrationDummy>::HOOKS.type_name
             );
             assert_eq!(
                 hooks.type_name(),
-                AllocationHooksOf::<'static, GcOnlyDummy>::HOOKS.type_name
+                AllocationHooksOf::<'static, PendingRegistrationDummy>::HOOKS.type_name
             );
         });
     }
 
     #[test]
-    fn initialized_class_table_disables_gc_only_scalar_fallback() {
+    fn initialized_class_table_disables_pending_type_class_fallback() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = class_table(ctx);
-            let info = crate::rsgc::object::gc_only_class_info(
-                AllocationHooksOf::<'static, UnmirroredGcOnlyDummy>::HOOKS,
-            );
+            let _table = class_table(ctx);
+            let unregistered_id = crate::rsgc::object::allocate_class_id();
 
-            assert!(table.lookup(info.class_id()).is_none());
-            assert!(primitive_layout_hooks_for_class_id(info.class_id()).is_none());
+            assert!(_table.lookup(unregistered_id).is_none());
+            assert!(primitive_layout_hooks_for_class_id(unregistered_id).is_none());
         });
     }
 
     #[test]
-    fn gc_only_classes_do_not_route_scheme_instance_operations() {
+    fn type_classes_do_not_route_scheme_instance_operations() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
             let table = class_table(ctx);
             let value = Gc::new(*ctx, GcOnlyDummy { value: 7 });
@@ -8005,7 +8008,7 @@ mod tests {
     #[test]
     fn scheme_instances_use_dynamic_class_id_and_gc_slots() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 512);
+            let table = class_table(ctx);
             let class = table
                 .register_dynamic(ctx, "user-class", ClassCategory::Scheme)
                 .unwrap();
@@ -8299,18 +8302,24 @@ mod tests {
     #[test]
     fn dynamic_registration_keeps_live_slots() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 1);
+            let table = ClassTable::with_max_id(ctx, MAX_CLASS_ID);
             let first = table
                 .register_dynamic(ctx, "first", ClassCategory::Scheme)
                 .unwrap();
             let first_id = first.id();
             let _ = first;
 
+            {
+                let mut inner = table.inner.lock();
+                inner.max_id = first_id.bits();
+            }
+
             let err = table
                 .register_dynamic(ctx, "second", ClassCategory::Scheme)
                 .unwrap_err();
 
             assert_eq!(err, ClassTableError::Exhausted);
+            assert!(first_id.bits() > builtin_class_ids::MAX);
             assert_eq!(table.lookup(first_id).unwrap().name(), "first");
         });
     }
@@ -8318,13 +8327,10 @@ mod tests {
     #[test]
     fn dynamic_registration_reports_exhaustion() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, 1);
-            let _descriptor = table
-                .register_dynamic(ctx, "first", ClassCategory::Scheme)
-                .unwrap();
-
+            let next_id = crate::rsgc::object::peek_next_class_id();
+            let table = ClassTable::with_max_id(ctx, next_id.saturating_sub(1));
             let err = table
-                .register_dynamic(ctx, "second", ClassCategory::Scheme)
+                .register_dynamic(ctx, "first", ClassCategory::Scheme)
                 .unwrap_err();
 
             assert_eq!(err, ClassTableError::Exhausted);
@@ -8332,16 +8338,14 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_registration_stops_below_gc_only_reserved_range() {
+    fn dynamic_registration_uses_unified_id_allocator() {
         crate::runtime::thread::Scheme::new_uninit().enter(|ctx| {
-            let table = ClassTable::with_max_id(ctx, MIN_GC_ONLY_CLASS_ID);
-            table.inner.lock().next_dynamic_id = MIN_GC_ONLY_CLASS_ID;
-
+            let table = ClassTable::with_max_id(ctx, MAX_CLASS_ID);
             let descriptor = table
-                .register_dynamic(ctx, "last-dynamic", ClassCategory::Scheme)
+                .register_dynamic(ctx, "dynamic", ClassCategory::Scheme)
                 .unwrap();
 
-            assert_eq!(descriptor.id().bits(), MIN_GC_ONLY_CLASS_ID - 1);
+            assert!(descriptor.id().bits() > builtin_class_ids::MAX);
         });
     }
 }

@@ -65,12 +65,14 @@ fn lookup_interned_symbol<'gc>(
             }
             let sym = sym.downcast::<Symbol<'_>>();
 
-            let mut n = sym.len();
-            while n != 0 {
+            if sym.len() != name.len() {
+                return false;
+            }
+
+            for n in 0..sym.len() {
                 if sym.get(n) != name.get(n) {
                     return false;
                 }
-                n -= 1;
             }
 
             true
@@ -115,14 +117,15 @@ impl<'gc> Symbol<'gc> {
         } else {
             let symbol = Self::new::<true>(*mc, str, hash, None);
 
-            WeakSet::add(
+            let symbol = WeakSet::add(
                 *SYMBOL_TABLE.get().unwrap().fetch(*mc),
                 *mc,
                 hash,
                 |mc, sym| symbool_lookup_predicate(mc, sym, symbol),
                 Value::new(symbol),
             )
-            .downcast()
+            .downcast();
+            symbol
         }
     }
 

@@ -392,12 +392,20 @@ impl Slot for ObjectSlot {
 mod tests {
     use super::*;
     use crate::Trace;
-    use crate::rsgc::object::builtin_class_ids;
+    use crate::rsgc::object::{AllocationHooksOf, builtin_class_ids};
     use crate::runtime::Scheme;
+    use mmtk::AllocationSemantics;
+    use std::mem::{align_of, size_of};
 
     #[derive(Trace)]
     #[collect(no_drop)]
     struct InternalGcOnly {
+        value: usize,
+    }
+
+    #[derive(Trace)]
+    #[collect(no_drop)]
+    struct OtherInternalGcOnly {
         value: usize,
     }
 
@@ -408,6 +416,73 @@ mod tests {
 
             assert_eq!(object.value, 7);
             assert!(object.as_gcobj().header().class_id().bits() > builtin_class_ids::MAX);
+        });
+    }
+
+    #[test]
+    fn fixed_size_gc_allocations_receive_distinct_class_ids() {
+        Scheme::new_uninit().enter(|ctx| {
+            let first = Gc::new(*ctx, InternalGcOnly { value: 7 });
+            let second = Gc::new(*ctx, OtherInternalGcOnly { value: 9 });
+
+            assert_eq!(first.value, 7);
+            assert_eq!(second.value, 9);
+            assert_ne!(
+                first.as_gcobj().header().class_id(),
+                second.as_gcobj().header().class_id()
+            );
+        });
+    }
+
+    #[test]
+    fn slow_path_allocation_sets_valid_object_bit() {
+        Scheme::new_uninit().enter(|ctx| {
+            let header_word = AllocationHooksOf::<InternalGcOnly>::class_header_word((*ctx).into());
+            let object = unsafe {
+                ctx.raw_allocate_slow_with_header_word(
+                    size_of::<InternalGcOnly>(),
+                    align_of::<InternalGcOnly>().max(size_of::<usize>()),
+                    header_word,
+                    AllocationSemantics::Default,
+                )
+            };
+
+            unsafe {
+                object.to_address().store(InternalGcOnly { value: 11 });
+            }
+
+            assert_eq!(
+                crate::rsgc::is_mmtk_heap_object(object.to_address()),
+                object.to_objref()
+            );
+        });
+    }
+
+    #[test]
+    fn unpublished_allocation_is_not_visible_until_published() {
+        Scheme::new_uninit().enter(|ctx| {
+            let header_word = AllocationHooksOf::<InternalGcOnly>::class_header_word((*ctx).into());
+            let allocation = unsafe {
+                ctx.raw_allocate_with_header_word_unpublished(
+                    size_of::<InternalGcOnly>(),
+                    align_of::<InternalGcOnly>().max(size_of::<usize>()),
+                    header_word,
+                    AllocationSemantics::Default,
+                )
+            };
+            let object = allocation.object();
+
+            assert_eq!(crate::rsgc::is_mmtk_heap_object(object.to_address()), None);
+
+            unsafe {
+                object.to_address().store(InternalGcOnly { value: 13 });
+                ctx.publish_allocated_object(allocation);
+            }
+
+            assert_eq!(
+                crate::rsgc::is_mmtk_heap_object(object.to_address()),
+                object.to_objref()
+            );
         });
     }
 }

@@ -20,10 +20,7 @@ use crate::rsgc::{
 };
 use simplehash::MurmurHasher64;
 
-use crate::runtime::{
-    Context,
-    vmthread::{VM_THREAD, VMThreadTask},
-};
+use crate::runtime::Context;
 
 use super::{WeakValue, *};
 
@@ -173,7 +170,18 @@ unsafe impl<'gc> Trace for WeakTable<'gc> {
         }
     }
 
-    unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
+    unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        let inner = self.inner.get_mut();
+        let entries = inner.entries.get();
+
+        for index in 0..entries.len() {
+            let mut entry = entries[index].get();
+            while let Some(current) = entry {
+                current.as_gcobj().process_weak_refs(weak_processor);
+                entry = current.next.get();
+            }
+        }
+    }
 }
 
 struct WeakTableInner<'gc> {
@@ -606,7 +614,15 @@ unsafe impl<'gc> Trace for AllWeakTables<'gc> {
             unsafe {
                 table.process_weak_refs(weak_processor);
             }
-            !table.is_broken()
+            if table.is_broken() {
+                return false;
+            }
+
+            if let Some(table) = unsafe { table.upgrade_unchecked() } {
+                table.as_gcobj().process_weak_refs(weak_processor);
+            }
+
+            true
         });
     }
 }
@@ -631,9 +647,7 @@ pub fn vacuum_weak_tables<'gc>(mc: Mutation<'gc>) {
 impl FinalizationNotify for WeakTableCleanup {
     fn notify_in_processing(&self) {}
 
-    fn schedule(&self) {
-        VM_THREAD.schedule_task(VMThreadTask::VacuumWeakTables);
-    }
+    fn schedule(&self) {}
 }
 
 static ONCE: Once = Once::new();
