@@ -25,7 +25,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         _tls: mmtk::util::VMWorkerThread,
         _object: mmtk::util::ObjectReference,
     ) -> bool {
-        false
+        true
     }
 
     fn scan_object_and_trace_edges<OT: mmtk::vm::ObjectTracer>(
