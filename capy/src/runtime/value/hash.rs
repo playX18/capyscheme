@@ -279,7 +279,6 @@ impl<'gc> HashTable<'gc> {
                 hashtable_header_word(false),
             );
         }
-        let initial_capacity = initial_capacity.min(1);
         let initial_capacity = if initial_capacity == 0 {
             8
         } else {
@@ -333,7 +332,6 @@ impl<'gc> HashTable<'gc> {
                 hashtable_header_word(true),
             );
         }
-        let initial_capacity = initial_capacity.min(1);
         let initial_capacity = if initial_capacity == 0 {
             8
         } else {
@@ -734,4 +732,56 @@ pub const fn u64_hash(mut key: u64) -> u64 {
     key = key.wrapping_add(key << 31);
     key >>= 2;
     key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        rsgc::Global,
+        runtime::{Scheme, value::Symbol},
+    };
+
+    type RootedHashTable = crate::Rootable!(Gc<'_, HashTable<'_>>);
+
+    #[test]
+    fn requested_initial_capacity_is_preserved() {
+        Scheme::new_uninit().enter(|ctx| {
+            let table = HashTable::new(*ctx, HashTableType::Eq, 128, 0.75);
+            assert_eq!(table.inner.lock().table.get().len(), 128);
+
+            let fallback = HashTable::new(*ctx, HashTableType::Eq, 0, 0.75);
+            assert_eq!(fallback.inner.lock().table.get().len(), 8);
+        });
+    }
+
+    #[test]
+    fn many_symbol_keys_survive_gc() {
+        let scheme = Scheme::new_uninit();
+        let table: Global<RootedHashTable> = scheme.enter(|ctx| {
+            let table = HashTable::new(*ctx, HashTableType::Eq, 256, 0.75);
+
+            for i in 0..512 {
+                let name = Symbol::from_str(ctx, &format!("entry-{i}"));
+                table.put(ctx, name, Value::new(i));
+            }
+
+            for i in 0..512 {
+                let name = Symbol::from_str(ctx, &format!("entry-{i}"));
+                assert_eq!(table.get(ctx, name), Some(Value::new(i)));
+            }
+
+            Global::new(table)
+        });
+
+        scheme.collect_garbage();
+
+        scheme.enter(|ctx| {
+            let table = *table.fetch(*ctx);
+            for i in 0..512 {
+                let name = Symbol::from_str(ctx, &format!("entry-{i}"));
+                assert_eq!(table.get(ctx, name), Some(Value::new(i)));
+            }
+        });
+    }
 }

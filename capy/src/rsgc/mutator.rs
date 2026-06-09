@@ -16,8 +16,9 @@ use mmtk::{
         Address,
         alloc::{AllocatorSelector, BumpAllocator, ImmixAllocator},
         conversions::raw_align_up,
-        metadata::side_metadata::{
-            global_side_metadata_vm_base_address, vo_bit_side_metadata_addr,
+        metadata::{
+            side_metadata::{global_side_metadata_vm_base_address, vo_bit_side_metadata_addr},
+            vo_bit::VO_BIT_SIDE_METADATA_SPEC,
         },
     },
 };
@@ -43,20 +44,21 @@ pub(crate) fn vo_bit_side_metadata_base() -> Address {
     unsafe { Address::from_usize(VO_BIT_SIDE_METADATA_BASE_ADDRESS.load(Ordering::Relaxed)) }
 }
 
-/// Set the valid-object (VO) bit for a heap object reference address.
-#[inline(always)]
-pub(crate) unsafe fn set_vo_bit_for_object_ref(object_ref: Address) {
-    let base = vo_bit_side_metadata_base();
-    let meta_addr = base + (object_ref.as_usize() >> 6);
-    let shift = (object_ref.as_usize() >> 3) & 0b111;
-    let byte_val = unsafe { meta_addr.load::<u8>() };
-    unsafe {
-        meta_addr.store::<u8>(byte_val | (1 << shift));
-    }
-}
-
 pub trait Rootable<'a> {
     type Root: ?Sized + 'a;
+}
+
+#[derive(Clone, Copy)]
+pub struct UnpublishedAllocation {
+    object: GCObject,
+    payload_size: usize,
+    semantics: AllocationSemantics,
+}
+
+impl UnpublishedAllocation {
+    pub fn object(self) -> GCObject {
+        self.object
+    }
 }
 
 #[doc(hidden)]
@@ -311,6 +313,100 @@ impl<'gc> Mutation<'gc> {
     pub const OFFSET_OF_STATE: usize = Thread::RT_STATE_OFFSET;
 
     #[inline(always)]
+    unsafe fn post_alloc(&self, object: GCObject, bytes: usize, semantics: AllocationSemantics) {
+        unsafe {
+            mmtk::memory_manager::post_alloc(
+                self.thread.mutator_unchecked(),
+                object.to_objref().unwrap(),
+                bytes,
+                semantics,
+            );
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn set_vo_bit_for_object(&self, object: GCObject) {
+        let object = object.to_objref().unwrap();
+        VO_BIT_SIDE_METADATA_SPEC.store_atomic::<u8>(object.to_raw_address(), 1, Ordering::SeqCst);
+    }
+
+    #[inline(always)]
+    pub unsafe fn publish_allocated_object(&self, allocation: UnpublishedAllocation) {
+        unsafe {
+            match allocation.semantics {
+                AllocationSemantics::Default => self.set_vo_bit_for_object(allocation.object),
+                _ => self.post_alloc(
+                    allocation.object,
+                    allocation.payload_size + size_of::<HeapObjectHeader>(),
+                    allocation.semantics,
+                ),
+            }
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn finish_unpublished_object(
+        &self,
+        object_start: Address,
+        size: usize,
+        semantics: AllocationSemantics,
+    ) -> UnpublishedAllocation {
+        let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
+        UnpublishedAllocation {
+            object,
+            payload_size: size,
+            semantics,
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn finish_allocated_object(
+        &self,
+        object_start: Address,
+        size: usize,
+        semantics: AllocationSemantics,
+    ) -> GCObject {
+        let allocation = unsafe { self.finish_unpublished_object(object_start, size, semantics) };
+        let object = allocation.object();
+        unsafe {
+            self.publish_allocated_object(allocation);
+        }
+        object
+    }
+
+    #[inline(always)]
+    unsafe fn finish_unpublished_object_with_header(
+        &self,
+        object_start: Address,
+        size: usize,
+        header_word: u64,
+        semantics: AllocationSemantics,
+    ) -> UnpublishedAllocation {
+        unsafe {
+            object_start.store(HeapObjectHeader::from_word(header_word));
+            self.finish_unpublished_object(object_start, size, semantics)
+        }
+    }
+
+    #[inline(always)]
+    unsafe fn finish_allocated_object_with_header(
+        &self,
+        object_start: Address,
+        size: usize,
+        header_word: u64,
+        semantics: AllocationSemantics,
+    ) -> GCObject {
+        let allocation = unsafe {
+            self.finish_unpublished_object_with_header(object_start, size, header_word, semantics)
+        };
+        let object = allocation.object();
+        unsafe {
+            self.publish_allocated_object(allocation);
+        }
+        object
+    }
+
+    #[inline(always)]
     pub fn state(&self) -> &'gc State<'gc> {
         debug_assert!(
             self.thread.is_thread_state_initialized(),
@@ -400,8 +496,11 @@ impl<'gc> Mutation<'gc> {
         unsafe {
             let size = size_of::<T>();
             let align = size_of::<usize>().max(align_of::<T>());
-            let obj = self.raw_allocate_with_header_word(size, align, header_word, semantics);
+            let allocation =
+                self.raw_allocate_with_header_word_unpublished(size, align, header_word, semantics);
+            let obj = allocation.object();
             obj.to_address().store(value);
+            self.publish_allocated_object(allocation);
 
             Gc::from_gcobj(obj)
         }
@@ -518,8 +617,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::from_word(header_word));
-            GCObject::from(object_start + OBJECT_REF_OFFSET)
+            self.finish_allocated_object_with_header(object_start, size, header_word, semantics)
         }
     }
 
@@ -549,8 +647,12 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::from_word(header_word));
-            GCObject::from(object_start + OBJECT_REF_OFFSET)
+            self.finish_allocated_object_with_header(
+                object_start,
+                size,
+                header_word,
+                AllocationSemantics::Immortal,
+            )
         }
     }
 
@@ -580,8 +682,12 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::from_word(header_word));
-            GCObject::from(object_start + OBJECT_REF_OFFSET)
+            self.finish_allocated_object_with_header(
+                object_start,
+                size,
+                header_word,
+                AllocationSemantics::NonMoving,
+            )
         }
     }
 
@@ -611,18 +717,12 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            object_start.store(HeapObjectHeader::from_word(header_word));
-
-            let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
-
-            mmtk::memory_manager::post_alloc(
-                self.thread.mutator_unchecked(),
-                object.to_objref().unwrap(),
+            self.finish_allocated_object_with_header(
+                object_start,
                 size,
+                header_word,
                 AllocationSemantics::Los,
-            );
-
-            object
+            )
         }
     }
 
@@ -654,8 +754,33 @@ impl<'gc> Mutation<'gc> {
         size: usize,
         alignment: usize,
         header_word: u64,
-        mut semantics: AllocationSemantics,
+        semantics: AllocationSemantics,
     ) -> GCObject {
+        let allocation = unsafe {
+            self.raw_allocate_with_header_word_unpublished(size, alignment, header_word, semantics)
+        };
+        let object = allocation.object();
+        unsafe {
+            self.publish_allocated_object(allocation);
+        }
+        object
+    }
+
+    #[inline(always)]
+    /// Allocate raw GC memory and install a precomputed object header word
+    /// without publishing the object to MMTk metadata.
+    ///
+    /// # Safety
+    ///
+    /// The caller must initialize any fields used by GC sizing/tracing before
+    /// calling [`publish_allocated_object`](Self::publish_allocated_object).
+    pub unsafe fn raw_allocate_with_header_word_unpublished(
+        &self,
+        size: usize,
+        alignment: usize,
+        header_word: u64,
+        mut semantics: AllocationSemantics,
+    ) -> UnpublishedAllocation {
         unsafe {
             if size + size_of::<HeapObjectHeader>() >= 8 * 1024 {
                 semantics = AllocationSemantics::Los;
@@ -675,13 +800,15 @@ impl<'gc> Mutation<'gc> {
                     OBJECT_REF_OFFSET as _,
                 );
                 if !object_start.is_zero() {
-                    object_start.store(HeapObjectHeader::from_word(header_word));
-                    let object_ref = object_start + OBJECT_REF_OFFSET;
-                    set_vo_bit_for_object_ref(object_ref);
-                    return GCObject::from(object_ref);
+                    return self.finish_unpublished_object_with_header(
+                        object_start,
+                        size,
+                        header_word,
+                        semantics,
+                    );
                 }
 
-                return self.raw_allocate_out_of_line_with_header_word(
+                return self.raw_allocate_out_of_line_with_header_word_unpublished(
                     size,
                     alignment,
                     header_word,
@@ -689,17 +816,22 @@ impl<'gc> Mutation<'gc> {
                 );
             }
 
-            self.raw_allocate_out_of_line_with_header_word(size, alignment, header_word, semantics)
+            self.raw_allocate_out_of_line_with_header_word_unpublished(
+                size,
+                alignment,
+                header_word,
+                semantics,
+            )
         }
     }
 
-    unsafe fn raw_allocate_out_of_line_with_header_word(
+    unsafe fn raw_allocate_out_of_line_with_header_word_unpublished(
         &self,
         size: usize,
         alignment: usize,
         header_word: u64,
         mut semantics: AllocationSemantics,
-    ) -> GCObject {
+    ) -> UnpublishedAllocation {
         if semantics == AllocationSemantics::Default
             && size + size_of::<HeapObjectHeader>() >= self.thread.max_non_los_alloc_bytes()
         {
@@ -721,18 +853,12 @@ impl<'gc> Mutation<'gc> {
                     );
                     self.refill_tlab();
 
-                    object_start.store(HeapObjectHeader::from_word(header_word));
-
-                    let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
-
-                    mmtk::memory_manager::post_alloc(
-                        self.thread.mutator_unchecked(),
-                        object.to_objref().unwrap(),
+                    self.finish_unpublished_object_with_header(
+                        object_start,
                         size,
+                        header_word,
                         AllocationSemantics::Los,
-                    );
-
-                    object
+                    )
                 }
                 semantics => {
                     self.flush_tlab();
@@ -746,9 +872,12 @@ impl<'gc> Mutation<'gc> {
                     );
                     self.refill_tlab();
 
-                    object_start.store(HeapObjectHeader::from_word(header_word));
-
-                    GCObject::from(object_start + OBJECT_REF_OFFSET)
+                    self.finish_unpublished_object_with_header(
+                        object_start,
+                        size,
+                        header_word,
+                        semantics,
+                    )
                 }
             }
         }
@@ -854,9 +983,7 @@ impl<'gc> Mutation<'gc> {
 
                 let object_start = lab.allocate(size + size_of::<HeapObjectHeader>(), alignment, 0);
                 if !object_start.is_zero() {
-                    let object_ref = object_start + OBJECT_REF_OFFSET;
-                    set_vo_bit_for_object_ref(object_ref);
-                    return GCObject::from(object_ref);
+                    return self.finish_allocated_object(object_start, size, semantics);
                 }
 
                 return self.raw_allocate_slow_uninit(size, alignment, semantics);
@@ -889,7 +1016,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            GCObject::from(object_start + OBJECT_REF_OFFSET)
+            self.finish_allocated_object(object_start, size, semantics)
         }
     }
 
@@ -936,16 +1063,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            let object = GCObject::from(object_start + OBJECT_REF_OFFSET);
-
-            mmtk::memory_manager::post_alloc(
-                self.thread.mutator_unchecked(),
-                object.to_objref().unwrap(),
-                size,
-                AllocationSemantics::Los,
-            );
-
-            object
+            self.finish_allocated_object(object_start, size, AllocationSemantics::Los)
         }
     }
 
@@ -967,7 +1085,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            GCObject::from(object_start + OBJECT_REF_OFFSET)
+            self.finish_allocated_object(object_start, size, AllocationSemantics::Immortal)
         }
     }
 
@@ -989,7 +1107,7 @@ impl<'gc> Mutation<'gc> {
             );
             self.refill_tlab();
 
-            GCObject::from(object_start + OBJECT_REF_OFFSET)
+            self.finish_allocated_object(object_start, size, AllocationSemantics::NonMoving)
         }
     }
 

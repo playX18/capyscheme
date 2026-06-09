@@ -12,7 +12,7 @@ use crate::rsgc::collection::Visitor;
 use crate::rsgc::{
     Gc, Mutation, WeakProcessor,
     barrier::IndexWrite,
-    object::{AllocationHooks, GCObject, gc_only_class_header_word_with_context},
+    object::{AllocationHooks, GCObject, type_class_header_word},
     traits::Trace,
 };
 
@@ -97,11 +97,11 @@ impl<T: Trace> Array<T> {
         let size = Self::array_size(len);
         let align = align_of::<Self>();
 
-        let alloc = unsafe {
-            mc.raw_allocate_with_header_word(
+        let allocation = unsafe {
+            mc.raw_allocate_with_header_word_unpublished(
                 size,
                 align,
-                gc_only_class_header_word_with_context(mc.into(), Self::HOOKS),
+                type_class_header_word::<Array<T>>(mc.into(), Self::HOOKS),
                 semantics,
             )
         };
@@ -110,14 +110,17 @@ impl<T: Trace> Array<T> {
         // - alloc is a valid allocation with zeroed out memory
         // - alloc can hold up to `len` elements.
         unsafe {
+            let alloc = allocation.object();
             let this = alloc.to_address().as_mut_ref::<Self>();
-            this.len = len;
+            this.len = 0;
+            mc.publish_allocated_object(allocation);
 
             for i in 0..len {
                 this.data
                     .as_mut_ptr()
                     .add(i)
                     .write(MaybeUninit::new(f(mc, i)));
+                this.len = i + 1;
             }
 
             Gc::from_gcobj(alloc)
@@ -302,6 +305,33 @@ mod tests {
 
             assert_eq!(array.as_slice(), &[0, 1, 2]);
             assert!(array.as_gcobj().header().class_id().bits() > builtin_class_ids::MAX);
+        });
+    }
+
+    #[test]
+    fn array_types_receive_distinct_class_ids() {
+        Scheme::new_uninit().enter(|ctx| {
+            let int_array = Array::with(*ctx, 1, |_, _| 0_i32);
+            let u64_array = Array::with(*ctx, 1, |_, _| 0_u64);
+
+            assert_ne!(
+                int_array.as_gcobj().header().class_id(),
+                u64_array.as_gcobj().header().class_id()
+            );
+        });
+    }
+
+    #[test]
+    fn array_element_slots_are_not_published_as_object_refs() {
+        Scheme::new_uninit().enter(|ctx| {
+            let array = Array::with(*ctx, 2, |_, index| index);
+            let element_slot = array.as_gcobj().to_address() + size_of::<usize>();
+
+            assert_eq!(
+                crate::rsgc::is_mmtk_heap_object(array.as_gcobj().to_address()),
+                array.as_gcobj().to_objref()
+            );
+            assert_eq!(crate::rsgc::is_mmtk_heap_object(element_slot), None);
         });
     }
 }

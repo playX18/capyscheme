@@ -1201,7 +1201,16 @@ pub fn init_modules<'gc>(ctx: Context<'gc>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::Scheme;
+    use crate::{Trace, rsgc::Global, runtime::Scheme, runtime::value::Symbol};
+
+    #[derive(Trace)]
+    #[collect(no_drop)]
+    struct LookupRoots<'gc> {
+        module: Gc<'gc, Module<'gc>>,
+        name: Gc<'gc, Symbol<'gc>>,
+    }
+
+    type RootedLookupRoots = crate::Rootable!(LookupRoots<'_>);
 
     #[test]
     fn module_and_variable_allocate_with_class_only_headers() {
@@ -1217,6 +1226,64 @@ mod tests {
                 variable.as_gcobj().header().class_id(),
                 ClassId::new(builtin_class_ids::VARIABLE).unwrap()
             );
+        });
+    }
+
+    #[test]
+    fn interned_symbol_module_lookup_survives_gc() {
+        let scheme = Scheme::new_uninit();
+        let roots: Global<RootedLookupRoots> = scheme.enter(|ctx| {
+            let module = Module::new(ctx, 8, Value::null(), Value::new(false));
+            let name = Symbol::from_str(ctx, "assertion-violation");
+            let expected = Value::new(42);
+
+            module.define(ctx, name.into(), expected);
+            assert_eq!(module.get(ctx, name.into()), Some(expected));
+
+            Global::new(LookupRoots { module, name })
+        });
+
+        scheme.collect_garbage();
+
+        scheme.enter(|ctx| {
+            let roots = roots.fetch(*ctx);
+            let expected = Value::new(42);
+
+            let name_after_gc = Symbol::from_str(ctx, "assertion-violation");
+            assert_eq!(name_after_gc.as_gcobj(), roots.name.as_gcobj());
+            assert_eq!(roots.module.get(ctx, name_after_gc.into()), Some(expected));
+        });
+    }
+
+    #[test]
+    fn exception_name_module_lookup_survives_gc_after_repeated_collections() {
+        let scheme = Scheme::new_uninit();
+        let roots: Global<RootedLookupRoots> = scheme.enter(|ctx| {
+            let module = Module::new(ctx, 8, Value::null(), Value::new(false));
+            let name = Symbol::from_str(ctx, "&undefined");
+            let expected = Value::new(42);
+
+            module.define(ctx, name.into(), expected);
+            assert_eq!(module.get(ctx, name.into()), Some(expected));
+
+            Global::new(LookupRoots { module, name })
+        });
+
+        for _ in 0..3 {
+            scheme.collect_garbage();
+        }
+
+        scheme.enter(|ctx| {
+            let roots = roots.fetch(*ctx);
+            let expected = Value::new(42);
+            let name_after_gc = Symbol::from_str(ctx, "&undefined");
+
+            assert_eq!(
+                name_after_gc.as_gcobj(),
+                roots.name.as_gcobj(),
+                "interning must preserve symbol pointer identity across GC"
+            );
+            assert_eq!(roots.module.get(ctx, name_after_gc.into()), Some(expected));
         });
     }
 }
