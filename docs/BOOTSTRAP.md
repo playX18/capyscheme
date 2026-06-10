@@ -25,7 +25,6 @@ At the end you get `stage-2/` as the “final” self-hosted result.
 You’ll need:
 
 - Rust toolchain (this repo includes `rust-toolchain.toml`).
-- A C compiler (`clang` by default, but `CC=gcc` works on many setups).
 - Optional: `cross` if you want to build for a non-host target.
 
 ## Quickstart
@@ -52,8 +51,6 @@ Most targets accept these variables:
 - `TARGET` (default: `rustc --print host-tuple`)
 	- Rust target triple.
 	- If `TARGET != host`, the Makefile will try to use `cross`.
-- `CC` (default: `clang`)
-	- C compiler used to build the launcher binaries.
 - `PREFIX` (default: `$HOME/.local/share`)
 	- Installation prefix used by `install-portable` and `install`.
 - `VERSION`
