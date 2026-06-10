@@ -283,7 +283,9 @@ impl<'gc> Number<'gc> {
                 let v = b[0] as u32;
                 if b.negative() { -(v as i32) } else { v as i32 }
             }
-            _ => panic!("Cannot coerce non-integer to i32"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to i32")
+            }
         }
     }
 
@@ -296,7 +298,9 @@ impl<'gc> Number<'gc> {
                 }
                 b[0] as u32
             }
-            _ => panic!("Cannot coerce non-integer to u32"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to u32")
+            }
         }
     }
 
@@ -310,7 +314,9 @@ impl<'gc> Number<'gc> {
                 let v = b[0];
                 if b.negative() { -(v as i64) } else { v as i64 }
             }
-            _ => panic!("Cannot coerce non-integer to i64"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to i64")
+            }
         }
     }
 
@@ -323,7 +329,9 @@ impl<'gc> Number<'gc> {
                 }
                 b[0]
             }
-            _ => panic!("Cannot coerce non-integer to u64"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to u64")
+            }
         }
     }
 
@@ -336,7 +344,9 @@ impl<'gc> Number<'gc> {
                 }
                 b[0] as usize
             }
-            _ => panic!("Cannot coerce non-integer to usize"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to usize")
+            }
         }
     }
 
@@ -354,7 +364,9 @@ impl<'gc> Number<'gc> {
                     v as isize
                 }
             }
-            _ => panic!("Cannot coerce non-integer to isize"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to isize")
+            }
         }
     }
 
@@ -362,7 +374,9 @@ impl<'gc> Number<'gc> {
         match self {
             Number::Fixnum(i) => i as f64,
             Number::BigInt(b) => b.as_f64(),
-            _ => panic!("Cannot coerce non-integer to f64"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to f64")
+            }
         }
     }
 
@@ -375,7 +389,9 @@ impl<'gc> Number<'gc> {
                 }
                 b[0] as u8
             }
-            _ => panic!("Cannot coerce non-integer to u8"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to u8")
+            }
         }
     }
 
@@ -389,7 +405,9 @@ impl<'gc> Number<'gc> {
                 let v = b[0];
                 if b.negative() { -(v as i8) } else { v as i8 }
             }
-            _ => panic!("Cannot coerce non-integer to i8"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to i8")
+            }
         }
     }
 
@@ -402,7 +420,9 @@ impl<'gc> Number<'gc> {
                 }
                 b[0] as u16
             }
-            _ => panic!("Cannot coerce non-integer to u16"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to u16")
+            }
         }
     }
 
@@ -416,7 +436,9 @@ impl<'gc> Number<'gc> {
                 let v = b[0];
                 if b.negative() { -(v as i16) } else { v as i16 }
             }
-            _ => panic!("Cannot coerce non-integer to i16"),
+            Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                panic!("Cannot coerce non-integer to i16")
+            }
         }
     }
 

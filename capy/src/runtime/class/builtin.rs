@@ -1,11 +1,9 @@
-use crate::rsgc::object::{
-    AllocationHooksOf, ClassId, builtin_class_ids,
-};
 use super::descriptor::ClassDescriptor;
 use super::flags::ClassCategory;
 use super::generic::{GenericDescriptor, MethodDescriptor, NextMethodDescriptor};
 use super::hooks::PrimitiveLayoutHooks;
 use super::slot::{SlotAccessorDefinition, SlotDefinitionDescriptor};
+use crate::rsgc::object::{AllocationHooksOf, ClassId, builtin_class_ids};
 
 pub const CLASS_TABLE_PAGE_BITS: u32 = 8;
 pub const CLASS_TABLE_PAGE_SIZE: usize = 1 << CLASS_TABLE_PAGE_BITS;

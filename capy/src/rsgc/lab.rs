@@ -2,7 +2,7 @@
 
 use mmtk::util::{Address, conversions::raw_align_up};
 
-use crate::rsgc::util::align_allocation_no_fill;
+use crate::utils::align_allocation_no_fill;
 
 /// Local allocation buffer: simple bump-pointer
 /// allocator for fast allocation of objects when possible.

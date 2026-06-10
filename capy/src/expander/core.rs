@@ -1,16 +1,16 @@
 use std::{cell::Cell, collections::HashMap, hash::Hash, sync::OnceLock};
 
-use crate::rsgc::{
-    Gc, Global, Mutation, Trace,
-    alloc::array::{Array, ArrayRef},
-    barrier,
-    cell::Lock,
-};
 use pretty::{DocAllocator, DocBuilder};
 
 use crate::{
     expander::{get_source_property, syntax_annotation},
     list,
+    rsgc::{
+        Gc, Global, Mutation, Trace,
+        alloc::array::{Array, ArrayRef},
+        barrier,
+        cell::Lock,
+    },
     runtime::{
         Context,
         modules::{Module, get_current_module},
@@ -707,7 +707,7 @@ pub type Error<'gc> = Box<CompileError<'gc>>;
 
 pub fn expand<'gc>(cenv: &mut Cenv<'gc>, program: Value<'gc>) -> Result<TermRef<'gc>, Error<'gc>> {
     if program.try_as::<Symbol>().is_some() {
-        // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+        // TODO(expander): Verify correctness. Rust expander is only used during bootstrapping.
         let module = get_current_module(cenv.ctx).downcast::<Module>();
         let module_name = module.name();
         match cenv.get(program) {
@@ -874,7 +874,7 @@ fn expand_set<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<'gc
     let name = form.cadr();
     let source = syntax_annotation(cenv.ctx, form);
     cenv.expression_name = old;
-    // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+    // TODO(expander): Verify correctness. Rust expander is only used during bootstrapping.
     let module = get_current_module(cenv.ctx).downcast::<Module>();
     let module_name = module.name();
     Ok(toplevel_set(cenv.ctx, module_name, name, value, source))
@@ -949,7 +949,7 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
                 },
             );
 
-            // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+            // TODO(expander): Verify correctness. Rust expander is only used during bootstrapping.
             let module = get_current_module(cenv.ctx).downcast::<Module>();
             let module_name = module.name();
             Ok(define(
@@ -966,7 +966,7 @@ fn expand_define<'gc>(cenv: &mut Cenv<'gc>, form: Value<'gc>) -> Result<TermRef<
             cenv.expression_name = name;
             let term = expand(cenv, value)?;
             cenv.expression_name = old;
-            // TODO: Verify correctness. Rust expander is only used during bootstrapping.
+            // TODO(expander): Verify correctness. Rust expander is only used during bootstrapping.
             let module = get_current_module(cenv.ctx).downcast::<Module>();
             let module_name = module.name();
             Ok(define(

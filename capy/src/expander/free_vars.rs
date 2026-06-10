@@ -196,7 +196,6 @@ impl<'gc> ComputeFreeVarResolver<'gc> {
         let mut not_declarative: Vec<Value> = Vec::new();
 
         for (module, _args) in self.module_definitions.iter() {
-            // println!(";; Module '{} definition", module);
             if not_declarative.iter().any(|m| m.r5rs_equal(*module)) {
                 continue;
             } else if self
@@ -347,17 +346,10 @@ pub fn resolve_free_vars<'gc>(ctx: Context<'gc>, exp: TermRef<'gc>) -> TermRef<'
         let sourcev = exp.source();
         match exp.kind {
             TermKind::ToplevelRef(module, name) => match resolve(ctx, module, name) {
-                Resolved::Local => {
-                    // println!(";; Resolved local toplevel ref '{}'", name);
-                    exp
-                }
-                Resolved::Duplicate => {
-                    // println!(";; Duplicate toplevel ref '{}'", name);
-                    exp
-                }
+                Resolved::Local => exp,
+                Resolved::Duplicate => exp,
                 Resolved::Unknown => exp,
                 Resolved::Known(mod_name, var_name) => {
-                    // println!(";; Resolved free var '{}::{}'", mod_name, var_name);
                     module_ref(ctx, mod_name, var_name, true, sourcev)
                 }
             },

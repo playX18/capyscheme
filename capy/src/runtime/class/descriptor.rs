@@ -1,18 +1,14 @@
-use crate::prelude::*;
-use crate::rsgc::alloc::{Array, ArrayRef};
-use crate::rsgc::cell::Lock;
-use crate::rsgc::object::{
-    AllocationHooksOf, ClassId, builtin_class_ids,
-};
-use crate::rsgc::{Gc, Trace, Visitor, Weak, WeakProcessor};
-use crate::runtime::value::conversions::ClassTagged;
-use crate::runtime::{Context, value::Value};
 use super::flags::{ClassCategory, ClassFlags};
 use super::hooks::{PrimitiveLayoutHooks, PrimitiveOperationHooks};
 use super::instance::SchemeInstance;
-use super::slot::{
-    SlotAccessError, SlotAccessorDescriptor, SlotDescriptor, SlotSpec,
-};
+use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotDescriptor, SlotSpec};
+use crate::prelude::*;
+use crate::rsgc::alloc::{Array, ArrayRef};
+use crate::rsgc::cell::Lock;
+use crate::rsgc::object::{AllocationHooksOf, ClassId, builtin_class_ids};
+use crate::rsgc::{Gc, Trace, Visitor, Weak, WeakProcessor};
+use crate::runtime::value::conversions::ClassTagged;
+use crate::runtime::{Context, value::Value};
 
 pub struct ClassDescriptor<'gc> {
     id: ClassId,
@@ -520,7 +516,10 @@ impl<'gc> ClassDescriptor<'gc> {
             .set(appended);
     }
 
-    pub(crate) fn invalidate_direct_method_caches(ctx: Context<'gc>, class: Gc<'gc, ClassDescriptor<'gc>>) {
+    pub(crate) fn invalidate_direct_method_caches(
+        ctx: Context<'gc>,
+        class: Gc<'gc, ClassDescriptor<'gc>>,
+    ) {
         for method in class.direct_methods().iter().copied() {
             if let Some(method) = method.try_as::<super::generic::MethodDescriptor>() {
                 super::generic::GenericDescriptor::clear_dispatcher_cache(ctx, method.generic());
@@ -550,7 +549,10 @@ fn initarg_metadata<'gc>(
     Array::from_slice(*ctx, &initargs)
 }
 
-pub(crate) fn class_id_list_to_class_objects<'gc>(ctx: Context<'gc>, ids: &[ClassId]) -> Value<'gc> {
+pub(crate) fn class_id_list_to_class_objects<'gc>(
+    ctx: Context<'gc>,
+    ids: &[ClassId],
+) -> Value<'gc> {
     let classes = ids
         .iter()
         .filter_map(|id| super::table::class_table(ctx).lookup(*id).map(Value::from))
@@ -565,7 +567,10 @@ pub(crate) fn class_id_to_class_object<'gc>(ctx: Context<'gc>, id: ClassId) -> V
         .unwrap_or_else(|| Value::new(false))
 }
 
-pub(crate) fn slot_definition_list<'gc>(ctx: Context<'gc>, slots: &[SlotDescriptor<'gc>]) -> Value<'gc> {
+pub(crate) fn slot_definition_list<'gc>(
+    ctx: Context<'gc>,
+    slots: &[SlotDescriptor<'gc>],
+) -> Value<'gc> {
     let definitions = slots
         .iter()
         .map(|slot| super::slot::SlotDefinitionDescriptor::from_slot(ctx, *slot).into())

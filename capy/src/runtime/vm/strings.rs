@@ -1,13 +1,15 @@
+use std::cmp::Ordering;
+use std::sync::LazyLock;
+
+use unicode_general_category::GeneralCategory;
+use unicode_general_category::get_general_category;
+use unicode_normalization::*;
+
 use crate::global;
 use crate::prelude::*;
 use crate::rsgc::Gc;
 use crate::runtime::prelude::*;
 use crate::runtime::vm::vector::Endianness;
-use std::cmp::Ordering;
-use std::sync::LazyLock;
-use unicode_general_category::GeneralCategory;
-use unicode_general_category::get_general_category;
-use unicode_normalization::*;
 
 pub static LOCALE: LazyLock<icu::locale::Locale> = LazyLock::new(|| {
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_string());

@@ -60,7 +60,7 @@ impl VmThread {
                         Ok(task) => match task {
                             VMThreadTask::FinalizePointers => (),
                             VMThreadTask::ClosePorts => {
-                                // TODO: implement port closing on thread shutdown
+                                // TODO(Adel): implement port closing on thread shutdown
                             }
                             VMThreadTask::VacuumWeakSets => {
                                 mutator.mutate(|mc, _| {

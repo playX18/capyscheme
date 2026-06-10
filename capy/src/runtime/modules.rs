@@ -306,10 +306,7 @@ impl<'gc> Module<'gc> {
                 let var = iface.variable(ctx, sym);
                 if let Some(var) = var {
                     if !var.is_bound() {
-                        println!(
-                            ";; Warning: imported unbound variable {sym} into {}",
-                            self.name.get()
-                        );
+                        log::warn!("imported unbound variable {sym} into {}", self.name.get());
                     }
 
                     self.import_obarray.put(ctx, sym, var);

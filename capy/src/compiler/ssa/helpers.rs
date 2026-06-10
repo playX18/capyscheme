@@ -1,12 +1,13 @@
-use crate::rsgc::mmtk::BarrierSelector;
+use std::mem::{offset_of, size_of};
+
 use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
-use std::mem::{offset_of, size_of};
 
 use crate::{
     compiler::ssa::{AllocationHeaderPreset, SSABuilder},
     cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
+    rsgc::mmtk::BarrierSelector,
     runtime::value::{Pair, Value, Vector},
 };
 

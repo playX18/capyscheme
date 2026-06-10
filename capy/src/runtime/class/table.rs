@@ -1,23 +1,22 @@
 use std::sync::OnceLock;
 
-use crate::Rootable;
-use crate::rsgc::alloc::{Array, ArrayRef};
-use crate::rsgc::cell::Lock;
-use crate::rsgc::object::{
-    AllocationHooks, ClassId, MAX_CLASS_ID, allocate_class_id,
-    builtin_class_ids, class_header_word, drain_pending_type_classes,
-    pending_hooks_for_class_id,
-};
-use crate::rsgc::{Gc, Global as GcGlobal, Trace, Visitor, WeakProcessor};
-use crate::rsgc::sync::monitor::Monitor;
-use crate::runtime::Context;
-use crate::runtime::value::Value;
 use super::builtin::{builtin_class_specs, builtin_id, builtin_primitive_layout_hooks};
 use super::descriptor::{ClassDescriptor, ClassDescriptorInit};
 use super::flags::{ClassCategory, ClassFlags};
 use super::hooks::PrimitiveLayoutHooks;
 use super::parse::{ParsedSlotSpec, parse_scheme_class_shape};
 use super::slot::{SlotDescriptor, SlotSpec};
+use crate::Rootable;
+use crate::rsgc::alloc::{Array, ArrayRef};
+use crate::rsgc::cell::Lock;
+use crate::rsgc::object::{
+    AllocationHooks, ClassId, MAX_CLASS_ID, allocate_class_id, builtin_class_ids,
+    class_header_word, drain_pending_type_classes, pending_hooks_for_class_id,
+};
+use crate::rsgc::sync::monitor::Monitor;
+use crate::rsgc::{Gc, Global as GcGlobal, Trace, Visitor, WeakProcessor};
+use crate::runtime::Context;
+use crate::runtime::value::Value;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ClassTableError {
@@ -333,7 +332,9 @@ impl<'gc> ClassTable<'gc> {
                     name,
                     category: ClassCategory::Internal,
                     primitive_layout_hooks: Some(hooks),
-                    primitive_operation_hooks: Some(super::hooks::PrimitiveOperationHooks::default()),
+                    primitive_operation_hooks: Some(
+                        super::hooks::PrimitiveOperationHooks::default(),
+                    ),
                     flags: None,
                     direct_supers: &[],
                     cpl: &[id],
@@ -530,7 +531,11 @@ impl<'gc> ClassTable<'gc> {
             .map(ParsedSlotSpec::as_slot_spec)
             .collect::<Vec<_>>();
         self.register_dynamic_with_slots(
-            ctx, &name, ClassCategory::Scheme, &direct_supers, &direct_slots,
+            ctx,
+            &name,
+            ClassCategory::Scheme,
+            &direct_supers,
+            &direct_slots,
         )
         .map_err(SchemeClassSpecError::ClassTable)
     }
@@ -554,9 +559,12 @@ impl<'gc> ClassTable<'gc> {
             .map(ParsedSlotSpec::as_slot_spec)
             .collect::<Vec<_>>();
         self.register_dynamic_with_slots_and_hooks(
-            ctx, &name, ClassCategory::Scheme,
+            ctx,
+            &name,
+            ClassCategory::Scheme,
             super::instance::invocable_scheme_class_options(),
-            &direct_supers, &direct_slots,
+            &direct_supers,
+            &direct_slots,
         )
         .map_err(SchemeClassSpecError::ClassTable)
     }
@@ -576,7 +584,12 @@ impl<'gc> ClassTable<'gc> {
             .map(ParsedSlotSpec::as_slot_spec)
             .collect::<Vec<_>>();
         self.redefine_dynamic_with_slots(
-            ctx, class.id(), &name, ClassCategory::Scheme, &direct_supers, &direct_slots,
+            ctx,
+            class.id(),
+            &name,
+            ClassCategory::Scheme,
+            &direct_supers,
+            &direct_slots,
         )
         .map_err(SchemeClassSpecError::ClassTable)
     }

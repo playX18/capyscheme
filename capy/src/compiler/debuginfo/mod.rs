@@ -12,9 +12,11 @@ use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::{LabelValueLoc, MachSrcLoc};
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, Expression, FileId, LineProgram, LineString,
-    Range, RangeList, Sections, UnitEntryId, Writer,
+    Range, RangeList, UnitEntryId, Writer,
 };
-use gimli::{AArch64, Encoding, Format, LineEncoding, Register, RiscV, RunTimeEndian, X86_64};
+use gimli::{
+    AArch64, Encoding, Format, LineEncoding, Register, RiscV, RunTimeEndian, SectionId, X86_64,
+};
 
 pub(crate) struct DebugContext<'gc> {
     endian: RunTimeEndian,
@@ -66,7 +68,7 @@ impl<'gc> DebugContext<'gc> {
         } else if main_srcloc.is::<Vector>() {
             main_srcloc.downcast::<Vector>()[0].get().to_string()
         } else {
-            println!("main_srcloc: {main_srcloc}");
+            log::trace!("main_srcloc: {main_srcloc}");
             main_srcloc.car().to_string()
         };
 
@@ -303,40 +305,6 @@ impl<'gc> DebugContext<'gc> {
                 line_program.add_file(file_name, dir, None)
             }
         })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn emit_sections<T: WriteDebugInfo>(&mut self, product: &mut T) {
-        let unit_range_list_id = self.dwarf.unit.ranges.add(self.unit_range_list.clone());
-        let root = self.dwarf.unit.root();
-        let root = self.dwarf.unit.get_mut(root);
-        root.set(
-            gimli::DW_AT_ranges,
-            AttributeValue::RangeListRef(unit_range_list_id),
-        );
-
-        let mut sections = Sections::new(WriterRelocate::new(self.endian));
-        self.dwarf
-            .write(&mut sections)
-            .expect("failed to write DWARF debug sections");
-
-        let mut section_map = HashMap::default();
-        let _: gimli::write::Result<()> = sections.for_each_mut(|id, section| {
-            if !section.writer.slice().is_empty() {
-                let section_id = product.add_debug_section(id, section.writer.take());
-                section_map.insert(id, section_id);
-            }
-            Ok(())
-        });
-
-        let _: gimli::write::Result<()> = sections.for_each(|id, section| {
-            if let Some(section_id) = section_map.get(&id) {
-                for reloc in &section.relocs {
-                    product.add_debug_reloc(&section_map, section_id, reloc);
-                }
-            }
-            Ok(())
-        });
     }
 }
 
@@ -584,20 +552,6 @@ fn address_for_func_at(func_id: u32, addend: i64) -> Address {
         symbol: func_id as usize,
         addend,
     }
-}
-
-use gimli::SectionId;
-
-pub(super) trait WriteDebugInfo {
-    type SectionId: Copy;
-
-    fn add_debug_section(&mut self, name: SectionId, data: Vec<u8>) -> Self::SectionId;
-    fn add_debug_reloc(
-        &mut self,
-        section_map: &HashMap<SectionId, Self::SectionId>,
-        from: &Self::SectionId,
-        reloc: &DebugReloc,
-    );
 }
 
 #[derive(Clone)]

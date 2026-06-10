@@ -519,7 +519,7 @@ macro_rules! with_cps {
         $expr
     }};
 
-    // TODO: Add `throw`, `throw_val_data`, and `throw_value` macro branches
+    // TODO(cps): Add `throw`, `throw_val_data`, and `throw_value` macro branches
     // when Term::Throw is implemented
 
 }

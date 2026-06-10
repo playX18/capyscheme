@@ -1,5 +1,7 @@
 //! Collection of loaded compiled libraries
 
+use std::{fs, io::Cursor, sync::LazyLock};
+
 use crate::rsgc::{Global, Trace, sync::monitor::Monitor};
 use crate::runtime::{
     Context,
@@ -7,7 +9,6 @@ use crate::runtime::{
     value::Value,
     vm::load::artifact::{LoadArtifact, LoadArtifactKind},
 };
-use std::{fs, io::Cursor, sync::LazyLock};
 
 pub enum Library<'gc> {
     Fasl(Value<'gc>),

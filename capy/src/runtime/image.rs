@@ -200,8 +200,8 @@ impl AllowedGC {
         match self {
             AllowedGC::Generational => {
                 if !matches!(*opts.plan, PlanSelector::StickyImmix) {
-                    println!(
-                        ";; WARN: The loaded heap image only allows StickyImmix. Switching to StickyImmix plan."
+                    log::warn!(
+                        "The loaded heap image only allows StickyImmix. Switching to StickyImmix plan."
                     );
                     opts.plan.set(PlanSelector::StickyImmix);
                 }
@@ -209,8 +209,8 @@ impl AllowedGC {
 
             AllowedGC::Concurrent => {
                 if !matches!(*opts.plan, PlanSelector::ConcurrentImmix) {
-                    println!(
-                        ";; WARN: The loaded heap image only allows concurrent GC plans. Switching to ConcurrentImmix plan."
+                    log::warn!(
+                        "The loaded heap image only allows concurrent GC plans. Switching to ConcurrentImmix plan."
                     );
                     opts.plan.set(PlanSelector::ConcurrentImmix);
                 }
@@ -218,8 +218,8 @@ impl AllowedGC {
 
             AllowedGC::Regular => {
                 if !matches!(*opts.plan, PlanSelector::MarkSweep | PlanSelector::Immix) {
-                    println!(
-                        ";; WARN: The loaded heap image only allows MarkSweep or Immix. Switching to Immix plan."
+                    log::warn!(
+                        "The loaded heap image only allows MarkSweep or Immix. Switching to Immix plan."
                     );
                     opts.plan.set(PlanSelector::Immix);
                 }

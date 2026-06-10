@@ -1,11 +1,11 @@
 use std::fmt;
 
+use super::descriptor::ClassDescriptor;
+use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
 use crate::rsgc::object::{AllocationHooks, GCObject};
 use crate::rsgc::{Gc, Visitor, WeakProcessor};
 use crate::runtime::Context;
 use crate::runtime::value::Value;
-use super::descriptor::ClassDescriptor;
-use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
 
 #[derive(Clone, Copy)]
 pub struct PrimitiveLayoutHooks {

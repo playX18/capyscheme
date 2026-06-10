@@ -1,4 +1,3 @@
-
 use crate::runtime::class::builtin::*;
 use crate::runtime::class::descriptor::*;
 use crate::runtime::class::flags::*;
@@ -8,9 +7,7 @@ use crate::runtime::class::instance::*;
 use crate::runtime::class::slot::*;
 use crate::runtime::class::table::*;
 
-use crate::rsgc::object::{
-    AllocationHooksOf, ClassId, MAX_CLASS_ID, builtin_class_ids,
-};
+use crate::rsgc::object::{AllocationHooksOf, ClassId, MAX_CLASS_ID, builtin_class_ids};
 use crate::rsgc::{Gc, Trace, Visitor};
 use crate::runtime::{Context, value::Value};
 use std::collections::HashSet;
@@ -725,13 +722,7 @@ fn generic_slow_dispatch_selects_most_specific_method() {
             .register_dynamic(ctx, "base", ClassCategory::Scheme)
             .unwrap();
         let derived = table
-            .register_dynamic_with_slots(
-                ctx,
-                "derived",
-                ClassCategory::Scheme,
-                &[base.id()],
-                &[],
-            )
+            .register_dynamic_with_slots(ctx, "derived", ClassCategory::Scheme, &[base.id()], &[])
             .unwrap();
         let generic = GenericDescriptor::new(ctx, "classify", 1);
         let base_method = GenericDescriptor::add_method_in_table(
@@ -829,8 +820,7 @@ fn generic_dispatcher_cache_stores_applicable_method_chain() {
         );
 
         assert!(generic.dispatcher_cache().is_empty());
-        let first =
-            GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(1)]).unwrap();
+        let first = GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(1)]).unwrap();
         assert_eq!(first.methods().len(), 2);
         assert_eq!(generic.dispatcher_cache().len(), 1);
 
@@ -842,8 +832,7 @@ fn generic_dispatcher_cache_stores_applicable_method_chain() {
         assert_eq!(entry.methods()[0].as_gcobj(), fixnum_method.as_gcobj());
         assert_eq!(entry.methods()[1].as_gcobj(), number_method.as_gcobj());
 
-        let second =
-            GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(2)]).unwrap();
+        let second = GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(2)]).unwrap();
         assert_eq!(generic.dispatcher_cache().len(), 1);
         assert_eq!(second.methods().as_gcobj(), entry.methods().as_gcobj());
     });
@@ -860,8 +849,7 @@ fn generic_dispatcher_cache_is_cleared_when_methods_change() {
             1,
             Value::new(10),
         );
-        let first =
-            GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(1)]).unwrap();
+        let first = GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(1)]).unwrap();
         assert_eq!(first.body(), Value::new(10));
         assert_eq!(generic.dispatcher_cache().len(), 1);
 
@@ -874,8 +862,7 @@ fn generic_dispatcher_cache_is_cleared_when_methods_change() {
         );
         assert!(generic.dispatcher_cache().is_empty());
 
-        let second =
-            GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(1)]).unwrap();
+        let second = GenericDescriptor::next_method_chain(ctx, generic, &[Value::new(1)]).unwrap();
         assert_eq!(second.body(), Value::new(20));
         assert_eq!(generic.dispatcher_cache().len(), 1);
 
@@ -1065,14 +1052,7 @@ fn class_redefinition_rejects_sealed_classes() {
         table.register_builtin(ctx, class).unwrap();
 
         let err = table
-            .redefine_dynamic_with_slots(
-                ctx,
-                id(1),
-                "pair-v2",
-                ClassCategory::Builtin,
-                &[],
-                &[],
-            )
+            .redefine_dynamic_with_slots(ctx, id(1), "pair-v2", ClassCategory::Builtin, &[], &[])
             .unwrap_err();
 
         assert_eq!(err, ClassTableError::NotMalleable(id(1)));
@@ -1394,13 +1374,7 @@ fn generic_slow_dispatch_handles_multi_argument_specificity() {
             .register_dynamic(ctx, "base", ClassCategory::Scheme)
             .unwrap();
         let derived = table
-            .register_dynamic_with_slots(
-                ctx,
-                "derived",
-                ClassCategory::Scheme,
-                &[base.id()],
-                &[],
-            )
+            .register_dynamic_with_slots(ctx, "derived", ClassCategory::Scheme, &[base.id()], &[])
             .unwrap();
         let generic = GenericDescriptor::new(ctx, "combine", 2);
         let generic_method = GenericDescriptor::add_method_in_table(
@@ -1824,8 +1798,7 @@ fn scheme_class_operation_hooks_allocate_instances() {
             .unwrap();
         assert_eq!(value.class_id(), Some(class.id()));
         // SAFETY: the dynamic class ID check above proves the Scheme-instance payload layout.
-        let instance: Gc<'_, SchemeInstance<'_>> =
-            unsafe { Gc::from_gcobj(value.as_cell_raw()) };
+        let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(value.as_cell_raw()) };
 
         assert_eq!(instance.class().id(), class.id());
         assert_eq!(instance.slot_by_accessor(x), Ok(Value::new(9)));
@@ -2067,11 +2040,8 @@ fn scheme_instance_initargs_reject_unknown_or_uninitializable_slots() {
             }
             _ => panic!("unknown init keyword should be rejected"),
         }
-        match SchemeInstance::allocate_with_initargs(
-            ctx,
-            class,
-            &[(locked_keyword, Value::new(1))],
-        ) {
+        match SchemeInstance::allocate_with_initargs(ctx, class, &[(locked_keyword, Value::new(1))])
+        {
             Err(SlotInitError::NotInitializable(keyword)) => {
                 assert_eq!(keyword, locked_keyword);
             }
@@ -2235,12 +2205,7 @@ fn scheme_class_registration_accepts_direct_supers() {
         let derived_slots = Value::cons(ctx, derived_slot.into(), Value::null());
         let direct_supers = Value::cons(ctx, base.into(), Value::null());
         let derived = table
-            .register_scheme_class_from_slot_list(
-                ctx,
-                derived_name,
-                derived_slots,
-                direct_supers,
-            )
+            .register_scheme_class_from_slot_list(ctx, derived_name, derived_slots, direct_supers)
             .unwrap();
 
         let object = builtin_id(builtin_class_ids::OBJECT);

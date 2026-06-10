@@ -1,12 +1,11 @@
-use crate::rsgc::{
-    Gc, Trace,
-    object::{ClassId, builtin_class_ids, class_header_word},
-};
-
 use crate::{
     expander::{get_source_property, sym_column, sym_filename, sym_line},
     list,
     prelude::*,
+    rsgc::{
+        Gc, Trace,
+        object::{ClassId, builtin_class_ids, class_header_word},
+    },
     runtime::{
         Context,
         fluids::Fluid,

@@ -171,7 +171,7 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
             return Ok(());
         }
 
-        println!("{obj}");
+        log::debug!("{obj}");
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "Unsupported type for FASL serialization",
@@ -304,7 +304,7 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
             self.put(sym.into_value(self.ctx))?;
             return Ok(());
         }
-        println!("{obj}");
+        log::debug!("{obj}");
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!("Unsupported type for FASL serialization: {}", obj),
@@ -370,7 +370,7 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
                 self.put32(bytes.len() as u32)?;
                 self.put_many(bytes)?;
             } else {
-                println!("CAN'T SERIALIZE LITE: {key}");
+                log::debug!("CAN'T SERIALIZE LITE: {key}");
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "Unsupported type for FASL serialization",

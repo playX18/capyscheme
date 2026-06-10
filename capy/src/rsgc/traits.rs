@@ -225,7 +225,7 @@ unsafe impl<T: Trace> Trace for Box<T> {
     }
 }
 
-// TODO: How to trace keys of hashmap safely?
+// TODO(GC): How to trace keys of hashmap safely? Keys are traced below but may alias values.
 
 unsafe impl<K: Trace, V: Trace, S> Trace for std::collections::HashMap<K, V, S> {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {

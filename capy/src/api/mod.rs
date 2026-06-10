@@ -2,18 +2,20 @@
 //!
 //! Exports most of the runtime functionality to C-compatible interface.
 
-use crate::runtime::{value::conversions::*, vm::load::load_thunk_in_vicinity};
-
-use libc::c_char;
 use std::{
     ffi::{CStr, c_void},
     marker::PhantomData,
     sync::Arc,
 };
 
+use libc::c_char;
+
 use crate::{
     prelude::*,
-    runtime::{Context, Scheme, vm::threading::ThreadObject},
+    runtime::{
+        Context, Scheme, value::conversions::*, vm::load::load_thunk_in_vicinity,
+        vm::threading::ThreadObject,
+    },
 };
 
 /// Safely convert a C string pointer to a Rust `&str`.

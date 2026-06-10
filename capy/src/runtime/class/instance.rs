@@ -1,18 +1,18 @@
 use std::fmt;
 
+use super::descriptor::ClassDescriptor;
+use super::flags::{ClassCategory, ClassFlags};
+use super::generic::generic_assertion_violation;
+use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
+use super::table::class_table;
 use crate::rsgc::alloc::{Array, ArrayRef};
 use crate::rsgc::cell::Lock;
 use crate::rsgc::object::class_header_word;
 use crate::rsgc::{Gc, Trace};
 use crate::runtime::{
     Context,
-    value::{Closure, NativeReturn, Value, PROCEDURES},
+    value::{Closure, NativeReturn, PROCEDURES, Value},
 };
-use super::descriptor::ClassDescriptor;
-use super::flags::{ClassCategory, ClassFlags};
-use super::generic::generic_assertion_violation;
-use super::slot::{SlotAccessError, SlotAccessorDescriptor, SlotInitError};
-use super::table::class_table;
 
 #[derive(Trace)]
 #[collect(no_drop)]
@@ -383,7 +383,12 @@ fn invocable_instance_procedure<'gc>(
             ctx,
             ctx.intern("class"),
             class.into(),
-            super::generic::generic_property_entry(ctx, ctx.intern("instance"), instance.into(), Value::null()),
+            super::generic::generic_property_entry(
+                ctx,
+                ctx.intern("instance"),
+                instance.into(),
+                Value::null(),
+            ),
         ),
     );
     PROCEDURES.fetch(*ctx).make_closure(
@@ -410,7 +415,10 @@ pub fn scheme_instance_compare_hook<'gc>(
     Some(lhs == rhs)
 }
 
-pub fn scheme_instance_hash_hook<'gc>(_class: Gc<'gc, ClassDescriptor<'gc>>, value: Value<'gc>) -> u64 {
+pub fn scheme_instance_hash_hook<'gc>(
+    _class: Gc<'gc, ClassDescriptor<'gc>>,
+    value: Value<'gc>,
+) -> u64 {
     value.as_cell_raw().hashcode()
 }
 

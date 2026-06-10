@@ -1,11 +1,16 @@
-use crate::rsgc::ObjectSlot;
-use crate::rsgc::collection::{Visitor, VisitorKind};
-use crate::rsgc::{
-    conservative::scan_conservative_native_stack, mm::MemoryManager, object::GCObject,
-    sync::thread::Thread, traits::Trace,
-};
-use mmtk::vm::SlotVisitor;
 use std::collections::HashSet;
+
+use mmtk::vm::SlotVisitor;
+
+use crate::rsgc::{
+    ObjectSlot,
+    collection::{Visitor, VisitorKind},
+    conservative::scan_conservative_native_stack,
+    mm::MemoryManager,
+    object::GCObject,
+    sync::thread::Thread,
+    traits::Trace,
+};
 pub struct RustScanning;
 
 impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
