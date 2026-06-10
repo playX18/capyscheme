@@ -326,7 +326,7 @@ impl Thread {
             "Thread must be in InNative state after entering native, got: {:?}",
             thread.get_exec_status()
         );
-        // TODO: CAS loop
+        // TODO(GC): Use a CAS loop instead of asserting single-threaded access
     }
 
     fn attempt_leave_native_no_block() -> bool {

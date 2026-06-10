@@ -25,7 +25,7 @@ type RootedGlobalTable = crate::Rootable!(GlobalTable<'_>);
 /// Implemented as a vector of [`Value`]s, indexed by [`Global`]s which allows
 /// us to serialize and deserialize it in a straightforward manner.
 pub struct GlobalTable<'gc> {
-    // TODO: Allow removing globals? Use a slab or similar data structure?
+    // TODO(GC): Allow removing globals? Use a slab or similar data structure?
     globals: Monitor<GlobalMap<'gc>>,
 }
 

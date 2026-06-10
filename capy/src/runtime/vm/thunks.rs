@@ -354,7 +354,7 @@ fn wrong_number_of_args_impl<'gc>(
     let msg = if is_cont {
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
-            println!(
+            log::trace!(
                 "WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}",
                 meta = if subr.is::<Closure>() {
                     subr.downcast::<Closure>().meta.get()
@@ -371,7 +371,7 @@ fn wrong_number_of_args_impl<'gc>(
     } else {
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
-            println!(
+            log::trace!(
                 "WRONG ARGUMENTS TO {subr} (meta: {meta}) {sym:?}: {rands:?}",
                 meta = if subr.is::<Closure>() {
                     subr.downcast::<Closure>().meta.get()
@@ -520,17 +520,17 @@ thunks! {
         ctx: Context<'gc>,
         subr: Value<'gc>
     ) -> Value<'gc> {
-        println!("call {subr}");
+        log::trace!("call {subr}");
         crate::runtime::vm::debug::print_stacktraces_impl(ctx);
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
             match subr.class_id() {
                 Some(class_id) => {
-                    println!("NON-APPLICABLE {subr}, class-id: {} called here:", class_id.bits())
+                    log::trace!("NON-APPLICABLE {subr}, class-id: {} called here:", class_id.bits())
                 }
-                None => println!("NON-APPLICABLE {subr}, class-id: <none> called here:"),
+                None => log::trace!("NON-APPLICABLE {subr}, class-id: <none> called here:"),
             }
-            println!("{sym:?}");
+            log::trace!("{sym:?}");
         });
         make_assertion_violation(
             ctx,
@@ -748,10 +748,10 @@ thunks! {
         if !module.is::<Module>() {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
-                println!("set-current-module: {module} ");
-                println!("{sym:?}");
+                log::trace!("set-current-module: {module} ");
+                log::trace!("{sym:?}");
             });
-            println!("set-current-module: not a module: {}", module);
+            log::trace!("set-current-module: not a module: {}", module);
             print_stacktraces_impl(ctx);
             panic!("set-current-module: not a module: {}", module);
         }
@@ -1650,7 +1650,7 @@ thunks! {
 
     pub fn logand(ctx: Context<'gc>, a: Value<'gc>, b: Value<'gc>) -> ThunkResult<'gc> {
         let Some(a) = a.number() else {
-            println!("logand: {a} is not a number, b={b}");
+            log::trace!("logand: {a} is not a number, b={b}");
             print_stacktraces_impl(ctx);
             return ThunkResult {
                 code: 1,
@@ -1663,7 +1663,7 @@ thunks! {
         };
 
         let Some(b) = b.number() else {
-            println!("logand: {b} is not a number, a={a}");
+            log::trace!("logand: {b} is not a number, a={a}");
             print_stacktraces_impl(ctx);
             return ThunkResult {
                 code: 1,
@@ -2290,8 +2290,8 @@ thunks! {
         if !c.is_char() {
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as *mut _, |symbol| {
-                println!("CHAR->INTEGER error {c}");
-                println!("{symbol:?}");
+                log::trace!("CHAR->INTEGER error {c}");
+                log::trace!("{symbol:?}");
             });
             crate::runtime::vm::debug::print_stacktraces_impl(ctx);
             return ThunkResult {

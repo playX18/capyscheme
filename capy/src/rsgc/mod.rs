@@ -34,7 +34,6 @@ pub mod ptr;
 pub mod scanning;
 pub mod sync;
 pub mod traits;
-pub mod util;
 pub mod weak;
 
 pub struct GarbageCollector {

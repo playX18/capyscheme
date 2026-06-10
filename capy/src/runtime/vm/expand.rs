@@ -915,7 +915,6 @@ impl<'gc> ScmTermToRsTerm<'gc> {
             let vars = receive_vars(self.ctx, t);
             let producer = receive_producer(self.ctx, t);
             let consumer = receive_consumer(self.ctx, t);
-            //println!("receive {ids} {vars} {producer} {consumer}");
             let mut lvars = Vec::new();
 
             let mut ls_vars = vars;

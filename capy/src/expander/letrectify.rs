@@ -175,7 +175,6 @@ impl<'gc> Letrectify<'gc> {
         let declarative_box_and_value = {
             let mut tab = HashMap::new();
             declarative.iter().for_each(|(&(module, name), _)| {
-                // println!(";; Declarative toplevel: {}@{}", module.0, name);
                 let boxed = if !private.contains(&(module, name)) {
                     Some(fresh_lvar(
                         ctx,
@@ -424,7 +423,6 @@ pub fn is_define_module_term<'gc>(
         && !args.is_empty()
         && let TermKind::Const(mod_name) = args[0].kind
     {
-        // println!(";; module definition: {}", mod_name);
         return Some((mod_name, args));
     }
 

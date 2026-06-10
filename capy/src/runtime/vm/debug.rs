@@ -237,7 +237,7 @@ pub fn print_stacktraces_impl<'gc>(ctx: Context<'gc>) {
                 frame.rator.to_string()
             };
 
-            println!(" at {}: {}(...)", src, proc_name,);
+            log::trace!(" at {}: {}(...)", src, proc_name,);
         });
 
         false

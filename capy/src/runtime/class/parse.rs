@@ -1,7 +1,7 @@
-use crate::runtime::{Context, value::Value};
 use super::descriptor::ClassDescriptor;
 use super::slot::SlotSpec;
 use super::table::{ClassListError, SchemeClassSpecError};
+use crate::runtime::{Context, value::Value};
 
 pub(crate) struct ParsedSlotSpec<'gc> {
     pub(crate) name: String,
@@ -163,7 +163,9 @@ fn slot_init_keyword_value<'gc>(value: Value<'gc>) -> Value<'gc> {
     }
 }
 
-pub(crate) fn parse_class_list<'gc>(values: Value<'gc>) -> Result<Vec<ClassId>, ClassListError<'gc>> {
+pub(crate) fn parse_class_list<'gc>(
+    values: Value<'gc>,
+) -> Result<Vec<ClassId>, ClassListError<'gc>> {
     let mut cursor = values;
     let mut ids = Vec::new();
     while !cursor.is_null() {
@@ -195,5 +197,5 @@ pub(crate) fn parse_scheme_class_shape<'gc>(
     Ok((name, direct_supers, slot_specs))
 }
 
-use crate::rsgc::object::ClassId;
 use crate::rsgc::Gc;
+use crate::rsgc::object::ClassId;

@@ -384,7 +384,9 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                     Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst constant is too big"))),
                     Number::Flonum(flonum) => Some(Value::from_raw(flonum.to_bits())),
 
-                    _ => panic!("BUG: .iconst called on non-integer value"),
+                    Number::Rational(_) | Number::Complex(_) => {
+                        panic!("BUG: .iconst called on non-integer value")
+                    }
                 }
             } else {
                 panic!("BUG: .iconst called on non-number value")
@@ -396,7 +398,9 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 match n {
                     Number::Fixnum(fix) => Some(Value::from_raw((fix & 0xFFFF) as u64)),
                     Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst16 constant is too big") & 0xFFFF)),
-                    _ => panic!("BUG: .iconst16 called on non-integer value"),
+                    Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                        panic!("BUG: .iconst16 called on non-integer value")
+                    }
                 }
             } else {
                 panic!("BUG: .iconst16 called on non-number value")
@@ -408,7 +412,9 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 match n {
                     Number::Fixnum(fix) => Some(Value::from_raw(fix as u32 as u64)),
                     Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst32 constant is too big") & 0xFFFFFFFF)),
-                    _ => panic!("BUG: .iconst32 called on non-integer value"),
+                    Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                        panic!("BUG: .iconst32 called on non-integer value")
+                    }
                 }
             } else {
                 panic!("BUG: .iconst32 called on non-number value")
@@ -420,7 +426,9 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 match n {
                     Number::Fixnum(fix) => Some(Value::from_raw(fix as u64)),
                     Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst64 constant is too big"))),
-                    _ => panic!("BUG: .iconst64 called on non-integer value"),
+                    Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
+                        panic!("BUG: .iconst64 called on non-integer value")
+                    }
                 }
             } else {
                 panic!("BUG: .iconst64 called on non-number value")

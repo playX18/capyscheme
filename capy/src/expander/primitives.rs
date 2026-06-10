@@ -384,7 +384,7 @@ primitive_expanders!(
 
 
     "apply" ex_apply<'gc>(ctx, args, src) {
-        // TODO: expand apply into a call when possible?
+        // TODO(expander): expand apply into a call when possible?
         // Right now just reify into a normal call...
         let _ = args;
         let _ = src;

@@ -108,7 +108,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
             .truncate(true)
             .open(format!("{destination}.ir.noopt.scm"))
             .unwrap();
-        println!(";; TRACE  (capy)@load: IR noopt -> {destination}.ir.noopt.scm");
+        log::info!(";; TRACE  (capy)@load: IR noopt -> {destination}.ir.noopt.scm");
         doc.1.render(80, &mut file_noopt).unwrap();
     }
 
@@ -121,7 +121,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         .truncate(true)
         .open(format!("{destination}.ir.scm"))
         .unwrap();
-    println!(";; TRACE  (capy)@load: IR -> {destination}.ir.scm");
+    log::info!(";; TRACE  (capy)@load: IR -> {destination}.ir.scm");
     doc.1.render(80, &mut file).unwrap();
 
     let doc = lowered
@@ -133,7 +133,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
         .truncate(true)
         .open(format!("{destination}.cps.scm"))
         .unwrap();
-    println!(";; TRACE  (capy)@load: CPS -> {destination}.cps.scm");
+    log::info!(";; TRACE  (capy)@load: CPS -> {destination}.cps.scm");
     doc.1.render(80, &mut file).unwrap();
 
     let linear_cps = {
@@ -143,7 +143,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
     };
     let rendered = render_lcps_dump(&linear_cps);
     std::fs::write(format!("{destination}.lcps.scm"), rendered).unwrap();
-    println!(";; TRACE  (capy)@load: LCPS -> {destination}.lcps.scm");
+    log::info!(";; TRACE  (capy)@load: LCPS -> {destination}.lcps.scm");
 }
 
 fn render_lcps_dump<'gc>(linear_cps: &crate::cps::linear::LinearProgram<'gc>) -> String {

@@ -1,10 +1,10 @@
+use super::builtin::builtin_id;
+use super::hooks::{PrimitiveSlotBoundHook, PrimitiveSlotRefHook, PrimitiveSlotSetHook};
 use crate::rsgc::alloc::{Array, ArrayRef};
 use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::rsgc::{Gc, Trace, Visitor, WeakProcessor};
 use crate::runtime::value::conversions::ClassTagged;
 use crate::runtime::{Context, value::Value};
-use super::builtin::builtin_id;
-use super::hooks::{PrimitiveSlotBoundHook, PrimitiveSlotRefHook, PrimitiveSlotSetHook};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Trace)]
 pub struct SlotFlags(u8);
@@ -217,7 +217,12 @@ unsafe impl Trace for SlotDescriptor<'_> {
 }
 
 impl<'gc> SlotDescriptor<'gc> {
-    pub(crate) fn from_spec(ctx: Context<'gc>, owner: ClassId, index: usize, spec: SlotSpec<'_, 'gc>) -> Self {
+    pub(crate) fn from_spec(
+        ctx: Context<'gc>,
+        owner: ClassId,
+        index: usize,
+        spec: SlotSpec<'_, 'gc>,
+    ) -> Self {
         Self {
             name: Array::from_slice(*ctx, spec.name.as_bytes()),
             owner,
@@ -596,7 +601,10 @@ pub struct SlotAccessorDefinition<'gc> {
 }
 
 impl<'gc> SlotAccessorDefinition<'gc> {
-    pub(crate) fn from_accessor(ctx: Context<'gc>, accessor: SlotAccessorDescriptor<'gc>) -> Gc<'gc, Self> {
+    pub(crate) fn from_accessor(
+        ctx: Context<'gc>,
+        accessor: SlotAccessorDescriptor<'gc>,
+    ) -> Gc<'gc, Self> {
         Gc::new_with_header_word(
             *ctx,
             Self {

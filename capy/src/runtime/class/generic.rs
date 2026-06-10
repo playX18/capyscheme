@@ -1,16 +1,15 @@
-
+use super::descriptor::ClassDescriptor;
+use super::table::class_table;
 use crate::prelude::*;
 use crate::rsgc::alloc::{Array, ArrayRef};
 use crate::rsgc::cell::Lock;
-use crate::rsgc::object::{ClassId, class_header_word, builtin_class_ids};
+use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::rsgc::{Gc, Trace};
 use crate::runtime::value::conversions::ClassTagged;
 use crate::runtime::{
     Context,
-    value::{Closure, NativeReturn, Value, PROCEDURES},
+    value::{Closure, NativeReturn, PROCEDURES, Value},
 };
-use super::descriptor::ClassDescriptor;
-use super::table::class_table;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GenericDispatchError {
@@ -544,7 +543,10 @@ impl<'gc> GenericDescriptor<'gc> {
         .set(appended);
     }
 
-    pub(crate) fn clear_dispatcher_cache(ctx: Context<'gc>, generic: Gc<'gc, GenericDescriptor<'gc>>) {
+    pub(crate) fn clear_dispatcher_cache(
+        ctx: Context<'gc>,
+        generic: Gc<'gc, GenericDescriptor<'gc>>,
+    ) {
         barrier::field!(
             Gc::write(*ctx, generic),
             GenericDescriptor,
