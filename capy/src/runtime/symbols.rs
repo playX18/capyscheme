@@ -124,6 +124,7 @@ mod tests {
         ];
 
         for (data, expected_header_word) in cases {
+            // SAFETY: Preconditions verified by the surrounding code
             let header_word = unsafe { data.address().load::<u64>() };
 
             assert_eq!(header_word, expected_header_word);

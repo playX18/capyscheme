@@ -92,6 +92,7 @@ impl VmThread {
                             mutator.mutate(|mc, _| {
                                 mmtk::memory_manager::gc_poll(
                                     &GarbageCollector::get().mmtk,
+                                    // SAFETY: Preconditions verified by the surrounding code
                                     unsafe {
                                         // SAFETY: `mc.thread()` and `VMMutatorThread` are both
                                         // thin wrappers around the same `*mut Thread` pointer.

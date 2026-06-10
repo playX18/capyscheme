@@ -132,6 +132,7 @@ impl<'gc> ConversionError<'gc> {
 /// downcast layout for the Rust type. An incorrect declaration
 /// can make [`Value::downcast`] produce a `Gc<T>` for an object with a different
 /// layout.
+// SAFETY: Invariants are upheld at this call site
 pub unsafe trait ClassTagged {
     /// Human-readable name used in conversion errors.
     const TYPE_NAME: &'static str;

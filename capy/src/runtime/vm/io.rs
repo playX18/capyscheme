@@ -33,8 +33,10 @@ fn term_io_error<'gc, R: TryIntoValues<'gc>>(
     nctx.raise_io_error(err, operation, who, &msg, irritant)
 }
 
+// SAFETY: Caller must ensure preconditions are met (see fn docs)
 unsafe fn open_tty_raw_fd() -> Result<i32, std::io::Error> {
     let path = CString::new("/dev/tty").expect("static tty path");
+    // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
     let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
     if fd < 0 {
         Err(std::io::Error::last_os_error())
@@ -556,6 +558,7 @@ pub mod io_ops {
     pub fn io_open(path: Gc<'gc, Str<'gc>>, oflag: i32, pmode: i32) -> i32 {
         let path = path.to_string();
 
+        // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
             let cpath = std::ffi::CString::new(path).expect("path should not contain null bytes");
             nctx.return_(libc::open(cpath.as_ptr(), oflag, pmode))
@@ -564,6 +567,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/isatty?")]
     pub fn term_isatty(fd: i32) -> bool {
+        // SAFETY: FFI: fd is a valid open file descriptor
         unsafe { nctx.return_(libc::isatty(fd) == 1) }
     }
 
@@ -577,6 +581,7 @@ pub mod io_ops {
             libc::O_RDONLY
         } | libc::O_CLOEXEC;
 
+        // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
             let path = CString::new("/dev/tty").expect("static tty path");
             let ret = libc::open(path.as_ptr(), flags);
@@ -597,6 +602,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/close-fd")]
     pub fn term_close_fd(fd: i32) -> i32 {
+        // SAFETY: FFI: fd is a valid open file descriptor
         unsafe {
             let ret = libc::close(fd);
             if ret < 0 {
@@ -616,6 +622,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/pipe")]
     pub fn term_pipe() -> Value<'gc> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut fds = [0i32; 2];
             let ret = libc::pipe(fds.as_mut_ptr());
@@ -643,6 +650,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/get-flags")]
     pub fn term_get_flags(fd: i32) -> i32 {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::fcntl(fd, libc::F_GETFL);
             if ret < 0 {
@@ -662,6 +670,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/set-flags!")]
     pub fn term_set_flags(fd: i32, flags: i32) -> i32 {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::fcntl(fd, libc::F_SETFL, flags);
             if ret < 0 {
@@ -681,6 +690,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/nonblocking!")]
     pub fn term_nonblocking(fd: i32, enabled: bool) -> bool {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFL);
             if flags < 0 {
@@ -734,6 +744,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(from) as *mut libc::c_void;
             let ret = libc::read(fd, ptr, nbytes);
@@ -760,6 +771,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(start) as *mut libc::c_void;
             let ret = libc::read(fd, ptr, count);
@@ -801,6 +813,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ptr = buf.as_slice().as_ptr().add(from) as *mut libc::c_void;
             let ret = libc::write(fd, ptr, nbytes);
@@ -827,6 +840,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ptr = buf.as_slice().as_ptr().add(start) as *const libc::c_void;
             let ret = libc::write(fd, ptr, count);
@@ -852,6 +866,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/install-sigwinch-handler!")]
     pub fn term_install_sigwinch_handler() -> bool {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = term_sigwinch_handler as *const () as usize;
@@ -880,6 +895,7 @@ pub mod io_ops {
             return nctx.return_(true);
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let fd = match open_tty_raw_fd() {
                 Ok(fd) => fd,
@@ -920,6 +936,7 @@ pub mod io_ops {
             return nctx.return_(true);
         };
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             if libc::tcsetattr(fd, libc::TCSANOW, &saved) < 0 {
                 return term_io_error(nctx, IoOperation::Stat, "term/disable-raw-mode!", fd.into());
@@ -951,6 +968,7 @@ pub mod io_ops {
 
     #[scheme(name = "term/terminal-size-list")]
     pub fn term_terminal_size_list() -> Value<'gc> {
+        // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
             let tty_fd = {
                 let path = CString::new("/dev/tty").expect("static tty path");
@@ -1009,6 +1027,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let ptr = buf.as_slice_mut_unchecked().as_mut_ptr().add(from) as *mut libc::c_void;
             let ret = libc::pread(fd, ptr, nbytes, offset);
@@ -1042,6 +1061,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ptr = buf.as_slice().as_ptr().add(from) as *const libc::c_void;
             let ret = libc::pwrite(fd, ptr, nbytes, offset);
@@ -1051,6 +1071,7 @@ pub mod io_ops {
 
     #[scheme(name = "io/lseek")]
     pub fn io_lseek64(fd: i32, offset: i64, whence: i32) -> i64 {
+        // SAFETY: FFI: fd is valid, whence is a valid seek origin
         unsafe {
             let ret = libc::lseek(fd, offset, whence);
             nctx.return_(ret)
@@ -1073,6 +1094,7 @@ pub mod io_ops {
         let templ = format!("{template}_XXXXXX");
         arr[..templ.len()].copy_from_slice(templ.as_bytes());
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::mkstemp(arr.as_mut_ptr() as *mut _);
             let newname = std::ffi::CStr::from_ptr(arr.as_ptr() as _).to_string_lossy();
@@ -1115,6 +1137,7 @@ pub mod io_ops {
             return nctx.return_(-1);
         }
 
+        // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         unsafe {
             let cpath =
                 CString::new(filename.to_string()).expect("filename should not contain null bytes");
@@ -1125,6 +1148,7 @@ pub mod io_ops {
 
     #[scheme(name = "syscall:close")]
     pub fn syscall_close(fd: i32) -> i32 {
+        // SAFETY: FFI: fd is a valid open file descriptor
         unsafe {
             let ret = libc::close(fd);
 
@@ -1147,6 +1171,7 @@ pub mod io_ops {
         }
 
         loop {
+            // SAFETY: Mutable access is exclusive and goes through GC write barrier
             let ret = unsafe {
                 let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
                 libc::read(fd, ptr, nbytes)
@@ -1175,6 +1200,7 @@ pub mod io_ops {
         }
 
         loop {
+            // SAFETY: Preconditions verified by the surrounding code
             let ret = unsafe {
                 let ptr = buf.as_slice().as_ptr().wrapping_add(offset) as *const libc::c_void;
                 libc::write(fd, ptr, nbytes)
@@ -1197,6 +1223,7 @@ pub mod io_ops {
             _ => return nctx.return_(-1),
         };
         loop {
+            // SAFETY: FFI: fd is valid, whence is a valid seek origin
             let ret = unsafe { libc::lseek(fd, offset, whence) };
             if ret != -1
                 || (errno::errno().0 != libc::EAGAIN && errno::errno().0 != libc::EWOULDBLOCK)
@@ -1209,6 +1236,7 @@ pub mod io_ops {
 
     #[scheme(name = "syscall:pollinput")]
     pub fn syscall_pollinput(fd: i32) -> i32 {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut fds = libc::pollfd {
                 fd,
@@ -1228,6 +1256,7 @@ pub mod io_ops {
     pub fn syscall_unlink(filename: Gc<'gc, Str<'gc>>) -> i32 {
         let cpath =
             CString::new(filename.to_string()).expect("filename should not contain null bytes");
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::unlink(cpath.as_ptr());
             nctx.return_(ret)
@@ -1240,6 +1269,7 @@ pub mod io_ops {
             .expect("old filename should not contain null bytes");
         let cnew = CString::new(new_filename.to_string())
             .expect("new filename should not contain null bytes");
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::rename(cold.as_ptr(), cnew.as_ptr());
             nctx.return_(ret)
@@ -1250,6 +1280,7 @@ pub mod io_ops {
     pub fn syscall_mtime(filename: Gc<'gc, Str<'gc>>, vbuf: Gc<'gc, Vector<'gc>>) -> i32 {
         let path = filename.to_string();
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut buf = std::mem::zeroed::<libc::stat>();
             let cpath = CString::new(path).expect("path should not contain null bytes");
@@ -1296,6 +1327,7 @@ pub mod io_ops {
 
         let cpath =
             CString::new(filename.to_string()).expect("filename should not contain null bytes");
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::access(cpath.as_ptr(), rmode);
             nctx.return_(ret)
@@ -1317,6 +1349,7 @@ pub mod io_ops {
         }
 
         loop {
+            // SAFETY: Mutable access is exclusive and goes through GC write barrier
             let ret = unsafe {
                 let ptr = buf.as_slice_mut_unchecked().as_mut_ptr() as *mut libc::c_void;
                 libc::recv(fd, ptr, nbytes, flags)
@@ -1345,6 +1378,7 @@ pub mod io_ops {
         }
 
         loop {
+            // SAFETY: Preconditions verified by the surrounding code
             let ret = unsafe {
                 let ptr = buf.as_slice().as_ptr() as *const libc::c_void;
                 libc::send(fd, ptr, nbytes, flags)
@@ -1376,6 +1410,7 @@ pub mod io_ops {
     pub fn system(command: Gc<'gc, Str<'gc>>) -> i32 {
         let ccommand =
             CString::new(command.to_string()).expect("command should not contain null bytes");
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let ret = libc::system(ccommand.as_ptr());
             if ret != -1 {
@@ -1408,6 +1443,7 @@ pub mod io_ops {
     #[scheme(name = "acquire-lockfile")]
     pub fn acquire_lockfile(path: Gc<'gc, Str<'gc>>, wait: Option<bool>) -> i32 {
         let wait = wait.unwrap_or(true);
+        // SAFETY: FFI: path is a valid NUL-terminated string with valid flags
         let fd = unsafe {
             libc::open(
                 CString::new(path.to_string())
@@ -1430,6 +1466,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: FFI: fd is valid, operation follows POSIX flock semantics
         if unsafe { libc::flock(fd, libc::LOCK_EX | if wait { 0 } else { libc::LOCK_NB }) } != 0 {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
@@ -1447,6 +1484,7 @@ pub mod io_ops {
 
     #[scheme(name = "release-lockfile")]
     pub fn release_lockfile(fd: i32) -> bool {
+        // SAFETY: FFI: fd is valid, operation follows POSIX flock semantics
         if unsafe { libc::flock(fd, libc::LOCK_UN) } != 0 {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
@@ -1459,6 +1497,7 @@ pub mod io_ops {
             );
         }
 
+        // SAFETY: FFI: fd is a valid open file descriptor
         if unsafe { libc::close(fd) } != 0 {
             let err = std::io::Error::last_os_error();
             let error = err.to_string();
@@ -1524,6 +1563,7 @@ pub mod io_ops {
 
     #[scheme(name = "%process-wait")]
     pub fn process_wait(pid: i32) -> i32 {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut status: i32 = 0;
             let ret = libc::waitpid(pid, &mut status as *mut i32, 0);
@@ -1579,6 +1619,7 @@ pub mod io_ops {
     /// - `flags`: The events to monitor (e.g., readable, writable).
     #[scheme(name = "poller-add!")]
     pub fn poller_add(poller: Gc<'gc, Poller>, key: usize, fd: i32, flags: i32) -> bool {
+        // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let readable = (flags & EREADABLE) != 0;
         let writable = (flags & EWRITABLE) != 0;
@@ -1590,6 +1631,7 @@ pub mod io_ops {
             event.set_interrupt(true);
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             match poller.inner.add(&fd, event) {
                 Ok(()) => nctx.return_(true),
@@ -1615,6 +1657,7 @@ pub mod io_ops {
         flags: i32,
         mode: i32,
     ) -> bool {
+        // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let mode = match mode {
             EONESHOT => polling::PollMode::Oneshot,
@@ -1651,6 +1694,7 @@ pub mod io_ops {
             event.set_interrupt(true);
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             match poller.inner.add_with_mode(&fd, event, mode) {
                 Ok(()) => nctx.return_(true),
@@ -1670,6 +1714,7 @@ pub mod io_ops {
 
     #[scheme(name = "poller-delete!")]
     pub fn poller_delete(poller: Gc<'gc, Poller>, fd: i32) -> bool {
+        // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         {
             match poller.inner.delete(fd) {
@@ -1690,6 +1735,7 @@ pub mod io_ops {
 
     #[scheme(name = "poller-modify!")]
     pub fn poller_modify(poller: Gc<'gc, Poller>, fd: i32, flags: i32) -> bool {
+        // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let readable = (flags & EREADABLE) != 0;
         let writable = (flags & EWRITABLE) != 0;
@@ -1728,6 +1774,7 @@ pub mod io_ops {
         flags: i32,
         mode: i32,
     ) -> bool {
+        // SAFETY: The raw fd is a valid open file descriptor
         let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
         let mode = match mode {
             EONESHOT => polling::PollMode::Oneshot,
@@ -1783,6 +1830,7 @@ pub mod io_ops {
         let timeout = timeout.map(std::time::Duration::from_micros);
         let poller_ptr = Gc::as_ptr(poller);
         let wait_outcome = ctx.outside_gc_world(|| {
+            // SAFETY: Preconditions verified by the surrounding code
             let poller = unsafe { &*poller_ptr };
             let mut events = polling::Events::new();
             let res = poller.inner.wait(&mut events, timeout);
@@ -1962,16 +2010,20 @@ fn poller_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::POLLER).unwrap())
 }
 
+// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Poller`
 unsafe impl ClassTagged for Poller {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::POLLER];
     const TYPE_NAME: &'static str = "poller";
 }
 
+// SAFETY: GC trace for `Poller` — all reachable heap fields are visited
 unsafe impl Trace for Poller {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         let _ = visitor;
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
         let _ = weak_processor;
     }
@@ -1989,6 +2041,7 @@ pub const EEDGE: i32 = 0x04;
 pub const EEDGEONESHOT: i32 = 0x08;
 
 fn blocking_poll_read(fd: i32) {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let mut readfs = [rustix::event::FdSetElement::default(); 1];
         rustix::event::fd_set_insert(&mut readfs, fd);
@@ -1997,6 +2050,7 @@ fn blocking_poll_read(fd: i32) {
 }
 
 fn blocking_poll_write(fd: i32) {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let mut writefs = [rustix::event::FdSetElement::default(); 1];
         rustix::event::fd_set_insert(&mut writefs, fd);

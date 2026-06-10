@@ -128,6 +128,7 @@ impl<'gc> Eq for Func<'gc> {}
 
 impl<'gc> Hash for Func<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // SAFETY: The pointer references a valid GC-managed object of the expected type
         unsafe {
             let hashcode = Gc::ptr_hash(Gc::from_ptr(self));
             hashcode.hash(state);
@@ -164,6 +165,7 @@ impl<'gc> Eq for Cont<'gc> {}
 
 impl<'gc> Hash for Cont<'gc> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // SAFETY: The pointer references a valid GC-managed object of the expected type
         unsafe {
             let hashcode = Gc::ptr_hash(Gc::from_ptr(self));
             hashcode.hash(state);

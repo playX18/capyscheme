@@ -187,6 +187,7 @@ impl<'gc> Pair<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Pair` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Pair<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::PAIR];
     const TYPE_NAME: &'static str = "pair";

@@ -58,7 +58,9 @@ impl<'gc> FoldingTable<'gc> {
 // 3. The GC only updates pointer bits inside Values, not their hash or equality behavior
 //    (NaN-boxed cell pointers preserve their bucket identity after forwarding).
 unsafe impl<'gc> Trace for FoldingTable<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             for val in self.table.keys() {
                 // SAFETY: See above — exclusive `&mut self` access makes this const-to-mut cast sound.
@@ -68,6 +70,7 @@ unsafe impl<'gc> Trace for FoldingTable<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }

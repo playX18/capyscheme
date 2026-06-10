@@ -36,10 +36,12 @@ mod dl_ops {
     #[scheme(name = "dlopen")]
     pub fn dlopen(name: Value<'gc>, flags: i32) -> Value<'gc> {
         let handle = if name == Value::new(false) {
+            // SAFETY: FFI: arguments follow POSIX dlopen requirements
             unsafe { libc::dlopen(std::ptr::null(), flags) }
         } else if name.is::<Str>() {
             let s = name.downcast::<Str>().to_string();
             let cstr = std::ffi::CString::new(s).unwrap();
+            // SAFETY: FFI: arguments follow POSIX dlopen requirements
             unsafe { libc::dlopen(cstr.as_ptr(), flags) }
         } else {
             return nctx.wrong_argument_violation(
@@ -53,6 +55,7 @@ mod dl_ops {
         };
 
         if handle.is_null() {
+            // SAFETY: FFI: dlerror call is safe after a failed dlopen/dlsym
             let dlerror = unsafe {
                 let err_ptr = libc::dlerror();
                 if err_ptr.is_null() {
@@ -88,8 +91,10 @@ mod dl_ops {
     pub fn dlclose(handle: Gc<'gc, Pointer>) -> Value<'gc> {
         let handle_ptr = handle.value();
 
+        // SAFETY: FFI: handle was obtained from a previous dlopen
         let result = unsafe { libc::dlclose(handle_ptr as _) };
         if result != 0 {
+            // SAFETY: FFI: dlerror call is safe after a failed dlopen/dlsym
             let dlerror = unsafe {
                 let err_ptr = libc::dlerror();
                 if err_ptr.is_null() {
@@ -131,8 +136,10 @@ mod dl_ops {
             );
         };
 
+        // SAFETY: FFI: handle is valid, symbol name is NUL-terminated
         let sym_ptr = unsafe { libc::dlsym(handle_ptr as _, symbol_cstr.as_ptr()) };
         if sym_ptr.is_null() {
+            // SAFETY: FFI: dlerror call is safe after a failed dlopen/dlsym
             let dlerror = unsafe {
                 let err_ptr = libc::dlerror();
                 if err_ptr.is_null() {
@@ -159,6 +166,7 @@ mod dl_ops {
 
     #[scheme(name = "load-native-extension")]
     pub fn load_native_extension(path: StringRef<'gc>) -> Result<Value<'gc>, Value<'gc>> {
+        // SAFETY: FFI: arguments follow POSIX dlopen requirements
         let handle = unsafe {
             libc::dlopen(
                 std::ffi::CString::new(path.to_string()).unwrap().as_ptr(),
@@ -166,6 +174,7 @@ mod dl_ops {
             )
         };
         if handle.is_null() {
+            // SAFETY: FFI: dlerror call is safe after a failed dlopen/dlsym
             let dlerror = unsafe {
                 let err_ptr = libc::dlerror();
                 if err_ptr.is_null() {
@@ -181,6 +190,7 @@ mod dl_ops {
                 &[path.into()],
             );
         }
+        // SAFETY: FFI: handle is valid, symbol name is NUL-terminated
         let init: extern "C-unwind" fn(Context<'gc>) -> VMResult<'gc> = unsafe {
             let symbol = libc::dlsym(handle, c"capy_register_extension".as_ptr() as _);
             if symbol.is_null() {

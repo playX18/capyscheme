@@ -57,6 +57,7 @@ pub mod interrupt_ops {
             [thread.into(), retk],
             Value::null(),
         );
+        // SAFETY: Tail-call return values are correctly set up from native code
         unsafe { nctx.return_call_unsafe(after.into(), thunk.into(), &[]) }
     }
 }
@@ -67,6 +68,7 @@ extern "C-unwind" fn call_without_interrupts_after<'gc>(
     rands: *const Value<'gc>,
     num_rands: usize,
 ) -> NativeReturn<'gc> {
+    // SAFETY: Preconditions verified by the surrounding code
     let nctx = unsafe {
         NativeCallContext::<Value>::from_raw(ctx, rator, rands, num_rands, Value::undefined())
     };
@@ -75,7 +77,9 @@ extern "C-unwind" fn call_without_interrupts_after<'gc>(
     let retk = rator[2].get();
     thread.unmask_interrupts();
     deliver_pending_interrupts(ctx);
+    // SAFETY: Pointer is valid for the given element count
     let values = unsafe { std::slice::from_raw_parts(rands, num_rands) };
+    // SAFETY: `retk` is a valid continuation frame on the stack
     unsafe { nctx.continue_to(retk, values) }.ret
 }
 

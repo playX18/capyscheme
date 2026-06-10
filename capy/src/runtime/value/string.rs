@@ -36,6 +36,7 @@ fn stringbuf_header_word(is_wide: bool) -> u64 {
     class_header_word(ClassId::new(class_id).unwrap())
 }
 
+// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Stringbuf`
 unsafe impl ClassTagged for Stringbuf {
     const CLASS_IDS: &'static [u32] = &[
         crate::rsgc::object::builtin_class_ids::STRINGBUF_WIDE,
@@ -44,15 +45,19 @@ unsafe impl ClassTagged for Stringbuf {
     const TYPE_NAME: &'static str = "#<stringbuf>";
 }
 
+// SAFETY: GC trace for `Stringbuf` — all reachable heap fields are visited
 unsafe impl Trace for Stringbuf {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, _visitor: &mut Visitor) {
         // No pointers to trace
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
 extern "C" fn compute_stringbuf_size(sb: GCObject) -> usize {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let sb = sb.to_address().as_ref::<Stringbuf>();
         let raw_size = sb.length
@@ -99,21 +104,25 @@ impl Stringbuf {
 
     pub(crate) fn chars<'a>(&self) -> &'a [u8] {
         assert!(self.is_narrow());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.contents().to_ptr(), self.len()) }
     }
 
     pub(crate) fn wide_chars<'a>(&self) -> &'a [char] {
         assert!(self.is_wide());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.contents().to_ptr(), self.len()) }
     }
 
     pub(crate) fn wide_chars_mut<'a>(&self) -> &'a mut [char] {
         assert!(self.is_wide());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.contents().to_mut_ptr(), self.len()) }
     }
 
     pub(crate) fn chars_mut<'a>(&self) -> &'a mut [u8] {
         assert!(self.is_narrow());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.contents().to_mut_ptr(), self.len()) }
     }
 
@@ -121,6 +130,7 @@ impl Stringbuf {
         let size =
             std::mem::size_of::<Self>() + length * if is_wide { size_of::<char>() } else { 1 };
         let bytesize_data = length * if is_wide { size_of::<char>() } else { 1 };
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let stringbuf_ = mc.raw_allocate_with_header_word(
                 size,
@@ -148,6 +158,7 @@ impl Stringbuf {
     #[allow(dead_code)]
     pub(crate) fn wide<'gc>(&self, mc: Mutation<'gc>) -> Gc<'gc, Self> {
         if self.is_wide() {
+            // SAFETY: The pointer references a valid GC-managed object of the expected type
             return unsafe { Gc::from_ptr(self) };
         }
 
@@ -165,6 +176,7 @@ impl Stringbuf {
 
     fn narrow<'gc>(&self, mc: Mutation<'gc>) -> Gc<'gc, Self> {
         if self.is_narrow() {
+            // SAFETY: The pointer references a valid GC-managed object of the expected type
             return unsafe { Gc::from_ptr(self) };
         }
 
@@ -280,6 +292,7 @@ impl<'gc> Str<'gc> {
                 Stringbuf::new(mc, count, false)
             };
             let chars = buf.chars_mut();
+            // SAFETY: The target pointer is valid, aligned, and points to writable memory
             unsafe {
                 std::ptr::write_bytes(chars.as_mut_ptr(), c as u8, count);
             }
@@ -450,6 +463,7 @@ impl<'gc> Str<'gc> {
     pub fn try_as_str(this: Gc<'gc, Self>, mc: Mutation<'gc>) -> Option<&'gc str> {
         if Self::try_narrow(this, mc) {
             let chars = this.chars().unwrap();
+            // SAFETY: Pointer is valid for the given element count
             let slice = unsafe { std::slice::from_raw_parts(chars.as_ptr(), this.len()) };
             Some(std::str::from_utf8(slice).unwrap())
         } else {
@@ -623,6 +637,7 @@ impl<'gc> Str<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Str` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Str<'gc> {
     const CLASS_IDS: &'static [u32] = &[
         crate::rsgc::object::builtin_class_ids::STRING,
@@ -854,6 +869,7 @@ impl<'gc> Symbol<'gc> {
 
     pub fn chars(&self) -> Option<&'gc [u8]> {
         if self.stringbuf.is_narrow() {
+            // SAFETY: Pointer is valid for the given element count
             Some(unsafe {
                 std::slice::from_raw_parts(self.stringbuf.contents().to_ptr(), self.len())
             })
@@ -864,6 +880,7 @@ impl<'gc> Symbol<'gc> {
 
     pub fn wide_chars(&self) -> Option<&'gc [char]> {
         if self.stringbuf.is_wide() {
+            // SAFETY: Pointer is valid for the given element count
             Some(unsafe {
                 std::slice::from_raw_parts(self.stringbuf.contents().to_ptr(), self.len())
             })

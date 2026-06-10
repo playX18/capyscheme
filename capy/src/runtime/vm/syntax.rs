@@ -72,6 +72,7 @@ impl<'gc> Syntax<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Syntax` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Syntax<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SYNTAX];
     const TYPE_NAME: &'static str = "#<syntax>";
@@ -391,6 +392,7 @@ impl<'gc> SyntaxTransformer<'gc> {
     }
 }
 
+// SAFETY: `gc` for `SyntaxTransformer` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for SyntaxTransformer<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SYNTAX_TRANSFORMER];
     const TYPE_NAME: &'static str = "#<syntax-transformer>";

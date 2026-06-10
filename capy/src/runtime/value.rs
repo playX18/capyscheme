@@ -46,6 +46,7 @@ pub union EncodedValueDescriptor {
 }
 
 impl EncodedValueDescriptor {
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub(crate) unsafe fn ptr(self) -> GCObject {
         // SAFETY: `*mut ()` and `GCObject` have the same layout (both pointer-sized).
         // Caller must ensure the value is a cell (i.e. `is_cell()` is true) so that `self.ptr`
@@ -69,6 +70,7 @@ impl<'gc> Hash for Value<'gc> {
                 return;
             }
 
+            // SAFETY: The value descriptor contains a valid GC object pointer
             unsafe {
                 // SAFETY: `is_cell()` guard above ensures `desc.ptr` is a valid GC object pointer.
                 let obj = self.desc.ptr();
@@ -99,11 +101,13 @@ impl<'gc> Value<'gc> {
 
     /// Returns the signed raw word backing this value.
     pub const fn raw_i64(self) -> i64 {
+        // SAFETY: NaN-boxed value bits are valid to read as raw i64/u64
         unsafe { self.desc.as_i64 }
     }
 
     /// Returns the raw bits backing this value.
     pub const fn bits(self) -> u64 {
+        // SAFETY: NaN-boxed value bits are valid to read as raw i64/u64
         unsafe { self.desc.as_u64 }
     }
 }
@@ -112,7 +116,9 @@ impl<'gc> Value<'gc> {
 // Non-cell values (ints, floats, tags) are ignored; cell values point into the GC heap
 // and `desc.ptr` is at a stable address suitable for `ObjectSlot` construction.
 unsafe impl<'gc> Trace for Value<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             if self.is_cell() && !self.is_empty() {
                 // SAFETY: `is_cell() && !is_empty()` ensures `desc.ptr` holds a live GC pointer.
@@ -124,6 +130,7 @@ unsafe impl<'gc> Trace for Value<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
@@ -443,6 +450,7 @@ impl<'gc> Value<'gc> {
             std::any::type_name::<T>(),
             self
         );
+        // SAFETY: The pointer references a valid GC-managed object of the expected type
         unsafe { Gc::from_gcobj(self.as_cell_raw()) }
     }
 
@@ -451,7 +459,9 @@ impl<'gc> Value<'gc> {
     /// # Safety
     ///
     /// The value must be a cell whose runtime type is `T`.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn downcast_unchecked<T: ClassTagged>(self) -> Gc<'gc, T> {
+        // SAFETY: The pointer references a valid GC-managed object of the expected type
         unsafe { Gc::from_gcobj(self.as_cell_raw()) }
     }
 

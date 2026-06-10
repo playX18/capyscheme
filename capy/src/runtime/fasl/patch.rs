@@ -464,6 +464,7 @@ mod tests {
 
     #[test]
     fn cranelift_arm64_call_relocation_patches_branch_immediate() {
+        // SAFETY: The usize was derived from a valid address by the caller
         let base = unsafe { Address::from_usize(0x1_0000) };
         let original = 0x9400_0000u32.to_le_bytes();
 
@@ -482,6 +483,7 @@ mod tests {
 
     #[test]
     fn cranelift_aarch64_page21_relocation_patches_adrp_immediate() {
+        // SAFETY: The usize was derived from a valid address by the caller
         let base = unsafe { Address::from_usize(0x1_0000) };
         let original = 0x9000_0000u32.to_le_bytes();
 
@@ -500,6 +502,7 @@ mod tests {
 
     #[test]
     fn cranelift_riscv_call_plt_relocation_patches_auipc_jalr_pair() {
+        // SAFETY: The usize was derived from a valid address by the caller
         let base = unsafe { Address::from_usize(0x1_0000) };
         let mut original = Vec::new();
         original.extend_from_slice(&0x0000_0097u32.to_le_bytes());

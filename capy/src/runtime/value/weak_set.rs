@@ -48,6 +48,7 @@ impl<'gc> WeakEntry<'gc> {
             return self.value;
         }
 
+        // SAFETY: The usize was derived from a valid address by the caller
         unsafe {
             mc.raw_weak_reference_load(GCObject::from_address(Address::from_usize(
                 self.value.bits() as _,
@@ -57,10 +58,13 @@ impl<'gc> WeakEntry<'gc> {
     }
 }
 
+// SAFETY: `gc` for `WeakEntry` upholds all trait invariants
 unsafe impl<'gc> Trace for WeakEntry<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, _visitor: &mut Visitor) {
         _visitor.register_for_weak_processing();
     }
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         if self.value.is_bwp() {
             assert!(!self.value.is::<Symbol>());
@@ -71,6 +75,7 @@ unsafe impl<'gc> Trace for WeakEntry<'gc> {
             return;
         }
 
+        // SAFETY: The pointer is a valid GC object descriptor from the current heap
         let new = unsafe { weak_processor.is_live_object(self.value.desc.ptr()) };
         if new.is_null() {
             self.value = Value::bwp();
@@ -122,12 +127,15 @@ const fn entry_distance(hash: u64, k: usize, size: usize) -> usize {
     }
 }
 
+// SAFETY: `gc` for `WeakSet` upholds all trait invariants
 unsafe impl<'gc> Trace for WeakSet<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
         let inner = self.inner.get_mut();
         visitor.trace(&mut inner.entries);
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let inner = self.inner.get_mut();
         let entries = inner.entries.get();
@@ -559,6 +567,7 @@ impl<'gc> WeakSet<'gc> {
     ) -> Value<'gc> {
         let inner = this.inner.lock();
         Gc::write(mc, this);
+        // SAFETY: The guard provides exclusive write access; no aliasing references
         unsafe { WeakSetInner::add(Write::assume(&*inner), mc, hash, pred, value) }
     }
 
@@ -570,6 +579,7 @@ impl<'gc> WeakSet<'gc> {
     ) -> Option<Value<'gc>> {
         let inner = this.inner.lock();
         Gc::write(mc, this);
+        // SAFETY: The guard provides exclusive write access; no aliasing references
         unsafe { WeakSetInner::lookup(Write::assume(&*inner), mc, hash, pred) }
     }
 
@@ -581,6 +591,7 @@ impl<'gc> WeakSet<'gc> {
     ) {
         let inner = this.inner.lock();
         Gc::write(mc, this);
+        // SAFETY: The guard provides exclusive write access; no aliasing references
         unsafe { WeakSetInner::remove(Write::assume(&*inner), mc, hash, pred) }
     }
 
@@ -624,14 +635,19 @@ impl<'gc> WeakSet<'gc> {
 
 struct AllWeakSets<'gc>(Monitor<Vec<Weak<'gc, WeakSet<'gc>>>>);
 
+// SAFETY: `gc` for `AllWeakSets` upholds all trait invariants
 unsafe impl<'gc> Send for AllWeakSets<'gc> {}
+// SAFETY: `gc` for `AllWeakSets` upholds all trait invariants
 unsafe impl<'gc> Sync for AllWeakSets<'gc> {}
 
+// SAFETY: `gc` for `AllWeakSets` upholds all trait invariants
 unsafe impl<'gc> Trace for AllWeakSets<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
         visitor.register_for_weak_processing();
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let all_weak_sets = self.0.get_mut();
         all_weak_sets.retain_mut(|weak_set| {
@@ -640,6 +656,7 @@ unsafe impl<'gc> Trace for AllWeakSets<'gc> {
                 return false;
             }
 
+            // SAFETY: The weak reference is known to be live at this point in the trace
             if let Some(weak_set) = unsafe { weak_set.upgrade_unchecked() } {
                 weak_set.as_gcobj().process_weak_refs(weak_processor);
             }
@@ -669,6 +686,7 @@ pub(crate) fn vacuum_weak_sets<'gc>(mc: Mutation<'gc>) {
             if let Some(weak_set) = weak_set.upgrade(mc) {
                 let wset = weak_set.inner.lock();
                 Gc::write(mc, weak_set);
+                // SAFETY: The guard provides exclusive write access; no aliasing references
                 unsafe {
                     WeakSetInner::vacuum(Write::assume(&*wset), mc);
                 }
@@ -691,6 +709,7 @@ pub fn init_weak_sets<'gc>(mc: Mutation<'gc>) {
     });
 }
 
+// SAFETY: `gc` for `WeakSet` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for WeakSet<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::WEAK_SET];
     const TYPE_NAME: &'static str = "#<weak-set>";

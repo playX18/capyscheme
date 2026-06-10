@@ -22,6 +22,7 @@ pub struct Symbol<'gc> {
     pub(crate) prefix_offset: u16,
 }
 
+// SAFETY: `gc` for `Symbol` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Symbol<'gc> {
     const CLASS_IDS: &'static [u32] = &[
         crate::rsgc::object::builtin_class_ids::SYMBOL,
@@ -115,17 +116,16 @@ impl<'gc> Symbol<'gc> {
         if let Some(symbol) = symbol {
             symbol.downcast()
         } else {
-            let symbol = Self::new::<true>(*mc, str, hash, None);
+            let sym = Self::new::<true>(*mc, str, hash, None);
 
-            let symbol = WeakSet::add(
+            WeakSet::add(
                 *SYMBOL_TABLE.get().unwrap().fetch(*mc),
                 *mc,
                 hash,
-                |mc, sym| symbool_lookup_predicate(mc, sym, symbol),
-                Value::new(symbol),
+                |mc, s| symbool_lookup_predicate(mc, s, sym),
+                Value::new(sym),
             )
-            .downcast();
-            symbol
+            .downcast()
         }
     }
 
@@ -210,6 +210,7 @@ impl<'gc> Symbol<'gc> {
 
     pub fn as_str(&self) -> Cow<'gc, str> {
         if let Some(ascii) = self.chars() {
+            // SAFETY: The byte content is known to be valid UTF-8
             let s = unsafe { std::str::from_utf8_unchecked(ascii) };
             Cow::Borrowed(s)
         } else if let Some(wide) = self.wide_chars() {
@@ -224,6 +225,7 @@ impl<'gc> Symbol<'gc> {
 impl<'gc> Str<'gc> {
     pub fn as_str(&self) -> Cow<'gc, str> {
         if let Some(ascii) = self.chars() {
+            // SAFETY: The byte content is known to be valid UTF-8
             let s = unsafe { std::str::from_utf8_unchecked(ascii) };
             Cow::Borrowed(s)
         } else if let Some(wide) = self.wide_chars() {
@@ -253,6 +255,7 @@ impl<'gc> Str<'gc> {
 impl<'gc> std::fmt::Display for Symbol<'gc> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(chars) = self.chars() {
+            // SAFETY: The byte content is known to be valid UTF-8
             unsafe {
                 f.write_str(std::str::from_utf8_unchecked(chars))?;
             }
@@ -334,6 +337,7 @@ fn keyword_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::KEYWORD).unwrap())
 }
 
+// SAFETY: `gc` for `Keyword` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Keyword<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::KEYWORD];
     const TYPE_NAME: &'static str = "keyword";

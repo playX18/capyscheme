@@ -331,6 +331,10 @@ impl<'gc> Mutation<'gc> {
     }
 
     #[inline(always)]
+    /// # Safety
+    ///
+    /// `allocation` must be a valid `UnpublishedAllocation` returned by a prior
+    /// `allocate_*` call, and the caller must hold the GC's mutator lock.
     pub unsafe fn publish_allocated_object(&self, allocation: UnpublishedAllocation) {
         unsafe {
             match allocation.semantics {

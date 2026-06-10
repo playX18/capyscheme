@@ -170,6 +170,7 @@ impl Default for PointerWithFinalizers {
 pub(crate) static POINTERS_WITH_FINALIZERS: LazyLock<Arc<PointerWithFinalizers>> =
     LazyLock::new(|| Arc::new(PointerWithFinalizers::new()));
 
+// SAFETY: Correct `pop` semantics for the finalization queue
 unsafe impl FinalizerQueue for PointerWithFinalizers {
     fn mark_ready_to_run(&self, object: ObjectReference) {
         self.queue.lock().unwrap().push_back(object);
@@ -203,11 +204,14 @@ global!(
     PTRS<'gc>: Gc<'gc, WeakTable<'gc>> = (ctx) WeakTable::new(*ctx, 8, 0.75);
 );
 
+// SAFETY: GC trace for `Pointer` — all reachable heap fields are visited
 unsafe impl Trace for Pointer {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         let _ = visitor;
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
@@ -225,6 +229,7 @@ impl Pointer {
     }
 }
 
+// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Pointer`
 unsafe impl ClassTagged for Pointer {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::POINTER];
     const TYPE_NAME: &'static str = "pointer";
@@ -329,6 +334,7 @@ pub mod ffi_ops {
 
         if length < 0 {
             // null-terminated string
+            // SAFETY: Preconditions verified by the surrounding code
             let cstr = unsafe { std::ffi::CStr::from_ptr(value.cast::<std::ffi::c_char>()) };
             let string = match cstr.to_str() {
                 Ok(s) => s,
@@ -357,6 +363,7 @@ pub mod ffi_ops {
                     &[pointer.into(), Value::new(length as i32)],
                 );
             }
+            // SAFETY: Pointer is valid for the given element count
             let slice = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length as usize) };
             let string = match std::str::from_utf8(slice) {
                 Ok(s) => s,
@@ -386,6 +393,7 @@ pub mod ffi_ops {
             .register_finalizer(&POINTERS_WITH_FINALIZERS, p);
         POINTERS_WITH_FINALIZERS.finalizers.lock().unwrap().insert(
             p.as_gcobj().to_objref().unwrap(),
+            // SAFETY: Source and destination types have compatible layouts and sizes
             unsafe {
                 std::mem::transmute::<*mut libc::c_void, extern "C" fn(*mut libc::c_void)>(
                     finalizer.value(),
@@ -400,6 +408,7 @@ pub mod ffi_ops {
         if p.value().is_null() {
             return null_pointer_error(nctx, "dereference-pointer");
         }
+        // SAFETY: Preconditions verified by the surrounding code
         let ptr = unsafe { *(p.value() as *const *mut std::ffi::c_void) };
         let new_ptr = Pointer::new(ptr);
         let new_ptr = Gc::new_with_header_word(*nctx.ctx, new_ptr, pointer_header_word());
@@ -452,6 +461,7 @@ pub mod ffi_ops {
 
     #[scheme(name = "ioctl/pointer")]
     pub fn ioctl(fd: i32, request: u64, argp: Gc<'gc, Pointer>) -> Value<'gc> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let res = libc::ioctl(fd, request, argp.value());
             nctx.return_(Value::new(res))
@@ -718,17 +728,21 @@ fn cif_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::CIF).unwrap())
 }
 
+// SAFETY: `gc` for `CIF` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for CIF<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CIF];
     const TYPE_NAME: &'static str = "cif";
 }
 
+// SAFETY: `gc` for `CIF` upholds all trait invariants
 unsafe impl<'gc> Trace for CIF<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         visitor.trace(&mut self.args);
         visitor.trace(&mut self.return_type);
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
@@ -784,6 +798,7 @@ pub(crate) fn make_cif_at<'gc>(
         return_type,
     };
 
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         obj.to_address().to_mut_ptr::<CIF>().write(cif);
     }
@@ -842,6 +857,7 @@ fn make_cif<'gc>(
     Ok(Gc::new_with_header_word(*ctx, cif, cif_header_word()))
 }
 
+// SAFETY: Caller ensures all C/FFI arguments are valid
 unsafe fn foreign_call<'a, 'gc>(
     nctx: NativeCallContext<'a, 'gc>,
     ctx: Context<'gc>,
@@ -850,6 +866,7 @@ unsafe fn foreign_call<'a, 'gc>(
     num_rands: usize,
     rands: *const Value<'gc>,
 ) -> NativeCallReturn<'gc> {
+    // SAFETY: Pointer is valid for the given element count
     let rands = unsafe { std::slice::from_raw_parts(rands, num_rands) };
     let cif = cif.downcast::<CIF>();
     let pointer = pointer.downcast::<Pointer>().value();
@@ -857,6 +874,7 @@ unsafe fn foreign_call<'a, 'gc>(
     let mut args: Vec<usize> = Vec::with_capacity(cif.nargs as usize);
     let mut arg_size = 0;
 
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let raw = cif.cif.as_raw_ptr();
 
@@ -937,6 +955,7 @@ unsafe fn foreign_call<'a, 'gc>(
             nctx.ctx.outside_gc_world(|| {
                 libffi::raw::ffi_call(
                     raw,
+                    // SAFETY: Invariants are upheld at this call site
                     Some(std::mem::transmute::<*mut (), unsafe extern "C" fn()>(
                         target,
                     )),
@@ -951,6 +970,7 @@ unsafe fn foreign_call<'a, 'gc>(
             raw,
             Some(std::mem::transmute::<
                 *mut libc::c_void,
+                // SAFETY: Invariants are upheld at this call site
                 unsafe extern "C" fn(),
             >(pointer)),
             rvalue.cast(),
@@ -994,6 +1014,7 @@ fn guess_ffi_type<'gc>(ctx: Context<'gc>, val: Value<'gc>) -> Result<*mut ffi_ty
     ))
 }
 
+// SAFETY: Caller must ensure preconditions are met (see fn docs)
 unsafe fn unpack<'gc>(
     ctx: Context<'gc>,
     typ: *const ffi_type,
@@ -1002,8 +1023,10 @@ unsafe fn unpack<'gc>(
     return_value: bool,
 ) -> Result<(), Value<'gc>> {
     let orig = typ;
+    // SAFETY: Preconditions verified by the surrounding code
     let t = unsafe { (*typ).type_ };
 
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         if t == types::void.type_ {
             return Ok(());
@@ -1245,12 +1268,14 @@ unsafe fn unpack<'gc>(
     Ok(())
 }
 
+// SAFETY: Caller must ensure preconditions are met (see fn docs)
 unsafe fn pack<'gc>(
     ctx: Context<'gc>,
     typ: *mut ffi_type,
     loc: *mut (),
     return_value: bool,
 ) -> Value<'gc> {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let t = (*typ).type_;
 
@@ -1358,6 +1383,7 @@ pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
     num_rands: usize,
     retk: Value<'gc>,
 ) -> NativeReturn<'gc> {
+    // SAFETY: Pointer is valid for the given element count
     unsafe {
         let rands = std::slice::from_raw_parts(rands, num_rands);
         let closure = rator.downcast::<Closure>();

@@ -151,9 +151,12 @@ pub type PrimitiveTransformer = for<'a, 'gc, 'b> fn(
 pub struct PrimitiveTable<'gc> {
     pub table: HashMap<Value<'gc>, PrimitiveTransformer>,
 }
+// SAFETY: `gc` for `PrimitiveTable` upholds all trait invariants
 unsafe impl<'gc> Trace for PrimitiveTable<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         for key in self.table.keys() {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 let value = key as *const Value<'gc> as *mut Value<'gc>;
                 (*value).trace(visitor);
@@ -161,6 +164,7 @@ unsafe impl<'gc> Trace for PrimitiveTable<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }

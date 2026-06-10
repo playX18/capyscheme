@@ -116,6 +116,7 @@ impl<'gc> SchemeInstance<'gc> {
 
         Gc::write(*ctx, instance);
         instance.as_gcobj().header().set_class_id(new_class.id());
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let instance_mut = instance.as_gcobj().to_address().as_mut_ref::<Self>();
             instance_mut.class = new_class;
@@ -252,6 +253,7 @@ pub fn try_scheme_instance<'gc>(
     if class.category() != ClassCategory::Scheme {
         return None;
     }
+    // SAFETY: The pointer references a valid GC-managed object of the expected type
     Some(unsafe { Gc::from_gcobj(value.as_cell_raw()) })
 }
 
@@ -260,6 +262,7 @@ pub fn print_primitive_value(
     value: Value<'_>,
 ) -> Option<fmt::Result> {
     let class = scheme_instance_class_for_primitive_value(value)?;
+    // SAFETY: The pointer references a valid GC-managed object of the expected type
     let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(value.as_cell_raw()) };
     debug_assert_eq!(instance.class().id(), class.id());
     class
@@ -270,6 +273,7 @@ pub fn print_primitive_value(
 
 pub fn compare_primitive_values(lhs: Value<'_>, rhs: Value<'_>) -> Option<bool> {
     let class = scheme_instance_class_for_primitive_value(lhs)?;
+    // SAFETY: The pointer references a valid GC-managed object of the expected type
     let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(lhs.as_cell_raw()) };
     debug_assert_eq!(instance.class().id(), class.id());
     class
@@ -280,6 +284,7 @@ pub fn compare_primitive_values(lhs: Value<'_>, rhs: Value<'_>) -> Option<bool> 
 
 pub fn hash_primitive_value(value: Value<'_>) -> Option<u64> {
     let class = scheme_instance_class_for_primitive_value(value)?;
+    // SAFETY: The pointer references a valid GC-managed object of the expected type
     let instance: Gc<'_, SchemeInstance<'_>> = unsafe { Gc::from_gcobj(value.as_cell_raw()) };
     debug_assert_eq!(instance.class().id(), class.id());
     class
@@ -296,6 +301,7 @@ fn scheme_instance_class_for_primitive_value<'gc>(
     }
     let class_id = value.as_cell_raw().class_id();
     let table = super::table::CLASS_TABLE.get()?;
+    // SAFETY: The table is guaranteed to be initialized before this point
     let class = unsafe { table.fetch_unchecked() }.lookup(class_id)?;
     (class.category() == ClassCategory::Scheme).then_some(class)
 }
@@ -362,6 +368,7 @@ extern "C-unwind" fn invocable_instance_closure_proc<'gc>(
             target,
         );
     }
+    // SAFETY: Pointer is valid for the given element count
     let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
     let mut forwarded = Vec::with_capacity(num_rands + 1);
     forwarded.push(instance);

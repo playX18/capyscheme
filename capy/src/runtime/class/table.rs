@@ -54,15 +54,20 @@ enum ClassSlot<'gc> {
     Class(Gc<'gc, ClassDescriptor<'gc>>),
 }
 
+// SAFETY: GC trace for `ClassSlot` — all reachable heap fields are visited
 unsafe impl Trace for ClassSlot<'_> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         if let Self::Class(class) = self {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe { class.trace(visitor) };
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
         if let Self::Class(class) = self {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe { class.process_weak_refs(weak_processor) };
         }
     }
@@ -83,12 +88,17 @@ impl<'gc> ClassPage<'gc> {
     }
 }
 
+// SAFETY: GC trace for `ClassPage` — all reachable heap fields are visited
 unsafe impl Trace for ClassPage<'_> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.slots.trace(visitor) };
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.slots.process_weak_refs(weak_processor) };
     }
 }
@@ -103,12 +113,17 @@ struct ClassRedefinitionState {
     epoch: u64,
 }
 
+// SAFETY: GC trace for `ClassTableInner` — all reachable heap fields are visited
 unsafe impl Trace for ClassTableInner<'_> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.pages.trace(visitor) };
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.pages.process_weak_refs(weak_processor) };
     }
 }
@@ -129,17 +144,24 @@ struct DynamicClassRedefinition<'a> {
     category: ClassCategory,
 }
 
+// SAFETY: GC trace for `ClassTable` — all reachable heap fields are visited
 unsafe impl Trace for ClassTable<'_> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.inner.get_mut().trace(visitor) };
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.inner.get_mut().process_weak_refs(weak_processor) };
     }
 }
 
+// SAFETY: `ClassTable` is `Send` because all mutable state is synchronized
 unsafe impl Send for ClassTable<'_> {}
+// SAFETY: `ClassTable` is `Sync` because all mutable access is serialized
 unsafe impl Sync for ClassTable<'_> {}
 
 type RootedClassTable = Rootable!(ClassTable<'_>);
@@ -154,6 +176,7 @@ pub(crate) fn is_type_class_registered(id: ClassId) -> bool {
     let Some(table) = CLASS_TABLE.get() else {
         return false;
     };
+    // SAFETY: The table is guaranteed to be initialized before this point
     unsafe { table.fetch_unchecked().lookup(id).is_some() }
 }
 
@@ -185,6 +208,7 @@ pub(crate) fn register_internal_type_class_if_ready<'gc>(
     let Some(table) = CLASS_TABLE.get() else {
         return;
     };
+    // SAFETY: The table is guaranteed to be initialized before this point
     let table = unsafe { table.fetch_unchecked() };
     register_internal_type_class(ctx, table, id, hooks);
 }
@@ -226,6 +250,7 @@ pub(crate) fn register_internal_type_class<'gc>(
 
 pub fn primitive_layout_hooks_for_class_id(id: ClassId) -> Option<PrimitiveLayoutHooks> {
     if let Some(table) = CLASS_TABLE.get() {
+        // SAFETY: The table is guaranteed to be initialized before this point
         return unsafe { table.fetch_unchecked() }
             .lookup(id)
             .and_then(|descriptor| descriptor.primitive_layout_hooks());

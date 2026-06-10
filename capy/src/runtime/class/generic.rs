@@ -159,6 +159,7 @@ extern "C-unwind" fn generic_closure_proc<'gc>(
             );
         }
     };
+    // SAFETY: Pointer is valid for the given element count
     let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
     match GenericDescriptor::invocation(ctx, generic, args) {
         Ok(invocation) => ctx.return_call(
@@ -252,6 +253,7 @@ impl<'gc> GenericDescriptor<'gc> {
     }
 
     pub fn name(&self) -> &str {
+        // SAFETY: The byte content is known to be valid UTF-8
         unsafe { std::str::from_utf8_unchecked(self.name.as_slice()) }
     }
 
@@ -731,16 +733,19 @@ impl<'gc> NextMethodDescriptor<'gc> {
     }
 }
 
+// SAFETY: `gc` for `GenericDescriptor` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for GenericDescriptor<'gc> {
     const TYPE_NAME: &'static str = "generic";
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::GENERIC];
 }
 
+// SAFETY: `gc` for `MethodDescriptor` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for MethodDescriptor<'gc> {
     const TYPE_NAME: &'static str = "method";
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::METHOD];
 }
 
+// SAFETY: `gc` for `NextMethodDescriptor` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for NextMethodDescriptor<'gc> {
     const TYPE_NAME: &'static str = "next-method";
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::NEXT_METHOD];

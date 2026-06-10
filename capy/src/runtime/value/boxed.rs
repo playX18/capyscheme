@@ -39,6 +39,7 @@ impl<'gc> Boxed<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Boxed` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Boxed<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::BOX];
     const TYPE_NAME: &'static str = "box";

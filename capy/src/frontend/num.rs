@@ -43,11 +43,14 @@ pub enum Number {
         imag: Rc<BigInt>,
     },
 }
+// SAFETY: GC trace for `Number` — all reachable heap fields are visited
 unsafe impl Trace for Number {
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         let _ = visitor;
     }

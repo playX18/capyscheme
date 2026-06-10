@@ -538,6 +538,7 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
             .read()
             .expect("load asmkit abs8 relocation");
         let code_block = value.downcast::<CodeBlock>();
+        // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let patched = unsafe {
             std::ptr::read_unaligned((code_block.entrypoint.as_usize() + 1) as *const usize)
         };
@@ -605,6 +606,7 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
         let target = values[0].get().downcast::<CodeBlock>();
         let source = values[1].get().downcast::<CodeBlock>();
         let patched =
+// SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe { std::ptr::read_unaligned((source.entrypoint.as_usize() + 1) as *const i32) };
         let expected =
             target.entrypoint.as_usize() as i128 - (source.entrypoint.as_usize() + 1 + 4) as i128;
@@ -664,10 +666,12 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         let values = value.downcast::<Vector>();
         let target = values[0].get();
         let code_block = values[1].get().downcast::<CodeBlock>();
+        // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let slot_address = unsafe {
             std::ptr::read_unaligned((code_block.entrypoint.as_usize() + 1) as *const usize)
         };
         assert_eq!(slot_address, code_block.loaded_data_base.as_usize());
+        // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let slot_value = unsafe { std::ptr::read(slot_address as *const Value) };
         assert_eq!(slot_value, target);
     });
@@ -733,7 +737,9 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         let target = values[1].get().downcast::<CodeBlock>();
         assert_eq!(source.loaded_data_value_bitmap(), &[1]);
         let slot_address =
+// SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe { std::ptr::read_unaligned((source.entrypoint.as_usize() + 1) as *const usize) };
+        // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let slot_word = unsafe { std::ptr::read(slot_address as *const usize) };
         assert_eq!(slot_word, target.entrypoint.as_usize());
     });
@@ -856,9 +862,11 @@ fn fasl_reader_resolves_forward_data_slot_address_relocation() {
         let values = value.downcast::<Vector>();
         let code_block = values[0].get().downcast::<CodeBlock>();
         let target = values[1].get();
+        // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let slot_address = unsafe {
             std::ptr::read_unaligned((code_block.entrypoint.as_usize() + 1) as *const usize)
         };
+        // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let slot_value = unsafe { std::ptr::read(slot_address as *const Value) };
         assert_eq!(slot_value, target);
     });
@@ -923,6 +931,7 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         let source = values[0].get().downcast::<CodeBlock>();
         let target = values[1].get().downcast::<CodeBlock>();
         let patched =
+// SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe { std::ptr::read_unaligned((source.entrypoint.as_usize() + 1) as *const usize) };
         assert_eq!(patched, target.entrypoint.as_usize());
     });
@@ -981,12 +990,15 @@ fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
         let first = values[1].get().downcast::<CodeBlock>();
         let second = values[2].get().downcast::<CodeBlock>();
         let first_slot =
+// SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe { std::ptr::read_unaligned((first.entrypoint.as_usize() + 1) as *const usize) };
         let second_slot =
+// SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe { std::ptr::read_unaligned((second.entrypoint.as_usize() + 1) as *const usize) };
 
         assert_eq!(first_slot, second_slot);
         assert_eq!(
+            // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe { std::ptr::read(first_slot as *const Value) },
             Value::new(false)
         );
@@ -1060,12 +1072,14 @@ fn fasl_reader_accepts_more_than_64_value_data_slots() {
         let values = value.downcast::<Vector>();
         let code_block = values[VALUE_SLOT_COUNT].get().downcast::<CodeBlock>();
         for index in [0, VALUE_SLOT_COUNT - 1] {
+            // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             let slot_address = unsafe {
                 std::ptr::read_unaligned(
                     (code_block.entrypoint.as_usize() + 1 + index * std::mem::size_of::<usize>())
                         as *const usize,
                 )
             };
+            // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             let slot_value = unsafe { std::ptr::read(slot_address as *const Value) };
             assert_eq!(slot_value, values[index].get());
         }

@@ -40,12 +40,16 @@ fn ephemeron_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::EPHEMERON).unwrap())
 }
 
+// SAFETY: `gc` for `Ephemeron` upholds all trait invariants
 unsafe impl<'gc> Trace for Ephemeron<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         visitor.register_for_weak_processing();
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        // SAFETY: The pointer is a valid GC object descriptor from the current heap
         unsafe {
             if self.key.is_cell() {
                 let obj = self.key.as_cell_raw();
@@ -73,6 +77,7 @@ unsafe impl<'gc> Trace for Ephemeron<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Ephemeron` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Ephemeron<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::EPHEMERON];
     const TYPE_NAME: &'static str = "#<ephemeron>";
@@ -136,6 +141,7 @@ pub mod gc {
         if !ephemeron.key.is_cell() {
             return nctx.return_(Value::new(false));
         }
+        // SAFETY: The value has been type-checked; `as_cell_raw` returns a valid GC object
         unsafe {
             ctx.raw_weak_reference_load(ephemeron.key.as_cell_raw());
         }

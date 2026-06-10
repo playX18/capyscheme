@@ -26,6 +26,7 @@ pub struct Annotation<'gc> {
     pub end_point: (u32, u32),
 }
 
+// SAFETY: `gc` for `Annotation` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Annotation<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::ANNOTATION];
     const TYPE_NAME: &'static str = "#<annotation>";
@@ -255,6 +256,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
                                 vec.push(byte as u8);
                                 current = current.cdr();
                             }
+                            // SAFETY: Mutable access is exclusive and goes through GC write barrier
                             unsafe {
                                 bv.as_slice_mut_unchecked().copy_from_slice(&vec);
                             }
