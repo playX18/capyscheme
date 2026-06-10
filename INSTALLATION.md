@@ -1,8 +1,10 @@
 # Installation
 
-To install & run CapyScheme you need additonal dependencies:
-- lld on macOS to link Scheme files after they were built
-- Makefile
+To install and run CapyScheme you need:
+
+- Rust toolchain (the repository pins one in `rust-toolchain.toml`)
+- A C compiler for the launcher binaries (`clang` by default; `CC=gcc` works on many setups)
+- `make`
 
 After they are installed simply run:
 ```sh

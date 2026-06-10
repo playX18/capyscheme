@@ -10,7 +10,7 @@ The recipes are provided by `Makefile` (ported from the original `Justfile`). Th
 CapyScheme is built in two layers:
 
 1. A **Rust runtime** (`libcapy`) plus tiny **C boot binaries** (`capy` and `capyc`).
-2. A set of **Scheme libraries** that are compiled into shared objects (e.g. `.so` on Linux) using `capyc`.
+2. A set of **Scheme libraries** that are compiled into FASL code images (`.fasl`) using `capyc`.
 
 Bootstrapping means:
 
@@ -84,9 +84,9 @@ It contains `libcapy.*` and any other Rust build products.
 Each stage has two kinds of artifacts:
 
 - `stage-N/capy` and `stage-N/capyc`: boot binaries wired to the Rust runtime.
-- `stage-N/compiled/`: compiled Scheme libraries as shared objects.
+- `stage-N/compiled/`: compiled Scheme libraries as FASL code images.
 
-The compiler (`capyc`) compiles Scheme sources from `lib/` into `.so`/`.dylib`/`.dll` under `stage-N/compiled/`.
+The compiler (`capyc`) compiles Scheme sources from `lib/` into `.fasl` files under `stage-N/compiled/`.
 
 ## The bootstrap stages
 
@@ -98,9 +98,9 @@ What it does:
 
 1. Builds the Rust crate `capy` with `--features portable,bootstrap`.
 2. Builds `stage-0/capy` and `stage-0/capyc` (C launchers linked to `libcapy`).
-3. Warms up a cache and triggers auto-compilation once:
-	 - runs `stage-0/capy -L lib --fresh-auto-compile -c 42`
-	 - with `XDG_CACHE_HOME=stage-0/cache`.
+3. Warms up the stage-0 fallback cache with `--fresh-auto-compile`:
+	 - runs simple evaluation (`-c 42`) and imports for `(rnrs)`, `(scheme base)`, `(srfi 1)`, and `(srfi 13)`.
+	 - uses `XDG_CACHE_HOME=stage-0/cache`, so generated fallback artifacts stay inside the stage directory.
 
 Optional psyntax compile (when `COMPILE_PSYNTAX=1`):
 
@@ -204,11 +204,10 @@ This target may use `sudo` if you’re not root.
 
 ## Notes on how compilation works
 
-The Makefile compiles each Scheme file into a shared library:
+The Makefile compiles each Scheme file into a FASL code image:
 
-- Linux: `.so`
-- macOS: `.dylib`
-- Windows (mingw): `.dll`
+- extension: `.fasl`
+- output root: `stage-1/compiled/` or `stage-2/compiled/`
 
 Compilation is done by invoking the compiler launcher (`capyc`) with a module set (`-m`) and library search path (`-L`).
 
@@ -216,6 +215,18 @@ Examples from the rules:
 
 - boot libraries are compiled with `-m "capy" -L lib`
 - most others are compiled with `-m "capy user"`
+
+At runtime, compiled artifacts are discovered through the compiled load path:
+
+- portable installs add `<install>/compiled`
+- FHS installs add `$(PREFIX)/lib/capy/compiled`
+- ad-hoc runs can add paths with `capy -C DIR` or `CAPY_LOAD_COMPILED_PATH=DIR`
+
+When the loader falls back to compiling source, it writes `.fasl` files under
+`XDG_CACHE_HOME/capy/cache/<version>/<gc-plan>/<arch>/...` (or the platform
+home-directory fallback if `XDG_CACHE_HOME` is unset). Use
+`--fresh-auto-compile` when changing source and wanting the fallback cache
+rebuilt instead of reusing a fresh-looking cached file.
 
 ## Troubleshooting
 

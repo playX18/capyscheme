@@ -173,8 +173,56 @@ We include a few important optimizations into the compiler: tree reductions, inl
 CPS is converted to SSA by building Cranelift IR after all optimizations are applied. During this stage
 all continuations that were not reified are converted to basic-blocks, and all procedures/reified continuations are converted to Cranelift functions. Some primcalls are lowered directly to Cranelift IR, while others might be lowered as calls to runtime.
 
-### Linking
+### FASL code images
 
-Once SSA is built we emit object file and link using platform linker as shared object.
+Once SSA is built, CapyScheme compiles Cranelift output into a FASL
+("fast load") code image instead of emitting and linking a platform object
+file for Scheme code. The public compiler path is:
+
+1. `compile_file` lowers source into CPS.
+2. `compile_cps_to_fasl_bytes` reifies continuations, linearizes CPS, builds
+   SSA/Cranelift functions, and asks `ModuleBuilder` for a loadable FASL byte
+   stream.
+3. `FaslWriter` serializes a graph containing constants, code blocks,
+   relocation records, and the entry closure.
+
+The FASL format is implemented under `capy/src/runtime/fasl/`:
+
+- `writer.rs` serializes Scheme data, closures, code blocks, and loaded
+  programs.
+- `reader.rs` reconstructs GC objects and executable code from a FASL stream.
+- `reloc.rs` encodes relocation records for runtime thunks, data slots, cache
+  cells, side metadata, and Cranelift relocations.
+- `graph.rs` tracks shared structure and cycles while reading/writing values.
+
+The current FASL magic is `CAPYFSL\0` and the format version is `1`. FASL
+artifacts use the `.fasl` extension. Shared-object Scheme artifacts are no
+longer produced by the compiler or accepted by the Scheme library loader.
 
 ## Runtime
+
+### Loading source and compiled artifacts
+
+Runtime loading is split between `capy/src/runtime/vm/load/` and
+`capy/src/runtime/vm/libraries.rs`.
+
+- Source files are found through `%load-path`, `CAPY_LOAD_PATH`, and the
+  active source extensions (`.scm` by default, plus any CLI `-x/--extensions`
+  entries).
+- Compiled artifacts are found through `%load-compiled-path`,
+  `CAPY_LOAD_COMPILED_PATH`, and CLI `-C/--compiled-load-path` entries. The
+  loader first checks architecture-specific paths such as
+  `<compiled-dir>/<arch>/<module>.fasl`, then non-architecture paths when no
+  explicit architecture was requested.
+- If no fresh compiled artifact exists, source loads describe the compile work
+  needed to Scheme. `load` and `load-in-vicinity` then invoke `compile-file`,
+  write a `.fasl` into the compile fallback cache, load it, and run the
+  returned entry thunk.
+- `--fresh-auto-compile` forces source-backed loads to compile rather than
+  trusting an existing fallback cache artifact.
+
+The fallback cache root is derived from `XDG_CACHE_HOME` when available, then
+`HOME`, `LOCALAPPDATA`, or `APPDATA`. Cache entries live below
+`capy/cache/<version>/<gc-plan>/<arch>/...`, where the GC-plan directory is
+`gen` for `StickyImmix`, `conc` for `ConcurrentImmix`, and `regular` for
+`Immix` or `MarkSweep`.
