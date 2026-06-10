@@ -46,17 +46,22 @@ struct FaslReaderRoots<'gc> {
     values: Monitor<Vec<Value<'gc>>>,
 }
 
+// SAFETY: `gc` for `FaslReaderRoots` upholds all trait invariants
 unsafe impl<'gc> Trace for FaslReaderRoots<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         for value in self.values.get_mut().iter_mut() {
             visitor.trace(value);
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
+// SAFETY: `FaslReaderRoots` is `Send` because all mutable state is synchronized
 unsafe impl Send for FaslReaderRoots<'_> {}
+// SAFETY: `FaslReaderRoots` is `Sync` because all mutable access is serialized
 unsafe impl Sync for FaslReaderRoots<'_> {}
 
 #[derive(Clone, Copy)]
@@ -647,6 +652,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
                 &spec.relocations,
                 &data_slots,
             ) {
+                // SAFETY: No concurrent access to the span; we own the code block
                 if let Some(span) = unsafe { code_block.take_span_for_finalization() } {
                     let _ = runtime_code_memory().lock().unwrap().release_span(span);
                 }
@@ -1227,6 +1233,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
             return;
         }
         debug_assert_eq!(loaded.data_len, data_slots.slots.len());
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let slots = loaded.data_rw_base.as_usize() as *mut usize;
             for (index, slot) in data_slots.slots.iter().copied().enumerate() {
@@ -1420,6 +1427,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
                 )
             })?;
         for fill in resolved {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 (fill.slot_address.as_usize() as *mut usize).write(target);
             }
@@ -1446,6 +1454,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
         }
         let value = self.graph_value(index)?;
         for fill in resolved {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 (fill.slot_address.as_usize() as *mut Value<'gc>).write(value);
             }

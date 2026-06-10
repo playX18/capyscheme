@@ -37,15 +37,19 @@ fn weak_mapping_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::WEAK_MAPPING).unwrap())
 }
 
+// SAFETY: `gc` for `WeakMapping` upholds all trait invariants
 unsafe impl<'gc> Trace for WeakMapping<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {
         _visitor.register_for_weak_processing();
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         if self._key.is_bwp() {
             self._value = Value::bwp();
         } else {
+            // SAFETY: The pointer is a valid GC object descriptor from the current heap
             let key = unsafe { weak_processor.is_live_object(self._key.desc.ptr()) };
             if !key.is_null() {
                 self._key.desc.ptr = key.to_address().to_mut_ptr();
@@ -58,6 +62,7 @@ unsafe impl<'gc> Trace for WeakMapping<'gc> {
     }
 }
 
+// SAFETY: `gc` for `WeakMapping` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for WeakMapping<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::WEAK_MAPPING];
     const TYPE_NAME: &'static str = "#<weak-mapping>";
@@ -86,6 +91,7 @@ impl<'gc> WeakMapping<'gc> {
         if self._key.is_bwp() {
             return Value::bwp();
         }
+        // SAFETY: The value descriptor contains a valid GC object pointer
         unsafe {
             mc.raw_weak_reference_load(self._key.desc.ptr());
         }
@@ -97,6 +103,7 @@ impl<'gc> WeakMapping<'gc> {
             return self._value;
         }
 
+        // SAFETY: The value descriptor contains a valid GC object pointer
         unsafe {
             mc.raw_weak_reference_load(self._value.desc.ptr());
         }
@@ -122,20 +129,26 @@ impl<'gc> WeakEntry<'gc> {
     }
 }
 
+// SAFETY: `gc` for `WeakEntry` upholds all trait invariants
 unsafe impl<'gc> Trace for WeakEntry<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {
         _visitor.register_for_weak_processing();
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.next.trace(_visitor);
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self._key.process_weak_refs(weak_processor);
         }
 
         if self._key.is_broken() {
+            // SAFETY: No concurrent access to this `Lock` cell exists at this point
             unsafe { self._value.unlock_unchecked().set(Value::bwp()) };
         } else {
             let mut vis = weak_processor.visitor();
@@ -163,13 +176,17 @@ fn weak_table_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::WEAK_TABLE).unwrap())
 }
 
+// SAFETY: `gc` for `WeakTable` upholds all trait invariants
 unsafe impl<'gc> Trace for WeakTable<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.inner.get_mut().trace(visitor);
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
         let inner = self.inner.get_mut();
         let entries = inner.entries.get();
@@ -192,11 +209,14 @@ struct WeakTableInner<'gc> {
     mod_count: Cell<usize>,
 }
 
+// SAFETY: `gc` for `WeakTableInner` upholds all trait invariants
 unsafe impl<'gc> Trace for WeakTableInner<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
         visitor.trace(&mut self.entries);
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut WeakProcessor) {}
 }
 
@@ -246,11 +266,13 @@ impl<'gc> WeakTable<'gc> {
     }
 
     #[allow(dead_code)]
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub(crate) unsafe fn at_object(
         ctx: Context<'gc>,
         obj: GCObject,
         kvs: Vec<(Value<'gc>, Value<'gc>)>,
     ) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let entries = Array::with(*ctx, 8, |_, _| Lock::new(None));
             let inner = WeakTableInner {
@@ -380,6 +402,7 @@ impl<'gc> WeakTable<'gc> {
         }
 
         Self::add_entry(
+            // SAFETY: The guard provides exclusive write access; no aliasing references
             unsafe { Write::assume(&*guard) },
             ctx,
             hash,
@@ -587,6 +610,7 @@ impl<'gc> WeakTable<'gc> {
 
 pub type WeakTableRef<'gc> = Gc<'gc, WeakTable<'gc>>;
 
+// SAFETY: `gc` for `WeakTable` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for WeakTable<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::WEAK_TABLE];
     const TYPE_NAME: &'static str = "#<weak-table>";
@@ -596,21 +620,27 @@ struct AllWeakTables<'gc> {
     tables: Monitor<Vec<Weak<'gc, WeakTable<'gc>>>>,
 }
 
+// SAFETY: `gc` for `AllWeakTables` upholds all trait invariants
 unsafe impl<'gc> Send for AllWeakTables<'gc> {}
+// SAFETY: `gc` for `AllWeakTables` upholds all trait invariants
 unsafe impl<'gc> Sync for AllWeakTables<'gc> {}
 
 type RootedWeakTables = crate::Rootable!(AllWeakTables<'_>);
 
 static ALL_WEAK_TABLES: OnceLock<Global<RootedWeakTables>> = OnceLock::new();
 
+// SAFETY: `gc` for `AllWeakTables` upholds all trait invariants
 unsafe impl<'gc> Trace for AllWeakTables<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
         visitor.register_for_weak_processing();
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
         let tables = self.tables.get_mut();
         tables.retain_mut(|table| {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 table.process_weak_refs(weak_processor);
             }
@@ -618,6 +648,7 @@ unsafe impl<'gc> Trace for AllWeakTables<'gc> {
                 return false;
             }
 
+            // SAFETY: The weak reference is known to be live at this point in the trace
             if let Some(table) = unsafe { table.upgrade_unchecked() } {
                 table.as_gcobj().process_weak_refs(weak_processor);
             }

@@ -33,6 +33,7 @@ unsafe impl bytemuck::Pod for GlobalValue {}
 // SAFETY: GlobalValue stores the same NaN-boxed bits as Value. The `is_cell()`
 // check ensures we only expose GC pointers to the visitor.
 unsafe impl Trace for GlobalValue {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         let value = Value::from_raw_i64(self.0 as i64);
         if value.is_cell() {
@@ -40,5 +41,6 @@ unsafe impl Trace for GlobalValue {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }

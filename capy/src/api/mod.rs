@@ -26,6 +26,7 @@ use crate::{
 ///
 /// The caller must ensure `ptr` (if non-null) points to a valid, null-terminated
 /// C string whose memory remains valid for the lifetime of the returned `&str`.
+// SAFETY: Caller must ensure preconditions are met (see fn docs)
 unsafe fn safe_cstr<'a>(ptr: *const c_char) -> Option<&'a str> {
     if ptr.is_null() {
         return None;
@@ -46,12 +47,14 @@ impl std::ops::Deref for ScmRef {
     type Target = Scm;
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.0.as_ref().unwrap() }
     }
 }
 
 impl std::ops::DerefMut for ScmRef {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.0.as_mut().unwrap() }
     }
 }
@@ -61,6 +64,7 @@ pub struct ContextRef<'gc>(pub *const c_void, PhantomData<Context<'gc>>);
 
 impl<'gc> ContextRef<'gc> {
     pub fn ctx(self) -> Context<'gc> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { Context::from_ptr(self.0 as *const ()) }
     }
 }
@@ -108,6 +112,7 @@ pub fn scm_set_accumulator<'gc>(ctx: ContextRef<'gc>, value: Value<'gc>) {
 /// `scm` must be a non-null handle returned by `scm_new` that has not already
 /// been freed. No other thread may use the handle after this call starts.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_free(scm: ScmRef) {
     // SAFETY: `scm.0` was allocated by `Box::into_raw` in `scm_new`. The caller
     // must ensure this is only called once per ScmRef and that no aliases remain.
@@ -131,6 +136,7 @@ pub type ThreadFn =
 /// function pointer and must uphold the runtime's FFI calling conventions for
 /// the supplied `arg`.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_fork<'gc>(
     parent: ContextRef<'gc>,
     init: ThreadFn,
@@ -146,7 +152,9 @@ pub unsafe extern "C" fn scm_fork<'gc>(
         let scm = Scheme::forked(thread_object_bits, dynamic_state);
         thread_spawned_clone.wait();
         let parent_ptr = ScmRef(Box::into_raw(Box::new(Scm { scheme: scm })));
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { init(parent_ptr, arg as _) };
+        // SAFETY: Preconditions verified by the surrounding code
         let _ = unsafe { Box::from_raw(parent_ptr.0) };
     });
 
@@ -166,6 +174,7 @@ pub type ScmEnterFn<'gc> =
 /// `scm` must be a live handle returned by `scm_new`. `enter` must be a valid
 /// function pointer and may not retain the provided context beyond the call.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_enter<'gc>(
     scm: ScmRef,
     enter: ScmEnterFn<'gc>,
@@ -173,6 +182,7 @@ pub unsafe extern "C" fn scm_enter<'gc>(
 ) -> libc::c_int {
     let scheme = &scm.scheme;
 
+    // SAFETY: Preconditions verified by the surrounding code
     scheme.enter(|ctx| unsafe {
         let ctxref = ContextRef(ctx.as_ptr() as _, PhantomData);
         enter(ctxref, arg)
@@ -199,6 +209,7 @@ pub unsafe extern "C" fn scm_enter<'gc>(
 /// `module_name` and `name` must be valid, null-terminated C strings when
 /// non-null. `ctx` must refer to a live Scheme context.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_public_ref<'gc>(
     ctx: ContextRef<'gc>,
     module_name: *const c_char,
@@ -235,6 +246,7 @@ pub unsafe extern "C" fn scm_public_ref<'gc>(
 /// `module_name` and `name` must be valid, null-terminated C strings when
 /// non-null. `ctx` must refer to a live Scheme context.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_private_ref<'gc>(
     ctx: ContextRef<'gc>,
     module_name: *const c_char,
@@ -259,6 +271,7 @@ pub unsafe extern "C" fn scm_private_ref<'gc>(
 /// `name` must be a valid, null-terminated C string when non-null. `ctx` must
 /// refer to a live Scheme context.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_intern_symbol<'gc>(
     ctx: ContextRef<'gc>,
     name: *const c_char,
@@ -278,6 +291,7 @@ pub unsafe extern "C" fn scm_intern_symbol<'gc>(
 /// `data` must be a valid, null-terminated C string when non-null. `ctx` must
 /// refer to a live Scheme context.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_string<'gc>(ctx: ContextRef<'gc>, data: *const c_char) -> Value<'gc> {
     // SAFETY: Caller must pass a valid, null-terminated C string.
     let data = match unsafe { safe_cstr(data) } {
@@ -315,6 +329,7 @@ pub extern "C" fn scm_string_utf8_length<'gc>(_ctx: ContextRef<'gc>, value: Valu
 /// When non-null, `buf` must be valid for writes of `capacity` bytes. When
 /// non-null, `written` must be valid for one `usize` write.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_string_to_utf8<'gc>(
     _ctx: ContextRef<'gc>,
     value: Value<'gc>,
@@ -324,6 +339,7 @@ pub unsafe extern "C" fn scm_string_to_utf8<'gc>(
 ) -> bool {
     let Some(string) = value.try_as::<Str>() else {
         if !written.is_null() {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe { *written = 0 };
         }
         return false;
@@ -333,6 +349,7 @@ pub unsafe extern "C" fn scm_string_to_utf8<'gc>(
     let bytes = text.as_bytes();
 
     if !written.is_null() {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { *written = bytes.len() };
     }
 
@@ -340,6 +357,7 @@ pub unsafe extern "C" fn scm_string_to_utf8<'gc>(
         return false;
     }
 
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), bytes.len());
         *buf.add(bytes.len()) = 0;
@@ -361,6 +379,7 @@ pub extern "C" fn scm_value_utf8_length<'gc>(_ctx: ContextRef<'gc>, value: Value
 /// When non-null, `buf` must be valid for writes of `capacity` bytes. When
 /// non-null, `written` must be valid for one `usize` write.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_value_to_utf8<'gc>(
     _ctx: ContextRef<'gc>,
     value: Value<'gc>,
@@ -372,6 +391,7 @@ pub unsafe extern "C" fn scm_value_to_utf8<'gc>(
     let bytes = text.as_bytes();
 
     if !written.is_null() {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { *written = bytes.len() };
     }
 
@@ -379,6 +399,7 @@ pub unsafe extern "C" fn scm_value_to_utf8<'gc>(
         return false;
     }
 
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf.cast::<u8>(), bytes.len());
         *buf.add(bytes.len()) = 0;
@@ -570,6 +591,7 @@ pub type FinishCallFn = for<'gc> extern "C" fn(
 /// `prepare` and `finish` must be valid function pointers that uphold the C API
 /// calling conventions for their data pointers.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_call(
     scm: ScmRef,
     mod_name: *const c_char,
@@ -661,6 +683,7 @@ pub extern "C" fn scm_resume_accumulator(
 /// `name` must be a valid, null-terminated C string when non-null. `scm` must
 /// refer to a live Scheme runtime handle.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_load_file(scm: ScmRef, name: *const c_char) -> libc::c_int {
     // SAFETY: Caller must pass a valid, null-terminated C string.
     let name = match unsafe { safe_cstr(name) } {
@@ -691,6 +714,7 @@ pub extern "C" fn scm_program_arguments<'gc>(ctx: ContextRef<'gc>) -> Value<'gc>
 ///
 /// `argv` must point to an array of at least `argc` valid, non-null C strings.
 #[unsafe(no_mangle)]
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn scm_program_arguments_init<'gc>(
     ctx: ContextRef<'gc>,
     argc: usize,

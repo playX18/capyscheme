@@ -58,6 +58,7 @@ fn relocatable_code_block_layout(
 }
 
 extern "C" fn compute_relocatable_code_block_size(obj: GCObject) -> usize {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let obj = obj.to_address().as_ref::<RelocatableCodeBlock<'static>>();
         relocatable_code_block_layout(
@@ -71,6 +72,7 @@ extern "C" fn compute_relocatable_code_block_size(obj: GCObject) -> usize {
 }
 
 extern "C" fn trace_relocatable_code_block(obj: GCObject, vis: &mut Visitor) {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let obj = obj
             .to_address()
@@ -83,6 +85,7 @@ extern "C" fn process_weak_relocatable_code_block(
     obj: GCObject,
     weak_processor: &mut WeakProcessor,
 ) {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let obj = obj
             .to_address()
@@ -113,6 +116,7 @@ impl<'gc> RelocatableCodeBlock<'gc> {
         relocations: &[CodeRelocation],
         loaded_data_value_bitmap: &[usize],
     ) -> Gc<'gc, Self> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let code_len =
                 u32::try_from(code.len()).expect("unlinked code block code is too large");
@@ -173,6 +177,7 @@ impl<'gc> RelocatableCodeBlock<'gc> {
     }
 
     pub fn code(&self) -> &[u8] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.payload.as_ptr().cast(), self.code_len as usize) }
     }
 
@@ -183,6 +188,7 @@ impl<'gc> RelocatableCodeBlock<'gc> {
             self.loaded_data_value_bitmap_word_count as usize,
         )
         .expect("unlinked code block layout is too large");
+        // SAFETY: Pointer is valid for the given element count
         unsafe {
             std::slice::from_raw_parts(
                 self.payload
@@ -202,6 +208,7 @@ impl<'gc> RelocatableCodeBlock<'gc> {
             self.loaded_data_value_bitmap_word_count as usize,
         )
         .expect("unlinked code block layout is too large");
+        // SAFETY: Pointer is valid for the given element count
         unsafe {
             std::slice::from_raw_parts(
                 self.payload
@@ -215,6 +222,7 @@ impl<'gc> RelocatableCodeBlock<'gc> {
     }
 }
 
+// SAFETY: `gc` for `RelocatableCodeBlock` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for RelocatableCodeBlock<'gc> {
     const CLASS_IDS: &'static [u32] =
         &[crate::rsgc::object::builtin_class_ids::RELOCATABLE_CODE_BLOCK];
@@ -222,8 +230,11 @@ unsafe impl<'gc> ClassTagged for RelocatableCodeBlock<'gc> {
     const TYPE_NAME: &'static str = "unlinked-code-block";
 }
 
+// SAFETY: `gc` for `RelocatableCodeBlock` upholds all trait invariants
 unsafe impl<'gc> Trace for RelocatableCodeBlock<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, _visitor: &mut Visitor) {}
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }

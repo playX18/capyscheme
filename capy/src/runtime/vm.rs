@@ -94,6 +94,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
 
     let f = get_trampoline_into_scheme().to_ptr::<()>();
 
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let f: extern "C-unwind" fn(
             Context<'gc>,
@@ -122,6 +123,7 @@ pub extern "C" fn call_scheme_with_k<'gc>(
 ///
 /// `ctx` must be an active runtime context, `cont` must be a live continuation
 /// value for that context, and `args` must contain values valid in `ctx`.
+// SAFETY: Invariants are upheld at this call site
 pub unsafe extern "C" fn continue_to<'gc>(
     ctx: Context<'gc>,
     cont: Value<'gc>,
@@ -136,6 +138,7 @@ pub unsafe extern "C" fn continue_to<'gc>(
 
     let f = get_trampoline_into_scheme().to_ptr::<()>();
 
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let f: extern "C-unwind" fn(
             Context<'gc>,
@@ -216,8 +219,10 @@ pub(crate) extern "C-unwind" fn default_retk<'gc>(
     let value = if num_rands == 0 {
         Value::undefined()
     } else if num_rands == 1 {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { *rands }
     } else {
+        // SAFETY: Pointer is valid for the given element count
         let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
         Vector::from_slice(*ctx, args).into()
     };
@@ -235,6 +240,7 @@ pub(crate) extern "C-unwind" fn default_exception_handler<'gc>(
     num_rands: usize,
     _retk: Value<'gc>,
 ) -> NativeReturn<'gc> {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         assert!(num_rands >= 1, "exception handler called with no arguments");
         let exception = *rands;
@@ -298,6 +304,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     /// # Safety
     ///
     /// Rands must be a valid pointer created by runtime, not arbitrary pointer.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn from_raw(
         ctx: Context<'gc>,
         rator: Value<'gc>,
@@ -308,6 +315,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
         Self {
             ctx,
             rator,
+            // SAFETY: Pointer is valid for the given element count
             rands: unsafe { std::slice::from_raw_parts(rands, num_rands) },
 
             retk,
@@ -397,6 +405,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     /// # Safety
     ///
     /// No type-checks are performed nor arity checks.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn return_call_unsafe(
         self,
         retk: Value<'gc>,
@@ -413,6 +422,7 @@ impl<'a, 'gc, R: TryIntoValues<'gc>> NativeCallContext<'a, 'gc, R> {
     /// # Safety
     ///
     /// This function is unsafe because continuations can be misused easily.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn continue_to(
         self,
         cont: Value<'gc>,

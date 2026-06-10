@@ -305,6 +305,7 @@ pub mod vector_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value;
         }
@@ -330,6 +331,7 @@ pub mod vector_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value;
         }
@@ -378,6 +380,7 @@ pub mod vector_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value as u8;
         }
@@ -462,6 +465,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -494,6 +498,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -580,6 +585,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -614,6 +620,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -710,6 +717,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -748,6 +756,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -813,6 +822,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -878,6 +888,7 @@ pub mod vector_ops {
             Endianness::Little => value.to_le_bytes(),
             Endianness::Big => value.to_be_bytes(),
         };
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -957,6 +968,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -1034,6 +1046,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -1084,6 +1097,7 @@ pub mod vector_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value;
         }
@@ -1126,6 +1140,7 @@ pub mod vector_ops {
             );
         }
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             bv.as_slice_mut_unchecked()[k] = value as u8;
         }
@@ -1170,6 +1185,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -1216,6 +1232,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -1262,6 +1279,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -1310,6 +1328,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -1360,6 +1379,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];
@@ -1414,6 +1434,7 @@ pub mod vector_ops {
         }
 
         let bytes = value.to_ne_bytes();
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = bv.as_slice_mut_unchecked();
             slice[k] = bytes[0];

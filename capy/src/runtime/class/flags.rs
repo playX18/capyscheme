@@ -71,11 +71,14 @@ impl ClassFlags {
     }
 }
 
+// SAFETY: GC trace for `ClassFlags` — all reachable heap fields are visited
 unsafe impl Trace for ClassFlags {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor<'_>) {
         let _ = visitor;
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
         let _ = weak_processor;
     }

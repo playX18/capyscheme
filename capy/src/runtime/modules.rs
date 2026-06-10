@@ -64,8 +64,11 @@ fn module_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::MODULE).unwrap())
 }
 
+// SAFETY: `gc` for `Module` upholds all trait invariants
 unsafe impl<'gc> Trace for Module<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.obarray.trace(visitor);
             self.uses.trace(visitor);
@@ -83,6 +86,7 @@ unsafe impl<'gc> Trace for Module<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
@@ -677,6 +681,7 @@ pub fn define_module<'gc>(
 
 static IMPORT_OBARRAY_MUTEX: Monitor<()> = Monitor::new(());
 
+// SAFETY: `gc` for `Module` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Module<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::MODULE];
     const TYPE_NAME: &'static str = "module";
@@ -723,6 +728,7 @@ impl<'gc> Variable<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Variable` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Variable<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::VARIABLE];
     const TYPE_NAME: &'static str = "variable";

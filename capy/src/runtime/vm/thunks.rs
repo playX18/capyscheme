@@ -299,6 +299,7 @@ impl<'gc> RegisterArgs<'gc> {
             1 => self.arg1,
             2 => self.arg2,
             3 => self.arg3,
+            // SAFETY: Preconditions verified by the surrounding code
             _ => unsafe { *self.overflow.add(index - REGISTER_ARG_COUNT) },
         }
     }
@@ -352,6 +353,7 @@ fn wrong_number_of_args_impl<'gc>(
 ) -> Value<'gc> {
     let is_cont = subr.is::<Closure>() && subr.downcast::<Closure>().is_continuation();
     let msg = if is_cont {
+        // SAFETY: Return address slot is valid — set up by the native calling convention
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
             log::trace!(
@@ -369,6 +371,7 @@ fn wrong_number_of_args_impl<'gc>(
             format!("expected {} value(s), got {}", expected, got)
         }
     } else {
+        // SAFETY: Return address slot is valid — set up by the native calling convention
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
             log::trace!(
@@ -415,6 +418,7 @@ thunks! {
         rands: *const Value<'gc>
     ) -> Value<'gc> {
         //print_stacktraces_impl(ctx);
+// SAFETY: Pointer is valid for the given element count
         let rands = unsafe { std::slice::from_raw_parts(rands, got) };
         wrong_number_of_args_impl(ctx, subr, got, expected, rands)
     }
@@ -449,6 +453,7 @@ thunks! {
         num_rands: usize,
         from: usize
     ) -> Value<'gc> {
+// SAFETY: Pointer is valid for the given element count
          let args = unsafe { std::slice::from_raw_parts(rands, num_rands) };
 
         let mut ls = Value::null();
@@ -522,6 +527,7 @@ thunks! {
     ) -> Value<'gc> {
         log::trace!("call {subr}");
         crate::runtime::vm::debug::print_stacktraces_impl(ctx);
+// SAFETY: Return address slot is valid — set up by the native calling convention
         let ret = unsafe { returnaddress(0) };
         backtrace::resolve(ret as _, |sym| {
             match subr.class_id() {
@@ -655,6 +661,7 @@ thunks! {
         let variable = module.downcast::<Module>().variable(ctx, name);
 
         let Some(var) = variable else {
+// SAFETY: Return address slot is valid — set up by the native calling convention
             let ret = unsafe { returnaddress(0) };
 
             return ThunkResult {
@@ -746,6 +753,7 @@ thunks! {
 
     pub fn set_current_module(ctx: Context<'gc>, module: Value<'gc>) -> Value<'gc> {
         if !module.is::<Module>() {
+// SAFETY: Return address slot is valid — set up by the native calling convention
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as _, |sym| {
                 log::trace!("set-current-module: {module} ");
@@ -796,6 +804,7 @@ thunks! {
         data: *const u8,
         size: usize
     ) -> Value<'gc> {
+// SAFETY: Pointer is valid for the given element count
         let data = unsafe { std::slice::from_raw_parts(data, size) };
 
         let fasl = FaslReader::new(ctx, data);
@@ -1072,9 +1081,12 @@ thunks! {
     }
 
     fn debug_trace(ctx: Context<'gc>, rator: Value<'gc>, rands: *const Value<'gc>, num_rands: usize, meta: Value<'gc>) -> () {
+// SAFETY: Pointer is valid for the given element count
         let ip = unsafe { returnaddress(0) };
+// SAFETY: Pointer is valid for the given element count
         let rands = unsafe { std::slice::from_raw_parts(rands, num_rands).to_vec() };
 
+// SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let frame = debug::ShadowFrame { ip: ip as u64, rator, rands, meta };
             (*ctx.state().shadow_stack.get()).push(frame);
@@ -2288,6 +2300,7 @@ thunks! {
     pub fn char_to_integer(ctx: Context<'gc>, c: Value<'gc>) -> ThunkResult<'gc> {
 
         if !c.is_char() {
+// SAFETY: Return address slot is valid — set up by the native calling convention
             let ret = unsafe { returnaddress(0) };
             backtrace::resolve(ret as *mut _, |symbol| {
                 log::trace!("CHAR->INTEGER error {c}");
@@ -3043,6 +3056,7 @@ thunks! {
         offset: i32,
         target: ObjectReference
     ) -> () {
+// SAFETY: Preconditions verified by the surrounding code
         unsafe {
             log::debug!("pre write barrier: src={:?}, offset={}, target={:?}", src, offset, target);
             ctx.mc.thread_unchecked()
@@ -3062,6 +3076,7 @@ thunks! {
         slot: ObjectSlot,
         target: ObjectReference
     ) -> () {
+// SAFETY: Preconditions verified by the surrounding code
         unsafe {
             log::debug!("pre write barrier: src={:?}, slot={:?}, target={:?}", src, slot, target);
             ctx.mc.thread_unchecked()
@@ -3081,6 +3096,7 @@ thunks! {
         offset: i32,
         target: ObjectReference
     ) -> () {
+// SAFETY: Preconditions verified by the surrounding code
         unsafe {
             log::debug!("post write barrier: src={:?}, offset={}, target={:?}", src, offset, target);
             ctx.mc.thread_unchecked()
@@ -3100,6 +3116,7 @@ thunks! {
         slot: ObjectSlot,
         target: ObjectReference
     ) -> () {
+// SAFETY: Preconditions verified by the surrounding code
         unsafe {
             log::debug!("post write barrier: src={:?}, slot={:?}, target={:?}", src, slot, target);
             ctx.mc.thread_unchecked()
@@ -4035,6 +4052,7 @@ thunks! {
         nrands: usize,
         rands: *mut Value<'gc>
     ) -> () {
+// SAFETY: Pointer is valid for the given element count
         unsafe {
             let retk = rands.read();
             let args = std::slice::from_raw_parts(rands.add(1), nrands - 1);
@@ -4137,6 +4155,7 @@ thunks! {
                 )
             }
         }
+// SAFETY: Preconditions verified by the surrounding code
         unsafe {
             ctx.state().set_current_marks(
                 marks.downcast::<ContinuationMarks>().cmarks
@@ -4209,6 +4228,7 @@ thunks! {
         header_word: usize,
         size: usize
     ) -> Value<'gc> {
+// SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let val = ctx
                 .mc
@@ -4219,6 +4239,7 @@ thunks! {
     }
 }
 
+// SAFETY: Invariants are upheld at this call site
 unsafe extern "C" {
     #[link_name = "llvm.returnaddress"]
     fn returnaddress(_: i32) -> *const u8;

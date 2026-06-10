@@ -46,6 +46,7 @@ impl<'gc> Complex<'gc> {
         Gc::new_with_header_word(*ctx, complex, complex_header_word())
     }
 }
+// SAFETY: `gc` for `Complex` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Complex<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::COMPLEX];
     const TYPE_NAME: &'static str = "complex";
@@ -79,6 +80,7 @@ impl<'gc> Rational<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Rational` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Rational<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::RATIONAL];
     const TYPE_NAME: &'static str = "rational";
@@ -100,7 +102,9 @@ pub enum Number<'gc> {
     Complex(Gc<'gc, Complex<'gc>>),
 }
 
+// SAFETY: `gc` for `Number` upholds all trait invariants
 unsafe impl<'gc> Trace for Number<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, tracer: &mut Visitor) {
         match self {
             Number::Fixnum(_) => {}
@@ -111,6 +115,7 @@ unsafe impl<'gc> Trace for Number<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }

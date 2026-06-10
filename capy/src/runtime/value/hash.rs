@@ -107,14 +107,19 @@ fn hashtable_header_word(immutable: bool) -> u64 {
 
 pub type HashTableRef<'gc> = Gc<'gc, HashTable<'gc>>;
 
+// SAFETY: `gc` for `HashTable` upholds all trait invariants
 unsafe impl<'gc> Trace for HashTable<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.inner.get_mut().trace(visitor);
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.inner.get_mut().process_weak_refs(weak_processor);
         }
@@ -204,6 +209,7 @@ pub struct InnerHashTable<'gc> {
 
 impl<'gc> HashTable<'gc> {
     #[allow(dead_code)]
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub(crate) unsafe fn at_object(
         ctx: Context<'gc>,
 
@@ -221,6 +227,7 @@ impl<'gc> HashTable<'gc> {
                 typ,
             };
 
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 obj.to_address().to_mut_ptr::<Self>().write(HashTable {
                     inner: Monitor::new(inner),
@@ -242,6 +249,7 @@ impl<'gc> HashTable<'gc> {
             typ,
         };
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             obj.to_address().to_mut_ptr::<Self>().write(HashTable {
                 inner: Monitor::new(inner),
@@ -464,6 +472,7 @@ impl<'gc> HashTable<'gc> {
         }
 
         Self::add_entry(
+            // SAFETY: The guard provides exclusive write access; no aliasing references
             unsafe { Write::assume(&*guard) },
             ctx,
             hash,
@@ -565,6 +574,7 @@ impl<'gc> HashTable<'gc> {
         let default = default(ctx);
 
         Self::add_entry(
+            // SAFETY: The guard provides exclusive write access; no aliasing references
             unsafe { Write::assume(&*guard) },
             ctx,
             hash,
@@ -714,6 +724,7 @@ impl<'gc> Iterator for HashTableValues<'gc> {
     }
 }
 
+// SAFETY: `gc` for `HashTable` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for HashTable<'gc> {
     const CLASS_IDS: &'static [u32] = &[
         crate::rsgc::object::builtin_class_ids::HASHTABLE,

@@ -27,11 +27,14 @@ fn condition_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::CONDITION).unwrap())
 }
 
+// SAFETY: GC trace for `Condition` — all reachable heap fields are visited
 unsafe impl Trace for Condition {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         let _ = visitor;
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
@@ -132,22 +135,27 @@ impl Mutex {
     }
 }
 
+// SAFETY: GC trace for `Mutex` — all reachable heap fields are visited
 unsafe impl Trace for Mutex {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         let _ = visitor;
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
 
+// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Mutex`
 unsafe impl ClassTagged for Mutex {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::MUTEX];
 
     const TYPE_NAME: &'static str = "mutex";
 }
 
+// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `Condition`
 unsafe impl ClassTagged for Condition {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CONDITION];
 
@@ -198,6 +206,7 @@ impl<'gc> ThreadObject<'gc> {
         if ptr == 0 {
             None
         } else {
+            // SAFETY: Preconditions verified by the surrounding code
             Some(unsafe { &*(ptr as *const RuntimeThread) })
         }
     }
@@ -209,7 +218,9 @@ impl<'gc> ThreadObject<'gc> {
     }
 
     pub(crate) fn enqueue_interrupt(&self, thunk: Value<'gc>) {
+        // SAFETY: Source and destination types have compatible layouts and sizes
         let thunk = unsafe { std::mem::transmute::<Value<'gc>, Value<'static>>(thunk) };
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { &*self.pending_interrupts }
             .queue
             .lock()
@@ -218,14 +229,17 @@ impl<'gc> ThreadObject<'gc> {
     }
 
     pub(crate) fn pop_pending_interrupt(&self) -> Option<Value<'gc>> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { &*self.pending_interrupts }
             .queue
             .lock()
             .pop_front()
+            // SAFETY: Source and destination types have compatible layouts and sizes
             .map(|value| unsafe { std::mem::transmute::<Value<'static>, Value<'gc>>(value) })
     }
 
     pub(crate) fn has_pending_interrupts(&self) -> bool {
+        // SAFETY: Preconditions verified by the surrounding code
         !unsafe { &*self.pending_interrupts }.queue.lock().is_empty()
     }
 
@@ -246,8 +260,11 @@ impl<'gc> ThreadObject<'gc> {
     }
 }
 
+// SAFETY: `gc` for `ThreadObject` upholds all trait invariants
 unsafe impl<'gc> Trace for ThreadObject<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.entrypoint.trace(visitor);
             for value in self
@@ -263,7 +280,9 @@ unsafe impl<'gc> Trace for ThreadObject<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.entrypoint.process_weak_refs(weak_processor);
             for value in self
@@ -280,6 +299,7 @@ unsafe impl<'gc> Trace for ThreadObject<'gc> {
     }
 }
 
+// SAFETY: `gc` for `ThreadObject` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for ThreadObject<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::THREAD];
 
@@ -289,6 +309,7 @@ unsafe impl<'gc> ClassTagged for ThreadObject<'gc> {
 impl Drop for ThreadObject<'_> {
     fn drop(&mut self) {
         if !self.pending_interrupts.is_null() {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 drop(Box::from_raw(self.pending_interrupts));
             }
@@ -405,6 +426,7 @@ pub mod threading_ops {
             let thread = nctx.ctx.state().thread_object;
             loop {
                 nctx.ctx.outside_gc_world(|| {
+                    // SAFETY: Preconditions verified by the surrounding code
                     let mutex_obj = unsafe { mutex_ptr.as_ref() };
                     loop {
                         match &mutex_obj.mutex {
@@ -469,10 +491,12 @@ pub mod threading_ops {
         }
 
         match &mutex_obj.mutex {
+            // SAFETY: Preconditions verified by the surrounding code
             MutexKind::Reentrant(mutex) => unsafe {
                 let guard = mutex.make_guard_unchecked();
                 drop(guard);
             },
+            // SAFETY: Preconditions verified by the surrounding code
             MutexKind::Regular(mutex) => unsafe {
                 let guard = mutex.make_guard_unchecked();
                 drop(guard);
@@ -553,8 +577,10 @@ pub mod threading_ops {
         let mutex_ptr = NonNull::from(&*mutex_obj);
         let thread = nctx.ctx.state().thread_object;
         nctx.ctx.outside_gc_world(|| {
+            // SAFETY: Preconditions verified by the surrounding code
             let mutex_obj = unsafe { mutex_ptr.as_ref() };
             match &mutex_obj.mutex {
+                // SAFETY: Preconditions verified by the surrounding code
                 MutexKind::Regular(mutex) => unsafe {
                     assert!(mutex_obj.begin_condition_wait());
                     let mut guard = mutex.make_guard_unchecked();

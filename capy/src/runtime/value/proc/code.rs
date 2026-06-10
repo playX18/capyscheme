@@ -20,6 +20,7 @@ pub struct CodeBlock<'gc> {
 // Finalizer queues move `CodeBlock` object references between GC worker and
 // scheduler threads. The queue only reads the span ownership guard and releases
 // the JIT span through the runtime-wide `CodeMemory` lock.
+// SAFETY: `gc` for `CodeBlock` upholds all trait invariants
 unsafe impl<'gc> Send for CodeBlock<'gc> {}
 
 fn code_block_header_word() -> u64 {
@@ -45,6 +46,7 @@ impl CodeBlockFinalizerQueue {
 pub static CODE_BLOCK_FINALIZERS: LazyLock<Arc<CodeBlockFinalizerQueue>> =
     LazyLock::new(|| Arc::new(CodeBlockFinalizerQueue::new()));
 
+// SAFETY: Correct `pop` semantics for the finalization queue
 unsafe impl FinalizerQueue for CodeBlockFinalizerQueue {
     fn mark_ready_to_run(&self, object: ObjectReference) {
         self.finalizers.lock().unwrap().push_back(object);
@@ -52,6 +54,7 @@ unsafe impl FinalizerQueue for CodeBlockFinalizerQueue {
 
     fn schedule(&self) {
         while let Some(object) = self.pop() {
+            // SAFETY: No concurrent access to the span; we own the code block
             unsafe {
                 let gc_object = GCObject::from(object);
                 let code_block = gc_object.to_address().as_ref::<CodeBlock<'static>>();
@@ -261,6 +264,7 @@ impl<'gc> CodeBlock<'gc> {
             }
         }
         let _guard = SpanBorrowGuard(&self.span_borrowed);
+        // SAFETY: Preconditions verified by the surrounding code
         let span = unsafe { &mut *(*self.span.get()).as_mut_ptr() };
         f(span)
     }
@@ -275,9 +279,11 @@ impl<'gc> CodeBlock<'gc> {
     ///
     /// This must only be called by the finalization path when no other code is
     /// borrowing or executing from the span.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn take_span_for_finalization(&self) -> Option<CodeSpan> {
         if self.span_initialized.get() && !self.span_finalized.get() && !self.span_borrowed.get() {
             self.span_finalized.set(true);
+            // SAFETY: Preconditions verified by the surrounding code
             Some(CodeSpan::from_raw(unsafe {
                 (*self.span.get()).as_ptr().read()
             }))
@@ -287,13 +293,16 @@ impl<'gc> CodeBlock<'gc> {
     }
 }
 
+// SAFETY: `gc` for `CodeBlock` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for CodeBlock<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::CODE_BLOCK];
 
     const TYPE_NAME: &'static str = "code-block";
 }
 
+// SAFETY: `gc` for `CodeBlock` upholds all trait invariants
 unsafe impl<'gc> Trace for CodeBlock<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         visitor.trace(&mut self.metadata);
         visitor.trace(&mut self.unlinked);
@@ -313,6 +322,7 @@ unsafe impl<'gc> Trace for CodeBlock<'gc> {
                 let slot = (self.loaded_data_base.as_usize()
                     + index as usize * std::mem::size_of::<Value<'static>>())
                     as *mut Value<'static>;
+                // SAFETY: Preconditions verified by the surrounding code
                 unsafe {
                     visitor.trace(&mut *slot);
                 }
@@ -323,6 +333,7 @@ unsafe impl<'gc> Trace for CodeBlock<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 

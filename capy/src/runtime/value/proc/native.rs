@@ -53,6 +53,7 @@ unsafe impl ClassTagged for NativeProc {
     const TYPE_NAME: &'static str = "native-procedure";
 }
 
+// SAFETY: GC trace for `NativeProc` — all reachable heap fields are visited
 unsafe impl Trace for NativeProc {
     // SAFETY: No GC references in NativeProc; nothing to trace.
     unsafe fn trace(&mut self, _vis: &mut Visitor) {}

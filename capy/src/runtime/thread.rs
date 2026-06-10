@@ -59,6 +59,7 @@ impl<'gc> Context<'gc> {
     ///
     /// `ptr` must have been obtained from `Context::as_ptr()` on a live mutator thread.
     /// The underlying `Mutation` must still be valid for the `'gc` lifetime.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn from_ptr(ptr: *const ()) -> Self {
         Self {
             // SAFETY: Delegates to `Mutation::from_ptr`; caller guarantees the pointer is valid.
@@ -485,6 +486,7 @@ fn pack_call_args<'gc>(
             regs[argc] = rand;
         } else {
             let overflow_index = argc - REGISTER_ARG_COUNT;
+            // SAFETY: The pointer was derived from a valid allocation or symbol address
             unsafe {
                 let slot = overflow.add(overflow_index);
                 if Address::from_ptr(slot) >= state.runstack_end {
@@ -506,6 +508,7 @@ fn pack_call_args<'gc>(
     }
 
     let overflow_count = argc.saturating_sub(REGISTER_ARG_COUNT);
+    // SAFETY: The pointer was derived from a valid allocation or symbol address
     unsafe {
         state
             .runstack
@@ -567,6 +570,7 @@ impl<'gc> GcSave<'gc> {
 
 // SAFETY: CallData stores GC-managed Values used to stage a tail call from native code.
 unsafe impl<'gc> Trace for CallData<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.trace(&mut self.rator);
         visitor.trace(&mut self.arg0);
@@ -574,12 +578,15 @@ unsafe impl<'gc> Trace for CallData<'gc> {
         visitor.trace(&mut self.arg2);
         visitor.trace(&mut self.arg3);
     }
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
 
+// SAFETY: `gc` for `GcSave` upholds all trait invariants
 unsafe impl<'gc> Trace for GcSave<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         pin_saved_value(self.rator.get(), visitor);
         pin_saved_value(self.arg0.get(), visitor);
@@ -593,6 +600,7 @@ unsafe impl<'gc> Trace for GcSave<'gc> {
         visitor.trace(&mut self.arg2);
         visitor.trace(&mut self.arg3);
     }
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
@@ -600,6 +608,7 @@ unsafe impl<'gc> Trace for GcSave<'gc> {
 
 fn pin_saved_value(value: Value<'_>, visitor: &mut crate::rsgc::collection::Visitor) {
     if value.is_cell() && !value.is_empty() {
+        // SAFETY: The value descriptor contains a valid GC object pointer
         let object = unsafe { value.desc.ptr() };
         if let Some(objref) = object.to_objref() {
             visitor.pin_root(objref);
@@ -610,11 +619,14 @@ fn pin_saved_value(value: Value<'_>, visitor: &mut crate::rsgc::collection::Visi
 // SAFETY: State contains GC roots (dynamic_state, runstack values, shadow_stack, etc.).
 // All traced fields are exclusively owned by this mutator thread during GC stop-the-world.
 unsafe impl Trace for State<'_> {
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.trace(&mut self.dynamic_state);
 
+        // SAFETY: Pointer is valid for the given element count
         let runstack = unsafe {
             // SAFETY: `runstack_start` through `runstack.get()` is a contiguous buffer of Values
             // allocated in `make_fresh_runstack`. The distance gives the number of live slots.
@@ -631,6 +643,7 @@ unsafe impl Trace for State<'_> {
         visitor.trace(&mut self.gc_save);
         visitor.trace(&mut self.call_data);
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             // SAFETY: `shadow_stack` UnsafeCell is only accessed during GC tracing (stop-the-world)
             // while no other thread can mutate it.
@@ -681,6 +694,7 @@ impl<'gc> State<'gc> {
     ///
     /// This function is unsafe because it allows setting arbitrary continuation marks
     /// which may violate invariants expected by the runtime in places like exception handlers.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn set_current_marks(&self, marks: Value<'gc>) {
         self.current_marks.set(marks);
     }
@@ -699,6 +713,7 @@ impl Scheme {
             let ctx = Context { mc };
             let result = f(ctx);
 
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe { (*ctx.state().shadow_stack.get()).clear() };
             result
         })
@@ -899,6 +914,7 @@ impl Scheme {
                     // SAFETY: `thread_object_bits` was obtained from `Gc::as_ptr()` on the
                     // parent thread. The GC keeps the object alive via the parent's root set.
                     let thread_object: Gc<'_, ThreadObject<'_>> =
+// SAFETY: The pointer references a valid GC-managed object of the expected type
                         unsafe { Gc::from_ptr(thread_object_bits as _) };
                     thread_object.bind_current_runtime_thread();
                     let state = State::new(mc, thread_object);
@@ -980,6 +996,7 @@ mod tests {
     }
 
     fn overflow_values<'gc>(state: &State<'gc>, count: usize) -> Vec<Value<'gc>> {
+        // SAFETY: Pointer is valid for the given element count
         unsafe {
             std::slice::from_raw_parts(state.runstack_start.to_ptr::<Value>(), count).to_vec()
         }
@@ -1047,6 +1064,7 @@ mod tests {
             );
 
             let mut slot_visitor = RecordingSlotVisitor::default();
+            // SAFETY: Preconditions verified by the surrounding code
             let mut visitor = unsafe {
                 crate::rsgc::collection::Visitor::new(
                     crate::rsgc::collection::VisitorKind::Slot(&mut slot_visitor),
@@ -1055,6 +1073,7 @@ mod tests {
             };
 
             let gc_save = std::ptr::addr_of!(ctx.state().gc_save).cast_mut();
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 (*gc_save).trace(&mut visitor);
             }

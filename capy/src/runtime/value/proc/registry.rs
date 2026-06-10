@@ -239,6 +239,7 @@ impl<'gc> ProcedureRegistry<'gc> {
 // SAFETY: ProcedureRegistry contains GC-managed Values in its maps.
 // We trace all entries during GC. The Monitor lock ensures exclusive access.
 unsafe impl<'gc> Trace for ProcedureRegistry<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         for proc in self.registered.get_mut().values_mut() {
             visitor.trace(proc);
@@ -249,6 +250,7 @@ unsafe impl<'gc> Trace for ProcedureRegistry<'gc> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }

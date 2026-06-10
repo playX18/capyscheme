@@ -244,6 +244,7 @@ impl<'gc> Index<usize> for Cache<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Cache` upholds all trait invariants
 unsafe impl<'gc> IndexWrite<usize> for Cache<'gc> {}
 
 #[derive(Trace)]
@@ -256,6 +257,7 @@ fn dynamic_state_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::DYNAMIC_STATE).unwrap())
 }
 
+// SAFETY: `gc` for `DynamicStateObject` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for DynamicStateObject<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::DYNAMIC_STATE];
     const TYPE_NAME: &'static str = "dynamic-state";
@@ -325,6 +327,7 @@ impl<'gc> DynamicState<'gc> {
             }
         }
 
+        // SAFETY: No concurrent access to this `Lock` cell exists at this point
         unsafe { self.values.unlock_unchecked().set(saved.downcast()) };
         self.has_aliased_values.set(false);
     }
@@ -409,6 +412,7 @@ impl<'gc> Fluid<'gc> {
                     return;
                 }
 
+                // SAFETY: No concurrent access to this `Lock` cell exists at this point
                 unsafe {
                     dynamic_state
                         .values
@@ -430,6 +434,7 @@ impl<'gc> Fluid<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Fluid` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Fluid<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::FLUID];
     const TYPE_NAME: &'static str = "fluid";

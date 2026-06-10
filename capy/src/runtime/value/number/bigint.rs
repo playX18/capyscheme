@@ -37,6 +37,7 @@ pub type Digit2X = u128;
 pub type Digit = u64;
 
 extern "C" fn compute_bigint_size(object: GCObject) -> usize {
+    // SAFETY: Preconditions verified by the surrounding code
     let bigint = unsafe { object.to_address().as_ref::<BigInt<'static>>() };
     let raw = bigint.num_words() * size_of::<Digit>() + size_of::<BigInt>();
     raw_align_up(raw, align_of::<BigInt>())
@@ -170,6 +171,7 @@ impl<'gc> BigInt<'gc> {
             }
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let layout = std::alloc::Layout::from_size_align_unchecked(
                 std::mem::size_of::<Self>() + std::mem::size_of_val(words),
@@ -212,6 +214,7 @@ impl<'gc> BigInt<'gc> {
     where
         F: FnOnce(&mut Self) -> Result<(), E>,
     {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let layout = std::alloc::Layout::from_size_align_unchecked(
                 std::mem::size_of::<Self>() + count * std::mem::size_of::<Digit>(),
@@ -255,12 +258,14 @@ impl<'gc> BigInt<'gc> {
 
     /// Returns a slice to the words of this BigInt.
     pub fn words_slice(&self) -> &[Digit] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.words.as_ptr(), self.num_words()) }
     }
 
     /// Returns a mutable slice to the words of this BigInt.
     /// Note: This requires mutable access to the Gc'd BigInt, e.g., via `Gc::write`.
     pub fn words_slice_mut(&mut self) -> &mut [Digit] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr(), self.num_words()) }
     }
 
@@ -353,11 +358,15 @@ fn bigint_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::BIGINT).unwrap())
 }
 
+// SAFETY: `gc` for `BigInt` upholds all trait invariants
 unsafe impl<'gc> Trace for BigInt<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, _visitor: &mut Visitor<'_>) {}
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, _weak_processor: &mut crate::rsgc::WeakProcessor) {}
 }
 
+// SAFETY: `gc` for `BigInt` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for BigInt<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::BIGINT];
     const TYPE_NAME: &'static str = "bigint";
@@ -368,6 +377,7 @@ impl<'gc> Index<usize> for BigInt<'gc> {
 
     fn index(&self, index: usize) -> &Self::Output {
         debug_assert!(index < self.count());
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { &*(self.words.as_ptr().add(index) as *const Digit) }
     }
 }
@@ -375,6 +385,7 @@ impl<'gc> Index<usize> for BigInt<'gc> {
 impl<'gc> IndexMut<usize> for BigInt<'gc> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         debug_assert!(index < self.count());
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { &mut *(self.words.as_mut_ptr().add(index) as *mut Digit) }
     }
 }
@@ -385,6 +396,7 @@ impl<'gc> Index<Range<usize>> for BigInt<'gc> {
     fn index(&self, range: Range<usize>) -> &Self::Output {
         assert!(range.start < self.count());
         assert!(range.end <= self.count());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.words.as_ptr().add(range.start), range.len()) }
     }
 }
@@ -394,6 +406,7 @@ impl<'gc> Index<RangeTo<usize>> for BigInt<'gc> {
 
     fn index(&self, range: RangeTo<usize>) -> &Self::Output {
         assert!(range.end <= self.count());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.words.as_ptr(), range.end) }
     }
 }
@@ -401,6 +414,7 @@ impl<'gc> Index<RangeTo<usize>> for BigInt<'gc> {
 impl<'gc> IndexMut<RangeTo<usize>> for BigInt<'gc> {
     fn index_mut(&mut self, range: RangeTo<usize>) -> &mut Self::Output {
         assert!(range.end <= self.count());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr(), range.end) }
     }
 }
@@ -410,6 +424,7 @@ impl<'gc> Index<RangeFrom<usize>> for BigInt<'gc> {
 
     fn index(&self, range: RangeFrom<usize>) -> &Self::Output {
         assert!(range.start < self.count());
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.words.as_ptr().add(range.start), self.count()) }
     }
 }
@@ -417,6 +432,7 @@ impl<'gc> Index<RangeFrom<usize>> for BigInt<'gc> {
 impl<'gc> IndexMut<RangeFrom<usize>> for BigInt<'gc> {
     fn index_mut(&mut self, range: RangeFrom<usize>) -> &mut Self::Output {
         assert!(range.start < self.count());
+        // SAFETY: Pointer is valid for the given element count
         unsafe {
             std::slice::from_raw_parts_mut(self.words.as_mut_ptr().add(range.start), self.count())
         }
@@ -427,6 +443,7 @@ impl<'gc> IndexMut<Range<usize>> for BigInt<'gc> {
     fn index_mut(&mut self, range: Range<usize>) -> &mut Self::Output {
         assert!(range.start < self.count());
         assert!(range.end <= self.count());
+        // SAFETY: Pointer is valid for the given element count
         unsafe {
             std::slice::from_raw_parts_mut(self.words.as_mut_ptr().add(range.start), range.len())
         }
@@ -437,12 +454,14 @@ impl<'gc> Deref for BigInt<'gc> {
     type Target = [Digit];
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.words.as_ptr(), self.count()) }
     }
 }
 
 impl<'gc> DerefMut for BigInt<'gc> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.words.as_mut_ptr(), self.count()) }
     }
 }

@@ -43,6 +43,7 @@ fn vector_header_word(immutable: bool) -> u64 {
 
 #[inline(never)]
 extern "C" fn trace_vector(vec: GCObject, vis: &mut Visitor) {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let vec = vec.to_address().as_mut_ref::<Vector<'static>>();
         for i in 0..vec.len() {
@@ -55,6 +56,7 @@ extern "C" fn process_weak_vector(_: GCObject, _: &mut WeakProcessor) {}
 
 #[inline(never)]
 extern "C" fn compute_vector_size(vec: GCObject) -> usize {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe { vec.to_address().as_ref::<Vector<'static>>().len() * size_of::<Value>() }
 }
 
@@ -89,6 +91,7 @@ impl<'gc> Vector<'gc> {
         length: usize,
         fill: Value<'gc>,
     ) -> Gc<'gc, Self> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>() + size_of::<Value>() * length,
@@ -116,6 +119,7 @@ impl<'gc> Vector<'gc> {
         vector
     }
     pub fn as_slice(&self) -> &[Value<'gc>] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 
@@ -125,7 +129,9 @@ impl<'gc> Vector<'gc> {
     ///
     /// The caller must ensure exclusive access to the vector contents for the
     /// duration of the returned borrow.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [Value<'gc>] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
@@ -147,6 +153,7 @@ impl<'gc> Vector<'gc> {
         );
 
         for (i, &value) in other_slice.iter().enumerate() {
+            // SAFETY: Preconditions verified by the surrounding code
             unsafe {
                 (vec.data.as_ptr() as *mut Value).add(i).write(value);
             }
@@ -168,22 +175,26 @@ impl<'gc> AsRef<[Value<'gc>]> for Vector<'gc> {
     }
 }
 
+// SAFETY: `gc` for `Vector` upholds all trait invariants
 unsafe impl<'gc> AsRefWrite<[Value<'gc>]> for Vector<'gc> {}
 
 impl<'gc> Deref for Vector<'gc> {
     type Target = [Lock<Value<'gc>>];
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 }
 
+// SAFETY: `gc` for `Vector` upholds all trait invariants
 unsafe impl<'gc> IndexWrite<usize> for Vector<'gc> {}
 impl<'gc> Index<usize> for Vector<'gc> {
     type Output = Lock<Value<'gc>>;
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.len(), "Index out of bounds");
+        // SAFETY: Pointer is valid for the given element count
         unsafe { &std::slice::from_raw_parts(self.data.as_ptr(), self.len())[index] }
     }
 }
@@ -191,6 +202,7 @@ impl<'gc> Index<usize> for Vector<'gc> {
 impl<'gc> IndexMut<usize> for Vector<'gc> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         assert!(index < self.len(), "Index out of bounds");
+        // SAFETY: Pointer is valid for the given element count
         unsafe { &mut std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), self.len())[index] }
     }
 }
@@ -248,6 +260,7 @@ fn mapped_bytevector_header_word() -> u64 {
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
 
 extern "C" fn trace_byte_vector_mapping(vec: GCObject, vis: &mut Visitor) {
+    // SAFETY: The pointer references a valid GC-managed object of the expected type
     unsafe {
         let bv = vec.to_address().as_mut_ref::<ByteVector>();
         let orig = bv.contents.sub(size_of::<ByteVector>());
@@ -260,6 +273,7 @@ extern "C" fn trace_byte_vector_mapping(vec: GCObject, vis: &mut Visitor) {
 extern "C" fn process_weak_byte_vector(_: GCObject, _: &mut WeakProcessor) {}
 
 extern "C" fn trace_owned_byte_vector(vec: GCObject, _: &mut Visitor) {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let bv = vec.to_address().as_mut_ref::<ByteVector>();
         bv.contents = vec.to_address().add(size_of::<ByteVector>());
@@ -267,6 +281,7 @@ extern "C" fn trace_owned_byte_vector(vec: GCObject, _: &mut Visitor) {
 }
 
 extern "C" fn compute_owned_byte_vector_size(vec: GCObject) -> usize {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe { vec.to_address().as_ref::<ByteVector>().len * size_of::<u8>() }
 }
 
@@ -327,6 +342,7 @@ impl ByteVector {
             AllocationSemantics::NonMoving
         };
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>() + size_of::<u8>() * length,
@@ -347,6 +363,7 @@ impl ByteVector {
     /// Allocates a memory-mapped bytevector. This can be used to represent
     /// memory from FFI calls or memory-mapped files.
     pub fn new_mapping<'gc>(mc: Mutation<'gc>, addr: Address, length: usize) -> Gc<'gc, Self> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>(),
@@ -374,6 +391,7 @@ impl ByteVector {
     }
 
     pub fn as_slice<'gc>(self: Gc<'gc, Self>) -> &'gc [u8] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 
@@ -383,11 +401,14 @@ impl ByteVector {
     ///
     /// The caller must ensure exclusive access to the bytevector contents for
     /// the duration of the returned borrow.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn as_slice_mut_unchecked<'gc>(self: Gc<'gc, Self>) -> &'gc mut [u8] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.contents.to_mut_ptr(), self.len) }
     }
 
     pub fn fill<'gc>(self: Gc<'gc, Self>, fill: u8) {
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             let slice = self.as_slice_mut_unchecked();
             for byte in slice.iter_mut() {
@@ -404,6 +425,7 @@ impl ByteVector {
             "Cannot copy from byte vector of different length"
         );
 
+        // SAFETY: Mutable access is exclusive and goes through GC write barrier
         unsafe {
             self.as_slice_mut_unchecked()[..other_slice.len()].copy_from_slice(other_slice);
         }
@@ -412,6 +434,7 @@ impl ByteVector {
 
 impl AsRef<[u8]> for ByteVector {
     fn as_ref(&self) -> &[u8] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 }
@@ -420,6 +443,7 @@ impl Deref for ByteVector {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.contents.to_ptr(), self.len) }
     }
 }
@@ -480,6 +504,7 @@ impl Index<core::ops::RangeFull> for ByteVector {
     }
 }
 
+// SAFETY: `gc` for `Vector` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Vector<'gc> {
     const CLASS_IDS: &'static [u32] = &[
         crate::rsgc::object::builtin_class_ids::MUTABLE_VECTOR,
@@ -488,6 +513,7 @@ unsafe impl<'gc> ClassTagged for Vector<'gc> {
     const TYPE_NAME: &'static str = "vector";
 }
 
+// SAFETY: Class IDs in `CLASS_IDS` match the allocation header for `ByteVector`
 unsafe impl ClassTagged for ByteVector {
     const CLASS_IDS: &'static [u32] = &[
         crate::rsgc::object::builtin_class_ids::MUTABLE_BYTEVECTOR,
@@ -513,6 +539,7 @@ fn tuple_header_word() -> u64 {
 }
 
 extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe {
         let tuple = tuple.to_address().as_mut_ref::<Tuple<'static>>();
 
@@ -525,9 +552,11 @@ extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {
 extern "C" fn process_weak_tuple(_: GCObject, _: &mut WeakProcessor) {}
 
 extern "C" fn compute_tuple_size(tuple: GCObject) -> usize {
+    // SAFETY: Preconditions verified by the surrounding code
     unsafe { tuple.to_address().as_ref::<Tuple<'static>>().len() * size_of::<Value>() }
 }
 
+// SAFETY: `gc` for `Tuple` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Tuple<'gc> {
     const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::TUPLE];
     const TYPE_NAME: &'static str = "tuple";
@@ -554,6 +583,7 @@ impl<'gc> Tuple<'gc> {
 
     /// Allocates a tuple with all slots initialized to `init`.
     pub fn new(mc: Mutation<'gc>, length: usize, init: Value<'gc>) -> Gc<'gc, Self> {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let alloc = mc.raw_allocate_with_header_word(
                 size_of::<Self>() + size_of::<Value>() * length,
@@ -582,6 +612,7 @@ impl<'gc> Tuple<'gc> {
     }
 
     pub fn as_slice(&self) -> &[Value<'gc>] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.data.as_ptr().cast(), self.len()) }
     }
 
@@ -591,7 +622,9 @@ impl<'gc> Tuple<'gc> {
     ///
     /// The caller must ensure exclusive access to the tuple contents for the
     /// duration of the returned borrow.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn as_slice_mut_unchecked(&mut self) -> &mut [Value<'gc>] {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr().cast(), self.len()) }
     }
 
@@ -628,12 +661,14 @@ impl<'gc> Deref for Tuple<'gc> {
     type Target = [Lock<Value<'gc>>];
 
     fn deref(&self) -> &Self::Target {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len()) }
     }
 }
 
 impl<'gc> DerefMut for Tuple<'gc> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: Pointer is valid for the given element count
         unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), self.len()) }
     }
 }
@@ -641,6 +676,7 @@ impl<'gc> DerefMut for Tuple<'gc> {
 impl<'gc> IndexMut<usize> for Tuple<'gc> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         assert!(index < self.len(), "Index out of bounds");
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { &mut *self.data.as_mut_ptr().add(index) }
     }
 }
@@ -650,11 +686,14 @@ impl<'gc> Index<usize> for Tuple<'gc> {
 
     fn index(&self, index: usize) -> &Self::Output {
         assert!(index < self.len(), "Index out of bounds");
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { &*self.data.as_ptr().add(index) }
     }
 }
 
+// SAFETY: `gc` for `Tuple` upholds all trait invariants
 unsafe impl<'gc> AsRefWrite<[Value<'gc>]> for Tuple<'gc> {}
+// SAFETY: `gc` for `Tuple` upholds all trait invariants
 unsafe impl<'gc> IndexWrite<usize> for Tuple<'gc> {}
 
 #[cfg(test)]

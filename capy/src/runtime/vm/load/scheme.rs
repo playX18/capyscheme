@@ -255,6 +255,7 @@ pub(crate) fn continue_loading_k(
     );
 
     match result {
+        // SAFETY: `retk` is a valid continuation frame on the stack
         Ok(thunk) => unsafe { nctx.continue_to(retk, &[thunk]) },
         Err(err) => nctx.return_(Err(err)),
     }

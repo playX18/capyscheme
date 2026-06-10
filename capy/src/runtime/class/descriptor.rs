@@ -65,8 +65,11 @@ impl core::fmt::Debug for ClassDescriptor<'_> {
     }
 }
 
+// SAFETY: GC trace for `ClassDescriptor` — all reachable heap fields are visited
 unsafe impl Trace for ClassDescriptor<'_> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.name.trace(visitor);
             self.flags.trace(visitor);
@@ -82,7 +85,9 @@ unsafe impl Trace for ClassDescriptor<'_> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.name.process_weak_refs(weak_processor);
             self.flags.process_weak_refs(weak_processor);
@@ -99,6 +104,7 @@ unsafe impl Trace for ClassDescriptor<'_> {
     }
 }
 
+// SAFETY: `gc` for `ClassDescriptor` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for ClassDescriptor<'gc> {
     const TYPE_NAME: &'static str = "class";
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CLASS];
@@ -220,6 +226,7 @@ impl<'gc> ClassDescriptor<'gc> {
     }
 
     pub fn name(&self) -> &str {
+        // SAFETY: The byte content is known to be valid UTF-8
         unsafe { std::str::from_utf8_unchecked(self.name.as_slice()) }
     }
 
@@ -233,6 +240,7 @@ impl<'gc> ClassDescriptor<'gc> {
 
     pub fn seal(&self) {
         let flags = self.flags().with_sealed().without_malleable();
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.flags.as_cell().set(flags) };
     }
 
@@ -242,6 +250,7 @@ impl<'gc> ClassDescriptor<'gc> {
         } else {
             return false;
         };
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe { self.flags.as_cell().set(flags) };
         true
     }

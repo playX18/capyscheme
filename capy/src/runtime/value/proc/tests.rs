@@ -137,12 +137,14 @@ fn loaded_code_block_owns_span_and_unlinked_code() {
         assert_eq!(code_block.arity.fixed_arity(), 2);
         assert_eq!(code_block.metadata.get(), metadata);
 
+        // SAFETY: No concurrent access to the span; we own the code block
         let span = unsafe {
             code_block
                 .take_span_for_finalization()
                 .expect("span is present")
         };
         assert!(!code_block.has_live_span());
+        // SAFETY: No concurrent access to the span; we own the code block
         assert!(unsafe { code_block.take_span_for_finalization() }.is_none());
         memory.release_span(span).expect("release code span");
     });
@@ -185,11 +187,13 @@ fn code_block_span_can_be_taken_for_finalization_once() {
             },
         );
 
+        // SAFETY: No concurrent access to the span; we own the code block
         let span = unsafe {
             code_block
                 .take_span_for_finalization()
                 .expect("span is present")
         };
+        // SAFETY: No concurrent access to the span; we own the code block
         assert!(unsafe { code_block.take_span_for_finalization() }.is_none());
         memory.release_span(span).expect("release code span");
     });

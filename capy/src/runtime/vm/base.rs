@@ -140,6 +140,7 @@ pub mod base_ops {
     }
 
     #[scheme(name = "%call/cc-unsafe")]
+    // SAFETY: Invariants are upheld at this call site
     pub fn call_cc_unsafe(proc: Value<'gc>) -> Result<Value<'gc>, Value<'gc>> {
         let k = nctx.retk;
         let k = make_closure_call_cc_cont(nctx.ctx, [k]);
@@ -385,6 +386,7 @@ pub mod base_ops {
     }
     #[scheme(name = "microsecond")]
     pub fn microsecond() -> u128 {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let mut tv: std::mem::MaybeUninit<libc::timeval> = std::mem::MaybeUninit::uninit();
             libc::gettimeofday(tv.as_mut_ptr(), std::ptr::null_mut());

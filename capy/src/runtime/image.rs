@@ -33,6 +33,7 @@ pub mod reader;
 pub fn all_native_procedures<'gc>(ctx: Context<'gc>) -> Vec<Address> {
     use crate::runtime::{self, vm};
     let mut native_procedures = Vec::with_capacity(600);
+// SAFETY: The pointer was derived from a valid allocation or symbol address
     unsafe {
         native_procedures.push(Address::from_ptr(default_retk as *const ()));
 

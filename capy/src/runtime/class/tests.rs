@@ -20,21 +20,27 @@ struct PendingRegistrationDummy {
     value: usize,
 }
 
+// SAFETY: GC trace for `GcOnlyDummy` — all reachable heap fields are visited
 unsafe impl Trace for GcOnlyDummy {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         let _ = visitor;
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
 
+// SAFETY: GC trace for `PendingRegistrationDummy` — all reachable heap fields are visited
 unsafe impl Trace for PendingRegistrationDummy {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         let _ = visitor;
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }

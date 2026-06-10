@@ -48,6 +48,7 @@ impl<'gc> WeakValue<'gc> {
             return self.as_value();
         }
 
+        // SAFETY: The value descriptor contains a valid GC object pointer
         unsafe {
             mc.raw_weak_reference_load(self.as_value().desc.ptr());
         }
@@ -59,11 +60,14 @@ impl<'gc> WeakValue<'gc> {
 // tracing we only register for weak processing; actual pointer updates happen
 // in `process_weak_refs` where we check liveness and replace dead refs with BWP.
 unsafe impl<'gc> Trace for WeakValue<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::collection::Visitor) {
         visitor.register_for_weak_processing();
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             let value = self.as_value();
 

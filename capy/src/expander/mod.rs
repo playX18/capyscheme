@@ -14,6 +14,7 @@ use crate::{
 use std::sync::OnceLock;
 
 pub mod assignment_elimination;
+pub mod cenv;
 pub mod compile_cps;
 pub mod compile_cps_bytecode;
 pub mod core;
@@ -24,6 +25,7 @@ pub mod free_vars;
 pub mod inlining;
 pub mod letrectify;
 pub mod primitives;
+pub mod term;
 
 pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     let Some(props) = get_source_property(ctx, obj) else {

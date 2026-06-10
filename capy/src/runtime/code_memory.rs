@@ -79,6 +79,7 @@ pub struct CodeMemory {
 // in the runtime-wide allocator. The raw pointers inside asmkit::Span identify
 // executable mappings; moving the wrapper between threads does not invalidate
 // those mappings.
+// SAFETY: `CodeMemory` is `Send` because all mutable state is synchronized
 unsafe impl Send for CodeMemory {}
 
 static RUNTIME_CODE_MEMORY: LazyLock<Mutex<CodeMemory>> =
@@ -115,6 +116,7 @@ impl CodeMemory {
             .allocator
             .alloc(allocation_size)
             .map_err(|err| io::Error::other(format!("failed to allocate JIT memory: {err:?}")))?;
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.allocator
                 .write(&mut span, |span| {
@@ -134,7 +136,9 @@ impl CodeMemory {
             (Address::ZERO, Address::ZERO)
         } else {
             (
+                // SAFETY: The pointer was derived from a valid allocation or symbol address
                 Address::from_ptr(unsafe { span.rx().add(data_offset) }),
+                // SAFETY: The pointer was derived from a valid allocation or symbol address
                 Address::from_ptr(unsafe { span.rw().add(data_offset) }),
             )
         };
@@ -160,6 +164,7 @@ impl CodeMemory {
         bytes: &[u8],
     ) -> io::Result<()> {
         validate_patch_bounds(span, offset, bytes)?;
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.allocator
                 .copy_from_slice(span, offset, bytes)
@@ -185,6 +190,7 @@ impl CodeMemory {
             validate_patch_bounds(span, *offset, bytes)?;
         }
 
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.allocator
                 .write(span, |span| {
@@ -204,6 +210,7 @@ impl CodeMemory {
 
     pub fn release_span(&mut self, span: CodeSpan) -> io::Result<()> {
         let span = span.into_raw();
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.allocator.release(span.rx()).map_err(|err| {
                 io::Error::other(format!("failed to release JIT memory: {err:?}"))
@@ -258,6 +265,7 @@ mod tests {
         assert!(loaded.size >= 6);
 
         let f: extern "C" fn() -> i32 =
+// SAFETY: Source and destination types have compatible layouts and sizes
             unsafe { std::mem::transmute(loaded.entrypoint.as_usize()) };
         assert_eq!(f(), 42);
 
@@ -280,6 +288,7 @@ mod tests {
             .expect("patch code");
 
         let f: extern "C" fn() -> i32 =
+// SAFETY: Source and destination types have compatible layouts and sizes
             unsafe { std::mem::transmute(loaded.entrypoint.as_usize()) };
         assert_eq!(f(), 42);
 

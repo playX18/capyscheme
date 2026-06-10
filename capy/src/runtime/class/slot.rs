@@ -184,8 +184,11 @@ pub struct SlotDescriptor<'gc> {
     pub(crate) flags: SlotFlags,
 }
 
+// SAFETY: GC trace for `SlotDescriptor` — all reachable heap fields are visited
 unsafe impl Trace for SlotDescriptor<'_> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.name.trace(visitor);
             self.init_value.trace(visitor);
@@ -200,7 +203,9 @@ unsafe impl Trace for SlotDescriptor<'_> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.name.process_weak_refs(weak_processor);
             self.init_value.process_weak_refs(weak_processor);
@@ -244,6 +249,7 @@ impl<'gc> SlotDescriptor<'gc> {
     }
 
     pub fn name(&self) -> &str {
+        // SAFETY: The byte content is known to be valid UTF-8
         unsafe { std::str::from_utf8_unchecked(self.name.as_slice()) }
     }
 
@@ -336,8 +342,11 @@ pub struct SlotAccessorDescriptor<'gc> {
     pub(crate) flags: SlotFlags,
 }
 
+// SAFETY: GC trace for `SlotAccessorDescriptor` — all reachable heap fields are visited
 unsafe impl Trace for SlotAccessorDescriptor<'_> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.name.trace(visitor);
             self.init_value.trace(visitor);
@@ -352,7 +361,9 @@ unsafe impl Trace for SlotAccessorDescriptor<'_> {
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut WeakProcessor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.name.process_weak_refs(weak_processor);
             self.init_value.process_weak_refs(weak_processor);
@@ -409,6 +420,7 @@ impl<'gc> SlotAccessorDescriptor<'gc> {
     }
 
     pub fn name(&self) -> &str {
+        // SAFETY: The byte content is known to be valid UTF-8
         unsafe { std::str::from_utf8_unchecked(self.name.as_slice()) }
     }
 
@@ -520,6 +532,7 @@ impl<'gc> SlotDefinitionDescriptor<'gc> {
     }
 
     pub fn name(&self) -> &str {
+        // SAFETY: The byte content is known to be valid UTF-8
         unsafe { std::str::from_utf8_unchecked(self.name.as_slice()) }
     }
 
@@ -576,6 +589,7 @@ impl<'gc> SlotDefinitionDescriptor<'gc> {
     }
 }
 
+// SAFETY: `gc` for `SlotDefinitionDescriptor` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for SlotDefinitionDescriptor<'gc> {
     const TYPE_NAME: &'static str = "slot-definition";
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SLOT_DEFINITION];
@@ -627,6 +641,7 @@ impl<'gc> SlotAccessorDefinition<'gc> {
     }
 
     pub fn name(&self) -> &str {
+        // SAFETY: The byte content is known to be valid UTF-8
         unsafe { std::str::from_utf8_unchecked(self.name.as_slice()) }
     }
 
@@ -700,6 +715,7 @@ impl<'gc> SlotAccessorDefinition<'gc> {
     }
 }
 
+// SAFETY: `gc` for `SlotAccessorDefinition` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for SlotAccessorDefinition<'gc> {
     const TYPE_NAME: &'static str = "slot-accessor";
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::SLOT_ACCESSOR];

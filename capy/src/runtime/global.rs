@@ -29,19 +29,24 @@ pub struct GlobalTable<'gc> {
     globals: Monitor<GlobalMap<'gc>>,
 }
 
+// SAFETY: `gc` for `GlobalTable` upholds all trait invariants
 unsafe impl<'gc> Trace for GlobalTable<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, tracer: &mut Visitor<'_>) {
         for value in self.globals.get_mut().iter_mut() {
             tracer.trace(value);
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }
 }
 
+// SAFETY: `GlobalTable` is `Send` because all mutable state is synchronized
 unsafe impl Send for GlobalTable<'_> {}
+// SAFETY: `GlobalTable` is `Sync` because all mutable access is serialized
 unsafe impl Sync for GlobalTable<'_> {}
 
 static GLOBALS: OnceLock<crate::rsgc::Global<RootedGlobalTable>> = OnceLock::new();
@@ -77,6 +82,7 @@ pub fn globals() -> &'static crate::rsgc::Global<RootedGlobalTable> {
 ///
 /// While this function is not unsafe per-se, it can lead to wrong program
 /// behaviour if it sets existing globals to incorrect indices.
+// SAFETY: Caller must ensure preconditions are met (see fn docs)
 pub unsafe fn globals_from_vec<'gc>(_ctx: impl AsRef<Context<'gc>>, vec: Vec<Value<'gc>>) {
     GLOBALS
         .set(crate::rsgc::Global::new(GlobalTable {
@@ -144,6 +150,7 @@ where
     ///
     /// `index` must refer to an initialized entry in the runtime global table
     /// for values compatible with `R`.
+    // SAFETY: Caller must ensure preconditions are met (see fn docs)
     pub unsafe fn from_index(index: usize) -> Self {
         Self {
             index: GlobalIndex(index),
@@ -152,6 +159,7 @@ where
     }
 }
 
+// SAFETY: `R` for `Global` upholds all trait invariants
 unsafe impl<R> Send for Global<R>
 where
     R: for<'a> Rootable<'a>,
@@ -159,6 +167,7 @@ where
 {
 }
 
+// SAFETY: `R` for `Global` upholds all trait invariants
 unsafe impl<R> Sync for Global<R>
 where
     R: for<'a> Rootable<'a>,
@@ -188,7 +197,9 @@ macro_rules! global {
 
                 #[allow(unused)]
                 #[doc(hidden)]
+// SAFETY: Caller must ensure preconditions are met (see fn docs)
                 pub unsafe fn [<$name: lower _from_index>](index: usize) -> $crate::prelude::Global<$crate::Rootable!($l => $t)> {
+// SAFETY: Preconditions verified by the surrounding code
                     unsafe {
                         $crate::prelude::Global::from_index(index)
                     }

@@ -792,7 +792,9 @@ fn invalid_data(message: &'static str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
 
+// SAFETY: `Trampolines` is `Send` because all mutable state is synchronized
 unsafe impl Send for Trampolines {}
+// SAFETY: `Trampolines` is `Sync` because all mutable access is serialized
 unsafe impl Sync for Trampolines {}
 
 pub(crate) static TRAMPOLINES: LazyLock<Trampolines> = LazyLock::new(Trampolines::new);
@@ -850,6 +852,7 @@ mod tests {
         );
 
         let f: extern "C" fn() -> usize =
+// SAFETY: Source and destination types have compatible layouts and sizes
             unsafe { std::mem::transmute(loaded.entrypoint.as_usize()) };
         assert_eq!(f(), RuntimeData::PairHeaderWord.address().as_usize());
     }

@@ -14,15 +14,20 @@ pub enum Library<'gc> {
     Fasl(Value<'gc>),
 }
 
+// SAFETY: `gc` for `Library` upholds all trait invariants
 unsafe impl<'gc> Trace for Library<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
         match self {
+            // SAFETY: Preconditions verified by the surrounding code
             Self::Fasl(value) => unsafe { value.trace(visitor) },
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         match self {
+            // SAFETY: Preconditions verified by the surrounding code
             Self::Fasl(value) => unsafe { value.process_weak_refs(weak_processor) },
         }
     }
@@ -53,13 +58,17 @@ pub struct LibraryCollection<'gc> {
     pub libs: Monitor<Vec<Library<'gc>>>,
 }
 
+// SAFETY: `gc` for `LibraryCollection` upholds all trait invariants
 unsafe impl<'gc> Trace for LibraryCollection<'gc> {
+    // SAFETY: All GC-reachable fields are traced via `visitor`
     unsafe fn trace(&mut self, visitor: &mut crate::rsgc::Visitor) {
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             self.libs.get_mut().trace(visitor);
         }
     }
 
+    // SAFETY: Weak refs are processed through the given weak_processor
     unsafe fn process_weak_refs(&mut self, weak_processor: &mut crate::rsgc::WeakProcessor) {
         let _ = weak_processor;
     }

@@ -20,6 +20,7 @@ pub(crate) fn continuation_marks_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap())
 }
 
+// SAFETY: `gc` for `ContinuationMarks` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for ContinuationMarks<'gc> {
     const CLASS_IDS: &'static [u32] = &[builtin_class_ids::CONTINUATION_MARKS];
 
@@ -31,6 +32,7 @@ unsafe impl<'gc> ClassTagged for ContinuationMarks<'gc> {
 pub(crate) fn c_star(results: &'gc [Value<'gc>]) -> Value<'gc> {
     let cm = ctx.state().current_marks();
     let marks = cm.car();
+    // SAFETY: `retk` is a valid continuation frame on the stack
     unsafe {
         ctx.state().set_current_marks(cm.cdr());
         let results = results.to_vec();
@@ -79,6 +81,7 @@ pub(crate) fn push_cframe<'gc>(
         let new_marks = list!(ctx, pair);
 
         let cframe = Value::cons(ctx, Value::cons(ctx, new_marks, retk.into()), old_marks);
+        // SAFETY: Preconditions verified by the surrounding code
         unsafe {
             ctx.state().set_current_marks(cframe);
         }
