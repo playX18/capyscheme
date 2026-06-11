@@ -1293,7 +1293,13 @@
       [(eq? (slot-accessor-name (car accessors)) slot-name) (car accessors)]
       [else (loop (cdr accessors))])))
 
-(define (slot-ref-using-class class obj slot-name . fallback)
+(define (%slot-name slot)
+  (if (slot-definition? slot)
+      (slot-definition-name slot)
+      slot))
+
+(define (%slot-ref-using-class class obj slot . fallback)
+  (define slot-name (%slot-name slot))
   (if (not (subclass? (class-of obj) class))
       (assertion-violation 'slot-ref-using-class
         "object is not an instance of class"
@@ -1301,15 +1307,16 @@
         class)
       (let ([accessor (class-slot-accessor class slot-name)])
         (cond
-          [accessor (slot-ref-using-accessor obj accessor)]
+          [accessor
+            (if (slot-bound-using-accessor? obj accessor)
+                (slot-ref-using-accessor obj accessor)
+                (slot-unbound class obj slot-name))]
           [(null? fallback)
-           (assertion-violation 'slot-ref-using-class
-             "class has no slot"
-             class
-             slot-name)]
+           (slot-missing class obj slot-name)]
           [else (car fallback)]))))
 
-(define (slot-set-using-class! class obj slot-name value)
+(define (%slot-set-using-class! class obj slot value)
+  (define slot-name (%slot-name slot))
   (if (not (subclass? (class-of obj) class))
       (assertion-violation 'slot-set-using-class!
         "object is not an instance of class"
@@ -1318,12 +1325,10 @@
       (let ([accessor (class-slot-accessor class slot-name)])
         (if accessor
             (slot-set-using-accessor! obj accessor value)
-            (assertion-violation 'slot-set-using-class!
-              "class has no slot"
-              class
-              slot-name)))))
+            (slot-missing class obj slot-name value)))))
 
-(define (slot-bound-using-class? class obj slot-name)
+(define (%slot-bound-using-class? class obj slot)
+  (define slot-name (%slot-name slot))
   (if (not (subclass? (class-of obj) class))
       (assertion-violation 'slot-bound-using-class?
         "object is not an instance of class"
@@ -2157,8 +2162,20 @@
 (define <slot-definition> (%builtin-class 'slot-definition))
 (define <slot-accessor> (%builtin-class 'slot-accessor))
 
+(define-generic slot-ref-using-class 3)
+(define-generic slot-set-using-class! 4)
+(define-generic slot-bound-using-class? 3)
 (define-generic slot-unbound)
 (define-generic slot-missing)
+
+(define-method (slot-ref-using-class (class <class>) obj slot . fallback)
+  (apply %slot-ref-using-class class obj slot fallback))
+
+(define-method (slot-set-using-class! (class <class>) obj slot value)
+  (%slot-set-using-class! class obj slot value))
+
+(define-method (slot-bound-using-class? (class <class>) obj slot)
+  (%slot-bound-using-class? class obj slot))
 
 (define-method (slot-unbound (class <class>) obj slot)
   (assertion-violation 'slot-unbound
