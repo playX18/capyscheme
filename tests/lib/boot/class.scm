@@ -706,6 +706,12 @@
     (slot-accessor? (class-slot-accessor macro-defined-custom-slot 'visible)))
   (test-assert "class-slot-accessor returns false for missing slots"
     (not (class-slot-accessor macro-defined-custom-slot 'missing)))
+  (test-assert "slot-ref-using-class is a generic"
+    (generic? slot-ref-using-class))
+  (test-assert "slot-set-using-class! is a generic"
+    (generic? slot-set-using-class!))
+  (test-assert "slot-bound-using-class? is a generic"
+    (generic? slot-bound-using-class?))
   (test-equal "slot-ref-using-accessor reads ordinary slots"
     (slot-ref-using-accessor accessor-instance macro-x-accessor)
     1)
@@ -728,6 +734,46 @@
   (test-error "slot-bound-using-class? rejects missing slots"
     &assertion-violation
     (slot-bound-using-class? macro-defined-point p 'missing))
+  (define-class macro-logged-object () ())
+  (define-class macro-logged-point (macro-logged-object)
+    ((logged #:init-keyword #:logged)))
+  (define macro-logged-events '())
+  (define macro-logged-instance
+    (make-instance macro-logged-point #:logged 10))
+  (define-method (slot-ref-using-class
+                   (class <class>) (obj macro-logged-object) slot . fallback)
+    (set! macro-logged-events
+      (cons (list 'read (slot-definition-name slot)) macro-logged-events))
+    (next-method))
+  (define-method (slot-set-using-class!
+                   (class <class>) (obj macro-logged-object) slot value)
+    (set! macro-logged-events
+      (cons (list 'write (slot-definition-name slot) value) macro-logged-events))
+    (next-method))
+  (define-method (slot-bound-using-class?
+                   (class <class>) (obj macro-logged-object) slot)
+    (set! macro-logged-events
+      (cons (list 'bound (slot-definition-name slot)) macro-logged-events))
+    (next-method))
+  (test-equal "slot-ref dispatches through slot-ref-using-class generic"
+    (slot-ref macro-logged-instance 'logged)
+    10)
+  (test-equal "slot-ref-using-class override receives slot definitions"
+    macro-logged-events
+    '((read logged)))
+  (test-equal "slot-set! dispatches through slot-set-using-class! generic"
+    (begin
+      (slot-set! macro-logged-instance 'logged 11)
+      (slot-ref macro-logged-instance 'logged))
+    11)
+  (test-equal "slot-set-using-class! override receives slot definitions"
+    macro-logged-events
+    '((read logged) (write logged 11) (read logged)))
+  (test-assert "slot-bound? dispatches through slot-bound-using-class? generic"
+    (slot-bound? macro-logged-instance 'logged))
+  (test-equal "slot-bound-using-class? override receives slot definitions"
+    macro-logged-events
+    '((bound logged) (read logged) (write logged 11) (read logged)))
   (test-assert "slot-bound-using-accessor? reports ordinary slots"
     (slot-bound-using-accessor? accessor-instance macro-x-accessor))
   (test-equal "slot-initialize-using-accessor! accepts explicit initargs"

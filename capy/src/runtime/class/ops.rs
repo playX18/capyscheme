@@ -1,5 +1,21 @@
+use crate::rsgc::Gc;
 use crate::runtime::Context;
+use crate::runtime::class::{ClassDescriptor, SlotDefinitionDescriptor};
+use crate::runtime::value::Value;
 use capy_derive::scheme;
+
+fn class_slot_argument<'gc>(
+    ctx: Context<'gc>,
+    class: Gc<'gc, ClassDescriptor<'gc>>,
+    name: &str,
+    fallback: Value<'gc>,
+) -> Value<'gc> {
+    class
+        .accessor_named(name)
+        .and_then(|accessor| class.slots().get(accessor.slot_index()).copied())
+        .map(|slot| SlotDefinitionDescriptor::from_slot(ctx, slot).into())
+        .unwrap_or(fallback)
+}
 
 #[scheme(path=capy)]
 pub mod class_ops {
@@ -1144,6 +1160,18 @@ pub mod class_ops {
         let class = instance.class();
         let receiver = Value::from(instance);
 
+        if let Some(slot_ref_using_class) = class_root_binding(nctx.ctx, "slot-ref-using-class") {
+            let slot = class_slot_argument(nctx.ctx, class, &slot_name, name.into());
+            return if let Some(fallback) = fallback {
+                nctx.return_call(
+                    slot_ref_using_class,
+                    &[class.into(), receiver, slot, fallback],
+                )
+            } else {
+                nctx.return_call(slot_ref_using_class, &[class.into(), receiver, slot])
+            };
+        }
+
         let Some(result) =
             class.slot_value_by_name(nctx.ctx, class, receiver, &slot_name, fallback)
         else {
@@ -1270,6 +1298,11 @@ pub mod class_ops {
         let slot_name = name.to_string();
         let class = instance_obj.class();
         let receiver = Value::from(instance_obj);
+
+        if let Some(slot_set_using_class) = class_root_binding(nctx.ctx, "slot-set-using-class!") {
+            let slot = class_slot_argument(nctx.ctx, class, &slot_name, name.into());
+            return nctx.return_call(slot_set_using_class, &[class.into(), receiver, slot, value]);
+        }
 
         let Some(result) =
             class.set_slot_value_by_name(nctx.ctx, class, receiver, &slot_name, value)
@@ -1593,6 +1626,13 @@ pub mod class_ops {
         let slot_name = name.to_string();
         let class = instance.class();
         let receiver = Value::from(instance);
+
+        if let Some(slot_bound_using_class) =
+            class_root_binding(nctx.ctx, "slot-bound-using-class?")
+        {
+            let slot = class_slot_argument(nctx.ctx, class, &slot_name, name.into());
+            return nctx.return_call(slot_bound_using_class, &[class.into(), receiver, slot]);
+        }
 
         let Some(result) = class.slot_bound_by_name(nctx.ctx, class, receiver, &slot_name) else {
             let who = nctx.ctx.intern("slot-bound?");
