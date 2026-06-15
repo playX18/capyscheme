@@ -202,7 +202,8 @@ utility. A namespace created with `define_namespace!` gives each monomorphized
 `T` its own zero-initialized static cell, so `ClassTagged`/allocation code can
 store per-type ids even when the type carries GC lifetimes. This currently relies
 on inline assembly support for the platforms listed in
-`capy/src/utils/generic_static.rs`; unsupported platforms fail at compile time.
+`capy/src/utils/generic_static.rs`; unsupported target OSes fail at compile
+time, and unsupported architecture/OS combinations are guarded as unsupported.
 
 ### Class table and descriptors
 
@@ -275,7 +276,8 @@ Slot operations dispatch through generics:
 - `slot-set!` calls `slot-set-using-class!`,
 - `slot-bound?` calls `slot-bound-using-class?`.
 
-Those generic hooks receive slot definition objects, which allows Scheme code to
+For existing slots, those generic hooks receive slot definition objects. Missing
+slot paths receive the original slot name instead. This allows Scheme code to
 specialize reads, writes, and bound checks while still using `next-method` to
 fall back to the default storage behavior.
 
@@ -294,11 +296,12 @@ Methods record:
 - the method body,
 - flags such as `:locked`/`#:locked`.
 
-Generic dispatch takes the first required dispatch arguments, resolves their
-classes, finds applicable methods by subclass/CPL checks, sorts them by
-specificity, and caches the resulting method list for the dispatch class tuple.
-Adding or replacing a method clears the dispatch cache. A sealed generic rejects
-new or replacement methods until it is unsealed.
+Generic dispatch enforces the generic's minimum required dispatch argument
+count, resolves the classes of supplied arguments, finds applicable methods by
+subclass/CPL checks, sorts them by specificity, and caches the resulting method
+list for the supplied argument class tuple. Adding or replacing a method clears
+the dispatch cache. A sealed generic rejects new or replacement methods until it
+is unsealed.
 
 Example:
 
