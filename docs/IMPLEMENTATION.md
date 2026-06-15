@@ -177,3 +177,187 @@ all continuations that were not reified are converted to basic-blocks, and all p
 Once SSA is built we emit object file and link using platform linker as shared object.
 
 ## Runtime
+
+### Object headers and class ids
+
+Heap objects carry a compact class id in the object header. The id is used by
+`class-of`, generic dispatch, slot access, and GC layout lookup. Built-in classes
+use reserved ids from `capy/src/rsgc/object.rs` (`builtin_class_ids`); dynamic
+Scheme classes and Rust type classes are allocated after the built-in range.
+
+Class ids are limited to 24 bits (`MAX_CLASS_ID`). The class table is paged, so
+ids can be sparse without allocating one large descriptor array. A descriptor is
+looked up through `class_table(ctx).lookup(id)`.
+
+Rust heap types that implement `Trace` normally get allocation hooks through
+`AllocationHooksOf<T>`. Those hooks describe:
+
+- how to trace the object,
+- how to process weak references,
+- fixed or dynamic instance size and alignment,
+- the Rust type name used for internal type classes.
+
+For generic Rust types, class ids are assigned through the `generic_static`
+utility. A namespace created with `define_namespace!` gives each monomorphized
+`T` its own zero-initialized static cell, so `ClassTagged`/allocation code can
+store per-type ids even when the type carries GC lifetimes. This currently relies
+on inline assembly support for the platforms listed in
+`capy/src/utils/generic_static.rs`; unsupported platforms fail at compile time.
+
+### Class table and descriptors
+
+`capy/src/runtime/class/` contains the object system implementation:
+
+- `descriptor.rs` defines `ClassDescriptor`, the first-class class object.
+- `table.rs` owns registration, lookup, hierarchy computation, and class
+  redefinition state.
+- `slot.rs` defines slot and accessor metadata.
+- `generic.rs` implements generic procedures, method descriptors, dispatch
+  caches, and next-method descriptors.
+- `ops.rs` exposes the Rust operations to Scheme through the `(capy)` module.
+
+Every class descriptor records its name, category, flags, direct superclasses,
+class precedence list (CPL), direct slots, inherited slots, accessors, class
+allocated slot storage, weak direct-subclass links, direct methods, and accepted
+initargs. Scheme classes implicitly inherit from `<object>` when no explicit
+root object superclass is supplied.
+
+Class registration has three main paths:
+
+1. `init_builtin_classes(ctx)` registers the fixed built-in classes during
+   runtime initialization.
+2. `make-class`/`define-class` allocate malleable Scheme classes.
+3. Internal Rust types may record pending type classes before the class table is
+   initialized; pending registrations are drained once built-ins are ready.
+
+The runtime keeps old class descriptors usable during redefinition. A stale
+instance can be detected with `%class-redefined?`; `touch-instance!` updates the
+instance to the current class shape. Slot values with matching names are
+preserved when classes are redefined or when `change-class` moves an instance to
+another Scheme class.
+
+### Scheme-facing object system
+
+Most user-visible object-system forms are defined in `lib/boot/base.scm` on top
+of the Rust primitives. A minimal class looks like:
+
+```scheme
+(import (capy))
+
+(define-class point ()
+  ((x #:init-value 0)
+   (y #:init-value 0)))
+
+(define p (make point #:x 10))
+
+(slot-ref p 'x) ; => 10
+(slot-ref p 'y) ; => 0
+(slot-set! p 'y 20)
+(eq? (class-of p) point) ; => #t
+```
+
+Slot options accepted by `define-class` include:
+
+- `#:init-value`, `#:init-thunk`, `#:initform`, and `#:init-form` for defaults,
+- `#:init-keyword` to rename the initarg,
+- `#:immutable #t` to reject mutation after initialization,
+- `#:initializable #f` to hide the slot from initargs,
+- `#:allocation #:class` for storage shared by instances of the class,
+- `#:slot-ref`, `#:slot-set!`, and `#:slot-bound?` for custom Scheme hooks,
+- `#:getter`, `#:setter`, and `#:accessor` to generate generic accessors.
+
+Gauche-style colon options such as `:init-value`, `:allocation`, and `:accessor`
+are accepted by the macro and normalized before runtime class creation.
+
+Slot operations dispatch through generics:
+
+- `slot-ref` calls `slot-ref-using-class`,
+- `slot-set!` calls `slot-set-using-class!`,
+- `slot-bound?` calls `slot-bound-using-class?`.
+
+Those generic hooks receive slot definition objects, which allows Scheme code to
+specialize reads, writes, and bound checks while still using `next-method` to
+fall back to the default storage behavior.
+
+### Generics and methods
+
+Generic procedures are invocable Scheme closures backed by `GenericDescriptor`.
+The closure carries the descriptor in its free variables/properties so predicates
+such as `generic?`, `generic-name`, and `generic-methods` work on the callable
+value.
+
+Methods record:
+
+- the owning generic,
+- a prefix list of class specializers,
+- the required argument count,
+- the method body,
+- flags such as `:locked`/`#:locked`.
+
+Generic dispatch takes the first required dispatch arguments, resolves their
+classes, finds applicable methods by subclass/CPL checks, sorts them by
+specificity, and caches the resulting method list for the dispatch class tuple.
+Adding or replacing a method clears the dispatch cache. A sealed generic rejects
+new or replacement methods until it is unsealed.
+
+Example:
+
+```scheme
+(define-class point () ((x #:init-value 0)))
+(define-class colored-point (point) ((color #:init-value 'black)))
+
+(define-generic describe)
+
+(define-method (describe (p point))
+  (list 'point (slot-ref p 'x)))
+
+(define-method (describe (p colored-point))
+  (list 'colored (slot-ref p 'color) (next-method)))
+
+(describe (make colored-point #:x 3 #:color 'red))
+; => (colored red (point 3))
+```
+
+`define-generic` also supports setter generics with `(setter name)` and fallback
+procedures. `define-method` requires all specialized arguments to form a prefix
+of the argument list; trailing unspecialized and rest arguments are allowed.
+
+### Invocable classes
+
+Classes marked applicable allocate procedure wrappers instead of returning the
+raw instance directly. They must define a `procedure` slot containing a callable
+value. The wrapper keeps the underlying instance and class in procedure
+properties:
+
+```scheme
+(define-class command ()
+  (procedure name)
+  #:applicable #t)
+
+(define run
+  (make command
+    #:name 'hello
+    #:procedure (lambda (self arg)
+                  (list (slot-ref self 'name) arg))))
+
+(run 'world) ; => (hello world)
+(procedure-property run 'instance) ; raw Scheme instance
+```
+
+### Developer constraints and pitfalls
+
+- Built-in classes cannot be unsealed. `class-unseal!` only succeeds for Scheme
+  classes.
+- Dynamic Scheme classes are malleable until sealed; sealed classes reject
+  redefinition.
+- `slot-ref` without a fallback routes unbound slots through `slot-unbound` and
+  missing slots through `slot-missing`. Supplying a fallback bypasses the missing
+  slot generic.
+- `class-slot-ref`, `class-slot-set!`, and `class-slot-bound?` are only valid
+  for class-allocated slots.
+- `change-class` only targets Scheme classes; built-in target classes are
+  rejected.
+- Applicable classes must include a `procedure` slot, and each applicable
+  instance must initialize it with a procedure.
+- The object header has no room for ids above `MAX_CLASS_ID`; exhausting class
+  ids is treated as a fatal registry error.
