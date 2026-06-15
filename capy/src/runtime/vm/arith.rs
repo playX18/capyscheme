@@ -1,11 +1,8 @@
 use std::cmp::Ordering;
 
 use crate::prelude::*;
+use crate::runtime::{Context, prelude::*};
 use crate::{global, list, vector};
-use crate::{
-    runtime::value::conversions::*,
-    runtime::{Context, prelude::*},
-};
 
 pub const fn decode_flonum(x: f64) -> (i64, i32, i32) {
     let bits = x.to_bits();

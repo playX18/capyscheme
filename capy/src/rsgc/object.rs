@@ -1,6 +1,8 @@
+use crate::define_namespace;
 use crate::rsgc::{collection::Visitor, mm::MemoryManager, traits::Trace, weak::WeakProcessor};
 use crate::runtime::Context;
 use crate::utils::easy_bitfield::{AtomicBitfieldContainer, BitField, BitFieldTrait};
+use crate::utils::generic_static::Namespace;
 use core::fmt;
 use mmtk::util::{
     Address, ObjectReference, constants::LOG_BYTES_IN_ADDRESS, conversions::raw_align_up,
@@ -151,7 +153,7 @@ impl AllocationHooks {
 /// with dynamic sizing rather than using this helper.
 pub struct AllocationHooksOf<'gc, T: Trace>(PhantomData<&'gc T>);
 
-impl<'gc, T: 'gc + Trace> AllocationHooksOf<'gc, T> {
+impl<'gc, T: Trace> AllocationHooksOf<'gc, T> {
     pub const HOOKS: AllocationHooks = AllocationHooks {
         type_name: std::any::type_name::<T>(),
         trace: default_trace::<T>,
@@ -300,8 +302,21 @@ fn register_type_class_with_context<'gc>(ctx: Context<'gc>, id: ClassId, hooks: 
     }
 }
 
+define_namespace!(ClassIdRegistry);
+struct ClassIdOf<T>(AtomicU32, PhantomData<fn() -> T>);
+
+impl<T> ClassIdOf<T> {
+    fn load(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn store(&self, id: ClassId) {
+        self.0.store(id.bits(), Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: AllocationHooks) -> u64 {
-    let _ = PhantomData::<fn() -> T>;
+    /*let _ = PhantomData::<fn() -> T>;
     let key = hooks.registry_key();
     let id = {
         let mut registry = type_class_registry().lock().unwrap();
@@ -315,7 +330,39 @@ pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: Allocatio
         }
     };
     register_type_class_with_context(ctx, id, hooks);
-    class_header_word(id)
+    class_header_word(id)*/
+    let _ = PhantomData::<fn() -> T>;
+
+    let addr = ClassIdRegistry::generic_static::<ClassIdOf<T>>();
+
+    let id = addr.load();
+    if id == 0 {
+        type_class_header_word_slow(ctx, hooks, addr);
+    }
+    addr.load() as u64
+}
+
+#[inline(never)]
+#[cold]
+fn type_class_header_word_slow<'gc>(
+    ctx: Context<'gc>,
+    hooks: AllocationHooks,
+    addr: &ClassIdOf<impl Sized>,
+) {
+    let key = hooks.registry_key();
+    let id = {
+        let mut registry = type_class_registry().lock().unwrap();
+        if let Some(&id) = registry.get(&key) {
+            id
+        } else {
+            let id = allocate_class_id();
+            registry.insert(key, id);
+            record_pending_type_class(id, hooks);
+            id
+        }
+    };
+    register_type_class_with_context(ctx, id, hooks);
+    addr.store(id);
 }
 
 pub fn class_header_word(class_id: ClassId) -> u64 {
