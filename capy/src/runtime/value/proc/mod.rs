@@ -17,7 +17,10 @@ use std::{
 use asmkit::core::jit_allocator::Span;
 use mmtk::{AllocationSemantics, util::ObjectReference};
 
-use crate::rsgc::object::{AllocationHooks, ClassId, builtin_class_ids, class_header_word};
+use crate::rsgc::object::{
+    AllocationHooks, ClassId, builtin_class_ids, class_header_word,
+    class_header_word_with_primitive_layout_tag, primitive_layout_tags,
+};
 use crate::runtime::{
     Context,
     code_memory::CodeSpan,

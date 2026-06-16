@@ -22,14 +22,15 @@ pub mod class_ops {
     use crate::prelude::*;
     use crate::rsgc::alloc::Array;
 
+    use crate::rsgc::object::builtin_class_ids;
     use crate::runtime::class::{
         ClassCategory, ClassDescriptor, ClassListError, GenericDescriptor, GenericDispatchError,
         MethodDescriptor, MethodFlags, NextMethodDescriptor, SchemeClassSpecError, SchemeInstance,
         SlotAccessError, SlotAccessorDefinition, SlotDefinitionDescriptor, SlotInitError,
-        builtin_class_specs, call_scheme_slot_bound, call_scheme_slot_ref, call_scheme_slot_set,
-        class_id_list_to_class_objects, class_id_to_class_object, class_root_binding, class_table,
-        generic_descriptor_from_value, generic_procedure, parse_class_list, slot_accessor_list,
-        slot_definition_list, try_scheme_instance,
+        builtin_class_specs, builtin_id, call_scheme_slot_bound, call_scheme_slot_ref,
+        call_scheme_slot_set, class_id_list_to_class_objects, class_id_to_class_object,
+        class_root_binding, class_table, generic_descriptor_from_value, generic_procedure,
+        parse_class_list, slot_accessor_list, slot_definition_list, try_scheme_instance,
     };
     use crate::runtime::value::{Keyword, Symbol};
 
@@ -41,17 +42,21 @@ pub mod class_ops {
     #[scheme(name = "%builtin-class")]
     pub fn builtin_class(name: Gc<'gc, Symbol<'gc>>) -> Value<'gc> {
         let name_string = name.to_string();
-        let Some(spec) = builtin_class_specs()
+        let class_id = if name_string == "immutable-vector" {
+            builtin_id(builtin_class_ids::MUTABLE_VECTOR)
+        } else if let Some(spec) = builtin_class_specs()
             .iter()
             .copied()
             .find(|spec| spec.name() == name_string)
-        else {
+        {
+            spec.id()
+        } else {
             let who = nctx.ctx.intern("%builtin-class");
             let message = nctx.ctx.str("unknown built-in class");
             return nctx.raise_assertion_violation(who, message, name.into());
         };
 
-        let Some(class) = class_table(nctx.ctx).lookup(spec.id()) else {
+        let Some(class) = class_table(nctx.ctx).lookup(class_id) else {
             let who = nctx.ctx.intern("%builtin-class");
             let message = nctx.ctx.str("built-in class is not initialized");
             return nctx.raise_assertion_violation(who, message, name.into());

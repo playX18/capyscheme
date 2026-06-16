@@ -18,7 +18,7 @@ use crate::{
         term::{ContRef, FuncRef},
     },
     expander::core::LVarRef,
-    rsgc::object::builtin_class_ids,
+    rsgc::object::{OBJECT_HEADER_OFFSET, primitive_layout_tags},
     runtime::{
         CallData, Context, REGISTER_ARG_COUNT, State,
         fasl::{
@@ -993,23 +993,33 @@ impl<'gc> ModuleBuilder<'gc> {
 
         let ctx = builder.ins().get_pinned_reg(clif_types::I64);
         let state = builder.ins().iadd_imm(ctx, Context::OFFSET_OF_STATE as i64);
-        let closure_proc_id = builder
+        let value_tag = builder.ins().band_imm(generic, Value::NOT_CELL_MASK);
+        let is_cell = builder
             .ins()
-            .iconst(clif_types::I32, builtin_class_ids::CLOSURE_PROC as i64);
-        let closure_proc = builder
+            .icmp_imm(ir::condcodes::IntCC::Equal, value_tag, 0);
+        let non_zero = builder
             .ins()
-            .call(thunks.has_class_id, &[generic, closure_proc_id]);
-        let closure_proc = builder.inst_results(closure_proc)[0];
-        let closure_k_id = builder
-            .ins()
-            .iconst(clif_types::I32, builtin_class_ids::CLOSURE_K as i64);
-        let closure_k = builder
-            .ins()
-            .call(thunks.has_class_id, &[generic, closure_k_id]);
-        let closure_k = builder.inst_results(closure_k)[0];
-        let is_closure = builder.ins().bor(closure_proc, closure_k);
+            .icmp_imm(ir::condcodes::IntCC::NotEqual, generic, 0);
+        let is_heap_object = builder.ins().band(is_cell, non_zero);
+        let check_closure_tag = builder.create_block();
         let closure_call = builder.create_block();
         let generic_call = builder.create_block();
+        builder
+            .ins()
+            .brif(is_heap_object, check_closure_tag, &[], generic_call, &[]);
+
+        builder.switch_to_block(check_closure_tag);
+        let object_tag = builder.ins().load(
+            clif_types::I8,
+            ir::MemFlags::trusted().with_can_move(),
+            generic,
+            (OBJECT_HEADER_OFFSET + 3) as i32,
+        );
+        let is_closure = builder.ins().icmp_imm(
+            ir::condcodes::IntCC::Equal,
+            object_tag,
+            primitive_layout_tags::CLOSURE as i64,
+        );
         builder
             .ins()
             .brif(is_closure, closure_call, &[], generic_call, &[]);
@@ -1318,6 +1328,7 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub sig_call: ir::SigRef,
 
     pub data_imports: HashMap<DataSymbol, ir::GlobalValue>,
+    pub heap_primitive_layout_facts: HashSet<(ir::Block, ir::Value, u8)>,
 
     pub srcloc: Option<SourceLoc>,
 }
@@ -1405,6 +1416,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             sig_call,
 
             data_imports: HashMap::new(),
+            heap_primitive_layout_facts: HashSet::new(),
             srcloc: None,
         };
 

@@ -1,6 +1,9 @@
 use crate::rsgc::{
     mmtk::util::Address,
-    object::{ClassId, builtin_class_ids, class_header_word},
+    object::{
+        ClassId, builtin_class_ids, class_header_word_with_primitive_layout_tag,
+        primitive_layout_tags,
+    },
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -47,25 +50,36 @@ impl RuntimeData {
             Self::PairHeaderWord => static_class_header_word_address(
                 &PAIR_HEADER_WORD,
                 ClassId::new(builtin_class_ids::PAIR).unwrap(),
+                primitive_layout_tags::PAIR,
             ),
             Self::ClosureProcHeaderWord => static_class_header_word_address(
                 &CLOSURE_PROC_HEADER_WORD,
                 ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap(),
+                primitive_layout_tags::CLOSURE,
             ),
             Self::ClosureKHeaderWord => static_class_header_word_address(
                 &CLOSURE_K_HEADER_WORD,
                 ClassId::new(builtin_class_ids::CLOSURE_K).unwrap(),
+                primitive_layout_tags::CLOSURE,
             ),
             Self::MutableVectorHeaderWord => static_class_header_word_address(
                 &MUTABLE_VECTOR_HEADER_WORD,
                 ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap(),
+                primitive_layout_tags::VECTOR,
             ),
         }
     }
 }
 
-fn static_class_header_word_address(cell: &'static AtomicU64, class_id: ClassId) -> Address {
-    publish_static_header_word(cell, class_header_word(class_id))
+fn static_class_header_word_address(
+    cell: &'static AtomicU64,
+    class_id: ClassId,
+    primitive_layout_tag: u8,
+) -> Address {
+    publish_static_header_word(
+        cell,
+        class_header_word_with_primitive_layout_tag(class_id, primitive_layout_tag),
+    )
 }
 
 fn publish_static_header_word(cell: &'static AtomicU64, header_word: u64) -> Address {
@@ -107,19 +121,31 @@ mod tests {
         let cases = [
             (
                 RuntimeData::PairHeaderWord,
-                class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap()),
+                class_header_word_with_primitive_layout_tag(
+                    ClassId::new(builtin_class_ids::PAIR).unwrap(),
+                    primitive_layout_tags::PAIR,
+                ),
             ),
             (
                 RuntimeData::ClosureProcHeaderWord,
-                class_header_word(ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap()),
+                class_header_word_with_primitive_layout_tag(
+                    ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap(),
+                    primitive_layout_tags::CLOSURE,
+                ),
             ),
             (
                 RuntimeData::ClosureKHeaderWord,
-                class_header_word(ClassId::new(builtin_class_ids::CLOSURE_K).unwrap()),
+                class_header_word_with_primitive_layout_tag(
+                    ClassId::new(builtin_class_ids::CLOSURE_K).unwrap(),
+                    primitive_layout_tags::CLOSURE,
+                ),
             ),
             (
                 RuntimeData::MutableVectorHeaderWord,
-                class_header_word(ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap()),
+                class_header_word_with_primitive_layout_tag(
+                    ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap(),
+                    primitive_layout_tags::VECTOR,
+                ),
             ),
         ];
 

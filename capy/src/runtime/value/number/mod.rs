@@ -18,7 +18,9 @@ use std::{
 
 use crate::rsgc::{Gc, Trace, collection::Visitor};
 
-use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
+use crate::rsgc::object::{
+    ClassId, builtin_class_ids, class_header_word_with_primitive_layout_tag, primitive_layout_tags,
+};
 use crate::runtime::{Context, value::ConversionError};
 
 use crate::runtime::value::{ClassTagged, FromValue, IntoValue, Value};
@@ -36,7 +38,10 @@ pub struct Complex<'gc> {
 }
 
 fn complex_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::COMPLEX).unwrap())
+    class_header_word_with_primitive_layout_tag(
+        ClassId::new(builtin_class_ids::COMPLEX).unwrap(),
+        primitive_layout_tags::NUMBER,
+    )
 }
 
 impl<'gc> Complex<'gc> {
@@ -62,7 +67,10 @@ pub struct Rational<'gc> {
 }
 
 fn rational_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::RATIONAL).unwrap())
+    class_header_word_with_primitive_layout_tag(
+        ClassId::new(builtin_class_ids::RATIONAL).unwrap(),
+        primitive_layout_tags::NUMBER,
+    )
 }
 
 impl<'gc> Rational<'gc> {

@@ -249,14 +249,14 @@ pub(crate) fn register_internal_type_class<'gc>(
 }
 
 pub fn primitive_layout_hooks_for_class_id(id: ClassId) -> Option<PrimitiveLayoutHooks> {
+    if let Some(hooks) = builtin_primitive_layout_hooks(id) {
+        return Some(hooks);
+    }
     if let Some(table) = CLASS_TABLE.get() {
         // SAFETY: The table is guaranteed to be initialized before this point
         return unsafe { table.fetch_unchecked() }
             .lookup(id)
             .and_then(|descriptor| descriptor.primitive_layout_hooks());
-    }
-    if let Some(hooks) = builtin_primitive_layout_hooks(id) {
-        return Some(hooks);
     }
     pending_hooks_for_class_id(id).map(PrimitiveLayoutHooks::from_allocation_hooks)
 }
