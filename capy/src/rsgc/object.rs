@@ -102,6 +102,19 @@ pub mod builtin_class_ids {
     pub const MAX: u32 = SLOT_ACCESSOR;
 }
 
+pub mod primitive_layout_tags {
+    pub const NONE: u8 = 0;
+    pub const PAIR: u8 = 1;
+    pub const VARIABLE: u8 = 2;
+    pub const CLOSURE: u8 = 3;
+    pub const VECTOR: u8 = 4;
+    pub const BYTEVECTOR: u8 = 5;
+    pub const TUPLE: u8 = 6;
+    pub const SYMBOL: u8 = 7;
+    pub const STRING: u8 = 8;
+    pub const NUMBER: u8 = 9;
+}
+
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);
 
 #[derive(Clone, Copy)]
@@ -170,6 +183,8 @@ impl<'gc, T: Trace> AllocationHooksOf<'gc, T> {
 }
 
 type ClassIdBits = BitField<u64, u32, 0, 24, false>;
+type PrimitiveLayoutTagBits = BitField<u64, u8, { ClassIdBits::NEXT_BIT }, 8, false>;
+type ImmutableObject = BitField<u64, bool, { PrimitiveLayoutTagBits::NEXT_BIT }, 1, false>;
 type HashBits = BitField<u64, u8, 57, 2, false>;
 type FinalizationState = BitField<u64, bool, { HashBits::NEXT_BIT }, 1, false>;
 
@@ -314,6 +329,24 @@ impl<T> ClassIdOf<T> {
         self.0.store(id.bits(), Ordering::Relaxed);
     }
 }
+/*
+pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: AllocationHooks) -> u64 {
+    let _ = PhantomData::<fn() -> T>;
+    let key = hooks.registry_key();
+    let id = {
+        let mut registry = type_class_registry().lock().unwrap();
+        if let Some(&id) = registry.get(&key) {
+            id
+        } else {
+            let id = allocate_class_id();
+            registry.insert(key, id);
+            record_pending_type_class(id, hooks);
+            id
+        }
+    };
+    register_type_class_with_context(ctx, id, hooks);
+    class_header_word(id)
+}*/
 
 pub(crate) fn type_class_header_word<'gc, T>(ctx: Context<'gc>, hooks: AllocationHooks) -> u64 {
     /*let _ = PhantomData::<fn() -> T>;
@@ -369,6 +402,24 @@ pub fn class_header_word(class_id: ClassId) -> u64 {
     class_id.bits() as u64
 }
 
+pub fn class_header_word_with_primitive_layout_tag(class_id: ClassId, tag: u8) -> u64 {
+    PrimitiveLayoutTagBits::update(tag, class_header_word(class_id))
+}
+
+pub fn class_header_word_with_immutable_flag(class_id: ClassId) -> u64 {
+    ImmutableObject::update(true, class_header_word(class_id))
+}
+
+pub fn class_header_word_with_primitive_layout_tag_and_immutable_flag(
+    class_id: ClassId,
+    tag: u8,
+) -> u64 {
+    ImmutableObject::update(
+        true,
+        class_header_word_with_primitive_layout_tag(class_id, tag),
+    )
+}
+
 unsafe impl Trace for ClassId {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         let _ = visitor;
@@ -408,6 +459,18 @@ impl HeapObjectHeader {
 
     pub(crate) fn set_class_id(&self, class_id: ClassId) {
         self.word.update::<ClassIdBits>(class_id.bits());
+    }
+
+    pub fn primitive_layout_tag(&self) -> u8 {
+        self.word.read::<PrimitiveLayoutTagBits>()
+    }
+
+    pub fn immutable_flag(&self) -> bool {
+        self.word.read::<ImmutableObject>()
+    }
+
+    pub(crate) fn set_immutable_flag(&self, immutable: bool) {
+        self.word.update::<ImmutableObject>(immutable);
     }
 
     pub fn finalization_state(&self) -> bool {
@@ -824,6 +887,22 @@ mod tests {
 
         assert_eq!(header_word, u64::from(class_id.bits()));
         assert_eq!(header.class_id(), class_id);
+        assert_eq!(header.primitive_layout_tag(), primitive_layout_tags::NONE);
+        assert!(!header.immutable_flag());
+    }
+
+    #[test]
+    fn class_header_word_can_carry_primitive_layout_tag_and_immutable_flag() {
+        let class_id = ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap();
+        let header_word = class_header_word_with_primitive_layout_tag_and_immutable_flag(
+            class_id,
+            primitive_layout_tags::VECTOR,
+        );
+        let header = HeapObjectHeader::from_word(header_word);
+
+        assert_eq!(header.class_id(), class_id);
+        assert_eq!(header.primitive_layout_tag(), primitive_layout_tags::VECTOR);
+        assert!(header.immutable_flag());
     }
 
     #[test]
@@ -839,6 +918,10 @@ mod tests {
     fn mmtk_side_bits_do_not_overlap_class_id_field() {
         assert!(ClassIdBits::NEXT_BIT <= HashBits::shift());
         assert!(ClassIdBits::NEXT_BIT <= FinalizationState::shift());
+        assert!(PrimitiveLayoutTagBits::NEXT_BIT <= HashBits::shift());
+        assert!(PrimitiveLayoutTagBits::NEXT_BIT <= FinalizationState::shift());
+        assert!(ImmutableObject::NEXT_BIT <= HashBits::shift());
+        assert!(ImmutableObject::NEXT_BIT <= FinalizationState::shift());
         const {
             assert!(ClassIdBits::NEXT_BIT <= LastBitfield::NEXT_BIT);
         }
