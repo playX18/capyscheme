@@ -705,7 +705,8 @@ mod tests {
             let closure_proc = Value::from(Closure::new(ctx, code_block, &[], false));
             let closure_continuation = Value::from(Closure::new(ctx, code_block, &[], true));
             let mutable_vector = Value::from(Vector::new::<false>(*ctx, 1, Value::undefined()));
-            let immutable_vector = Value::from(Vector::new::<true>(*ctx, 1, Value::undefined()));
+            let immutable_vector_gc = Vector::new::<true>(*ctx, 1, Value::undefined());
+            let immutable_vector = Value::from(immutable_vector_gc);
             let mutable_bytevector = Value::from(ByteVector::new::<false>(*ctx, 4, true));
             let immutable_bytevector = Value::from(ByteVector::new::<true>(*ctx, 4, true));
             let bytevector_source = ByteVector::new::<false>(*ctx, 4, true);
@@ -745,7 +746,7 @@ mod tests {
                 (closure_proc, builtin_class_ids::CLOSURE_PROC),
                 (closure_continuation, builtin_class_ids::CLOSURE_K),
                 (mutable_vector, builtin_class_ids::MUTABLE_VECTOR),
-                (immutable_vector, builtin_class_ids::IMMUTABLE_VECTOR),
+                (immutable_vector, builtin_class_ids::MUTABLE_VECTOR),
                 (mutable_bytevector, builtin_class_ids::MUTABLE_BYTEVECTOR),
                 (
                     immutable_bytevector,
@@ -773,6 +774,7 @@ mod tests {
             for (value, raw_class_id) in cases {
                 assert_eq!(value.class_id(), ClassId::new(raw_class_id));
             }
+            assert!(immutable_vector_gc.is_immutable());
         });
     }
 
@@ -780,7 +782,8 @@ mod tests {
     fn class_predicates_accept_class_id_subkinds() {
         Scheme::new_uninit().enter(|ctx| {
             let mutable_vector = Value::from(Vector::new::<false>(*ctx, 1, Value::undefined()));
-            let immutable_vector = Value::from(Vector::new::<true>(*ctx, 1, Value::undefined()));
+            let immutable_vector_gc = Vector::new::<true>(*ctx, 1, Value::undefined());
+            let immutable_vector = Value::from(immutable_vector_gc);
             assert!(mutable_vector.is::<Vector>());
             assert!(immutable_vector.is::<Vector>());
             assert!(
@@ -789,8 +792,9 @@ mod tests {
             );
             assert!(
                 immutable_vector
-                    .is_class_id(ClassId::new(builtin_class_ids::IMMUTABLE_VECTOR).unwrap())
+                    .is_class_id(ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap())
             );
+            assert!(immutable_vector_gc.is_immutable());
 
             let mutable_bytevector = Value::from(ByteVector::new::<false>(*ctx, 1, true));
             let immutable_bytevector = Value::from(ByteVector::new::<true>(*ctx, 1, true));

@@ -1,6 +1,6 @@
 use super::{AllocationHeaderPreset, SSABuilder};
 use crate::cps::term::Atom;
-use crate::rsgc::object::builtin_class_ids;
+use crate::rsgc::object::primitive_layout_tags;
 use crate::runtime::Context;
 use crate::runtime::State;
 use crate::runtime::modules::Variable;
@@ -1320,7 +1320,7 @@ prim!(
             panic!("invalid %class-id?: expected fixnum class ID, got {class_id}")
         };
 
-        PrimValue::Comparison(ssa.has_class_id(val, class_id as u32))
+        PrimValue::Comparison(ssa.has_specific_class_id(val, class_id as u32))
     },
 
     "%refptr" => refptr(ssa, args, _h) {
@@ -1576,16 +1576,13 @@ prim!(
 
     "procedure?" => is_procedure(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_proc = ssa.has_any_class_id(
-            val,
-            &[builtin_class_ids::CLOSURE_PROC, builtin_class_ids::CLOSURE_K],
-        );
+        let is_proc = ssa.has_heap_primitive_layout_tag(val, primitive_layout_tags::CLOSURE);
         PrimValue::Comparison(is_proc)
     },
 
     "variable?" => is_variable(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_variable = ssa.has_class_id(val, builtin_class_ids::VARIABLE);
+        let is_variable = ssa.has_heap_primitive_layout_tag(val, primitive_layout_tags::VARIABLE);
         PrimValue::Comparison(is_variable)
     },
 
@@ -1651,7 +1648,7 @@ prim!(
 
     "pair?" => is_pair(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_pair = ssa.has_class_id(val, builtin_class_ids::PAIR);
+        let is_pair = ssa.has_heap_primitive_layout_tag(val, primitive_layout_tags::PAIR);
         PrimValue::Comparison(is_pair)
     },
 
@@ -1685,24 +1682,14 @@ prim!(
 
     "vector?" => is_vector(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_vector = ssa.has_any_class_id(
-            val,
-            &[builtin_class_ids::MUTABLE_VECTOR, builtin_class_ids::IMMUTABLE_VECTOR],
-        );
+        let is_vector = ssa.has_heap_primitive_layout_tag(val, primitive_layout_tags::VECTOR);
 
         PrimValue::Comparison(is_vector)
     },
 
     "bytevector?" => is_bytevector(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        let is_bv = ssa.has_any_class_id(
-            val,
-            &[
-                builtin_class_ids::MUTABLE_BYTEVECTOR,
-                builtin_class_ids::IMMUTABLE_BYTEVECTOR,
-                builtin_class_ids::MAPPED_BYTEVECTOR,
-            ],
-        );
+        let is_bv = ssa.has_heap_primitive_layout_tag(val, primitive_layout_tags::BYTEVECTOR);
         PrimValue::Comparison(is_bv)
     },
 
@@ -1841,9 +1828,9 @@ prim!(
     "string?" => is_string(ssa, args, _h) {
         let val = ssa.atom(args[0]);
 
-        PrimValue::Comparison(ssa.has_any_class_id(
+        PrimValue::Comparison(ssa.has_heap_primitive_layout_tag(
             val,
-            &[builtin_class_ids::STRING, builtin_class_ids::IMMUTABLE_STRING],
+            primitive_layout_tags::STRING,
         ))
     },
 
@@ -1862,7 +1849,10 @@ prim!(
 
     "symbol?" => is_symbol(ssa, args, _h) {
         let val = ssa.atom(args[0]);
-        PrimValue::Comparison(ssa.has_class_id(val, builtin_class_ids::SYMBOL))
+        PrimValue::Comparison(ssa.has_heap_primitive_layout_tag(
+            val,
+            primitive_layout_tags::SYMBOL,
+        ))
     },
 
     "eq?" => is_eq(ssa, args, _h) {
@@ -1957,14 +1947,7 @@ prim!(
         ssa.builder.ins().brif(is_inline_num, succ, &[BlockArg::Value(is_inline_num)], check_heap, &[]);
         ssa.builder.switch_to_block(check_heap);
         {
-            let check = ssa.has_any_class_id(
-                val,
-                &[
-                    builtin_class_ids::BIGINT,
-                    builtin_class_ids::RATIONAL,
-                    builtin_class_ids::COMPLEX,
-                ],
-            );
+            let check = ssa.has_heap_primitive_layout_tag(val, primitive_layout_tags::NUMBER);
             ssa.builder.ins().jump(succ, &[BlockArg::Value(check)]);
         }
 
@@ -2491,35 +2474,43 @@ prim!(
 
     "car" => car(ssa, args, _h) {
         let pair = ssa.atom(args[0]);
-        let is_pair = ssa.builder.create_block();
-        let not_pair = ssa.builder.create_block();
-        ssa.builder.func.layout.set_cold(not_pair);
 
-        ssa.branch_if_has_class_id(pair, builtin_class_ids::PAIR, is_pair, &[], not_pair, &[]);
-        ssa.builder.switch_to_block(is_pair);
+        if !ssa.current_block_has_heap_primitive_layout_tag(pair, primitive_layout_tags::PAIR) {
+            let is_pair = ssa.builder.create_block();
+            let not_pair = ssa.builder.create_block();
+            ssa.builder.func.layout.set_cold(not_pair);
 
-        ssa.builder.switch_to_block(not_pair);
-        {
-            ssa.emit_raise(RaiseKind::CarNotPair, &[pair], Value::new(false));
+            ssa.branch_if_heap_primitive_layout_tag(pair, primitive_layout_tags::PAIR, is_pair, &[], not_pair, &[]);
+            ssa.builder.switch_to_block(is_pair);
+            ssa.prove_current_block_heap_primitive_layout_tag(pair, primitive_layout_tags::PAIR);
+
+            ssa.builder.switch_to_block(not_pair);
+            {
+                ssa.emit_raise(RaiseKind::CarNotPair, &[pair], Value::new(false));
+            }
+            ssa.builder.switch_to_block(is_pair);
         }
-        ssa.builder.switch_to_block(is_pair);
 
         PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), pair, offset_of!(Pair, car) as i32))
     },
     "cdr" => cdr(ssa, args, _h) {
         let pair = ssa.atom(args[0]);
-        let is_pair = ssa.builder.create_block();
-        let not_pair = ssa.builder.create_block();
-        ssa.builder.func.layout.set_cold(not_pair);
 
-        ssa.branch_if_has_class_id(pair, builtin_class_ids::PAIR, is_pair, &[], not_pair, &[]);
-        ssa.builder.switch_to_block(is_pair);
+        if !ssa.current_block_has_heap_primitive_layout_tag(pair, primitive_layout_tags::PAIR) {
+            let is_pair = ssa.builder.create_block();
+            let not_pair = ssa.builder.create_block();
+            ssa.builder.func.layout.set_cold(not_pair);
 
-        ssa.builder.switch_to_block(not_pair);
-        {
-            ssa.emit_raise(RaiseKind::CdrNotPair, &[pair], Value::new(false));
+            ssa.branch_if_heap_primitive_layout_tag(pair, primitive_layout_tags::PAIR, is_pair, &[], not_pair, &[]);
+            ssa.builder.switch_to_block(is_pair);
+            ssa.prove_current_block_heap_primitive_layout_tag(pair, primitive_layout_tags::PAIR);
+
+            ssa.builder.switch_to_block(not_pair);
+            {
+                ssa.emit_raise(RaiseKind::CdrNotPair, &[pair], Value::new(false));
+            }
+            ssa.builder.switch_to_block(is_pair);
         }
-        ssa.builder.switch_to_block(is_pair);
 
         PrimValue::Value(ssa.builder.ins().load(types::I64, ir::MemFlags::trusted().with_can_move(), pair, offset_of!(Pair, cdr) as i32))
     },
@@ -2566,7 +2557,7 @@ prim!(
     "tuple?" => is_tuple(ssa, args, _h) {
         let val = ssa.atom(args[0]);
 
-        let res = ssa.has_class_id(val, builtin_class_ids::TUPLE);
+        let res = ssa.has_heap_primitive_layout_tag(val, primitive_layout_tags::TUPLE);
 
         PrimValue::Comparison(res)
     },
@@ -2831,12 +2822,9 @@ fn ensure_vector<'gc, 'a, 'f>(
 
     ssa.builder.func.layout.set_cold(bb_slow);
 
-    ssa.branch_if_has_any_class_id(
+    ssa.branch_if_heap_primitive_layout_tag(
         val,
-        &[
-            builtin_class_ids::MUTABLE_VECTOR,
-            builtin_class_ids::IMMUTABLE_VECTOR,
-        ],
+        primitive_layout_tags::VECTOR,
         bb_vector,
         &[],
         bb_slow,

@@ -2,7 +2,7 @@ use std::{collections::HashMap, mem::offset_of};
 
 use crate::rsgc::{
     Gc,
-    object::{HeapObjectHeader, OBJECT_REF_OFFSET, builtin_class_ids},
+    object::{HeapObjectHeader, OBJECT_REF_OFFSET, builtin_class_ids, primitive_layout_tags},
     sync::thread::Thread,
 };
 
@@ -65,6 +65,26 @@ pub(crate) enum AllocationHeaderPreset {
 }
 
 impl AllocationHeaderPreset {
+    pub(crate) const fn header_word(self) -> u64 {
+        match self {
+            Self::Pair => {
+                ((primitive_layout_tags::PAIR as u64) << 24) | builtin_class_ids::PAIR as u64
+            }
+            Self::ClosureProc => {
+                ((primitive_layout_tags::CLOSURE as u64) << 24)
+                    | builtin_class_ids::CLOSURE_PROC as u64
+            }
+            Self::ClosureK => {
+                ((primitive_layout_tags::CLOSURE as u64) << 24)
+                    | builtin_class_ids::CLOSURE_K as u64
+            }
+            Self::MutableVector => {
+                ((primitive_layout_tags::VECTOR as u64) << 24)
+                    | builtin_class_ids::MUTABLE_VECTOR as u64
+            }
+        }
+    }
+
     pub(crate) const fn header_word_runtime_data(self) -> crate::runtime::symbols::RuntimeData {
         match self {
             Self::Pair => crate::runtime::symbols::RuntimeData::PairHeaderWord,
@@ -372,13 +392,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         con_alloc_size: usize,
         var_alloc_size: Option<ir::Value>,
     ) -> ir::Value {
-        let header_word = self.import_runtime_data(preset.header_word_runtime_data(), types::I64);
-        self.alloc_with_header_word_inner(header_word, con_alloc_size, var_alloc_size)
+        self.alloc_with_static_header_word_inner(
+            preset.header_word(),
+            con_alloc_size,
+            var_alloc_size,
+        )
     }
 
-    fn alloc_with_header_word_inner(
+    fn alloc_with_static_header_word_inner(
         &mut self,
-        header_word: ir::Value,
+        header_word: u64,
         con_alloc_size: usize,
         var_alloc_size: Option<ir::Value>,
     ) -> ir::Value {
@@ -416,7 +439,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.builder.switch_to_block(fastpath);
             self.emit_alloc_with_header_word_fastpath(
                 ctx,
-                header_word,
+                Some(header_word),
                 payload_size,
                 slowpath,
                 merge,
@@ -424,7 +447,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         } else {
             self.emit_alloc_with_header_word_fastpath(
                 ctx,
-                header_word,
+                Some(header_word),
                 payload_size,
                 slowpath,
                 merge,
@@ -433,12 +456,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 
         self.builder.switch_to_block(slowpath);
         {
-            let header_word = self.builder.ins().load(
-                types::I64,
-                ir::MemFlags::trusted().with_can_move(),
-                header_word,
-                0,
-            );
+            let header_word = self.builder.ins().iconst(types::I64, header_word as i64);
             let call = self.builder.ins().call(
                 self.thunks.alloc_with_header_word,
                 &[ctx, header_word, payload_size],
@@ -454,7 +472,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn emit_alloc_with_header_word_fastpath(
         &mut self,
         ctx: ir::Value,
-        header_word_slot: ir::Value,
+        static_header_word: Option<u64>,
         payload_size: ir::Value,
         slowpath: ir::Block,
         merge: ir::Block,
@@ -492,12 +510,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             ctx,
             Thread::LAB_OFFSET_CURSOR as i32,
         );
-        let header_word = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            header_word_slot,
-            0,
-        );
+        let header_word = match static_header_word {
+            Some(header_word) => self.builder.ins().iconst(types::I64, header_word as i64),
+            None => unreachable!("dynamic allocation headers are not used by SSA presets"),
+        };
         self.builder
             .ins()
             .store(ir::MemFlags::trusted(), header_word, cursor, 0);
@@ -1078,6 +1094,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 closure,
                 index,
             } => {
+                if matches!(closure, LinearAtom::Local(binding) if *binding == self.target.binding)
+                    && let Some(source) = self.target.free_vars.get(*index)
+                    && self.is_self_reference(self.target.sources[source])
+                {
+                    self.bind_linear_var(*dst, VarDef::Value(self.rator));
+                    return;
+                }
+
                 let closure = self.linear_atom(*closure);
                 let value = self.builder.ins().load(
                     types::I64,
@@ -1252,10 +1276,32 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let callee = self.linear_atom(callee);
-        let target = self.load_function_entrypoint(self.module_builder.generic_apply_trampoline);
-        Callee::Generic {
-            target,
-            generic: callee,
+        let get_closure_code = self.builder.create_block();
+        let error = self.builder.create_block();
+        self.builder.func.layout.set_cold(error);
+        self.branch_if_heap_primitive_layout_tag(
+            callee,
+            primitive_layout_tags::CLOSURE,
+            get_closure_code,
+            &[],
+            error,
+            &[],
+        );
+        self.builder.switch_to_block(error);
+        {
+            self.emit_raise(RaiseKind::NonApplicable, &[callee], Value::new(false));
+        }
+
+        self.builder.switch_to_block(get_closure_code);
+        let code = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            callee,
+            offset_of!(Closure, code) as i32,
+        );
+        Callee::Indirect {
+            target: code,
+            closure: callee,
         }
     }
 
@@ -1273,11 +1319,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
 
         let closure = self.linear_atom(callee);
-        let target =
-            self.load_function_entrypoint(self.module_builder.generic_tail_apply_trampoline);
-        Callee::Generic {
-            target,
-            generic: closure,
+        let code = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            closure,
+            offset_of!(Closure, code) as i32,
+        );
+        Callee::Indirect {
+            target: code,
+            closure,
         }
     }
 
@@ -1569,7 +1619,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.ins().ireduce(types::I32, value)
             }
             SwitchKind::SymbolEq { mask } => {
-                let is_symbol = self.has_class_id(value, builtin_class_ids::SYMBOL);
+                let is_symbol =
+                    self.has_heap_primitive_layout_tag(value, primitive_layout_tags::SYMBOL);
                 self.builder
                     .ins()
                     .brif(is_symbol, switch_block, &[], type_miss_block, &[]);

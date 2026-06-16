@@ -19,7 +19,10 @@ fn closure_header_word(is_cont: bool) -> u64 {
         builtin_class_ids::CLOSURE_PROC
     };
 
-    class_header_word(ClassId::new(class_id).unwrap())
+    class_header_word_with_primitive_layout_tag(
+        ClassId::new(class_id).unwrap(),
+        primitive_layout_tags::CLOSURE,
+    )
 }
 
 impl<'gc> Index<usize> for Closure<'gc> {

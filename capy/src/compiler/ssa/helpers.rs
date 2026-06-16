@@ -7,7 +7,10 @@ use crate::{
     compiler::ssa::{AllocationHeaderPreset, SSABuilder},
     cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
-    rsgc::mmtk::BarrierSelector,
+    rsgc::{
+        mmtk::BarrierSelector,
+        object::{OBJECT_HEADER_OFFSET, builtin_class_ids},
+    },
     runtime::value::{Pair, Value, Vector},
 };
 
@@ -334,24 +337,159 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.ins().select(v, tr, fs)
     }
 
-    pub fn has_class_id(&mut self, v: ir::Value, class_id: u32) -> ir::Value {
-        let class_id = self.builder.ins().iconst(types::I32, class_id as i64);
-        let call = self
-            .builder
-            .ins()
-            .call(self.thunks.has_class_id, &[v, class_id]);
-        self.builder.inst_results(call)[0]
+    pub fn has_specific_class_id(&mut self, v: ir::Value, class_id: u32) -> ir::Value {
+        match class_id {
+            builtin_class_ids::BOOL => {
+                let mask = self.builder.ins().band_imm(v, !1);
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, mask, Value::VALUE_FALSE)
+            }
+            builtin_class_ids::CHAR => {
+                let mask = self.builder.ins().band_imm(v, Value::CHAR_MASK);
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, mask, Value::CHAR_TAG)
+            }
+            builtin_class_ids::NULL => {
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, v, Value::VALUE_NULL)
+            }
+            builtin_class_ids::EOF => {
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, v, Value::VALUE_EOF)
+            }
+            builtin_class_ids::VOID => {
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, v, Value::VALUE_VOID)
+            }
+            builtin_class_ids::UNSPECIFIED => {
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, v, Value::VALUE_UNSPECIFIED)
+            }
+            builtin_class_ids::UNDEFINED => {
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, v, Value::VALUE_UNDEFINED)
+            }
+            builtin_class_ids::FIXNUM => {
+                let tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
+                self.builder
+                    .ins()
+                    .icmp_imm(IntCC::Equal, tag, Value::NUMBER_TAG)
+            }
+            builtin_class_ids::FLONUM => {
+                let number_tag = self.builder.ins().band_imm(v, Value::NUMBER_TAG);
+                let is_number = self.builder.ins().icmp_imm(IntCC::NotEqual, number_tag, 0);
+                let is_fixnum =
+                    self.builder
+                        .ins()
+                        .icmp_imm(IntCC::Equal, number_tag, Value::NUMBER_TAG);
+                let not_fixnum = self.builder.ins().bnot(is_fixnum);
+                self.builder.ins().band(is_number, not_fixnum)
+            }
+            _ => self.has_heap_class_id(v, class_id),
+        }
     }
 
-    pub fn has_any_class_id(&mut self, v: ir::Value, class_ids: &[u32]) -> ir::Value {
+    pub fn has_heap_primitive_layout_tag(&mut self, v: ir::Value, tag: u8) -> ir::Value {
+        let check_object = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.append_block_param(join, types::I8);
+
+        let false_ = self.builder.ins().iconst(types::I8, 0);
+        self.branch_if_immediate(v, join, &[BlockArg::Value(false_)], check_object, &[]);
+
+        self.builder.switch_to_block(check_object);
+        let object_tag = self.builder.ins().load(
+            types::I8,
+            ir::MemFlags::trusted().with_can_move(),
+            v,
+            (OBJECT_HEADER_OFFSET + 3) as i32,
+        );
+        let matches = self
+            .builder
+            .ins()
+            .icmp_imm(IntCC::Equal, object_tag, tag as i64);
+        self.builder.ins().jump(join, &[BlockArg::Value(matches)]);
+
+        self.builder.switch_to_block(join);
+        self.builder.block_params(join)[0]
+    }
+
+    pub fn current_block_has_heap_primitive_layout_tag(&self, v: ir::Value, tag: u8) -> bool {
+        self.builder
+            .current_block()
+            .is_some_and(|block| self.heap_primitive_layout_facts.contains(&(block, v, tag)))
+    }
+
+    pub fn prove_current_block_heap_primitive_layout_tag(&mut self, v: ir::Value, tag: u8) {
+        if let Some(block) = self.builder.current_block() {
+            self.heap_primitive_layout_facts.insert((block, v, tag));
+        }
+    }
+
+    fn has_heap_class_id(&mut self, v: ir::Value, class_id: u32) -> ir::Value {
+        self.has_any_heap_class_id(v, &[class_id])
+    }
+
+    pub fn has_any_heap_class_id(&mut self, v: ir::Value, class_ids: &[u32]) -> ir::Value {
+        const CLASS_ID_MASK: i64 = 0x00ff_ffff;
+
         assert!(
             !class_ids.is_empty(),
-            "has_any_class_id requires at least one class ID"
+            "has_any_heap_class_id requires at least one class ID"
         );
 
-        let mut result = self.has_class_id(v, class_ids[0]);
+        let heap_object = self.builder.create_block();
+        let not_heap_object = self.builder.create_block();
+        let join = self.builder.create_block();
+        self.builder.append_block_param(join, types::I8);
+
+        self.branch_if_heap_object(v, heap_object, &[], not_heap_object, &[]);
+
+        self.builder.switch_to_block(heap_object);
+        let header = self.builder.ins().load(
+            types::I64,
+            ir::MemFlags::trusted().with_can_move(),
+            v,
+            OBJECT_HEADER_OFFSET as i32,
+        );
+        let object_class_id = self.builder.ins().band_imm(header, CLASS_ID_MASK);
+        let mut matches =
+            self.builder
+                .ins()
+                .icmp_imm(IntCC::Equal, object_class_id, class_ids[0] as i64);
+        for class_id in &class_ids[1..] {
+            let next = self
+                .builder
+                .ins()
+                .icmp_imm(IntCC::Equal, object_class_id, *class_id as i64);
+            matches = self.builder.ins().bor(matches, next);
+        }
+        self.builder.ins().jump(join, &[BlockArg::Value(matches)]);
+
+        self.builder.switch_to_block(not_heap_object);
+        let false_ = self.builder.ins().iconst(types::I8, 0);
+        self.builder.ins().jump(join, &[BlockArg::Value(false_)]);
+
+        self.builder.switch_to_block(join);
+        self.builder.block_params(join)[0]
+    }
+
+    pub fn has_any_specific_class_id(&mut self, v: ir::Value, class_ids: &[u32]) -> ir::Value {
+        assert!(
+            !class_ids.is_empty(),
+            "has_any_specific_class_id requires at least one class ID"
+        );
+
+        let mut result = self.has_specific_class_id(v, class_ids[0]);
         for &class_id in &class_ids[1..] {
-            let next = self.has_class_id(v, class_id);
+            let next = self.has_specific_class_id(v, class_id);
             result = self.builder.ins().bor(result, next);
         }
         result
@@ -385,7 +523,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .brif(is_heap_object, then, then_args, else_, else_args);
     }
 
-    pub fn branch_if_has_class_id(
+    pub fn branch_if_has_specific_class_id(
         &mut self,
         v: ir::Value,
         class_id: u32,
@@ -394,13 +532,43 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         else_: ir::Block,
         else_args: &[BlockArg],
     ) {
-        let has_class_id = self.has_class_id(v, class_id);
+        let matches = self.has_specific_class_id(v, class_id);
         self.builder
             .ins()
-            .brif(has_class_id, then, then_args, else_, else_args);
+            .brif(matches, then, then_args, else_, else_args);
     }
 
-    pub fn branch_if_has_any_class_id(
+    pub fn branch_if_heap_class_id(
+        &mut self,
+        v: ir::Value,
+        class_id: u32,
+        then: ir::Block,
+        then_args: &[BlockArg],
+        else_: ir::Block,
+        else_args: &[BlockArg],
+    ) {
+        let matches = self.has_heap_class_id(v, class_id);
+        self.builder
+            .ins()
+            .brif(matches, then, then_args, else_, else_args);
+    }
+
+    pub fn branch_if_heap_primitive_layout_tag(
+        &mut self,
+        v: ir::Value,
+        tag: u8,
+        then: ir::Block,
+        then_args: &[BlockArg],
+        else_: ir::Block,
+        else_args: &[BlockArg],
+    ) {
+        let matches = self.has_heap_primitive_layout_tag(v, tag);
+        self.builder
+            .ins()
+            .brif(matches, then, then_args, else_, else_args);
+    }
+
+    pub fn branch_if_any_heap_class_id(
         &mut self,
         v: ir::Value,
         class_ids: &[u32],
@@ -409,10 +577,25 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         else_: ir::Block,
         else_args: &[BlockArg],
     ) {
-        let has_class_id = self.has_any_class_id(v, class_ids);
+        let matches = self.has_any_heap_class_id(v, class_ids);
         self.builder
             .ins()
-            .brif(has_class_id, then, then_args, else_, else_args);
+            .brif(matches, then, then_args, else_, else_args);
+    }
+
+    pub fn branch_if_has_any_specific_class_id(
+        &mut self,
+        v: ir::Value,
+        class_ids: &[u32],
+        then: ir::Block,
+        then_args: &[BlockArg],
+        else_: ir::Block,
+        else_args: &[BlockArg],
+    ) {
+        let matches = self.has_any_specific_class_id(v, class_ids);
+        self.builder
+            .ins()
+            .brif(matches, then, then_args, else_, else_args);
     }
 
     pub fn handle_thunk_call_result(

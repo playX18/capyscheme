@@ -19,7 +19,10 @@ use crate::rsgc::{
     global::Global,
     mmtk::{AllocationSemantics, util::conversions::raw_align_up},
     mutator::Mutation,
-    object::{AllocationHooks, ClassId, GCObject, builtin_class_ids, class_header_word},
+    object::{
+        AllocationHooks, ClassId, GCObject, builtin_class_ids,
+        class_header_word_with_primitive_layout_tag, primitive_layout_tags,
+    },
 };
 use rand::Rng;
 
@@ -355,7 +358,10 @@ impl<'gc> BigInt<'gc> {
 }
 
 fn bigint_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::BIGINT).unwrap())
+    class_header_word_with_primitive_layout_tag(
+        ClassId::new(builtin_class_ids::BIGINT).unwrap(),
+        primitive_layout_tags::NUMBER,
+    )
 }
 
 // SAFETY: `gc` for `BigInt` upholds all trait invariants

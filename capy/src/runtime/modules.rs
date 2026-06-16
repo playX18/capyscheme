@@ -1,6 +1,9 @@
 use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 
-use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
+use crate::rsgc::object::{
+    ClassId, builtin_class_ids, class_header_word, class_header_word_with_primitive_layout_tag,
+    primitive_layout_tags,
+};
 use crate::rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
 use crate::{
@@ -695,7 +698,10 @@ pub struct Variable<'gc> {
 }
 
 fn variable_header_word() -> u64 {
-    class_header_word(ClassId::new(builtin_class_ids::VARIABLE).unwrap())
+    class_header_word_with_primitive_layout_tag(
+        ClassId::new(builtin_class_ids::VARIABLE).unwrap(),
+        primitive_layout_tags::VARIABLE,
+    )
 }
 
 const _: () = {

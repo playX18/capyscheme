@@ -106,9 +106,7 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::CLOSURE_PROC | builtin_class_ids::CLOSURE_K => {
             crate::runtime::value::CLOSURE_HOOKS
         }
-        builtin_class_ids::MUTABLE_VECTOR | builtin_class_ids::IMMUTABLE_VECTOR => {
-            crate::runtime::value::Vector::<'static>::HOOKS
-        }
+        builtin_class_ids::MUTABLE_VECTOR => crate::runtime::value::Vector::<'static>::HOOKS,
         builtin_class_ids::TUPLE => crate::runtime::value::Tuple::<'static>::HOOKS,
         builtin_class_ids::BIGINT => crate::runtime::value::BigInt::<'static>::HOOKS,
         builtin_class_ids::RATIONAL => {
@@ -251,7 +249,6 @@ builtin_specs! {
     "closure" => builtin_class_ids::CLOSURE_PROC, Builtin;
     "continuation-closure" => builtin_class_ids::CLOSURE_K, Builtin;
     "vector" => builtin_class_ids::MUTABLE_VECTOR, Builtin;
-    "immutable-vector" => builtin_class_ids::IMMUTABLE_VECTOR, Builtin;
     "tuple" => builtin_class_ids::TUPLE, Builtin;
     "top" => builtin_class_ids::TOP, Abstract;
     "bottom" => builtin_class_ids::BOTTOM, Abstract;

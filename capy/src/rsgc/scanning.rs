@@ -30,6 +30,7 @@ impl mmtk::vm::Scanning<MemoryManager> for RustScanning {
         _tls: mmtk::util::VMWorkerThread,
         _object: mmtk::util::ObjectReference,
     ) -> bool {
+        // TRUE for all objects right now.
         true
     }
 

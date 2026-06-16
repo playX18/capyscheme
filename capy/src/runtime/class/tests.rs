@@ -204,7 +204,6 @@ fn builtin_classes_publish_primitive_layout_hooks_from_class_metadata() {
             builtin_class_ids::CLOSURE_PROC,
             builtin_class_ids::CLOSURE_K,
             builtin_class_ids::MUTABLE_VECTOR,
-            builtin_class_ids::IMMUTABLE_VECTOR,
             builtin_class_ids::TUPLE,
             builtin_class_ids::BIGINT,
             builtin_class_ids::RATIONAL,
