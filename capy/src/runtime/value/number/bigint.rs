@@ -19,9 +19,7 @@ use crate::rsgc::{
     global::Global,
     mmtk::{AllocationSemantics, util::conversions::raw_align_up},
     mutator::Mutation,
-    object::{
-        AllocationHooks, ClassId, GCObject, builtin_class_ids, class_header_word,
-    },
+    object::{AllocationHooks, ClassId, GCObject, builtin_class_ids, class_header_word},
 };
 use rand::Rng;
 

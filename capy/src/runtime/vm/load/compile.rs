@@ -1,4 +1,9 @@
+use std::fs::File;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compiler::{CompilationOptions, compile_cps_to_fasl_bytes, compile_file};
 use crate::runtime::Context;
@@ -12,6 +17,8 @@ use super::{
     paths::{ResolvedLoadPath, resolve_load_path},
     policy::get_execution_policy,
 };
+
+static TEMP_ARTIFACT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 enum LoadMode {
     DescribeIfCompileNeeded,
@@ -231,8 +238,24 @@ pub(super) fn compile_cps_to_destination<'gc>(
             &[],
         )),
         LoadArtifactKind::FaslCode => {
+            let _lock = ArtifactLock::acquire(&destination.path).map_err(|err| {
+                make_io_error(
+                    ctx,
+                    "compile",
+                    Str::new(
+                        *ctx,
+                        format!(
+                            "Cannot lock FASL code image '{}': {err}",
+                            destination.path.display()
+                        ),
+                        true,
+                    )
+                    .into(),
+                    &[],
+                )
+            })?;
             let bytes = compile_cps_to_fasl_bytes(ctx, cps, options)?;
-            std::fs::write(&destination.path, bytes).map_err(|err| {
+            write_artifact_atomically(&destination.path, &bytes).map_err(|err| {
                 make_io_error(
                     ctx,
                     "compile",
@@ -250,6 +273,101 @@ pub(super) fn compile_cps_to_destination<'gc>(
             })
         }
     }
+}
+
+struct ArtifactLock {
+    #[allow(dead_code)]
+    file: File,
+}
+
+impl ArtifactLock {
+    fn acquire(path: &Path) -> std::io::Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let lock_path = path.with_extension(format!(
+            "{}.lock",
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("artifact")
+        ));
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(lock_path)?;
+        lock_file(&file)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for ArtifactLock {
+    fn drop(&mut self) {
+        let _ = unlock_file(&self.file);
+    }
+}
+
+#[cfg(unix)]
+fn lock_file(file: &File) -> std::io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+fn unlock_file(file: &File) -> std::io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_file(_: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn unlock_file(_: &File) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn write_artifact_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
+    let unique = TEMP_ARTIFACT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = path.with_file_name(format!(
+        ".{file_name}.tmp.{}.{}",
+        std::process::id(),
+        unique
+    ));
+
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp_path, path)
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    result
 }
 
 fn load_artifact<'gc>(
