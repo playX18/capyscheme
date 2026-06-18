@@ -654,7 +654,7 @@ mod tests {
                         "class-id-uninterned-symbol",
                         None,
                     )),
-                    builtin_class_ids::UNINTERNED_SYMBOL,
+                    builtin_class_ids::SYMBOL,
                 ),
                 (
                     Value::from(Keyword::from_symbol(
@@ -669,7 +669,7 @@ mod tests {
                 ),
                 (
                     Value::from(Vector::new::<false>(*ctx, 2, Value::unspecified())),
-                    builtin_class_ids::MUTABLE_VECTOR,
+                    builtin_class_ids::VECTOR,
                 ),
                 (
                     Value::from(ByteVector::new::<false>(*ctx, 4, true)),
@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_allocation_presets_allocate_with_class_only_headers() {
+    fn collapsed_variant_values_use_layout_class_ids() {
         Scheme::new_uninit().enter(|ctx| {
             let pair = Value::cons(ctx, Value::new(1), Value::null());
             let code_block = CodeBlock::new_aot(
@@ -743,10 +743,10 @@ mod tests {
 
             let cases = [
                 (pair, builtin_class_ids::PAIR),
-                (closure_proc, builtin_class_ids::CLOSURE_PROC),
-                (closure_continuation, builtin_class_ids::CLOSURE_K),
-                (mutable_vector, builtin_class_ids::MUTABLE_VECTOR),
-                (immutable_vector, builtin_class_ids::MUTABLE_VECTOR),
+                (closure_proc, builtin_class_ids::CLOSURE),
+                (closure_continuation, builtin_class_ids::CLOSURE),
+                (mutable_vector, builtin_class_ids::VECTOR),
+                (immutable_vector, builtin_class_ids::VECTOR),
                 (mutable_bytevector, builtin_class_ids::MUTABLE_BYTEVECTOR),
                 (
                     immutable_bytevector,
@@ -755,9 +755,9 @@ mod tests {
                 (mapped_bytevector, builtin_class_ids::MAPPED_BYTEVECTOR),
                 (tuple, builtin_class_ids::TUPLE),
                 (string, builtin_class_ids::STRING),
-                (immutable_string, builtin_class_ids::IMMUTABLE_STRING),
+                (immutable_string, builtin_class_ids::STRING),
                 (symbol, builtin_class_ids::SYMBOL),
-                (uninterned_symbol, builtin_class_ids::UNINTERNED_SYMBOL),
+                (uninterned_symbol, builtin_class_ids::SYMBOL),
                 (keyword, builtin_class_ids::KEYWORD),
                 (mutable_hash, builtin_class_ids::HASHTABLE),
                 (immutable_hash, builtin_class_ids::IMMUTABLE_HASHTABLE),
@@ -774,12 +774,19 @@ mod tests {
             for (value, raw_class_id) in cases {
                 assert_eq!(value.class_id(), ClassId::new(raw_class_id));
             }
+            assert!(!closure_proc.downcast::<Closure>().is_continuation());
+            assert!(closure_continuation
+                .downcast::<Closure>()
+                .is_continuation());
             assert!(immutable_vector_gc.is_immutable());
+            assert!(immutable_string.downcast::<Str>().is_immutable());
+            assert!(!symbol.downcast::<Symbol>().is_uninterned());
+            assert!(uninterned_symbol.downcast::<Symbol>().is_uninterned());
         });
     }
 
     #[test]
-    fn class_predicates_accept_class_id_subkinds() {
+    fn class_predicates_accept_collapsed_layout_classes() {
         Scheme::new_uninit().enter(|ctx| {
             let mutable_vector = Value::from(Vector::new::<false>(*ctx, 1, Value::undefined()));
             let immutable_vector_gc = Vector::new::<true>(*ctx, 1, Value::undefined());
@@ -788,11 +795,11 @@ mod tests {
             assert!(immutable_vector.is::<Vector>());
             assert!(
                 mutable_vector
-                    .is_class_id(ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap())
+                    .is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap())
             );
             assert!(
                 immutable_vector
-                    .is_class_id(ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap())
+                    .is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap())
             );
             assert!(immutable_vector_gc.is_immutable());
 
@@ -844,12 +851,16 @@ mod tests {
             assert!(closure_proc.is::<Closure>());
             assert!(closure_continuation.is::<Closure>());
             assert!(
-                closure_proc.is_class_id(ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap())
+                closure_proc.is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap())
             );
             assert!(
                 closure_continuation
-                    .is_class_id(ClassId::new(builtin_class_ids::CLOSURE_K).unwrap())
+                    .is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap())
             );
+            assert!(!closure_proc.downcast::<Closure>().is_continuation());
+            assert!(closure_continuation
+                .downcast::<Closure>()
+                .is_continuation());
 
             let annotation = Value::from(Gc::new_with_header_word(
                 *ctx,

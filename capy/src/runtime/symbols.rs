@@ -1,8 +1,7 @@
 use crate::rsgc::{
     mmtk::util::Address,
     object::{
-        ClassId, builtin_class_ids, class_header_word_with_primitive_layout_tag,
-        primitive_layout_tags,
+        ClassId, builtin_class_ids, class_header_word, class_header_word_with_private_variant_flag,
     },
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,23 +48,21 @@ impl RuntimeData {
         match self {
             Self::PairHeaderWord => static_class_header_word_address(
                 &PAIR_HEADER_WORD,
-                ClassId::new(builtin_class_ids::PAIR).unwrap(),
-                primitive_layout_tags::PAIR,
+                class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap()),
             ),
             Self::ClosureProcHeaderWord => static_class_header_word_address(
                 &CLOSURE_PROC_HEADER_WORD,
-                ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap(),
-                primitive_layout_tags::CLOSURE,
+                class_header_word(ClassId::new(builtin_class_ids::CLOSURE).unwrap()),
             ),
             Self::ClosureKHeaderWord => static_class_header_word_address(
                 &CLOSURE_K_HEADER_WORD,
-                ClassId::new(builtin_class_ids::CLOSURE_K).unwrap(),
-                primitive_layout_tags::CLOSURE,
+                class_header_word_with_private_variant_flag(
+                    ClassId::new(builtin_class_ids::CLOSURE).unwrap(),
+                ),
             ),
             Self::MutableVectorHeaderWord => static_class_header_word_address(
                 &MUTABLE_VECTOR_HEADER_WORD,
-                ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap(),
-                primitive_layout_tags::VECTOR,
+                class_header_word(ClassId::new(builtin_class_ids::VECTOR).unwrap()),
             ),
         }
     }
@@ -73,13 +70,9 @@ impl RuntimeData {
 
 fn static_class_header_word_address(
     cell: &'static AtomicU64,
-    class_id: ClassId,
-    primitive_layout_tag: u8,
+    header_word: u64,
 ) -> Address {
-    publish_static_header_word(
-        cell,
-        class_header_word_with_primitive_layout_tag(class_id, primitive_layout_tag),
-    )
+    publish_static_header_word(cell, header_word)
 }
 
 fn publish_static_header_word(cell: &'static AtomicU64, header_word: u64) -> Address {
@@ -121,31 +114,21 @@ mod tests {
         let cases = [
             (
                 RuntimeData::PairHeaderWord,
-                class_header_word_with_primitive_layout_tag(
-                    ClassId::new(builtin_class_ids::PAIR).unwrap(),
-                    primitive_layout_tags::PAIR,
-                ),
+                class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap()),
             ),
             (
                 RuntimeData::ClosureProcHeaderWord,
-                class_header_word_with_primitive_layout_tag(
-                    ClassId::new(builtin_class_ids::CLOSURE_PROC).unwrap(),
-                    primitive_layout_tags::CLOSURE,
-                ),
+                class_header_word(ClassId::new(builtin_class_ids::CLOSURE).unwrap()),
             ),
             (
                 RuntimeData::ClosureKHeaderWord,
-                class_header_word_with_primitive_layout_tag(
-                    ClassId::new(builtin_class_ids::CLOSURE_K).unwrap(),
-                    primitive_layout_tags::CLOSURE,
+                class_header_word_with_private_variant_flag(
+                    ClassId::new(builtin_class_ids::CLOSURE).unwrap(),
                 ),
             ),
             (
                 RuntimeData::MutableVectorHeaderWord,
-                class_header_word_with_primitive_layout_tag(
-                    ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap(),
-                    primitive_layout_tags::VECTOR,
-                ),
+                class_header_word(ClassId::new(builtin_class_ids::VECTOR).unwrap()),
             ),
         ];
 

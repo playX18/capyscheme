@@ -288,13 +288,9 @@ where
                 have_length(cps, Atom::Local(length))
             }
         );
-        letk check_immutable_string () = with_cps!(cps;
-            let is_immutable_string = #% "%class-id?" (x, Value::new(builtin_class_ids::IMMUTABLE_STRING as i32)) @ src;
-            if is_immutable_string => k | not_string
-        );
         letk check_string () = with_cps!(cps;
             let is_string = #% "%class-id?" (x, Value::new(builtin_class_ids::STRING as i32)) @ src;
-            if is_string => k | check_immutable_string
+            if is_string => k | not_string
         );
 
         let is_immediate = #% "immediate?" (x) @ src;

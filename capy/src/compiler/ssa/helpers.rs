@@ -396,44 +396,19 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    pub fn has_heap_primitive_layout_tag(&mut self, v: ir::Value, tag: u8) -> ir::Value {
-        let check_object = self.builder.create_block();
-        let join = self.builder.create_block();
-        self.builder.append_block_param(join, types::I8);
-
-        let false_ = self.builder.ins().iconst(types::I8, 0);
-        self.branch_if_immediate(v, join, &[BlockArg::Value(false_)], check_object, &[]);
-
-        self.builder.switch_to_block(check_object);
-        let object_tag = self.builder.ins().load(
-            types::I8,
-            ir::MemFlags::trusted().with_can_move(),
-            v,
-            (OBJECT_HEADER_OFFSET + 3) as i32,
-        );
-        let matches = self
-            .builder
-            .ins()
-            .icmp_imm(IntCC::Equal, object_tag, tag as i64);
-        self.builder.ins().jump(join, &[BlockArg::Value(matches)]);
-
-        self.builder.switch_to_block(join);
-        self.builder.block_params(join)[0]
-    }
-
-    pub fn current_block_has_heap_primitive_layout_tag(&self, v: ir::Value, tag: u8) -> bool {
+    pub fn current_block_has_heap_class_id(&self, v: ir::Value, class_id: u32) -> bool {
         self.builder
             .current_block()
-            .is_some_and(|block| self.heap_primitive_layout_facts.contains(&(block, v, tag)))
+            .is_some_and(|block| self.heap_class_id_facts.contains(&(block, v, class_id)))
     }
 
-    pub fn prove_current_block_heap_primitive_layout_tag(&mut self, v: ir::Value, tag: u8) {
+    pub fn prove_current_block_heap_class_id(&mut self, v: ir::Value, class_id: u32) {
         if let Some(block) = self.builder.current_block() {
-            self.heap_primitive_layout_facts.insert((block, v, tag));
+            self.heap_class_id_facts.insert((block, v, class_id));
         }
     }
 
-    fn has_heap_class_id(&mut self, v: ir::Value, class_id: u32) -> ir::Value {
+    pub fn has_heap_class_id(&mut self, v: ir::Value, class_id: u32) -> ir::Value {
         self.has_any_heap_class_id(v, &[class_id])
     }
 
@@ -548,21 +523,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         else_args: &[BlockArg],
     ) {
         let matches = self.has_heap_class_id(v, class_id);
-        self.builder
-            .ins()
-            .brif(matches, then, then_args, else_, else_args);
-    }
-
-    pub fn branch_if_heap_primitive_layout_tag(
-        &mut self,
-        v: ir::Value,
-        tag: u8,
-        then: ir::Block,
-        then_args: &[BlockArg],
-        else_: ir::Block,
-        else_args: &[BlockArg],
-    ) {
-        let matches = self.has_heap_primitive_layout_tag(v, tag);
         self.builder
             .ins()
             .brif(matches, then, then_args, else_, else_args);

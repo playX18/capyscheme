@@ -2,7 +2,7 @@ use std::{collections::HashMap, mem::offset_of};
 
 use crate::rsgc::{
     Gc,
-    object::{HeapObjectHeader, OBJECT_REF_OFFSET, builtin_class_ids, primitive_layout_tags},
+    object::{HeapObjectHeader, OBJECT_REF_OFFSET, builtin_class_ids},
     sync::thread::Thread,
 };
 
@@ -67,21 +67,10 @@ pub(crate) enum AllocationHeaderPreset {
 impl AllocationHeaderPreset {
     pub(crate) const fn header_word(self) -> u64 {
         match self {
-            Self::Pair => {
-                ((primitive_layout_tags::PAIR as u64) << 24) | builtin_class_ids::PAIR as u64
-            }
-            Self::ClosureProc => {
-                ((primitive_layout_tags::CLOSURE as u64) << 24)
-                    | builtin_class_ids::CLOSURE_PROC as u64
-            }
-            Self::ClosureK => {
-                ((primitive_layout_tags::CLOSURE as u64) << 24)
-                    | builtin_class_ids::CLOSURE_K as u64
-            }
-            Self::MutableVector => {
-                ((primitive_layout_tags::VECTOR as u64) << 24)
-                    | builtin_class_ids::MUTABLE_VECTOR as u64
-            }
+            Self::Pair => builtin_class_ids::PAIR as u64,
+            Self::ClosureProc => builtin_class_ids::CLOSURE as u64,
+            Self::ClosureK => (1_u64 << 24) | builtin_class_ids::CLOSURE as u64,
+            Self::MutableVector => builtin_class_ids::VECTOR as u64,
         }
     }
 
@@ -1279,9 +1268,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let get_closure_code = self.builder.create_block();
         let error = self.builder.create_block();
         self.builder.func.layout.set_cold(error);
-        self.branch_if_heap_primitive_layout_tag(
+        self.branch_if_heap_class_id(
             callee,
-            primitive_layout_tags::CLOSURE,
+            builtin_class_ids::CLOSURE,
             get_closure_code,
             &[],
             error,
@@ -1619,8 +1608,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 self.builder.ins().ireduce(types::I32, value)
             }
             SwitchKind::SymbolEq { mask } => {
-                let is_symbol =
-                    self.has_heap_primitive_layout_tag(value, primitive_layout_tags::SYMBOL);
+                let is_symbol = self.has_heap_class_id(value, builtin_class_ids::SYMBOL);
                 self.builder
                     .ins()
                     .brif(is_symbol, switch_block, &[], type_miss_block, &[]);

@@ -13,16 +13,13 @@ pub struct Closure<'gc> {
 }
 
 fn closure_header_word(is_cont: bool) -> u64 {
-    let class_id = if is_cont {
-        builtin_class_ids::CLOSURE_K
-    } else {
-        builtin_class_ids::CLOSURE_PROC
-    };
+    let class_id = ClassId::new(builtin_class_ids::CLOSURE).unwrap();
 
-    class_header_word_with_primitive_layout_tag(
-        ClassId::new(class_id).unwrap(),
-        primitive_layout_tags::CLOSURE,
-    )
+    if is_cont {
+        class_header_word_with_private_variant_flag(class_id)
+    } else {
+        class_header_word(class_id)
+    }
 }
 
 impl<'gc> Index<usize> for Closure<'gc> {
@@ -203,17 +200,14 @@ impl<'gc> Closure<'gc> {
 
 // SAFETY: Closure stores its class ID in the heap header selected at construction time.
 unsafe impl<'gc> ClassTagged for Closure<'gc> {
-    const CLASS_IDS: &'static [u32] = &[
-        crate::rsgc::object::builtin_class_ids::CLOSURE_PROC,
-        crate::rsgc::object::builtin_class_ids::CLOSURE_K,
-    ];
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::CLOSURE];
 
     const TYPE_NAME: &'static str = "procedure";
 }
 
 impl<'gc> Closure<'gc> {
     pub fn is_continuation(&self) -> bool {
-        payload_class_id(self).bits() == builtin_class_ids::CLOSURE_K
+        heap_header(self).private_variant_flag()
     }
 
     /// Check if this closure is a continuation produced by `call/cc`.

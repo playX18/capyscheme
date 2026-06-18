@@ -13,7 +13,7 @@ use crate::rsgc::{
     },
     object::{
         AllocationHooks, ClassId, builtin_class_ids, class_header_word,
-        class_header_word_with_primitive_layout_tag, primitive_layout_tags,
+        class_header_word_with_private_variant_flag,
     },
 };
 use std::{
@@ -228,16 +228,13 @@ pub struct Str<'gc> {
 }
 
 fn string_header_word(read_only: bool) -> u64 {
-    let class_id = if read_only {
-        builtin_class_ids::IMMUTABLE_STRING
-    } else {
-        builtin_class_ids::STRING
-    };
+    let class_id = ClassId::new(builtin_class_ids::STRING).unwrap();
 
-    class_header_word_with_primitive_layout_tag(
-        ClassId::new(class_id).unwrap(),
-        primitive_layout_tags::STRING,
-    )
+    if read_only {
+        class_header_word_with_private_variant_flag(class_id)
+    } else {
+        class_header_word(class_id)
+    }
 }
 
 impl<'gc> Str<'gc> {
@@ -494,7 +491,11 @@ impl<'gc> Str<'gc> {
     }
 
     pub fn is_mutable(&self) -> bool {
-        payload_class_id(self).bits() == builtin_class_ids::STRING
+        !heap_header(self).private_variant_flag()
+    }
+
+    pub fn is_immutable(&self) -> bool {
+        heap_header(self).private_variant_flag()
     }
 
     pub fn data(&self) -> Address {
@@ -645,10 +646,7 @@ impl<'gc> Str<'gc> {
 
 // SAFETY: `gc` for `Str` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Str<'gc> {
-    const CLASS_IDS: &'static [u32] = &[
-        crate::rsgc::object::builtin_class_ids::STRING,
-        crate::rsgc::object::builtin_class_ids::IMMUTABLE_STRING,
-    ];
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::STRING];
     const TYPE_NAME: &'static str = "string";
 }
 
@@ -826,16 +824,13 @@ impl<'gc> Hash for Str<'gc> {
 }
 
 fn symbol_header_word(interned: bool) -> u64 {
-    let class_id = if interned {
-        builtin_class_ids::SYMBOL
-    } else {
-        builtin_class_ids::UNINTERNED_SYMBOL
-    };
+    let class_id = ClassId::new(builtin_class_ids::SYMBOL).unwrap();
 
-    class_header_word_with_primitive_layout_tag(
-        ClassId::new(class_id).unwrap(),
-        primitive_layout_tags::SYMBOL,
-    )
+    if interned {
+        class_header_word(class_id)
+    } else {
+        class_header_word_with_private_variant_flag(class_id)
+    }
 }
 
 impl<'gc> Symbol<'gc> {

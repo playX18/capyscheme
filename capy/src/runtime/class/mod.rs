@@ -33,7 +33,7 @@ pub use table::{
     primitive_layout_hooks_for_class_id,
 };
 
-pub(crate) use builtin::{builtin_class_specs, builtin_id};
+pub(crate) use builtin::builtin_class_specs;
 pub(crate) use descriptor::{
     call_scheme_slot_bound, call_scheme_slot_ref, call_scheme_slot_set,
     class_id_list_to_class_objects, class_id_to_class_object, slot_accessor_list,

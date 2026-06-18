@@ -49,13 +49,13 @@ pub mod vector;
 fn is_procedure(value: Value<'_>) -> bool {
     value
         .class_id()
-        .is_some_and(|id| matches!(id.bits(), builtin_class_ids::CLOSURE_PROC))
+        .is_some_and(|id| id.bits() == builtin_class_ids::CLOSURE)
 }
 
 fn is_continuation(value: Value<'_>) -> bool {
     value
-        .class_id()
-        .is_some_and(|id| id.bits() == builtin_class_ids::CLOSURE_K)
+        .try_as::<Closure>()
+        .is_some_and(|closure| closure.is_continuation())
 }
 
 /// Perform call into the Scheme code in `rator` with `args`.
@@ -955,7 +955,7 @@ mod tests {
             let cont = Value::from(Closure::new(ctx, code_block, &[], true));
 
             assert!(is_procedure(proc));
-            assert!(!is_procedure(cont));
+            assert!(is_procedure(cont));
             assert!(!is_procedure(Value::null()));
             assert!(is_continuation(cont));
             assert!(!is_continuation(proc));

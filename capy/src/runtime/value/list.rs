@@ -3,10 +3,7 @@
 use crate::rsgc::{
     Trace, barrier,
     cell::Lock,
-    object::{
-        ClassId, builtin_class_ids, class_header_word_with_primitive_layout_tag,
-        primitive_layout_tags,
-    },
+    object::{ClassId, builtin_class_ids, class_header_word},
 };
 use std::mem::offset_of;
 
@@ -32,10 +29,7 @@ const _: () = {
 };
 
 fn pair_header_word() -> u64 {
-    class_header_word_with_primitive_layout_tag(
-        ClassId::new(builtin_class_ids::PAIR).unwrap(),
-        primitive_layout_tags::PAIR,
-    )
+    class_header_word(ClassId::new(builtin_class_ids::PAIR).unwrap())
 }
 
 impl<'gc> Pair<'gc> {
