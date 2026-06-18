@@ -201,18 +201,15 @@ fn builtin_classes_publish_primitive_layout_hooks_from_class_metadata() {
         let cases = [
             builtin_class_ids::PAIR,
             builtin_class_ids::VARIABLE,
-            builtin_class_ids::CLOSURE_PROC,
-            builtin_class_ids::CLOSURE_K,
-            builtin_class_ids::MUTABLE_VECTOR,
+            builtin_class_ids::CLOSURE,
+            builtin_class_ids::VECTOR,
             builtin_class_ids::TUPLE,
             builtin_class_ids::BIGINT,
             builtin_class_ids::RATIONAL,
             builtin_class_ids::COMPLEX,
             builtin_class_ids::SYMBOL,
-            builtin_class_ids::UNINTERNED_SYMBOL,
             builtin_class_ids::KEYWORD,
             builtin_class_ids::STRING,
-            builtin_class_ids::IMMUTABLE_STRING,
             builtin_class_ids::STRINGBUF_WIDE,
             builtin_class_ids::STRINGBUF_NARROW,
             builtin_class_ids::MUTABLE_BYTEVECTOR,
@@ -402,10 +399,6 @@ fn builtin_classes_have_cpl_for_family_predicates() {
         assert!(table.is_subclass(id(builtin_class_ids::COMPLEX), number));
         assert!(table.is_subclass(id(builtin_class_ids::PAIR), object));
         assert!(table.is_subclass(id(builtin_class_ids::CLASS), id(builtin_class_ids::TYPE)));
-        assert!(table.is_subclass(
-            id(builtin_class_ids::UNINTERNED_SYMBOL),
-            id(builtin_class_ids::SYMBOL)
-        ));
         assert!(!table.is_subclass(id(builtin_class_ids::PAIR), number));
     });
 }

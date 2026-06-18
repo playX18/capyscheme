@@ -9,8 +9,8 @@ use crate::rsgc::{
     collection::Visitor,
     mmtk::AllocationSemantics,
     object::{
-        AllocationHooks, ClassId, builtin_class_ids, class_header_word_with_primitive_layout_tag,
-        class_header_word_with_primitive_layout_tag_and_immutable_flag, primitive_layout_tags,
+        AllocationHooks, ClassId, builtin_class_ids, class_header_word,
+        class_header_word_with_private_variant_flag,
     },
 };
 use std::ops::{Deref, DerefMut, Index};
@@ -35,15 +35,12 @@ const _: () = {
 };
 
 fn vector_header_word(immutable: bool) -> u64 {
-    let class_id = ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap();
+    let class_id = ClassId::new(builtin_class_ids::VECTOR).unwrap();
 
     if immutable {
-        class_header_word_with_primitive_layout_tag_and_immutable_flag(
-            class_id,
-            primitive_layout_tags::VECTOR,
-        )
+        class_header_word_with_private_variant_flag(class_id)
     } else {
-        class_header_word_with_primitive_layout_tag(class_id, primitive_layout_tags::VECTOR)
+        class_header_word(class_id)
     }
 }
 
@@ -88,7 +85,7 @@ impl<'gc> Vector<'gc> {
     }
 
     pub fn is_immutable(&self) -> bool {
-        heap_header(self).immutable_flag()
+        heap_header(self).private_variant_flag()
     }
 
     /// Allocates a vector with all slots initialized to `fill`.
@@ -256,17 +253,11 @@ fn bytevector_header_word(immutable: bool) -> u64 {
         builtin_class_ids::MUTABLE_BYTEVECTOR
     };
 
-    class_header_word_with_primitive_layout_tag(
-        ClassId::new(class_id).unwrap(),
-        primitive_layout_tags::BYTEVECTOR,
-    )
+    class_header_word(ClassId::new(class_id).unwrap())
 }
 
 fn mapped_bytevector_header_word() -> u64 {
-    class_header_word_with_primitive_layout_tag(
-        ClassId::new(builtin_class_ids::MAPPED_BYTEVECTOR).unwrap(),
-        primitive_layout_tags::BYTEVECTOR,
-    )
+    class_header_word(ClassId::new(builtin_class_ids::MAPPED_BYTEVECTOR).unwrap())
 }
 
 pub const BYTE_VECTOR_MAX_LENGTH: usize = usize::MAX;
@@ -518,7 +509,7 @@ impl Index<core::ops::RangeFull> for ByteVector {
 
 // SAFETY: `gc` for `Vector` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Vector<'gc> {
-    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::MUTABLE_VECTOR];
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::VECTOR];
     const TYPE_NAME: &'static str = "vector";
 }
 
@@ -544,10 +535,7 @@ const _: () = {
 };
 
 fn tuple_header_word() -> u64 {
-    class_header_word_with_primitive_layout_tag(
-        ClassId::new(builtin_class_ids::TUPLE).unwrap(),
-        primitive_layout_tags::TUPLE,
-    )
+    class_header_word(ClassId::new(builtin_class_ids::TUPLE).unwrap())
 }
 
 extern "C" fn trace_tuple(tuple: GCObject, vis: &mut Visitor) {

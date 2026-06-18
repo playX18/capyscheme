@@ -18,7 +18,7 @@ use crate::{
         term::{ContRef, FuncRef},
     },
     expander::core::LVarRef,
-    rsgc::object::{OBJECT_HEADER_OFFSET, primitive_layout_tags},
+    rsgc::object::{OBJECT_HEADER_OFFSET, builtin_class_ids},
     runtime::{
         CallData, Context, REGISTER_ARG_COUNT, State,
         fasl::{
@@ -1009,16 +1009,17 @@ impl<'gc> ModuleBuilder<'gc> {
             .brif(is_heap_object, check_closure_tag, &[], generic_call, &[]);
 
         builder.switch_to_block(check_closure_tag);
-        let object_tag = builder.ins().load(
-            clif_types::I8,
+        let header = builder.ins().load(
+            clif_types::I64,
             ir::MemFlags::trusted().with_can_move(),
             generic,
-            (OBJECT_HEADER_OFFSET + 3) as i32,
+            OBJECT_HEADER_OFFSET as i32,
         );
+        let object_class_id = builder.ins().band_imm(header, 0x00ff_ffff);
         let is_closure = builder.ins().icmp_imm(
             ir::condcodes::IntCC::Equal,
-            object_tag,
-            primitive_layout_tags::CLOSURE as i64,
+            object_class_id,
+            builtin_class_ids::CLOSURE as i64,
         );
         builder
             .ins()
@@ -1328,7 +1329,7 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub sig_call: ir::SigRef,
 
     pub data_imports: HashMap<DataSymbol, ir::GlobalValue>,
-    pub heap_primitive_layout_facts: HashSet<(ir::Block, ir::Value, u8)>,
+    pub heap_class_id_facts: HashSet<(ir::Block, ir::Value, u32)>,
 
     pub srcloc: Option<SourceLoc>,
 }
@@ -1416,7 +1417,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             sig_call,
 
             data_imports: HashMap::new(),
-            heap_primitive_layout_facts: HashSet::new(),
+            heap_class_id_facts: HashSet::new(),
             srcloc: None,
         };
 

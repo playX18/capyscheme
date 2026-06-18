@@ -68,7 +68,6 @@ fn builtin_direct_supers(id: ClassId) -> ([ClassId; 1], usize) {
         | builtin_class_ids::BIGINT
         | builtin_class_ids::RATIONAL
         | builtin_class_ids::COMPLEX => &[builtin_class_ids::NUMBER],
-        builtin_class_ids::UNINTERNED_SYMBOL => &[builtin_class_ids::SYMBOL],
         _ => &[builtin_class_ids::OBJECT],
     };
     let mut direct_supers = [id; 1];
@@ -103,10 +102,8 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::VARIABLE => {
             AllocationHooksOf::<'static, crate::runtime::modules::Variable<'static>>::HOOKS
         }
-        builtin_class_ids::CLOSURE_PROC | builtin_class_ids::CLOSURE_K => {
-            crate::runtime::value::CLOSURE_HOOKS
-        }
-        builtin_class_ids::MUTABLE_VECTOR => crate::runtime::value::Vector::<'static>::HOOKS,
+        builtin_class_ids::CLOSURE => crate::runtime::value::CLOSURE_HOOKS,
+        builtin_class_ids::VECTOR => crate::runtime::value::Vector::<'static>::HOOKS,
         builtin_class_ids::TUPLE => crate::runtime::value::Tuple::<'static>::HOOKS,
         builtin_class_ids::BIGINT => crate::runtime::value::BigInt::<'static>::HOOKS,
         builtin_class_ids::RATIONAL => {
@@ -115,13 +112,13 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::COMPLEX => {
             AllocationHooksOf::<'static, crate::runtime::value::Complex<'static>>::HOOKS
         }
-        builtin_class_ids::SYMBOL | builtin_class_ids::UNINTERNED_SYMBOL => {
+        builtin_class_ids::SYMBOL => {
             AllocationHooksOf::<'static, crate::runtime::value::Symbol<'static>>::HOOKS
         }
         builtin_class_ids::KEYWORD => {
             AllocationHooksOf::<'static, crate::runtime::value::Keyword<'static>>::HOOKS
         }
-        builtin_class_ids::STRING | builtin_class_ids::IMMUTABLE_STRING => {
+        builtin_class_ids::STRING => {
             AllocationHooksOf::<'static, crate::runtime::value::Str<'static>>::HOOKS
         }
         builtin_class_ids::STRINGBUF_WIDE | builtin_class_ids::STRINGBUF_NARROW => {
@@ -246,9 +243,8 @@ macro_rules! builtin_specs {
 builtin_specs! {
     "pair" => builtin_class_ids::PAIR, Builtin;
     "variable" => builtin_class_ids::VARIABLE, Builtin;
-    "closure" => builtin_class_ids::CLOSURE_PROC, Builtin;
-    "continuation-closure" => builtin_class_ids::CLOSURE_K, Builtin;
-    "vector" => builtin_class_ids::MUTABLE_VECTOR, Builtin;
+    "closure" => builtin_class_ids::CLOSURE, Builtin;
+    "vector" => builtin_class_ids::VECTOR, Builtin;
     "tuple" => builtin_class_ids::TUPLE, Builtin;
     "top" => builtin_class_ids::TOP, Abstract;
     "bottom" => builtin_class_ids::BOTTOM, Abstract;
@@ -269,10 +265,8 @@ builtin_specs! {
     "complex" => builtin_class_ids::COMPLEX, Builtin;
     "number" => builtin_class_ids::NUMBER, Abstract;
     "symbol" => builtin_class_ids::SYMBOL, Builtin;
-    "uninterned-symbol" => builtin_class_ids::UNINTERNED_SYMBOL, Builtin;
     "keyword" => builtin_class_ids::KEYWORD, Builtin;
     "string" => builtin_class_ids::STRING, Builtin;
-    "immutable-string" => builtin_class_ids::IMMUTABLE_STRING, Builtin;
     "stringbuf-wide" => builtin_class_ids::STRINGBUF_WIDE, Builtin;
     "stringbuf-narrow" => builtin_class_ids::STRINGBUF_NARROW, Builtin;
     "bytevector" => builtin_class_ids::MUTABLE_BYTEVECTOR, Builtin;

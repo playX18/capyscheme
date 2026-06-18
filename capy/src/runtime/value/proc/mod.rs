@@ -19,7 +19,7 @@ use mmtk::{AllocationSemantics, util::ObjectReference};
 
 use crate::rsgc::object::{
     AllocationHooks, ClassId, builtin_class_ids, class_header_word,
-    class_header_word_with_primitive_layout_tag, primitive_layout_tags,
+    class_header_word_with_private_variant_flag,
 };
 use crate::runtime::{
     Context,

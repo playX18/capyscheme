@@ -64,7 +64,6 @@
     <closure>
     <complex>
     <condition>
-    <continuation-closure>
     <continuation-marks>
     <code-block>
     <dynamic-state>
@@ -79,8 +78,6 @@
     <hash-table>
     <immutable-bytevector>
     <immutable-hash-table>
-    <immutable-string>
-    <immutable-vector>
     <keyword>
     <mapped-bytevector>
     <method>
@@ -111,7 +108,6 @@
     <tuple>
     <type>
     <undefined>
-    <uninterned-symbol>
     <unspecified>
     <variable>
     <vector>

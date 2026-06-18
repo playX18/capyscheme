@@ -32,10 +32,8 @@ pub const MAX_CLASS_ID: u32 = (1 << 24) - 1;
 pub mod builtin_class_ids {
     pub const PAIR: u32 = 1;
     pub const VARIABLE: u32 = 2;
-    pub const CLOSURE_PROC: u32 = 3;
-    pub const CLOSURE_K: u32 = 4;
-    pub const MUTABLE_VECTOR: u32 = 5;
-    pub const IMMUTABLE_VECTOR: u32 = 6;
+    pub const CLOSURE: u32 = 3;
+    pub const VECTOR: u32 = 5;
     pub const TUPLE: u32 = 7;
 
     pub const TOP: u32 = 8;
@@ -59,7 +57,6 @@ pub mod builtin_class_ids {
     pub const SYMBOL: u32 = 26;
     pub const KEYWORD: u32 = 27;
     pub const STRING: u32 = 28;
-    pub const IMMUTABLE_STRING: u32 = 29;
     pub const STRINGBUF_WIDE: u32 = 30;
     pub const STRINGBUF_NARROW: u32 = 31;
     pub const MUTABLE_BYTEVECTOR: u32 = 32;
@@ -92,7 +89,6 @@ pub mod builtin_class_ids {
     pub const CONDITION: u32 = 59;
     pub const ANNOTATION: u32 = 60;
     pub const CONTINUATION_MARKS: u32 = 61;
-    pub const UNINTERNED_SYMBOL: u32 = 62;
     pub const GENERIC: u32 = 63;
     pub const METHOD: u32 = 64;
     pub const NEXT_METHOD: u32 = 65;
@@ -100,19 +96,6 @@ pub mod builtin_class_ids {
     pub const SLOT_ACCESSOR: u32 = 67;
 
     pub const MAX: u32 = SLOT_ACCESSOR;
-}
-
-pub mod primitive_layout_tags {
-    pub const NONE: u8 = 0;
-    pub const PAIR: u8 = 1;
-    pub const VARIABLE: u8 = 2;
-    pub const CLOSURE: u8 = 3;
-    pub const VECTOR: u8 = 4;
-    pub const BYTEVECTOR: u8 = 5;
-    pub const TUPLE: u8 = 6;
-    pub const SYMBOL: u8 = 7;
-    pub const STRING: u8 = 8;
-    pub const NUMBER: u8 = 9;
 }
 
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);
@@ -183,8 +166,7 @@ impl<'gc, T: Trace> AllocationHooksOf<'gc, T> {
 }
 
 type ClassIdBits = BitField<u64, u32, 0, 24, false>;
-type PrimitiveLayoutTagBits = BitField<u64, u8, { ClassIdBits::NEXT_BIT }, 8, false>;
-type ImmutableObject = BitField<u64, bool, { PrimitiveLayoutTagBits::NEXT_BIT }, 1, false>;
+type PrivateVariantFlag = BitField<u64, bool, { ClassIdBits::NEXT_BIT }, 1, false>;
 type HashBits = BitField<u64, u8, 57, 2, false>;
 type FinalizationState = BitField<u64, bool, { HashBits::NEXT_BIT }, 1, false>;
 
@@ -402,23 +384,10 @@ pub fn class_header_word(class_id: ClassId) -> u64 {
     class_id.bits() as u64
 }
 
-pub fn class_header_word_with_primitive_layout_tag(class_id: ClassId, tag: u8) -> u64 {
-    PrimitiveLayoutTagBits::update(tag, class_header_word(class_id))
+pub fn class_header_word_with_private_variant_flag(class_id: ClassId) -> u64 {
+    PrivateVariantFlag::update(true, class_header_word(class_id))
 }
 
-pub fn class_header_word_with_immutable_flag(class_id: ClassId) -> u64 {
-    ImmutableObject::update(true, class_header_word(class_id))
-}
-
-pub fn class_header_word_with_primitive_layout_tag_and_immutable_flag(
-    class_id: ClassId,
-    tag: u8,
-) -> u64 {
-    ImmutableObject::update(
-        true,
-        class_header_word_with_primitive_layout_tag(class_id, tag),
-    )
-}
 
 unsafe impl Trace for ClassId {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
@@ -461,16 +430,12 @@ impl HeapObjectHeader {
         self.word.update::<ClassIdBits>(class_id.bits());
     }
 
-    pub fn primitive_layout_tag(&self) -> u8 {
-        self.word.read::<PrimitiveLayoutTagBits>()
+    pub(crate) fn private_variant_flag(&self) -> bool {
+        self.word.read::<PrivateVariantFlag>()
     }
 
-    pub fn immutable_flag(&self) -> bool {
-        self.word.read::<ImmutableObject>()
-    }
-
-    pub(crate) fn set_immutable_flag(&self, immutable: bool) {
-        self.word.update::<ImmutableObject>(immutable);
+    pub(crate) fn set_private_variant_flag(&self, value: bool) {
+        self.word.update::<PrivateVariantFlag>(value);
     }
 
     pub fn finalization_state(&self) -> bool {
@@ -887,22 +852,17 @@ mod tests {
 
         assert_eq!(header_word, u64::from(class_id.bits()));
         assert_eq!(header.class_id(), class_id);
-        assert_eq!(header.primitive_layout_tag(), primitive_layout_tags::NONE);
-        assert!(!header.immutable_flag());
+        assert!(!header.private_variant_flag());
     }
 
     #[test]
-    fn class_header_word_can_carry_primitive_layout_tag_and_immutable_flag() {
-        let class_id = ClassId::new(builtin_class_ids::MUTABLE_VECTOR).unwrap();
-        let header_word = class_header_word_with_primitive_layout_tag_and_immutable_flag(
-            class_id,
-            primitive_layout_tags::VECTOR,
-        );
+    fn class_header_word_can_carry_private_variant_flag() {
+        let class_id = ClassId::new(builtin_class_ids::VECTOR).unwrap();
+        let header_word = class_header_word_with_private_variant_flag(class_id);
         let header = HeapObjectHeader::from_word(header_word);
 
         assert_eq!(header.class_id(), class_id);
-        assert_eq!(header.primitive_layout_tag(), primitive_layout_tags::VECTOR);
-        assert!(header.immutable_flag());
+        assert!(header.private_variant_flag());
     }
 
     #[test]
@@ -918,10 +878,8 @@ mod tests {
     fn mmtk_side_bits_do_not_overlap_class_id_field() {
         assert!(ClassIdBits::NEXT_BIT <= HashBits::shift());
         assert!(ClassIdBits::NEXT_BIT <= FinalizationState::shift());
-        assert!(PrimitiveLayoutTagBits::NEXT_BIT <= HashBits::shift());
-        assert!(PrimitiveLayoutTagBits::NEXT_BIT <= FinalizationState::shift());
-        assert!(ImmutableObject::NEXT_BIT <= HashBits::shift());
-        assert!(ImmutableObject::NEXT_BIT <= FinalizationState::shift());
+        assert!(PrivateVariantFlag::NEXT_BIT <= HashBits::shift());
+        assert!(PrivateVariantFlag::NEXT_BIT <= FinalizationState::shift());
         const {
             assert!(ClassIdBits::NEXT_BIT <= LastBitfield::NEXT_BIT);
         }

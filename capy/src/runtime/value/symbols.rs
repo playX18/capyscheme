@@ -24,10 +24,7 @@ pub struct Symbol<'gc> {
 
 // SAFETY: `gc` for `Symbol` upholds all trait invariants
 unsafe impl<'gc> ClassTagged for Symbol<'gc> {
-    const CLASS_IDS: &'static [u32] = &[
-        crate::rsgc::object::builtin_class_ids::SYMBOL,
-        crate::rsgc::object::builtin_class_ids::UNINTERNED_SYMBOL,
-    ];
+    const CLASS_IDS: &'static [u32] = &[crate::rsgc::object::builtin_class_ids::SYMBOL];
     const TYPE_NAME: &'static str = "symbol";
 }
 
@@ -183,11 +180,11 @@ impl<'gc> Symbol<'gc> {
     }
 
     pub fn is_interned(&self) -> bool {
-        payload_class_id(self).bits() == builtin_class_ids::SYMBOL
+        !heap_header(self).private_variant_flag()
     }
 
     pub fn is_uninterned(&self) -> bool {
-        payload_class_id(self).bits() == builtin_class_ids::UNINTERNED_SYMBOL
+        heap_header(self).private_variant_flag()
     }
 
     pub fn uninterned_suffix(&self, ctx: Context<'gc>) -> Gc<'gc, Str<'gc>> {
