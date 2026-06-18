@@ -775,9 +775,7 @@ mod tests {
                 assert_eq!(value.class_id(), ClassId::new(raw_class_id));
             }
             assert!(!closure_proc.downcast::<Closure>().is_continuation());
-            assert!(closure_continuation
-                .downcast::<Closure>()
-                .is_continuation());
+            assert!(closure_continuation.downcast::<Closure>().is_continuation());
             assert!(immutable_vector_gc.is_immutable());
             assert!(immutable_string.downcast::<Str>().is_immutable());
             assert!(!symbol.downcast::<Symbol>().is_uninterned());
@@ -793,14 +791,8 @@ mod tests {
             let immutable_vector = Value::from(immutable_vector_gc);
             assert!(mutable_vector.is::<Vector>());
             assert!(immutable_vector.is::<Vector>());
-            assert!(
-                mutable_vector
-                    .is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap())
-            );
-            assert!(
-                immutable_vector
-                    .is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap())
-            );
+            assert!(mutable_vector.is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap()));
+            assert!(immutable_vector.is_class_id(ClassId::new(builtin_class_ids::VECTOR).unwrap()));
             assert!(immutable_vector_gc.is_immutable());
 
             let mutable_bytevector = Value::from(ByteVector::new::<false>(*ctx, 1, true));
@@ -850,17 +842,12 @@ mod tests {
             let closure_continuation = Value::from(Closure::new(ctx, code_block, &[], true));
             assert!(closure_proc.is::<Closure>());
             assert!(closure_continuation.is::<Closure>());
+            assert!(closure_proc.is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap()));
             assert!(
-                closure_proc.is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap())
-            );
-            assert!(
-                closure_continuation
-                    .is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap())
+                closure_continuation.is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap())
             );
             assert!(!closure_proc.downcast::<Closure>().is_continuation());
-            assert!(closure_continuation
-                .downcast::<Closure>()
-                .is_continuation());
+            assert!(closure_continuation.downcast::<Closure>().is_continuation());
 
             let annotation = Value::from(Gc::new_with_header_word(
                 *ctx,

@@ -26,10 +26,10 @@ pub mod class_ops {
         ClassCategory, ClassDescriptor, ClassListError, GenericDescriptor, GenericDispatchError,
         MethodDescriptor, MethodFlags, NextMethodDescriptor, SchemeClassSpecError, SchemeInstance,
         SlotAccessError, SlotAccessorDefinition, SlotDefinitionDescriptor, SlotInitError,
-        builtin_class_specs, call_scheme_slot_bound, call_scheme_slot_ref,
-        call_scheme_slot_set, class_id_list_to_class_objects, class_id_to_class_object,
-        class_root_binding, class_table, generic_descriptor_from_value, generic_procedure,
-        parse_class_list, slot_accessor_list, slot_definition_list, try_scheme_instance,
+        builtin_class_specs, call_scheme_slot_bound, call_scheme_slot_ref, call_scheme_slot_set,
+        class_id_list_to_class_objects, class_id_to_class_object, class_root_binding, class_table,
+        generic_descriptor_from_value, generic_procedure, parse_class_list, slot_accessor_list,
+        slot_definition_list, try_scheme_instance,
     };
     use crate::runtime::value::{Keyword, Symbol};
 

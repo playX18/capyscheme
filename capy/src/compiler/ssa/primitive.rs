@@ -2824,14 +2824,7 @@ fn ensure_vector<'gc, 'a, 'f>(
 
     ssa.builder.func.layout.set_cold(bb_slow);
 
-    ssa.branch_if_heap_class_id(
-        val,
-        builtin_class_ids::VECTOR,
-        bb_vector,
-        &[],
-        bb_slow,
-        &[],
-    );
+    ssa.branch_if_heap_class_id(val, builtin_class_ids::VECTOR, bb_vector, &[], bb_slow, &[]);
     ssa.builder.switch_to_block(bb_vector);
     {
         let length = ssa.builder.ins().load(

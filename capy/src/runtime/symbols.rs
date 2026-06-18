@@ -68,10 +68,7 @@ impl RuntimeData {
     }
 }
 
-fn static_class_header_word_address(
-    cell: &'static AtomicU64,
-    header_word: u64,
-) -> Address {
+fn static_class_header_word_address(cell: &'static AtomicU64, header_word: u64) -> Address {
     publish_static_header_word(cell, header_word)
 }
 

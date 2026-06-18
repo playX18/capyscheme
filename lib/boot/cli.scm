@@ -261,8 +261,17 @@
     (exit 0))
 
   (define (parse-module str)
-    (define parts (string-split str #\space))
-    (map string->symbol parts))
+    (and str
+      (let* ([len (string-length str)]
+             [body
+               (if (and (>= len 2)
+                     (eqv? (string-ref str 0) #\()
+                     (eqv? (string-ref str (- len 1)) #\)))
+                 (substring str 1 (- len 1))
+                 str)]
+             [parts (filter (lambda (part) (> (string-length part) 0))
+                      (string-split body #\space))])
+        (map string->symbol parts))))
 
   (define (run)
     (define res (with-exception-handler
@@ -328,7 +337,7 @@
                   (define out (compile-file
                                file
                                out-file
-                               (or (and module-name (resolve-module module-name #t #t)) #f)
+                               (or (and module-name (resolve-module module-name #f #t)) #f)
                                #f))
                   (when verbose
                     (format #t ";; Compiled ~a -> ~a~%" file out))))))

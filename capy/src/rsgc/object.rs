@@ -388,7 +388,6 @@ pub fn class_header_word_with_private_variant_flag(class_id: ClassId) -> u64 {
     PrivateVariantFlag::update(true, class_header_word(class_id))
 }
 
-
 unsafe impl Trace for ClassId {
     unsafe fn trace(&mut self, visitor: &mut Visitor) {
         let _ = visitor;

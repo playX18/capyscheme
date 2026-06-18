@@ -1,8 +1,6 @@
 use std::{cell::Cell, mem::offset_of, sync::atomic::AtomicUsize};
 
-use crate::rsgc::object::{
-    ClassId, builtin_class_ids, class_header_word,
-};
+use crate::rsgc::object::{ClassId, builtin_class_ids, class_header_word};
 use crate::rsgc::{Gc, Trace, barrier, cell::Lock, sync::monitor::Monitor};
 
 use crate::{

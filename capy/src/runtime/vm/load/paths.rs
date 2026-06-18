@@ -238,6 +238,28 @@ pub(super) fn resolve_load_path<'gc>(
     );
 
     let Some(source_path) = source_path else {
+        if let Some(artifact) = find_compiled_candidate(ctx, filename, None, arch) {
+            let full_path = artifact.path.canonicalize().map_err(|err| {
+                make_io_error(
+                    ctx,
+                    "find-path-to",
+                    Str::new(
+                        *ctx,
+                        format!(
+                            "Failed to canonicalize path {}: {err}",
+                            artifact.path.display()
+                        ),
+                        true,
+                    )
+                    .into(),
+                    &[],
+                )
+            })?;
+            return Ok(Some(ResolvedLoadPath::Artifact {
+                artifact,
+                full_path,
+            }));
+        }
         return Ok(None);
     };
 
@@ -398,33 +420,55 @@ fn freshest_compiled_candidate<'gc>(
         .metadata()
         .ok()
         .and_then(|metadata| metadata.modified().ok())?;
+    find_compiled_candidate(ctx, filename, Some((full_source_path, source_time)), arch)
+}
+
+fn find_compiled_candidate<'gc>(
+    ctx: Context<'gc>,
+    filename: &Path,
+    source: Option<(&Path, SystemTime)>,
+    arch: Option<&str>,
+) -> Option<LoadArtifact> {
     let kind = artifact_kind_for_policy(get_execution_policy());
     let explicit_arch = arch.is_some();
     let arch = target_arch(arch);
+    let mut relative_candidates = Vec::new();
+    for candidate in source_candidates(ctx, filename) {
+        let artifact = candidate.with_extension(artifact_extension(kind));
+        if !relative_candidates.contains(&artifact) {
+            relative_candidates.push(artifact);
+        }
+    }
 
     let mut compiled_path = ctx.globals().loc_load_compiled_path().get();
     while compiled_path.is_pair() {
         let next = compiled_path.cdr();
         let dir = PathBuf::from(compiled_path.car().downcast::<Str>().to_string());
-        let mut candidates = vec![
-            dir.join(arch)
-                .join(filename)
-                .with_extension(artifact_extension(kind)),
-        ];
-        if !explicit_arch {
-            candidates.push(dir.join(filename).with_extension(artifact_extension(kind)));
+        let mut candidates = Vec::new();
+        for relative_candidate in &relative_candidates {
+            candidates.push(dir.join(arch).join(relative_candidate));
+            if !explicit_arch {
+                candidates.push(dir.join(relative_candidate));
+            }
         }
 
         for candidate in candidates {
-            if is_regular_file(&candidate)
-                && let Some(compiled_time) = candidate
+            if !is_regular_file(&candidate) {
+                continue;
+            }
+            if let Some((full_source_path, source_time)) = source {
+                let Some(compiled_time) = candidate
                     .metadata()
                     .ok()
                     .and_then(|metadata| metadata.modified().ok())
-                && compiled_is_fresh(full_source_path, &candidate, source_time, compiled_time)
-            {
-                return Some(LoadArtifact::new(kind, candidate));
+                else {
+                    continue;
+                };
+                if !compiled_is_fresh(full_source_path, &candidate, source_time, compiled_time) {
+                    continue;
+                }
             }
+            return Some(LoadArtifact::new(kind, candidate));
         }
 
         compiled_path = next;
@@ -625,6 +669,10 @@ mod tests {
             ctx.globals()
                 .loc_load_compiled_path()
                 .set(ctx, Value::null());
+            ctx.globals().loc_compile_fallback_path().set(
+                ctx,
+                Str::new(*ctx, temp.path().join("fallback").to_string_lossy(), true).into(),
+            );
 
             let resolved = resolve_load_path(ctx, "target", Some(&vicinity), false, None)
                 .unwrap()
@@ -746,6 +794,50 @@ mod tests {
                         .join(source.strip_prefix("/").unwrap_or(&source))
                         .with_extension(FASL_CODE_EXTENSION)
                 );
+            });
+        });
+    }
+
+    #[test]
+    fn resolves_compiled_artifact_without_source_file() {
+        with_policy(ExecutionPolicy::Aot, || {
+            with_ctx(|ctx| {
+                let temp = TempDir::new();
+                let source_dir = temp.path().join("src");
+                let compiled_dir = temp.path().join("compiled");
+                fs::create_dir_all(&source_dir).unwrap();
+                fs::create_dir_all(compiled_dir.join("lib")).unwrap();
+
+                let compiled = compiled_dir
+                    .join("lib/test")
+                    .with_extension(FASL_CODE_EXTENSION);
+                fs::write(&compiled, b"compiled").unwrap();
+
+                ctx.globals()
+                    .loc_load_extensions()
+                    .set(ctx, scm_list(ctx, &["scm"]));
+                ctx.globals()
+                    .loc_load_path()
+                    .set(ctx, scm_list(ctx, &[source_dir.to_string_lossy().as_ref()]));
+                ctx.globals().loc_load_compiled_path().set(
+                    ctx,
+                    scm_list(ctx, &[compiled_dir.to_string_lossy().as_ref()]),
+                );
+
+                let resolved =
+                    resolve_load_path(ctx, Path::new("lib/test"), None::<&Path>, false, None)
+                        .unwrap()
+                        .unwrap();
+                let ResolvedLoadPath::Artifact {
+                    artifact,
+                    full_path,
+                } = resolved
+                else {
+                    panic!("expected compiled artifact resolution");
+                };
+
+                assert_eq!(artifact.path, compiled);
+                assert_eq!(full_path, compiled.canonicalize().unwrap());
             });
         });
     }
