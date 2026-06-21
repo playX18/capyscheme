@@ -3,8 +3,7 @@
   (import (capy)
     (core control)
     (core repl)
-    (capy args)
-    (capy args argparser))
+    (capy args))
 
   (define (eval-string/value str)
     (call-with-input-string
@@ -89,6 +88,8 @@
           (set! %load-extensions (append (reverse (arg-results-ref res "extensions")) %load-extensions))
           (if (arg-results-ref res "fresh-auto-compile")
             (set! %fresh-auto-compile #t))
+          (if (arg-results-ref res "debug")
+            ((@@ (capy) load-debug-enable!) #t))
           (define out '())
 
           (when (arg-results-ref res "runtime-stats")
@@ -176,55 +177,59 @@
       "runtime-stats"
       (defaults-to #f)
       (help "Enable runtime timing/counter statistics"))
+    (add-flag! parser
+      "debug"
+      (defaults-to #f)
+      (help "Load FASL code through debug stacktrace trampolines"))
     (argparser-add-separator! parser "Garbage collection options:")
     (add-option! parser
       "gc-plan"
-      (defaults-to '("StickyImmix"))
+      (defaults-to "StickyImmix")
       (value-help "PLAN")
       (help "Select the MMTK GC plan (StickyImmix, ConcurrentImmix, MarkSweep, or Immix)"))
     (add-option! parser
       "gc-trigger"
-      (defaults-to '("Delegated"))
+      (defaults-to "Delegated")
       (value-help "TRIGGER")
       (help "Set the MMTK GC trigger policy"))
     (add-option! parser
       "gc-max-heap"
-      (defaults-to '("2G"))
+      (defaults-to "2G")
       (value-help "SIZE")
       (help "Set the maximum heap size"))
     (add-option! parser
       "gc-heuristic"
-      (defaults-to '("adaptive"))
+      (defaults-to "adaptive")
       (value-help "MODE")
       (help "Select the Capy GC heuristic"))
     (add-option! parser
       "gc-min-free-percent"
-      (defaults-to '("10"))
+      (defaults-to "10")
       (value-help "PERCENT")
       (help "Set the minimum free heap threshold"))
     (add-option! parser
       "gc-init-free-percent"
-      (defaults-to '("70"))
+      (defaults-to "70")
       (value-help "PERCENT")
       (help "Set the initial free heap threshold"))
     (add-option! parser
       "gc-allocation-threshold-percent"
-      (defaults-to '("0"))
+      (defaults-to "0")
       (value-help "PERCENT")
       (help "Set the allocation threshold for GC heuristics"))
     (add-option! parser
       "gc-alloc-spike-percent"
-      (defaults-to '("5"))
+      (defaults-to "5")
       (value-help "PERCENT")
       (help "Set the allocation spike threshold for GC heuristics"))
     (add-option! parser
       "gc-learning-steps"
-      (defaults-to '("5"))
+      (defaults-to "5")
       (value-help "STEPS")
       (help "Set the GC heuristic learning window"))
     (add-option! parser
       "gc-guaranteed-interval-ms"
-      (defaults-to '("300000"))
+      (defaults-to "300000")
       (value-help "MILLISECONDS")
       (help "Set the guaranteed GC interval"))
     (argparser-add-separator! parser "Logging options:")
@@ -294,7 +299,7 @@
     (define r6rs-mode (arg-results-ref res "r6rs"))
     (define verbose (arg-results-ref res "verbose"))
     (define runtime-stats (arg-results-ref res "runtime-stats"))
-    (define backtrace (not (arg-results-ref res "nobacktrace")))
+    (define backtrace #t)
     (if (and r7rs-mode r6rs-mode)
       (error "Cannot specify both --r7rs and --r6rs modes"))
     (define source-files (arg-results-rest res))
@@ -306,6 +311,9 @@
 
     (when runtime-stats
       ((@@ (capy) runtime-stats-enable!) #t))
+    (when (arg-results-ref res "nobacktrace")
+      (format (current-error-port)
+        "warning: --nobacktrace is deprecated; debug is controlled when FASL is loaded~%"))
 
     (define module-name (or (parse-module (arg-results-ref res "module"))
                          '(capy user)))
@@ -352,7 +360,7 @@
 
   (add-flag! parser
     "nobacktrace"
-    (help "Disable backtrace code generation; Greatly speeds up runtime"))
+    (help "Deprecated compatibility flag; debug is controlled when FASL is loaded"))
 
   (add-flag! parser
     "r7rs"

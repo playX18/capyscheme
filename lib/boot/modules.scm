@@ -83,15 +83,67 @@
       (core-hash-clear! (module-import-obarray module)))))
 
 (define (module-use-interfaces! module interfaces)
+  (define (interface-variable interfaces sym)
+    (let loop ([rest interfaces])
+      (cond
+        [(null? rest) #f]
+        [(module-variable (car rest) sym)]
+        [else (loop (cdr rest))])))
+
+  (define (explicit-interfaces interfaces)
+    (let loop ([rest interfaces] [out '()])
+      (cond
+        [(null? rest) (reverse out)]
+        [(eq? (car rest) the-scm-module) (loop (cdr rest) out)]
+        [else (loop (cdr rest) (cons (car rest) out))])))
+
+  (define (interface-without-duplicate-imports iface prior)
+    (let ([filtered #f]
+          [changed? #f]
+          [empty? #t])
+      (define (ensure-filtered!)
+        (or filtered
+          (let ([custom (make-module)])
+            (set-module-name! custom (module-name iface))
+            (set-module-kind! custom 'custom-interface)
+            (set! filtered custom)
+            custom)))
+      (module-for-each
+        (lambda (sym var)
+          (let ([existing (interface-variable prior sym)])
+            (cond
+              [(not existing)
+                (set! empty? #f)
+                (module-add! (ensure-filtered!) sym var)]
+              [(eq? existing var)
+                (set! changed? #t)]
+              [else
+                (set! empty? #f)
+                (module-add! (ensure-filtered!) sym var)])))
+        iface)
+      (cond
+        [empty? #f]
+        [changed? filtered]
+        [else iface])))
+
   (let* ([cur (module-uses module)]
-         [new (let loop ([in interfaces] [out '()])
+         [explicit-cur (explicit-interfaces cur)]
+         [new (let loop ([in interfaces]
+                         [accepted cur]
+                         [accepted-explicit explicit-cur]
+                         [out '()])
                (if (null? in)
                  (reverse out)
-                 (loop (cdr in)
-                   (let ([iface (car in)])
-                     (if (or (memq iface cur) (memq iface out))
-                       out
-                       (cons iface out))))))])
+                 (let ([iface (car in)])
+                   (if (or (memq iface accepted) (memq iface out))
+                     (loop (cdr in) accepted accepted-explicit out)
+                     (let ([iface* (interface-without-duplicate-imports iface accepted-explicit)])
+                       (if iface*
+                         (loop (cdr in)
+                               (cons iface* accepted)
+                               (cons iface* accepted-explicit)
+                               (cons iface* out))
+                         (loop (cdr in) accepted accepted-explicit out)))))))])
 
     (set-module-uses! module (append new cur))
     (core-hash-clear! (module-import-obarray module))))

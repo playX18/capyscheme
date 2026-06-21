@@ -1,6 +1,6 @@
 use super::{
     FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF,
-    FASL_TAG_UNLINKED_CODEBLOCK, FaslReader,
+    FASL_TAG_UNLINKED_CODEBLOCK, FaslLoadOptions, FaslReader,
 };
 
 #[test]
@@ -73,7 +73,7 @@ fn fasl_reader_rejects_old_fasl_version() {
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(super::FASL_MAGIC);
-        bytes.extend_from_slice(&(super::FASL_VERSION - 1).to_le_bytes());
+        bytes.extend_from_slice(&(super::MIN_SUPPORTED_FASL_VERSION - 1).to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
 
         let err = FaslReader::new(ctx, std::io::Cursor::new(bytes))
@@ -124,6 +124,12 @@ fn fasl_relocation_records_roundtrip_all_current_target_families() {
             offset: 32,
             kind: RelocKind::CodeEntry,
             target: RelocTarget::Entry(5),
+            addend: 0,
+        },
+        Relocation {
+            offset: 34,
+            kind: RelocKind::CodeEntry,
+            target: RelocTarget::DebugEntry(6),
             addend: 0,
         },
         Relocation {
@@ -351,6 +357,50 @@ fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
         assert_eq!(closure.code, code_block.entrypoint);
         assert!(matches!(code_block.kind, CodeBlockKind::Loaded));
         assert_eq!(code_block.arity.fixed_arity(), 0);
+    });
+}
+
+#[test]
+fn fasl_reader_debug_load_uses_trampoline_without_rewriting_artifact() {
+    use super::{CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec, ProgramSpec};
+    use crate::runtime::{
+        Scheme,
+        value::{Closure, Value},
+        vm::trampolines::get_debug_trampoline_from_scheme,
+    };
+
+    let scm = Scheme::new_uninit();
+    scm.enter(|ctx| {
+        let mut bytes = Vec::new();
+        let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]);
+        let code_blocks = [GraphCodeSpec::new(0, code)];
+        let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
+        FaslWriter::new(ctx, &mut bytes)
+            .write_image(FaslImage::Program(&program), FaslCompression::None)
+            .expect("write unified FASL closure");
+        let original = bytes.clone();
+
+        let normal = FaslReader::new(ctx, std::io::Cursor::new(bytes.clone()))
+            .read()
+            .expect("load normal FASL closure")
+            .downcast::<Closure>();
+        let debug = FaslReader::new_with_options(
+            ctx,
+            std::io::Cursor::new(bytes.clone()),
+            FaslLoadOptions::DEBUG,
+        )
+        .read()
+        .expect("load debug FASL closure")
+        .downcast::<Closure>();
+
+        assert_eq!(bytes, original);
+        assert_eq!(normal.code, normal.code_block.entrypoint);
+        assert_eq!(normal.code_block.unlinked.code(), [0xc3]);
+
+        let debug_trampoline = get_debug_trampoline_from_scheme();
+        assert_eq!(debug.code, debug_trampoline);
+        assert_ne!(debug.code_block.entrypoint, debug_trampoline);
+        assert_eq!(debug.code_block.unlinked.code(), [0xc3]);
     });
 }
 
@@ -934,6 +984,88 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
 // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe { std::ptr::read_unaligned((source.entrypoint.as_usize() + 1) as *const usize) };
         assert_eq!(patched, target.entrypoint.as_usize());
+    });
+}
+
+#[test]
+fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
+    use super::{
+        FASL_TAG_CODE_BLOCK, FASL_TAG_F, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_VECTOR,
+        reloc::{RelocKind, RelocTarget, Relocation},
+    };
+    use crate::runtime::{
+        Scheme,
+        value::{CodeBlock, Vector},
+        vm::trampolines::get_debug_trampoline_from_scheme,
+    };
+
+    let scm = Scheme::new_uninit();
+    scm.enter(|ctx| {
+        let mut bytes = Vec::new();
+        let payload_start = put_fasl_header(&mut bytes);
+        bytes.push(FASL_TAG_GRAPH);
+        put_u32(&mut bytes, 2);
+        put_u32(&mut bytes, 0);
+        bytes.push(FASL_TAG_VECTOR);
+        put_u32(&mut bytes, 2);
+        bytes.push(FASL_TAG_GRAPH_DEF);
+        put_u32(&mut bytes, 0);
+        bytes.push(FASL_TAG_CODE_BLOCK);
+        put_u32(&mut bytes, 9);
+        bytes.push(0xc3);
+        bytes.extend_from_slice(&0usize.to_le_bytes());
+        put_u32(&mut bytes, 0);
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.push(0);
+        bytes.push(FASL_TAG_F);
+        put_u32(&mut bytes, 1);
+        Relocation {
+            offset: 1,
+            kind: RelocKind::CodeEntry,
+            target: RelocTarget::DebugEntry(1),
+            addend: 0,
+        }
+        .encode(&mut bytes)
+        .expect("encode debug-entry relocation");
+        bytes.push(FASL_TAG_GRAPH_DEF);
+        put_u32(&mut bytes, 1);
+        bytes.push(FASL_TAG_CODE_BLOCK);
+        put_u32(&mut bytes, 1);
+        bytes.push(0xc3);
+        put_u32(&mut bytes, 0);
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.push(0);
+        bytes.push(FASL_TAG_F);
+        put_u32(&mut bytes, 0);
+        finish_fasl_image(&mut bytes, payload_start);
+
+        let normal = FaslReader::new(ctx, std::io::Cursor::new(bytes.clone()))
+            .read()
+            .expect("load normal debug-entry relocation")
+            .downcast::<Vector>();
+        let normal_source = normal[0].get().downcast::<CodeBlock>();
+        let normal_target = normal[1].get().downcast::<CodeBlock>();
+        let normal_patched =
+            // SAFETY: The target pointer is valid, aligned, and points to initialized memory
+            unsafe {
+                std::ptr::read_unaligned((normal_source.entrypoint.as_usize() + 1) as *const usize)
+            };
+        assert_eq!(normal_patched, normal_target.entrypoint.as_usize());
+
+        let debug =
+            FaslReader::new_with_options(ctx, std::io::Cursor::new(bytes), FaslLoadOptions::DEBUG)
+                .read()
+                .expect("load debug debug-entry relocation")
+                .downcast::<Vector>();
+        let debug_source = debug[0].get().downcast::<CodeBlock>();
+        let debug_target = debug[1].get().downcast::<CodeBlock>();
+        let debug_patched =
+            // SAFETY: The target pointer is valid, aligned, and points to initialized memory
+            unsafe {
+                std::ptr::read_unaligned((debug_source.entrypoint.as_usize() + 1) as *const usize)
+            };
+        assert_eq!(debug_patched, get_debug_trampoline_from_scheme().as_usize());
+        assert_ne!(debug_patched, debug_target.entrypoint.as_usize());
     });
 }
 

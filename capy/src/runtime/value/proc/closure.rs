@@ -88,7 +88,17 @@ impl<'gc> Closure<'gc> {
         free: &[Value<'gc>],
         is_cont: bool,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code_block, free, is_cont, false)
+        Self::new_with_entry(ctx, code_block, free, is_cont, code_block.entrypoint)
+    }
+
+    pub fn new_with_entry(
+        ctx: Context<'gc>,
+        code_block: Gc<'gc, CodeBlock<'gc>>,
+        free: &[Value<'gc>],
+        is_cont: bool,
+        entry: Address,
+    ) -> Gc<'gc, Self> {
+        Self::new_inner(ctx, code_block, free, is_cont, false, entry)
     }
 
     pub fn new_native(
@@ -97,7 +107,7 @@ impl<'gc> Closure<'gc> {
         free: &[Value<'gc>],
         is_cont: bool,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code_block, free, is_cont, true)
+        Self::new_inner(ctx, code_block, free, is_cont, true, code_block.entrypoint)
     }
 
     fn new_inner(
@@ -106,6 +116,7 @@ impl<'gc> Closure<'gc> {
         free: &[Value<'gc>],
         is_cont: bool,
         _is_native: bool,
+        entry: Address,
     ) -> Gc<'gc, Self> {
         let meta = code_block.metadata.get();
 
@@ -132,7 +143,7 @@ impl<'gc> Closure<'gc> {
                 AllocationSemantics::Default,
             );
             let this = ptr.to_address().as_mut_ref::<Self>();
-            this.code = code_block.entrypoint;
+            this.code = entry;
             this.code_block = code_block;
 
             this.meta = Lock::new(meta);

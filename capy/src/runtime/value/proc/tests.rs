@@ -44,6 +44,30 @@ fn closure_inherits_metadata_from_code_block() {
 }
 
 #[test]
+fn closure_can_use_explicit_entry_without_changing_code_block() {
+    with_ctx(|ctx| {
+        let metadata = Value::cons(ctx, ctx.intern("name"), ctx.str("closure-a"));
+        let code_block = CodeBlock::new_aot(
+            ctx,
+            Address::from_ptr(test_native_proc as *const ()),
+            CodeArity::new(0),
+            false,
+            metadata,
+        );
+        let custom_entry = code_block.entrypoint + 1usize;
+        let closure = Closure::new_with_entry(ctx, code_block, &[], false, custom_entry);
+
+        assert_eq!(closure.code, custom_entry);
+        assert_eq!(
+            code_block.entrypoint,
+            Address::from_ptr(test_native_proc as *const ())
+        );
+        assert!(Gc::ptr_eq(closure.code_block, code_block));
+        assert_eq!(closure.meta.get(), code_block.metadata.get());
+    });
+}
+
+#[test]
 fn mutating_closure_metadata_does_not_mutate_code_block_default() {
     with_ctx(|ctx| {
         let metadata = Value::cons(ctx, ctx.intern("name"), ctx.str("prototype"));

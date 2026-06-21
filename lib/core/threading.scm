@@ -27,6 +27,8 @@
     (rename (core primitives)
       (fork-thread %fork-thread)
       (%thread-interrupt! %native-thread-interrupt!)
+      (mutex? %native-mutex?)
+      (thread-condition? %native-thread-condition?)
       (thread? %native-thread?)
       (current-thread %native-current-thread))
     (core conditions)
@@ -61,6 +63,12 @@
 
   (define (current-thread)
     (%current-thread))
+
+  (define (mutex? obj)
+    (%native-mutex? obj))
+
+  (define (thread-condition? obj)
+    (%native-thread-condition? obj))
 
   (define (call-with-new-thread thunk)
     (define cv (make-condition))

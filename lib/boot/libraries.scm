@@ -1380,6 +1380,7 @@
     log:set-logger
     *simple-logger*
 
+    load-debug-enable!
     shadow-stack
     resolve-address-name
 
@@ -1406,6 +1407,7 @@
     condition-broadcast
 
     make-mutex
+    mutex?
     mutex-reentrant?
     mutex-acquire
     mutex-release

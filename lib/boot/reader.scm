@@ -533,7 +533,8 @@
                               ((true) ;r2rs
                                 (assert-mode p "#!true" '(rnrs r2rs capy)))
                               ((nobacktrace)
-                                (reader-nobacktrace-set! p #t))
+                                (format (current-error-port)
+                                  "warning: #!nobacktrace is deprecated; debug is controlled when FASL is loaded~%"))
 
                               (else
                                 (reader-warning p "Invalid directive" type id)))

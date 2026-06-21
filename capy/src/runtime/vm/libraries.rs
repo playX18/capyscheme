@@ -7,7 +7,10 @@ use crate::runtime::{
     Context,
     fasl::FaslReader,
     value::Value,
-    vm::load::artifact::{LoadArtifact, LoadArtifactKind},
+    vm::load::{
+        artifact::{LoadArtifact, LoadArtifactKind},
+        policy::get_fasl_load_options,
+    },
 };
 
 pub enum Library<'gc> {
@@ -46,7 +49,9 @@ impl<'gc> Library<'gc> {
             )),
             LoadArtifactKind::FaslCode => {
                 let bytes = fs::read(&artifact.path)?;
-                let value = FaslReader::new(ctx, Cursor::new(bytes)).read()?;
+                let value =
+                    FaslReader::new_with_options(ctx, Cursor::new(bytes), get_fasl_load_options())
+                        .read()?;
                 let entrypoint = if initialize { value } else { Value::new(false) };
                 Ok((Self::Fasl(value), entrypoint))
             }
@@ -121,6 +126,7 @@ mod tests {
         Scheme,
         fasl::{CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec, ProgramSpec},
         value::{Closure, Value},
+        vm::{load::policy::set_fasl_debug_entries, trampolines::get_debug_trampoline_from_scheme},
     };
     use std::sync::Mutex;
 
@@ -162,6 +168,51 @@ mod tests {
                 assert!(value.is::<Closure>());
             });
             assert_eq!(loaded_count, 1);
+        });
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn library_collection_honors_fasl_debug_load_mode() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let scm = Scheme::new_uninit();
+        scm.enter(|ctx| {
+            set_fasl_debug_entries(false);
+            let mut bytes = Vec::new();
+            let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]);
+            let code_blocks = [GraphCodeSpec::new(0, code)];
+            let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
+            FaslWriter::new(ctx, &mut bytes)
+                .write_image(FaslImage::Program(&program), FaslCompression::None)
+                .expect("write unified FASL");
+            let path = std::env::temp_dir()
+                .join(format!("capy-test-debug-fasl-{}.fasl", std::process::id()));
+            fs::write(&path, bytes).expect("write unified FASL artifact");
+            let artifact = LoadArtifact::new(LoadArtifactKind::FaslCode, &path);
+
+            let normal_libs = LibraryCollection::new();
+            let normal = normal_libs
+                .load(&artifact, ctx)
+                .expect("load normal FASL artifact")
+                .downcast::<Closure>();
+            assert_eq!(normal.code, normal.code_block.entrypoint);
+
+            set_fasl_debug_entries(true);
+            let debug_libs = LibraryCollection::new();
+            let debug = debug_libs
+                .load(&artifact, ctx)
+                .expect("load debug FASL artifact")
+                .downcast::<Closure>();
+            set_fasl_debug_entries(false);
+            fs::remove_file(&path).expect("remove unified FASL artifact");
+
+            assert_eq!(debug.code, get_debug_trampoline_from_scheme());
+            assert_eq!(
+                debug.code_block.unlinked.code(),
+                normal.code_block.unlinked.code()
+            );
         });
     }
 }

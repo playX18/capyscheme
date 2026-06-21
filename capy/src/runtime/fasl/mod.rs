@@ -18,7 +18,7 @@ pub mod reader;
 pub mod reloc;
 pub mod writer;
 
-pub use reader::FaslReader;
+pub use reader::{FaslLoadOptions, FaslReader};
 pub use writer::{FaslCompression, FaslImage, FaslWriter};
 
 pub const FASL_EOF: u8 = 0;
@@ -73,7 +73,8 @@ pub const FASL_TAG_REF_INIT: u8 = 0xFE;
 /// FASL file magic bytes.
 pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
 /// Current FASL file format version.
-pub const FASL_VERSION: u32 = 4;
+pub const FASL_VERSION: u32 = 5;
+pub const MIN_SUPPORTED_FASL_VERSION: u32 = 4;
 
 pub struct CodeSpec<'a, 'gc> {
     pub bytes: &'a [u8],
