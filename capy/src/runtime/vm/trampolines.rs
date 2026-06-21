@@ -32,7 +32,7 @@ use crate::{
     call_signature,
     runtime::{
         COMPILED_ENTRY_ARG_COUNT, REGISTER_ARG_COUNT, State,
-        value::{Closure, NativeProc, Value},
+        value::{Closure, CodeBlock, NativeProc, Value},
     },
 };
 
@@ -44,10 +44,12 @@ pub struct Trampolines {
     enter_scheme_trampoline: CodeAllocation,
     native_trampoline: CodeAllocation,
     native_continuation_trampoline: CodeAllocation,
+    debug_scheme_trampoline: CodeAllocation,
 
     pub enter_scheme_size: usize,
     pub native_trampoline_size: usize,
     pub native_continuation_trampoline_size: usize,
+    pub debug_scheme_trampoline_size: usize,
 }
 
 fn compiled_tail_signature() -> ir::Signature {
@@ -555,6 +557,117 @@ fn scheme_native_continuation_code(fctx: &mut FunctionBuilderContext, ctx: &mut 
     }
 }
 
+fn debug_scheme_trampoline_code(fctx: &mut FunctionBuilderContext, ctx: &mut Context) {
+    let mut builder = FunctionBuilder::new(&mut ctx.func, fctx);
+
+    let entry = builder.create_block();
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+
+    let rator = builder.block_params(entry)[0];
+    let argc = builder.block_params(entry)[1];
+    let arg0 = builder.block_params(entry)[2];
+    let arg1 = builder.block_params(entry)[3];
+    let arg2 = builder.block_params(entry)[4];
+    let arg3 = builder.block_params(entry)[5];
+
+    let ctx = builder.ins().get_pinned_reg(types::I64);
+    let state = builder
+        .ins()
+        .iadd_imm(ctx, crate::runtime::thread::Context::OFFSET_OF_STATE as i64);
+    let overflow = overflow_base(&mut builder, state, argc);
+
+    let code_block = builder.ins().load(
+        types::I64,
+        MemFlags::new(),
+        rator,
+        offset_of!(Closure, code_block) as i32,
+    );
+    let real_code = builder.ins().load(
+        types::I64,
+        MemFlags::new(),
+        code_block,
+        offset_of!(CodeBlock, entrypoint) as i32,
+    );
+    let flags = builder.ins().load(
+        types::I32,
+        MemFlags::new(),
+        code_block,
+        offset_of!(CodeBlock, flags) as i32,
+    );
+    let continuation_flag = builder.ins().band_imm(flags, 1);
+    let is_continuation =
+        builder
+            .ins()
+            .icmp_imm(ir::condcodes::IntCC::NotEqual, continuation_flag, 0);
+    let has_retk = builder
+        .ins()
+        .icmp_imm(ir::condcodes::IntCC::UnsignedGreaterThan, argc, 0);
+
+    let check_continuation = builder.create_block();
+    let push_frame = builder.create_block();
+    let call_real = builder.create_block();
+    builder.append_block_param(call_real, types::I64);
+
+    builder.ins().brif(
+        has_retk,
+        check_continuation,
+        &[],
+        call_real,
+        &[ir::BlockArg::Value(arg0)],
+    );
+
+    builder.switch_to_block(check_continuation);
+    builder.ins().brif(
+        is_continuation,
+        call_real,
+        &[ir::BlockArg::Value(arg0)],
+        push_frame,
+        &[],
+    );
+
+    builder.switch_to_block(push_frame);
+    let sig = call_signature!(SystemV(
+        I64, /* ctx */
+        I64, /* rator */
+        I64, /* argc */
+        I64, /* arg0 */
+        I64, /* arg1 */
+        I64, /* arg2 */
+        I64, /* arg3 */
+        I64  /* overflow */
+    ) -> I64);
+    let sigref = builder.import_signature(sig);
+    let helper = builder.ins().iconst(
+        types::I64,
+        RuntimeThunk::Thunk_push_debug_dframe_regs
+            .address()
+            .as_usize() as i64,
+    );
+    let call = builder.ins().call_indirect(
+        sigref,
+        helper,
+        &[ctx, rator, argc, arg0, arg1, arg2, arg3, overflow],
+    );
+    let new_arg0 = builder.inst_results(call)[0];
+    builder
+        .ins()
+        .jump(call_real, &[ir::BlockArg::Value(new_arg0)]);
+
+    builder.switch_to_block(call_real);
+    let new_arg0 = builder.block_params(call_real)[0];
+    let sig_call = compiled_tail_signature();
+    let sig_call = builder.import_signature(sig_call);
+    builder.ins().return_call_indirect(
+        sig_call,
+        real_code,
+        &[rator, argc, new_arg0, arg1, arg2, arg3],
+    );
+
+    builder.seal_all_blocks();
+    builder.finalize();
+}
+
 impl Trampolines {
     pub fn new() -> Self {
         let isa = host_isa();
@@ -581,14 +694,23 @@ impl Trampolines {
             compiled_tail_signature(),
             scheme_native_continuation_code,
         );
+        let debug_scheme_trampoline = compile_trampoline(
+            &mut memory,
+            &*isa,
+            3,
+            compiled_tail_signature(),
+            debug_scheme_trampoline_code,
+        );
 
         Self {
             enter_scheme_size: enter_scheme_trampoline.size,
             native_trampoline_size: native_trampoline.size,
             native_continuation_trampoline_size: native_continuation_trampoline.size,
+            debug_scheme_trampoline_size: debug_scheme_trampoline.size,
             enter_scheme_trampoline,
             native_trampoline,
             native_continuation_trampoline,
+            debug_scheme_trampoline,
             _memory: Mutex::new(memory),
         }
     }
@@ -817,6 +939,10 @@ pub fn get_cont_trampoline_from_scheme() -> Address {
     TRAMPOLINES.native_continuation_trampoline.entrypoint
 }
 
+pub fn get_debug_trampoline_from_scheme() -> Address {
+    TRAMPOLINES.debug_scheme_trampoline.entrypoint
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -855,5 +981,15 @@ mod tests {
 // SAFETY: Source and destination types have compatible layouts and sizes
             unsafe { std::mem::transmute(loaded.entrypoint.as_usize()) };
         assert_eq!(f(), RuntimeData::PairHeaderWord.address().as_usize());
+    }
+
+    #[test]
+    fn debug_trampoline_from_scheme_is_distinct_executable_entry() {
+        let debug = get_debug_trampoline_from_scheme();
+
+        assert!(!debug.is_zero());
+        assert_ne!(debug, get_trampoline_from_scheme());
+        assert_ne!(debug, get_cont_trampoline_from_scheme());
+        assert_ne!(debug, get_trampoline_into_scheme());
     }
 }

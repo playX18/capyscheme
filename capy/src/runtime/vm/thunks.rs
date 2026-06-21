@@ -9,6 +9,7 @@ use crate::prelude::PROCEDURES;
 use crate::runtime::vm::exceptions::{
     make_raise_condition, make_undefined_violation as undefined_violation,
 };
+use crate::runtime::vm::load::policy::get_fasl_load_options;
 use crate::runtime::vm::{default_exception_handler, default_retk as vm_default_retk};
 use crate::runtime::{
     class::{GenericDescriptor, GenericDispatchError},
@@ -807,7 +808,7 @@ thunks! {
 // SAFETY: Pointer is valid for the given element count
         let data = unsafe { std::slice::from_raw_parts(data, size) };
 
-        let fasl = FaslReader::new(ctx, data);
+        let fasl = FaslReader::new_with_options(ctx, data, get_fasl_load_options());
 
 
 
@@ -4108,6 +4109,56 @@ thunks! {
             key.into(),
             info.into(),
             retk.downcast::<Closure>(),
+        )
+    }
+
+    pub fn push_debug_dframe_regs(
+        ctx: Context<'gc>,
+        rator: Value<'gc>,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>
+    ) -> Value<'gc> {
+        if argc == 0 || !rator.is::<Closure>() || !arg0.is::<Closure>() {
+            return arg0;
+        }
+
+        let args = RegisterArgs {
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            overflow,
+        };
+        let rator_closure = rator.downcast::<Closure>();
+        if rator_closure.is_continuation() {
+            return arg0;
+        }
+
+        let call_args = (1..argc).rev().fold(Value::null(), |acc, index| {
+            let arg = args.get(index);
+            Value::cons(ctx, arg, acc)
+        });
+
+        let meta = rator_closure.meta.get();
+        let src = if meta.is_pair() {
+            meta.assq(Symbol::from_str(ctx, "source").into())
+                .map(|source| source.cdr())
+                .unwrap_or(Value::new(false))
+        } else {
+            Value::new(false)
+        };
+        let info = Vector::from_slice(*ctx, &[src, rator, call_args]);
+        let key = crate::runtime::vm::debug::sym_stacktrace_key(ctx);
+
+        crate::runtime::vm::control::push_cframe(
+            ctx,
+            key.into(),
+            info.into(),
+            arg0.downcast::<Closure>(),
         )
     }
 

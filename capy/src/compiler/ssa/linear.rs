@@ -517,6 +517,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     pub(crate) fn make_closure(
         &mut self,
         code_block: ir::Value,
+        entrypoint: ir::Value,
         free_count: usize,
         is_cont: bool,
     ) -> ir::Value {
@@ -528,12 +529,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let size = size_of::<Closure>() + free_count * size_of::<Value>();
         let closure = self.alloc_with_header_word_preset(preset, size, None);
 
-        let entrypoint = self.builder.ins().load(
-            types::I64,
-            ir::MemFlags::trusted().with_can_move(),
-            code_block,
-            offset_of!(CodeBlock, entrypoint) as i32,
-        );
         let metadata = self.builder.ins().load(
             types::I64,
             ir::MemFlags::trusted().with_can_move(),
@@ -1058,6 +1053,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
+    fn code_function_symbol(&self, code: CodeId<'gc>) -> FunctionSymbol {
+        match code {
+            CodeId::Function(func) => self.module_builder.func_for_func[&func],
+            CodeId::Continuation(cont) => self.module_builder.func_for_cont[&cont],
+        }
+    }
+
     fn linear_instruction(&mut self, instruction: &Instruction<'gc>) {
         match instruction {
             Instruction::Const { dst, value } => {
@@ -1071,8 +1073,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 free_count,
             } => {
                 let code_block = self.load_data_value(self.code_block_data(*code));
+                let entrypoint = self.load_function_entrypoint(self.code_function_symbol(*code));
                 let clos = self.make_closure(
                     code_block,
+                    entrypoint,
                     *free_count,
                     matches!(kind, ClosureKind::Continuation),
                 );

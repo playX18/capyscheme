@@ -75,11 +75,17 @@ fn declare_direct_data(next_data_symbol: &mut u32, _name: &str) -> DataSymbol {
 fn fasl_relocation_from_direct_relocation(
     relocation: &DirectRelocation,
     data_slot_targets: &HashMap<u32, RelocTarget>,
+    debug_entry_functions: &HashSet<u32>,
 ) -> Result<Relocation, String> {
     let (target, abs8_kind) = match relocation.target {
-        DirectTarget::Symbol(Symbol::Function(symbol)) => {
-            (RelocTarget::Entry(symbol.index()), RelocKind::CodeEntry)
-        }
+        DirectTarget::Symbol(Symbol::Function(symbol)) => (
+            if debug_entry_functions.contains(&symbol.index()) {
+                RelocTarget::DebugEntry(symbol.index())
+            } else {
+                RelocTarget::Entry(symbol.index())
+            },
+            RelocKind::CodeEntry,
+        ),
         DirectTarget::Symbol(Symbol::Data { kind, symbol }) => {
             if kind == DataKind::RuntimeData {
                 (
@@ -434,6 +440,10 @@ impl<'gc> ModuleBuilder<'gc> {
 
     pub fn compile_loaded_fasl_bytes(&mut self) -> Result<Vec<u8>, String> {
         let declared_procedures = self.declare_procedures();
+        let debug_entry_function_ids = declared_procedures
+            .iter()
+            .map(|declared| declared.function.index())
+            .collect::<HashSet<_>>();
         let isa = host_isa();
         let mut cache = CompileContext::new();
         let mut functions = Vec::with_capacity(declared_procedures.len());
@@ -582,7 +592,14 @@ impl<'gc> ModuleBuilder<'gc> {
                     let code_id = slot
                         .pointer_code
                         .ok_or_else(|| "pointer data slot requires a code target".to_string())?;
-                    data_slot_targets.insert(slot_id, RelocTarget::Entry(code_id));
+                    data_slot_targets.insert(
+                        slot_id,
+                        if debug_entry_function_ids.contains(&code_id) {
+                            RelocTarget::DebugEntry(code_id)
+                        } else {
+                            RelocTarget::Entry(code_id)
+                        },
+                    );
                 }
                 DataKind::SideMetadata => {
                     let kind = slot.side_metadata.ok_or_else(|| {
@@ -606,7 +623,11 @@ impl<'gc> ModuleBuilder<'gc> {
                     .relocs
                     .iter()
                     .map(|relocation| {
-                        fasl_relocation_from_direct_relocation(relocation, &data_slot_targets)
+                        fasl_relocation_from_direct_relocation(
+                            relocation,
+                            &data_slot_targets,
+                            &debug_entry_function_ids,
+                        )
                     })
                     .collect::<Result<Vec<_>, _>>()?,
             );
@@ -1585,8 +1606,12 @@ mod tests {
             };
 
             assert_eq!(
-                fasl_relocation_from_direct_relocation(&relocation, &HashMap::new())
-                    .expect("convert non-x86 relocation"),
+                fasl_relocation_from_direct_relocation(
+                    &relocation,
+                    &HashMap::new(),
+                    &HashSet::new(),
+                )
+                .expect("convert non-x86 relocation"),
                 Relocation {
                     offset: 4,
                     kind: RelocKind::Cranelift(kind),
@@ -1595,6 +1620,34 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn fasl_relocation_conversion_marks_debug_entry_function_targets() {
+        use cranelift_codegen::binemit::Reloc;
+
+        let relocation = DirectRelocation {
+            offset: 4,
+            kind: Reloc::X86CallPCRel4,
+            addend: -4,
+            target: DirectTarget::Symbol(CodeSymbol::function(FunctionSymbol::new(7))),
+        };
+        let debug_entry_functions = HashSet::from([7]);
+
+        assert_eq!(
+            fasl_relocation_from_direct_relocation(
+                &relocation,
+                &HashMap::new(),
+                &debug_entry_functions,
+            )
+            .expect("convert debug entry relocation"),
+            Relocation {
+                offset: 4,
+                kind: RelocKind::Cranelift(Reloc::X86CallPCRel4),
+                target: RelocTarget::DebugEntry(7),
+                addend: -4,
+            }
+        );
     }
 
     #[test]
@@ -1615,8 +1668,12 @@ mod tests {
         };
 
         assert_eq!(
-            fasl_relocation_from_direct_relocation(&relocation, &data_slot_targets)
-                .expect("convert data-slot relocation"),
+            fasl_relocation_from_direct_relocation(
+                &relocation,
+                &data_slot_targets,
+                &HashSet::new(),
+            )
+            .expect("convert data-slot relocation"),
             Relocation {
                 offset: 4,
                 kind: RelocKind::CraneliftDataSlot(Reloc::Aarch64AdrPrelPgHi21),
@@ -1641,8 +1698,12 @@ mod tests {
         };
 
         assert_eq!(
-            fasl_relocation_from_direct_relocation(&relocation, &data_slot_targets)
-                .expect("convert cache-cell relocation"),
+            fasl_relocation_from_direct_relocation(
+                &relocation,
+                &data_slot_targets,
+                &HashSet::new(),
+            )
+            .expect("convert cache-cell relocation"),
             Relocation {
                 offset: 4,
                 kind: RelocKind::CraneliftDataSlot(Reloc::X86PCRel4),

@@ -101,6 +101,7 @@ pub enum RelocKind {
 pub enum RelocTarget {
     Object(u32),
     Entry(u32),
+    DebugEntry(u32),
     CacheCell(u32),
     RuntimeSymbol(u32),
     SideMetadata(SideMetadataSlot),
@@ -117,6 +118,7 @@ const UNLINKED_TARGET_ENTRY: u8 = 1;
 const UNLINKED_TARGET_RUNTIME_SYMBOL: u8 = 2;
 const UNLINKED_TARGET_SIDE_METADATA: u8 = 3;
 const UNLINKED_TARGET_CACHE_CELL: u8 = 4;
+const UNLINKED_TARGET_DEBUG_ENTRY: u8 = 5;
 
 impl Relocation {
     pub fn new(offset: u32, kind: RelocKind, target: RelocTarget, addend: i64) -> Self {
@@ -171,6 +173,7 @@ pub(crate) fn encode_unlinked_relocations(
             let (target_tag, target_payload) = match relocation.target {
                 RelocTarget::Object(index) => (UNLINKED_TARGET_OBJECT, index),
                 RelocTarget::Entry(index) => (UNLINKED_TARGET_ENTRY, index),
+                RelocTarget::DebugEntry(index) => (UNLINKED_TARGET_DEBUG_ENTRY, index),
                 RelocTarget::CacheCell(index) => (UNLINKED_TARGET_CACHE_CELL, index),
                 RelocTarget::RuntimeSymbol(symbol) => (UNLINKED_TARGET_RUNTIME_SYMBOL, symbol),
                 RelocTarget::SideMetadata(kind) => {
@@ -216,6 +219,7 @@ pub(crate) fn decode_unlinked_relocations(
             let target = match relocation.target_tag {
                 UNLINKED_TARGET_OBJECT => RelocTarget::Object(relocation.target_payload),
                 UNLINKED_TARGET_ENTRY => RelocTarget::Entry(relocation.target_payload),
+                UNLINKED_TARGET_DEBUG_ENTRY => RelocTarget::DebugEntry(relocation.target_payload),
                 UNLINKED_TARGET_CACHE_CELL => RelocTarget::CacheCell(relocation.target_payload),
                 UNLINKED_TARGET_RUNTIME_SYMBOL => {
                     RelocTarget::RuntimeSymbol(relocation.target_payload)
@@ -304,6 +308,10 @@ impl RelocTarget {
                 write_u8(out, 1)?;
                 write_u32(out, index)
             }
+            Self::DebugEntry(index) => {
+                write_u8(out, 5)?;
+                write_u32(out, index)
+            }
             Self::CacheCell(index) => {
                 write_u8(out, 4)?;
                 write_u32(out, index)
@@ -328,6 +336,7 @@ impl RelocTarget {
                 input,
             )?)?)),
             4 => Ok(Self::CacheCell(read_u32(input)?)),
+            5 => Ok(Self::DebugEntry(read_u32(input)?)),
             _ => Err(invalid_data("invalid FASL relocation target")),
         }
     }

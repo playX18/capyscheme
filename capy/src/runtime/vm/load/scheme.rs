@@ -23,6 +23,7 @@ use super::{
         CompilationPhase, compile_cps_to_destination, destination_artifact_for_current_policy,
         load_thunk_in_vicinity,
     },
+    policy::set_fasl_debug_entries,
 };
 
 type LoadResult<'gc> = Result<Value<'gc>, Value<'gc>>;
@@ -117,6 +118,12 @@ pub(super) mod load_ops {
         {
             nctx.return_(Ok(Value::new(false)))
         }
+    }
+
+    #[scheme(name = "load-debug-enable!")]
+    pub fn load_debug_enable(enabled: bool) -> Value<'gc> {
+        set_fasl_debug_entries(enabled);
+        nctx.return_(Value::undefined())
     }
 
     #[scheme(name = "load-thunk-in-vicinity-k")]
