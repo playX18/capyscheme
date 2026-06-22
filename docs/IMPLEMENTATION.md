@@ -167,13 +167,33 @@ We include a few important optimizations into the compiler: tree reductions, inl
 - Contification: converts procedures into continuations which in turn allows them to be compiled as basic-block instead of requiring allocating a closure.
 - Reification: marks continuations which still require a closure to be allocated. Such continuations are usually handler/return continuations passed to `call` term or used for `call/cc`.
 
+#### CPS->Linear CPS lowering
+
+After CPS optimization, the compiler reifies functions and any continuations that still need closure allocation, then lowers them into Linear CPS (`capy/src/cps/linear/`). Linear CPS makes each function or reified continuation a procedure with explicit basic blocks, instructions, terminators, and value ids.
+
+The lowering pass runs a small sequence of LCPS-specific transforms:
+
+- switch inference (`switch.rs`) turns eligible conditional control flow into switch-like terminators,
+- rest-argument lowering (`rest.rs`) makes variadic argument handling explicit,
+- cache-operation lowering (`cache.rs`) lowers cache primitives used by global/module lookup,
+- constant hoisting (`constant.rs`) moves constants into procedure-local bindings.
+
+Compiler dump mode writes this stage as `<destination>.lcps.scm`, next to the Tree IR and CPS dumps.
+
 #### CPS->SSA conversion
 
-CPS is converted to SSA by building Cranelift IR after all optimizations are applied. During this stage
-all continuations that were not reified are converted to basic-blocks, and all procedures/reified continuations are converted to Cranelift functions. Some primcalls are lowered directly to Cranelift IR, while others might be lowered as calls to runtime.
+CPS is converted to SSA from the Linear CPS representation by building Cranelift IR after all optimizations are applied. During this stage all continuations that were not reified are converted to basic blocks, and all procedures/reified continuations are converted to Cranelift functions. Some primcalls are lowered directly to Cranelift IR, while others might be lowered as calls to runtime.
 
-### Linking
+### FASL emission
 
-Once SSA is built we emit object file and link using platform linker as shared object.
+Once SSA is built, the compiler emits a unified FASL code image instead of linking a platform shared object for Scheme code. `compile_cps_to_fasl_bytes` in `capy/src/compiler/object.rs` performs CPS reification, Linear CPS lowering, Cranelift code generation through `ModuleBuilder`, and returns FASL bytes for the loader or `capyc -o`.
+
+See `docs/FASL.md` for the artifact format, load path resolution, and cache behavior.
 
 ## Runtime
+
+Runtime entrypoints are exposed through Scheme libraries in `lib/boot/` and Rust thunks under `capy/src/runtime/vm/`. Operational details that tend to matter while developing the compiler and runtime are documented separately:
+
+- `docs/BOOTSTRAP.md` describes stage builds, installed layouts, and compiled library artifacts.
+- `docs/FASL.md` describes compiled Scheme artifact loading.
+- `docs/GC.md` describes GC flags, heuristic modes, and diagnostics.

@@ -3,14 +3,14 @@
 
 CapyScheme can **self-host** itself by building a minimal runtime and then *bootstrapping* the Scheme libraries and compiler through a few stages.
 
-The recipes are provided by `Makefile` (ported from the original `Justfile`). This files explains what each stage does, which targets to run, and how to tweak the build.
+The recipes are provided by `Makefile` (ported from the original `Justfile`). This file explains what each stage does, which targets to run, and how to tweak the build.
 
 ## Top-level overview
 
 CapyScheme is built in two layers:
 
-1. A **Rust runtime** (`libcapy`) plus tiny **C boot binaries** (`capy` and `capyc`).
-2. A set of **Scheme libraries** that are compiled into shared objects (e.g. `.so` on Linux) using `capyc`.
+1. A **Rust executable** (`capy`) plus a shell **compiler wrapper** (`capyc`).
+2. A set of **Scheme libraries** that are compiled into FASL code images (`.fasl`) using `capyc`.
 
 Bootstrapping means:
 
@@ -25,7 +25,7 @@ At the end you get `stage-2/` as the “final” self-hosted result.
 You’ll need:
 
 - Rust toolchain (this repo includes `rust-toolchain.toml`).
-- A C compiler (`clang` by default, but `CC=gcc` works on many setups).
+- `rsync` for install and distribution targets.
 - Optional: `cross` if you want to build for a non-host target.
 
 ## Quickstart
@@ -52,14 +52,14 @@ Most targets accept these variables:
 - `TARGET` (default: `rustc --print host-tuple`)
 	- Rust target triple.
 	- If `TARGET != host`, the Makefile will try to use `cross`.
-- `CC` (default: `clang`)
-	- C compiler used to build the launcher binaries.
 - `PREFIX` (default: `$HOME/.local/share`)
 	- Installation prefix used by `install-portable` and `install`.
 - `VERSION`
 	- Auto-detected from `capy/Cargo.toml` (you can override it).
 - `PORTABLE` (default: `1`)
-	- Controls some rpath behavior for the produced launchers.
+	- Retained in the Makefile defaults/help output. The actual runtime layout is selected by `build-runtime-portable` or `build-runtime-fhs`.
+- `COMPILED_SCM_EXT` (currently `fasl`)
+	- Extension used by the per-library compilation rules. The loader treats AOT Scheme artifacts as FASL code images.
 - `COMPILE_PSYNTAX` (default: `0`)
    - When set to `1`, stage-0 will additionally compile psyntax into psyntax-exp.
    Set this to 1 when you modify macro-expander code (psyntax.scm).
@@ -77,16 +77,22 @@ This directory is referenced as:
 
 - `TARGET_PATH := target/<TARGET>/<PROFILE>`
 
-It contains `libcapy.*` and any other Rust build products.
+It contains the compiled `capy` binary and any other Rust build products.
 
 ### Stage directories
 
 Each stage has two kinds of artifacts:
 
-- `stage-N/capy` and `stage-N/capyc`: boot binaries wired to the Rust runtime.
-- `stage-N/compiled/`: compiled Scheme libraries as shared objects.
+- `stage-N/capy` and `stage-N/capyc`: the Rust executable and a shell wrapper that starts compiler mode.
+- `stage-N/compiled/`: compiled Scheme libraries as `.fasl` files.
 
-The compiler (`capyc`) compiles Scheme sources from `lib/` into `.so`/`.dylib`/`.dll` under `stage-N/compiled/`.
+The compiler (`capyc`) compiles Scheme sources from `lib/` into `.fasl` files under `stage-N/compiled/`. Examples include:
+
+- `stage-N/compiled/boot/base.fasl`
+- `stage-N/compiled/core/lists.fasl`
+- `stage-N/compiled/rnrs/base.fasl`
+
+At runtime, `-C DIR` / `--compiled-load-path DIR` prepends `DIR` to `%load-compiled-path`. The loader searches compiled paths for `*.fasl` artifacts, checking an architecture-scoped subdirectory first (for example `DIR/x86_64/...`) and then the unscoped path when no explicit architecture is requested.
 
 ## The bootstrap stages
 
@@ -97,10 +103,11 @@ Target: `make stage-0`
 What it does:
 
 1. Builds the Rust crate `capy` with `--features portable,bootstrap`.
-2. Builds `stage-0/capy` and `stage-0/capyc` (C launchers linked to `libcapy`).
-3. Warms up a cache and triggers auto-compilation once:
+2. Copies the Rust binary to `stage-0/capy` and writes the `stage-0/capyc` compiler wrapper.
+3. Warms up the auto-compile cache:
 	 - runs `stage-0/capy -L lib --fresh-auto-compile -c 42`
-	 - with `XDG_CACHE_HOME=stage-0/cache`.
+	 - imports `(rnrs)`, `(scheme base)`, `(srfi 1)`, and `(srfi 13)`
+	 - uses `XDG_CACHE_HOME=stage-0/cache`.
 
 Optional psyntax compile (when `COMPILE_PSYNTAX=1`):
 
@@ -110,7 +117,8 @@ Environment used in stage-0 runs:
 
 - `CAPY_LOAD_PATH=./lib`
 - `XDG_CACHE_HOME=stage-0/cache`
-- `LD_LIBRARY_PATH=<TARGET_PATH>` (and `DYLD_FALLBACK_LIBRARY_PATH` on macOS)
+
+For local experiments, set `CAPY_LOAD_COMPILED_PATH` or pass `-C DIR` when you want to prepend an existing compiled library directory.
 
 ### Stage 1: compile libraries using stage-0 compiler
 
@@ -126,8 +134,9 @@ What it does:
 	 - r7rs (`lib/scheme/*.scm`)
 	 - CLI (`lib/boot/cli.scm` and `lib/boot.scm`)
 	 - capy libraries (`lib/capy/*.sls` and some `.scm`)
-2. Copies boot binaries from stage-0:
-	 - `stage-1/capy` and `stage-1/capyc` are copies of stage-0 binaries.
+	 - common libraries (`lib/common/*.scm`)
+2. Copies the stage-0 executable and compiler wrapper:
+	 - `stage-1/capy` and `stage-1/capyc`
 
 ### Stage 2: rebuild libraries using stage-1 compiler
 
@@ -136,7 +145,7 @@ Target: `make stage-2`
 What it does:
 
 1. Uses `stage-1/capyc` to compile libraries again into `stage-2/compiled/`.
-2. Copies boot binaries from stage-1.
+2. Copies the stage-1 executable and compiler wrapper.
 
 Stage-2 is the “final” self-hosted output used by the install/dist targets.
 
@@ -150,9 +159,9 @@ If you only want the Rust runtime (no Scheme bootstrap stages):
 There are also convenience targets that build the “full” launchers:
 
 - `make build-runtime-fhs`
-	- Builds with `CAPY_SYSROOT=$(PREFIX)` and links launchers with an rpath pointing at `${PREFIX}/lib/`.
+	- Builds `bin/capy-full` with `CAPY_SYSROOT=$(PREFIX)` so runtime paths resolve through the install prefix.
 - `make build-runtime-portable`
-	- Same Rust build flags as `build-runtime`, but links launchers with rpath `$ORIGIN` so `libcapy.*` can live next to them.
+	- Builds `bin/capy-full` with portable runtime path discovery.
 
 ## Installing and distributing
 
@@ -168,8 +177,8 @@ It copies:
 
 - `lib/` (Scheme sources)
 - `stage-2/compiled/` (compiled libraries)
-- `libcapy.*` from the Rust target directory
-- `stage-2/capy-full` and `stage-2/capyc-full` (launchers)
+- `bin/capy-full` as `capy`
+- a generated `capyc` wrapper that starts `capy` with `--capy-compiler-entrypoint`
 
 It also creates a versioned symlink:
 
@@ -196,7 +205,6 @@ Target: `make install`
 Installs into an FHS-ish layout under `$(PREFIX)`:
 
 - `$(PREFIX)/bin/capy` and `$(PREFIX)/bin/capyc`
-- `$(PREFIX)/lib/libcapy.*`
 - `$(PREFIX)/lib/capy/compiled/` (compiled libraries)
 - `$(PREFIX)/share/capy/lib/` (Scheme sources)
 
@@ -204,11 +212,10 @@ This target may use `sudo` if you’re not root.
 
 ## Notes on how compilation works
 
-The Makefile compiles each Scheme file into a shared library:
+The Makefile compiles each Scheme file into a FASL code image:
 
-- Linux: `.so`
-- macOS: `.dylib`
-- Windows (mingw): `.dll`
+- output extension: `.fasl`
+- selected in `Makefile` by `COMPILED_SCM_EXT := fasl`
 
 Compilation is done by invoking the compiler launcher (`capyc`) with a module set (`-m`) and library search path (`-L`).
 
@@ -217,18 +224,13 @@ Examples from the rules:
 - boot libraries are compiled with `-m "capy" -L lib`
 - most others are compiled with `-m "capy user"`
 
+Scheme library artifacts are no longer produced or loaded as shared objects; the loader reports an error for shared-object Scheme artifacts and expects FASL code images in AOT mode. See `docs/FASL.md` for the artifact format and load path details.
+
 ## Troubleshooting
 
-### `error while loading shared libraries: libcapy.so: cannot open shared object file`
+### `capyc` starts the wrong executable
 
-This means the launcher can’t find `libcapy`.
-
-- For stage builds, the Makefile sets `LD_LIBRARY_PATH=$(TARGET_PATH)` when running `stage-0/capy`.
-- For installed builds:
-	- Portable installs should work because rpath is set to `$ORIGIN`.
-	- FHS installs rely on rpath pointing at `$(PREFIX)/lib/`.
-
-If you built custom binaries, verify their rpath and dynamic deps.
+`capyc` is a shell wrapper that executes the sibling `capy` binary with `--capy-compiler-entrypoint`. If a custom install moves one without the other, regenerate the wrapper or keep both files in the same directory.
 
 ### `cross: command not found`
 
@@ -248,9 +250,18 @@ Stage-0 uses:
 
 - `XDG_CACHE_HOME=stage-0/cache`
 
-If something is corrupted, you can remove it and rebuild stage-0:
+Runtime auto-compilation writes fallback FASL files under a versioned cache path such as:
+
+- `stage-0/cache/capy/cache/<version>/<plan-bucket>/<arch>/...`
+- `$HOME/.cache/capy/cache/<version>/<plan-bucket>/<arch>/...` when `XDG_CACHE_HOME` is not set
+
+The plan bucket is derived from the selected MMTk plan: `gen` for `StickyImmix`, `conc` for `ConcurrentImmix`, and `regular` for `Immix` or `MarkSweep`.
+
+Each FASL write is protected by a sibling lock file, for example `library.fasl.lock`, and is written atomically. If a cache artifact is stale or corrupt, remove the cache directory and rebuild or rerun with `--fresh-auto-compile` so sources are recompiled:
 
 ```sh
 rm -rf stage-0/cache
 make stage-0
 ```
+
+For direct debugging of FASL load failures, pass `--debug` to `capy`. This loads FASL code through debug stacktrace trampolines; `--nobacktrace` on `capyc` is kept only as a deprecated compatibility flag.

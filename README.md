@@ -19,6 +19,14 @@ To run tests yourself:
 $ capy -L . -s tests/r6rs/run-via-eval.sps
 ```
 
+## Documentation
+
+- [Installation](INSTALLATION.md): prerequisites and install targets.
+- [Bootstrap guide](docs/BOOTSTRAP.md): stage builds, Makefile knobs, and compiled library layout.
+- [Implementation overview](docs/IMPLEMENTATION.md): frontend, CPS, Linear CPS, SSA, and runtime pointers.
+- [FASL code images](docs/FASL.md): compiled Scheme artifact format, loading, and cache behavior.
+- [GC tuning and diagnostics](docs/GC.md): runtime flags, environment variables, and heuristic modes.
+
 ## Thanks
 
 Big thanks to authors of [Larceny](https://github.com/larcenists/larceny), [Guile](https://www.gnu.org/software/guile/) and [Ypsilon](https://github.com/fujita-y/ypsilon). CapyScheme uses stdlib parts from all of them and takes inspiration from them.

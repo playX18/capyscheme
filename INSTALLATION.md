@@ -1,8 +1,10 @@
 # Installation
 
-To install & run CapyScheme you need additonal dependencies:
-- lld on macOS to link Scheme files after they were built
-- Makefile
+To install and run CapyScheme you need:
+
+- a Rust toolchain (this repo includes `rust-toolchain.toml`)
+- `make`
+- `rsync` for install and distribution targets
 
 After they are installed simply run:
 ```sh
@@ -15,6 +17,6 @@ $ make PREFIX=/usr/local install
 
 ```
 
-After everything is installed you should add installed directory into PATH.
-If you wish to use native extensions also add `extensions/` directory under prefix
-into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
+After everything is installed you should add the installed directory to `PATH`.
+
+See `docs/BOOTSTRAP.md` for the full build and bootstrap layout.
