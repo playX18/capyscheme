@@ -702,8 +702,8 @@ mod tests {
                 false,
                 Value::null(),
             );
-            let closure_proc = Value::from(Closure::new(ctx, code_block, &[], false));
-            let closure_continuation = Value::from(Closure::new(ctx, code_block, &[], true));
+            let closure_proc = Value::from(Closure::new(ctx, code_block, 0, false));
+            let closure_continuation = Value::from(Closure::new(ctx, code_block, 0, true));
             let mutable_vector = Value::from(Vector::new::<false>(*ctx, 1, Value::undefined()));
             let immutable_vector_gc = Vector::new::<true>(*ctx, 1, Value::undefined());
             let immutable_vector = Value::from(immutable_vector_gc);
@@ -838,8 +838,8 @@ mod tests {
                 false,
                 Value::null(),
             );
-            let closure_proc = Value::from(Closure::new(ctx, code_block, &[], false));
-            let closure_continuation = Value::from(Closure::new(ctx, code_block, &[], true));
+            let closure_proc = Value::from(Closure::new(ctx, code_block, 0, false));
+            let closure_continuation = Value::from(Closure::new(ctx, code_block, 0, true));
             assert!(closure_proc.is::<Closure>());
             assert!(closure_continuation.is::<Closure>());
             assert!(closure_proc.is_class_id(ClassId::new(builtin_class_ids::CLOSURE).unwrap()));

@@ -62,6 +62,9 @@
         (lambda ()
           (define res (parse-args parser (cdr args)))
 
+          (if (arg-results-ref res "version")
+            (format #t "CapyScheme ~a~%" (implementation-version)))
+
           (if (arg-results-ref res "log-warn")
             (log:set-max-level! log:warn))
           (if (arg-results-ref res "log-error")
@@ -253,11 +256,16 @@
     (add-flag! parser
       "log-error"
       (help "Enable error logging"))
+    (add-flag! parser 
+      "version"
+      (help "Show version and exit"))
 
     (run)))
 
 (define (enter-compiler args)
   "Entrypoint for `capyc` compiler CLI."
+  ((@@ (capy) primitive-load) "boot/compiler.scm")
+
   (define arg0 "capyc")
   (define parser (argparser))
 
@@ -300,7 +308,9 @@
     (define r6rs-mode (arg-results-ref res "r6rs"))
     (define verbose (arg-results-ref res "verbose"))
     (define runtime-stats (arg-results-ref res "runtime-stats"))
+    (define version (arg-results-ref res "version"))
     (define backtrace #t)
+    (when version (format #t "CapyScheme Compiler ~a~%" (implementation-version)) (exit 0))
     (if (and r7rs-mode r6rs-mode)
       (error "Cannot specify both --r7rs and --r6rs modes"))
     (cond
@@ -381,6 +391,10 @@
     "verbose"
     (abbreviation "v")
     (help "Enable verbose output"))
+
+  (add-flag! parser 
+    "version"
+    (help "Show version and exit"))
 
   (add-flag! parser
     "runtime-stats"

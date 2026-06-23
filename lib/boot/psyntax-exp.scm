@@ -1610,54 +1610,65 @@
              (lp body)))))
      (r6rs-import-sym?
        (lambda (stx) (symbol? (syntax->datum stx))))
+     (exact-nonnegative-integer?
+       (lambda (x)
+         (if (exact-integer? x) (not (negative? x)) '#f)))
      (r6rs-import-n?
        (lambda (stx)
-         (let ((n (syntax->datum stx)))
-           (if (exact-integer? n) (not (negative? n)) '#f))))
-     (r6rs-import-colon-n?
-       (lambda (x)
-         (let ((sym (syntax->datum x)))
-           (if (symbol? sym)
-               (let ((str (symbol->string sym)))
-                 (if (string-prefix? '":" str)
-                     (let ((num (string->number (substring str '1))))
-                       (if (exact-integer? num)
-                           (not (negative? num))
-                           '#f))
-                     '#f))
-               '#f))))
-     (r6rs-srfi-name?
+         (exact-nonnegative-integer? (syntax->datum stx))))
+     (r7rs-mode?
+       (lambda () (eq? (capy:execution-mode) 'r7rs)))
+     (r6rs-mode?
+       (lambda () (eq? (capy:execution-mode) 'r6rs)))
+     (module-name-part?
+       (lambda (stx)
+         (let ((part (syntax->datum stx)))
+           (cond ((symbol? part) '#t)
+                 ((if (exact-nonnegative-integer? part)
+                      (r7rs-mode?)
+                      '#f)
+                  '#t)
+                 ((number? part)
+                  (syntax-violation
+                    '#f
+                    '"numeric module name components are only valid in R7RS mode"
+                    stx))
+                 (else '#f)))))
+     (module-name?
        (lambda (stx)
          ((lambda (tmp)
             ((lambda (tmp.1)
                (if tmp.1
-                   (apply (lambda (n rest)
-                            (if (and-map r6rs-import-sym? rest)
-                                (let ((tmp.2 (r6rs-import-n? n)))
-                                  (or tmp.2 (r6rs-import-colon-n? n)))
-                                '#f))
+                   (apply (lambda (name name*)
+                            (and-map module-name-part? (cons name name*)))
                           tmp.1)
                    '#f))
-             ($sc-dispatch
-               tmp
-               (cons (vector
-                       'free-id
-                       (make-syntax 'srfi '((top)) '(hygiene capy)))
-                     '(any . each-any)))))
+             ($sc-dispatch tmp '(any . each-any))))
           stx)))
-     (r6rs-module-name?
+     (r6rs-srfi-name?
+       (lambda (stx)
+         (if (r6rs-mode?)
+             ((lambda (tmp)
+                ((lambda (tmp.1)
+                   (if tmp.1
+                       (apply (lambda (n rest)
+                                (if (and-map r6rs-import-sym? rest)
+                                    (r6rs-import-n? n)
+                                    '#f))
+                              tmp.1)
+                       '#f))
+                 ($sc-dispatch
+                   tmp
+                   (cons (vector
+                           'free-id
+                           (make-syntax 'srfi '((top)) '(hygiene capy)))
+                         '(any . each-any)))))
+              stx)
+             '#f)))
+     (library-reference-name?
        (lambda (stx)
          (let ((tmp (r6rs-srfi-name? stx)))
-           (or tmp
-               ((lambda (tmp.1)
-                  ((lambda (tmp.2)
-                     (if tmp.2
-                         (apply (lambda (name name*)
-                                  (and-map r6rs-import-sym? (cons name name*)))
-                                tmp.2)
-                         '#f))
-                   ($sc-dispatch tmp.1 '(any . each-any))))
-                stx)))))
+           (or tmp (module-name? stx)))))
      (make-r6rs-srfi-n
        (lambda (context n)
          (datum->syntax
@@ -1773,9 +1784,7 @@
                      ((lambda (tmp.2)
                         (if (if tmp.2
                                 (apply (lambda (name name* version)
-                                         (and-map
-                                           r6rs-import-sym?
-                                           (cons name name*)))
+                                         (module-name? (cons name name*)))
                                        tmp.2)
                                 '#f)
                             (apply (lambda (name name* version)
@@ -1788,8 +1797,7 @@
                             ((lambda (tmp.3)
                                (if (if tmp.3
                                        (apply (lambda (name name*)
-                                                (and-map
-                                                  r6rs-import-sym?
+                                                (module-name?
                                                   (cons name name*)))
                                               tmp.3)
                                        '#f)
@@ -2064,7 +2072,7 @@
                                                                           (apply (lambda (name
                                                                                           name*
                                                                                           version)
-                                                                                   (r6rs-module-name?
+                                                                                   (library-reference-name?
                                                                                      (cons name
                                                                                            name*)))
                                                                                  tmp.8)
@@ -2087,7 +2095,7 @@
                                                                          (if (if tmp.9
                                                                                  (apply (lambda (name
                                                                                                  name*)
-                                                                                          (r6rs-module-name?
+                                                                                          (library-reference-name?
                                                                                             (cons name
                                                                                                   name*)))
                                                                                         tmp.9)
@@ -2226,7 +2234,7 @@
                                                                          #(expand)
                                                                          #((top))
                                                                          #(#((capy)
-                                                                             id686))))
+                                                                             id39491))))
                                                                      '(hygiene
                                                                         capy))
                                                                    (make-syntax
@@ -2763,7 +2771,7 @@
                                                        espec
                                                        ispec
                                                        body)
-                                                (r6rs-module-name?
+                                                (module-name?
                                                   (cons name name*)))
                                               tmp.3)
                                        '#f)
@@ -2798,7 +2806,7 @@
                                                               espec
                                                               ispec
                                                               body)
-                                                       (r6rs-module-name?
+                                                       (module-name?
                                                          (cons name name*)))
                                                      tmp.4)
                                               '#f)
@@ -3750,7 +3758,12 @@
                               ((define-module-form)
                                ((lambda (tmp)
                                   ((lambda (tmp.1)
-                                     (if tmp.1
+                                     (if (if tmp.1
+                                             (apply (lambda (name name* body.1)
+                                                      (module-name?
+                                                        (cons name name*)))
+                                                    tmp.1)
+                                             '#f)
                                          (apply (lambda (name name* body.1)
                                                   (parse (cons (list (make-syntax
                                                                        'eval-when
@@ -3764,7 +3777,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id686))))
+                                                                                     id39491))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -3789,7 +3802,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4006))))
+                                                                                                       id42804))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (list (list (make-syntax
@@ -3826,7 +3839,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4006))))
+                                                                                                       id42804))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -3862,7 +3875,12 @@
                               ((define-pure-module-form)
                                ((lambda (tmp)
                                   ((lambda (tmp.1)
-                                     (if tmp.1
+                                     (if (if tmp.1
+                                             (apply (lambda (name name* body.1)
+                                                      (module-name?
+                                                        (cons name name*)))
+                                                    tmp.1)
+                                             '#f)
                                          (apply (lambda (name name* body.1)
                                                   (parse (cons (list (make-syntax
                                                                        'eval-when
@@ -3876,7 +3894,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id686))))
+                                                                                     id39491))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -3901,7 +3919,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4006))))
+                                                                                                       id42804))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (cons (list (make-syntax
@@ -3939,7 +3957,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4006))))
+                                                                                                       id42804))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -3989,7 +4007,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id686))))
+                                                                                     id39491))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4048,7 +4066,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id686))))
+                                                                                     id39491))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4107,7 +4125,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id686))))
+                                                                                     id39491))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -5807,7 +5825,7 @@
             ((lambda (tmp.1)
                (if (if tmp.1
                        (apply (lambda (mod.1 id)
-                                (if (and-map id? mod.1) (id? id) '#f))
+                                (if (module-name? mod.1) (id? id) '#f))
                               tmp.1)
                        '#f)
                    (apply (lambda (mod.1 id)
@@ -5895,7 +5913,7 @@
                    (let ((tmp-1.1 ($sc-dispatch tmp '(_ each-any any))))
                      (if (if tmp-1.1
                              (apply (lambda (mod.1 id)
-                                      (if (and-map id? mod.1) (id? id) '#f))
+                                      (if (module-name? mod.1) (id? id) '#f))
                                     tmp-1.1)
                              '#f)
                          (apply (lambda (mod.1 id)
@@ -5925,7 +5943,7 @@
                                          'any))))
                            (if (if tmp-1.2
                                    (apply (lambda (mod.1 exp)
-                                            (and-map id? mod.1))
+                                            (module-name? mod.1))
                                           tmp-1.2)
                                    '#f)
                                (apply (lambda (mod.1 exp)
@@ -8220,7 +8238,6 @@
                                     '"source expression failed to match any pattern"
                                     tmp)))))))))
             (make-syntax '#f '((top)) '(hygiene capy))))))
-
 (define syntax-error
   (let ((make-syntax make-syntax))
     (letrec*

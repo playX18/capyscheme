@@ -951,8 +951,8 @@ mod tests {
                 false,
                 Value::null(),
             );
-            let proc = Value::from(Closure::new(ctx, code_block, &[], false));
-            let cont = Value::from(Closure::new(ctx, code_block, &[], true));
+            let proc = Value::from(Closure::new(ctx, code_block, 0, false));
+            let cont = Value::from(Closure::new(ctx, code_block, 0, true));
 
             assert!(is_procedure(proc));
             assert!(is_procedure(cont));

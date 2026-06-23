@@ -85,20 +85,39 @@ impl<'gc> Closure<'gc> {
     pub fn new(
         ctx: Context<'gc>,
         code_block: Gc<'gc, CodeBlock<'gc>>,
-        free: &[Value<'gc>],
+        nfree: usize,
         is_cont: bool,
     ) -> Gc<'gc, Self> {
-        Self::new_with_entry(ctx, code_block, free, is_cont, code_block.entrypoint)
+        Self::new_with_entry(ctx, code_block, nfree, is_cont, code_block.entrypoint)
     }
 
     pub fn new_with_entry(
+        ctx: Context<'gc>,
+        code_block: Gc<'gc, CodeBlock<'gc>>,
+        nfree: usize,
+        is_cont: bool,
+        entry: Address,
+    ) -> Gc<'gc, Self> {
+        Self::new_inner(ctx, code_block, nfree, None, is_cont, entry)
+    }
+
+    pub fn new_with_free_vars(
+        ctx: Context<'gc>,
+        code_block: Gc<'gc, CodeBlock<'gc>>,
+        free: &[Value<'gc>],
+        is_cont: bool,
+    ) -> Gc<'gc, Self> {
+        Self::new_with_entry_and_free_vars(ctx, code_block, free, is_cont, code_block.entrypoint)
+    }
+
+    pub fn new_with_entry_and_free_vars(
         ctx: Context<'gc>,
         code_block: Gc<'gc, CodeBlock<'gc>>,
         free: &[Value<'gc>],
         is_cont: bool,
         entry: Address,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code_block, free, is_cont, false, entry)
+        Self::new_inner(ctx, code_block, free.len(), Some(free), is_cont, entry)
     }
 
     pub fn new_native(
@@ -107,31 +126,20 @@ impl<'gc> Closure<'gc> {
         free: &[Value<'gc>],
         is_cont: bool,
     ) -> Gc<'gc, Self> {
-        Self::new_inner(ctx, code_block, free, is_cont, true, code_block.entrypoint)
+        Self::new_with_free_vars(ctx, code_block, free, is_cont)
     }
 
     fn new_inner(
         ctx: Context<'gc>,
         code_block: Gc<'gc, CodeBlock<'gc>>,
-        free: &[Value<'gc>],
+        nfree: usize,
+        free: Option<&[Value<'gc>]>,
         is_cont: bool,
-        _is_native: bool,
         entry: Address,
     ) -> Gc<'gc, Self> {
         let meta = code_block.metadata.get();
 
-        /*Gc::new(
-            *ctx,
-            Self {
-                header,
-                direct,
-                code,
-                free,
-                meta: Lock::new(meta),
-            },
-        )*/
-
-        let size = size_of::<Self>() + std::mem::size_of_val(free);
+        let size = size_of::<Self>() + size_of::<Value>() * nfree;
         // SAFETY: We raw-allocate a `Closure` + trailing `free` array via the GC allocator.
         // The closure class hooks ensure proper tracing. We initialize all fields before returning
         // the Gc handle.
@@ -147,8 +155,9 @@ impl<'gc> Closure<'gc> {
             this.code_block = code_block;
 
             this.meta = Lock::new(meta);
-            this.nfree = free.len();
-            for (i, &value) in free.iter().enumerate() {
+            this.nfree = nfree;
+            for i in 0..nfree {
+                let value = free.map_or(Value::undefined(), |free| free[i]);
                 this.free.as_mut_ptr().add(i).write(Lock::new(value));
             }
             Gc::from_gcobj(ptr)

@@ -331,11 +331,11 @@
 
 (define (clear-module-autoload! module-name)
   (let* ([reverse-name (reverse module-name)]
-         [name (symbol->string (car reverse-name))]
+         [name (module-name-part->path-string (car reverse-name))]
          [dir-hint-module-name (reverse (cdr reverse-name))]
          [dir-hint (apply string-append
                     (map (lambda (elt)
-                          (string-append (symbol->string elt) "/"))
+                          (string-append (module-name-part->path-string elt) "/"))
                       dir-hint-module-name))]
          [autoload-key (cons dir-hint name)])
     (set! autoloads-done (delete! autoload-key autoloads-done))
@@ -357,11 +357,11 @@
 
 (define (try-module-autoload module-name)
   (let* ([reverse-name (reverse module-name)]
-         [name (symbol->string (car reverse-name))]
+         [name (module-name-part->path-string (car reverse-name))]
          [dir-hint-module-name (reverse (cdr reverse-name))]
          [dir-hint (apply string-append
                     (map (lambda (elt)
-                          (string-append (symbol->string elt) "/"))
+                          (string-append (module-name-part->path-string elt) "/"))
                       dir-hint-module-name))])
     (resolve-module dir-hint-module-name #f #t)
 
@@ -511,18 +511,77 @@
         (format #t "irritants=~a~%" (condition-irritants exn)))
       (format p "Unhandled exception: ~a~!: ~a~%~!" (condition-who exn)))))
 
-(define capy:execution-mode (make-parameter 'capy))
+(define (module-name-part->path-string part)
+  (cond
+    [(symbol? part) (symbol->string part)]
+    [(and (exact-integer? part) (not (negative? part)))
+      (number->string part)]
+    [else
+      (assertion-violation 'module-name-part->path-string
+        "invalid module name component"
+        part)]))
+
+(define capy:r7rs-load-extensions '())
+(define capy:r6rs-load-extensions '())
+(define capy:all-mode-load-extensions '())
 
 (let* ([host-arch (host-arch)]
        [host-os (host-os)]
        [host-family (host-family)]
        [host-os-scm (string-append host-os ".scm")]
        [host-family-scm (string-append host-family ".scm")]
-       [arch-scm (string-append host-arch ".scm")])
-  (set! %load-extensions
-    (append (list host-os-scm host-family-scm arch-scm
-             "capy.scm" "scm" "sch" "sps" "ss")
-      %load-extensions)))
+       [arch-scm (string-append host-arch ".scm")]
+       [host-os-sld (string-append host-os ".sld")]
+       [host-family-sld (string-append host-family ".sld")]
+       [arch-sld (string-append host-arch ".sld")]
+       [host-os-sls (string-append host-os ".sls")]
+       [host-family-sls (string-append host-family ".sls")]
+       [arch-sls (string-append host-arch ".sls")]
+       [common (list host-os-scm host-family-scm arch-scm
+                 "capy.scm" "scm" "sch" "ss")])
+  (set! capy:r7rs-load-extensions
+    (append common
+      (list host-os-sld host-family-sld arch-sld
+        "capy.sld" "sld")))
+  (set! capy:r6rs-load-extensions
+    (append common
+      (list host-os-sls host-family-sls arch-sls
+        "capy.sls" "sls" "sps")))
+  (set! capy:all-mode-load-extensions
+    (append capy:r7rs-load-extensions capy:r6rs-load-extensions)))
+
+(define (capy:mode-load-extensions mode)
+  (case mode
+    [(r7rs) capy:r7rs-load-extensions]
+    [(r6rs) capy:r6rs-load-extensions]
+    [else
+      (assertion-violation 'capy:execution-mode
+        "invalid execution mode"
+        mode)]))
+
+(define (capy:mode-load-extension? ext)
+  (member ext capy:all-mode-load-extensions))
+
+(define (capy:update-load-extensions! mode)
+  (let ([extra (filter (lambda (ext)
+                        (not (capy:mode-load-extension? ext)))
+                 %load-extensions)])
+    (set! %load-extensions
+      (append (capy:mode-load-extensions mode) extra))))
+
+(define capy:execution-mode
+  (let ([mode 'r7rs])
+    (lambda args
+      (if (null? args)
+        mode
+        (let ([old mode]
+              [new-mode (car args)])
+          (capy:mode-load-extensions new-mode)
+          (set! mode new-mode)
+          (capy:update-load-extensions! new-mode)
+          old)))))
+
+(capy:update-load-extensions! (capy:execution-mode))
 
 (define (install-r7rs!)
   (capy:execution-mode 'r7rs))
