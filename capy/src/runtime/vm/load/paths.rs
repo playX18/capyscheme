@@ -657,12 +657,12 @@ mod tests {
             let load_path = temp.path().join("load-path");
             fs::create_dir_all(&vicinity).unwrap();
             fs::create_dir_all(&load_path).unwrap();
-            fs::write(vicinity.join("target.sld"), b"vicinity").unwrap();
+            fs::write(vicinity.join("target.scm"), b"vicinity").unwrap();
             fs::write(load_path.join("target.scm"), b"load-path").unwrap();
 
             ctx.globals()
                 .loc_load_extensions()
-                .set(ctx, scm_list(ctx, &["sld", "scm"]));
+                .set(ctx, scm_list(ctx, &["scm"]));
             ctx.globals()
                 .loc_load_path()
                 .set(ctx, scm_list(ctx, &[load_path.to_string_lossy().as_ref()]));
@@ -688,10 +688,10 @@ mod tests {
                 panic!("expected source resolution");
             };
 
-            assert_eq!(source_path, vicinity.join("target.sld"));
+            assert_eq!(source_path, vicinity.join("target.scm"));
             assert_eq!(
                 full_source_path,
-                vicinity.join("target.sld").canonicalize().unwrap()
+                vicinity.join("target.scm").canonicalize().unwrap()
             );
             assert_eq!(compiled_artifact, None);
         });
