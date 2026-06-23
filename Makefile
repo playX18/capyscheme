@@ -156,35 +156,28 @@ RNRS_SRCS := \
 	lib/rnrs/enums.scm \
 	lib/rnrs/mutable-pairs.scm
 
-CAPY_SRCS_SLS := \
-	lib/capy/prelims.sls \
-	lib/capy/pretty-print.sls \
-	lib/capy/args/argparser.sls \
-	lib/capy/args/option.sls \
-	lib/capy/args/parser.sls \
-	lib/capy/args/results.sls \
-	lib/capy/args.sls \
-	lib/capy/session.sls \
-	lib/capy/deque.sls \
-	lib/capy/channel.sls \
-	lib/capy/term/private/ansi.sls \
-	lib/capy/term/command.sls \
-	lib/capy/term/style.sls \
-	lib/capy/term/event-parser.sls \
-	lib/capy/term/event.sls \
-	lib/capy/term/terminal.sls \
-	lib/capy/term/cursor.sls \
-	lib/capy/term/clipboard.sls \
-	lib/capy/term/tty.sls \
-	lib/capy/term/line.sls \
-	lib/capy/term.sls \
-	lib/capy/generator.sls \
-	lib/capy/future.sls \
-	lib/capy/binary-heap.sls \
-	lib/capy/intrusive/dlist.sls \
-	lib/capy/intrusive/slist.sls \
-
-CAPY_SRCS_SCM := \
+CAPY_SRCS := \
+	lib/capy/prelims.scm \
+	lib/capy/pretty-print.scm \
+	lib/capy/session.scm \
+	lib/capy/deque.scm \
+	lib/capy/channel.scm \
+	lib/capy/term/private/ansi.scm \
+	lib/capy/term/command.scm \
+	lib/capy/term/style.scm \
+	lib/capy/term/event-parser.scm \
+	lib/capy/term/event.scm \
+	lib/capy/term/terminal.scm \
+	lib/capy/term/cursor.scm \
+	lib/capy/term/clipboard.scm \
+	lib/capy/term/tty.scm \
+	lib/capy/term/line.scm \
+	lib/capy/term.scm \
+	lib/capy/generator.scm \
+	lib/capy/future.scm \
+	lib/capy/binary-heap.scm \
+	lib/capy/intrusive/dlist.scm \
+	lib/capy/intrusive/slist.scm \
 	lib/capy/compiler/tree-il/terms.scm 	 \
 	lib/capy/compiler/tree-il/fold.scm       \
 	lib/capy/compiler/tree-il/primitives.scm \
@@ -193,47 +186,50 @@ CAPY_SRCS_SCM := \
 	lib/capy/compiler/tree-il.scm				
 
 
-SRFI_SRCS := \
-	lib/srfi/srfi-0.scm \
-	lib/srfi/srfi-1.scm \
-	lib/srfi/srfi-6.scm \
-	lib/srfi/srfi-8.scm \
-	lib/srfi/srfi-9.scm \
-	lib/srfi/srfi-11.scm \
-	lib/srfi/srfi-13.scm \
-	lib/srfi/srfi-14.scm \
-	lib/srfi/srfi-16.scm \
-	lib/srfi/srfi-23.scm \
-	lib/srfi/srfi-26.scm \
-	lib/srfi/srfi-27.scm \
-	lib/srfi/srfi-28.scm \
-	lib/srfi/srfi-34.scm \
-	lib/srfi/srfi-36.scm \
-	lib/srfi/srfi-39.scm \
-	lib/srfi/srfi-48.scm \
-	lib/srfi/srfi-55.scm \
-	lib/srfi/srfi-64.scm \
-	lib/srfi/srfi-98.scm \
-	lib/srfi/srfi-124.scm \
-	lib/srfi/srfi-125.scm \
-	lib/srfi/srfi-128.scm \
-	lib/srfi/srfi-130.scm \
-	lib/srfi/srfi-132.scm \
-	lib/srfi/srfi-132/delndups.scm \
-	lib/srfi/srfi-132/merge.scm \
-	lib/srfi/srfi-132/select.scm \
-	lib/srfi/srfi-132/sortfaster.scm \
-	lib/srfi/srfi-132/sorting.scm \
-	lib/srfi/srfi-132/sortp.scm \
-	lib/srfi/srfi-132/vector-util.scm \
-	lib/srfi/srfi-145.scm \
-	lib/srfi/srfi-157.scm \
-	lib/srfi/srfi-180.scm \
-	lib/srfi/srfi-213.scm \
-	lib/srfi/srfi-214.scm \
-	lib/srfi/srfi-257.scm \
-	lib/srfi/srfi-257/misc.sld \
-	lib/srfi/srfi-259.scm
+SRFI_SRCS_R7RS := \
+	lib/srfi/0.scm \
+	lib/srfi/1.scm \
+	lib/srfi/6.scm \
+	lib/srfi/8.scm \
+	lib/srfi/9.scm \
+	lib/srfi/11.scm \
+	lib/srfi/13.scm \
+	lib/srfi/14.scm \
+	lib/srfi/16.scm \
+	lib/srfi/23.scm \
+	lib/srfi/26.scm \
+	lib/srfi/27.scm \
+	lib/srfi/28.scm \
+	lib/srfi/34.scm \
+	lib/srfi/36.scm \
+	lib/srfi/39.scm \
+	lib/srfi/48.scm \
+	lib/srfi/55.scm \
+	lib/srfi/64.scm \
+	lib/srfi/98.scm \
+	lib/srfi/124.scm \
+	lib/srfi/125.scm \
+	lib/srfi/128.scm \
+	lib/srfi/130.scm \
+	lib/srfi/132.scm \
+	lib/srfi/132/delndups.scm \
+	lib/srfi/132/merge.scm \
+	lib/srfi/132/select.scm \
+	lib/srfi/132/sortfaster.scm \
+	lib/srfi/132/sorting.scm \
+	lib/srfi/132/sortp.scm \
+	lib/srfi/132/vector-util.scm \
+	lib/srfi/145.scm \
+	lib/srfi/157.scm \
+	lib/srfi/180.scm \
+	lib/srfi/213.scm \
+	lib/srfi/214.scm \
+	lib/srfi/257.scm \
+	lib/srfi/257/misc.scm \
+	lib/srfi/259.scm
+
+SRFI_SRCS_R6RS := $(patsubst lib/srfi/%.scm,lib/srfi/:%.scm,$(SRFI_SRCS_R7RS))
+SRFI_SRCS := $(SRFI_SRCS_R7RS) $(SRFI_SRCS_R6RS)
 
 R7RS_SRCS := \
 	lib/scheme/base.scm \
@@ -259,20 +255,29 @@ R7RS_SRCS := \
 COMMON_SRCS := \
 	lib/common/pregexp.scm
 
+CAPY_ARGS_SRCS := \
+	lib/capy/args/help/optional.scm \
+	lib/capy/args/string.scm \
+	lib/capy/args/option.scm \
+	lib/capy/args/grammar.scm \
+	lib/capy/args/results.scm \
+	lib/capy/args/parser.scm \
+	lib/capy/args/runner.scm \
+	lib/capy/args.scm
+
 # Map sources to outputs (given OUT).
 
 BOOT_OUTS  = $(patsubst lib/boot/%.scm,$(OUT)/boot/%.$(COMPILED_SCM_EXT),$(BOOT_SRCS))
 CORE_OUTS  = $(patsubst lib/core/%.scm,$(OUT)/core/%.$(COMPILED_SCM_EXT),$(CORE_SRCS)) $(OUT)/core.$(COMPILED_SCM_EXT)
 RNRS_OUTS  = $(patsubst lib/rnrs/%.scm,$(OUT)/rnrs/%.$(COMPILED_SCM_EXT),$(RNRS_SRCS)) $(OUT)/rnrs.$(COMPILED_SCM_EXT)
-CAPY_OUTS  = $(patsubst lib/capy/%.sls,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_SRCS_SLS)) \
-            $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_SRCS_SCM)) \
-            $(OUT)/capy/args.$(COMPILED_SCM_EXT)
+CAPY_OUTS  = $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_SRCS))
 SRFI_OUTS  = $(patsubst lib/srfi/%.scm,$(OUT)/srfi/%.$(COMPILED_SCM_EXT),$(SRFI_SRCS))
 R7RS_OUTS  = $(patsubst lib/scheme/%.scm,$(OUT)/scheme/%.$(COMPILED_SCM_EXT),$(R7RS_SRCS))
 COMMON_OUTS = $(patsubst lib/common/%.scm,$(OUT)/common/%.$(COMPILED_SCM_EXT),$(COMMON_SRCS))
+CAPY_ARGS_OUTS = $(patsubst lib/capy/%.scm,$(OUT)/capy/%.$(COMPILED_SCM_EXT),$(CAPY_ARGS_SRCS))
 
 .PHONY: all help build build-runtime build-runtime-fhs build-runtime-portable install-scm test stage-0 stage-1 stage-2 \
-	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-srfi compile-r7rs compile-common\
+	compile-cli compile-boot compile-core compile-rnrs compile-capy compile-capy-args compile-srfi compile-r7rs compile-common\
 	install-portable dist-portable install install-cross dist-deb dist-rpm
 
 all: build
@@ -395,7 +400,7 @@ endif
 
 	@echo "Stage-0 CapyScheme created in stage-0/ directory"
 
-compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-cli compile-capy compile-common
+compile-all: compile-boot compile-core compile-rnrs compile-srfi compile-r7rs compile-capy-args compile-cli compile-capy compile-common
 
 stage-1: 
 	$(MAKE) $(foreach n,0 1 2 3 4 5 6 7 8 9,$(filter -j$n%,$(MAKEFLAGS))) compile-all COMPILER=stage-0/capyc OUT=stage-1/compiled 
@@ -442,16 +447,8 @@ $(OUT)/rnrs.$(COMPILED_SCM_EXT): lib/rnrs.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
-# Capy (sls/scm)
-$(OUT)/capy/%.$(COMPILED_SCM_EXT): lib/capy/%.sls
-	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
-
+# Capy
 $(OUT)/capy/%.$(COMPILED_SCM_EXT): lib/capy/%.scm
-	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
-
-$(OUT)/capy/args.$(COMPILED_SCM_EXT): lib/capy/args.sls
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
@@ -465,21 +462,24 @@ $(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
 
-$(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.sld
-	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
-
 # Common
 $(OUT)/common/%.$(COMPILED_SCM_EXT): lib/common/%.scm
 	@mkdir -p $(dir $@)
 	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+
+$(OUT)/capy/args/option.$(COMPILED_SCM_EXT): $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT)
+$(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT): $(OUT)/capy/args/option.$(COMPILED_SCM_EXT) $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT) $(OUT)/capy/args/string.$(COMPILED_SCM_EXT)
+$(OUT)/capy/args/results.$(COMPILED_SCM_EXT): $(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT) $(OUT)/capy/args/option.$(COMPILED_SCM_EXT) $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT)
+$(OUT)/capy/args/parser.$(COMPILED_SCM_EXT): $(OUT)/capy/args/option.$(COMPILED_SCM_EXT) $(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT) $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT) $(OUT)/capy/args/results.$(COMPILED_SCM_EXT) $(OUT)/capy/args/string.$(COMPILED_SCM_EXT)
+$(OUT)/capy/args/runner.$(COMPILED_SCM_EXT): $(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT) $(OUT)/capy/args/parser.$(COMPILED_SCM_EXT) $(OUT)/capy/args/results.$(COMPILED_SCM_EXT) $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT) $(OUT)/capy/args/string.$(COMPILED_SCM_EXT)
+$(OUT)/capy/args.$(COMPILED_SCM_EXT): $(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT) $(OUT)/capy/args/option.$(COMPILED_SCM_EXT) $(OUT)/capy/args/parser.$(COMPILED_SCM_EXT) $(OUT)/capy/args/results.$(COMPILED_SCM_EXT)
 
 # -------------------------
 # High-level compile targets
 # -------------------------
 
 
-compile-cli:
+compile-cli: compile-capy-args
 	$(call require_var,COMPILER)
 	$(call require_var,OUT)
 	@echo "Compiling CLI"
@@ -508,12 +508,19 @@ compile-rnrs:
 	@$(MAKE) $(RNRS_OUTS) COMPILER=$(COMPILER) OUT=$(OUT)
 	@echo "RNRS libraries: $(words $(RNRS_SRCS)) files"
 
-compile-capy:
+compile-capy: compile-capy-args
 	$(call require_var,COMPILER)
 	$(call require_var,OUT)
 	@echo "Compiling capy"
 	@$(MAKE) $(CAPY_OUTS) COMPILER=$(COMPILER) OUT=$(OUT)
-	@echo "Capy libraries: $(words $(CAPY_SRCS_SLS)) sls + $(words $(CAPY_SRCS_SCM)) scm"
+	@echo "Capy libraries: $(words $(CAPY_SRCS)) scm"
+
+compile-capy-args:
+	$(call require_var,COMPILER)
+	$(call require_var,OUT)
+	@echo "Compiling capy args"
+	@$(MAKE) $(CAPY_ARGS_OUTS) COMPILER=$(COMPILER) OUT=$(OUT)
+	@echo "Capy args libraries: $(words $(CAPY_ARGS_SRCS)) scm"
 
 compile-srfi:
 	$(call require_var,COMPILER)
@@ -707,11 +714,11 @@ dist-rpm: build
 	find "$(PKG_ROOT)/rpm/rpmbuild/RPMS" -name "*.rpm" -maxdepth 2 -type f -print -exec cp -f {} "$(DIST_DIR)/" \;
 	@echo "Wrote RPM(s) to $(DIST_DIR)/"
 
-# Recursively walk *.scm, *.sls, *.sld files and call schemat
+# Recursively walk *.scm files and call schemat
 fmt:
 	@echo "Formatting Scheme files..."
 	@mkdir -p .fmt-tmp
-	@find lib -type f \( -name "*.scm" -o -name "*.sls" -o -name "*.sld" \) | while read -r f; do \
+	@find lib -type f -name "*.scm" | while read -r f; do \
 		echo "  $$f"; \
 		schemat < "$$f" > ".fmt-tmp/$$(basename "$$f")" && \
 		[ -s ".fmt-tmp/$$(basename "$$f")" ] && \

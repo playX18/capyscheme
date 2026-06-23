@@ -1144,12 +1144,10 @@
     (datum->syntax
       context
       (string->symbol
-        (string-append
-          "srfi-"
-          (let ((n (syntax->datum n)))
-            (if (symbol? n)
-              (substring (symbol->string n) 1)
-              (number->string n)))))))
+        (let ((n (syntax->datum n)))
+          (if (symbol? n)
+            (symbol->string n)
+            (string-append ":" (number->string n)))))))
 
   (define (resolve-r6rs-interface* import-spec)
     (define (make-custom-interface mod)

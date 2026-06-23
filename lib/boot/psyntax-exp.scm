@@ -1663,12 +1663,10 @@
          (datum->syntax
            context
            (string->symbol
-             (string-append
-               '"srfi-"
-               (let ((n.1 (syntax->datum n)))
-                 (if (symbol? n.1)
-                     (substring (symbol->string n.1) '1)
-                     (number->string n.1))))))))
+             (let ((n.1 (syntax->datum n)))
+               (if (symbol? n.1)
+                   (symbol->string n.1)
+                   (string-append '":" (number->string n.1))))))))
      (resolve-r6rs-interface*
        (lambda (import-spec)
          (letrec*
@@ -8349,4 +8347,3 @@
                         '"source expression failed to match any pattern"
                         tmp-1)))))
             (make-syntax '#f '((top)) '(hygiene capy))))))
-

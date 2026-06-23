@@ -511,27 +511,17 @@
         (format #t "irritants=~a~%" (condition-irritants exn)))
       (format p "Unhandled exception: ~a~!: ~a~%~!" (condition-who exn)))))
 
-(set! %load-extensions
-  (append '("capy.sls" "capy.sld" "capy.scm" "sls" "sld" "sch" "sps" "ss")
-    %load-extensions))
-
 (define capy:execution-mode (make-parameter 'capy))
 
-(let* (
-       [host-arch (host-arch)]
+(let* ([host-arch (host-arch)]
        [host-os (host-os)]
        [host-family (host-family)]
-       [host-os-sld (string-append host-os ".sld")]
-       [host-family-sld (string-append host-family ".sld")]
-       [arch-sld (string-append host-arch ".sld")]
-       [host-os-sls (string-append host-os ".sls")]
-       [host-family-sls (string-append host-family ".sls")]
-       [arch-sls (string-append host-arch ".sls")])
+       [host-os-scm (string-append host-os ".scm")]
+       [host-family-scm (string-append host-family ".scm")]
+       [arch-scm (string-append host-arch ".scm")])
   (set! %load-extensions
-    (append (list host-os-sld host-family-sld arch-sld
-             host-os-sls
-             host-family-sls
-             arch-sls)
+    (append (list host-os-scm host-family-scm arch-scm
+             "capy.scm" "scm" "sch" "sps" "ss")
       %load-extensions)))
 
 (define (install-r7rs!)

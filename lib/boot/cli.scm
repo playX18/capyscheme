@@ -82,6 +82,11 @@
             (exit 0))
           (when (arg-results-ref res "entrypoint")
             (set! entrypoint (parse-entrypoint (arg-results-ref res "entrypoint"))))
+          (when (and (arg-results-ref res "r7rs") (arg-results-ref res "r6rs"))
+            (error "Cannot specify both --r7rs and --r6rs modes"))
+          (cond
+            [(arg-results-ref res "r7rs") (install-r7rs!)]
+            [(arg-results-ref res "r6rs") (install-r6rs!)])
           (set! %load-path (append (canonicalize-paths (reverse (arg-results-ref res "load-path"))) %load-path))
           (set! %load-path (append %load-path (canonicalize-paths (reverse (arg-results-ref res "append-load-path")))))
           (set! %load-compiled-path (append (canonicalize-paths (reverse (arg-results-ref res "compiled-load-path"))) %load-compiled-path))
@@ -290,10 +295,6 @@
     (define append-load-path (arg-results-ref res "append-load-path"))
     (define compiled-load-path (arg-results-ref res "compiled-load-path"))
     (define extensions (arg-results-ref res "extensions"))
-    (set! %load-path (append (canonicalize-paths load-path) %load-path))
-    (set! %load-path (append %load-path (canonicalize-paths append-load-path)))
-    (set! %load-compiled-path (append (canonicalize-paths (reverse compiled-load-path)) %load-compiled-path))
-    (set! %load-extensions (append (reverse extensions) %load-extensions))
     (define out-file (arg-results-ref res "output"))
     (define r7rs-mode (arg-results-ref res "r7rs"))
     (define r6rs-mode (arg-results-ref res "r6rs"))
@@ -302,6 +303,13 @@
     (define backtrace #t)
     (if (and r7rs-mode r6rs-mode)
       (error "Cannot specify both --r7rs and --r6rs modes"))
+    (cond
+      [r7rs-mode (install-r7rs!)]
+      [r6rs-mode (install-r6rs!)])
+    (set! %load-path (append (canonicalize-paths load-path) %load-path))
+    (set! %load-path (append %load-path (canonicalize-paths append-load-path)))
+    (set! %load-compiled-path (append (canonicalize-paths (reverse compiled-load-path)) %load-compiled-path))
+    (set! %load-extensions (append (reverse extensions) %load-extensions))
     (define source-files (arg-results-rest res))
     (if (null? source-files)
       (print-help))
