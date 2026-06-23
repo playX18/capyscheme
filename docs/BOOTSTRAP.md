@@ -1,256 +1,386 @@
+# Bootstrapping CapyScheme
 
-# Bootstrapping CapyScheme (stages 0 → 2)
+CapyScheme bootstraps by building a Rust `capy` executable, creating a
+`capyc` wrapper around the same executable, and then using that compiler entry
+point to compile the Scheme libraries into `.fasl` files.
 
-CapyScheme can **self-host** itself by building a minimal runtime and then *bootstrapping* the Scheme libraries and compiler through a few stages.
-
-The recipes are provided by `Makefile` (ported from the original `Justfile`). This files explains what each stage does, which targets to run, and how to tweak the build.
-
-## Top-level overview
-
-CapyScheme is built in two layers:
-
-1. A **Rust runtime** (`libcapy`) plus tiny **C boot binaries** (`capy` and `capyc`).
-2. A set of **Scheme libraries** that are compiled into shared objects (e.g. `.so` on Linux) using `capyc`.
-
-Bootstrapping means:
-
-- build a first runnable compiler (`capyc`) using the Rust runtime,
-- use it to compile libraries,
-- then use the newly built compiler to rebuild those libraries again (stage-2).
-
-At the end you get `stage-2/` as the “final” self-hosted result.
-
-## Prerequisites
-
-You’ll need:
-
-- Rust toolchain (this repo includes `rust-toolchain.toml`).
-- A C compiler (`clang` by default, but `CC=gcc` works on many setups).
-- Optional: `cross` if you want to build for a non-host target.
+The current build is driven by `Makefile`.
 
 ## Quickstart
 
-Build everything (runtime + stage-0/1/2):
+Build the runtime and bootstrap stages:
 
 ```sh
 make build
 ```
 
-Afterwards, you’ll have:
+This runs, in order:
 
-- `stage-0/capy`, `stage-0/capyc`
-- `stage-1/capy`, `stage-1/capyc`, plus compiled libraries in `stage-1/compiled/`
-- `stage-2/capy`, `stage-2/capyc`, plus compiled libraries in `stage-2/compiled/`
+1. `make stage-0`
+2. `make build-runtime`
+3. `make stage-1`
+4. `make stage-2`
 
-## Makefile knobs (variables)
+The result is:
 
-Most targets accept these variables:
+- `bin/capy` and `bin/capyc`
+- `stage-0/capy` and `stage-0/capyc`
+- `stage-1/capy`, `stage-1/capyc`, and `stage-1/compiled/`
+- `stage-2/capy`, `stage-2/capyc`, and `stage-2/compiled/`
 
-- `PROFILE` (default: `release`)
-	- Rust profile used for builds.
-	- Typical values: `release` or `debug`.
-- `TARGET` (default: `rustc --print host-tuple`)
-	- Rust target triple.
-	- If `TARGET != host`, the Makefile will try to use `cross`.
-- `CC` (default: `clang`)
-	- C compiler used to build the launcher binaries.
-- `PREFIX` (default: `$HOME/.local/share`)
-	- Installation prefix used by `install-portable` and `install`.
-- `VERSION`
-	- Auto-detected from `capy/Cargo.toml` (you can override it).
-- `PORTABLE` (default: `1`)
-	- Controls some rpath behavior for the produced launchers.
-- `COMPILE_PSYNTAX` (default: `0`)
-   - When set to `1`, stage-0 will additionally compile psyntax into psyntax-exp.
-   Set this to 1 when you modify macro-expander code (psyntax.scm).
-  
+`stage-2/compiled/` is the final bootstrapped library set used by the install
+and packaging targets.
 
-## Artifacts and directories
+## Prerequisites
 
-### Target directory
+You need:
 
-Rust builds under a target-specific directory:
+- Rust, using the toolchain selected by `rust-toolchain.toml`.
+- `make` and Bash, which the Makefile selects as its recipe shell.
+- `rsync` for install targets.
+- Optional: `cross`, when building for a `TARGET` different from the host.
+- Optional: `dpkg-deb`, `fakeroot`, or `rpmbuild` for package targets.
 
-- `target/<TARGET>/<PROFILE>/`
+## Main Makefile Variables
 
-This directory is referenced as:
+- `PROFILE` defaults to `release`.
+  It is passed to Cargo as `--profile $(PROFILE)`.
+- `TARGET` defaults to `rustc --print host-tuple`.
+  If it differs from the host target, the Makefile uses `cross`; otherwise it
+  uses `cargo`.
+- `PREFIX` defaults to `$(HOME)/.local/share`.
+  Install targets write below this path unless overridden.
+- `VERSION` is discovered with `cargo info capy`, falling back to
+  `capy/Cargo.toml`.
+- `PORTABLE` defaults to `1`.
+  It is still exposed as a Makefile knob, but the current runtime targets encode
+  portable behavior through Cargo features.
+- `COMPILE_PSYNTAX` defaults to `0`.
+  Set it to `1` when changes to `lib/boot/psyntax.scm` require regenerating
+  `lib/boot/psyntax-exp.scm`.
+- `MMTK_PLAN` defaults to `StickyImmix`.
+- `CAPY_LOAD_PATH` defaults to `./lib`.
+- `CAPY` defaults to `stage-0/capy` for `make test`.
 
-- `TARGET_PATH := target/<TARGET>/<PROFILE>`
+Rust artifacts are built under:
 
-It contains `libcapy.*` and any other Rust build products.
+```text
+target/$(TARGET)/$(PROFILE)/
+```
 
-### Stage directories
+The Makefile refers to that path as `$(TARGET_PATH)`.
 
-Each stage has two kinds of artifacts:
+## Runtime Targets
 
-- `stage-N/capy` and `stage-N/capyc`: boot binaries wired to the Rust runtime.
-- `stage-N/compiled/`: compiled Scheme libraries as shared objects.
+### `make build-runtime-bootstrap`
 
-The compiler (`capyc`) compiles Scheme sources from `lib/` into `.so`/`.dylib`/`.dll` under `stage-N/compiled/`.
+Builds `capy` with:
 
-## The bootstrap stages
+```sh
+cargo build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable,bootstrap
+```
 
-### Stage 0: build a runnable system
+Then it copies the executable to `bin/capy` and writes `bin/capyc` as a shell
+wrapper:
 
-Target: `make stage-0`
+```sh
+exec "$(dirname "$0")/capy" --capy-compiler-entrypoint "$@"
+```
 
-What it does:
+### `make build-runtime`
 
-1. Builds the Rust crate `capy` with `--features portable,bootstrap`.
-2. Builds `stage-0/capy` and `stage-0/capyc` (C launchers linked to `libcapy`).
-3. Warms up a cache and triggers auto-compilation once:
-	 - runs `stage-0/capy -L lib --fresh-auto-compile -c 42`
-	 - with `XDG_CACHE_HOME=stage-0/cache`.
+Builds the normal portable runtime:
 
-Optional psyntax compile (when `COMPILE_PSYNTAX=1`):
+```sh
+cargo build --profile $(PROFILE) --target $(TARGET) -p capy --bin capy --features portable --no-default-features
+```
 
-- runs `lib/boot/compile-psyntax.scm` to compile `psyntax.scm` into `psyntax-exp.scm`.
+It also writes `bin/capy` and `bin/capyc`.
 
-Environment used in stage-0 runs:
+### `make build-runtime-portable`
 
-- `CAPY_LOAD_PATH=./lib`
+Builds the same portable runtime shape as `build-runtime`, but installs it as:
+
+- `bin/capy-full`
+- `bin/capyc-full`
+
+Portable install and tarball targets copy `bin/capy-full` as the installed
+`capy` executable and generate a matching `capyc` wrapper.
+
+### `make build-runtime-fhs`
+
+Builds with:
+
+```sh
+CAPY_SYSROOT=$(PREFIX) cargo build --no-default-features --profile $(PROFILE) --target $(TARGET) -p capy --bin capy
+```
+
+It writes `bin/capy-full` and `bin/capyc-full`. The FHS install and package
+targets use this form so the executable looks for its system root under
+`$(PREFIX)`.
+
+## Bootstrap Stages
+
+### Stage 0: `make stage-0`
+
+`stage-0` depends on `build-runtime-bootstrap`.
+
+It creates:
+
+- `stage-0/capy`, copied from `$(TARGET_PATH)/capy`
+- `stage-0/capyc`, a wrapper that invokes `stage-0/capy` with
+  `--capy-compiler-entrypoint`
+- `stage-0/cache`, populated by warm-up runs
+
+The warm-up commands run with:
+
+- `RUST_MIN_STACK=134217728`
+- `MMTK_PLAN=StickyImmix`
+- `CAPY_GC_MAX_HEAP=8G`
 - `XDG_CACHE_HOME=stage-0/cache`
-- `LD_LIBRARY_PATH=<TARGET_PATH>` (and `DYLD_FALLBACK_LIBRARY_PATH` on macOS)
+- `CAPY_LOAD_PATH=./lib`
 
-### Stage 1: compile libraries using stage-0 compiler
+They evaluate:
 
-Target: `make stage-1`
+- `42`
+- `(import (rnrs))`
+- `(import (scheme base))`
+- `(import (srfi 1))`
+- `(import (srfi 13))`
 
-What it does:
+If `COMPILE_PSYNTAX=1`, stage 0 also runs
+`lib/boot/compile-psyntax.scm` and then checks an import of both
+`(scheme base)` and `(rnrs)`.
 
-1. Uses `stage-0/capyc` to compile every Scheme library under `lib/`:
-	 - boot libraries (`lib/boot/*.scm`)
-	 - core (`lib/core/*.scm` and `lib/core.scm`)
-	 - rnrs (`lib/rnrs/*.scm` and `lib/rnrs.scm`)
-	 - srfi (`lib/srfi/*.scm`)
-	 - r7rs (`lib/scheme/*.scm`)
-	 - CLI (`lib/boot/cli.scm` and `lib/boot.scm`)
-	 - capy libraries (`lib/capy/*.sls` and some `.scm`)
-2. Copies boot binaries from stage-0:
-	 - `stage-1/capy` and `stage-1/capyc` are copies of stage-0 binaries.
+### Stage 1: `make stage-1`
 
-### Stage 2: rebuild libraries using stage-1 compiler
+`stage-1` compiles all Scheme libraries with:
 
-Target: `make stage-2`
+```text
+COMPILER=stage-0/capyc
+OUT=stage-1/compiled
+```
 
-What it does:
+Then it copies:
 
-1. Uses `stage-1/capyc` to compile libraries again into `stage-2/compiled/`.
-2. Copies boot binaries from stage-1.
+- `stage-0/capy` to `stage-1/capy`
+- `stage-0/capyc` to `stage-1/capyc`
 
-Stage-2 is the “final” self-hosted output used by the install/dist targets.
+### Stage 2: `make stage-2`
 
-## Runtime-only builds
+`stage-2` compiles the same Scheme library set with:
 
-If you only want the Rust runtime (no Scheme bootstrap stages):
+```text
+COMPILER=stage-1/capyc
+OUT=stage-2/compiled
+```
 
-- `make build-runtime`
-	- Builds `capy` crate with `--features portable --no-default-features`.
+Then it copies:
 
-There are also convenience targets that build the “full” launchers:
+- `stage-1/capy` to `stage-2/capy`
+- `stage-1/capyc` to `stage-2/capyc`
 
-- `make build-runtime-fhs`
-	- Builds with `CAPY_SYSROOT=$(PREFIX)` and links launchers with an rpath pointing at `${PREFIX}/lib/`.
-- `make build-runtime-portable`
-	- Same Rust build flags as `build-runtime`, but links launchers with rpath `$ORIGIN` so `libcapy.*` can live next to them.
+## Compiled Libraries
 
-## Installing and distributing
+Compiled Scheme output uses the `fasl` extension:
 
-### Portable install (self-contained in one directory)
+```text
+COMPILED_SCM_EXT := fasl
+```
 
-Target: `make install-portable`
+`make compile-all` expands to:
 
-Installs under:
+- `compile-boot`
+- `compile-core`
+- `compile-rnrs`
+- `compile-srfi`
+- `compile-r7rs`
+- `compile-capy-args`
+- `compile-cli`
+- `compile-capy`
+- `compile-common`
 
-- `$(PREFIX)/capy/$(VERSION)/`
+The stage targets pass `COMPILER` and `OUT` into these compile targets. Most
+files are compiled with:
 
-It copies:
+```sh
+$(CAPY_ENV) $(COMPILER) --nobacktrace -o <output.fasl> -m "capy user" <source.scm>
+```
 
-- `lib/` (Scheme sources)
-- `stage-2/compiled/` (compiled libraries)
-- `libcapy.*` from the Rust target directory
-- `stage-2/capy-full` and `stage-2/capyc-full` (launchers)
+Boot and CLI files use `-m "capy" -L lib`.
 
-It also creates a versioned symlink:
+The current source groups include:
 
-- `capy-$(VERSION)` → `capy`
+- boot libraries under `lib/boot/`
+- core libraries under `lib/core/` plus `lib/core.scm`
+- R6RS/RNRS libraries under `lib/rnrs/` plus `lib/rnrs.scm`
+- SRFI libraries under `lib/srfi/`
+- R7RS libraries under `lib/scheme/`
+- Capy libraries under `lib/capy/`
+- common libraries under `lib/common/`
+- CLI entry libraries `lib/boot/cli.scm` and `lib/boot.scm`
 
-After installing, add the install directory to your `PATH`.
+## Tests
 
-### Portable tarball (no install)
+Run:
 
-Target: `make dist-portable`
+```sh
+make test
+```
 
-Creates a `.tar.gz` containing a portable layout like the one from `install-portable`.
+By default this uses `CAPY=stage-0/capy`. If that executable does not exist,
+the target builds `stage-0` first. It runs every `*.scm` file under
+`tests/lib/` with:
 
-You can customize output locations:
+```sh
+$(CAPY_ENV) $(CAPY) -L lib --fresh-auto-compile -s <test>
+```
 
-- `OUTDIR` (default: `dist`)
-- `STAGEDIR` (default: `stage-dist`)
-- `OUTNAME` (default: auto-generated)
+Use another executable with:
 
-### FHS-ish install (bin/lib/share)
+```sh
+make test CAPY=/path/to/capy
+```
 
-Target: `make install`
+## Installing
 
-Installs into an FHS-ish layout under `$(PREFIX)`:
+### Portable Install
 
-- `$(PREFIX)/bin/capy` and `$(PREFIX)/bin/capyc`
-- `$(PREFIX)/lib/libcapy.*`
-- `$(PREFIX)/lib/capy/compiled/` (compiled libraries)
-- `$(PREFIX)/share/capy/lib/` (Scheme sources)
+Run:
 
-This target may use `sudo` if you’re not root.
+```sh
+make install-portable
+```
 
-## Notes on how compilation works
+This depends on `build` and `build-runtime-portable`, then installs into:
 
-The Makefile compiles each Scheme file into a shared library:
+```text
+$(PREFIX)/capy/$(VERSION)/
+```
 
-- Linux: `.so`
-- macOS: `.dylib`
-- Windows (mingw): `.dll`
+It writes:
 
-Compilation is done by invoking the compiler launcher (`capyc`) with a module set (`-m`) and library search path (`-L`).
+- `capy`, copied from `bin/capy-full`
+- `capyc`, generated as a wrapper around installed `capy`
+- `capy-$(VERSION)`, a symlink to `capy`
+- `lib/`, copied from the source tree
+- `compiled/`, copied from `stage-2/compiled`
+- `extensions/`
 
-Examples from the rules:
+Add `$(PREFIX)/capy/$(VERSION)` to `PATH` to use that installation.
 
-- boot libraries are compiled with `-m "capy" -L lib`
-- most others are compiled with `-m "capy user"`
+### FHS Install
+
+Run:
+
+```sh
+make install PREFIX=/usr/local
+```
+
+This depends on `build`, then runs `build-runtime-fhs` and installs:
+
+- `$(PREFIX)/bin/capy`
+- `$(PREFIX)/bin/capyc`
+- `$(PREFIX)/lib/capy/compiled/`
+- `$(PREFIX)/share/capy/lib/`
+
+## Distribution Targets
+
+### Portable Tarball
+
+Run:
+
+```sh
+make dist-portable
+```
+
+This depends on `build` and `build-runtime-portable`. It stages the same layout
+as `install-portable`, adds `LICENSE` and `CHANGELOG.md`, and writes:
+
+```text
+dist/capyscheme-$(VERSION)-$(TARGET).tar.gz
+```
+
+Environment variables accepted by the recipe:
+
+- `OUTDIR`, defaulting to `dist`
+- `STAGEDIR`, defaulting to `stage-dist`
+- `OUTNAME`, defaulting to `capyscheme-$(VERSION)-$(TARGET).tar.gz`
+
+### Debian Package
+
+Run:
+
+```sh
+make dist-deb
+```
+
+This depends on `build`, builds an FHS runtime with `PREFIX=/usr`, stages files
+under `stage-pkg/deb`, and writes a `.deb` into `dist/`.
+
+Useful knobs:
+
+- `DIST_DIR`
+- `PKG_NAME`
+- `PKG_ROOT`
+- `DEB_MAINTAINER`
+- `DEB_SECTION`
+- `DEB_PRIORITY`
+
+### RPM Package
+
+Run:
+
+```sh
+make dist-rpm
+```
+
+This depends on `build`, builds an FHS runtime with `PREFIX=/usr`, stages files
+under `stage-pkg/rpm`, writes a spec file, runs `rpmbuild`, and copies resulting
+RPMs into `dist/`.
+
+Useful knobs:
+
+- `DIST_DIR`
+- `PKG_NAME`
+- `PKG_ROOT`
+- `RPM_LICENSE`
+- `RPM_SUMMARY`
 
 ## Troubleshooting
 
-### `error while loading shared libraries: libcapy.so: cannot open shared object file`
-
-This means the launcher can’t find `libcapy`.
-
-- For stage builds, the Makefile sets `LD_LIBRARY_PATH=$(TARGET_PATH)` when running `stage-0/capy`.
-- For installed builds:
-	- Portable installs should work because rpath is set to `$ORIGIN`.
-	- FHS installs rely on rpath pointing at `$(PREFIX)/lib/`.
-
-If you built custom binaries, verify their rpath and dynamic deps.
-
 ### `cross: command not found`
 
-If you set `TARGET` to something other than your host triple, the Makefile will choose `cross`.
-
-Install it via:
+The Makefile uses `cross` when `TARGET` differs from the host target. Install it
+with:
 
 ```sh
 make install-cross
 ```
 
-Or build for your native target (don’t override `TARGET`).
+If you intended a native build, leave `TARGET` unset.
 
-### Stage cache issues
+### Tests say `CAPY executable not found`
 
-Stage-0 uses:
-
-- `XDG_CACHE_HOME=stage-0/cache`
-
-If something is corrupted, you can remove it and rebuild stage-0:
+Build stage 0 first:
 
 ```sh
-rm -rf stage-0/cache
 make stage-0
 ```
+
+Or point the test target at an existing executable:
+
+```sh
+make test CAPY=/path/to/capy
+```
+
+### Compiled libraries are missing
+
+Run the full bootstrap:
+
+```sh
+make build
+```
+
+The install and package targets expect `stage-2/compiled/` to exist and contain
+the bootstrapped `.fasl` library set.
