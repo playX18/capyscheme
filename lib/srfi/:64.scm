@@ -391,7 +391,7 @@
                 " does not match test-begin "
                 end-name)))
       (cond-expand
-        (23 (error msg))
+        (srfi-23 (error msg))
         (else (display msg) (newline)))))
 
   (define (%test-final-report1 value label color port)
@@ -451,7 +451,7 @@
       (if (null? groups)
         (let ((msg (string-append line "test-end not in a group")))
           (cond-expand
-            (23 (error msg))
+            (srfi-23 (error msg))
             (else (display msg) (newline)))))
       (if (and suite-name (not (equal? suite-name (car groups))))
         ((test-runner-on-bad-end-name r) r suite-name (car groups)))
@@ -648,7 +648,7 @@
               (ex <java.lang.Throwable>
                 (test-result-set! (test-runner-current) 'actual-error ex)
                 #f))))))
-    (34
+    (srfi-34
       (define-syntax %test-evaluate-with-catch
         (syntax-rules ()
           ((%test-evaluate-with-catch test-expression)
@@ -952,7 +952,7 @@
                              (instance? ex et))
                         (else #t)))))
                 (%test-report-result)))))))
-    ((and 34 35)
+    ((and srfi-34 srfi-35)
       (define-syntax %test-error
         (syntax-rules ()
           ((%test-error r etype expr)
@@ -965,7 +965,7 @@
                                        (else #t))
                                 expr
                                 #f))))))
-    (34
+    (srfi-34
       (define-syntax %test-error
         (syntax-rules ()
           ((%test-error r etype expr)
@@ -1129,5 +1129,5 @@
           (gauche (eval form ((with-module gauche.internal vm-current-module))))
           (else (eval form)))
         (cond-expand
-          (23 (error "(not at eof)"))
+          (srfi-23 (error "(not at eof)"))
           (else "error"))))))

@@ -780,8 +780,7 @@ thunks! {
         nfree: usize,
         is_cont: bool
     ) -> Value<'gc> {
-        let free = vec![Value::undefined(); nfree];
-        Closure::new(ctx, code_block, &free, is_cont).into()
+        Closure::new(ctx, code_block, nfree, is_cont).into()
     }
 
     pub fn make_aot_code_block(

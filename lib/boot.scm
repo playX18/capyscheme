@@ -110,11 +110,10 @@
 ;            (format #t ";; (primitive) Error loading file '~a'~%" filename)
 ;            (raise exn))
 ;        (lambda () (thunk))))))))
-
 (primitive-load "boot/base.scm")
 (primitive-load "boot/libraries.scm")
 (primitive-load "boot/match.scm")
-(primitive-load "boot/compiler.scm")
+;(primitive-load "boot/compiler.scm")
 (primitive-load "boot/cli.scm")
 
 (let ([user-module (define-module* '(capy user))])

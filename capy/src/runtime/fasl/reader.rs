@@ -523,7 +523,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
                 } else {
                     code_block.entrypoint
                 };
-                Ok(Value::from(Closure::new_with_entry(
+                Ok(Value::from(Closure::new_with_entry_and_free_vars(
                     self.ctx, code_block, &free, is_cont, entry,
                 )))
             }

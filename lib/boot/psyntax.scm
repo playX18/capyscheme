@@ -1115,31 +1115,41 @@
 
   (define (r6rs-import-sym? stx)
     (symbol? (syntax->datum stx)))
+  (define (exact-nonnegative-integer? x)
+    (and (exact-integer? x)
+      (not (negative? x))))
   (define (r6rs-import-n? stx)
-    (let ((n (syntax->datum stx)))
-      (and (exact-integer? n)
-        (not (negative? n)))))
-  (define (r6rs-import-colon-n? x)
-    (let ((sym (syntax->datum x)))
-      (and (symbol? sym)
-        (let ((str (symbol->string sym)))
-          (and (string-prefix? ":" str)
-            (let ((num (string->number (substring str 1))))
-              (and (exact-integer? num)
-                (not (negative? num)))))))))
-  (define (r6rs-srfi-name? stx)
-    (syntax-case stx (srfi)
-      ((srfi n rest ...)
-        (and (and-map r6rs-import-sym? #'(rest ...))
-          (or (r6rs-import-n? #'n)
-            (r6rs-import-colon-n? #'n))))
+    (exact-nonnegative-integer? (syntax->datum stx)))
+  (define (r7rs-mode?)
+    (eq? (capy:execution-mode) 'r7rs))
+  (define (r6rs-mode?)
+    (eq? (capy:execution-mode) 'r6rs))
+  (define (module-name-part? stx)
+    (let ((part (syntax->datum stx)))
+      (cond
+        ((symbol? part) #t)
+        ((and (exact-nonnegative-integer? part) (r7rs-mode?)) #t)
+        ((number? part)
+          (syntax-violation
+            #f
+            "numeric module name components are only valid in R7RS mode"
+            stx))
+        (else #f))))
+  (define (module-name? stx)
+    (syntax-case stx ()
+      ((name name* ...)
+        (and-map module-name-part? #'(name name* ...)))
       (_ #f)))
-  (define (r6rs-module-name? stx)
-    (or (r6rs-srfi-name? stx)
-      (syntax-case stx ()
-        ((name name* ...)
-          (and-map r6rs-import-sym? #'(name name* ...)))
+  (define (r6rs-srfi-name? stx)
+    (and (r6rs-mode?)
+      (syntax-case stx (srfi)
+        ((srfi n rest ...)
+          (and (and-map r6rs-import-sym? #'(rest ...))
+            (r6rs-import-n? #'n)))
         (_ #f))))
+  (define (library-reference-name? stx)
+    (or (r6rs-srfi-name? stx)
+      (module-name? stx)))
   (define (make-r6rs-srfi-n context n)
     (datum->syntax
       context
@@ -1178,11 +1188,11 @@
                 #`(library (srfi #,srfi-n rest ... (version ...))))))))
 
       ((library (name name* ... (version ...)))
-        (and-map r6rs-import-sym? #'(name name* ...))
+        (module-name? #'(name name* ...))
         (resolve-interface (syntax->datum #'(name name* ...)) #f '() #f))
 
       ((library (name name* ...))
-        (and-map r6rs-import-sym? #'(name name* ...))
+        (module-name? #'(name name* ...))
         (resolve-r6rs-interface* #'(library (name name* ... ()))))
 
       ((only import-set identifier ...)
@@ -1273,11 +1283,11 @@
                   (lp (cdr in) (cons (vector to replace? var) out))))))))
 
       ((name name* ... (version ...))
-        (r6rs-module-name? #'(name name* ...))
+        (library-reference-name? #'(name name* ...))
         (resolve-r6rs-interface* #'(library (name name* ... (version ...)))))
 
       ((name name* ...)
-        (r6rs-module-name? #'(name name* ...))
+        (library-reference-name? #'(name name* ...))
         (resolve-r6rs-interface* #'(library (name name* ... ()))))))
 
   (define (expand-import-form stx)
@@ -1400,7 +1410,7 @@
           (import ispec ...)
           body
           ...)
-        (r6rs-module-name? #'(name name* ...))
+        (module-name? #'(name name* ...))
         #`(library (name name* ... ())
            (export espec ...)
            (import ispec ...)
@@ -1412,7 +1422,7 @@
           (import ispec ...)
           body
           ...)
-        (r6rs-module-name? #'(name name* ...))
+        (module-name? #'(name name* ...))
         (let* ((library-name (syntax->datum #'(name name* ...)))
                (auto-prelims (if (or (equal? library-name '(capy prelims))
                                   (equal? library-name '(core)))
@@ -1655,6 +1665,7 @@
               ((define-module-form)
                 (syntax-case e ()
                   [(_ (name name* ...) body ...)
+                    (module-name? #'(name name* ...))
                     (parse
                       #'((eval-when (expand load eval)
                           (let ([m ((@@ (capy) define-module*) '(name name* ...))])
@@ -1666,6 +1677,7 @@
               ((define-pure-module-form)
                 (syntax-case e ()
                   [(_ (name name* ...) body ...)
+                    (module-name? #'(name name* ...))
                     (parse
                       #'((eval-when (expand load eval)
                           (let ([m ((@@ (capy) define-module*) '(name name* ...) #t)])
@@ -2456,7 +2468,7 @@
   (define (expand-public-ref e r w mod)
     (syntax-case e ()
       [(_ (mod ...) id)
-        (and (and-map id? #'(mod ...)) (id? #'id))
+        (and (module-name? #'(mod ...)) (id? #'id))
         (values
           (syntax->datum #'id)
           r
@@ -2494,7 +2506,7 @@
                tmp-1))
           (apply (lambda (id) (values (syntax->datum id) r top-wrap #f '(primitive))) tmp-1)
           (let ((tmp-1 ($sc-dispatch tmp '(_ each-any any))))
-            (if (and tmp-1 (apply (lambda (mod id) (and (and-map id? mod) (id? id))) tmp-1))
+            (if (and tmp-1 (apply (lambda (mod id) (and (module-name? mod) (id? id))) tmp-1))
               (apply (lambda (mod id)
                       (values
                         (syntax->datum id)
@@ -2509,7 +2521,7 @@
                               (vector 'free-id (make-syntax '@@ top-wrap '(hygiene capy)))
                               'each-any
                               'any))))
-                (if (and tmp-1 (apply (lambda (mod exp) (and-map id? mod)) tmp-1))
+                (if (and tmp-1 (apply (lambda (mod exp) (module-name? mod)) tmp-1))
                   (apply (lambda (mod exp)
                           (let ((mod (syntax->datum
                                       (cons (make-syntax 'private top-wrap '(hygiene capy)) mod))))

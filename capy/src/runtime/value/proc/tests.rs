@@ -35,7 +35,7 @@ fn closure_inherits_metadata_from_code_block() {
             false,
             metadata,
         );
-        let closure = Closure::new(ctx, code_block, &[], false);
+        let closure = Closure::new(ctx, code_block, 0, false);
 
         assert_eq!(closure.code, code_block.entrypoint);
         assert!(Gc::ptr_eq(closure.code_block, code_block));
@@ -55,7 +55,7 @@ fn closure_can_use_explicit_entry_without_changing_code_block() {
             metadata,
         );
         let custom_entry = code_block.entrypoint + 1usize;
-        let closure = Closure::new_with_entry(ctx, code_block, &[], false, custom_entry);
+        let closure = Closure::new_with_entry(ctx, code_block, 0, false, custom_entry);
 
         assert_eq!(closure.code, custom_entry);
         assert_eq!(
@@ -79,14 +79,14 @@ fn mutating_closure_metadata_does_not_mutate_code_block_default() {
             metadata,
         );
 
-        let closure_a = Closure::new(ctx, code_block, &[], false);
+        let closure_a = Closure::new(ctx, code_block, 0, false);
         let updated = Value::cons(ctx, ctx.intern("name"), ctx.str("updated"));
         let wclosure = Gc::write(*ctx, closure_a);
         barrier::field!(wclosure, Closure, meta)
             .unlock()
             .set(updated);
 
-        let closure_b = Closure::new(ctx, code_block, &[], false);
+        let closure_b = Closure::new(ctx, code_block, 0, false);
 
         assert_eq!(code_block.metadata.get(), metadata);
         assert_eq!(closure_a.meta.get(), updated);
