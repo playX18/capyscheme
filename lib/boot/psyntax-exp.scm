@@ -2234,7 +2234,7 @@
                                                                          #(expand)
                                                                          #((top))
                                                                          #(#((capy)
-                                                                             id39491))))
+                                                                             id851))))
                                                                      '(hygiene
                                                                         capy))
                                                                    (make-syntax
@@ -3199,6 +3199,26 @@
                                            'each-any))))))
                       ($sc-dispatch tmp '())))
                    clauses))))
+            (prepend-reversed-syntax-list
+              (lambda (items out)
+                ((lambda (tmp)
+                   ((lambda (tmp.1)
+                      (if tmp.1
+                          (apply (lambda () out) tmp.1)
+                          ((lambda (tmp.2)
+                             (if tmp.2
+                                 (apply (lambda (item rest)
+                                          (prepend-reversed-syntax-list
+                                            rest
+                                            (cons item out)))
+                                        tmp.2)
+                                 (syntax-violation
+                                   '#f
+                                   '"source expression failed to match any pattern"
+                                   tmp)))
+                           ($sc-dispatch tmp '(any . any)))))
+                    ($sc-dispatch tmp '())))
+                 items)))
             (partition-decls
               (lambda (decls exports imports code)
                 ((lambda (tmp)
@@ -3232,13 +3252,9 @@
                                                           decls.1
                                                           exports
                                                           imports
-                                                          (cons (cons (make-syntax
-                                                                        'begin
-                                                                        '((top))
-                                                                        '(hygiene
-                                                                           capy))
-                                                                      expr)
-                                                                code)))
+                                                          (prepend-reversed-syntax-list
+                                                            expr
+                                                            code)))
                                                       tmp.4)
                                                ((lambda (tmp.5)
                                                   (if tmp.5
@@ -3777,7 +3793,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id39491))))
+                                                                                     id851))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -3802,7 +3818,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id42804))))
+                                                                                                       id4177))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (list (list (make-syntax
@@ -3839,7 +3855,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id42804))))
+                                                                                                       id4177))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -3894,7 +3910,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id39491))))
+                                                                                     id851))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -3919,7 +3935,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id42804))))
+                                                                                                       id4177))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (cons (list (make-syntax
@@ -3957,7 +3973,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id42804))))
+                                                                                                       id4177))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -4007,7 +4023,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id39491))))
+                                                                                     id851))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4066,7 +4082,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id39491))))
+                                                                                     id851))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4125,7 +4141,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id39491))))
+                                                                                     id851))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
