@@ -1494,6 +1494,11 @@
           (if (has-req? #'test)
             #'(decl ...)
             (handle-cond-expand #'clauses)))))
+    (define (prepend-reversed-syntax-list items out)
+      (syntax-case items ()
+        (() out)
+        ((item . rest)
+          (prepend-reversed-syntax-list #'rest (cons #'item out)))))
     (define (partition-decls decls exports imports code)
       (syntax-case decls (export import begin include include-ci
                           include-library-declarations
@@ -1505,7 +1510,7 @@
           (partition-decls #'decls exports (append imports #'(clause ...)) code))
         (((begin expr ...) . decls)
           (partition-decls #'decls exports imports
-            (cons #'(begin expr ...) code)))
+            (prepend-reversed-syntax-list #'(expr ...) code)))
         (((include filename ...) . decls)
           (partition-decls #'decls exports imports
             (cons #'(begin (include filename) ...) code)))
