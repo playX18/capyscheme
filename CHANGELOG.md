@@ -1,4 +1,4 @@
-## [unreleased]
+## [2.0.0](https://codeberg.org/playXE/capy/compare/v1.3.0..v2.0.0) - 2026-06-25
 
 ### ⛰️  Features
 

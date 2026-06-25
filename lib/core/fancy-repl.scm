@@ -351,6 +351,26 @@
         matches)
       (newline)))
 
+  (define (print-startup-banner)
+    (display (styled-string "   ____                  " 'bold 'cyan))
+    (newline)
+    (display (styled-string "  / ___|__ _ _ __  _   _ " 'bold 'cyan))
+    (newline)
+    (display (styled-string " | |   / _` | '_ \\| | | |" 'bold 'cyan))
+    (newline)
+    (display (styled-string " | |__| (_| | |_) | |_| |" 'bold 'cyan))
+    (newline)
+    (display (styled-string "  \\____\\__,_| .__/ \\__, |" 'bold 'cyan))
+    (newline)
+    (display (styled-string "            |_|    |___/ " 'bold 'cyan))
+    (newline)
+    (display (styled-string
+               (string-append "v" (implementation-version) " | R6RS/R7RS Scheme")
+               'bold 'green))
+    (newline)
+    (newline)
+    (flush-output-port (current-output-port)))
+
   (define (read-eval-print-loop)
     (define editor
       (make-line-editor
@@ -362,6 +382,7 @@
         #:continuation?
         (lambda (text cursor)
           (fancy-repl-incomplete-input? text))))
+    (print-startup-banner)
     (let loop ()
       (guard (c
               [else
