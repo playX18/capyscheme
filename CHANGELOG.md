@@ -41,6 +41,9 @@
 - *(ssa)* Inline allocation - ([1fd7b1b](https://codeberg.org/playXE/capy/commit/1fd7b1b2845547cacbdd03ca5fcd7aa74c4ccd91))
 - *(tests)* Use srfi-64 test runner for racket/r6rs test suite - ([0ca56c9](https://codeberg.org/playXE/capy/commit/0ca56c9ed305d6528c9c56be31d37a483dd74fba))
 - *(vscode)* Add Capy Scheme LSP extension - ([180ec16](https://codeberg.org/playXE/capy/commit/180ec160da7aa46f8b6c981d6a59961ef96e036f))
+- Use generic static for classID registratio (fixed) - ([d0651b5](https://codeberg.org/playXE/capy/commit/d0651b58aab44eedef6c318c08be077c98d9d98e))
+- Use generic static to allocate class ids - ([28bb3aa](https://codeberg.org/playXE/capy/commit/28bb3aabca763f4fd71ad4d73d50d336ca4a09b0))
+- Make slot-ref-using-class and slot-set-using-class generics - ([d9fbe3d](https://codeberg.org/playXE/capy/commit/d9fbe3d15cedc8f54e7c176f2e259297cc61c84f))
 - Faster class ID allocation - ([ee5bea6](https://codeberg.org/playXE/capy/commit/ee5bea63f6eb59b87b0ced518c538bdaa03d1f63))
 - FASL full encoding - ([702d5ce](https://codeberg.org/playXE/capy/commit/702d5ce2c05b79feb5e7f8767568faddcd619516))
 - FASL compilation instead of ELF/mach-o - ([4eb8e94](https://codeberg.org/playXE/capy/commit/4eb8e94a296091b6cde01ae13dbe3f61cfa55833))
@@ -59,14 +62,19 @@
 - *(capy/term)* Synchronized update - ([ea0f259](https://codeberg.org/playXE/capy/commit/ea0f259a2234421d0cb246cc7b7e2ad6efaa2c7e))
 - *(core)* Make generic hashtables work properly - ([3becc08](https://codeberg.org/playXE/capy/commit/3becc08906b43fb0835fb84fe45c23b7280dc82b))
 - *(cps)* Lower to wrong arity condition instead of panicking in compiler - ([4ecdeca](https://codeberg.org/playXE/capy/commit/4ecdecaa0f4c1a929fe339b4aa8ea12d756d7c6e))
+- *(import)* Resolve libraries with numbers properly - ([c9cbf35](https://codeberg.org/playXE/capy/commit/c9cbf35b4acb5fda00163b2f88ad377d2a1ccbd2))
 - *(lib)* Fix #%app imports - ([23d5085](https://codeberg.org/playXE/capy/commit/23d50859053535873404050e35ccee128280173d))
 - *(lib/capy)* Better threading - ([712093f](https://codeberg.org/playXE/capy/commit/712093f4a25348acec0393f9325d51d6814b046b))
 - *(lib/core)* Mutex protect data - ([e551a91](https://codeberg.org/playXE/capy/commit/e551a911a1704e6744ff456c2491a27dfa2d1742))
 - *(number)* Fix quotient on flonums panicking - ([f59029c](https://codeberg.org/playXE/capy/commit/f59029c9bf6c4559f57ad1a8c928468777532a1e))
+- *(psyntax)* Splice begin body in define-library correctly - ([43663b7](https://codeberg.org/playXE/capy/commit/43663b7e30d610a5040c971ae3401e772b8e56b1))
 - *(psyntax)* Proper expadn-expr on eval-when - ([b890104](https://codeberg.org/playXE/capy/commit/b890104e830b00b482439d5cdbe5db272ed2d7f0))
 - *(psyntax)* Stabilize implicit #%app bootstrap - ([5df6bc0](https://codeberg.org/playXE/capy/commit/5df6bc03e6114e320377034c9bf6496c2f03d325))
 - *(repl)* Import core control - ([e29aaab](https://codeberg.org/playXE/capy/commit/e29aaab17ef7bd54a3f0e304a6894315de33b8af))
 - *(tests)* Letrectify outputs letrec* - ([8b6ebf5](https://codeberg.org/playXE/capy/commit/8b6ebf58318f8131c2d752bea2fd8561cd9d49f5))
+- Load compiler.scm in boot - ([b2fd466](https://codeberg.org/playXE/capy/commit/b2fd46642da82e8b7f93ca295a6c165aed877790))
+- Mutex? re-export, better debugging - ([e315336](https://codeberg.org/playXE/capy/commit/e315336f442998daf1f94339b36667b746501fde))
+- Use lockfile for cache files - ([6e80d87](https://codeberg.org/playXE/capy/commit/6e80d87ad728a9cbd7a714b2703083ac01d23364))
 - Better ABI, simplify safepotints, fix negation - ([f85f609](https://codeberg.org/playXE/capy/commit/f85f60996f20278ec50ee00bb4029df6cadc8dc4))
 - Conservative scanning - ([5f6926b](https://codeberg.org/playXE/capy/commit/5f6926b23ab40d916010900b33382738ababc18c))
 - Fix keywords - ([377b117](https://codeberg.org/playXE/capy/commit/377b117ae77c8772e1aa3160cb2e5097abaafc76))
@@ -106,6 +114,8 @@
 ### ⚙️ Miscellaneous Tasks
 
 - *(clippy)* Remove lint suppressions - ([835a163](https://codeberg.org/playXE/capy/commit/835a16370d6bd3935c34575c8f065a3c9a90a9a4))
+- Cleanup module loading and tests - ([54341f8](https://codeberg.org/playXE/capy/commit/54341f81d54546af5c7b435f5490fb04363e4e7b))
+- Update BOOTSTRAP.md - ([762c830](https://codeberg.org/playXE/capy/commit/762c8308813076eb4d537da945ef15c8dc87f450))
 - Simplify fasl - ([77cb2ba](https://codeberg.org/playXE/capy/commit/77cb2ba822ff85d2437494000f14826085ca6c9f))
 - Support FASL boostrap - ([75cbdc7](https://codeberg.org/playXE/capy/commit/75cbdc7301c71abcaad74a47153c46d40e7678ff))
 - Fmt - ([d4fcac4](https://codeberg.org/playXE/capy/commit/d4fcac4e40ec677a89d5cb6356f30f26eca99b25))
@@ -116,6 +126,7 @@
 ### ◀️ Revert
 
 - *(capy/cps)* Optimization caused bugs in bootstrap - ([19e16cf](https://codeberg.org/playXE/capy/commit/19e16cf0a3e320bdbfac8904f8131f977daf08de))
+- Stop checking the whole class hierarchy for primitvies - ([5d9d2a4](https://codeberg.org/playXE/capy/commit/5d9d2a4ad6fee08d61dc25a9a7c106db805d3f5c))
 
 ### Build
 
