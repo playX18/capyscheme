@@ -14,6 +14,7 @@ use crate::{
     prelude::*,
     runtime::{
         modules::define,
+        vm::VMResult,
         prelude::*,
         vm::thunks::make_assertion_violation,
         vmthread::{VM_THREAD, VMThreadTask},
@@ -21,7 +22,7 @@ use crate::{
     static_symbols,
 };
 use libffi::{
-    low::{type_tag, types},
+    low::{self, CodePtr, ffi_cif, type_tag, types},
     middle::Type,
     raw::{ffi_arg, ffi_type},
 };
@@ -169,6 +170,29 @@ impl Default for PointerWithFinalizers {
 }
 pub(crate) static POINTERS_WITH_FINALIZERS: LazyLock<Arc<PointerWithFinalizers>> =
     LazyLock::new(|| Arc::new(PointerWithFinalizers::new()));
+
+type RootedCallbackProc = crate::Rootable!(Value<'_>);
+
+struct CallbackData {
+    ctx: *const (),
+    proc: crate::rsgc::global::Global<RootedCallbackProc>,
+}
+
+struct CallbackOwner {
+    cif: libffi::middle::Cif,
+    closure: *mut low::ffi_closure,
+    code: CodePtr,
+    data: CallbackData,
+}
+
+impl Drop for CallbackOwner {
+    fn drop(&mut self) {
+        // SAFETY: `closure` was allocated by libffi::low::closure_alloc.
+        unsafe {
+            low::closure_free(self.closure);
+        }
+    }
+}
 
 // SAFETY: Correct `pop` semantics for the finalization queue
 unsafe impl FinalizerQueue for PointerWithFinalizers {
@@ -459,6 +483,68 @@ pub mod ffi_ops {
         nctx.return_(clos.into())
     }
 
+    #[scheme(name = "procedure->callback-pointer")]
+    pub fn procedure_to_callback_pointer(
+        return_type: Value<'gc>,
+        arg_types: Value<'gc>,
+        proc: Gc<'gc, Closure<'gc>>,
+    ) -> Value<'gc> {
+        let rtype = match make_ffi_type(nctx.ctx, return_type) {
+            Ok(rtype) => rtype,
+            Err(e) => return nctx.conversion_error("procedure->callback-pointer", e),
+        };
+        let args = match make_ffi_arg_types(nctx.ctx, arg_types) {
+            Ok(args) => args,
+            Err(e) => return nctx.conversion_error("procedure->callback-pointer", e),
+        };
+        let cif = libffi::middle::Cif::new(args, rtype);
+        let (closure, code) = low::closure_alloc();
+        let mut owner = Box::new(CallbackOwner {
+            cif,
+            closure,
+            code,
+            data: CallbackData {
+                ctx: nctx.ctx.as_ptr(),
+                proc: crate::rsgc::global::Global::new(proc.into()),
+            },
+        });
+
+        // SAFETY: The boxed owner keeps both the CIF and userdata alive until
+        // `free-callback-pointer` drops it.
+        unsafe {
+            low::prep_closure(
+                owner.closure,
+                owner.cif.as_raw_ptr(),
+                scheme_callback,
+                &owner.data,
+                owner.code,
+            )
+            .expect("libffi failed to prepare callback closure");
+        }
+
+        let code = owner.code.as_mut_ptr();
+        let owner = Box::into_raw(owner);
+        let ptr = Gc::new_with_header_word(*nctx.ctx, Pointer::new(code), pointer_header_word());
+        let owner_ptr =
+            Gc::new_with_header_word(*nctx.ctx, Pointer::new(owner.cast()), pointer_header_word());
+        ptrs(nctx.ctx).put(nctx.ctx, ptr, owner_ptr);
+        nctx.return_(ptr.into())
+    }
+
+    #[scheme(name = "free-callback-pointer")]
+    pub fn free_callback_pointer(callback: Gc<'gc, Pointer>) -> bool {
+        let owner = ptrs(nctx.ctx).get(nctx.ctx, callback);
+        if let Some(owner) = owner {
+            ptrs(nctx.ctx).remove(nctx.ctx, callback.into());
+            let owner = owner.downcast::<Pointer>().value().cast::<CallbackOwner>();
+            // SAFETY: This pointer came from Box::into_raw in procedure->callback-pointer.
+            unsafe {
+                drop(Box::from_raw(owner));
+            }
+        }
+        nctx.return_(true)
+    }
+
     #[scheme(name = "ioctl/pointer")]
     pub fn ioctl(fd: i32, request: u64, argp: Gc<'gc, Pointer>) -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
@@ -707,6 +793,27 @@ fn make_ffi_type<'gc>(ctx: Context<'gc>, ftype: Value<'gc>) -> Result<Type, Conv
     } else {
         Err(ConversionError::type_mismatch(0, "foreign type", ftype))
     }
+}
+
+fn make_ffi_arg_types<'gc>(
+    ctx: Context<'gc>,
+    arg_types: Value<'gc>,
+) -> Result<Vec<Type>, ConversionError<'gc>> {
+    if !arg_types.is_list() {
+        return Err(ConversionError::type_mismatch(1, "list", arg_types));
+    }
+
+    let mut walk = arg_types;
+    let mut args = Vec::with_capacity(arg_types.list_length());
+    while walk.is_pair() {
+        let atype = walk.car();
+        if !parse_ffi_type(ctx, atype, false, &mut 0, &mut 0) {
+            return Err(ConversionError::type_mismatch(1, "foreign type", atype));
+        }
+        args.push(make_ffi_type(ctx, atype)?);
+        walk = walk.cdr();
+    }
+    Ok(args)
 }
 
 #[repr(C)]
@@ -1374,6 +1481,47 @@ unsafe fn pack<'gc>(
 
         todo!()
     }
+}
+
+unsafe extern "C" fn scheme_callback(
+    cif: &ffi_cif,
+    result: &mut ffi_arg,
+    args: *const *const libc::c_void,
+    userdata: &CallbackData,
+) {
+    // SAFETY: Callback data is created from a live Capy context and is only
+    // valid for callbacks invoked by C during that context's lifetime.
+    let ctx = unsafe { Context::from_ptr(userdata.ctx) };
+    let proc = *userdata.proc.fetch(*ctx);
+    let mut scheme_args = Vec::with_capacity(cif.nargs as usize);
+
+    for i in 0..cif.nargs as usize {
+        // SAFETY: libffi supplies one argument slot per CIF argument.
+        let arg_loc = unsafe { *args.add(i) as *mut () };
+        // SAFETY: `arg_types` belongs to the live CIF passed by libffi.
+        let arg_type = unsafe { *cif.arg_types.add(i) };
+        // SAFETY: libffi argument locations match the CIF's argument types.
+        scheme_args.push(unsafe { pack(ctx, arg_type, arg_loc, false) });
+    }
+
+    let value = match call_scheme(ctx, proc, scheme_args) {
+        VMResult::Ok(value) => value,
+        VMResult::Err(_) => {
+            *result = 0;
+            return;
+        }
+    };
+
+    // SAFETY: libffi provided `result` as the return storage for this CIF.
+    let _ = unsafe {
+        unpack(
+            ctx,
+            cif.rtype,
+            value,
+            (result as *mut ffi_arg).cast::<()>(),
+            true,
+        )
+    };
 }
 
 pub(crate) extern "C-unwind" fn c_foreign_call<'gc>(
