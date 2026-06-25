@@ -269,14 +269,8 @@ pub(crate) fn continue_loading_k(
 }
 
 fn compile_backtraces_enabled<'gc>(ctx: Context<'gc>) -> bool {
-    if let Some(key) = ctx.private_ref("capy", "*compile-backtrace-key*") {
-        match ctx.get_mark_first(key) {
-            Some(mark) => mark != Value::new(false),
-            None => true,
-        }
-    } else {
-        true
-    }
+    let _ = ctx;
+    false
 }
 
 fn resolve_module_value<'gc>(

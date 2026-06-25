@@ -14,7 +14,7 @@ pub struct CompilationOptions {
 
 impl Default for CompilationOptions {
     fn default() -> Self {
-        Self { backtraces: true }
+        Self { backtraces: false }
     }
 }
 

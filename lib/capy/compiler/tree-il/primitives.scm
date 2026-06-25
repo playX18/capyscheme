@@ -184,7 +184,8 @@
           [table (make-eq-hashtable)])
       (for-each
         (lambda (name)
-          (hashtable-set! table (module-ensure-local-variable! m name) name))
+          (hashtable-set! table name (or (module-variable m name)
+                                        (module-ensure-local-variable! m name))))
         interesting-primitive-names)
       table))
 
@@ -208,9 +209,11 @@
             (define name (toplevel-ref-name x))
             (cond
               [(and (not (hashtable-ref local-definitions name #f))
-                  (hashtable-ref *interesting-primitive-vars* (module-variable m name)))
+                  (let ([var (module-variable m name)]
+                        [prim-var (hashtable-ref *interesting-primitive-vars* name #f)])
+                    (and var prim-var (eq? var prim-var))))
                 =>
-                (lambda (name)
+                (lambda (_)
                   (make-primref src name))]
               [else x])]
           [(module-ref? x)
@@ -223,9 +226,11 @@
                 (lambda (module)
                   (define iface (if public? (or (module-public-interface module) module) module))
                   (cond
-                    [(hashtable-ref *interesting-primitive-vars* (module-variable iface name))
+                    [(let ([var (module-variable iface name)]
+                           [prim-var (hashtable-ref *interesting-primitive-vars* name #f)])
+                       (and var prim-var (eq? var prim-var)))
                       =>
-                      (lambda (name) (make-primref src name))]
+                      (lambda (_) (make-primref src name))]
                     [else x]))]
               [else x])]
           [(application? x)
@@ -500,6 +505,10 @@
     (expt x y))
 
   (define-primitive-expander ash
+    (x y)
+    (ash x y))
+
+  (define-primitive-expander bitwise-arithmetic-shift
     (x y)
     (ash x y))
 

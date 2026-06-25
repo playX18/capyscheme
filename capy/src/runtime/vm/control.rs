@@ -9,6 +9,7 @@ use crate::rsgc::{
     Gc, Trace,
     object::{ClassId, builtin_class_ids, class_header_word},
 };
+use mmtk::util::Address;
 
 #[repr(C)]
 #[derive(Trace)]
@@ -18,6 +19,19 @@ pub struct ContinuationMarks<'gc> {
 
 pub(crate) fn continuation_marks_header_word() -> u64 {
     class_header_word(ClassId::new(builtin_class_ids::CONTINUATION_MARKS).unwrap())
+}
+
+fn is_c_star_continuation<'gc>(retk: ClosureRef<'gc>) -> bool {
+    if retk.nfree != 1 {
+        return false;
+    }
+
+    let proc = retk[0].get();
+    if let Some(proc) = proc.try_as::<NativeProc>() {
+        proc.proc == Address::from_ptr(_raw_scm_cont_c_star as *const ())
+    } else {
+        false
+    }
 }
 
 // SAFETY: `gc` for `ContinuationMarks` upholds all trait invariants
@@ -66,18 +80,18 @@ pub(crate) fn push_cframe<'gc>(
     retk: ClosureRef<'gc>,
 ) -> Value<'gc> {
     let old_marks = ctx.state().current_marks();
-    let cont_closure = make_static_closure_c_star(ctx);
 
     let pair = Value::cons(ctx, key, value);
 
     // retk == C*: we're in tail position of another wcm
-    if Gc::ptr_eq(retk, cont_closure) {
+    if is_c_star_continuation(retk) {
         let first_marks = old_marks.car();
         let new_marks = replace_or_add_mark(ctx, first_marks.car(), key, pair);
 
         first_marks.set_car(ctx, new_marks);
-        cont_closure.into()
+        retk.into()
     } else {
+        let cont_closure = make_static_closure_c_star(ctx);
         let new_marks = list!(ctx, pair);
 
         let cframe = Value::cons(ctx, Value::cons(ctx, new_marks, retk.into()), old_marks);
