@@ -73,6 +73,7 @@
 - *(psyntax)* Stabilize implicit #%app bootstrap - ([5df6bc0](https://codeberg.org/playXE/capy/commit/5df6bc03e6114e320377034c9bf6496c2f03d325))
 - *(repl)* Import core control - ([e29aaab](https://codeberg.org/playXE/capy/commit/e29aaab17ef7bd54a3f0e304a6894315de33b8af))
 - *(tests)* Letrectify outputs letrec* - ([8b6ebf5](https://codeberg.org/playXE/capy/commit/8b6ebf58318f8131c2d752bea2fd8561cd9d49f5))
+- Make release packages installable - ([93e2b2d](https://codeberg.org/playXE/capy/commit/93e2b2d4720b050aa0cd73d3138a5500390c8ae5))
 - Publish release package artifacts - ([1d006b7](https://codeberg.org/playXE/capy/commit/1d006b7b825438a04973302007b42c41a6453479))
 - Load compiler.scm in boot - ([b2fd466](https://codeberg.org/playXE/capy/commit/b2fd46642da82e8b7f93ca295a6c165aed877790))
 - Mutex? re-export, better debugging - ([e315336](https://codeberg.org/playXE/capy/commit/e315336f442998daf1f94339b36667b746501fde))
@@ -107,6 +108,10 @@
 
 - Design linear cps ssa refactor - ([efa3c72](https://codeberg.org/playXE/capy/commit/efa3c72b9813c20772d72116a11038e9132cfaf6))
 - Design cps block macro - ([95ac1d4](https://codeberg.org/playXE/capy/commit/95ac1d40fdc36b4a014b6d0d517184935aa12919))
+
+### ⚡ Performance
+
+- Reduce compiler overhead - ([564b4c2](https://codeberg.org/playXE/capy/commit/564b4c291fdeea76f5d2757a5cdfd60a62f8fab9))
 
 ### 🧪 Testing
 
