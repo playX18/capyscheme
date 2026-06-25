@@ -612,6 +612,7 @@ PKG_ROOT ?= stage-pkg
 DEB_MAINTAINER ?= Adel Prokurov <adel.prokurov@gmail.com>
 DEB_SECTION ?= devel
 DEB_PRIORITY ?= optional
+DEB_DEPENDS ?= libc6 (>= 2.39), libgcc-s1 (>= 12)
 
 # RPM metadata
 RPM_LICENSE ?= LGPL3+
@@ -622,13 +623,13 @@ dist-deb: build
 	@# Build FHS runtime binaries (linked against /usr/lib)
 	$(MAKE) PREFIX=/usr build-runtime-fhs
 	rm -rf "$(PKG_ROOT)/deb"
-	mkdir -p "$(PKG_ROOT)/deb/root/usr/bin" "$(PKG_ROOT)/deb/root/usr/lib" "$(PKG_ROOT)/deb/root/usr/lib/capy" "$(PKG_ROOT)/deb/root/usr/share/capy" "$(PKG_ROOT)/deb/DEBIAN" "$(DIST_DIR)"
-	cp bin/capy-full "$(PKG_ROOT)/deb/root/usr/bin/capy"
-	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PKG_ROOT)/deb/root/usr/bin/capyc"
-	chmod +x "$(PKG_ROOT)/deb/root/usr/bin/capyc"
-	cp -r stage-2/compiled "$(PKG_ROOT)/deb/root/usr/lib/capy/"
-	cp -r lib "$(PKG_ROOT)/deb/root/usr/share/capy/"
-	installed_size_kb=$$(du -sk "$(PKG_ROOT)/deb/root/usr" | awk '{print $$1}'); \
+	mkdir -p "$(PKG_ROOT)/deb/usr/bin" "$(PKG_ROOT)/deb/usr/lib" "$(PKG_ROOT)/deb/usr/lib/capy" "$(PKG_ROOT)/deb/usr/share/capy" "$(PKG_ROOT)/deb/DEBIAN" "$(DIST_DIR)"
+	cp bin/capy-full "$(PKG_ROOT)/deb/usr/bin/capy"
+	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PKG_ROOT)/deb/usr/bin/capyc"
+	chmod +x "$(PKG_ROOT)/deb/usr/bin/capyc"
+	cp -r lib "$(PKG_ROOT)/deb/usr/share/capy/"
+	cp -r stage-2/compiled "$(PKG_ROOT)/deb/usr/lib/capy/"
+	installed_size_kb=$$(du -sk "$(PKG_ROOT)/deb/usr" | awk '{print $$1}'); \
 	arch=$$(dpkg --print-architecture 2>/dev/null || echo amd64); \
 	pkgver="$(VERSION)"; \
 	deb_ver=$${pkgver#v}; \
@@ -639,6 +640,7 @@ dist-deb: build
 		"Priority: $(DEB_PRIORITY)" \
 		"Architecture: $$arch" \
 		"Maintainer: $(DEB_MAINTAINER)" \
+		"Depends: $(DEB_DEPENDS)" \
 		"Description: CapyScheme (runtime + compiler)" \
 		" A Scheme implementation with a native runtime and compiler." \
 		"Installed-Size: $$installed_size_kb" \
@@ -666,8 +668,8 @@ dist-rpm: build
 	cp bin/capy-full "$(PKG_ROOT)/rpm/root/usr/bin/capy"
 	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
 	chmod +x "$(PKG_ROOT)/rpm/root/usr/bin/capyc"
-	cp -r stage-2/compiled "$(PKG_ROOT)/rpm/root/usr/lib/capy/"
 	cp -r lib "$(PKG_ROOT)/rpm/root/usr/share/capy/"
+	cp -r stage-2/compiled "$(PKG_ROOT)/rpm/root/usr/lib/capy/"
 	rm -rf "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"
 	mkdir -p "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)"
 	cp -a "$(PKG_ROOT)/rpm/root/usr" "$(PKG_ROOT)/rpm/rpmbuild/BUILD/$(PKG_NAME)-$(VERSION)/"
