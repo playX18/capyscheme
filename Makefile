@@ -648,9 +648,9 @@ dist-deb: build
 	pkgver="$(VERSION)"; \
 	deb_ver=$${pkgver#v}; \
 	if command -v fakeroot >/dev/null 2>&1; then \
-		fakeroot dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$$deb_ver_$$arch.deb"; \
+		fakeroot dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$${deb_ver}_$${arch}.deb"; \
 	else \
-		dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$$deb_ver_$$arch.deb"; \
+		dpkg-deb --build "$(PKG_ROOT)/deb" "$(DIST_DIR)/$(PKG_NAME)_$${deb_ver}_$${arch}.deb"; \
 	fi
 	@echo "Wrote $(DIST_DIR)/$(PKG_NAME)_$$(v='$(VERSION)'; echo $${v#v})_$$(dpkg --print-architecture 2>/dev/null || echo amd64).deb"
 
