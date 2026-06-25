@@ -76,7 +76,7 @@ jobs:
       - name: Build Capy
         shell: bash
         run: |
-          make VERSION="$RELEASE_VERSION" build
+          make -j4 VERSION="$RELEASE_VERSION" build
       - name: Create portable tarball
         shell: bash
         run: |

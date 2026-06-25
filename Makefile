@@ -712,7 +712,8 @@ dist-rpm: build
 		> "$(PKG_ROOT)/rpm/rpmbuild/SPECS/$(PKG_NAME).spec"
 	rpmbuild -bb "$(PKG_ROOT)/rpm/rpmbuild/SPECS/$(PKG_NAME).spec" \
 		--define "_topdir $(CURDIR)/$(PKG_ROOT)/rpm/rpmbuild" \
-		--define "_dbpath $(CURDIR)/$(PKG_ROOT)/rpm/rpmbuild/RPMDB"
+		--define "_dbpath $(CURDIR)/$(PKG_ROOT)/rpm/rpmbuild/RPMDB" \
+		--define "debug_package %{nil}"
 	find "$(PKG_ROOT)/rpm/rpmbuild/RPMS" -name "*.rpm" -maxdepth 2 -type f -print -exec cp -f {} "$(DIST_DIR)/" \;
 	@echo "Wrote RPM(s) to $(DIST_DIR)/"
 
