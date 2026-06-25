@@ -274,10 +274,10 @@ pub fn resolve_primitives<'gc>(
 
     x.post_order(ctx, |ctx, x| match &x.kind {
         TermKind::ToplevelRef(_, name) => {
-            if let Some(var) = m.variable(ctx, *name)
+            if !local_definitions.contains(name)
+                && let Some(var) = m.variable(ctx, *name)
                 && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
                 && Gc::ptr_eq(var, prim.downcast::<Variable>())
-                && !local_definitions.contains(name)
             {
                 Gc::new(
                     *ctx,
@@ -299,14 +299,15 @@ pub fn resolve_primitives<'gc>(
                     module
                 };
 
-                if let Some(v) = iface.variable(ctx, *name)
-                    && let Some(name) = ctx.globals().interesting_primitive_vars().get(ctx, v)
+                if let Some(var) = iface.variable(ctx, *name)
+                    && let Some(prim) = ctx.globals().interesting_primitive_vars().get(ctx, *name)
+                    && Gc::ptr_eq(var, prim.downcast::<Variable>())
                 {
                     return Gc::new(
                         *ctx,
                         Term {
                             source: Lock::new(x.source()),
-                            kind: TermKind::PrimRef(name),
+                            kind: TermKind::PrimRef(*name),
                         },
                     );
                 }
@@ -649,6 +650,14 @@ primitive_expanders!(
     }
 
     "ash" ex_ash<'gc>(ctx, args, src) {
+        if args.len() != 2 {
+            return None;
+        }
+
+        Some(prim_call_term(ctx, sym_ash(ctx).into(), args, src))
+    }
+
+    "bitwise-arithmetic-shift" ex_bitwise_arithmetic_shift<'gc>(ctx, args, src) {
         if args.len() != 2 {
             return None;
         }

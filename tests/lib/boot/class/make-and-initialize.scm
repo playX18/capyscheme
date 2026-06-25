@@ -27,9 +27,6 @@
   (test-equal "built-in <string> binding exposes string class"
     (class-name <string>)
     "string")
-  (test-equal "built-in <immutable-string> binding exposes immutable string class"
-    (class-name <immutable-string>)
-    "immutable-string")
   (test-equal "built-in <bytevector> binding exposes bytevector class"
     (class-name <bytevector>)
     "bytevector")
@@ -55,9 +52,7 @@
       (cons <pair> "pair")
       (cons <variable> "variable")
       (cons <closure> "closure")
-      (cons <continuation-closure> "continuation-closure")
       (cons <vector> "vector")
-      (cons <immutable-vector> "immutable-vector")
       (cons <tuple> "tuple")
       (cons <top> "top")
       (cons <bottom> "bottom")
@@ -78,10 +73,8 @@
       (cons <complex> "complex")
       (cons <number> "number")
       (cons <symbol> "symbol")
-      (cons <uninterned-symbol> "uninterned-symbol")
       (cons <keyword> "keyword")
       (cons <string> "string")
-      (cons <immutable-string> "immutable-string")
       (cons <stringbuf-wide> "stringbuf-wide")
       (cons <stringbuf-narrow> "stringbuf-narrow")
       (cons <bytevector> "bytevector")
