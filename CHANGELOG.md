@@ -18,6 +18,7 @@
 - *(compiler)* Optimize rest arguments to direct access - ([76e7a05](https://codeberg.org/playXE/capy/commit/76e7a056cf0b938fd37a38e2bdd3e24503cb7f81))
 - *(control)* Implement call-in-continuation and add tests for its behavior - ([7fce732](https://codeberg.org/playXE/capy/commit/7fce732bfd1228654c1899cf1c8c0424be0882f8))
 - *(core)* Fancy repl - ([9f3b8b3](https://codeberg.org/playXE/capy/commit/9f3b8b38e2ce9924c47b41a92ceeb1d88b7b4534))
+- *(ffi)* Add callbacks - ([5239967](https://codeberg.org/playXE/capy/commit/5239967edc88240e453b8b4a9402578ab155ba85))
 - *(lcps)* Low level primops - ([ee6aa09](https://codeberg.org/playXE/capy/commit/ee6aa09f8126ae8741a8a23627393497e9787233))
 - *(lib)* Add terminal library - ([4107b51](https://codeberg.org/playXE/capy/commit/4107b5177d9cdb624dcb40336638bbe9dcc012e5))
 - *(library)* Auto-import capy prelims - ([3116a3f](https://codeberg.org/playXE/capy/commit/3116a3f471f7f1bf229a60216029ef0b2b09bc38))
