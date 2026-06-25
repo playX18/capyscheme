@@ -1,7 +1,7 @@
 on: 
   push: 
     tags: 
-      - 'v1.*'
+      - 'v*'
   workflow_dispatch:
   workflow_call:
 
@@ -104,6 +104,6 @@ jobs:
           release-dir: dist
           override: true 
           tag: ${{ env.VERSION }}
-          title: Release v${{ env.VERSION }}
+          title: Release ${{ env.VERSION }}
           release-notes: |
             ${{ needs.generate_changelog.outputs.release_body }}
