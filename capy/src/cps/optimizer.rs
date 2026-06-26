@@ -337,7 +337,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
 }
 
 fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, bool) {
-    stacker::maybe_grow(4 * 1024 * 1024, 1024 * 1024, || match *term {
+    stacker::maybe_grow(64 * 1024, 4 * 1024 * 1024, || match *term {
         Term::Let(binding, expr, prev_body) => match expr {
             Expression::PrimCall(prim, prev_args, source) => {
                 /*if state.is_dead(binding)

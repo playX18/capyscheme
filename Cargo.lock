@@ -698,7 +698,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1359,7 +1359,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1623,7 +1623,7 @@ dependencies = [
 [[package]]
 name = "mmtk"
 version = "0.32.0"
-source = "git+https://github.com/mmtk/mmtk-core#5781e63331f59bdea7db0a9c3f18305e37b3fcd4"
+source = "git+https://github.com/playx18/mmtk-core?rev=d24e3c0b24d2b54fdf59665885e849154c7341dc#d24e3c0b24d2b54fdf59665885e849154c7341dc"
 dependencies = [
  "atomic",
  "atomic-traits",
@@ -1659,7 +1659,7 @@ dependencies = [
 [[package]]
 name = "mmtk-macros"
 version = "0.32.0"
-source = "git+https://github.com/mmtk/mmtk-core#5781e63331f59bdea7db0a9c3f18305e37b3fcd4"
+source = "git+https://github.com/playx18/mmtk-core?rev=d24e3c0b24d2b54fdf59665885e849154c7341dc#d24e3c0b24d2b54fdf59665885e849154c7341dc"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -2150,7 +2150,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

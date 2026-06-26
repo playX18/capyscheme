@@ -10,7 +10,7 @@ version = "2.0.0"
 [workspace.dependencies]
 
 bytecodegen = { git = "https://github.com/playx18/bytecodegen" }
-mmtk = { git = "https://github.com/mmtk/mmtk-core", default-features = true, features = ["vo_bit", "vo_bit_access"] }
+mmtk = { git = "https://github.com/playx18/mmtk-core", rev = "d24e3c0b24d2b54fdf59665885e849154c7341dc", features = ["vo_bit", "vo_bit_access"] }
 cranelift = "0.127"
 cranelift-codegen = "0.127"
 target-lexicon = "*"
