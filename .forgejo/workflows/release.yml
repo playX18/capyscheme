@@ -72,7 +72,11 @@ jobs:
         shell: bash
         run: |
           apt update -y
-          apt install -y rsync make gcc rpm
+          apt install -y rsync make gcc musl-tools linux-libc-dev rpm
+      - name: Install musl Rust target
+        shell: bash
+        run: |
+          rustup target add x86_64-unknown-linux-musl
       - name: Build Capy
         shell: bash
         run: |
@@ -81,6 +85,14 @@ jobs:
         shell: bash
         run: |
           make VERSION="$RELEASE_VERSION" dist-portable
+      - name: Create musl portable tarball
+        shell: bash
+        run: |
+          CFLAGS="-idirafter /usr/include -idirafter /usr/include/x86_64-linux-gnu" make -j4 \
+            VERSION="$RELEASE_VERSION" \
+            TARGET=x86_64-unknown-linux-musl \
+            CARGO_BIN=cargo \
+            dist-portable
       - name: Create deb package 
         shell: bash
         run: |
