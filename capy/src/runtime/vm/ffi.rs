@@ -549,7 +549,7 @@ pub mod ffi_ops {
     pub fn ioctl(fd: i32, request: u64, argp: Gc<'gc, Pointer>) -> Value<'gc> {
         // SAFETY: Preconditions verified by the surrounding code
         unsafe {
-            let res = libc::ioctl(fd, request, argp.value());
+            let res = libc::ioctl(fd, request as libc::Ioctl, argp.value());
             nctx.return_(Value::new(res))
         }
     }
