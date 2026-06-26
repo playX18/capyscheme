@@ -538,15 +538,15 @@
        [host-family-sls (string-append host-family ".sls")]
        [arch-sls (string-append host-arch ".sls")]
        [common (list host-os-scm host-family-scm arch-scm
-                 "capy.scm" "scm" "sch" "ss")])
+                 "capy.scm" "scm" "sch" "ss")]
+       [r7rs (list host-os-sld host-family-sld arch-sld
+               "capy.sld" "sld")]
+       [r6rs (list host-os-sls host-family-sls arch-sls
+               "capy.sls" "sls" "sps")])
   (set! capy:r7rs-load-extensions
-    (append common
-      (list host-os-sld host-family-sld arch-sld
-        "capy.sld" "sld")))
+    (append r7rs common))
   (set! capy:r6rs-load-extensions
-    (append common
-      (list host-os-sls host-family-sls arch-sls
-        "capy.sls" "sls" "sps")))
+    (append r6rs common))
   (set! capy:all-mode-load-extensions
     (append capy:r7rs-load-extensions capy:r6rs-load-extensions)))
 
