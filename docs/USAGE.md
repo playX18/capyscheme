@@ -94,8 +94,9 @@ CAPY_LOAD_PATH=./lib capy --r6rs -L tests -C stage-2/compiled -s tests/r6rs/run-
 ```
 
 Portable installs look for source libraries under `lib/` and compiled libraries
-under `compiled/` next to the `capy` executable. FHS installs look under
-`share/capy/lib/` and `lib/capy/compiled/` below `CAPY_SYSROOT`.
+under `compiled/` next to the `capy` executable. FHS builds bake in
+`CAPY_SYSROOT` at build time and look under `share/capy/lib/` and
+`lib/capy/compiled/` below that sysroot.
 
 ## FASL artifacts and auto-compile
 
