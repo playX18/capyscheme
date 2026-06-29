@@ -27,9 +27,23 @@ Capy 2.0.0 is a large compiler, runtime, and library release.
 Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment 99.3% of tests are passing.
 
 To run tests yourself:
-```sh 
-$ capy -L . -s tests/r6rs/run-via-eval.sps
+```sh
+$ capy --r6rs -L . -s tests/r6rs/run-via-eval.sps
 ```
+
+Capy defaults to R7RS mode. Use `--r6rs` when extensionless imports should
+prefer `.sls` and `.sps` files, and `--r7rs` when they should prefer `.sld`
+files. See [Using CapyScheme](docs/USAGE.md) for execution modes, load paths,
+compiled `.fasl` artifacts, and common source-loading pitfalls.
+
+# Documentation
+
+- [Installation](INSTALLATION.md) covers release tarballs and source installs.
+- [Using CapyScheme](docs/USAGE.md) covers execution modes, load paths, and
+  compiled artifacts.
+- [Bootstrapping CapyScheme](docs/BOOTSTRAP.md) covers build, test, install, and
+  packaging workflows.
+- [Implementation](docs/IMPLEMENTATION.md) outlines the compiler pipeline.
 
 ## Thanks
 

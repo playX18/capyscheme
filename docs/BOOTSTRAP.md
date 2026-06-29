@@ -307,6 +307,32 @@ Environment variables accepted by the recipe:
 - `STAGEDIR`, defaulting to `stage-dist`
 - `OUTNAME`, defaulting to `capyscheme-$(VERSION)-$(TARGET).tar.gz`
 
+### Musl Portable Tarball
+
+The Forgejo release workflow also builds a Linux musl portable tarball for
+systems where a self-contained runtime is preferable to a glibc-linked archive.
+The artifact uses the same staged layout as `dist-portable`; only `TARGET`
+changes the Rust target triple and archive name:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+CFLAGS="-idirafter /usr/include -idirafter /usr/include/x86_64-linux-gnu" \
+  make -j4 VERSION="$VERSION" \
+  TARGET=x86_64-unknown-linux-musl \
+  CARGO_BIN=cargo \
+  dist-portable
+```
+
+The default archive name is:
+
+```text
+dist/capyscheme-$(VERSION)-x86_64-unknown-linux-musl.tar.gz
+```
+
+The `CFLAGS` include path workaround mirrors `.forgejo/workflows/release.yml`.
+Keep it with the musl build unless the workflow and local toolchain no longer
+need access to the host Linux headers.
+
 ### Debian Package
 
 Run:

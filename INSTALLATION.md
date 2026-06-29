@@ -1,20 +1,54 @@
 # Installation
 
-To install & run CapyScheme you need additonal dependencies:
-- lld on macOS to link Scheme files after they were built
-- Makefile
+## From a portable tarball
 
-After they are installed simply run:
+Release tarballs contain a `capy/<version>/` directory with:
+
+- `capy`
+- `capyc`
+- `lib/`
+- `compiled/`
+- `extensions/`
+
+Extract the archive and add that directory to `PATH`:
+
 ```sh
-$ make install-portable
+tar -xf capyscheme-<version>-<target>.tar.gz
+export PATH="$PWD/capy/<version>:$PATH"
 ```
 
-Or if you want to install system-wide
-```sh
-$ make PREFIX=/usr/local install
+Use the `x86_64-unknown-linux-musl` tarball on Linux systems where a more
+self-contained portable runtime is preferable to a glibc-linked archive.
 
+## From source
+
+To install and run CapyScheme from source you need:
+
+- `lld` on macOS to link Scheme files after they are built
+- `make`
+- Rust, using the toolchain selected by `rust-toolchain.toml`
+- `rsync`
+
+For a portable install, run:
+
+```sh
+make install-portable
 ```
 
-After everything is installed you should add installed directory into PATH.
-If you wish to use native extensions also add `extensions/` directory under prefix
-into your LD_LIBRARY_PATH/DYLD_FALLBACK_LIBRARY_PATH.
+This installs into `$(PREFIX)/capy/$(VERSION)/`. Add that directory to `PATH`.
+
+For a system-wide FHS install, run:
+
+```sh
+make PREFIX=/usr/local install
+```
+
+This installs `capy` and `capyc` into `$(PREFIX)/bin`, source libraries under
+`$(PREFIX)/share/capy/lib`, and compiled libraries under
+`$(PREFIX)/lib/capy/compiled`.
+
+If you use native extensions, add the installed `extensions/` directory to
+`LD_LIBRARY_PATH` on Linux or `DYLD_FALLBACK_LIBRARY_PATH` on macOS.
+
+See [Bootstrapping CapyScheme](docs/BOOTSTRAP.md) for full build, test, and
+packaging details.
