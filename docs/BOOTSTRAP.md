@@ -315,6 +315,9 @@ The artifact uses the same staged layout as `dist-portable`; only `TARGET`
 changes the Rust target triple and archive name:
 
 ```sh
+# Debian/Ubuntu packages used by the release workflow:
+sudo apt install -y musl-tools linux-libc-dev
+
 rustup target add x86_64-unknown-linux-musl
 CFLAGS="-idirafter /usr/include -idirafter /usr/include/x86_64-linux-gnu" \
   make -j4 VERSION="$VERSION" \

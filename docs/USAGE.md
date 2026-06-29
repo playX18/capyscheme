@@ -62,9 +62,10 @@ source extensions:
 12. `sch`
 13. `ss`
 
-Use `--r6rs` when extensionless imports should find `.sls` or `.sps` files
-before `.sld` files. Use `--r7rs` when the same library path should prefer
-`.sld` files.
+Use `--r6rs` when extensionless imports should search R6RS `.sls` or `.sps`
+files. Use `--r7rs` when the same library path should search R7RS `.sld` files.
+Neither mode searches the other mode's standard library extension family unless
+you add those extensions explicitly with `-x` / `--extensions`.
 
 Custom extensions from `-x` / `--extensions` are added ahead of the built-in
 mode list for that invocation:
@@ -99,13 +100,25 @@ under `compiled/` next to the `capy` executable. FHS installs look under
 ## FASL artifacts and auto-compile
 
 Compiled Scheme artifacts use the `.fasl` extension. A direct `.fasl` path is
-loaded as an artifact. Otherwise Capy resolves source first, then looks for a
-fresh matching `.fasl` in the compiled load path and in the fallback compile
-cache.
+loaded as an artifact. When no source file is found, Capy can also resolve a
+matching `.fasl` from the compiled load path.
 
-The fallback cache lives under `capy/cache/<version>/` in `XDG_CACHE_HOME`,
-`HOME`, `LOCALAPPDATA`, or `APPDATA`, and is split by GC plan. This prevents
-compiled artifacts for one runtime configuration from being reused by another.
+When source is found, Capy looks for a fresh matching `.fasl` before compiling.
+Compiled load path entries are checked under `<compiled-dir>/<arch>/...` first.
+When no explicit architecture is requested, Capy also checks
+`<compiled-dir>/...`.
+
+The fallback cache root is chosen in this order:
+
+1. `$XDG_CACHE_HOME/capy/cache/<version>/`
+2. `$HOME/.cache/capy/cache/<version>/`
+3. `$LOCALAPPDATA/.cache/capy/cache/<version>/`
+4. `$APPDATA/.cache/capy/cache/<version>/`
+5. `capy/cache/<version>/` relative to the current directory
+
+Fallback artifacts are stored below a GC-plan directory (`gen`, `regular`, or
+`conc`) and then an architecture directory. This prevents compiled artifacts for
+one runtime configuration from being reused by another.
 
 Use `--fresh-auto-compile` when tests or development runs should bypass existing
 fallback cache artifacts and compile loaded source again:

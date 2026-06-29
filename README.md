@@ -32,9 +32,9 @@ $ capy --r6rs -L . -s tests/r6rs/run-via-eval.sps
 ```
 
 Capy defaults to R7RS mode. Use `--r6rs` when extensionless imports should
-prefer `.sls` and `.sps` files, and `--r7rs` when they should prefer `.sld`
-files. See [Using CapyScheme](docs/USAGE.md) for execution modes, load paths,
-compiled `.fasl` artifacts, and common source-loading pitfalls.
+search R6RS `.sls` and `.sps` files, and `--r7rs` when they should search R7RS
+`.sld` files. See [Using CapyScheme](docs/USAGE.md) for execution modes, load
+paths, compiled `.fasl` artifacts, and common source-loading pitfalls.
 
 # Documentation
 

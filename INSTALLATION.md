@@ -47,8 +47,10 @@ This installs `capy` and `capyc` into `$(PREFIX)/bin`, source libraries under
 `$(PREFIX)/share/capy/lib`, and compiled libraries under
 `$(PREFIX)/lib/capy/compiled`.
 
-If you use native extensions, add the installed `extensions/` directory to
-`LD_LIBRARY_PATH` on Linux or `DYLD_FALLBACK_LIBRARY_PATH` on macOS.
+Portable tarballs and `make install-portable` include an `extensions/`
+directory. If you install native extensions there, add that directory to
+`LD_LIBRARY_PATH` on Linux or `DYLD_FALLBACK_LIBRARY_PATH` on macOS. The FHS
+`make install` target does not currently create an extensions directory.
 
 See [Bootstrapping CapyScheme](docs/BOOTSTRAP.md) for full build, test, and
 packaging details.
