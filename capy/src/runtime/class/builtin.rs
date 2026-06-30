@@ -221,6 +221,13 @@ pub fn builtin_primitive_layout_hooks(id: ClassId) -> Option<PrimitiveLayoutHook
         builtin_class_ids::SLOT_ACCESSOR => {
             AllocationHooksOf::<'static, SlotAccessorDefinition<'static>>::HOOKS
         }
+        builtin_class_ids::PERSISTENT_MAP => {
+            AllocationHooksOf::<'static, crate::runtime::value::PersistentMap<'static>>::HOOKS
+        }
+        builtin_class_ids::PERSISTENT_SET => {
+            AllocationHooksOf::<'static, crate::runtime::value::PersistentSet<'static>>::HOOKS
+        }
+        builtin_class_ids::HAMT_NODE => crate::runtime::value::hamt::HamtNode::HOOKS,
         _ => return None,
     };
     Some(PrimitiveLayoutHooks::from_allocation_hooks(hooks))
@@ -304,4 +311,7 @@ builtin_specs! {
     "next-method" => builtin_class_ids::NEXT_METHOD, Builtin;
     "slot-definition" => builtin_class_ids::SLOT_DEFINITION, Builtin;
     "slot-accessor" => builtin_class_ids::SLOT_ACCESSOR, Builtin;
+    "persistent-map" => builtin_class_ids::PERSISTENT_MAP, Builtin;
+    "persistent-set" => builtin_class_ids::PERSISTENT_SET, Builtin;
+    "hamt-node" => builtin_class_ids::HAMT_NODE, Builtin;
 }

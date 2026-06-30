@@ -107,6 +107,57 @@ impl<'gc> Value<'gc> {
             return true;
         }
 
+        if self.is::<PersistentMap>() && other.is::<PersistentMap>() {
+            let a = self.downcast::<PersistentMap>();
+            let b = other.downcast::<PersistentMap>();
+
+            if a.len() != b.len() {
+                return false;
+            }
+
+            let mut equal = true;
+            a.fold(
+                |acc, key, value| {
+                    if !equal {
+                        return acc;
+                    }
+                    match b.get(key) {
+                        Some(other_value) if value.r5rs_equal(other_value) => acc,
+                        _ => {
+                            equal = false;
+                            acc
+                        }
+                    }
+                },
+                Value::new(false),
+            );
+            return equal;
+        }
+
+        if self.is::<PersistentSet>() && other.is::<PersistentSet>() {
+            let a = self.downcast::<PersistentSet>();
+            let b = other.downcast::<PersistentSet>();
+
+            if a.len() != b.len() {
+                return false;
+            }
+
+            let mut equal = true;
+            a.fold(
+                |acc, key, _| {
+                    if !equal {
+                        return acc;
+                    }
+                    if !b.contains(key) {
+                        equal = false;
+                    }
+                    acc
+                },
+                Value::new(false),
+            );
+            return equal;
+        }
+
         if self.is::<Str>() && other.is::<Str>() {
             return self.downcast::<Str>().eq(&other.downcast::<Str>());
         }

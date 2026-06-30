@@ -37,6 +37,8 @@ pub mod libraries;
 pub mod list;
 pub mod load;
 pub mod memoize;
+pub mod persistent_map;
+pub mod persistent_set;
 pub mod records;
 pub mod strings;
 pub mod syntax;
