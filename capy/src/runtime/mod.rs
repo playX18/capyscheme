@@ -40,6 +40,8 @@ pub(crate) fn init<'gc>(mc: Context<'gc>) {
     vm::base::init_base(mc);
     vm::io::init_io(mc);
     vm::hash::init_hash(mc);
+    vm::persistent_map::init_persistent_map(mc);
+    vm::persistent_set::init_persistent_set(mc);
     vm::syntax::init_syntax(mc);
     vm::memoize::init_memoize(mc);
     vm::expand::init_expand(mc);

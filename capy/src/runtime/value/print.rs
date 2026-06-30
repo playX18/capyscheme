@@ -156,6 +156,10 @@ impl<'gc, 'a, 'b> ValueFmt<'gc, 'a, 'b> {
         } else if x.is::<HashTable<'gc>>() {
             let _ht = x.downcast::<HashTable<'gc>>();
             write!(self.fmt, "#<hashtable>",)
+        } else if x.is::<PersistentMap<'gc>>() {
+            write!(self.fmt, "#<persistent-map>",)
+        } else if x.is::<PersistentSet<'gc>>() {
+            write!(self.fmt, "#<persistent-set>",)
         } else if x.is::<Closure<'gc>>() {
             let closure = x.downcast::<Closure<'gc>>();
             write!(self.fmt, "#<procedure {:p}>", closure)

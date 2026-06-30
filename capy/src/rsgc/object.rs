@@ -94,8 +94,11 @@ pub mod builtin_class_ids {
     pub const NEXT_METHOD: u32 = 65;
     pub const SLOT_DEFINITION: u32 = 66;
     pub const SLOT_ACCESSOR: u32 = 67;
+    pub const PERSISTENT_MAP: u32 = 68;
+    pub const PERSISTENT_SET: u32 = 69;
+    pub const HAMT_NODE: u32 = 70;
 
-    pub const MAX: u32 = SLOT_ACCESSOR;
+    pub const MAX: u32 = HAMT_NODE;
 }
 
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(builtin_class_ids::MAX + 1);
