@@ -161,6 +161,8 @@ CAPY_SRCS := \
 	lib/capy/pretty-print.scm \
 	lib/capy/session.scm \
 	lib/capy/deque.scm \
+	lib/capy/persistent-map.scm \
+	lib/capy/persistent-set.scm \
 	lib/capy/channel.scm \
 	lib/capy/term/private/ansi.scm \
 	lib/capy/term/command.scm \
