@@ -1,3 +1,18 @@
+## [unreleased]
+
+### ⛰️  Features
+
+- Add HAMT persistent set/map - ([f94a321](https://codeberg.org/playXE/capy/commit/f94a3213470b033fd8e126c515b3aa889ada0fa9))
+
+### 🧪 Testing
+
+- Test HAMT - ([c07be60](https://codeberg.org/playXE/capy/commit/c07be600f694a4e5f5d7aa663605c5b66da85f76))
+
+### ⚙️ Miscellaneous Tasks
+
+- Build peristent map/set as part of bootstrap - ([2b74f2f](https://codeberg.org/playXE/capy/commit/2b74f2f0d760d8abc0beacc34e47b00ef152dd4d))
+
+
 ## [2.0.2](https://codeberg.org/playXE/capy/compare/v2.0.1..v2.0.2) - 2026-06-28
 
 ### ⚙️ Miscellaneous Tasks
