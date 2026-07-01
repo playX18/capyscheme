@@ -134,7 +134,9 @@ extern "C" fn trace_hamt_node(obj: GCObject, vis: &mut Visitor) {
                 }
             }
             TAG_COLLISION => {
-                let header = obj.to_address().as_mut_ref::<HamtCollisionHeader<'static>>();
+                let header = obj
+                    .to_address()
+                    .as_mut_ref::<HamtCollisionHeader<'static>>();
                 for i in 0..header.entry_count as usize {
                     let entry = header.entries.as_mut_ptr().add(i).as_mut().unwrap();
                     entry.key.trace(vis);
@@ -205,8 +207,7 @@ fn alloc_bitmap<'gc>(
     children: &[Gc<'gc, HamtNode>],
 ) -> Gc<'gc, HamtNode> {
     let child_count = children.len() as u32;
-    let size = size_of::<HamtBitmapHeader<'gc>>()
-        + children.len() * size_of::<Gc<'gc, HamtNode>>();
+    let size = size_of::<HamtBitmapHeader<'gc>>() + children.len() * size_of::<Gc<'gc, HamtNode>>();
     unsafe {
         let alloc = mc.raw_allocate_with_header_word(
             size,
@@ -223,7 +224,7 @@ fn alloc_bitmap<'gc>(
             header.children.as_mut_ptr().add(i).write(*child);
         }
         // SAFETY: Allocation matches HamtNode layout prefix.
-        unsafe { Gc::from_gcobj(alloc) }
+        Gc::from_gcobj(alloc)
     }
 }
 
@@ -268,14 +269,18 @@ fn alloc_collision<'gc>(
         header.hash = hash;
         header.entry_count = entries.len() as u32;
         for (i, (key, value, entry_hash)) in entries.iter().enumerate() {
-            header.entries.as_mut_ptr().add(i).write(HamtCollisionEntry {
-                hash: *entry_hash,
-                key: *key,
-                value: *value,
-            });
+            header
+                .entries
+                .as_mut_ptr()
+                .add(i)
+                .write(HamtCollisionEntry {
+                    hash: *entry_hash,
+                    key: *key,
+                    value: *value,
+                });
         }
         // SAFETY: Allocation matches HamtNode layout prefix.
-        unsafe { Gc::from_gcobj(alloc) }
+        Gc::from_gcobj(alloc)
     }
 }
 
@@ -370,17 +375,21 @@ fn make_leaf_or_collision<'gc>(
     hash2: u32,
 ) -> Gc<'gc, HamtNode> {
     if shift >= 32 {
-        return alloc_collision(
-            mc,
-            hash1,
-            &[(key1, value1, hash1), (key2, value2, hash2)],
-        );
+        return alloc_collision(mc, hash1, &[(key1, value1, hash1), (key2, value2, hash2)]);
     }
     let f1 = fragment(hash1, shift);
     let f2 = fragment(hash2, shift);
     if f1 == f2 {
         let child = make_leaf_or_collision(
-            mc, typ, shift + HAMT_SHIFT, key1, value1, hash1, key2, value2, hash2,
+            mc,
+            typ,
+            shift + HAMT_SHIFT,
+            key1,
+            value1,
+            hash1,
+            key2,
+            value2,
+            hash2,
         );
         let bit = 1u32 << f1;
         alloc_bitmap(mc, bit, &[child])
@@ -410,15 +419,7 @@ fn hamt_assoc_leaf<'gc>(
     } else {
         (
             make_leaf_or_collision(
-                mc,
-                typ,
-                shift,
-                leaf.key,
-                leaf.value,
-                leaf.hash,
-                key,
-                value,
-                hash,
+                mc, typ, shift, leaf.key, leaf.value, leaf.hash, key, value, hash,
             ),
             true,
         )
@@ -447,10 +448,7 @@ fn hamt_assoc_collision<'gc>(
     if !found {
         entries.push((key, value, hash));
     }
-    (
-        alloc_collision(mc, header.hash, &entries),
-        !found,
-    )
+    (alloc_collision(mc, header.hash, &entries), !found)
 }
 
 fn hamt_assoc<'gc>(
@@ -482,10 +480,9 @@ fn hamt_assoc<'gc>(
                 let bit = 1u32 << idx;
                 if header.bitmap & bit == 0 {
                     let leaf = alloc_leaf(mc, hash, key, value);
-                    let mut children: Vec<Gc<'gc, HamtNode>> =
-                        (0..header.child_count as usize)
-                            .map(|i| header.children.as_ptr().add(i).read())
-                            .collect();
+                    let mut children: Vec<Gc<'gc, HamtNode>> = (0..header.child_count as usize)
+                        .map(|i| header.children.as_ptr().add(i).read())
+                        .collect();
                     let insert_at = bit_index(header.bitmap | bit, bit);
                     children.insert(insert_at, leaf);
                     let new_bitmap = header.bitmap | bit;
@@ -509,10 +506,9 @@ fn hamt_assoc<'gc>(
                     let child = header.children.as_ptr().add(child_idx).read();
                     let (new_child, added) =
                         hamt_assoc(mc, typ, Some(child), shift + HAMT_SHIFT, key, value, hash);
-                    let mut children: Vec<Gc<'gc, HamtNode>> =
-                        (0..header.child_count as usize)
-                            .map(|i| header.children.as_ptr().add(i).read())
-                            .collect();
+                    let mut children: Vec<Gc<'gc, HamtNode>> = (0..header.child_count as usize)
+                        .map(|i| header.children.as_ptr().add(i).read())
+                        .collect();
                     children[child_idx] = new_child.unwrap();
                     (Some(alloc_bitmap(mc, header.bitmap, &children)), added)
                 }
@@ -522,8 +518,7 @@ fn hamt_assoc<'gc>(
                 let idx = fragment(hash, shift) as usize;
                 if array.children[idx].get().is_none() {
                     let leaf = alloc_leaf(mc, hash, key, value);
-                    let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] =
-                        [None; HAMT_WIDTH];
+                    let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] = [None; HAMT_WIDTH];
                     for i in 0..HAMT_WIDTH {
                         slots[i] = array.children[i].get();
                     }
@@ -542,8 +537,7 @@ fn hamt_assoc<'gc>(
                     let child = array.children[idx].get().unwrap();
                     let (new_child, added) =
                         hamt_assoc(mc, typ, Some(child), shift + HAMT_SHIFT, key, value, hash);
-                    let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] =
-                        [None; HAMT_WIDTH];
+                    let mut slots: [Option<Gc<'gc, HamtNode>>; HAMT_WIDTH] = [None; HAMT_WIDTH];
                     for i in 0..HAMT_WIDTH {
                         slots[i] = array.children[i].get();
                     }
@@ -556,8 +550,7 @@ fn hamt_assoc<'gc>(
                     .as_gcobj()
                     .to_address()
                     .as_ref::<HamtCollisionHeader<'gc>>();
-                let (new_node, added) =
-                    hamt_assoc_collision(mc, typ, header, key, value, hash);
+                let (new_node, added) = hamt_assoc_collision(mc, typ, header, key, value, hash);
                 (Some(new_node), added)
             }
             _ => (Some(alloc_leaf(mc, hash, key, value)), true),
@@ -668,10 +661,9 @@ fn hamt_remove<'gc>(
                         (Some(alloc_bitmap(mc, new_bitmap, &children)), true)
                     }
                 } else {
-                    let mut children: Vec<Gc<'gc, HamtNode>> =
-                        (0..header.child_count as usize)
-                            .map(|i| header.children.as_ptr().add(i).read())
-                            .collect();
+                    let mut children: Vec<Gc<'gc, HamtNode>> = (0..header.child_count as usize)
+                        .map(|i| header.children.as_ptr().add(i).read())
+                        .collect();
                     children[child_idx] = new_child.unwrap();
                     (Some(alloc_bitmap(mc, header.bitmap, &children)), true)
                 }
