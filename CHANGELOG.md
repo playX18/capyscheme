@@ -4,6 +4,10 @@
 
 - Add HAMT persistent set/map - ([f94a321](https://codeberg.org/playXE/capy/commit/f94a3213470b033fd8e126c515b3aa889ada0fa9))
 
+### 🐛 Bug Fixes
+
+- Remove hamt warning - ([77fa869](https://codeberg.org/playXE/capy/commit/77fa869098ad4df0a020780aa4ccca71aa1f1d49))
+
 ### 🧪 Testing
 
 - Test HAMT - ([c07be60](https://codeberg.org/playXE/capy/commit/c07be600f694a4e5f5d7aa663605c5b66da85f76))
