@@ -127,6 +127,27 @@ pub unsafe trait Namespace: 'static + Send + Sync + Copy + Clone {
             );
         }
 
+        #[cfg(all(
+            target_arch = "riscv64",
+            any(target_os = "none", target_os = "linux", target_os = "freebsd")
+        ))]
+        unsafe {
+            std::arch::asm!(
+                "/* {type_name} */",
+                "1: auipc {x}, %pcrel_hi(2f)",
+                "addi {x}, {x}, %pcrel_lo(1b)",
+                ".pushsection .bss.generic_statics,\"aw\",@nobits",
+                ".p2align {align}, 0",
+                "2: .zero {size}",
+                ".popsection",
+                size = const { cmp_max(mem::size_of::<T>(), 1) },
+                align = const { mem::align_of::<T>().ilog2() },
+                type_name = in(reg) type_name,
+                x = out(reg) addr,
+                options(nostack)
+            );
+        }
+
         #[cfg(not(any(
             target_os = "none",
             target_os = "linux",

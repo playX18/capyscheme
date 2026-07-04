@@ -1,3 +1,19 @@
+/// Returns machine code bytes for a single "return" instruction on the host architecture.
+fn ret_bytes() -> &'static [u8] {
+    #[cfg(target_arch = "x86_64")]
+    {
+        &[0xc3]
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        &[0xc0, 0x03, 0x5f, 0xd6] // ret
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        &[0x67, 0x80, 0x00, 0x00] // jalr x0, x1, 0
+    }
+}
+
 use super::{
     FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF,
     FASL_TAG_UNLINKED_CODEBLOCK, FaslLoadOptions, FaslReader,
@@ -334,7 +350,7 @@ fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
-        let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]);
+        let code = CodeSpec::new(ret_bytes(), 0, 0, false, Value::new(false), &[]);
         let code_blocks = [GraphCodeSpec::new(0, code)];
         let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
         FaslWriter::new(ctx, &mut bytes)
@@ -372,7 +388,7 @@ fn fasl_reader_debug_load_uses_trampoline_without_rewriting_artifact() {
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
-        let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]);
+        let code = CodeSpec::new(ret_bytes(), 0, 0, false, Value::new(false), &[]);
         let code_blocks = [GraphCodeSpec::new(0, code)];
         let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
         FaslWriter::new(ctx, &mut bytes)
@@ -395,12 +411,12 @@ fn fasl_reader_debug_load_uses_trampoline_without_rewriting_artifact() {
 
         assert_eq!(bytes, original);
         assert_eq!(normal.code, normal.code_block.entrypoint);
-        assert_eq!(normal.code_block.unlinked.code(), [0xc3]);
+        assert_eq!(normal.code_block.unlinked.code(), ret_bytes());
 
         let debug_trampoline = get_debug_trampoline_from_scheme();
         assert_eq!(debug.code, debug_trampoline);
         assert_ne!(debug.code_block.entrypoint, debug_trampoline);
-        assert_eq!(debug.code_block.unlinked.code(), [0xc3]);
+        assert_eq!(debug.code_block.unlinked.code(), ret_bytes());
     });
 }
 
@@ -412,20 +428,19 @@ fn fasl_reader_decodes_relocatable_code_block_value() {
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
         let payload_start = put_fasl_header(&mut bytes);
-        put_test_relocatable_code_block(&mut bytes, &[0xc3], 0, 0);
+        put_test_relocatable_code_block(&mut bytes, ret_bytes(), 0, 0);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read unlinked code block");
         let unlinked = value.downcast::<RelocatableCodeBlock>();
-        assert_eq!(unlinked.code(), [0xc3]);
+        assert_eq!(unlinked.code(), ret_bytes());
         assert_eq!(unlinked.entry_offset, 0);
         assert_eq!(unlinked.relocations(), &[]);
     });
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn fasl_reader_reads_zero_relocation_closure_with_code_block() {
     use super::{
@@ -447,8 +462,8 @@ fn fasl_reader_reads_zero_relocation_closure_with_code_block() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 1); // code byte length
-        bytes.push(0xc3); // ret
+        put_u32(&mut bytes, ret_bytes().len() as u32); // code byte length
+        bytes.extend_from_slice(ret_bytes()); // ret
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes()); // arity
         bytes.push(0); // code-block is_cont
@@ -467,12 +482,11 @@ fn fasl_reader_reads_zero_relocation_closure_with_code_block() {
         assert_eq!(closure.code, code_block.entrypoint);
         assert!(matches!(code_block.kind, CodeBlockKind::Loaded));
         assert_eq!(code_block.arity.fixed_arity(), 0);
-        assert_eq!(code_block.unlinked.code(), [0xc3]);
+        assert_eq!(code_block.unlinked.code(), ret_bytes());
         assert!(code_block.has_live_span());
     });
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn fasl_reader_entry_resolves_graph_defined_code_block() {
     use super::{
@@ -497,8 +511,8 @@ fn fasl_reader_entry_resolves_graph_defined_code_block() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 1); // code byte length
-        bytes.push(0xc3); // ret
+        put_u32(&mut bytes, ret_bytes().len() as u32); // code byte length
+        bytes.extend_from_slice(ret_bytes()); // ret
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes()); // arity
         bytes.push(0); // code-block is_cont
@@ -534,8 +548,8 @@ fn fasl_reader_reads_code_block_as_value() {
         let mut bytes = Vec::new();
         let payload_start = put_fasl_header(&mut bytes);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 1); // code byte length
-        bytes.push(0xc3);
+        put_u32(&mut bytes, ret_bytes().len() as u32); // code byte length
+        bytes.extend_from_slice(ret_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
         bytes.push(0); // is_cont
@@ -550,7 +564,6 @@ fn fasl_reader_reads_code_block_as_value() {
     });
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
     use super::{
@@ -566,8 +579,8 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         let mut bytes = Vec::new();
         let payload_start = put_fasl_header(&mut bytes);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 9); // ret plus one word patch slot
-        bytes.push(0xc3);
+        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -575,7 +588,7 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
         Relocation {
-            offset: 1,
+            offset: ret_bytes().len() as u32,
             kind: RelocKind::Asmkit(AsmkitReloc::Abs8),
             target: RelocTarget::SideMetadata(SideMetadataSlot::Global),
             addend: 0,
@@ -590,7 +603,7 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         let code_block = value.downcast::<CodeBlock>();
         // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let patched = unsafe {
-            std::ptr::read_unaligned((code_block.entrypoint.as_usize() + 1) as *const usize)
+            std::ptr::read_unaligned((code_block.entrypoint.as_usize() + ret_bytes().len()) as *const usize)
         };
         assert_eq!(patched, global_side_metadata_vm_base_address().as_usize());
     });
@@ -622,7 +635,7 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
         put_u32(&mut bytes, 1); // target code byte length
-        bytes.push(0xc3);
+        bytes.extend_from_slice(ret_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
         bytes.push(0); // is_cont
@@ -632,7 +645,7 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
         put_u32(&mut bytes, 5); // ret plus rel32 patch slot
-        bytes.push(0xc3);
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0i32.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -664,7 +677,6 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
     });
 }
 
-#[cfg(target_arch = "x86_64")]
 #[test]
 fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
     use super::{
@@ -692,8 +704,8 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 9); // ret plus one word patch slot
-        bytes.push(0xc3);
+        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -701,7 +713,7 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 1); // relocation count
         Relocation {
-            offset: 1,
+            offset: ret_bytes().len() as u32,
             kind: RelocKind::DataSlotAddress,
             target: RelocTarget::Object(0),
             addend: 0,
@@ -718,7 +730,7 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         let code_block = values[1].get().downcast::<CodeBlock>();
         // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let slot_address = unsafe {
-            std::ptr::read_unaligned((code_block.entrypoint.as_usize() + 1) as *const usize)
+            std::ptr::read_unaligned((code_block.entrypoint.as_usize() + ret_bytes().len()) as *const usize)
         };
         assert_eq!(slot_address, code_block.loaded_data_base.as_usize());
         // SAFETY: The target pointer is valid, aligned, and points to initialized memory
@@ -751,8 +763,8 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 9); // ret plus one word patch slot
-        bytes.push(0xc3);
+        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -771,7 +783,7 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
         put_u32(&mut bytes, 1); // target code byte length
-        bytes.push(0xc3);
+        bytes.extend_from_slice(ret_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
         bytes.push(0); // is_cont
@@ -823,8 +835,8 @@ fn fasl_reader_keeps_raw_data_slots_out_of_value_bitmap() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 17); // ret plus two word patch slots
-        bytes.push(0xc3);
+        put_u32(&mut bytes, (ret_bytes().len() + 2 * std::mem::size_of::<usize>()) as u32); // ret plus two word patch slots
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
@@ -884,8 +896,8 @@ fn fasl_reader_resolves_forward_data_slot_address_relocation() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 9); // ret plus one word patch slot
-        bytes.push(0xc3);
+        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -946,8 +958,8 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 9); // ret plus one word patch slot
-        bytes.push(0xc3);
+        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -966,7 +978,7 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
         put_u32(&mut bytes, 1); // target code byte length
-        bytes.push(0xc3);
+        bytes.extend_from_slice(ret_bytes());
         put_u32(&mut bytes, 0); // entry offset
         bytes.extend_from_slice(&0i32.to_le_bytes());
         bytes.push(0); // is_cont
@@ -1011,8 +1023,8 @@ fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 9);
-        bytes.push(0xc3);
+        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32);
+        bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0);
         bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -1020,7 +1032,7 @@ fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
         bytes.push(FASL_TAG_F);
         put_u32(&mut bytes, 1);
         Relocation {
-            offset: 1,
+            offset: ret_bytes().len() as u32,
             kind: RelocKind::CodeEntry,
             target: RelocTarget::DebugEntry(1),
             addend: 0,
@@ -1030,8 +1042,8 @@ fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, 1);
-        bytes.push(0xc3);
+        put_u32(&mut bytes, ret_bytes().len() as u32);
+        bytes.extend_from_slice(ret_bytes());
         put_u32(&mut bytes, 0);
         bytes.extend_from_slice(&0i32.to_le_bytes());
         bytes.push(0);
@@ -1048,7 +1060,7 @@ fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
         let normal_patched =
             // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe {
-                std::ptr::read_unaligned((normal_source.entrypoint.as_usize() + 1) as *const usize)
+                std::ptr::read_unaligned((normal_source.entrypoint.as_usize() + ret_bytes().len()) as *const usize)
             };
         assert_eq!(normal_patched, normal_target.entrypoint.as_usize());
 
@@ -1062,7 +1074,7 @@ fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
         let debug_patched =
             // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             unsafe {
-                std::ptr::read_unaligned((debug_source.entrypoint.as_usize() + 1) as *const usize)
+                std::ptr::read_unaligned((debug_source.entrypoint.as_usize() + ret_bytes().len()) as *const usize)
             };
         assert_eq!(debug_patched, get_debug_trampoline_from_scheme().as_usize());
         assert_ne!(debug_patched, debug_target.entrypoint.as_usize());
@@ -1096,8 +1108,8 @@ fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
             bytes.push(FASL_TAG_GRAPH_DEF);
             put_u32(&mut bytes, code_index);
             bytes.push(FASL_TAG_CODE_BLOCK);
-            put_u32(&mut bytes, 1 + std::mem::size_of::<usize>() as u32);
-            bytes.push(0xc3);
+            put_u32(&mut bytes, ret_bytes().len() as u32 + std::mem::size_of::<usize>() as u32);
+            bytes.extend_from_slice(ret_bytes());
             bytes.extend_from_slice(&0usize.to_le_bytes());
             put_u32(&mut bytes, 0); // entry offset
             bytes.extend_from_slice(&0i32.to_le_bytes());
@@ -1105,7 +1117,7 @@ fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
             bytes.push(FASL_TAG_F); // metadata
             put_u32(&mut bytes, 1); // relocation count
             Relocation {
-                offset: 1,
+                offset: ret_bytes().len() as u32,
                 kind: RelocKind::CacheCell,
                 target: RelocTarget::CacheCell(0),
                 addend: 0,
@@ -1123,10 +1135,10 @@ fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
         let second = values[2].get().downcast::<CodeBlock>();
         let first_slot =
 // SAFETY: The target pointer is valid, aligned, and points to initialized memory
-            unsafe { std::ptr::read_unaligned((first.entrypoint.as_usize() + 1) as *const usize) };
+            unsafe { std::ptr::read_unaligned((first.entrypoint.as_usize() + ret_bytes().len()) as *const usize) };
         let second_slot =
 // SAFETY: The target pointer is valid, aligned, and points to initialized memory
-            unsafe { std::ptr::read_unaligned((second.entrypoint.as_usize() + 1) as *const usize) };
+            unsafe { std::ptr::read_unaligned((second.entrypoint.as_usize() + ret_bytes().len()) as *const usize) };
 
         assert_eq!(first_slot, second_slot);
         assert_eq!(
@@ -1174,9 +1186,9 @@ fn fasl_reader_accepts_more_than_64_value_data_slots() {
         bytes.push(FASL_TAG_CODE_BLOCK);
         put_u32(
             &mut bytes,
-            (1 + VALUE_SLOT_COUNT * std::mem::size_of::<usize>()) as u32,
+            (ret_bytes().len() + VALUE_SLOT_COUNT * std::mem::size_of::<usize>()) as u32,
         );
-        bytes.push(0xc3);
+        bytes.extend_from_slice(ret_bytes());
         bytes.resize(
             bytes.len() + VALUE_SLOT_COUNT * std::mem::size_of::<usize>(),
             0,
@@ -1188,7 +1200,7 @@ fn fasl_reader_accepts_more_than_64_value_data_slots() {
         put_u32(&mut bytes, VALUE_SLOT_COUNT as u32);
         for index in 0..VALUE_SLOT_COUNT {
             Relocation {
-                offset: 1 + (index * std::mem::size_of::<usize>()) as u32,
+                offset: ret_bytes().len() as u32 + (index * std::mem::size_of::<usize>()) as u32,
                 kind: RelocKind::DataSlotAddress,
                 target: RelocTarget::Object(index as u32),
                 addend: 0,
@@ -1207,7 +1219,7 @@ fn fasl_reader_accepts_more_than_64_value_data_slots() {
             // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             let slot_address = unsafe {
                 std::ptr::read_unaligned(
-                    (code_block.entrypoint.as_usize() + 1 + index * std::mem::size_of::<usize>())
+                    (code_block.entrypoint.as_usize() + ret_bytes().len() + index * std::mem::size_of::<usize>())
                         as *const usize,
                 )
             };

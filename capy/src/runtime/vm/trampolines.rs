@@ -37,7 +37,22 @@ use crate::{
 };
 
 #[cfg(target_arch = "x86_64")]
-const X86_64_ABSOLUTE_JUMP_STUB_LEN: usize = 13;
+const ABSOLUTE_JUMP_STUB_LEN: usize = 13;
+
+#[cfg(target_arch = "aarch64")]
+const ABSOLUTE_JUMP_STUB_LEN: usize = 16;
+
+#[cfg(target_arch = "riscv64")]
+const ABSOLUTE_JUMP_STUB_LEN: usize = 16;
+
+#[cfg(target_arch = "x86_64")]
+const ARCH_CALL_RELOC: Reloc = Reloc::X86CallPCRel4;
+
+#[cfg(target_arch = "aarch64")]
+const ARCH_CALL_RELOC: Reloc = Reloc::Arm64Call;
+
+#[cfg(target_arch = "riscv64")]
+const ARCH_CALL_RELOC: Reloc = Reloc::RiscvCallPlt;
 
 pub struct Trampolines {
     _memory: Mutex<CodeMemory>,
@@ -774,7 +789,7 @@ fn code_bytes_with_call_stubs(
     let mut call_stub_offsets = std::collections::HashMap::new();
     for reloc in relocations
         .iter()
-        .filter(|reloc| reloc.kind == Reloc::X86CallPCRel4)
+        .filter(|reloc| reloc.kind == ARCH_CALL_RELOC)
     {
         if call_stub_offsets.contains_key(&reloc.offset) {
             return Err(invalid_data("duplicate call relocation offset"));
@@ -806,6 +821,12 @@ fn apply_runtime_relocation(
             target.as_usize(),
             reloc.addend,
         ),
+        Reloc::Arm64Call => {
+            apply_arm64_call_reloc(memory, site, reloc.offset, target.as_usize(), reloc.addend)
+        }
+        Reloc::RiscvCallPlt => {
+            apply_riscv64_call_plt_reloc(memory, site, reloc.offset, target.as_usize(), reloc.addend)
+        }
         _ => Err(invalid_data("unsupported trampoline relocation kind")),
     }
 }
@@ -835,16 +856,7 @@ fn resolve_runtime_relocation_target(target: Target) -> std::io::Result<Address>
 }
 
 fn empty_absolute_jump_stub() -> std::io::Result<Vec<u8>> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        Ok(vec![0; X86_64_ABSOLUTE_JUMP_STUB_LEN])
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        Err(invalid_data(
-            "call stubs are only supported on x86_64 targets",
-        ))
-    }
+    Ok(vec![0; ABSOLUTE_JUMP_STUB_LEN])
 }
 
 fn apply_x86_pc_rel4(
@@ -889,19 +901,149 @@ fn rel32_displacement(patch_address: usize, target: usize) -> Option<i32> {
 fn absolute_jump_stub(target: usize) -> std::io::Result<Vec<u8>> {
     #[cfg(target_arch = "x86_64")]
     {
-        let mut stub = Vec::with_capacity(X86_64_ABSOLUTE_JUMP_STUB_LEN);
+        let mut stub = Vec::with_capacity(ABSOLUTE_JUMP_STUB_LEN);
         // movabs r11, imm64; jmp r11
         stub.extend_from_slice(&[0x49, 0xbb]);
         stub.extend_from_slice(&target.to_le_bytes());
         stub.extend_from_slice(&[0x41, 0xff, 0xe3]);
         Ok(stub)
     }
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
     {
-        let _ = target;
-        Err(invalid_data(
-            "call stubs are only supported on x86_64 targets",
-        ))
+        let addr = target as u64;
+        let mut stub = Vec::with_capacity(ABSOLUTE_JUMP_STUB_LEN);
+        // movz x16, #imm16
+        stub.extend_from_slice(&((0xd2800000u32 | (((addr & 0xffff) as u32) << 5)) | 16).to_le_bytes());
+        // movk x16, #imm16, lsl #16
+        stub.extend_from_slice(&((0xf2a00000u32 | ((((addr >> 16) & 0xffff) as u32) << 5)) | 16).to_le_bytes());
+        // movk x16, #imm16, lsl #32
+        stub.extend_from_slice(&((0xf2c00000u32 | ((((addr >> 32) & 0xffff) as u32) << 5)) | 16).to_le_bytes());
+        // br x16
+        stub.extend_from_slice(&0xd61f0200u32.to_le_bytes());
+        Ok(stub)
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        let addr = target as i64;
+        let hi20 = ((addr + 0x800) >> 12) as u32;
+        let lo12 = (addr - ((hi20 as i64) << 12)) as u32;
+        let mut stub = Vec::with_capacity(ABSOLUTE_JUMP_STUB_LEN);
+        // lui x1, %hi20
+        stub.extend_from_slice(&((hi20 << 12) | 0x37).to_le_bytes());
+        // addi x1, x1, %lo12
+        stub.extend_from_slice(&((lo12 << 20) | (1 << 15) | (0 << 12) | (1 << 7) | 0x13).to_le_bytes());
+        // jalr x0, x1, 0
+        stub.extend_from_slice(&((0u32 << 20) | (1 << 15) | (0 << 12) | (0 << 7) | 0x67).to_le_bytes());
+        Ok(stub)
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+    {
+        Err(invalid_data("absolute jump stubs are not supported on this architecture"))
+    }
+}
+
+fn read_u32_at(base: Address, offset: u32) -> std::io::Result<u32> {
+    let addr = add_i64_to_usize(base.as_usize(), offset as i64)?;
+    // SAFETY: The address is within allocated executable memory owned by the caller
+    let bytes = unsafe { std::ptr::read_unaligned(addr as *const u32) };
+    Ok(bytes)
+}
+
+fn apply_arm64_call_reloc(
+    memory: &mut CodeMemory,
+    site: &mut TrampolineRelocationSite<'_>,
+    offset: u32,
+    target: usize,
+    addend: i64,
+) -> std::io::Result<()> {
+    let patch_address = add_i64_to_usize(site.base.as_usize(), offset as i64)?;
+    let relocated_target = add_i64_to_usize(target, addend)?;
+    let displacement = relocated_target as i128 - patch_address as i128;
+    if displacement % 4 != 0 {
+        return Err(invalid_data("arm64 call target is not 4-byte aligned"));
+    }
+    let imm26 = displacement / 4;
+    if (-(1i128 << 25)..(1i128 << 25)).contains(&imm26) {
+        let original = read_u32_at(site.base, offset)?;
+        let patched = (original & !0x03ff_ffff) | ((imm26 as u32) & 0x03ff_ffff);
+        memory.patch(site.span, offset as usize, &patched.to_le_bytes())
+    } else {
+        let stub_offset = site
+            .call_stub_offsets
+            .get(&offset)
+            .copied()
+            .ok_or_else(|| invalid_data("missing arm64 call stub for out-of-range relocation"))?;
+        let stub_address = add_i64_to_usize(site.base.as_usize(), stub_offset as i64)?;
+        let stub_displacement = stub_address as i128 - patch_address as i128;
+        if stub_displacement % 4 != 0 {
+            return Err(invalid_data("arm64 call stub is not 4-byte aligned"));
+        }
+        let stub_imm26 = stub_displacement / 4;
+        if !(-(1i128 << 25)..(1i128 << 25)).contains(&stub_imm26) {
+            return Err(invalid_data("arm64 call stub is out of bl range"));
+        }
+        let original = read_u32_at(site.base, offset)?;
+        let patched = (original & !0x03ff_ffff) | ((stub_imm26 as u32) & 0x03ff_ffff);
+        memory.patch(site.span, offset as usize, &patched.to_le_bytes())?;
+        memory.patch(
+            site.span,
+            stub_offset as usize,
+            &absolute_jump_stub(relocated_target)?,
+        )
+    }
+}
+
+fn apply_riscv64_call_plt_reloc(
+    memory: &mut CodeMemory,
+    site: &mut TrampolineRelocationSite<'_>,
+    offset: u32,
+    target: usize,
+    addend: i64,
+) -> std::io::Result<()> {
+    let patch_address = add_i64_to_usize(site.base.as_usize(), offset as i64)?;
+    let relocated_target = add_i64_to_usize(target, addend)?;
+    let delta = relocated_target as i128 - patch_address as i128;
+
+    // RiscvCallPlt is an AUIPC+JALR pair (8 bytes)
+    if (-(1i128 << 31)..(1i128 << 31)).contains(&delta) {
+        let auipc_orig = read_u32_at(site.base, offset)?;
+        let jalr_orig = read_u32_at(site.base, offset + 4)?;
+        let hi20 = ((delta as i64 + 0x800) >> 12) as u32;
+        let lo12 = (delta as i64 - ((hi20 as i64) << 12)) as u32;
+        let auipc = (auipc_orig & 0x00000fff) | (hi20 << 12);
+        let jalr = (jalr_orig & 0x000fffff) | (lo12 << 20);
+        let mut patch_bytes = [0u8; 8];
+        patch_bytes[0..4].copy_from_slice(&auipc.to_le_bytes());
+        patch_bytes[4..8].copy_from_slice(&jalr.to_le_bytes());
+        memory.patch(site.span, offset as usize, &patch_bytes)
+    } else {
+        let stub_offset = site
+            .call_stub_offsets
+            .get(&offset)
+            .copied()
+            .ok_or_else(|| {
+                invalid_data("missing riscv call stub for out-of-range relocation")
+            })?;
+        let stub_address = add_i64_to_usize(site.base.as_usize(), stub_offset as i64)?;
+        let stub_delta = stub_address as i128 - patch_address as i128;
+        if !(-(1i128 << 31)..(1i128 << 31)).contains(&stub_delta) {
+            return Err(invalid_data("riscv call stub is out of auipc+jalr range"));
+        }
+        let auipc_orig = read_u32_at(site.base, offset)?;
+        let jalr_orig = read_u32_at(site.base, offset + 4)?;
+        let hi20 = ((stub_delta as i64 + 0x800) >> 12) as u32;
+        let lo12 = (stub_delta as i64 - ((hi20 as i64) << 12)) as u32;
+        let auipc = (auipc_orig & 0x00000fff) | (hi20 << 12);
+        let jalr = (jalr_orig & 0x000fffff) | (lo12 << 20);
+        let mut patch_bytes = [0u8; 8];
+        patch_bytes[0..4].copy_from_slice(&auipc.to_le_bytes());
+        patch_bytes[4..8].copy_from_slice(&jalr.to_le_bytes());
+        memory.patch(site.span, offset as usize, &patch_bytes)?;
+        memory.patch(
+            site.span,
+            stub_offset as usize,
+            &absolute_jump_stub(relocated_target)?,
+        )
     }
 }
 
