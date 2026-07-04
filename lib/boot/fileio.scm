@@ -217,28 +217,27 @@
                    ((line) 'line)
                    ((datum flush) 'datum)
                    (else 'block)))
-         (exists? (file-io/file-exists? filename)))
-    (cond ((and exists? (not dont-create) (not dont-fail))
-           (let* ((exec-mode (capy:execution-mode)))
-
-             (raise-i/o-file-already-exists
-               'open-file-input/output-port
-               "file already exists"
-               filename)))
-      ((and (not exists?)
-          (not dont-create))
-        (call-with-port (open-file-output-port filename) values))
-      ((not exists?)
-        (raise-io/file-does-not-exist-error
-          'open-file-input/output-port
-          "file does not exist"
-          filename)))
-    (let ([fd (osdep/open-file filename 'input+output 'binary opts)])
+          (exists? (file-io/file-exists? filename)))
+     (cond ((and exists? (not dont-create) (not dont-fail))
+            (let* ((exec-mode (capy:execution-mode)))
+              (raise-i/o-file-already-exists
+                'open-file-input/output-port
+                "file already exists"
+                filename)))
+          ((and (not exists?) (not dont-create))
+            (call-with-port (open-file-output-port filename) values))
+          ((not exists?)
+            (raise-io/file-does-not-exist-error
+              'open-file-input/output-port
+              "file does not exist"
+              filename))
+          (else #f))
+    (let ([fd (apply osdep/open-file filename 'input+output 'binary opts)])
       (define (read! bv start count)
-        (define tmp (make-bytevector count))
-        (define nbytes (osdep/read-file fd tmp count))
-        (r6rs:bytevector-copy! tmp 0 bv start nbytes)
-        nbytes)
+        (let* ([tmp (make-bytevector count)]
+               [nbytes (osdep/read-file fd tmp count)])
+          (r6rs:bytevector-copy! tmp 0 bv start (if (fixnum? nbytes) nbytes 0))
+          (if (fixnum? nbytes) nbytes 0)))
       (define (write! bv start count)
         (osdep/write-file4 fd bv count start))
       (define (get-position)
