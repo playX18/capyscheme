@@ -62,8 +62,9 @@
         (lambda ()
           (define res (parse-args parser (cdr args)))
 
-          (if (arg-results-ref res "version")
-            (format #t "CapyScheme ~a~%" (implementation-version)))
+          (when (arg-results-ref res "version")
+            (format #t "CapyScheme ~a~%" (implementation-version))
+            (exit 0))
 
           (if (arg-results-ref res "log-warn")
             (log:set-max-level! log:warn))
