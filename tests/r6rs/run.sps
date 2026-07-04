@@ -2,7 +2,7 @@
 
 (import (rnrs)
   (tests r6rs test)
-  (prefix (srfi 64) test:)
+  (prefix (srfi :64) test:)
   (tests r6rs base)
   (tests r6rs reader)
   (tests r6rs unicode)

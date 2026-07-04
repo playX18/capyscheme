@@ -4,7 +4,7 @@
   (rnrs)
   (rnrs eval)
   (tests r6rs test)
-  (prefix (srfi 64) test:))
+  (prefix (srfi :64) test:))
 
 (define-syntax test-library
   (syntax-rules ()

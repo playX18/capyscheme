@@ -15,7 +15,7 @@
     report-test-results)
   (import (rnrs)
     (core parameters)
-    (prefix (srfi 64) test:)
+    (prefix (srfi :64) test:)
     (only (capy) syntax-sourcev))
 
   (define-record-type err
