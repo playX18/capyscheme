@@ -88,7 +88,14 @@ If argument count to primitive does not match this pass will convert primitive b
 
 ### CPS stage
 
-CapyScheme relies on CPS in order to get cheap first-class continuations and easy exception handling. Tree IR is converted to CPS after its optimized and CPS form has the following terms and atoms:
+CapyScheme relies on CPS in order to get cheap first-class continuations and easy exception handling. Tree IR is converted to CPS after it is optimized by the lowering pipeline in `capy/src/compiler/pipeline.rs`. That pipeline:
+
+1. Optionally resolves and expands primitives in the current module.
+2. Resolves free variables and letrectifies when primitive expansion is enabled.
+3. Fixes `letrec`, eta-expands procedures, and eliminates assignments.
+4. Converts optimized Tree IR to CPS, rewrites the CPS graph, and contifies procedures that can become continuations.
+
+CPS form has the following terms and atoms:
 
 ```scm
 ; atoms
@@ -165,15 +172,29 @@ We include a few important optimizations into the compiler: tree reductions, inl
   as much as possible.
 - Inlining & loop unrolling: run together and inline known function calls, in case of recursive calls loop-unrolling is able to unroll calls until some limit is reached. Limit for both unrolling and inlining is computed by comparing tree size with predefined constants (fibonacci sequence at the moment).
 - Contification: converts procedures into continuations which in turn allows them to be compiled as basic-block instead of requiring allocating a closure.
-- Reification: marks continuations which still require a closure to be allocated. Such continuations are usually handler/return continuations passed to `call` term or used for `call/cc`.
+- Reification: records the continuations which still require closures to be allocated. Such continuations are usually handler/return continuations passed to `call` term or used for `call/cc`.
+
+#### Linear CPS
+
+Before native code generation, reification output is lowered into linear CPS (`capy/src/cps/linear/`). Linear CPS assigns stable IDs to procedures, continuations, blocks, and values so later stages can emit and debug structured native code without walking the high-level CPS tree.
+
+The dump path in `dump_lowered_program_artifacts` can write this form as `<destination>.lcps.scm` next to the optimized Tree IR and CPS dumps. Use this when investigating a mismatch between CPS optimization and Cranelift lowering.
 
 #### CPS->SSA conversion
 
-CPS is converted to SSA by building Cranelift IR after all optimizations are applied. During this stage
-all continuations that were not reified are converted to basic-blocks, and all procedures/reified continuations are converted to Cranelift functions. Some primcalls are lowered directly to Cranelift IR, while others might be lowered as calls to runtime.
+CPS is converted to SSA by building Cranelift IR after all optimizations and linearization are applied. During this stage all continuations that were not reified are converted to basic blocks, and all procedures/reified continuations are converted to Cranelift functions. Some primcalls are lowered directly to Cranelift IR, while others might be lowered as calls to runtime.
 
-### Linking
+### FASL code artifacts
 
-Once SSA is built we emit object file and link using platform linker as shared object.
+Current AOT compilation produces unified FASL code artifacts instead of platform-linked shared objects. `compile_cps_to_fasl_bytes` reifies CPS, linearizes it, builds Cranelift functions with `ModuleBuilder`, and serializes the resulting code and constants to FASL bytes.
+
+The loader treats AOT outputs as `.fasl` files:
+
+- `LoadArtifactKind::FaslCode` is the artifact kind selected for AOT policy.
+- `artifact_extension(LoadArtifactKind::FaslCode)` returns `fasl`.
+- `compile_cps_to_destination` rejects `SharedObject` outputs with "Shared-object Scheme artifacts are no longer produced by the compiler".
+- `capy/src/runtime/fasl/` owns the binary format. The current file magic is `CAPYFSL\0`, and the format carries code blocks, graph values, relocations, and an entry record.
+
+This means contributors should debug compiler output as FASL data plus Cranelift-generated code, not as a temporary `.so`/`.dylib`/`.dll` link step.
 
 ## Runtime
