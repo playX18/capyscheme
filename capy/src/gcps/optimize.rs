@@ -17,7 +17,7 @@ use crate::{
 
 use super::{
     clone::GraphClone,
-    convert::{ConvertResult, cps_to_graph, graph_to_cps},
+    convert::{ConvertResult, cps_func_to_graph, graph_func_to_cps},
     dom_contify,
     graph::{
         ActiveLinkStatus, BoundVar, ContVar, ExprKind, FreeVar, FunctionId, FunctionLink,
@@ -92,7 +92,7 @@ pub(super) enum ContifySource {
 
 pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResult<FuncRef<'gc>> {
     let mut convert_profile = ProfileScope::new("compiler.lower.gcps.convert");
-    let mut program = cps_to_graph(ctx, func.body())?;
+    let mut program = cps_func_to_graph(ctx, func)?;
     if convert_profile.is_enabled() {
         let stats = program.graph.stats();
         convert_profile.field("terms", stats.terms);
@@ -104,7 +104,8 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
     drop(convert_profile);
 
     let mut optimize_profile = ProfileScope::new("compiler.lower.gcps.run");
-    let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(DEFAULT_GAS));
+    let root = program.root();
+    let stats = optimize_graph(ctx, &mut program.graph, root, Some(DEFAULT_GAS));
     if optimize_profile.is_enabled() {
         let graph_stats = program.graph.stats();
         optimize_profile.field("iterations", stats.iterations);
@@ -133,14 +134,14 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
     drop(optimize_profile);
 
     let mut reify_profile = ProfileScope::new("compiler.lower.gcps.reify");
-    let body = graph_to_cps(ctx, &program.graph, program.root)?;
+    let func = graph_func_to_cps(ctx, &program.graph, program.entry)?;
     if reify_profile.is_enabled() {
         let stats = program.graph.stats();
         reify_profile.field("terms", stats.terms);
         reify_profile.field("functions", stats.functions);
         reify_profile.field("free_occurrences", stats.free_occurrences);
     }
-    Ok(func.with_body(ctx, body))
+    Ok(func)
 }
 
 pub fn optimize_graph<'gc>(
@@ -2186,6 +2187,7 @@ mod tests {
     use crate::{
         cps::term::{Atom, BranchHint, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
         expander::core::{LVarRef, fresh_lvar},
+        gcps::convert::{cps_to_graph, graph_to_cps},
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Scheme,

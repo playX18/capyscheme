@@ -70,6 +70,17 @@ pub struct GraphProgram<'gc> {
     pub root: Subterm,
 }
 
+pub struct GraphFunctionProgram<'gc> {
+    pub graph: Graph<'gc>,
+    pub entry: FunctionId,
+}
+
+impl<'gc> GraphFunctionProgram<'gc> {
+    pub fn root(&self) -> Subterm {
+        self.graph[self.entry].body
+    }
+}
+
 type LiteralBind<'gc> = (LVarRef<'gc>, Value<'gc>, Value<'gc>);
 type GraphLiteralBind<'gc> = (BoundVar, Value<'gc>, Value<'gc>);
 
@@ -310,8 +321,21 @@ pub fn cps_to_graph<'gc>(
     build_cps_graph(term, Some(ctx))
 }
 
+pub fn cps_func_to_graph<'gc>(
+    ctx: Context<'gc>,
+    func: FuncRef<'gc>,
+) -> ConvertResult<GraphFunctionProgram<'gc>> {
+    build_cps_func_graph(func, Some(ctx))
+}
+
 pub fn normalized_cps_to_graph<'gc>(term: TermRef<'gc>) -> ConvertResult<GraphProgram<'gc>> {
     build_cps_graph(term, None)
+}
+
+pub fn normalized_cps_func_to_graph<'gc>(
+    func: FuncRef<'gc>,
+) -> ConvertResult<GraphFunctionProgram<'gc>> {
+    build_cps_func_graph(func, None)
 }
 
 fn build_cps_graph<'gc>(
@@ -327,6 +351,21 @@ fn build_cps_graph<'gc>(
     };
     let root = builder.convert_root(term)?;
     Ok(GraphProgram { graph, root })
+}
+
+fn build_cps_func_graph<'gc>(
+    func: FuncRef<'gc>,
+    ctx: Option<Context<'gc>>,
+) -> ConvertResult<GraphFunctionProgram<'gc>> {
+    let mut graph = Graph::new();
+    let mut builder = ToGraph {
+        graph: &mut graph,
+        vars: HashMap::new(),
+        ctx,
+        fresh_count: 0,
+    };
+    let entry = builder.convert_func(func, false)?;
+    Ok(GraphFunctionProgram { graph, entry })
 }
 
 struct ToGraph<'a, 'gc> {
@@ -713,6 +752,20 @@ pub fn graph_to_cps<'gc>(
         known_literals: HashMap::new(),
     }
     .lower_term_link(root)
+}
+
+pub fn graph_func_to_cps<'gc>(
+    ctx: Context<'gc>,
+    graph: &Graph<'gc>,
+    entry: FunctionId,
+) -> ConvertResult<FuncRef<'gc>> {
+    FromGraph {
+        ctx,
+        graph,
+        fresh_count: 0,
+        known_literals: HashMap::new(),
+    }
+    .lower_func(entry)
 }
 
 struct FromGraph<'a, 'gc> {
@@ -1233,6 +1286,79 @@ mod tests {
             assert_eq!(lowered_alternative, alternative);
             assert!(alternative_args.is_none());
             assert_eq!(lowered_hints, hints);
+        });
+    }
+
+    #[test]
+    fn cps_func_graph_roundtrip_preserves_entry_identity() {
+        Scheme::new_uninit().enter(|ctx| {
+            let binding = lvar(ctx, "entry");
+            let return_cont = lvar(ctx, "return");
+            let arg = lvar(ctx, "arg");
+            let rest = lvar(ctx, "rest");
+            let name = Value::new(Symbol::from_str(ctx, "entry-name"));
+            let source = Value::new(42);
+            let meta = Value::new(Symbol::from_str(ctx, "entry-meta"));
+            let body = Gc::new(
+                *ctx,
+                Term::Continue(
+                    return_cont,
+                    Array::from_slice(*ctx, &[Atom::Local(arg)]),
+                    source,
+                ),
+            );
+            let func = Gc::new(
+                *ctx,
+                Func {
+                    name,
+                    source,
+                    binding,
+                    return_cont,
+                    args: Array::from_slice(*ctx, &[arg]),
+                    variadic: Some(rest),
+                    body: Lock::new(body),
+                    free_vars: Lock::new(None),
+                    meta,
+                },
+            );
+
+            let program = cps_func_to_graph(ctx, func).expect("function graph conversion");
+            let entry = program.graph[program.entry];
+            assert_eq!(program.root(), entry.body);
+            assert_eq!(program.graph[entry.var].var, binding);
+            assert_eq!(
+                entry.cont.map(|cont| program.graph[cont].var),
+                Some(return_cont)
+            );
+            assert_eq!(
+                program
+                    .graph
+                    .bound_vars_slice(&entry.vars)
+                    .iter()
+                    .map(|var| program.graph[*var].var)
+                    .collect::<Vec<_>>(),
+                vec![arg]
+            );
+            assert_eq!(entry.variadic.map(|var| program.graph[var].var), Some(rest));
+            assert_eq!(entry.name, name);
+            assert_eq!(entry.source, source);
+            assert_eq!(entry.meta, meta);
+
+            let lowered =
+                graph_func_to_cps(ctx, &program.graph, program.entry).expect("function lowering");
+            assert_eq!(lowered.binding, binding);
+            assert_eq!(lowered.return_cont, return_cont);
+            assert_eq!(lowered.args.as_slice(), &[arg]);
+            assert_eq!(lowered.variadic, Some(rest));
+            assert_eq!(lowered.name, name);
+            assert_eq!(lowered.source, source);
+            assert_eq!(lowered.meta, meta);
+            let Term::Continue(cont, args, lowered_source) = *lowered.body() else {
+                panic!("expected entry body to roundtrip");
+            };
+            assert_eq!(cont, return_cont);
+            assert_eq!(args.as_slice(), &[Atom::Local(arg)]);
+            assert_eq!(lowered_source, source);
         });
     }
 }
