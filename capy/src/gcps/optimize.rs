@@ -16,6 +16,7 @@ use crate::{
 };
 
 use super::{
+    clone::GraphClone,
     convert::{ConvertResult, cps_to_graph, graph_to_cps},
     dom_contify,
     graph::{
@@ -27,6 +28,8 @@ use super::{
 };
 
 pub const DEFAULT_GAS: usize = 42_000;
+const MAX_RECURSIVE_UNROLL_DEPTH: usize = 1;
+const MAX_RECURSIVE_UNROLL_TERMS: usize = 48;
 
 static CONTIFY_DUMP_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -42,6 +45,7 @@ pub struct OptimizationStats {
     pub constant_branches_simplified: usize,
     pub identical_branches_simplified: usize,
     pub known_prim_propagations: usize,
+    pub recursive_unrolls: usize,
     pub singleton_calls_inlined: usize,
     pub singleton_continuations_inlined: usize,
     pub contifications: usize,
@@ -113,6 +117,7 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
         optimize_profile.field("constant_branches", stats.constant_branches_simplified);
         optimize_profile.field("identical_branches", stats.identical_branches_simplified);
         optimize_profile.field("known_prim_propagations", stats.known_prim_propagations);
+        optimize_profile.field("recursive_unrolls", stats.recursive_unrolls);
         optimize_profile.field("calls_inlined", stats.singleton_calls_inlined);
         optimize_profile.field("conts_inlined", stats.singleton_continuations_inlined);
         optimize_profile.field("contifications", stats.contifications);
@@ -252,7 +257,16 @@ impl OptimizerState {
                     );
                 }
                 TermKind::App(callee, args, cont) => {
-                    self.reduce_call(graph, queued_link, active_link, term, callee, args, cont);
+                    self.reduce_call(
+                        ctx,
+                        graph,
+                        queued_link,
+                        active_link,
+                        term,
+                        callee,
+                        args,
+                        cont,
+                    );
                 }
                 TermKind::Continue(cont, args) => {
                     self.reduce_continue(graph, queued_link, active_link, term, cont, args);
@@ -879,6 +893,7 @@ impl OptimizerState {
 
     fn reduce_call<'gc>(
         &mut self,
+        ctx: Context<'gc>,
         graph: &mut Graph<'gc>,
         queued_link: Subterm,
         active_link: Subterm,
@@ -891,6 +906,20 @@ impl OptimizerState {
             return;
         };
         let function_data = graph[function];
+
+        if self.try_unroll_recursive_call(
+            ctx,
+            graph,
+            queued_link,
+            active_link,
+            term,
+            binder,
+            function,
+            &args,
+            cont,
+        ) {
+            return;
+        }
 
         if function_data.cont.is_none()
             || function_data.is_rec
@@ -923,6 +952,75 @@ impl OptimizerState {
                 graph.read_term_link(active_link).unwrap_or(term),
             );
         }
+    }
+
+    fn try_unroll_recursive_call<'gc>(
+        &mut self,
+        ctx: Context<'gc>,
+        graph: &mut Graph<'gc>,
+        queued_link: Subterm,
+        active_link: Subterm,
+        term: TermId,
+        binder: BoundVar,
+        function: FunctionId,
+        args: &super::graph::FreeVars,
+        cont: ContVar,
+    ) -> bool {
+        let function_data = graph[function];
+        let Some(return_cont) = function_data.cont else {
+            return false;
+        };
+
+        if function_data.var != binder
+            || !function_data.is_rec
+            || function_data.variadic.is_some()
+            || function_data.unroll_count >= MAX_RECURSIVE_UNROLL_DEPTH
+            || function_data.is_cold
+            || function_data.is_noinline
+            || function_data.is_reified
+            || !self.arity_matches(graph, function, args)
+            || !self.term_is_inside_function(graph, term, function)
+            || !self.term_subtree_fits(graph, function_data.body, MAX_RECURSIVE_UNROLL_TERMS)
+        {
+            return false;
+        }
+
+        let formals = graph.bound_vars_slice(&function_data.vars).to_vec();
+        let actuals = graph
+            .free_vars_slice(args)
+            .iter()
+            .copied()
+            .map(|actual| graph.free_binder(actual))
+            .collect::<Vec<_>>();
+        let return_actual = graph.free_binder(cont);
+        let mut substitutions = formals
+            .into_iter()
+            .zip(actuals)
+            .collect::<Vec<(BoundVar, BoundVar)>>();
+        substitutions.push((return_cont, return_actual));
+
+        let clone_link = graph.new_term_link(None);
+        if GraphClone::with_substitutions(ctx, graph, substitutions)
+            .clone_subterm_into(function_data.body, clone_link)
+            .is_none()
+        {
+            graph.clear_term_link(clone_link);
+            return false;
+        }
+
+        verbose_log!("gcps optimize: unroll recursive call to {binder}");
+        graph[function].unroll_count += 1;
+        self.stats.recursive_unrolls += 1;
+        self.replace_with_existing_body(graph, active_link, term, clone_link);
+        self.collect_redexes(graph, active_link);
+        self.worklist.add_subterm(active_link);
+        if queued_link != active_link {
+            graph.set_term_link(
+                queued_link,
+                graph.read_term_link(active_link).unwrap_or(term),
+            );
+        }
+        true
     }
 
     fn reduce_continue<'gc>(
@@ -984,6 +1082,46 @@ impl OptimizerState {
         match function.variadic {
             Some(_) => actual >= fixed,
             None => actual == fixed,
+        }
+    }
+
+    fn term_subtree_fits<'gc>(&self, graph: &Graph<'gc>, link: Subterm, limit: usize) -> bool {
+        let mut remaining = limit;
+        self.consume_term_budget(graph, link, &mut remaining)
+    }
+
+    fn consume_term_budget<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        link: Subterm,
+        remaining: &mut usize,
+    ) -> bool {
+        let Some(term) = graph.read_term_link(link) else {
+            return false;
+        };
+        let Some(next) = remaining.checked_sub(1) else {
+            return false;
+        };
+        *remaining = next;
+
+        match graph[term].kind {
+            TermKind::LetVal(_, body) => self.consume_term_budget(graph, body, remaining),
+            TermKind::Fix(functions, body) | TermKind::Letk(functions, body) => {
+                for link in graph.function_links_slice(&functions) {
+                    let Some(function) = graph.read_function_link(*link) else {
+                        continue;
+                    };
+                    if !self.consume_term_budget(graph, graph[function].body, remaining) {
+                        return false;
+                    }
+                }
+                self.consume_term_budget(graph, body, remaining)
+            }
+            TermKind::If(_, consequent, alternative) => {
+                self.consume_term_budget(graph, consequent, remaining)
+                    && self.consume_term_budget(graph, alternative, remaining)
+            }
+            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => true,
         }
     }
 
@@ -3289,6 +3427,229 @@ mod tests {
             };
             assert_eq!(cont, outer);
             assert_eq!(args.as_slice(), &[Atom::Local(y)]);
+        });
+    }
+
+    #[test]
+    fn direct_self_recursive_call_unrolls_once() {
+        Scheme::new_uninit().enter(|ctx| {
+            let f = lvar(ctx, "f");
+            let ret = lvar(ctx, "ret");
+            let halt = lvar(ctx, "halt");
+            let x = lvar(ctx, "x");
+            let seed = lvar(ctx, "seed");
+            let next = lvar(ctx, "next");
+            let unknown_prim = prim(ctx, "not-a-folded-primitive");
+            let source = Value::new(false);
+            let func = fixed_func(
+                ctx,
+                f,
+                ret,
+                &[x],
+                Gc::new(
+                    *ctx,
+                    Term::Let(
+                        next,
+                        Expression::PrimCall(
+                            unknown_prim,
+                            Array::from_slice(*ctx, &[Atom::Local(x)]),
+                            source,
+                        ),
+                        Gc::new(
+                            *ctx,
+                            Term::App(
+                                Atom::Local(f),
+                                ret,
+                                Array::from_slice(*ctx, &[Atom::Local(next)]),
+                                source,
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Fix(
+                    Array::from_slice(*ctx, &[func]),
+                    Gc::new(
+                        *ctx,
+                        Term::App(
+                            Atom::Local(f),
+                            halt,
+                            Array::from_slice(*ctx, &[Atom::Local(seed)]),
+                            source,
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                ctx,
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                256,
+            );
+            assert_eq!(stats.recursive_unrolls, 1);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Fix(funcs, _) = *lowered else {
+                panic!("expected recursive function binding to remain");
+            };
+            let body = funcs[0].body();
+            let Term::Let(first, Expression::PrimCall(_, first_args, _), body) = *body else {
+                panic!("expected original loop step, got {body:?}");
+            };
+            assert_eq!(first, next);
+            assert_eq!(first_args.as_ref(), &[Atom::Local(x)]);
+            let Term::Let(second, Expression::PrimCall(_, second_args, _), body) = *body else {
+                panic!("expected cloned loop step");
+            };
+            assert_ne!(second, next);
+            assert_eq!(second_args.as_ref(), &[Atom::Local(next)]);
+            let Term::App(Atom::Local(callee), cont, args, _) = *body else {
+                panic!("expected remaining recursive tail call");
+            };
+            assert_eq!(callee, f);
+            assert_eq!(cont, ret);
+            assert_eq!(args.as_ref(), &[Atom::Local(second)]);
+        });
+    }
+
+    #[test]
+    fn mutually_recursive_calls_are_not_unrolled() {
+        Scheme::new_uninit().enter(|ctx| {
+            let f = lvar(ctx, "f");
+            let g = lvar(ctx, "g");
+            let f_ret = lvar(ctx, "f-ret");
+            let g_ret = lvar(ctx, "g-ret");
+            let halt = lvar(ctx, "halt");
+            let source = Value::new(false);
+            let func_f = fixed_func(
+                ctx,
+                f,
+                f_ret,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::App(Atom::Local(g), f_ret, Array::from_slice(*ctx, &[]), source),
+                ),
+            );
+            let func_g = fixed_func(
+                ctx,
+                g,
+                g_ret,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::App(Atom::Local(f), g_ret, Array::from_slice(*ctx, &[]), source),
+                ),
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Fix(
+                    Array::from_slice(*ctx, &[func_f, func_g]),
+                    Gc::new(
+                        *ctx,
+                        Term::App(Atom::Local(f), halt, Array::from_slice(*ctx, &[]), source),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                ctx,
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                128,
+            );
+            assert_eq!(stats.recursive_unrolls, 0);
+        });
+    }
+
+    #[test]
+    fn noinline_recursive_function_is_not_unrolled() {
+        Scheme::new_uninit().enter(|ctx| {
+            let f = lvar(ctx, "f");
+            let ret = lvar(ctx, "ret");
+            let halt = lvar(ctx, "halt");
+            let x = lvar(ctx, "x");
+            let seed = lvar(ctx, "seed");
+            let next = lvar(ctx, "next");
+            let source = Value::new(false);
+            let func = fixed_func(
+                ctx,
+                f,
+                ret,
+                &[x],
+                Gc::new(
+                    *ctx,
+                    Term::Let(
+                        next,
+                        Expression::PrimCall(
+                            prim(ctx, "not-a-folded-primitive"),
+                            Array::from_slice(*ctx, &[Atom::Local(x)]),
+                            source,
+                        ),
+                        Gc::new(
+                            *ctx,
+                            Term::App(
+                                Atom::Local(f),
+                                ret,
+                                Array::from_slice(*ctx, &[Atom::Local(next)]),
+                                source,
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Fix(
+                    Array::from_slice(*ctx, &[func]),
+                    Gc::new(
+                        *ctx,
+                        Term::App(
+                            Atom::Local(f),
+                            halt,
+                            Array::from_slice(*ctx, &[Atom::Local(seed)]),
+                            source,
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let root = program.graph.read_term_link(program.root).expect("root");
+            let TermKind::Fix(functions, _) = program.graph[root].kind else {
+                panic!("expected fix root");
+            };
+            let function = program
+                .graph
+                .read_function_link(program.graph.function_links_slice(&functions)[0])
+                .expect("function");
+            program.graph[function].is_noinline = true;
+
+            let stats = optimize_graph_with_mode(
+                ctx,
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                128,
+            );
+            assert_eq!(stats.recursive_unrolls, 0);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Fix(funcs, _) = *lowered else {
+                panic!("expected recursive function binding to remain");
+            };
+            let Term::Let(_, _, body) = *funcs[0].body() else {
+                panic!("expected original single loop step");
+            };
+            let Term::App(Atom::Local(callee), _, _, _) = *body else {
+                panic!("expected original recursive tail call");
+            };
+            assert_eq!(callee, f);
         });
     }
 
