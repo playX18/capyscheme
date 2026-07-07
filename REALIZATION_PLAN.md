@@ -22,17 +22,26 @@ large unrelated refactors.
 ### Pipeline Shape
 
 - `capy/src/compiler/pipeline.rs` still calls
-  `compile_cps::cps_toplevel` to produce a tree `FuncRef`.
-- The default path then calls `gcps::optimize::optimize_func`, but that function
-  converts only the function body to graph, optimizes it, and immediately lowers
-  it back to tree CPS.
+  `compile_cps::cps_toplevel` to produce a tree `FuncRef`. This is now the
+  earliest remaining tree-CPS dependency on the default path.
+- The default path calls `gcps::optimize::optimize_func_to_graph_linear`, which
+  converts the tree CPS function to Graph CPS, optimizes it, reifies graph
+  procedure/free-variable metadata, and lowers the graph directly to
+  `cps::linear::LinearProgram`.
+- `LoweredProgram` carries the optimized tree CPS only as a compatibility and
+  dump value; `linear_cps` carries the graph-linear program used by codegen when
+  present.
 - `CAPY_CPS_PIPELINE=tree`, `tree-cps`, or `shrink-contify` still selects the
   old tree CPS rewrite plus tree contification path.
-- `capy/src/compiler/object.rs` compiles FASL bytes from tree `FuncRef` by
-  running `cps::reify` and `cps::linear::linearize`.
-- `capy/src/cps/linear/ir.rs` still uses tree identity:
-  `LinearProgram.entry: FuncRef` and `CodeId::{Function(FuncRef),
-  Continuation(ContRef)}`.
+- `capy/src/compiler/object.rs` still exposes `compile_cps_to_fasl_bytes` for
+  tree compatibility, but runtime expanded-Scheme compilation now sends the
+  full `LoweredProgram` to codegen so graph-linear code is preferred.
+- `capy/src/cps/linear/ir.rs` now supports both tree identity and graph-native
+  code identity through `CodeId::{Function, Continuation, GraphFunction,
+  GraphContinuation}` and `LinearProgram.entry: CodeId`.
+- `ModuleBuilder` and SSA lowering now declare, locate, and emit FASL code/data
+  slots by generic `CodeId`, so graph-linear programs compile without
+  reifying the optimized graph back through tree CPS for code generation.
 
 ### Existing GCPS Optimizer
 
@@ -392,8 +401,14 @@ Deliverable commits:
 
 ## Milestone 3: Graph-Native Program And Reification
 
-The current `GraphProgram { graph, root }` only represents a function body. A
-full graph-native pipeline needs stable program identity.
+Status: mostly implemented on this branch. `GraphFunctionProgram`,
+`GraphReifyInfo`, graph subterm cloning, and branch-hint preservation exist and
+are used by graph-linear lowering. Remaining work is graph-native dump support
+that can replace tree `.cps.scm` dumps.
+
+The original `GraphProgram { graph, root }` only represented a function body.
+The remaining graph-native expander work should build on the stable program
+identity added for graph reification and graph-linear codegen.
 
 Tasks:
 
@@ -437,6 +452,12 @@ Deliverable commits:
 - `gcps: preserve branch hints`
 
 ## Milestone 4: Direct Graph-To-Linear Lowering
+
+Status: implemented on this branch for the default runtime compilation path.
+`linearize_graph` lowers graph procedures to `cps::linear`, linear `CodeId` is
+graph-capable, and SSA consumes graph code IDs. Remaining hardening work is
+differential coverage, graph-native direct-call recognition in SSA, and broader
+end-to-end Scheme examples.
 
 Add graph lowering beside the existing tree lowering first. Do not replace
 `cps::linear::linearize(&ReifyInfo)` until parity is proven.
@@ -538,6 +559,11 @@ Deliverable commits:
 - `compiler: enable graph cps lowering mode`
 
 ## Milestone 6: Pipeline Cutover And Cleanup
+
+Status: partially implemented. `LoweredProgram` can carry graph-linear code and
+runtime expanded-Scheme compilation prefers it for codegen. The default path is
+not fully graph-native yet because `compile_cps.rs` still emits tree CPS and the
+pipeline still keeps a graph-to-tree fallback for dumps/debug compatibility.
 
 Tasks:
 
