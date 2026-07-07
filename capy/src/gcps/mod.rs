@@ -1,5 +1,6 @@
 //! Graphical CPS from "Compiling with Continuations, Continued".
 
+pub mod clone;
 pub mod convert;
 mod dom_contify;
 pub mod graph;
