@@ -2,15 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::{cell::Cell, hash::Hash};
 
 use crate::rsgc::{
-    Gc, Trace,
-    alloc::{Array, array::ArrayRef},
+    alloc::{array::ArrayRef, Array},
     barrier,
     cell::Lock,
+    Gc, Trace,
 };
 
 use crate::{
     expander::core::LVarRef,
-    runtime::{Context, value::Value, vm::exceptions::RaiseKind},
+    runtime::{value::Value, vm::exceptions::RaiseKind, Context},
 };
 
 /// Array of CPS atom references.
@@ -80,6 +80,7 @@ impl<'gc> From<LVarRef<'gc>> for Atom<'gc> {
 #[derive(Debug, Clone, Trace, Copy, PartialEq, Eq)]
 #[collect(no_drop)]
 pub enum Expression<'gc> {
+    Literal(Value<'gc>, Value<'gc>),
     PrimCall(Value<'gc>, Atoms<'gc>, Value<'gc>),
 }
 
@@ -306,6 +307,7 @@ impl<'gc> Term<'gc> {
             Term::Let(binding, exp, body) => {
                 binding.ref_count.set(0);
                 match exp {
+                    Expression::Literal(..) => {}
                     Expression::PrimCall(_, args, _) => {
                         for arg in args.iter() {
                             arg.count_refs();

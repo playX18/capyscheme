@@ -4,7 +4,7 @@ use crate::{
 };
 
 use super::term::*;
-use ::pretty::{DocAllocator, DocBuilder};
+use pretty::{DocAllocator, DocBuilder};
 
 impl<'gc> Atom<'gc> {
     pub fn pretty<'a, D, A>(&self, alloc: &'a D) -> DocBuilder<'a, D, A>
@@ -203,6 +203,7 @@ impl<'gc> Expression<'gc> {
         A: 'a + Clone,
     {
         match self {
+            Expression::Literal(value, _) => alloc.text(value.to_string()),
             // #%prim(args...)
             Expression::PrimCall(prim, args, _) => {
                 let args_doc =

@@ -964,11 +964,12 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn linear_var(&mut self, var: ValueId) -> ir::Value {
-        match *self
+        let def = self
             .linear_variables
             .get(&var)
-            .unwrap_or_else(|| panic!("linear variable {var:?} not found"))
-        {
+            .copied()
+            .unwrap_or_else(|| panic!("linear variable {var:?} not found"));
+        match def {
             VarDef::Value(value) => value,
             VarDef::Comparison(value) => self.comparison_to_value(value),
         }

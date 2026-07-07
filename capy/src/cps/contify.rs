@@ -31,16 +31,16 @@
 use std::cell::Cell;
 
 use crate::rsgc::{
-    Gc,
     alloc::{Array, ArrayRef},
     cell::Lock,
     traits::IterGc,
+    Gc,
 };
 
 use crate::{
     cps::{
-        Map, Set, SingleValueSet, Substitute,
         term::{Atom, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
+        Map, Set, SingleValueSet, Substitute,
     },
     expander::core::LVarRef,
     runtime::Context,
@@ -244,6 +244,7 @@ impl<'gc> Term<'gc> {
     ) -> SingleValueSet<ContPair<'gc>> {
         match self {
             Self::Let(_, expr, body) => match expr {
+                Expression::Literal(..) => body.common_return_cont(ns, ignore),
                 Expression::PrimCall(_, args, _) => {
                     if args
                         .iter()
@@ -811,6 +812,7 @@ impl<'gc> Cont<'gc> {
 impl<'gc> Expression<'gc> {
     pub fn subst(self, ctx: Context<'gc>, subst: &Map<LVarRef<'gc>, LVarRef<'gc>>) -> Self {
         match self {
+            Self::Literal(value, src) => Self::Literal(value, src),
             Self::PrimCall(name, prev_args, src) => {
                 let args = prev_args
                     .iter()

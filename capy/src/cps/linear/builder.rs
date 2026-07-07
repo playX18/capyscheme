@@ -1,8 +1,8 @@
 use crate::{
     compiler::ssa::primitive::Primitive,
     cps::{
-        ReifyInfo,
         term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
+        ReifyInfo,
     },
     expander::core::LVarRef,
     runtime::value::Value,
@@ -230,6 +230,12 @@ impl<'gc> ProcedureBuilder<'gc> {
         instructions: &mut Vec<Instruction<'gc>>,
     ) -> Terminator<'gc> {
         match *term {
+            Term::Let(var, Expression::Literal(value, _source), next) => {
+                let dst = self.value(var);
+                instructions.push(Instruction::Const { dst, value });
+                self.convert_term(next, instructions)
+            }
+
             Term::Let(var, Expression::PrimCall(prim, args, source), next) => {
                 let prim = primitive_from_value(prim);
                 let args = self.atoms(args);

@@ -257,6 +257,7 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
         match *term {
             Term::Let(_, expr, body) => {
                 match expr {
+                    Expression::Literal(..) => {}
                     Expression::PrimCall(_, args, _) => {
                         for arg in args.iter() {
                             inc_val_use_a(*arg, census, rhs);
@@ -339,6 +340,12 @@ fn census<'gc>(term: TermRef<'gc>) -> Map<LVarRef<'gc>, Count> {
 fn shrink_tree<'gc>(term: TermRef<'gc>, state: State<'gc>) -> (TermRef<'gc>, bool) {
     stacker::maybe_grow(64 * 1024, 4 * 1024 * 1024, || match *term {
         Term::Let(binding, expr, prev_body) => match expr {
+            Expression::Literal(value, _) => {
+                let state = state.with_atom_subst(Atom::Local(binding), Atom::Constant(value));
+                let (body, _) = shrink_tree(prev_body, state);
+                (body, true)
+            }
+
             Expression::PrimCall(prim, prev_args, source) => {
                 /*if state.is_dead(binding)
                     && SIDE_EFFECT_FREE_OPS.contains(&*prim.downcast::<Symbol>().as_str())
@@ -782,6 +789,7 @@ fn copy_t<'gc>(
             subv.insert(Atom::Local(binding), Atom::Local(binding1));
             let body1 = copy_t(ctx, body, subv, subc);
             let expr = match expr {
+                Expression::Literal(value, source) => Expression::Literal(value, source),
                 Expression::PrimCall(prim, args, source) => {
                     let args = args.iter().map(|&a| subv.subst(a)).collect::<Vec<_>>();
                     let atoms = Array::from_slice(*ctx, args);
@@ -995,6 +1003,11 @@ fn mentions_tracked_var<'gc>(tracked_binding: Option<LVarRef<'gc>>, var: LVarRef
 
 fn term_metadata<'gc>(term: TermRef<'gc>, tracked_binding: Option<LVarRef<'gc>>) -> (usize, bool) {
     match *term {
+        Term::Let(_, Expression::Literal(..), body) => {
+            let (body_size, body_mentions) = term_metadata(body, tracked_binding);
+            (1 + body_size, body_mentions)
+        }
+
         Term::Let(_, Expression::PrimCall(_, args, _), body) => {
             let (body_size, body_mentions) = term_metadata(body, tracked_binding);
             let mentions = body_mentions
@@ -1087,6 +1100,7 @@ fn inline_t<'gc>(
     match *term {
         Term::Let(name, prev_exp, prev_body) => {
             let exp = match prev_exp {
+                Expression::Literal(value, src) => Expression::Literal(value, src),
                 Expression::PrimCall(prim, prev_args, src) => {
                     let args = prev_args
                         .iter()
@@ -1106,6 +1120,7 @@ fn inline_t<'gc>(
             let body = inline_t(state, prev_body, cnt_limit, tracked_binding);
             let mentions = body.mentions_tracked_binding
                 || match exp {
+                    Expression::Literal(..) => false,
                     Expression::PrimCall(_, args, _) => args
                         .iter()
                         .copied()

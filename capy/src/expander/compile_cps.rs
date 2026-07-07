@@ -1,17 +1,17 @@
 use crate::cps::builder::CPSBuilder;
-use crate::cps::term::{Atom, BranchHint, Cont, Func, FuncRef, Term, TermRef};
+use crate::cps::term::{Atom, BranchHint, Cont, Expression, Func, FuncRef, Term, TermRef};
 use crate::expander::core::{
-    LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, seq_from_slice,
+    seq_from_slice, LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef,
 };
 use crate::rsgc::alloc::array::Array;
 use crate::rsgc::cell::Lock;
 use crate::rsgc::object::builtin_class_ids;
-use crate::rsgc::{Gc, Global, Trace, barrier};
-use crate::runtime::Context;
+use crate::rsgc::{barrier, Gc, Global, Trace};
 use crate::runtime::prelude::*;
 use crate::runtime::value::Value;
 use crate::runtime::value::{Str, Vector};
 use crate::runtime::vm::exceptions::RaiseKind;
+use crate::runtime::Context;
 use crate::{list, static_symbols, with_cps};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -84,7 +84,7 @@ pub fn cps_toplevel<'gc>(ctx: Context<'gc>, forms: &[CoreTermRef<'gc>]) -> FuncR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{Scheme, vm::exceptions::RaiseKind};
+    use crate::runtime::{vm::exceptions::RaiseKind, Scheme};
 
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -136,6 +136,28 @@ mod tests {
             assert_eq!(kind, RaiseKind::WrongNumberOfArgumentsCar);
             assert_eq!(args.len(), 1);
             assert_eq!(args[0], Atom::Constant(Value::new(5)));
+        });
+    }
+
+    #[test]
+    fn constants_lower_to_literal_expression() {
+        with_ctx(|ctx| {
+            let mut cps = CPSBuilder::new(ctx);
+            let k = cps.fresh_variable("k");
+            let value = Value::new(42);
+            let term = convert(&mut cps, crate::expander::core::constant(ctx, value), k);
+
+            let Term::Let(binding, Expression::Literal(literal, _), body) = *term else {
+                panic!("constant should lower to a let-bound literal expression");
+            };
+            assert_eq!(literal, value);
+
+            let Term::Continue(cont, args, _) = *body else {
+                panic!("literal body should continue with the bound value");
+            };
+            assert_eq!(cont, k);
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0], Atom::Local(binding));
         });
     }
 }
@@ -222,6 +244,20 @@ impl<'gc> PrimitiveTable<'gc> {
             None
         }
     }
+}
+
+fn bind_literal<'gc>(
+    cps: &mut CPSBuilder<'gc>,
+    value: Value<'gc>,
+    source: Value<'gc>,
+    k: impl FnOnce(&mut CPSBuilder<'gc>, Atom<'gc>) -> TermRef<'gc>,
+) -> TermRef<'gc> {
+    let binding = cps.fresh_variable("literal");
+    let body = k(cps, Atom::Local(binding));
+    Gc::new(
+        *cps.ctx,
+        Term::Let(binding, Expression::Literal(value, source), body),
+    )
 }
 
 static_symbols!(
@@ -777,6 +813,7 @@ pub fn convert_arg<'gc, 'a>(
     let src = exp.source();
     match exp.kind {
         TermKind::LRef(var) => k(cps, Atom::Local(var)),
+        TermKind::Const(value) => bind_literal(cps, value, src, k),
 
         _ if is_single_valued(exp) => {
             with_cps!(cps;
@@ -863,11 +900,11 @@ pub fn convert<'gc>(
             )
         }
 
-        TermKind::Const(c) => {
+        TermKind::Const(c) => bind_literal(cps, *c, src, |cps, atom| {
             with_cps!(cps;
-                continue k (Atom::Constant(*c)) @ src
+                continue k (atom) @ src
             )
-        }
+        }),
 
         TermKind::PrimRef(name) => {
             let module = list!(cps.ctx, cps.ctx.intern("capy"));

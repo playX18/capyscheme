@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{env, path::Path};
 
 use crate::cps::contify::contify;
 use crate::cps::term::FuncRef;
@@ -7,6 +7,7 @@ use crate::expander::{
     assignment_elimination, compile_cps, eta_expand::eta_expand, fix_letrec::fix_letrec,
     free_vars::resolve_free_vars, letrectify::letrectify, primitives,
 };
+use crate::gcps::optimize::optimize_func;
 use crate::rsgc::Gc;
 use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
 use crate::runtime::{Context, modules::Module, value::Value};
@@ -23,6 +24,13 @@ pub(crate) struct LoweredProgram<'gc> {
 pub(crate) struct DumpArtifactsOptions {
     pub(crate) enabled: bool,
     pub(crate) include_unoptimized: bool,
+}
+
+fn use_tree_cps_pipeline() -> bool {
+    matches!(
+        env::var("CAPY_CPS_PIPELINE").ok().as_deref(),
+        Some("tree" | "tree-cps" | "shrink-contify")
+    )
 }
 
 pub fn lower_to_cps<'gc>(
@@ -71,14 +79,21 @@ pub(crate) fn lower_expanded_to_cps<'gc>(
         let _profile = ProfileScope::new("compiler.lower.compile_cps_toplevel");
         compile_cps::cps_toplevel(ctx, &[optimized_il])
     };
-    cps = {
-        let _profile = ProfileScope::new("compiler.lower.cps.rewrite");
-        crate::cps::rewrite_func(ctx, cps)
-    };
-    cps = {
-        let _profile = ProfileScope::new("compiler.lower.cps.contify");
-        cps.with_body(ctx, contify(ctx, cps.body()))
-    };
+    if use_tree_cps_pipeline() {
+        cps = {
+            let _profile = ProfileScope::new("compiler.lower.cps.rewrite");
+            crate::cps::rewrite_func(ctx, cps)
+        };
+        cps = {
+            let _profile = ProfileScope::new("compiler.lower.cps.contify");
+            cps.with_body(ctx, contify(ctx, cps.body()))
+        };
+    } else {
+        cps = {
+            let _profile = ProfileScope::new("compiler.lower.gcps.optimize");
+            optimize_func(ctx, cps).unwrap_or_else(|err| panic!("gcps optimization failed: {err}"))
+        };
+    }
     Ok(LoweredProgram {
         original_il,
         optimized_il,

@@ -12,6 +12,10 @@ type Vars<'gc> = HashSet<LVarRef<'gc>>;
 pub fn get_fvt<'gc>(term: TermRef<'gc>, fv: &mut FreeVars<'gc>) -> HashSet<LVarRef<'gc>> {
     stacker::maybe_grow(64 * 1024, 16 * 1024 * 1024, || match *term {
         Term::Let(bind, expr, body) => match expr {
+            Expression::Literal(..) => get_fvt(body, fv)
+                .into_iter()
+                .filter(|v| *v != bind)
+                .collect(),
             Expression::PrimCall(_, args, _) => {
                 let map: Vars = args.iter().copied().flat_map(get_fva).collect();
                 for arg in args.iter() {
