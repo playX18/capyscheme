@@ -13,7 +13,7 @@ use super::{
     dom_contify,
     graph::{
         ActiveLinkStatus, BoundVar, ContVar, FreeVar, FunctionId, FunctionLink, Graph,
-        GraphWorklist, Parent, Subterm, TermId, TermKind, WorklistQueue,
+        GraphWorklist, Parent, Subexpr, Subterm, TermId, TermKind, WorklistQueue,
     },
     scc_contify,
 };
@@ -28,6 +28,7 @@ pub struct OptimizationStats {
     pub gas_used: usize,
     pub ran_out_of_gas: bool,
     pub dead_bindings_processed: usize,
+    pub dead_letvals_removed: usize,
     pub singleton_calls_inlined: usize,
     pub singleton_continuations_inlined: usize,
     pub contifications: usize,
@@ -93,6 +94,7 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
         optimize_profile.field("gas_used", stats.gas_used);
         optimize_profile.field("ran_out_of_gas", stats.ran_out_of_gas);
         optimize_profile.field("dead_bindings", stats.dead_bindings_processed);
+        optimize_profile.field("dead_letvals", stats.dead_letvals_removed);
         optimize_profile.field("calls_inlined", stats.singleton_calls_inlined);
         optimize_profile.field("conts_inlined", stats.singleton_continuations_inlined);
         optimize_profile.field("contifications", stats.contifications);
@@ -149,6 +151,7 @@ pub(super) struct OptimizerState {
     function_owner_defs: SecondaryMap<FunctionId, Option<Subterm>>,
     return_cont_owners: SecondaryMap<BoundVar, Option<FunctionId>>,
     known_exprs: SecondaryMap<BoundVar, Option<super::graph::Subexpr>>,
+    known_expr_defs: SecondaryMap<BoundVar, Option<Subterm>>,
     known_function_count: usize,
     known_expr_count: usize,
     dead_bindings: WorklistQueue<BoundVar>,
@@ -174,6 +177,7 @@ impl OptimizerState {
             function_owner_defs: SecondaryMap::new(),
             return_cont_owners: SecondaryMap::new(),
             known_exprs: SecondaryMap::new(),
+            known_expr_defs: SecondaryMap::new(),
             known_function_count: 0,
             known_expr_count: 0,
             dead_bindings: WorklistQueue::new(),
@@ -208,6 +212,9 @@ impl OptimizerState {
             self.stats.iterations += 1;
 
             match graph[term].kind {
+                TermKind::LetVal((binder, expr), body) => {
+                    self.reduce_letval(graph, queued_link, active_link, term, binder, expr, body);
+                }
                 TermKind::App(callee, args, cont) => {
                     self.reduce_call(graph, queued_link, active_link, term, callee, args, cont);
                 }
@@ -234,7 +241,10 @@ impl OptimizerState {
         };
 
         match graph[term].kind {
-            TermKind::App(..) | TermKind::Continue(..) | TermKind::Fix(..) => {
+            TermKind::LetVal(..)
+            | TermKind::App(..)
+            | TermKind::Continue(..)
+            | TermKind::Fix(..) => {
                 self.worklist.add_subterm(root);
             }
             _ => {}
@@ -245,6 +255,7 @@ impl OptimizerState {
                 self.known_expr_count += 1;
             }
             self.known_exprs[binder] = Some(expr);
+            self.known_expr_defs[binder] = Some(root);
         }
 
         if let TermKind::Fix(functions, _) | TermKind::Letk(functions, _) = graph[term].kind {
@@ -279,22 +290,69 @@ impl OptimizerState {
     fn process_dead_bindings<'gc>(&mut self, graph: &mut Graph<'gc>) {
         while let Some(binding) = self.dead_bindings.get() {
             self.stats.dead_bindings_processed += 1;
-            if let Some(expr) = self.known_exprs[binding] {
-                if let Some(expr_id) = graph.read_expr_link(expr) {
-                    let mut occurrences = std::mem::take(&mut self.old_occurrences);
-                    occurrences.clear();
-                    graph.push_free_vars_of_expr(expr_id, &mut occurrences);
-                    for occ in occurrences.iter().copied() {
-                        self.kill_occurrence(graph, occ);
-                    }
-                    occurrences.clear();
-                    self.old_occurrences = occurrences;
+            let expr_def = self.known_expr_defs[binding];
+            if let Some(expr) = self.take_known_expr(binding) {
+                if let Some(def) = expr_def {
+                    self.worklist.add_subterm(def);
                 }
+                self.kill_free_vars_of_expr_link(graph, expr);
             }
 
             if let Some(link) = self.known_functions[binding] {
                 graph.clear_function_link(link);
             }
+        }
+    }
+
+    fn take_known_expr(&mut self, binding: BoundVar) -> Option<Subexpr> {
+        let expr = self.known_exprs[binding].take();
+        if expr.is_some() {
+            self.known_expr_count = self.known_expr_count.saturating_sub(1);
+            self.known_expr_defs[binding] = None;
+        }
+        expr
+    }
+
+    fn kill_free_vars_of_expr_link<'gc>(&mut self, graph: &mut Graph<'gc>, expr: Subexpr) {
+        let Some(expr_id) = graph.read_expr_link(expr) else {
+            return;
+        };
+        let mut occurrences = std::mem::take(&mut self.old_occurrences);
+        occurrences.clear();
+        graph.push_free_vars_of_expr(expr_id, &mut occurrences);
+        for occ in occurrences.iter().copied() {
+            self.kill_occurrence(graph, occ);
+        }
+        occurrences.clear();
+        self.old_occurrences = occurrences;
+    }
+
+    fn reduce_letval<'gc>(
+        &mut self,
+        graph: &mut Graph<'gc>,
+        queued_link: Subterm,
+        active_link: Subterm,
+        term: TermId,
+        binder: BoundVar,
+        expr: Subexpr,
+        body: Subterm,
+    ) {
+        if !graph.binder_is_dead(binder) {
+            return;
+        }
+
+        verbose_log!("gcps optimize: remove dead letval {binder}");
+        self.stats.dead_letvals_removed += 1;
+        if self.take_known_expr(binder).is_some() {
+            self.kill_free_vars_of_expr_link(graph, expr);
+        }
+        self.replace_with_existing_body(graph, active_link, term, body);
+        self.worklist.add_subterm(active_link);
+        if queued_link != active_link {
+            graph.set_term_link(
+                queued_link,
+                graph.read_term_link(active_link).unwrap_or(term),
+            );
         }
     }
 
@@ -1472,6 +1530,128 @@ mod tests {
     }
 
     #[test]
+    fn dead_letval_is_removed() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let dead = lvar(ctx, "dead");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    dead,
+                    Expression::Literal(Value::new(1), source),
+                    Gc::new(
+                        *ctx,
+                        Term::Continue(halt, Array::from_slice(*ctx, &[]), source),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph(&mut program.graph, program.root, Some(64));
+            assert_eq!(stats.dead_letvals_removed, 1);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Continue(cont, args, _) = *lowered else {
+                panic!("expected dead letval to be removed");
+            };
+            assert_eq!(cont, halt);
+            assert!(args.is_empty());
+        });
+    }
+
+    #[test]
+    fn dead_letval_requeues_binding_made_dead_by_removed_expr() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let outer = lvar(ctx, "outer");
+            let inner = lvar(ctx, "inner");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    outer,
+                    Expression::Literal(Value::new(1), source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            inner,
+                            Expression::PrimCall(
+                                Value::new(false),
+                                Array::from_slice(*ctx, &[Atom::Local(outer)]),
+                                source,
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Continue(halt, Array::from_slice(*ctx, &[]), source),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph(&mut program.graph, program.root, Some(64));
+            assert_eq!(stats.dead_letvals_removed, 2);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Continue(cont, args, _) = *lowered else {
+                panic!("expected both dead letvals to be removed");
+            };
+            assert_eq!(cont, halt);
+            assert!(args.is_empty());
+        });
+    }
+
+    #[test]
+    fn dead_letval_retains_outer_binding_still_used_by_body() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let live = lvar(ctx, "live");
+            let dead = lvar(ctx, "dead");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    live,
+                    Expression::Literal(Value::new(1), source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            dead,
+                            Expression::PrimCall(
+                                Value::new(false),
+                                Array::from_slice(*ctx, &[Atom::Local(live)]),
+                                source,
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Continue(
+                                    halt,
+                                    Array::from_slice(*ctx, &[Atom::Local(live)]),
+                                    source,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph(&mut program.graph, program.root, Some(64));
+            assert_eq!(stats.dead_letvals_removed, 1);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Let(binding, Expression::Literal(..), body) = *lowered else {
+                panic!("expected live letval to remain");
+            };
+            assert_eq!(binding, live);
+            let Term::Continue(cont, args, _) = *body else {
+                panic!("expected dead letval body");
+            };
+            assert_eq!(cont, halt);
+            assert_eq!(args.as_ref(), &[Atom::Local(live)]);
+        });
+    }
+
+    #[test]
     fn singleton_continuation_is_beta_reduced() {
         Scheme::new_uninit().enter(|ctx| {
             let halt = lvar(ctx, "halt");
@@ -2238,6 +2418,135 @@ mod tests {
             )
             .expect("site");
             assert_eq!(site, program.root);
+        });
+    }
+
+    #[test]
+    fn dominator_contification_handles_multiple_return_locations() {
+        Scheme::new_uninit().enter(|ctx| {
+            let f = lvar(ctx, "f");
+            let g1 = lvar(ctx, "g1");
+            let g2 = lvar(ctx, "g2");
+            let h = lvar(ctx, "h");
+            let f_ret = lvar(ctx, "f-ret");
+            let g1_ret = lvar(ctx, "g1-ret");
+            let g2_ret = lvar(ctx, "g2-ret");
+            let h_ret = lvar(ctx, "h-ret");
+            let k1 = lvar(ctx, "k1");
+            let k2 = lvar(ctx, "k2");
+            let f_branch1 = lvar(ctx, "f-branch1");
+            let f_branch2 = lvar(ctx, "f-branch2");
+            let source = Value::new(false);
+
+            let app = |callee, cont| {
+                Gc::new(
+                    *ctx,
+                    Term::App(
+                        Atom::Local(callee),
+                        cont,
+                        Array::from_slice(*ctx, &[]),
+                        source,
+                    ),
+                )
+            };
+            let continue_to = |cont| {
+                Gc::new(
+                    *ctx,
+                    Term::Continue(cont, Array::from_slice(*ctx, &[]), source),
+                )
+            };
+            let make_func = |binding, return_cont, body| {
+                Gc::new(
+                    *ctx,
+                    Func {
+                        name: Value::new(false),
+                        source,
+                        binding,
+                        return_cont,
+                        args: Array::from_slice(*ctx, &[]),
+                        variadic: None,
+                        body: Lock::new(body),
+                        free_vars: Lock::new(None),
+                        meta: Value::new(false),
+                    },
+                )
+            };
+            let make_cont = |binding, body| {
+                Gc::new(
+                    *ctx,
+                    Cont {
+                        name: Value::new(false),
+                        binding,
+                        args: Array::from_slice(*ctx, &[]),
+                        variadic: None,
+                        body: Lock::new(body),
+                        source,
+                        free_vars: Lock::new(None),
+                        reified: Cell::new(false),
+                        cold: false,
+                        noinline: false,
+                        meta: Value::new(false),
+                    },
+                )
+            };
+
+            let f_branch1_cont = make_cont(f_branch1, app(g1, f_ret));
+            let f_branch2_cont = make_cont(f_branch2, app(g2, f_ret));
+            let func_f = make_func(
+                f,
+                f_ret,
+                Gc::new(
+                    *ctx,
+                    Term::Letk(
+                        Array::from_slice(*ctx, &[f_branch1_cont, f_branch2_cont]),
+                        continue_to(f_branch1),
+                    ),
+                ),
+            );
+            let func_g1 = make_func(g1, g1_ret, app(h, g1_ret));
+            let func_g2 = make_func(g2, g2_ret, app(h, g2_ret));
+            let func_h = make_func(h, h_ret, continue_to(h_ret));
+            let cont_k1 = make_cont(k1, app(f, k1));
+            let cont_k2 = make_cont(k2, app(f, k2));
+            let term = Gc::new(
+                *ctx,
+                Term::Fix(
+                    Array::from_slice(*ctx, &[func_f, func_g1, func_g2, func_h]),
+                    Gc::new(
+                        *ctx,
+                        Term::Letk(
+                            Array::from_slice(*ctx, &[cont_k1, cont_k2]),
+                            Gc::new(
+                                *ctx,
+                                Term::Continue(k1, Array::from_slice(*ctx, &[]), source),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut scc_program = cps_to_graph(ctx, term).expect("convert scc");
+            let scc_stats = optimize_graph_with_mode(
+                &mut scc_program.graph,
+                scc_program.root,
+                GcpsContifyMode::Scc,
+                1,
+            );
+            let mut dom_program = cps_to_graph(ctx, term).expect("convert dom");
+            let dom_stats = optimize_graph_with_mode(
+                &mut dom_program.graph,
+                dom_program.root,
+                GcpsContifyMode::Dom,
+                1,
+            );
+
+            assert!(
+                dom_stats.dom_contified_functions > scc_stats.scc_contified_functions,
+                "expected ADom to contify more functions than SCC on the Figure 7 shape: dom={}, scc={}",
+                dom_stats.dom_contified_functions,
+                scc_stats.scc_contified_functions
+            );
+            assert_eq!(dom_stats.dom_contified_functions, 3);
         });
     }
 

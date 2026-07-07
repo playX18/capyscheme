@@ -207,6 +207,10 @@ fn analyze_dominators<'gc>(
     facts: &DomFacts,
     reachable: &EntitySet<FunctionId>,
 ) -> Vec<(Destination, Vec<FunctionId>)> {
+    // ICFP'01 Figure 6: build G over Root, continuations, and functions.
+    // Non-tail calls enter a callee from the return continuation node; tail
+    // calls enter it from the caller function node.  ADom then chooses the
+    // highest non-root dominator as the contification destination.
     let mut dom_graph = petgraph::Graph::<DomLoc, ()>::new();
     let mut nodes = HashMap::<DomLoc, NodeIndex>::new();
     let mut reverse = HashMap::<NodeIndex, DomLoc>::new();
