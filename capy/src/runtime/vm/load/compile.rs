@@ -5,7 +5,10 @@ use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::compiler::{CompilationOptions, compile_cps_to_fasl_bytes, compile_file};
+use crate::compiler::{
+    CompilationOptions, LoweredProgram, compile_cps_to_fasl_bytes, compile_file,
+    compile_lowered_to_fasl_bytes,
+};
 use crate::runtime::Context;
 use crate::runtime::modules::current_module;
 use crate::runtime::value::{Closure, Str, Value};
@@ -225,6 +228,27 @@ pub(super) fn compile_cps_to_destination<'gc>(
     options: CompilationOptions,
     destination: &LoadArtifact,
 ) -> Result<(), Value<'gc>> {
+    compile_to_destination(ctx, destination, || {
+        compile_cps_to_fasl_bytes(ctx, cps, options)
+    })
+}
+
+pub(super) fn compile_lowered_to_destination<'gc>(
+    ctx: Context<'gc>,
+    lowered: &LoweredProgram<'gc>,
+    options: CompilationOptions,
+    destination: &LoadArtifact,
+) -> Result<(), Value<'gc>> {
+    compile_to_destination(ctx, destination, || {
+        compile_lowered_to_fasl_bytes(ctx, lowered, options)
+    })
+}
+
+fn compile_to_destination<'gc>(
+    ctx: Context<'gc>,
+    destination: &LoadArtifact,
+    compile_fasl: impl FnOnce() -> Result<Vec<u8>, Value<'gc>>,
+) -> Result<(), Value<'gc>> {
     match destination.kind {
         LoadArtifactKind::SharedObject => Err(make_io_error(
             ctx,
@@ -254,7 +278,7 @@ pub(super) fn compile_cps_to_destination<'gc>(
                     &[],
                 )
             })?;
-            let bytes = compile_cps_to_fasl_bytes(ctx, cps, options)?;
+            let bytes = compile_fasl()?;
             write_artifact_atomically(&destination.path, &bytes).map_err(|err| {
                 make_io_error(
                     ctx,

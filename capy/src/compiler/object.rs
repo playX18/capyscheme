@@ -1,5 +1,11 @@
+use crate::compiler::LoweredProgram;
 use crate::compiler::ssa::ModuleBuilder;
-use crate::cps::{linear::linearize, reify, term::FuncRef};
+use crate::cps::{
+    ReifyInfo,
+    linear::{LinearProgram, linearize},
+    reify,
+    term::FuncRef,
+};
 use crate::runtime::vm::thunks::make_io_error;
 use crate::runtime::{
     Context,
@@ -27,6 +33,29 @@ pub fn compile_cps_to_fasl_bytes<'gc>(
     let reify_info = reify(ctx, cps);
     let linear = linearize(&reify_info);
 
+    compile_linear_cps_to_fasl_bytes(ctx, reify_info, linear, opts)
+}
+
+pub(crate) fn compile_lowered_to_fasl_bytes<'gc>(
+    ctx: Context<'gc>,
+    lowered: &LoweredProgram<'gc>,
+    opts: CompilationOptions,
+) -> Result<Vec<u8>, Value<'gc>> {
+    if let Some(linear) = lowered.linear_cps.clone() {
+        let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
+        let reify_info = reify(ctx, lowered.cps);
+        compile_linear_cps_to_fasl_bytes(ctx, reify_info, linear, opts)
+    } else {
+        compile_cps_to_fasl_bytes(ctx, lowered.cps, opts)
+    }
+}
+
+fn compile_linear_cps_to_fasl_bytes<'gc>(
+    ctx: Context<'gc>,
+    reify_info: ReifyInfo<'gc>,
+    linear: LinearProgram<'gc>,
+    opts: CompilationOptions,
+) -> Result<Vec<u8>, Value<'gc>> {
     let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
     module_builder.stacktraces = opts.backtraces;
     module_builder.compile_loaded_fasl_bytes().map_err(|err| {

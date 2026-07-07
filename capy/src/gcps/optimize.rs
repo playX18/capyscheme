@@ -9,6 +9,7 @@ use cranelift_entity::{EntitySet, SecondaryMap};
 use crate::{
     cps::{
         fold::folding_table,
+        linear::LinearProgram,
         term::{Atom as CpsAtom, FuncRef},
     },
     runtime::{Context, value::Value},
@@ -24,6 +25,8 @@ use super::{
         FunctionLinks, Graph, GraphWorklist, Parent, Subexpr, Subterm, TermId, TermKind,
         WorklistQueue,
     },
+    linear::linearize_graph,
+    reify::reify_graph,
     scc_contify,
 };
 
@@ -90,7 +93,28 @@ pub(super) enum ContifySource {
     Dominator,
 }
 
-pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResult<FuncRef<'gc>> {
+pub struct OptimizedGraphFunctionProgram<'gc> {
+    pub graph: Graph<'gc>,
+    pub entry: FunctionId,
+    pub stats: OptimizationStats,
+}
+
+impl<'gc> OptimizedGraphFunctionProgram<'gc> {
+    pub fn root(&self) -> Subterm {
+        self.graph[self.entry].body
+    }
+}
+
+pub struct OptimizedGraphLinearProgram<'gc> {
+    pub cps: FuncRef<'gc>,
+    pub linear: LinearProgram<'gc>,
+    pub stats: OptimizationStats,
+}
+
+pub fn optimize_func_to_graph<'gc>(
+    ctx: Context<'gc>,
+    func: FuncRef<'gc>,
+) -> ConvertResult<OptimizedGraphFunctionProgram<'gc>> {
     let mut convert_profile = ProfileScope::new("compiler.lower.gcps.convert");
     let mut program = cps_func_to_graph(ctx, func)?;
     if convert_profile.is_enabled() {
@@ -133,6 +157,15 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
     }
     drop(optimize_profile);
 
+    Ok(OptimizedGraphFunctionProgram {
+        graph: program.graph,
+        entry: program.entry,
+        stats,
+    })
+}
+
+pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResult<FuncRef<'gc>> {
+    let program = optimize_func_to_graph(ctx, func)?;
     let mut reify_profile = ProfileScope::new("compiler.lower.gcps.reify");
     let func = graph_func_to_cps(ctx, &program.graph, program.entry)?;
     if reify_profile.is_enabled() {
@@ -142,6 +175,44 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
         reify_profile.field("free_occurrences", stats.free_occurrences);
     }
     Ok(func)
+}
+
+pub fn optimize_func_to_graph_linear<'gc>(
+    ctx: Context<'gc>,
+    func: FuncRef<'gc>,
+) -> ConvertResult<OptimizedGraphLinearProgram<'gc>> {
+    let mut program = optimize_func_to_graph(ctx, func)?;
+
+    let mut graph_reify_profile = ProfileScope::new("compiler.lower.gcps.graph_reify");
+    let graph_reify = reify_graph(&mut program.graph, program.entry);
+    if graph_reify_profile.is_enabled() {
+        graph_reify_profile.field("functions", graph_reify.functions.len());
+        graph_reify_profile.field("continuations", graph_reify.continuations.len());
+    }
+    drop(graph_reify_profile);
+
+    let mut linearize_profile = ProfileScope::new("compiler.lower.gcps.linearize");
+    let linear = linearize_graph(&program.graph, &graph_reify);
+    if linearize_profile.is_enabled() {
+        linearize_profile.field("procedures", linear.procedures.len());
+    }
+    drop(linearize_profile);
+
+    let mut reify_profile = ProfileScope::new("compiler.lower.gcps.reify_tree_dump");
+    let cps = graph_func_to_cps(ctx, &program.graph, program.entry)?;
+    if reify_profile.is_enabled() {
+        let stats = program.graph.stats();
+        reify_profile.field("terms", stats.terms);
+        reify_profile.field("functions", stats.functions);
+        reify_profile.field("free_occurrences", stats.free_occurrences);
+    }
+    drop(reify_profile);
+
+    Ok(OptimizedGraphLinearProgram {
+        cps,
+        linear,
+        stats: program.stats,
+    })
 }
 
 pub fn optimize_graph<'gc>(

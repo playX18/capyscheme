@@ -20,7 +20,7 @@ use super::paths::{fallback_file_name, find_path_to};
 use super::{
     artifact::LoadArtifact,
     compile::{
-        CompilationPhase, compile_cps_to_destination, destination_artifact_for_current_policy,
+        CompilationPhase, compile_lowered_to_destination, destination_artifact_for_current_policy,
         load_thunk_in_vicinity,
     },
     policy::set_fasl_debug_entries,
@@ -305,7 +305,7 @@ fn compile_expanded_to_destination<'gc>(
     let lowered = lower_expanded_scheme(ctx, expanded, module)?;
     let destination = destination_artifact_for_current_policy(destination);
     dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
-    compile_cps_to_destination(ctx, lowered.cps, options, &destination)?;
+    compile_lowered_to_destination(ctx, &lowered, options, &destination)?;
 
     if !load_thunk {
         return Ok(Str::new(*ctx, destination.path.display().to_string(), true).into());
