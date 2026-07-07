@@ -145,55 +145,7 @@ impl<'gc> DebugContext<'gc> {
         func: FuncRef<'gc>,
         linkage_name: &str,
     ) -> FunctionDebugContext<'gc> {
-        let (file_id, line, column) = self.get_span_loc(func.source());
-
-        let scope = self.dwarf.unit.root();
-        let entry_id = self.dwarf.unit.add(scope, gimli::DW_TAG_subprogram);
-        let entry = self.dwarf.unit.get_mut(entry_id);
-        let linkage_name_id = if linkage_name != func.name.to_string() {
-            Some(self.dwarf.strings.add(linkage_name))
-        } else {
-            None
-        };
-
-        let name_id = if func.name != Value::new(false) {
-            self.dwarf.strings.add(func.name.to_string())
-        } else {
-            self.dwarf.strings.add(func.binding.name.to_string())
-        };
-
-        entry.set(gimli::DW_AT_low_pc, AttributeValue::Udata(0));
-        entry.set(gimli::DW_AT_high_pc, AttributeValue::Udata(0));
-
-        let mut frame_base_expr = Expression::new();
-
-        frame_base_expr.op_reg(self.stack_pointer_register);
-        entry.set(
-            gimli::DW_AT_frame_base,
-            AttributeValue::Exprloc(frame_base_expr),
-        );
-
-        if let Some(linkage_name_id) = linkage_name_id {
-            entry.set(
-                gimli::DW_AT_linkage_name,
-                AttributeValue::StringRef(linkage_name_id),
-            );
-        }
-        entry.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
-
-        entry.set(
-            gimli::DW_AT_decl_file,
-            AttributeValue::FileIndex(Some(file_id)),
-        );
-        entry.set(gimli::DW_AT_decl_line, AttributeValue::Udata(line));
-
-        FunctionDebugContext {
-            entry_id,
-            lvar_to_label: HashMap::new(),
-            label_to_lvar: HashMap::new(),
-            srcloc: (file_id, line, column),
-            source_loc_set: HashMap::new(),
-        }
+        self.define_procedure(func.source(), func.name, func.binding, linkage_name)
     }
 
     pub(crate) fn define_cont(
@@ -201,21 +153,31 @@ impl<'gc> DebugContext<'gc> {
         func: ContRef<'gc>,
         linkage_name: &str,
     ) -> FunctionDebugContext<'gc> {
-        let (file_id, line, column) = self.get_span_loc(func.source());
+        self.define_procedure(func.source(), func.name, func.binding, linkage_name)
+    }
+
+    pub(crate) fn define_procedure(
+        &mut self,
+        source: Value<'gc>,
+        name: Value<'gc>,
+        binding: LVarRef<'gc>,
+        linkage_name: &str,
+    ) -> FunctionDebugContext<'gc> {
+        let (file_id, line, column) = self.get_span_loc(source);
 
         let scope = self.dwarf.unit.root();
         let entry_id = self.dwarf.unit.add(scope, gimli::DW_TAG_subprogram);
         let entry = self.dwarf.unit.get_mut(entry_id);
-        let linkage_name_id = if linkage_name != func.name.to_string() {
+        let linkage_name_id = if linkage_name != name.to_string() {
             Some(self.dwarf.strings.add(linkage_name))
         } else {
             None
         };
 
-        let name_id = if func.name != Value::new(false) {
-            self.dwarf.strings.add(func.name.to_string())
+        let name_id = if name != Value::new(false) {
+            self.dwarf.strings.add(name.to_string())
         } else {
-            self.dwarf.strings.add(func.binding.name.to_string())
+            self.dwarf.strings.add(binding.name.to_string())
         };
 
         entry.set(gimli::DW_AT_low_pc, AttributeValue::Udata(0));

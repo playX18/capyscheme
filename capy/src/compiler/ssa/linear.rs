@@ -1048,23 +1048,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn code_block_data(&self, code: CodeId<'gc>) -> DataSymbol {
-        match code {
-            CodeId::Function(func) => self.module_builder.code_block_for_func[&func],
-            CodeId::Continuation(cont) => self.module_builder.code_block_for_cont[&cont],
-            CodeId::GraphFunction(_) | CodeId::GraphContinuation(_) => {
-                panic!("graph linear programs are not supported by the tree SSA builder yet")
-            }
-        }
+        self.module_builder.code_block_for_code[&code]
     }
 
     fn code_function_symbol(&self, code: CodeId<'gc>) -> FunctionSymbol {
-        match code {
-            CodeId::Function(func) => self.module_builder.func_for_func[&func],
-            CodeId::Continuation(cont) => self.module_builder.func_for_cont[&cont],
-            CodeId::GraphFunction(_) | CodeId::GraphContinuation(_) => {
-                panic!("graph linear programs are not supported by the tree SSA builder yet")
-            }
-        }
+        self.module_builder.func_for_code[&code]
     }
 
     fn linear_instruction(&mut self, instruction: &Instruction<'gc>) {

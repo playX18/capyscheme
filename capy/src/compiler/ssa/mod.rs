@@ -169,6 +169,8 @@ pub struct ModuleBuilder<'gc> {
     pub func_for_func: HashMap<FuncRef<'gc>, FunctionSymbol>,
     pub code_block_for_cont: HashMap<ContRef<'gc>, DataSymbol>,
     pub code_block_for_func: HashMap<FuncRef<'gc>, DataSymbol>,
+    pub func_for_code: HashMap<CodeId<'gc>, FunctionSymbol>,
+    pub code_block_for_code: HashMap<CodeId<'gc>, DataSymbol>,
     pub pointer_slot_for_function: HashMap<FunctionSymbol, DataSymbol>,
     pub raise_trampolines: Vec<FunctionSymbol>,
     pub raise_to_exception_handler_trampoline: FunctionSymbol,
@@ -317,6 +319,8 @@ impl<'gc> ModuleBuilder<'gc> {
             func_for_func: HashMap::new(),
             code_block_for_cont: HashMap::new(),
             code_block_for_func: HashMap::new(),
+            func_for_code: HashMap::new(),
+            code_block_for_code: HashMap::new(),
             pointer_slot_for_function: HashMap::new(),
             raise_trampolines,
             raise_to_exception_handler_trampoline,
@@ -408,9 +412,12 @@ impl<'gc> ModuleBuilder<'gc> {
                     let func_id = self.declare_function_symbol(&name, &sig);
 
                     self.func_for_func.insert(func, func_id);
+                    self.func_for_code.insert(procedure.code, func_id);
                     let code_block_data_id =
                         self.declare_code_block_slot(&format!("codeblock_fn{}", i));
                     self.code_block_for_func.insert(func, code_block_data_id);
+                    self.code_block_for_code
+                        .insert(procedure.code, code_block_data_id);
                     declared.push(DeclaredProcedure {
                         procedure: procedure.clone(),
                         function: func_id,
@@ -423,17 +430,51 @@ impl<'gc> ModuleBuilder<'gc> {
                     let name = format!("cont{}:{}:{}", i, cont.name, cont.binding.name);
                     let cont_id = self.declare_function_symbol(&name, &sig);
                     self.func_for_cont.insert(cont, cont_id);
+                    self.func_for_code.insert(procedure.code, cont_id);
                     let code_block_data_id =
                         self.declare_code_block_slot(&format!("codeblock_cont{}", i));
                     self.code_block_for_cont.insert(cont, code_block_data_id);
+                    self.code_block_for_code
+                        .insert(procedure.code, code_block_data_id);
                     declared.push(DeclaredProcedure {
                         procedure: procedure.clone(),
                         function: cont_id,
                         name,
                     });
                 }
-                CodeId::GraphFunction(_) | CodeId::GraphContinuation(_) => {
-                    panic!("graph linear programs are not supported by the tree SSA builder yet")
+                CodeId::GraphFunction(_) => {
+                    let i = function_index;
+                    function_index += 1;
+                    let binding = procedure.sources[&procedure.binding];
+                    let name = format!("graph_fn{}:{}:{}", i, procedure.name, binding.name);
+                    let func_id = self.declare_function_symbol(&name, &sig);
+                    self.func_for_code.insert(procedure.code, func_id);
+                    let code_block_data_id =
+                        self.declare_code_block_slot(&format!("codeblock_graph_fn{}", i));
+                    self.code_block_for_code
+                        .insert(procedure.code, code_block_data_id);
+                    declared.push(DeclaredProcedure {
+                        procedure: procedure.clone(),
+                        function: func_id,
+                        name,
+                    });
+                }
+                CodeId::GraphContinuation(_) => {
+                    let i = continuation_index;
+                    continuation_index += 1;
+                    let binding = procedure.sources[&procedure.binding];
+                    let name = format!("graph_cont{}:{}:{}", i, procedure.name, binding.name);
+                    let cont_id = self.declare_function_symbol(&name, &sig);
+                    self.func_for_code.insert(procedure.code, cont_id);
+                    let code_block_data_id =
+                        self.declare_code_block_slot(&format!("codeblock_graph_cont{}", i));
+                    self.code_block_for_code
+                        .insert(procedure.code, code_block_data_id);
+                    declared.push(DeclaredProcedure {
+                        procedure: procedure.clone(),
+                        function: cont_id,
+                        name,
+                    });
                 }
             }
         }
@@ -474,12 +515,28 @@ impl<'gc> ModuleBuilder<'gc> {
                     true,
                     cont.meta,
                 ),
-                CodeId::GraphFunction(_) | CodeId::GraphContinuation(_) => {
-                    return Err(
-                        "graph linear programs are not supported by the tree SSA builder yet"
-                            .to_string(),
-                    );
-                }
+                CodeId::GraphFunction(_) => (
+                    self.debug_context.define_procedure(
+                        declared.procedure.source,
+                        declared.procedure.name,
+                        declared.procedure.sources[&declared.procedure.binding],
+                        &declared.name,
+                    ),
+                    Self::arity_for_procedure(&declared.procedure),
+                    false,
+                    declared.procedure.meta,
+                ),
+                CodeId::GraphContinuation(_) => (
+                    self.debug_context.define_procedure(
+                        declared.procedure.source,
+                        declared.procedure.name,
+                        declared.procedure.sources[&declared.procedure.binding],
+                        &declared.name,
+                    ),
+                    Self::arity_for_procedure(&declared.procedure),
+                    true,
+                    declared.procedure.meta,
+                ),
             };
             let mut ssa = SSABuilder::new(
                 self,
@@ -525,17 +582,9 @@ impl<'gc> ModuleBuilder<'gc> {
                 .and_then(|symbol| constant_indices.get(&symbol).copied());
         }
         let data_slots = self.fasl_data_slots(&constant_indices);
-        let CodeId::Function(entrypoint) = self.linear.entry else {
-            return Err(
-                "graph linear programs are not supported by the tree SSA builder yet".to_string(),
-            );
-        };
-        if entrypoint != self.reify_info.entrypoint {
-            return Err("linear entry does not match tree reify entrypoint".to_string());
-        }
         let entry_code = self
-            .func_for_func
-            .get(&entrypoint)
+            .func_for_code
+            .get(&self.linear.entry)
             .copied()
             .ok_or_else(|| "entry function was not declared".to_string())?;
 
@@ -1189,25 +1238,15 @@ impl<'gc> ModuleBuilder<'gc> {
     }
 
     fn constant_indices(&mut self) -> HashMap<DataSymbol, u32> {
-        let funcs = self
-            .reify_info
-            .functions
+        let metadata = self
+            .linear
+            .procedures
             .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        let conts = self
-            .reify_info
-            .continuations
-            .iter()
-            .copied()
-            .filter(|cont| cont.reified.get())
+            .map(|procedure| procedure.meta)
             .collect::<Vec<_>>();
 
-        for func in funcs {
-            let _ = self.intern_constant(func.meta);
-        }
-        for cont in conts {
-            let _ = self.intern_constant(cont.meta);
+        for metadata in metadata {
+            let _ = self.intern_constant(metadata);
         }
 
         let constants = self
@@ -1234,16 +1273,10 @@ impl<'gc> ModuleBuilder<'gc> {
         for symbol in self.cache_cells.values().copied() {
             slots.push(FaslDataSlot::cache_cell(symbol));
         }
-        for (func, symbol) in self.code_block_for_func.iter() {
+        for (code, symbol) in self.code_block_for_code.iter() {
             slots.push(FaslDataSlot::code(
                 *symbol,
-                self.func_for_func.get(func).copied(),
-            ));
-        }
-        for (cont, symbol) in self.code_block_for_cont.iter() {
-            slots.push(FaslDataSlot::code(
-                *symbol,
-                self.func_for_cont.get(cont).copied(),
+                self.func_for_code.get(code).copied(),
             ));
         }
         for (function, symbol) in self.pointer_slot_for_function.iter() {
@@ -1334,6 +1367,14 @@ impl<'gc> ModuleBuilder<'gc> {
             -((cont.args.len() as i32) + 1)
         } else {
             cont.args.len() as i32
+        }
+    }
+
+    fn arity_for_procedure(procedure: &Procedure<'gc>) -> i32 {
+        if procedure.variadic.is_some() {
+            -((procedure.params.len() as i32) + 1)
+        } else {
+            procedure.params.len() as i32
         }
     }
 }
@@ -1476,6 +1517,7 @@ mod tests {
             term::{Atom, Func, Term},
         },
         expander::core::{LVarRef, fresh_lvar},
+        gcps::{convert::cps_func_to_graph, linear::linearize_graph, reify::reify_graph},
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Context, Scheme,
@@ -2245,6 +2287,45 @@ mod tests {
             let value = crate::runtime::fasl::FaslReader::new(ctx, std::io::Cursor::new(bytes))
                 .read()
                 .expect("load unified FASL with pointer and side-metadata data slots");
+
+            assert!(value.is::<Closure>());
+        });
+    }
+
+    #[test]
+    fn module_builder_compiles_loadable_unified_fasl_for_graph_linear_local_call() {
+        with_ctx(|ctx| {
+            let (entry, _) = local_call_func(ctx);
+            let tree_reify_info = reify(ctx, entry);
+            let mut graph_program =
+                cps_func_to_graph(ctx, entry).expect("function graph conversion");
+            let graph_reify = reify_graph(&mut graph_program.graph, graph_program.entry);
+            let linear = linearize_graph(&graph_program.graph, &graph_reify);
+
+            assert!(matches!(linear.entry, CodeId::GraphFunction(_)));
+            assert!(linear.procedures.iter().all(|procedure| {
+                matches!(
+                    procedure.code,
+                    CodeId::GraphFunction(_) | CodeId::GraphContinuation(_)
+                )
+            }));
+
+            let mut module_builder = ModuleBuilder::new(ctx, tree_reify_info, linear);
+            let bytes = module_builder
+                .compile_loaded_fasl_bytes()
+                .expect("compile graph-linear unified FASL");
+
+            assert!(module_builder.func_for_func.is_empty());
+            assert!(module_builder.func_for_cont.is_empty());
+            assert!(!module_builder.func_for_code.is_empty());
+            assert!(module_builder.func_for_code.keys().all(|code| matches!(
+                code,
+                CodeId::GraphFunction(_) | CodeId::GraphContinuation(_)
+            )));
+
+            let value = crate::runtime::fasl::FaslReader::new(ctx, std::io::Cursor::new(bytes))
+                .read()
+                .expect("load graph-linear unified FASL");
 
             assert!(value.is::<Closure>());
         });
