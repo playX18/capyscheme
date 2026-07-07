@@ -368,12 +368,8 @@ fn choose_candidate<'gc>(
             binders.insert(graph[*function].var);
         }
 
-        let (return_cont, site) = match destination {
-            Destination::Cont(cont) => {
-                let site =
-                    scc_contify::contification_site(graph, active_link, live, body, &binders)?;
-                (cont, site)
-            }
+        let return_cont = match destination {
+            Destination::Cont(cont) => cont,
             Destination::Func(function) => {
                 if binders.contains(graph[function].var) {
                     continue;
@@ -381,15 +377,22 @@ fn choose_candidate<'gc>(
                 let Some(return_cont) = graph[function].cont else {
                     continue;
                 };
-                (return_cont, graph[function].body)
+                return_cont
             }
         };
+        let site = scc_contify::contification_site(graph, active_link, live, body, &binders)?;
 
         let Some(site_term) = graph.read_term_link(site) else {
             continue;
         };
         if !state.binder_is_available_at_term(graph, site_term, return_cont) {
             verbose_log!("gcps dom contify: skip contification out of target scope");
+            continue;
+        }
+        if functions.iter().copied().any(|function| {
+            !state.function_uses_only_available_scope_at_term(graph, function, &binders, site_term)
+        }) {
+            verbose_log!("gcps dom contify: skip contification with unavailable free binders");
             continue;
         }
 

@@ -142,6 +142,18 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
     let doc = lowered
         .cps
         .pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
+    let mut file_opt = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(format!("{destination}.cps.opt.scm"))
+        .unwrap();
+    log::info!(";; TRACE  (capy)@load: CPS after opts -> {destination}.cps.opt.scm");
+    doc.1.render(80, &mut file_opt).unwrap();
+
+    let doc = lowered
+        .cps
+        .pretty::<_, &pretty::BoxAllocator>(&pretty::BoxAllocator);
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -170,7 +182,9 @@ fn render_lcps_dump<'gc>(linear_cps: &crate::cps::linear::LinearProgram<'gc>) ->
 
 #[cfg(test)]
 mod tests {
-    use super::render_lcps_dump;
+    use super::{
+        DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, render_lcps_dump,
+    };
     use crate::{
         compiler::ssa::primitive::Primitive,
         cps::{
@@ -180,7 +194,10 @@ mod tests {
             },
             term::{Func, Term},
         },
-        expander::core::{LVarRef, fresh_lvar},
+        expander::{
+            core::{LVarRef, fresh_lvar},
+            term::{Term as IlTerm, TermKind as IlTermKind},
+        },
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Context, Scheme,
@@ -226,6 +243,52 @@ mod tests {
                 meta: Value::new(false),
             },
         )
+    }
+
+    fn dummy_il<'gc>(ctx: Context<'gc>) -> crate::expander::core::TermRef<'gc> {
+        Gc::new(
+            *ctx,
+            IlTerm {
+                source: Lock::new(Value::new(false)),
+                kind: IlTermKind::Const(Value::new(42)),
+            },
+        )
+    }
+
+    #[test]
+    fn trace_artifacts_include_cps_after_opts_dump() {
+        with_ctx(|ctx| {
+            let dir = std::env::temp_dir().join(format!(
+                "capy-cps-after-opts-dump-test-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let destination = dir.join("out.fasl");
+            let il = dummy_il(ctx);
+            let lowered = LoweredProgram {
+                original_il: il,
+                optimized_il: il,
+                cps: dummy_func(ctx),
+            };
+
+            dump_lowered_program_artifacts(
+                ctx,
+                &destination,
+                &lowered,
+                DumpArtifactsOptions {
+                    enabled: true,
+                    include_unoptimized: false,
+                },
+            );
+
+            let cps_after_opts = std::fs::read_to_string(dir.join("out.fasl.cps.opt.scm"))
+                .expect("CPS after opts dump");
+            assert!(cps_after_opts.contains("lcps-dump-test"));
+            assert!(dir.join("out.fasl.cps.scm").exists());
+
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
     }
 
     #[test]
