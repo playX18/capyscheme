@@ -7,7 +7,10 @@ use std::{
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
-    cps::term::FuncRef,
+    cps::{
+        fold::folding_table,
+        term::{Atom as CpsAtom, FuncRef},
+    },
     runtime::{Context, value::Value},
     utils::pass_profile::ProfileScope,
 };
@@ -37,6 +40,7 @@ pub struct OptimizationStats {
     pub eta_continuations: usize,
     pub eta_functions: usize,
     pub constant_branches_simplified: usize,
+    pub known_prim_propagations: usize,
     pub singleton_calls_inlined: usize,
     pub singleton_continuations_inlined: usize,
     pub contifications: usize,
@@ -95,7 +99,7 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
     drop(convert_profile);
 
     let mut optimize_profile = ProfileScope::new("compiler.lower.gcps.run");
-    let stats = optimize_graph(&mut program.graph, program.root, Some(DEFAULT_GAS));
+    let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(DEFAULT_GAS));
     if optimize_profile.is_enabled() {
         let graph_stats = program.graph.stats();
         optimize_profile.field("iterations", stats.iterations);
@@ -106,6 +110,7 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
         optimize_profile.field("eta_continuations", stats.eta_continuations);
         optimize_profile.field("eta_functions", stats.eta_functions);
         optimize_profile.field("constant_branches", stats.constant_branches_simplified);
+        optimize_profile.field("known_prim_propagations", stats.known_prim_propagations);
         optimize_profile.field("calls_inlined", stats.singleton_calls_inlined);
         optimize_profile.field("conts_inlined", stats.singleton_continuations_inlined);
         optimize_profile.field("contifications", stats.contifications);
@@ -132,6 +137,7 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
 }
 
 pub fn optimize_graph<'gc>(
+    ctx: Context<'gc>,
     graph: &mut Graph<'gc>,
     root: Subterm,
     gas: Option<usize>,
@@ -151,7 +157,7 @@ pub fn optimize_graph<'gc>(
             profile.field("contify_mode", format!("{contify_mode:?}"));
         }
     }
-    state.run(graph, gas.unwrap_or(usize::MAX), contify_mode);
+    state.run(ctx, graph, gas.unwrap_or(usize::MAX), contify_mode);
     state.stats
 }
 
@@ -201,7 +207,13 @@ impl OptimizerState {
         }
     }
 
-    fn run<'gc>(&mut self, graph: &mut Graph<'gc>, mut gas: usize, contify_mode: GcpsContifyMode) {
+    fn run<'gc>(
+        &mut self,
+        ctx: Context<'gc>,
+        graph: &mut Graph<'gc>,
+        mut gas: usize,
+        contify_mode: GcpsContifyMode,
+    ) {
         let initial_gas = gas;
         while gas > 0 {
             gas -= 1;
@@ -226,7 +238,16 @@ impl OptimizerState {
 
             match graph[term].kind {
                 TermKind::LetVal((binder, expr), body) => {
-                    self.reduce_letval(graph, queued_link, active_link, term, binder, expr, body);
+                    self.reduce_letval(
+                        ctx,
+                        graph,
+                        queued_link,
+                        active_link,
+                        term,
+                        binder,
+                        expr,
+                        body,
+                    );
                 }
                 TermKind::App(callee, args, cont) => {
                     self.reduce_call(graph, queued_link, active_link, term, callee, args, cont);
@@ -395,6 +416,7 @@ impl OptimizerState {
 
     fn reduce_letval<'gc>(
         &mut self,
+        ctx: Context<'gc>,
         graph: &mut Graph<'gc>,
         queued_link: Subterm,
         active_link: Subterm,
@@ -404,6 +426,7 @@ impl OptimizerState {
         body: Subterm,
     ) {
         if !graph.binder_is_dead(binder) {
+            self.reduce_known_primcall(ctx, graph, binder, expr);
             return;
         }
 
@@ -420,6 +443,52 @@ impl OptimizerState {
                 graph.read_term_link(active_link).unwrap_or(term),
             );
         }
+    }
+
+    fn reduce_known_primcall<'gc>(
+        &mut self,
+        ctx: Context<'gc>,
+        graph: &mut Graph<'gc>,
+        binder: BoundVar,
+        expr: Subexpr,
+    ) {
+        let Some(expr_id) = graph.read_expr_link(expr) else {
+            return;
+        };
+        let ExprKind::PrimCall(prim, vars) = graph[expr_id].kind else {
+            return;
+        };
+
+        let arg_occurrences = graph.free_vars_slice(&vars).to_vec();
+        let mut args = Vec::with_capacity(arg_occurrences.len());
+        let mut arg_binders = Vec::with_capacity(arg_occurrences.len());
+        for var in &arg_occurrences {
+            let binder = graph.free_binder(*var);
+            let Some(value) = self.known_literal_value(graph, binder) else {
+                return;
+            };
+            arg_binders.push(binder);
+            args.push(CpsAtom::Constant(value));
+        }
+
+        let Some(value) = folding_table(ctx).try_fold(ctx, prim, &args) else {
+            return;
+        };
+
+        verbose_log!("gcps optimize: fold known primcall bound to {binder}");
+        self.stats.known_prim_propagations += 1;
+        for occ in arg_occurrences {
+            self.kill_occurrence(graph, occ);
+        }
+        for binder in arg_binders {
+            if graph.binder_is_dead(binder)
+                && let Some(def) = self.known_expr_defs[binder]
+            {
+                self.worklist.add_subterm(def);
+            }
+        }
+        graph[expr_id].kind = ExprKind::Literal(value);
+        self.enqueue_occurrence_owners(graph, binder);
     }
 
     fn reduce_if<'gc>(
@@ -880,6 +949,9 @@ impl OptimizerState {
             return;
         };
         self.replace_term_with(graph, active_link, old_term, replacement);
+        if replacement_link != active_link {
+            graph.clear_term_link(replacement_link);
+        }
     }
 
     fn replace_term_with<'gc>(
@@ -920,8 +992,9 @@ impl OptimizerState {
         self.old_occurrences = old_occurrences;
         self.new_occurrences = new_occurrences;
 
-        if let Some(parent) = graph.read_parent_link(graph[old_term].link) {
-            graph.set_parent_link(graph[replacement].link, parent);
+        match graph.read_parent_link(graph[old_term].link) {
+            Some(parent) => graph.set_parent_link(graph[replacement].link, parent),
+            None => graph.clear_parent_link(graph[replacement].link),
         }
     }
 
@@ -1894,12 +1967,19 @@ mod tests {
         cps::term::{Atom, BranchHint, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
         expander::core::{LVarRef, fresh_lvar},
         rsgc::{Gc, alloc::Array, cell::Lock},
-        runtime::{Scheme, value::Value},
+        runtime::{
+            Scheme,
+            value::{Symbol, Value},
+        },
     };
     use std::cell::Cell;
 
     fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
         fresh_lvar(ctx, ctx.intern(name))
+    }
+
+    fn prim<'gc>(ctx: Context<'gc>, name: &str) -> Value<'gc> {
+        Symbol::from_str(ctx, name).into()
     }
 
     fn fixed_cont<'gc>(
@@ -1951,6 +2031,7 @@ mod tests {
     }
 
     fn optimize_graph_with_mode<'gc>(
+        ctx: Context<'gc>,
         graph: &mut Graph<'gc>,
         root: Subterm,
         mode: GcpsContifyMode,
@@ -1958,7 +2039,7 @@ mod tests {
     ) -> OptimizationStats {
         let mut state = OptimizerState::new();
         state.collect_redexes(graph, root);
-        state.run(graph, gas, mode);
+        state.run(ctx, graph, gas, mode);
         state.stats
     }
 
@@ -1981,7 +2062,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            let stats = optimize_graph(&mut program.graph, program.root, Some(64));
+            let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             assert_eq!(stats.dead_letvals_removed, 1);
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Continue(cont, args, _) = *lowered else {
@@ -2023,7 +2104,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            let stats = optimize_graph(&mut program.graph, program.root, Some(64));
+            let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             assert_eq!(stats.dead_letvals_removed, 2);
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Continue(cont, args, _) = *lowered else {
@@ -2069,7 +2150,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            let stats = optimize_graph(&mut program.graph, program.root, Some(64));
+            let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             assert_eq!(stats.dead_letvals_removed, 1);
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Let(binding, Expression::Literal(..), body) = *lowered else {
@@ -2115,6 +2196,7 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph_with_mode(
+                ctx,
                 &mut program.graph,
                 program.root,
                 GcpsContifyMode::Off,
@@ -2186,6 +2268,7 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph_with_mode(
+                ctx,
                 &mut program.graph,
                 program.root,
                 GcpsContifyMode::Off,
@@ -2230,6 +2313,7 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph_with_mode(
+                ctx,
                 &mut program.graph,
                 program.root,
                 GcpsContifyMode::Off,
@@ -2286,6 +2370,7 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph_with_mode(
+                ctx,
                 &mut program.graph,
                 program.root,
                 GcpsContifyMode::Off,
@@ -2347,6 +2432,7 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph_with_mode(
+                ctx,
                 &mut program.graph,
                 program.root,
                 GcpsContifyMode::Off,
@@ -2389,6 +2475,7 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph_with_mode(
+                ctx,
                 &mut program.graph,
                 program.root,
                 GcpsContifyMode::Off,
@@ -2443,6 +2530,7 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph_with_mode(
+                ctx,
                 &mut program.graph,
                 program.root,
                 GcpsContifyMode::Off,
@@ -2459,6 +2547,205 @@ mod tests {
             };
             assert_eq!(cont, alternative);
             assert!(args.is_empty());
+        });
+    }
+
+    #[test]
+    fn known_primcall_folds_constant_args() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let left = lvar(ctx, "left");
+            let right = lvar(ctx, "right");
+            let result = lvar(ctx, "result");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    left,
+                    Expression::Literal(Value::from_i32(2), source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            right,
+                            Expression::Literal(Value::from_i32(3), source),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    result,
+                                    Expression::PrimCall(
+                                        prim(ctx, "+"),
+                                        Array::from_slice(
+                                            *ctx,
+                                            &[Atom::Local(left), Atom::Local(right)],
+                                        ),
+                                        source,
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::Continue(
+                                            halt,
+                                            Array::from_slice(*ctx, &[Atom::Local(result)]),
+                                            source,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(128));
+            assert_eq!(stats.known_prim_propagations, 1);
+            assert!(
+                stats.dead_letvals_removed >= 2,
+                "expected folded argument bindings to become dead"
+            );
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Let(binding, Expression::Literal(value, _), body) = *lowered else {
+                panic!("expected folded primcall to become a literal let, got {lowered:?}");
+            };
+            assert_eq!(binding, result);
+            assert_eq!(value, Value::from_i32(5));
+            let Term::Continue(cont, args, _) = *body else {
+                panic!("expected folded result to flow to continue");
+            };
+            assert_eq!(cont, halt);
+            assert_eq!(args.as_ref(), &[Atom::Local(result)]);
+        });
+    }
+
+    #[test]
+    fn folded_boolean_primcall_feeds_branch_cleanup() {
+        Scheme::new_uninit().enter(|ctx| {
+            let left = lvar(ctx, "left");
+            let right = lvar(ctx, "right");
+            let test = lvar(ctx, "test");
+            let consequent = lvar(ctx, "consequent");
+            let alternative = lvar(ctx, "alternative");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    left,
+                    Expression::Literal(Value::from_i32(1), source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            right,
+                            Expression::Literal(Value::from_i32(1), source),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    test,
+                                    Expression::PrimCall(
+                                        prim(ctx, "="),
+                                        Array::from_slice(
+                                            *ctx,
+                                            &[Atom::Local(left), Atom::Local(right)],
+                                        ),
+                                        source,
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::If {
+                                            test: Atom::Local(test),
+                                            consequent,
+                                            consequent_args: None,
+                                            alternative,
+                                            alternative_args: None,
+                                            hints: [BranchHint::Normal, BranchHint::Normal],
+                                        },
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                ctx,
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                256,
+            );
+            assert_eq!(stats.known_prim_propagations, 1);
+            assert_eq!(stats.constant_branches_simplified, 1);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Continue(cont, args, _) = *lowered else {
+                panic!("expected folded branch to lower to direct continue, got {lowered:?}");
+            };
+            assert_eq!(cont, consequent);
+            assert!(args.is_empty());
+        });
+    }
+
+    #[test]
+    fn unknown_primcall_with_constant_args_does_not_fold() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let left = lvar(ctx, "left");
+            let right = lvar(ctx, "right");
+            let result = lvar(ctx, "result");
+            let unknown_prim = prim(ctx, "not-a-folded-primitive");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    left,
+                    Expression::Literal(Value::from_i32(2), source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            right,
+                            Expression::Literal(Value::from_i32(3), source),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    result,
+                                    Expression::PrimCall(
+                                        unknown_prim,
+                                        Array::from_slice(
+                                            *ctx,
+                                            &[Atom::Local(left), Atom::Local(right)],
+                                        ),
+                                        source,
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::Continue(
+                                            halt,
+                                            Array::from_slice(*ctx, &[Atom::Local(result)]),
+                                            source,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(128));
+            assert_eq!(stats.known_prim_propagations, 0);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Let(_, Expression::Literal(..), body) = *lowered else {
+                panic!("expected first literal binding to remain, got {lowered:?}");
+            };
+            let Term::Let(_, Expression::Literal(..), body) = *body else {
+                panic!("expected second literal binding to remain");
+            };
+            let Term::Let(binding, Expression::PrimCall(prim, args, _), _) = *body else {
+                panic!("expected unknown primcall to remain");
+            };
+            assert_eq!(binding, result);
+            assert_eq!(prim, unknown_prim);
+            assert_eq!(args.as_ref(), &[Atom::Local(left), Atom::Local(right)]);
         });
     }
 
@@ -2501,7 +2788,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Continue(cont, args, _) = *lowered else {
                 panic!("expected reduced continue");
@@ -2550,7 +2837,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Letk(_, body) = *lowered else {
                 panic!("expected variadic continuation to remain bound");
@@ -2602,7 +2889,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Letk(_, body) = *lowered else {
                 panic!("expected noinline continuation to remain bound");
@@ -2685,7 +2972,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Letk(_, body) = *lowered else {
                 panic!("expected complex continuation to remain bound");
@@ -2743,7 +3030,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Let(_, Expression::Literal(..), body) = *lowered else {
                 panic!("expected outer literal binding");
@@ -2818,7 +3105,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Letk(_, body) = *lowered else {
                 panic!("expected local-target continuation to remain bound");
@@ -2881,7 +3168,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Let(_, Expression::Literal(..), body) = *lowered else {
                 panic!("expected literal outer binding");
@@ -2962,7 +3249,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Fix(_, body) = *lowered else {
                 panic!("expected outer function binding to remain");
@@ -3034,7 +3321,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Letk(_, body) = *lowered else {
                 panic!("expected original local continuation binding");
@@ -3111,7 +3398,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(1));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(1));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Letk(_, body) = *lowered else {
                 panic!("expected local continuation binding");
@@ -3338,6 +3625,7 @@ mod tests {
 
             let mut scc_program = cps_to_graph(ctx, term).expect("convert scc");
             let scc_stats = optimize_graph_with_mode(
+                ctx,
                 &mut scc_program.graph,
                 scc_program.root,
                 GcpsContifyMode::Scc,
@@ -3345,6 +3633,7 @@ mod tests {
             );
             let mut dom_program = cps_to_graph(ctx, term).expect("convert dom");
             let dom_stats = optimize_graph_with_mode(
+                ctx,
                 &mut dom_program.graph,
                 dom_program.root,
                 GcpsContifyMode::Dom,
@@ -3411,7 +3700,7 @@ mod tests {
             );
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
-            optimize_graph(&mut program.graph, program.root, Some(64));
+            optimize_graph(ctx, &mut program.graph, program.root, Some(64));
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Let(_, Expression::Literal(..), body) = *lowered else {
                 panic!("expected literal body");
