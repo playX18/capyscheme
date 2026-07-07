@@ -6,14 +6,19 @@ use std::{
 
 use cranelift_entity::{EntitySet, SecondaryMap};
 
-use crate::{cps::term::FuncRef, runtime::Context, utils::pass_profile::ProfileScope};
+use crate::{
+    cps::term::FuncRef,
+    runtime::{Context, value::Value},
+    utils::pass_profile::ProfileScope,
+};
 
 use super::{
     convert::{ConvertResult, cps_to_graph, graph_to_cps},
     dom_contify,
     graph::{
-        ActiveLinkStatus, BoundVar, ContVar, FreeVar, FunctionId, FunctionLink, FunctionLinks,
-        Graph, GraphWorklist, Parent, Subexpr, Subterm, TermId, TermKind, WorklistQueue,
+        ActiveLinkStatus, BoundVar, ContVar, ExprKind, FreeVar, FunctionId, FunctionLink,
+        FunctionLinks, Graph, GraphWorklist, Parent, Subexpr, Subterm, TermId, TermKind,
+        WorklistQueue,
     },
     scc_contify,
 };
@@ -31,6 +36,7 @@ pub struct OptimizationStats {
     pub dead_letvals_removed: usize,
     pub eta_continuations: usize,
     pub eta_functions: usize,
+    pub constant_branches_simplified: usize,
     pub singleton_calls_inlined: usize,
     pub singleton_continuations_inlined: usize,
     pub contifications: usize,
@@ -99,6 +105,7 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
         optimize_profile.field("dead_letvals", stats.dead_letvals_removed);
         optimize_profile.field("eta_continuations", stats.eta_continuations);
         optimize_profile.field("eta_functions", stats.eta_functions);
+        optimize_profile.field("constant_branches", stats.constant_branches_simplified);
         optimize_profile.field("calls_inlined", stats.singleton_calls_inlined);
         optimize_profile.field("conts_inlined", stats.singleton_continuations_inlined);
         optimize_profile.field("contifications", stats.contifications);
@@ -234,6 +241,17 @@ impl OptimizerState {
                     self.reduce_eta_functions(graph, functions);
                     self.try_contify_fix(graph, active_link, term, functions, body, contify_mode);
                 }
+                TermKind::If(test, consequent, alternative) => {
+                    self.reduce_if(
+                        graph,
+                        queued_link,
+                        active_link,
+                        term,
+                        test,
+                        consequent,
+                        alternative,
+                    );
+                }
                 _ => {}
             }
         }
@@ -254,6 +272,7 @@ impl OptimizerState {
             TermKind::LetVal(..)
             | TermKind::App(..)
             | TermKind::Continue(..)
+            | TermKind::If(..)
             | TermKind::Fix(..) => {
                 self.worklist.add_subterm(root);
             }
@@ -348,6 +367,18 @@ impl OptimizerState {
         expr
     }
 
+    fn known_literal_value<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        binding: BoundVar,
+    ) -> Option<Value<'gc>> {
+        let expr = graph.read_expr_link(self.known_exprs[binding]?)?;
+        let ExprKind::Literal(value) = graph[expr].kind else {
+            return None;
+        };
+        Some(value)
+    }
+
     fn kill_free_vars_of_expr_link<'gc>(&mut self, graph: &mut Graph<'gc>, expr: Subexpr) {
         let Some(expr_id) = graph.read_expr_link(expr) else {
             return;
@@ -382,6 +413,47 @@ impl OptimizerState {
             self.kill_free_vars_of_expr_link(graph, expr);
         }
         self.replace_with_existing_body(graph, active_link, term, body);
+        self.worklist.add_subterm(active_link);
+        if queued_link != active_link {
+            graph.set_term_link(
+                queued_link,
+                graph.read_term_link(active_link).unwrap_or(term),
+            );
+        }
+    }
+
+    fn reduce_if<'gc>(
+        &mut self,
+        graph: &mut Graph<'gc>,
+        queued_link: Subterm,
+        active_link: Subterm,
+        term: TermId,
+        test: FreeVar,
+        consequent: Subterm,
+        alternative: Subterm,
+    ) {
+        let Some(value) = self.known_literal_value(graph, graph.free_binder(test)) else {
+            return;
+        };
+
+        let (taken, skipped) = if value != Value::new(false) {
+            (consequent, alternative)
+        } else {
+            (alternative, consequent)
+        };
+        let parent_term = match graph.read_parent_link(graph[term].link) {
+            Some(Parent::Term(parent)) => Some(parent),
+            _ => None,
+        };
+        verbose_log!("gcps optimize: simplify constant branch tested by {test}");
+        self.stats.constant_branches_simplified += 1;
+        self.replace_with_existing_body(graph, active_link, term, taken);
+        self.kill_free_vars_of_term_subtree_link(graph, skipped);
+        if let Some(parent) = parent_term
+            && let ActiveLinkStatus::ActiveSubterm(link) = graph.get_active_link_for(parent)
+        {
+            self.worklist.add_subterm(link);
+        }
         self.worklist.add_subterm(active_link);
         if queued_link != active_link {
             graph.set_term_link(
@@ -608,6 +680,46 @@ impl OptimizerState {
         }
         occurrences.clear();
         self.old_occurrences = occurrences;
+    }
+
+    fn kill_free_vars_of_term_subtree_link<'gc>(&mut self, graph: &mut Graph<'gc>, link: Subterm) {
+        let Some(term) = graph.read_term_link(link) else {
+            return;
+        };
+
+        match graph[term].kind {
+            TermKind::LetVal((binding, expr), body) => {
+                self.take_known_expr(binding);
+                self.kill_free_vars_of_expr_link(graph, expr);
+                self.kill_free_vars_of_term_subtree_link(graph, body);
+            }
+            TermKind::Fix(functions, body) | TermKind::Letk(functions, body) => {
+                let function_bodies = graph
+                    .function_links_slice(&functions)
+                    .iter()
+                    .copied()
+                    .filter_map(|link| graph.read_function_link(link))
+                    .map(|function| {
+                        let binding = graph[function].var;
+                        let body = graph[function].body;
+                        (binding, body)
+                    })
+                    .collect::<Vec<_>>();
+                for (binding, body) in function_bodies {
+                    self.clear_known_function(graph, binding);
+                    self.kill_free_vars_of_term_subtree_link(graph, body);
+                }
+                self.kill_free_vars_of_term_subtree_link(graph, body);
+            }
+            TermKind::If(_, consequent, alternative) => {
+                self.kill_direct_free_vars_of_term_link(graph, link);
+                self.kill_free_vars_of_term_subtree_link(graph, consequent);
+                self.kill_free_vars_of_term_subtree_link(graph, alternative);
+            }
+            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {
+                self.kill_direct_free_vars_of_term_link(graph, link);
+            }
+        }
     }
 
     fn enqueue_occurrence_owners<'gc>(&mut self, graph: &Graph<'gc>, binder: BoundVar) {
@@ -1779,7 +1891,7 @@ fn emit_contification_dump(index: usize, phase: &str, dump: &str) {
 mod tests {
     use super::*;
     use crate::{
-        cps::term::{Atom, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
+        cps::term::{Atom, BranchHint, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
         expander::core::{LVarRef, fresh_lvar},
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{Scheme, value::Value},
@@ -2245,6 +2357,108 @@ mod tests {
             let Term::Fix(..) = *lowered else {
                 panic!("expected reordered eta-function wrapper to remain");
             };
+        });
+    }
+
+    #[test]
+    fn known_truthy_if_uses_consequent() {
+        Scheme::new_uninit().enter(|ctx| {
+            let test = lvar(ctx, "test");
+            let consequent = lvar(ctx, "consequent");
+            let alternative = lvar(ctx, "alternative");
+            let value = lvar(ctx, "value");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    test,
+                    Expression::Literal(Value::from_i32(1), source),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(test),
+                            consequent,
+                            consequent_args: Some(Array::from_slice(*ctx, &[Atom::Local(value)])),
+                            alternative,
+                            alternative_args: Some(Array::from_slice(*ctx, &[Atom::Local(value)])),
+                            hints: [BranchHint::Normal, BranchHint::Normal],
+                        },
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                64,
+            );
+            assert_eq!(stats.constant_branches_simplified, 1);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Continue(cont, args, _) = *lowered else {
+                panic!("expected constant branch to lower to direct continue");
+            };
+            assert_eq!(cont, consequent);
+            assert_eq!(args.as_ref(), &[Atom::Local(value)]);
+        });
+    }
+
+    #[test]
+    fn known_false_if_uses_alternative_and_kills_skipped_branch_uses() {
+        Scheme::new_uninit().enter(|ctx| {
+            let test = lvar(ctx, "test");
+            let skipped_value = lvar(ctx, "skipped-value");
+            let consequent = lvar(ctx, "consequent");
+            let alternative = lvar(ctx, "alternative");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    test,
+                    Expression::Literal(Value::new(false), source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            skipped_value,
+                            Expression::Literal(Value::from_i32(7), source),
+                            Gc::new(
+                                *ctx,
+                                Term::If {
+                                    test: Atom::Local(test),
+                                    consequent,
+                                    consequent_args: Some(Array::from_slice(
+                                        *ctx,
+                                        &[Atom::Local(skipped_value)],
+                                    )),
+                                    alternative,
+                                    alternative_args: None,
+                                    hints: [BranchHint::Normal, BranchHint::Normal],
+                                },
+                            ),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                128,
+            );
+            assert_eq!(stats.constant_branches_simplified, 1);
+            assert!(
+                stats.dead_letvals_removed >= 2,
+                "expected test and skipped-only value bindings to be removed"
+            );
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Continue(cont, args, _) = *lowered else {
+                panic!("expected false branch to lower to direct continue, got {lowered:?}");
+            };
+            assert_eq!(cont, alternative);
+            assert!(args.is_empty());
         });
     }
 
