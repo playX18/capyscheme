@@ -7,11 +7,12 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+use crate::cps::term::BranchHint;
 use crate::runtime::vm::exceptions::RaiseKind;
 use crate::{expander::core::LVarRef, runtime::value::Value};
 use cranelift_entity::{
-    packed_option::{PackedOption, ReservedValue},
     EntityList, EntityRef, ListPool, PrimaryMap,
+    packed_option::{PackedOption, ReservedValue},
 };
 
 pub use super::worklist::{GraphWorklist, WorklistQueue};
@@ -254,7 +255,7 @@ pub enum TermKind {
     Fix(FunctionLinks, Subterm),
     Letk(FunctionLinks, Subterm),
 
-    If(FreeVar, Subterm, Subterm),
+    If(FreeVar, Subterm, Subterm, [BranchHint; 2]),
     Continue(ContVar, FreeVars),
     App(FreeVar, FreeVars, ContVar),
     Raise(RaiseKind, FreeVars),
@@ -852,7 +853,7 @@ impl<'gc> Graph<'gc> {
         match self.terms[term].kind {
             TermKind::LetVal(_, body) => f(body),
             TermKind::Fix(_, body) | TermKind::Letk(_, body) => f(body),
-            TermKind::If(_, then_branch, else_branch) => {
+            TermKind::If(_, then_branch, else_branch, _) => {
                 f(then_branch);
                 f(else_branch);
             }
@@ -1127,13 +1128,14 @@ impl<'gc> Graph<'gc> {
                 self.fmt_term_link(f, body, depth + 1)?;
                 write!(f, ")")
             }
-            TermKind::If(var, then_branch, else_branch) => {
+            TermKind::If(var, then_branch, else_branch, hints) => {
                 write!(f, "(if ")?;
                 self.fmt_free_var(f, var)?;
                 write!(f, " ")?;
                 self.fmt_term_link(f, then_branch, depth + 1)?;
                 write!(f, " ")?;
                 self.fmt_term_link(f, else_branch, depth + 1)?;
+                write!(f, " {hints:?}")?;
                 write!(f, ")")
             }
             TermKind::Continue(cont, vars) => {

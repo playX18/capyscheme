@@ -278,7 +278,7 @@ impl OptimizerState {
                     self.reduce_eta_functions(graph, functions);
                     self.try_contify_fix(graph, active_link, term, functions, body, contify_mode);
                 }
-                TermKind::If(test, consequent, alternative) => {
+                TermKind::If(test, consequent, alternative, _) => {
                     self.reduce_if(
                         graph,
                         queued_link,
@@ -876,7 +876,7 @@ impl OptimizerState {
                 }
                 self.kill_free_vars_of_term_subtree_link(graph, body);
             }
-            TermKind::If(_, consequent, alternative) => {
+            TermKind::If(_, consequent, alternative, _) => {
                 self.kill_direct_free_vars_of_term_link(graph, link);
                 self.kill_free_vars_of_term_subtree_link(graph, consequent);
                 self.kill_free_vars_of_term_subtree_link(graph, alternative);
@@ -1130,7 +1130,7 @@ impl OptimizerState {
                 }
                 self.consume_term_budget(graph, body, remaining)
             }
-            TermKind::If(_, consequent, alternative) => {
+            TermKind::If(_, consequent, alternative, _) => {
                 self.consume_term_budget(graph, consequent, remaining)
                     && self.consume_term_budget(graph, alternative, remaining)
             }
@@ -1341,7 +1341,7 @@ impl OptimizerState {
                 value_scope.insert(binding);
                 self.term_is_simple_continuation_inline_body(graph, body, value_scope)
             }
-            TermKind::If(_, then_branch, else_branch) => {
+            TermKind::If(_, then_branch, else_branch, _) => {
                 let mut then_scope = value_scope.clone();
                 let mut else_scope = value_scope.clone();
                 self.term_is_simple_continuation_inline_body(graph, then_branch, &mut then_scope)
@@ -1689,7 +1689,7 @@ impl OptimizerState {
                 }
                 self.transform_apps_to_continues(graph, body, binders);
             }
-            TermKind::If(_, then_branch, else_branch) => {
+            TermKind::If(_, then_branch, else_branch, _) => {
                 self.transform_apps_to_continues(graph, then_branch, binders);
                 self.transform_apps_to_continues(graph, else_branch, binders);
             }
@@ -1817,7 +1817,7 @@ impl OptimizerState {
                 }
                 self.term_uses_only_available_scope_at_term(graph, body, &body_local, site_term)
             }
-            TermKind::If(test, then_branch, else_branch) => {
+            TermKind::If(test, then_branch, else_branch, _) => {
                 self.free_occurrences_are_available_at_term(graph, [test], local, site_term)
                     && self.term_uses_only_available_scope_at_term(
                         graph,
@@ -2058,7 +2058,7 @@ impl OptimizerState {
                 }
                 self.term_uses_only_allowed_scope(graph, body, &body_allowed)
             }
-            TermKind::If(test, then_branch, else_branch) => {
+            TermKind::If(test, then_branch, else_branch, _) => {
                 self.free_occurrences_are_allowed(graph, [test], allowed)
                     && self.term_uses_only_allowed_scope(graph, then_branch, allowed)
                     && self.term_uses_only_allowed_scope(graph, else_branch, allowed)

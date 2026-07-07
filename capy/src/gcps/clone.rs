@@ -118,11 +118,11 @@ impl<'a, 'gc> GraphClone<'a, 'gc> {
                 let body = self.clone_subterm_link(body)?;
                 TermKind::Letk(functions, body)
             }
-            TermKind::If(test, consequent, alternative) => {
+            TermKind::If(test, consequent, alternative, hints) => {
                 let test = self.clone_free_occurrence(test, target);
                 let consequent = self.clone_subterm_link(consequent)?;
                 let alternative = self.clone_subterm_link(alternative)?;
-                TermKind::If(test, consequent, alternative)
+                TermKind::If(test, consequent, alternative, hints)
             }
             TermKind::Continue(cont, vars) => {
                 let cont = self.clone_free_occurrence(cont, target);
@@ -207,7 +207,7 @@ impl<'a, 'gc> GraphClone<'a, 'gc> {
             TermKind::Fix(_, body) | TermKind::Letk(_, body) => {
                 self.graph.backpatch_subterms(term, &[body]);
             }
-            TermKind::If(_, consequent, alternative) => {
+            TermKind::If(_, consequent, alternative, _) => {
                 self.graph
                     .backpatch_subterms(term, &[consequent, alternative]);
             }

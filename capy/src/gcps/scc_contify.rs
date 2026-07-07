@@ -164,7 +164,7 @@ fn collect_tailcalls<'gc>(
             }
             collect_tailcalls(graph, body, return_cont, out);
         }
-        TermKind::If(_, then_branch, else_branch) => {
+        TermKind::If(_, then_branch, else_branch, _) => {
             collect_tailcalls(graph, then_branch, return_cont, out);
             collect_tailcalls(graph, else_branch, return_cont, out);
         }
@@ -226,7 +226,7 @@ fn common_return_cont<'gc>(
             }
             acc
         }
-        TermKind::If(test, then_branch, else_branch) => {
+        TermKind::If(test, then_branch, else_branch, _) => {
             if binders.contains(graph.free_binder(test)) {
                 return SingleValueSet::Top;
             }
@@ -297,7 +297,7 @@ fn find_push_site<'gc>(
             children.push(find_push_site(graph, body, binders));
             combine_push_sites(link, children)
         }
-        TermKind::If(_, then_branch, else_branch) => combine_push_sites(
+        TermKind::If(_, then_branch, else_branch, _) => combine_push_sites(
             link,
             [
                 find_push_site(graph, then_branch, binders),

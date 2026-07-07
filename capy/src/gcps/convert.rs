@@ -8,15 +8,15 @@ use std::{cell::Cell, collections::HashMap, fmt};
 
 use crate::{
     cps::term::{Atom, BranchHint, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
-    expander::core::{fresh_lvar, LVarRef},
+    expander::core::{LVarRef, fresh_lvar},
     rsgc::{
-        alloc::{array::ArrayRef, Array},
-        cell::Lock,
         Gc, Trace,
+        alloc::{Array, array::ArrayRef},
+        cell::Lock,
     },
     runtime::{
-        value::{Symbol, Value},
         Context,
+        value::{Symbol, Value},
     },
 };
 
@@ -654,7 +654,7 @@ impl<'gc> ToGraph<'_, 'gc> {
                 consequent_args,
                 alternative,
                 alternative_args,
-                ..
+                hints,
             } => {
                 let branch_source = Value::new(false);
                 let test = self.use_atom(test, branch_source, owner, &mut literal_binds)?;
@@ -665,8 +665,11 @@ impl<'gc> ToGraph<'_, 'gc> {
                     alternative_args,
                     &mut literal_binds,
                 )?;
-                self.graph
-                    .new_term(uplink, TermKind::If(test, consequent, alternative), source)
+                self.graph.new_term(
+                    uplink,
+                    TermKind::If(test, consequent, alternative, hints),
+                    source,
+                )
             }
             Term::Let(binding, expr, body) => {
                 let expr = self.convert_expression(expr, owner, &mut literal_binds)?;
@@ -907,6 +910,7 @@ impl<'gc> FromGraph<'_, 'gc> {
         test: FreeVar,
         consequent: Subterm,
         alternative: Subterm,
+        hints: [BranchHint; 2],
     ) -> ConvertResult<TermRef<'gc>> {
         if let (Some((consequent, consequent_args)), Some((alternative, alternative_args))) = (
             self.lower_direct_continue(consequent)?,
@@ -920,7 +924,7 @@ impl<'gc> FromGraph<'_, 'gc> {
                     consequent_args,
                     alternative,
                     alternative_args,
-                    hints: [BranchHint::Normal, BranchHint::Normal],
+                    hints,
                 },
             ));
         }
@@ -972,7 +976,7 @@ impl<'gc> FromGraph<'_, 'gc> {
                 consequent_args: None,
                 alternative: alternative_name,
                 alternative_args: None,
-                hints: [BranchHint::Normal, BranchHint::Normal],
+                hints,
             },
         );
         Ok(Gc::new(
@@ -1036,8 +1040,8 @@ impl<'gc> FromGraph<'_, 'gc> {
                     Term::Letk(Array::from_slice(*self.ctx, &conts), body),
                 )
             }
-            TermKind::If(test, consequent, alternative) => {
-                return self.lower_if(test, consequent, alternative);
+            TermKind::If(test, consequent, alternative, hints) => {
+                return self.lower_if(test, consequent, alternative, hints);
             }
             TermKind::Continue(cont, args) => {
                 let args = self.free_atoms(&args);
@@ -1080,7 +1084,7 @@ impl<'gc> FromGraph<'_, 'gc> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{runtime::vm::exceptions::RaiseKind, runtime::Scheme};
+    use crate::{runtime::Scheme, runtime::vm::exceptions::RaiseKind};
 
     fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
         fresh_lvar(ctx, ctx.intern(name))
@@ -1187,6 +1191,48 @@ mod tests {
 
             assert_eq!(prim, cache_ref);
             assert_eq!(args.as_slice(), &[Atom::Constant(key)]);
+        });
+    }
+
+    #[test]
+    fn branch_hints_roundtrip_through_graph() {
+        Scheme::new_uninit().enter(|ctx| {
+            let test = lvar(ctx, "test");
+            let consequent = lvar(ctx, "consequent");
+            let alternative = lvar(ctx, "alternative");
+            let hints = [BranchHint::Hot, BranchHint::Cold];
+            let term = Gc::new(
+                *ctx,
+                Term::If {
+                    test: Atom::Local(test),
+                    consequent,
+                    consequent_args: Some(Array::from_slice(*ctx, &[Atom::Local(test)])),
+                    alternative,
+                    alternative_args: None,
+                    hints,
+                },
+            );
+
+            let program = cps_to_graph(ctx, term).expect("graph conversion");
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lowering");
+            let Term::If {
+                test: lowered_test,
+                consequent: lowered_consequent,
+                consequent_args,
+                alternative: lowered_alternative,
+                alternative_args,
+                hints: lowered_hints,
+            } = *lowered
+            else {
+                panic!("expected if after lowering");
+            };
+
+            assert_eq!(lowered_test, Atom::Local(test));
+            assert_eq!(lowered_consequent, consequent);
+            assert_eq!(consequent_args.unwrap().as_slice(), &[Atom::Local(test)]);
+            assert_eq!(lowered_alternative, alternative);
+            assert!(alternative_args.is_none());
+            assert_eq!(lowered_hints, hints);
         });
     }
 }

@@ -128,7 +128,7 @@ fn collect_calls<'gc>(
             }
             collect_calls(graph, facts, body, caller, current_return_cont);
         }
-        TermKind::If(test, then_branch, else_branch) => {
+        TermKind::If(test, then_branch, else_branch, _) => {
             mark_if_live_binder_escapes(graph, facts, test);
             collect_calls(graph, facts, then_branch, caller, current_return_cont);
             collect_calls(graph, facts, else_branch, caller, current_return_cont);
