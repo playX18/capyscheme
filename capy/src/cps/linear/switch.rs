@@ -1,5 +1,8 @@
 use super::*;
-use crate::{compiler::ssa::primitive::Primitive, runtime::value::Symbol};
+use crate::{
+    compiler::ssa::primitive::Primitive,
+    runtime::value::{Symbol, Value},
+};
 use std::collections::{HashMap, HashSet};
 const SYMBOL_HASH_DISPATCH_MIN_LENGTH: usize = 4;
 
@@ -20,6 +23,7 @@ struct SwitchNode<'gc> {
     value: SwitchCaseValue<'gc>,
     target: BranchTarget<'gc>,
     next: BranchTarget<'gc>,
+    removed_blocks: Vec<BlockId>,
     instruction_count: usize,
 }
 
@@ -59,7 +63,7 @@ fn infer_switch_candidate<'gc>(
         .iter()
         .map(|block| (block.id, block))
         .collect::<HashMap<_, _>>();
-    let first = switch_node(blocks[&start], true)?;
+    let first = switch_node(&blocks, predecessors, blocks[&start], true)?;
     let mut kind = first.kind;
     let scrutinee = first.scrutinee;
     let mut cases = vec![SwitchCase {
@@ -67,6 +71,7 @@ fn infer_switch_candidate<'gc>(
         target: first.target,
     }];
     let mut chain_blocks = vec![start];
+    chain_blocks.extend(first.removed_blocks);
     let instruction_count = first.instruction_count;
     let mut seen_values = HashSet::from([first.value]);
     let mut next = first.next;
@@ -75,7 +80,7 @@ fn infer_switch_candidate<'gc>(
     {
         let Some(node) = blocks
             .get(&block)
-            .and_then(|block| switch_node(block, false))
+            .and_then(|block| switch_node(&blocks, predecessors, block, false))
         else {
             break;
         };
@@ -84,6 +89,7 @@ fn infer_switch_candidate<'gc>(
         }
         chain_blocks.extend(skipped_blocks);
         chain_blocks.push(block);
+        chain_blocks.extend(node.removed_blocks);
         cases.push(SwitchCase {
             value: node.value,
             target: node.target,
@@ -109,6 +115,7 @@ fn infer_switch_candidate<'gc>(
         .iter()
         .any(|case| branch_target_mentions_removed(&case.target, &removed))
         || branch_target_mentions_removed(&next, &removed)
+        || atom_mentions_defs(scrutinee, &removed_defs)
         || cases
             .iter()
             .any(|case| branch_target_mentions_defs(&case.target, &removed_defs))
@@ -150,7 +157,7 @@ fn switch_chain_next_block<'gc>(
     let mut skipped_blocks = Vec::new();
     loop {
         let current = blocks[&block];
-        if switch_node(current, false).is_some() {
+        if switch_node(blocks, predecessors, current, false).is_some() {
             return Some((block, skipped_blocks));
         }
 
@@ -175,7 +182,17 @@ fn switch_chain_next_block<'gc>(
     }
 }
 
-fn switch_node<'gc>(block: &Block<'gc>, allow_prefix: bool) -> Option<SwitchNode<'gc>> {
+fn switch_node<'gc>(
+    blocks: &HashMap<BlockId, &Block<'gc>>,
+    predecessors: &HashMap<BlockId, usize>,
+    block: &Block<'gc>,
+    allow_prefix: bool,
+) -> Option<SwitchNode<'gc>> {
+    switch_direct_node(block, allow_prefix)
+        .or_else(|| switch_jump_branch_node(blocks, predecessors, block, allow_prefix))
+}
+
+fn switch_direct_node<'gc>(block: &Block<'gc>, allow_prefix: bool) -> Option<SwitchNode<'gc>> {
     let Terminator::Branch {
         test: LinearAtom::Local(test),
         consequent,
@@ -186,6 +203,67 @@ fn switch_node<'gc>(block: &Block<'gc>, allow_prefix: bool) -> Option<SwitchNode
         return None;
     };
     let test = *test;
+    switch_test_node(block, test, consequent, alternative, allow_prefix)
+}
+
+fn switch_jump_branch_node<'gc>(
+    blocks: &HashMap<BlockId, &Block<'gc>>,
+    predecessors: &HashMap<BlockId, usize>,
+    block: &Block<'gc>,
+    allow_prefix: bool,
+) -> Option<SwitchNode<'gc>> {
+    let Terminator::Jump { target, args } = &block.terminator else {
+        return None;
+    };
+    if predecessors.get(target).copied().unwrap_or(0) != 1 {
+        return None;
+    }
+
+    let branch = blocks[target];
+    if !branch.instructions.is_empty() {
+        return None;
+    }
+    let Terminator::Branch {
+        test: LinearAtom::Local(branch_test),
+        consequent,
+        alternative,
+        hints: _,
+    } = &branch.terminator
+    else {
+        return None;
+    };
+    let test = branch_test_jump_arg(branch, *branch_test, args)?;
+
+    let mut node = switch_test_node(block, test, consequent, alternative, allow_prefix)?;
+    node.removed_blocks.push(*target);
+    Some(node)
+}
+
+fn branch_test_jump_arg<'gc>(
+    branch: &Block<'gc>,
+    branch_test: ValueId,
+    args: &[LinearAtom<'gc>],
+) -> Option<ValueId> {
+    let fixed_param_count = branch
+        .params
+        .len()
+        .saturating_sub(usize::from(branch.variadic.is_some()));
+    let index = branch.params[..fixed_param_count]
+        .iter()
+        .position(|param| *param == branch_test)?;
+    let LinearAtom::Local(test) = args.get(index).copied()? else {
+        return None;
+    };
+    Some(test)
+}
+
+fn switch_test_node<'gc>(
+    block: &Block<'gc>,
+    test: ValueId,
+    consequent: &BranchTarget<'gc>,
+    alternative: &BranchTarget<'gc>,
+    allow_prefix: bool,
+) -> Option<SwitchNode<'gc>> {
     switch_fixnum_node(block, test, consequent, alternative, allow_prefix)
         .or_else(|| switch_eq_char_node(block, test, consequent, alternative, allow_prefix))
         .or_else(|| switch_eq_symbol_node(block, test, consequent, alternative, allow_prefix))
@@ -199,17 +277,13 @@ fn switch_fixnum_node<'gc>(
     alternative: &BranchTarget<'gc>,
     allow_prefix: bool,
 ) -> Option<SwitchNode<'gc>> {
-    if block.instructions.len() != 1 && !allow_prefix {
-        return None;
-    }
-    let Instruction::PrimCall {
-        dst, prim, args, ..
-    } = block.instructions.last()?
-    else {
-        return None;
-    };
-    let kind = switch_kind_for_primitive(*prim)?;
-    if *dst != test || args.len() != 2 {
+    let SwitchPrimCall {
+        prim,
+        args,
+        instruction_count,
+    } = switch_prim_call(block, test, allow_prefix)?;
+    let kind = switch_kind_for_primitive(prim)?;
+    if args.len() != 2 {
         return None;
     }
     let (scrutinee, value) = fixnum_switch_test(args[0], args[1])?;
@@ -219,7 +293,8 @@ fn switch_fixnum_node<'gc>(
         value: SwitchCaseValue::Integer(value),
         target: consequent.clone(),
         next: alternative.clone(),
-        instruction_count: 1,
+        removed_blocks: Vec::new(),
+        instruction_count,
     })
 }
 
@@ -254,16 +329,12 @@ fn switch_eq_char_node<'gc>(
     alternative: &BranchTarget<'gc>,
     allow_prefix: bool,
 ) -> Option<SwitchNode<'gc>> {
-    if block.instructions.len() != 1 && !allow_prefix {
-        return None;
-    }
-    let Instruction::PrimCall {
-        dst, prim, args, ..
-    } = block.instructions.last()?
-    else {
-        return None;
-    };
-    if *dst != test || !is_eq_like_primitive(*prim) || args.len() != 2 {
+    let SwitchPrimCall {
+        prim,
+        args,
+        instruction_count,
+    } = switch_prim_call(block, test, allow_prefix)?;
+    if !is_eq_like_primitive(prim) || args.len() != 2 {
         return None;
     }
     let (scrutinee, value) = char_switch_test(args[0], args[1])?;
@@ -273,7 +344,8 @@ fn switch_eq_char_node<'gc>(
         value: SwitchCaseValue::Integer(value),
         target: consequent.clone(),
         next: alternative.clone(),
-        instruction_count: 1,
+        removed_blocks: Vec::new(),
+        instruction_count,
     })
 }
 
@@ -299,16 +371,12 @@ fn switch_eq_symbol_node<'gc>(
     alternative: &BranchTarget<'gc>,
     allow_prefix: bool,
 ) -> Option<SwitchNode<'gc>> {
-    if block.instructions.len() != 1 && !allow_prefix {
-        return None;
-    }
-    let Instruction::PrimCall {
-        dst, prim, args, ..
-    } = block.instructions.last()?
-    else {
-        return None;
-    };
-    if *dst != test || !is_eq_like_primitive(*prim) || args.len() != 2 {
+    let SwitchPrimCall {
+        prim,
+        args,
+        instruction_count,
+    } = switch_prim_call(block, test, allow_prefix)?;
+    if !is_eq_like_primitive(prim) || args.len() != 2 {
         return None;
     }
     let (scrutinee, value) = symbol_switch_test(args[0], args[1])?;
@@ -318,7 +386,8 @@ fn switch_eq_symbol_node<'gc>(
         value,
         target: consequent.clone(),
         next: alternative.clone(),
-        instruction_count: 1,
+        removed_blocks: Vec::new(),
+        instruction_count,
     })
 }
 
@@ -327,6 +396,81 @@ fn is_eq_like_primitive(prim: Primitive) -> bool {
         prim,
         Primitive::is_eq | Primitive::is_eqv | Primitive::is_equal
     )
+}
+
+struct SwitchPrimCall<'gc> {
+    prim: Primitive,
+    args: Vec<LinearAtom<'gc>>,
+    instruction_count: usize,
+}
+
+fn switch_prim_call<'gc>(
+    block: &Block<'gc>,
+    test: ValueId,
+    allow_prefix: bool,
+) -> Option<SwitchPrimCall<'gc>> {
+    let Instruction::PrimCall {
+        dst, prim, args, ..
+    } = block.instructions.last()?
+    else {
+        return None;
+    };
+    if *dst != test {
+        return None;
+    }
+
+    let mut instruction_count = 1;
+    let mut constants = HashMap::new();
+    let mut needed = args
+        .iter()
+        .filter_map(|arg| match arg {
+            LinearAtom::Local(value) => Some(*value),
+            LinearAtom::Constant(_) => None,
+        })
+        .collect::<HashSet<_>>();
+
+    for instruction in block.instructions[..block.instructions.len() - 1]
+        .iter()
+        .rev()
+    {
+        match instruction {
+            Instruction::Const { dst, value } if needed.remove(dst) => {
+                constants.insert(*dst, *value);
+                instruction_count += 1;
+            }
+            _ => break,
+        }
+    }
+
+    if block.instructions.len() != instruction_count && !allow_prefix {
+        return None;
+    }
+
+    let args = args
+        .iter()
+        .copied()
+        .map(|arg| resolve_local_constant(arg, &constants))
+        .collect();
+
+    Some(SwitchPrimCall {
+        prim: *prim,
+        args,
+        instruction_count,
+    })
+}
+
+fn resolve_local_constant<'gc>(
+    atom: LinearAtom<'gc>,
+    constants: &HashMap<ValueId, Value<'gc>>,
+) -> LinearAtom<'gc> {
+    match atom {
+        LinearAtom::Local(value) => constants
+            .get(&value)
+            .copied()
+            .map(LinearAtom::Constant)
+            .unwrap_or(atom),
+        LinearAtom::Constant(_) => atom,
+    }
 }
 
 fn symbol_switch_test<'gc>(
@@ -461,6 +605,7 @@ fn switch_char_node<'gc>(
         value: SwitchCaseValue::Integer(case_char.char() as i32),
         target: consequent.clone(),
         next: alternative.clone(),
+        removed_blocks: Vec::new(),
         instruction_count: 3,
     })
 }
@@ -483,6 +628,7 @@ fn switch_removed_defs<'gc>(
     for block in chain_blocks.iter().copied().skip(1) {
         if let Some(block) = blocks.get(&block) {
             defs.extend(block.params.iter().copied());
+            defs.extend(block.variadic);
             defs.extend(block.instructions.iter().flat_map(Instruction::defs));
         }
     }
@@ -497,6 +643,10 @@ fn switch_removed_defs<'gc>(
     }
 
     defs
+}
+
+fn atom_mentions_defs<'gc>(atom: LinearAtom<'gc>, defs: &HashSet<ValueId>) -> bool {
+    matches!(atom, LinearAtom::Local(value) if defs.contains(&value))
 }
 
 fn branch_target_mentions_defs<'gc>(target: &BranchTarget<'gc>, defs: &HashSet<ValueId>) -> bool {

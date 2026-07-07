@@ -1,8 +1,12 @@
+use super::{
+    Block, BlockId, BranchTarget, CodeId, Instruction, LinearAtom, Procedure, ProcedureKind,
+    SwitchCaseValue, SwitchKind, Terminator, ValueId, infer_switches, linearize,
+};
 use crate::{
+    compiler::ssa::primitive::Primitive,
     cps::{
-        linear::{CodeId, Terminator, linearize},
         reify::reify,
-        term::{Atom, Expression, Func, Term},
+        term::{Atom, BranchHint, Expression, Func, Term},
     },
     expander::core::{LVarRef, fresh_lvar},
     rsgc::{Gc, alloc::Array, cell::Lock},
@@ -121,5 +125,163 @@ fn linearize_raise_term_to_raise_terminator() {
         assert_eq!(args.len(), 3);
         assert_eq!(procedure.blocks[0].terminator.successors(), Vec::new());
         assert_eq!(procedure.blocks[0].terminator.uses(), args.clone());
+    });
+}
+
+#[test]
+fn infer_switches_from_split_compare_branch_blocks() {
+    with_ctx(|ctx| {
+        let func = prim_call_func(ctx, "eq?", &[]);
+        let source = Value::new(false);
+        let scrutinee = ValueId(9);
+        let local = |block| BranchTarget::Local {
+            block,
+            args: vec![],
+        };
+        let terminal = |id| Block {
+            id,
+            params: vec![],
+            variadic: None,
+            instructions: vec![],
+            terminator: Terminator::Raise {
+                kind: RaiseKind::AssertionViolation,
+                args: vec![],
+                source,
+            },
+            source,
+        };
+
+        let procedure = Procedure {
+            code: CodeId::Function(func),
+            kind: ProcedureKind::Function,
+            binding: ValueId(0),
+            name: source,
+            source,
+            meta: source,
+            return_cont: Some(ValueId(1)),
+            params: vec![scrutinee],
+            variadic: None,
+            free_vars: vec![],
+            sources: std::collections::HashMap::new(),
+            entry: BlockId(0),
+            blocks: vec![
+                Block {
+                    id: BlockId(0),
+                    params: vec![scrutinee],
+                    variadic: None,
+                    instructions: vec![
+                        Instruction::Const {
+                            dst: ValueId(20),
+                            value: Value::new(0),
+                        },
+                        Instruction::PrimCall {
+                            dst: ValueId(21),
+                            prim: Primitive::is_eq,
+                            args: vec![
+                                LinearAtom::Local(scrutinee),
+                                LinearAtom::Local(ValueId(20)),
+                            ],
+                            source,
+                        },
+                    ],
+                    terminator: Terminator::Jump {
+                        target: BlockId(1),
+                        args: vec![LinearAtom::Local(ValueId(21))],
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(1),
+                    params: vec![ValueId(22), ValueId(23)],
+                    variadic: Some(ValueId(23)),
+                    instructions: vec![],
+                    terminator: Terminator::Branch {
+                        test: LinearAtom::Local(ValueId(22)),
+                        consequent: local(BlockId(2)),
+                        alternative: local(BlockId(3)),
+                        hints: [BranchHint::Normal, BranchHint::Normal],
+                    },
+                    source,
+                },
+                terminal(BlockId(2)),
+                Block {
+                    id: BlockId(3),
+                    params: vec![],
+                    variadic: None,
+                    instructions: vec![
+                        Instruction::Const {
+                            dst: ValueId(30),
+                            value: Value::new(1),
+                        },
+                        Instruction::PrimCall {
+                            dst: ValueId(31),
+                            prim: Primitive::is_eq,
+                            args: vec![
+                                LinearAtom::Local(scrutinee),
+                                LinearAtom::Local(ValueId(30)),
+                            ],
+                            source,
+                        },
+                    ],
+                    terminator: Terminator::Jump {
+                        target: BlockId(4),
+                        args: vec![LinearAtom::Local(ValueId(31))],
+                    },
+                    source,
+                },
+                Block {
+                    id: BlockId(4),
+                    params: vec![ValueId(32), ValueId(33)],
+                    variadic: Some(ValueId(33)),
+                    instructions: vec![],
+                    terminator: Terminator::Branch {
+                        test: LinearAtom::Local(ValueId(32)),
+                        consequent: local(BlockId(5)),
+                        alternative: local(BlockId(6)),
+                        hints: [BranchHint::Normal, BranchHint::Normal],
+                    },
+                    source,
+                },
+                terminal(BlockId(5)),
+                terminal(BlockId(6)),
+            ],
+        };
+
+        let procedure = infer_switches(procedure);
+        let block_ids = procedure
+            .blocks
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            block_ids,
+            vec![BlockId(0), BlockId(2), BlockId(5), BlockId(6)]
+        );
+
+        let entry = procedure
+            .blocks
+            .iter()
+            .find(|block| block.id == BlockId(0))
+            .expect("entry block should survive");
+        assert!(entry.instructions.is_empty());
+
+        let Terminator::Switch {
+            kind,
+            scrutinee: switch_scrutinee,
+            cases,
+            default,
+        } = &entry.terminator
+        else {
+            panic!("split compare/branch chain should infer a switch");
+        };
+
+        assert_eq!(*kind, SwitchKind::Eq);
+        assert_eq!(*switch_scrutinee, LinearAtom::Local(scrutinee));
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].value, SwitchCaseValue::Integer(0));
+        assert_eq!(cases[0].target, local(BlockId(2)));
+        assert_eq!(cases[1].value, SwitchCaseValue::Integer(1));
+        assert_eq!(cases[1].target, local(BlockId(5)));
+        assert_eq!(*default, local(BlockId(6)));
     });
 }
