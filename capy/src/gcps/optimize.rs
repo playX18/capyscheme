@@ -40,6 +40,7 @@ pub struct OptimizationStats {
     pub eta_continuations: usize,
     pub eta_functions: usize,
     pub constant_branches_simplified: usize,
+    pub identical_branches_simplified: usize,
     pub known_prim_propagations: usize,
     pub singleton_calls_inlined: usize,
     pub singleton_continuations_inlined: usize,
@@ -110,6 +111,7 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
         optimize_profile.field("eta_continuations", stats.eta_continuations);
         optimize_profile.field("eta_functions", stats.eta_functions);
         optimize_profile.field("constant_branches", stats.constant_branches_simplified);
+        optimize_profile.field("identical_branches", stats.identical_branches_simplified);
         optimize_profile.field("known_prim_propagations", stats.known_prim_propagations);
         optimize_profile.field("calls_inlined", stats.singleton_calls_inlined);
         optimize_profile.field("conts_inlined", stats.singleton_continuations_inlined);
@@ -501,23 +503,52 @@ impl OptimizerState {
         consequent: Subterm,
         alternative: Subterm,
     ) {
-        let Some(value) = self.known_literal_value(graph, graph.free_binder(test)) else {
+        if let Some(value) = self.known_literal_value(graph, graph.free_binder(test)) {
+            let (taken, skipped) = if value != Value::new(false) {
+                (consequent, alternative)
+            } else {
+                (alternative, consequent)
+            };
+            verbose_log!("gcps optimize: simplify constant branch tested by {test}");
+            self.stats.constant_branches_simplified += 1;
+            self.replace_if_with_branch(graph, queued_link, active_link, term, taken, skipped);
             return;
-        };
+        }
 
-        let (taken, skipped) = if value != Value::new(false) {
-            (consequent, alternative)
-        } else {
-            (alternative, consequent)
-        };
+        if self.direct_continue_branches_are_equivalent(graph, consequent, alternative) {
+            verbose_log!("gcps optimize: simplify identical branch tested by {test}");
+            self.stats.identical_branches_simplified += 1;
+            self.replace_if_with_branch(
+                graph,
+                queued_link,
+                active_link,
+                term,
+                consequent,
+                alternative,
+            );
+        }
+    }
+
+    fn replace_if_with_branch<'gc>(
+        &mut self,
+        graph: &mut Graph<'gc>,
+        queued_link: Subterm,
+        active_link: Subterm,
+        term: TermId,
+        taken: Subterm,
+        skipped: Subterm,
+    ) {
         let parent_term = match graph.read_parent_link(graph[term].link) {
             Some(Parent::Term(parent)) => Some(parent),
             _ => None,
         };
-        verbose_log!("gcps optimize: simplify constant branch tested by {test}");
-        self.stats.constant_branches_simplified += 1;
+        let same_replacement = graph.read_term_link(taken) == graph.read_term_link(skipped);
         self.replace_with_existing_body(graph, active_link, term, taken);
-        self.kill_free_vars_of_term_subtree_link(graph, skipped);
+        if !same_replacement {
+            self.kill_free_vars_of_term_subtree_link(graph, skipped);
+        } else if skipped != taken {
+            graph.clear_term_link(skipped);
+        }
         if let Some(parent) = parent_term
             && let ActiveLinkStatus::ActiveSubterm(link) = graph.get_active_link_for(parent)
         {
@@ -530,6 +561,28 @@ impl OptimizerState {
                 graph.read_term_link(active_link).unwrap_or(term),
             );
         }
+    }
+
+    fn direct_continue_branches_are_equivalent<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        left: Subterm,
+        right: Subterm,
+    ) -> bool {
+        let Some(left) = graph.read_term_link(left) else {
+            return false;
+        };
+        let Some(right) = graph.read_term_link(right) else {
+            return false;
+        };
+        let TermKind::Continue(left_cont, left_args) = graph[left].kind else {
+            return false;
+        };
+        let TermKind::Continue(right_cont, right_args) = graph[right].kind else {
+            return false;
+        };
+        graph.free_binder(left_cont) == graph.free_binder(right_cont)
+            && self.free_vars_have_same_binders(graph, &left_args, &right_args)
     }
 
     fn reduce_eta_continuations<'gc>(&mut self, graph: &mut Graph<'gc>, functions: FunctionLinks) {
@@ -654,6 +707,22 @@ impl OptimizerState {
                 .copied()
                 .zip(formals.iter().copied())
                 .all(|(arg, formal)| graph.free_binder(arg) == formal)
+    }
+
+    fn free_vars_have_same_binders<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        left: &super::graph::FreeVars,
+        right: &super::graph::FreeVars,
+    ) -> bool {
+        let left = graph.free_vars_slice(left);
+        let right = graph.free_vars_slice(right);
+        left.len() == right.len()
+            && left
+                .iter()
+                .copied()
+                .zip(right.iter().copied())
+                .all(|(left, right)| graph.free_binder(left) == graph.free_binder(right))
     }
 
     fn all_occurrences_are_control_uses_available_at<'gc>(
@@ -2547,6 +2616,111 @@ mod tests {
             };
             assert_eq!(cont, alternative);
             assert!(args.is_empty());
+        });
+    }
+
+    #[test]
+    fn identical_continue_branches_collapse() {
+        Scheme::new_uninit().enter(|ctx| {
+            let test = lvar(ctx, "test");
+            let join = lvar(ctx, "join");
+            let value = lvar(ctx, "value");
+            let source = Value::new(false);
+            let term = Gc::new(
+                *ctx,
+                Term::Let(
+                    test,
+                    Expression::PrimCall(
+                        prim(ctx, "not-a-folded-primitive"),
+                        Array::from_slice(*ctx, &[]),
+                        source,
+                    ),
+                    Gc::new(
+                        *ctx,
+                        Term::If {
+                            test: Atom::Local(test),
+                            consequent: join,
+                            consequent_args: Some(Array::from_slice(*ctx, &[Atom::Local(value)])),
+                            alternative: join,
+                            alternative_args: Some(Array::from_slice(*ctx, &[Atom::Local(value)])),
+                            hints: [BranchHint::Normal, BranchHint::Normal],
+                        },
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                ctx,
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                128,
+            );
+            assert_eq!(stats.constant_branches_simplified, 0);
+            assert_eq!(stats.identical_branches_simplified, 1);
+            assert!(
+                stats.dead_letvals_removed >= 1,
+                "expected now-unused test binding to be removed"
+            );
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Continue(cont, args, _) = *lowered else {
+                panic!("expected identical branches to lower to direct continue, got {lowered:?}");
+            };
+            assert_eq!(cont, join);
+            assert_eq!(args.as_ref(), &[Atom::Local(value)]);
+        });
+    }
+
+    #[test]
+    fn same_target_branches_with_different_args_do_not_collapse() {
+        Scheme::new_uninit().enter(|ctx| {
+            let test = lvar(ctx, "test");
+            let join = lvar(ctx, "join");
+            let left = lvar(ctx, "left");
+            let right = lvar(ctx, "right");
+            let term = Gc::new(
+                *ctx,
+                Term::If {
+                    test: Atom::Local(test),
+                    consequent: join,
+                    consequent_args: Some(Array::from_slice(*ctx, &[Atom::Local(left)])),
+                    alternative: join,
+                    alternative_args: Some(Array::from_slice(*ctx, &[Atom::Local(right)])),
+                    hints: [BranchHint::Normal, BranchHint::Normal],
+                },
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                ctx,
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                64,
+            );
+            assert_eq!(stats.identical_branches_simplified, 0);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::If {
+                consequent,
+                consequent_args,
+                alternative,
+                alternative_args,
+                ..
+            } = *lowered
+            else {
+                panic!("expected non-identical branches to remain, got {lowered:?}");
+            };
+            assert_eq!(consequent, join);
+            assert_eq!(alternative, join);
+            assert_eq!(
+                consequent_args.expect("consequent args").as_ref(),
+                &[Atom::Local(left)]
+            );
+            assert_eq!(
+                alternative_args.expect("alternative args").as_ref(),
+                &[Atom::Local(right)]
+            );
         });
     }
 
