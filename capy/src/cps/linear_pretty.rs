@@ -11,12 +11,7 @@ use std::fmt::Write;
 pub fn render_program<'gc>(program: &LinearProgram<'gc>) -> String {
     let mut out = String::new();
     writeln!(out, "(linear-program").unwrap();
-    writeln!(
-        out,
-        "  (entry {})",
-        render_code_id(&CodeId::Function(program.entry))
-    )
-    .unwrap();
+    writeln!(out, "  (entry {})", render_code_id(&program.entry)).unwrap();
     for procedure in &program.procedures {
         render_procedure(&mut out, procedure, 2);
     }
@@ -330,6 +325,10 @@ fn render_code_id<'gc>(code: &CodeId<'gc>) -> String {
     match code {
         CodeId::Function(func) => format!("(function {})", render_lvar(func.binding)),
         CodeId::Continuation(cont) => format!("(continuation {})", render_lvar(cont.binding)),
+        CodeId::GraphFunction(function) => format!("(graph-function {})", function.0),
+        CodeId::GraphContinuation(continuation) => {
+            format!("(graph-continuation {})", continuation.0)
+        }
     }
 }
 
@@ -370,8 +369,8 @@ mod tests {
     use crate::{
         cps::{
             linear::{
-                Block, BlockId, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
-                Procedure, ProcedureKind, Terminator, ValueId,
+                Block, BlockId, ClosureKind, CodeId, GraphCodeId, Instruction, LinearAtom,
+                LinearProgram, Procedure, ProcedureKind, Terminator, ValueId,
             },
             term::{Func, Term},
         },
@@ -426,7 +425,7 @@ mod tests {
                 },
             );
             let program = LinearProgram {
-                entry,
+                entry: CodeId::Function(entry),
                 procedures: vec![Procedure {
                     code: CodeId::Function(entry),
                     kind: ProcedureKind::Function,
@@ -479,6 +478,35 @@ mod tests {
             assert!(rendered.contains("block"));
             assert!(rendered.contains("make-closure"));
             assert!(rendered.contains("closure-set"));
+        });
+    }
+
+    #[test]
+    fn pretty_renders_graph_code_ids() {
+        with_ctx(|ctx| {
+            let program = LinearProgram {
+                entry: CodeId::GraphFunction(GraphCodeId(7)),
+                procedures: vec![Procedure {
+                    code: CodeId::GraphContinuation(GraphCodeId(9)),
+                    kind: ProcedureKind::Continuation,
+                    binding: ValueId(0),
+                    name: Symbol::from_str(ctx, "k").into(),
+                    source: Value::new(false),
+                    meta: Value::new(false),
+                    return_cont: None,
+                    params: vec![],
+                    variadic: None,
+                    free_vars: vec![],
+                    sources: Default::default(),
+                    entry: BlockId(0),
+                    blocks: vec![],
+                }],
+            };
+
+            let rendered = super::render_program(&program);
+
+            assert!(rendered.contains("(entry (graph-function 7))"));
+            assert!(rendered.contains("(procedure continuation (graph-continuation 9)"));
         });
     }
 }

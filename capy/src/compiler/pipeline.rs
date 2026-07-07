@@ -329,7 +329,7 @@ mod tests {
                 }],
             };
             let linear = LinearProgram {
-                entry,
+                entry: CodeId::Function(entry),
                 procedures: vec![procedure],
             };
 

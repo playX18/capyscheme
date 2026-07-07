@@ -32,14 +32,19 @@ pub enum ClosureKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GraphCodeId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CodeId<'gc> {
     Function(FuncRef<'gc>),
     Continuation(ContRef<'gc>),
+    GraphFunction(GraphCodeId),
+    GraphContinuation(GraphCodeId),
 }
 
 #[derive(Debug, Clone)]
 pub struct LinearProgram<'gc> {
-    pub entry: FuncRef<'gc>,
+    pub entry: CodeId<'gc>,
     pub procedures: Vec<Procedure<'gc>>,
 }
 

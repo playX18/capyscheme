@@ -27,7 +27,7 @@ pub fn linearize<'gc>(reify: &ReifyInfo<'gc>) -> LinearProgram<'gc> {
     }
 
     LinearProgram {
-        entry: reify.entrypoint,
+        entry: CodeId::Function(reify.entrypoint),
         procedures,
     }
 }

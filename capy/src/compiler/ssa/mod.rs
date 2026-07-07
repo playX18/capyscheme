@@ -432,6 +432,9 @@ impl<'gc> ModuleBuilder<'gc> {
                         name,
                     });
                 }
+                CodeId::GraphFunction(_) | CodeId::GraphContinuation(_) => {
+                    panic!("graph linear programs are not supported by the tree SSA builder yet")
+                }
             }
         }
 
@@ -471,6 +474,12 @@ impl<'gc> ModuleBuilder<'gc> {
                     true,
                     cont.meta,
                 ),
+                CodeId::GraphFunction(_) | CodeId::GraphContinuation(_) => {
+                    return Err(
+                        "graph linear programs are not supported by the tree SSA builder yet"
+                            .to_string(),
+                    );
+                }
             };
             let mut ssa = SSABuilder::new(
                 self,
@@ -516,9 +525,17 @@ impl<'gc> ModuleBuilder<'gc> {
                 .and_then(|symbol| constant_indices.get(&symbol).copied());
         }
         let data_slots = self.fasl_data_slots(&constant_indices);
+        let CodeId::Function(entrypoint) = self.linear.entry else {
+            return Err(
+                "graph linear programs are not supported by the tree SSA builder yet".to_string(),
+            );
+        };
+        if entrypoint != self.reify_info.entrypoint {
+            return Err("linear entry does not match tree reify entrypoint".to_string());
+        }
         let entry_code = self
             .func_for_func
-            .get(&self.reify_info.entrypoint)
+            .get(&entrypoint)
             .copied()
             .ok_or_else(|| "entry function was not declared".to_string())?;
 
@@ -1575,7 +1592,7 @@ mod tests {
 
     fn empty_linear_program<'gc>(entry: FuncRef<'gc>) -> LinearProgram<'gc> {
         LinearProgram {
-            entry,
+            entry: CodeId::Function(entry),
             procedures: Vec::new(),
         }
     }
