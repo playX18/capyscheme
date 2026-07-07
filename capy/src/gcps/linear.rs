@@ -48,7 +48,7 @@ mod tests {
     use crate::{
         cps::{
             linear::{BranchTarget, ClosureKind, CodeId, Instruction, LinearProgram, Terminator},
-            term::{Atom, BranchHint, Cont, Func, Term},
+            term::{Atom, BranchHint, Cont, Expression, Func, Term},
         },
         expander::core::{LVarRef, fresh_lvar},
         gcps::{
@@ -363,6 +363,154 @@ mod tests {
             assert!(matches!(alternative, BranchTarget::Reified { .. }));
         });
     }
+
+    #[test]
+    fn cache_ref_literal_key_lowers_to_constant_cache_key() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "f");
+            let ret = lvar(ctx, "ret");
+            let key_var = lvar(ctx, "key");
+            let cached = lvar(ctx, "cached");
+            let key = Value::new(42);
+            let source = Value::new(false);
+            let cache_ref = Symbol::from_str(ctx, "cache-ref").into();
+            let body = Gc::new(
+                *ctx,
+                Term::Let(
+                    key_var,
+                    Expression::Literal(key, source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            cached,
+                            Expression::PrimCall(
+                                cache_ref,
+                                Array::from_slice(*ctx, &[Atom::Local(key_var)]),
+                                source,
+                            ),
+                            Gc::new(
+                                *ctx,
+                                Term::Continue(
+                                    ret,
+                                    Array::from_slice(*ctx, &[Atom::Local(cached)]),
+                                    source,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let func = Gc::new(
+                *ctx,
+                Func {
+                    name: Value::new(false),
+                    source,
+                    binding: f,
+                    return_cont: ret,
+                    args: Array::from_slice(*ctx, []),
+                    variadic: None,
+                    body: Lock::new(body),
+                    free_vars: Lock::new(None),
+                    meta: Value::new(false),
+                },
+            );
+
+            let (_graph, _reify, linear) = graph_program(ctx, func);
+            let entry = procedure(&linear, linear.entry);
+
+            assert!(entry.blocks.iter().any(|block| {
+                block.instructions.iter().any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::CacheRef {
+                            cache_key: crate::cps::linear::LinearAtom::Constant(value),
+                            ..
+                        } if *value == key
+                    )
+                })
+            }));
+        });
+    }
+
+    #[test]
+    fn cache_set_literal_key_lowers_to_constant_cache_key() {
+        with_ctx(|ctx| {
+            let f = lvar(ctx, "f");
+            let ret = lvar(ctx, "ret");
+            let key_var = lvar(ctx, "key");
+            let value_var = lvar(ctx, "value");
+            let cached = lvar(ctx, "cached");
+            let key = Value::new(42);
+            let value = Value::new(7);
+            let source = Value::new(false);
+            let cache_set = Symbol::from_str(ctx, "cache-set!").into();
+            let body = Gc::new(
+                *ctx,
+                Term::Let(
+                    key_var,
+                    Expression::Literal(key, source),
+                    Gc::new(
+                        *ctx,
+                        Term::Let(
+                            value_var,
+                            Expression::Literal(value, source),
+                            Gc::new(
+                                *ctx,
+                                Term::Let(
+                                    cached,
+                                    Expression::PrimCall(
+                                        cache_set,
+                                        Array::from_slice(
+                                            *ctx,
+                                            &[Atom::Local(key_var), Atom::Local(value_var)],
+                                        ),
+                                        source,
+                                    ),
+                                    Gc::new(
+                                        *ctx,
+                                        Term::Continue(
+                                            ret,
+                                            Array::from_slice(*ctx, &[Atom::Local(cached)]),
+                                            source,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            );
+            let func = Gc::new(
+                *ctx,
+                Func {
+                    name: Value::new(false),
+                    source,
+                    binding: f,
+                    return_cont: ret,
+                    args: Array::from_slice(*ctx, []),
+                    variadic: None,
+                    body: Lock::new(body),
+                    free_vars: Lock::new(None),
+                    meta: Value::new(false),
+                },
+            );
+
+            let (_graph, _reify, linear) = graph_program(ctx, func);
+            let entry = procedure(&linear, linear.entry);
+
+            assert!(entry.blocks.iter().any(|block| {
+                block.instructions.iter().any(|instruction| {
+                    matches!(
+                        instruction,
+                        Instruction::CacheSet {
+                            cache_key: crate::cps::linear::LinearAtom::Constant(value),
+                            ..
+                        } if *value == key
+                    )
+                })
+            }));
+        });
+    }
 }
 
 fn linearize_function<'gc>(
@@ -500,6 +648,7 @@ struct ProcedureBuilder<'a, 'gc> {
     blocks: Vec<Block<'gc>>,
     local_blocks: HashMap<BoundVar, BlockId>,
     values: HashMap<BoundVar, ValueId>,
+    known_literals: HashMap<BoundVar, Value<'gc>>,
     sources: HashMap<ValueId, LVarRef<'gc>>,
     next_value: u32,
     next_block: usize,
@@ -513,6 +662,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
             blocks: Vec::new(),
             local_blocks: HashMap::new(),
             values: HashMap::new(),
+            known_literals: HashMap::new(),
             sources: HashMap::new(),
             next_value: 0,
             next_block: 1,
@@ -554,6 +704,26 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
             .copied()
             .map(|var| self.atom(var))
             .collect()
+    }
+
+    fn literal_atom(&self, var: FreeVar) -> Option<LinearAtom<'gc>> {
+        let binder = self.graph.free_binder(var);
+        self.known_literals
+            .get(&binder)
+            .copied()
+            .map(LinearAtom::Constant)
+    }
+
+    fn atoms_for_prim(&mut self, prim: Primitive, vars: &FreeVars) -> Vec<LinearAtom<'gc>> {
+        let mut args = self.atoms(vars);
+        if matches!(prim, Primitive::cache_ref | Primitive::cache_set) {
+            if let Some(first) = self.graph.free_vars_slice(vars).first().copied() {
+                if let Some(literal) = self.literal_atom(first) {
+                    args[0] = literal;
+                }
+            }
+        }
+        args
     }
 
     fn alloc_block(&mut self) -> BlockId {
@@ -728,11 +898,12 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
         match self.graph[expr].kind {
             ExprKind::Literal(value) => {
                 let dst = self.value(binding);
+                self.known_literals.insert(binding, value);
                 instructions.push(Instruction::Const { dst, value });
             }
             ExprKind::PrimCall(prim, args) => {
                 let prim = primitive_from_value(prim);
-                let args = self.atoms(&args);
+                let args = self.atoms_for_prim(prim, &args);
                 let dst = self.value(binding);
                 instructions.push(Instruction::PrimCall {
                     dst,
