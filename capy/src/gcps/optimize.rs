@@ -12,8 +12,8 @@ use super::{
     convert::{ConvertResult, cps_to_graph, graph_to_cps},
     dom_contify,
     graph::{
-        ActiveLinkStatus, BoundVar, ContVar, FreeVar, FunctionId, FunctionLink, Graph,
-        GraphWorklist, Parent, Subexpr, Subterm, TermId, TermKind, WorklistQueue,
+        ActiveLinkStatus, BoundVar, ContVar, FreeVar, FunctionId, FunctionLink, FunctionLinks,
+        Graph, GraphWorklist, Parent, Subexpr, Subterm, TermId, TermKind, WorklistQueue,
     },
     scc_contify,
 };
@@ -29,6 +29,8 @@ pub struct OptimizationStats {
     pub ran_out_of_gas: bool,
     pub dead_bindings_processed: usize,
     pub dead_letvals_removed: usize,
+    pub eta_continuations: usize,
+    pub eta_functions: usize,
     pub singleton_calls_inlined: usize,
     pub singleton_continuations_inlined: usize,
     pub contifications: usize,
@@ -95,6 +97,8 @@ pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResul
         optimize_profile.field("ran_out_of_gas", stats.ran_out_of_gas);
         optimize_profile.field("dead_bindings", stats.dead_bindings_processed);
         optimize_profile.field("dead_letvals", stats.dead_letvals_removed);
+        optimize_profile.field("eta_continuations", stats.eta_continuations);
+        optimize_profile.field("eta_functions", stats.eta_functions);
         optimize_profile.field("calls_inlined", stats.singleton_calls_inlined);
         optimize_profile.field("conts_inlined", stats.singleton_continuations_inlined);
         optimize_profile.field("contifications", stats.contifications);
@@ -148,6 +152,7 @@ pub(super) struct OptimizerState {
     worklist: GraphWorklist,
     known_functions: SecondaryMap<BoundVar, Option<FunctionLink>>,
     function_defs: SecondaryMap<BoundVar, Option<Subterm>>,
+    local_function_binders: SecondaryMap<BoundVar, bool>,
     function_owner_defs: SecondaryMap<FunctionId, Option<Subterm>>,
     return_cont_owners: SecondaryMap<BoundVar, Option<FunctionId>>,
     known_exprs: SecondaryMap<BoundVar, Option<super::graph::Subexpr>>,
@@ -174,6 +179,7 @@ impl OptimizerState {
             worklist: GraphWorklist::new(),
             known_functions: SecondaryMap::new(),
             function_defs: SecondaryMap::new(),
+            local_function_binders: SecondaryMap::new(),
             function_owner_defs: SecondaryMap::new(),
             return_cont_owners: SecondaryMap::new(),
             known_exprs: SecondaryMap::new(),
@@ -221,7 +227,11 @@ impl OptimizerState {
                 TermKind::Continue(cont, args) => {
                     self.reduce_continue(graph, queued_link, active_link, term, cont, args);
                 }
+                TermKind::Letk(functions, _) => {
+                    self.reduce_eta_continuations(graph, functions);
+                }
                 TermKind::Fix(functions, body) => {
+                    self.reduce_eta_functions(graph, functions);
                     self.try_contify_fix(graph, active_link, term, functions, body, contify_mode);
                 }
                 _ => {}
@@ -247,6 +257,7 @@ impl OptimizerState {
             | TermKind::Fix(..) => {
                 self.worklist.add_subterm(root);
             }
+            TermKind::Letk(..) => {}
             _ => {}
         }
 
@@ -269,11 +280,19 @@ impl OptimizerState {
                 }
                 self.known_functions[binder] = Some(*link);
                 self.function_defs[binder] = Some(root);
+                self.local_function_binders[binder] = true;
                 self.function_owner_defs[function] = Some(root);
                 if let Some(return_cont) = graph[function].cont {
+                    self.local_function_binders[return_cont] = true;
                     self.return_cont_owners[return_cont] = Some(function);
                 }
             }
+        }
+
+        if let TermKind::Letk(functions, _) = graph[term].kind
+            && self.has_eta_continuation_candidate(graph, functions)
+        {
+            self.worklist.add_subterm(root);
         }
 
         graph.for_each_subterm(term, |child| self.collect_redexes(graph, child));
@@ -298,10 +317,26 @@ impl OptimizerState {
                 self.kill_free_vars_of_expr_link(graph, expr);
             }
 
-            if let Some(link) = self.known_functions[binding] {
-                graph.clear_function_link(link);
+            self.clear_known_function(graph, binding);
+        }
+    }
+
+    fn clear_known_function<'gc>(
+        &mut self,
+        graph: &mut Graph<'gc>,
+        binding: BoundVar,
+    ) -> Option<FunctionLink> {
+        let link = self.known_functions[binding].take()?;
+        self.known_function_count = self.known_function_count.saturating_sub(1);
+        self.function_defs[binding] = None;
+        if let Some(function) = graph.read_function_link(link) {
+            self.function_owner_defs[function] = None;
+            if let Some(return_cont) = graph[function].cont {
+                self.return_cont_owners[return_cont] = None;
             }
         }
+        graph.clear_function_link(link);
+        Some(link)
     }
 
     fn take_known_expr(&mut self, binding: BoundVar) -> Option<Subexpr> {
@@ -353,6 +388,231 @@ impl OptimizerState {
                 queued_link,
                 graph.read_term_link(active_link).unwrap_or(term),
             );
+        }
+    }
+
+    fn reduce_eta_continuations<'gc>(&mut self, graph: &mut Graph<'gc>, functions: FunctionLinks) {
+        let links = graph.function_links_slice(&functions).to_vec();
+        for link in links {
+            let Some(function) = graph.read_function_link(link) else {
+                continue;
+            };
+            let Some(target) = self.eta_continuation_target(graph, function) else {
+                continue;
+            };
+            self.contract_eta_function(graph, link, function, target, true);
+        }
+    }
+
+    fn has_eta_continuation_candidate<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        functions: FunctionLinks,
+    ) -> bool {
+        graph
+            .function_links_slice(&functions)
+            .iter()
+            .copied()
+            .filter_map(|link| graph.read_function_link(link))
+            .any(|function| self.eta_continuation_target(graph, function).is_some())
+    }
+
+    fn reduce_eta_functions<'gc>(&mut self, graph: &mut Graph<'gc>, functions: FunctionLinks) {
+        let links = graph.function_links_slice(&functions).to_vec();
+        for link in links {
+            let Some(function) = graph.read_function_link(link) else {
+                continue;
+            };
+            let Some(target) = self.eta_function_target(graph, function) else {
+                continue;
+            };
+            self.contract_eta_function(graph, link, function, target, false);
+        }
+    }
+
+    fn eta_continuation_target<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        function: FunctionId,
+    ) -> Option<BoundVar> {
+        let function_data = graph[function];
+        if function_data.cont.is_some()
+            || function_data.variadic.is_some()
+            || function_data.is_cold
+            || function_data.is_noinline
+            || function_data.is_reified
+        {
+            return None;
+        }
+
+        let body = graph.read_term_link(function_data.body)?;
+        let TermKind::Continue(target, args) = graph[body].kind else {
+            return None;
+        };
+        let target = graph.free_binder(target);
+        if target == function_data.var
+            || self.binder_has_local_definition(target)
+            || !self.args_are_formals_in_order(graph, &args, &function_data.vars)
+            || !self.all_occurrences_are_control_uses_available_at(graph, function_data.var, target)
+        {
+            return None;
+        }
+
+        Some(target)
+    }
+
+    fn eta_function_target<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        function: FunctionId,
+    ) -> Option<BoundVar> {
+        let function_data = graph[function];
+        let return_cont = function_data.cont?;
+        if function_data.variadic.is_some()
+            || function_data.is_cold
+            || function_data.is_noinline
+            || function_data.is_reified
+        {
+            return None;
+        }
+
+        let body = graph.read_term_link(function_data.body)?;
+        let TermKind::App(target, args, cont) = graph[body].kind else {
+            return None;
+        };
+        let target = graph.free_binder(target);
+        if target == function_data.var
+            || self.binder_has_local_definition(target)
+            || graph.free_binder(cont) != return_cont
+            || !self.args_are_formals_in_order(graph, &args, &function_data.vars)
+            || !self.all_occurrences_are_callee_uses_available_at(graph, function_data.var, target)
+        {
+            return None;
+        }
+
+        Some(target)
+    }
+
+    fn binder_has_local_definition(&self, binder: BoundVar) -> bool {
+        self.local_function_binders[binder]
+            || self.function_defs[binder].is_some()
+            || self.return_cont_owners[binder].is_some()
+    }
+
+    fn args_are_formals_in_order<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        args: &super::graph::FreeVars,
+        formals: &super::graph::BoundVars,
+    ) -> bool {
+        let args = graph.free_vars_slice(args);
+        let formals = graph.bound_vars_slice(formals);
+        args.len() == formals.len()
+            && args
+                .iter()
+                .copied()
+                .zip(formals.iter().copied())
+                .all(|(arg, formal)| graph.free_binder(arg) == formal)
+    }
+
+    fn all_occurrences_are_control_uses_available_at<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        removed: BoundVar,
+        replacement: BoundVar,
+    ) -> bool {
+        self.all_occurrences_match_available_use(graph, removed, replacement, |graph, term, occ| {
+            matches!(
+                graph[term].kind,
+                TermKind::Continue(cont, _) if cont == occ
+            ) || matches!(
+                graph[term].kind,
+                TermKind::App(_, _, cont) if cont == occ
+            )
+        })
+    }
+
+    fn all_occurrences_are_callee_uses_available_at<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        removed: BoundVar,
+        replacement: BoundVar,
+    ) -> bool {
+        self.all_occurrences_match_available_use(graph, removed, replacement, |graph, term, occ| {
+            matches!(
+                graph[term].kind,
+                TermKind::App(callee, ..) if callee == occ
+            )
+        })
+    }
+
+    fn all_occurrences_match_available_use<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        removed: BoundVar,
+        replacement: BoundVar,
+        mut occurrence_matches: impl FnMut(&Graph<'gc>, TermId, FreeVar) -> bool,
+    ) -> bool {
+        let mut allowed = true;
+        graph.for_each_occurrence(removed, |occ| {
+            if !allowed {
+                return;
+            }
+            let owner = graph.free_owner(occ);
+            let Some(term) = graph.read_term_link(owner) else {
+                allowed = false;
+                return;
+            };
+            allowed = !self.term_is_inside_any_function(graph, term)
+                && occurrence_matches(graph, term, occ)
+                && self.binder_is_available_at_term(graph, term, replacement);
+        });
+        allowed
+    }
+
+    fn contract_eta_function<'gc>(
+        &mut self,
+        graph: &mut Graph<'gc>,
+        link: FunctionLink,
+        function: FunctionId,
+        target: BoundVar,
+        is_continuation: bool,
+    ) {
+        let binding = graph[function].var;
+        verbose_log!("gcps optimize: eta-contract {binding} to {target}");
+
+        graph.subst_var_for_binders(target, binding);
+        self.kill_direct_free_vars_of_term_link(graph, graph[function].body);
+        if self.known_functions[binding] == Some(link) {
+            self.clear_known_function(graph, binding);
+        } else {
+            graph.clear_function_link(link);
+        }
+        self.enqueue_occurrence_owners(graph, target);
+        if is_continuation {
+            self.stats.eta_continuations += 1;
+        } else {
+            self.stats.eta_functions += 1;
+        }
+    }
+
+    fn kill_direct_free_vars_of_term_link<'gc>(&mut self, graph: &mut Graph<'gc>, link: Subterm) {
+        let Some(term) = graph.read_term_link(link) else {
+            return;
+        };
+        let mut occurrences = std::mem::take(&mut self.old_occurrences);
+        occurrences.clear();
+        graph.push_direct_free_vars_of_term(term, &mut occurrences);
+        for occ in occurrences.iter().copied() {
+            self.kill_occurrence(graph, occ);
+        }
+        occurrences.clear();
+        self.old_occurrences = occurrences;
+    }
+
+    fn enqueue_occurrence_owners<'gc>(&mut self, graph: &Graph<'gc>, binder: BoundVar) {
+        for occ in graph.collect_occurrences(binder) {
+            self.worklist.add_subterm(graph.free_owner(occ));
         }
     }
 
@@ -1236,6 +1496,19 @@ impl OptimizerState {
         }
     }
 
+    fn term_is_inside_any_function<'gc>(&self, graph: &Graph<'gc>, mut term: TermId) -> bool {
+        loop {
+            let Some(parent) = graph.read_parent_link(graph[term].link) else {
+                return false;
+            };
+
+            match parent {
+                Parent::Func(_) => return true,
+                Parent::Term(parent) => term = parent,
+            }
+        }
+    }
+
     fn term_is_inside_term_scope<'gc>(
         &self,
         graph: &Graph<'gc>,
@@ -1506,7 +1779,7 @@ fn emit_contification_dump(index: usize, phase: &str, dump: &str) {
 mod tests {
     use super::*;
     use crate::{
-        cps::term::{Atom, Cont, Expression, Func, Term},
+        cps::term::{Atom, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
         expander::core::{LVarRef, fresh_lvar},
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{Scheme, value::Value},
@@ -1515,6 +1788,54 @@ mod tests {
 
     fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
         fresh_lvar(ctx, ctx.intern(name))
+    }
+
+    fn fixed_cont<'gc>(
+        ctx: Context<'gc>,
+        binding: LVarRef<'gc>,
+        args: &[LVarRef<'gc>],
+        body: TermRef<'gc>,
+        noinline: bool,
+    ) -> ContRef<'gc> {
+        Gc::new(
+            *ctx,
+            Cont {
+                name: Value::new(false),
+                binding,
+                args: Array::from_slice(*ctx, args),
+                variadic: None,
+                body: Lock::new(body),
+                source: Value::new(false),
+                free_vars: Lock::new(None),
+                reified: Cell::new(false),
+                cold: false,
+                noinline,
+                meta: Value::new(false),
+            },
+        )
+    }
+
+    fn fixed_func<'gc>(
+        ctx: Context<'gc>,
+        binding: LVarRef<'gc>,
+        return_cont: LVarRef<'gc>,
+        args: &[LVarRef<'gc>],
+        body: TermRef<'gc>,
+    ) -> FuncRef<'gc> {
+        Gc::new(
+            *ctx,
+            Func {
+                name: Value::new(false),
+                source: Value::new(false),
+                binding,
+                return_cont,
+                args: Array::from_slice(*ctx, args),
+                variadic: None,
+                body: Lock::new(body),
+                free_vars: Lock::new(None),
+                meta: Value::new(false),
+            },
+        )
     }
 
     fn optimize_graph_with_mode<'gc>(
@@ -1648,6 +1969,282 @@ mod tests {
             };
             assert_eq!(cont, halt);
             assert_eq!(args.as_ref(), &[Atom::Local(live)]);
+        });
+    }
+
+    #[test]
+    fn eta_continuation_wrapper_collapses() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let k = lvar(ctx, "k");
+            let x = lvar(ctx, "x");
+            let value = lvar(ctx, "value");
+            let source = Value::new(false);
+            let wrapper = fixed_cont(
+                ctx,
+                k,
+                &[x],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(halt, Array::from_slice(*ctx, &[Atom::Local(x)]), source),
+                ),
+                false,
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[wrapper]),
+                    Gc::new(
+                        *ctx,
+                        Term::Continue(k, Array::from_slice(*ctx, &[Atom::Local(value)]), source),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                64,
+            );
+            assert_eq!(stats.eta_continuations, 1);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Continue(cont, args, _) = *lowered else {
+                panic!("expected eta-continuation wrapper to disappear");
+            };
+            assert_eq!(cont, halt);
+            assert_eq!(args.as_ref(), &[Atom::Local(value)]);
+        });
+    }
+
+    #[test]
+    fn eta_continuation_rejects_reordered_arguments() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let k = lvar(ctx, "k");
+            let keep_k_live = lvar(ctx, "keep-k-live");
+            let x = lvar(ctx, "x");
+            let y = lvar(ctx, "y");
+            let a = lvar(ctx, "a");
+            let b = lvar(ctx, "b");
+            let source = Value::new(false);
+            let wrapper = fixed_cont(
+                ctx,
+                k,
+                &[x, y],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(
+                        halt,
+                        Array::from_slice(*ctx, &[Atom::Local(y), Atom::Local(x)]),
+                        source,
+                    ),
+                ),
+                false,
+            );
+            let second_use = fixed_cont(
+                ctx,
+                keep_k_live,
+                &[],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(
+                        k,
+                        Array::from_slice(*ctx, &[Atom::Local(a), Atom::Local(b)]),
+                        source,
+                    ),
+                ),
+                false,
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[wrapper, second_use]),
+                    Gc::new(
+                        *ctx,
+                        Term::Continue(
+                            k,
+                            Array::from_slice(*ctx, &[Atom::Local(a), Atom::Local(b)]),
+                            source,
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                64,
+            );
+            assert_eq!(stats.eta_continuations, 0);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Letk(..) = *lowered else {
+                panic!("expected reordered eta-continuation wrapper to remain");
+            };
+        });
+    }
+
+    #[test]
+    fn eta_continuation_rejects_noinline_wrapper() {
+        Scheme::new_uninit().enter(|ctx| {
+            let halt = lvar(ctx, "halt");
+            let k = lvar(ctx, "k");
+            let x = lvar(ctx, "x");
+            let value = lvar(ctx, "value");
+            let source = Value::new(false);
+            let wrapper = fixed_cont(
+                ctx,
+                k,
+                &[x],
+                Gc::new(
+                    *ctx,
+                    Term::Continue(halt, Array::from_slice(*ctx, &[Atom::Local(x)]), source),
+                ),
+                true,
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Letk(
+                    Array::from_slice(*ctx, &[wrapper]),
+                    Gc::new(
+                        *ctx,
+                        Term::Continue(k, Array::from_slice(*ctx, &[Atom::Local(value)]), source),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                64,
+            );
+            assert_eq!(stats.eta_continuations, 0);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Letk(..) = *lowered else {
+                panic!("expected noinline eta-continuation wrapper to remain");
+            };
+        });
+    }
+
+    #[test]
+    fn eta_function_wrapper_collapses() {
+        Scheme::new_uninit().enter(|ctx| {
+            let f = lvar(ctx, "f");
+            let g = lvar(ctx, "g");
+            let ret = lvar(ctx, "ret");
+            let k = lvar(ctx, "k");
+            let x = lvar(ctx, "x");
+            let value = lvar(ctx, "value");
+            let source = Value::new(false);
+            let wrapper = fixed_func(
+                ctx,
+                f,
+                ret,
+                &[x],
+                Gc::new(
+                    *ctx,
+                    Term::App(
+                        Atom::Local(g),
+                        ret,
+                        Array::from_slice(*ctx, &[Atom::Local(x)]),
+                        source,
+                    ),
+                ),
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Fix(
+                    Array::from_slice(*ctx, &[wrapper]),
+                    Gc::new(
+                        *ctx,
+                        Term::App(
+                            Atom::Local(f),
+                            k,
+                            Array::from_slice(*ctx, &[Atom::Local(value)]),
+                            source,
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                64,
+            );
+            assert_eq!(stats.eta_functions, 1);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::App(Atom::Local(func), cont, args, _) = *lowered else {
+                panic!("expected eta-function wrapper to disappear");
+            };
+            assert_eq!(func, g);
+            assert_eq!(cont, k);
+            assert_eq!(args.as_ref(), &[Atom::Local(value)]);
+        });
+    }
+
+    #[test]
+    fn eta_function_rejects_reordered_arguments() {
+        Scheme::new_uninit().enter(|ctx| {
+            let f = lvar(ctx, "f");
+            let g = lvar(ctx, "g");
+            let ret = lvar(ctx, "ret");
+            let k = lvar(ctx, "k");
+            let x = lvar(ctx, "x");
+            let y = lvar(ctx, "y");
+            let a = lvar(ctx, "a");
+            let b = lvar(ctx, "b");
+            let source = Value::new(false);
+            let wrapper = fixed_func(
+                ctx,
+                f,
+                ret,
+                &[x, y],
+                Gc::new(
+                    *ctx,
+                    Term::App(
+                        Atom::Local(g),
+                        ret,
+                        Array::from_slice(*ctx, &[Atom::Local(y), Atom::Local(x)]),
+                        source,
+                    ),
+                ),
+            );
+            let term = Gc::new(
+                *ctx,
+                Term::Fix(
+                    Array::from_slice(*ctx, &[wrapper]),
+                    Gc::new(
+                        *ctx,
+                        Term::App(
+                            Atom::Local(f),
+                            k,
+                            Array::from_slice(*ctx, &[Atom::Local(a), Atom::Local(b)]),
+                            source,
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Off,
+                64,
+            );
+            assert_eq!(stats.eta_functions, 0);
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Fix(..) = *lowered else {
+                panic!("expected reordered eta-function wrapper to remain");
+            };
         });
     }
 
