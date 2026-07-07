@@ -365,12 +365,14 @@ impl OptimizerState {
     fn process_dead_bindings<'gc>(&mut self, graph: &mut Graph<'gc>) {
         while let Some(binding) = self.dead_bindings.get() {
             self.stats.dead_bindings_processed += 1;
-            let expr_def = self.known_expr_defs[binding];
-            if let Some(expr) = self.take_known_expr(binding) {
+            if let Some(expr) = self.known_exprs[binding]
+                && self.expr_link_is_dead_removable(graph, expr)
+            {
+                let expr_def = self.known_expr_defs[binding];
+                self.take_known_expr(binding);
                 if let Some(def) = expr_def {
                     self.worklist.add_subterm(def);
                 }
-                self.kill_free_vars_of_expr_link(graph, expr);
             }
 
             self.clear_known_function(graph, binding);
@@ -446,6 +448,10 @@ impl OptimizerState {
             return;
         }
 
+        if !self.expr_link_is_dead_removable(graph, expr) {
+            return;
+        }
+
         verbose_log!("gcps optimize: remove dead letval {binder}");
         self.stats.dead_letvals_removed += 1;
         if self.take_known_expr(binder).is_some() {
@@ -459,6 +465,13 @@ impl OptimizerState {
                 graph.read_term_link(active_link).unwrap_or(term),
             );
         }
+    }
+
+    fn expr_link_is_dead_removable<'gc>(&self, graph: &Graph<'gc>, expr: Subexpr) -> bool {
+        let Some(expr) = graph.read_expr_link(expr) else {
+            return false;
+        };
+        matches!(graph[expr].kind, ExprKind::Literal(_))
     }
 
     fn reduce_known_primcall<'gc>(
@@ -2281,11 +2294,12 @@ mod tests {
     }
 
     #[test]
-    fn dead_letval_requeues_binding_made_dead_by_removed_expr() {
+    fn dead_primcall_letval_is_retained() {
         Scheme::new_uninit().enter(|ctx| {
             let halt = lvar(ctx, "halt");
             let outer = lvar(ctx, "outer");
-            let inner = lvar(ctx, "inner");
+            let dead = lvar(ctx, "dead");
+            let unknown_prim = prim(ctx, "not-a-folded-primitive");
             let source = Value::new(false);
             let term = Gc::new(
                 *ctx,
@@ -2295,9 +2309,9 @@ mod tests {
                     Gc::new(
                         *ctx,
                         Term::Let(
-                            inner,
+                            dead,
                             Expression::PrimCall(
-                                Value::new(false),
+                                unknown_prim,
                                 Array::from_slice(*ctx, &[Atom::Local(outer)]),
                                 source,
                             ),
@@ -2312,10 +2326,20 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(64));
-            assert_eq!(stats.dead_letvals_removed, 2);
+            assert_eq!(stats.dead_letvals_removed, 0);
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
-            let Term::Continue(cont, args, _) = *lowered else {
-                panic!("expected both dead letvals to be removed");
+            let Term::Let(binding, Expression::Literal(..), body) = *lowered else {
+                panic!("expected literal feeding retained primcall");
+            };
+            assert_eq!(binding, outer);
+            let Term::Let(binding, Expression::PrimCall(prim, args, _), body) = *body else {
+                panic!("expected dead primcall binding to be retained");
+            };
+            assert_eq!(binding, dead);
+            assert_eq!(prim, unknown_prim);
+            assert_eq!(args.as_ref(), &[Atom::Local(outer)]);
+            let Term::Continue(cont, args, _) = *body else {
+                panic!("expected retained primcall body");
             };
             assert_eq!(cont, halt);
             assert!(args.is_empty());
@@ -2328,6 +2352,7 @@ mod tests {
             let halt = lvar(ctx, "halt");
             let live = lvar(ctx, "live");
             let dead = lvar(ctx, "dead");
+            let unknown_prim = prim(ctx, "not-a-folded-primitive");
             let source = Value::new(false);
             let term = Gc::new(
                 *ctx,
@@ -2339,7 +2364,7 @@ mod tests {
                         Term::Let(
                             dead,
                             Expression::PrimCall(
-                                Value::new(false),
+                                unknown_prim,
                                 Array::from_slice(*ctx, &[Atom::Local(live)]),
                                 source,
                             ),
@@ -2358,14 +2383,20 @@ mod tests {
 
             let mut program = cps_to_graph(ctx, term).expect("convert");
             let stats = optimize_graph(ctx, &mut program.graph, program.root, Some(64));
-            assert_eq!(stats.dead_letvals_removed, 1);
+            assert_eq!(stats.dead_letvals_removed, 0);
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
             let Term::Let(binding, Expression::Literal(..), body) = *lowered else {
                 panic!("expected live letval to remain");
             };
             assert_eq!(binding, live);
+            let Term::Let(binding, Expression::PrimCall(prim, prim_args, _), body) = *body else {
+                panic!("expected dead primcall binding to be retained");
+            };
+            assert_eq!(binding, dead);
+            assert_eq!(prim, unknown_prim);
+            assert_eq!(prim_args.as_ref(), &[Atom::Local(live)]);
             let Term::Continue(cont, args, _) = *body else {
-                panic!("expected dead letval body");
+                panic!("expected retained primcall body");
             };
             assert_eq!(cont, halt);
             assert_eq!(args.as_ref(), &[Atom::Local(live)]);
@@ -2797,13 +2828,15 @@ mod tests {
             );
             assert_eq!(stats.constant_branches_simplified, 0);
             assert_eq!(stats.identical_branches_simplified, 1);
-            assert!(
-                stats.dead_letvals_removed >= 1,
-                "expected now-unused test binding to be removed"
-            );
+            assert_eq!(stats.dead_letvals_removed, 0);
             let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
-            let Term::Continue(cont, args, _) = *lowered else {
-                panic!("expected identical branches to lower to direct continue, got {lowered:?}");
+            let Term::Let(binding, Expression::PrimCall(_, args, _), body) = *lowered else {
+                panic!("expected unknown test primcall to be retained, got {lowered:?}");
+            };
+            assert_eq!(binding, test);
+            assert!(args.is_empty());
+            let Term::Continue(cont, args, _) = *body else {
+                panic!("expected identical branches to lower to direct continue");
             };
             assert_eq!(cont, join);
             assert_eq!(args.as_ref(), &[Atom::Local(value)]);
