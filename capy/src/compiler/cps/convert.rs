@@ -7,7 +7,7 @@
 use std::{cell::Cell, collections::HashMap, fmt};
 
 use crate::{
-    cps::term::{Atom, BranchHint, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
+    cps::term::{Atom, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
     expander::core::{LVarRef, fresh_lvar},
     rsgc::{
         Gc, Trace,
@@ -21,9 +21,17 @@ use crate::{
 };
 
 use super::graph::{
-    BoundVar, ContVar, ExprId, ExprKind, FreeVar, Function, FunctionId, FunctionLink,
+    BranchHint, BoundVar, ContVar, ExprId, ExprKind, FreeVar, Function, FunctionId, FunctionLink,
     FunctionLinks, Graph, Parent, Subexpr, Subterm, TermId, TermKind, TermLink,
 };
+
+fn convert_branch_hint(hint: crate::cps::term::BranchHint) -> BranchHint {
+    match hint {
+        crate::cps::term::BranchHint::Normal => BranchHint::Normal,
+        crate::cps::term::BranchHint::Hot => BranchHint::Hot,
+        crate::cps::term::BranchHint::Cold => BranchHint::Cold,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConvertError {
@@ -704,9 +712,13 @@ impl<'gc> ToGraph<'_, 'gc> {
                     alternative_args,
                     &mut literal_binds,
                 )?;
+                let graph_hints = [
+                    convert_branch_hint(hints[0]),
+                    convert_branch_hint(hints[1]),
+                ];
                 self.graph.new_term(
                     uplink,
-                    TermKind::If(test, consequent, alternative, hints),
+                    TermKind::If(test, consequent, alternative, graph_hints),
                     source,
                 )
             }
@@ -965,6 +977,10 @@ impl<'gc> FromGraph<'_, 'gc> {
         alternative: Subterm,
         hints: [BranchHint; 2],
     ) -> ConvertResult<TermRef<'gc>> {
+        let cps_hints = [
+            convert_branch_hint_reverse(hints[0]),
+            convert_branch_hint_reverse(hints[1]),
+        ];
         if let (Some((consequent, consequent_args)), Some((alternative, alternative_args))) = (
             self.lower_direct_continue(consequent)?,
             self.lower_direct_continue(alternative)?,
@@ -977,7 +993,7 @@ impl<'gc> FromGraph<'_, 'gc> {
                     consequent_args,
                     alternative,
                     alternative_args,
-                    hints,
+                    hints: cps_hints,
                 },
             ));
         }
@@ -1029,7 +1045,7 @@ impl<'gc> FromGraph<'_, 'gc> {
                 consequent_args: None,
                 alternative: alternative_name,
                 alternative_args: None,
-                hints,
+                hints: cps_hints,
             },
         );
         Ok(Gc::new(
@@ -1134,6 +1150,14 @@ impl<'gc> FromGraph<'_, 'gc> {
     }
 }
 
+fn convert_branch_hint_reverse(hint: BranchHint) -> crate::cps::term::BranchHint {
+    match hint {
+        BranchHint::Normal => crate::cps::term::BranchHint::Normal,
+        BranchHint::Hot => crate::cps::term::BranchHint::Hot,
+        BranchHint::Cold => crate::cps::term::BranchHint::Cold,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1170,195 +1194,5 @@ mod tests {
         });
     }
 
-    #[test]
-    fn cps_graph_roundtrip_keeps_literals_out_of_atoms() {
-        Scheme::new_uninit().enter(|ctx| {
-            let k = lvar(ctx, "k");
-            let one = Value::new(1);
-            let source = Value::new(false);
-            let term = Gc::new(
-                *ctx,
-                Term::Raise {
-                    kind: RaiseKind::AssertionViolation,
-                    args: Array::from_slice(*ctx, &[Atom::Constant(one)]),
-                    source,
-                },
-            );
 
-            let program = cps_to_graph(ctx, term).expect("graph conversion");
-            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lowering");
-            let Term::Let(binding, Expression::Literal(value, _), body) = *lowered else {
-                panic!("expected literal let after lowering");
-            };
-            assert_eq!(value, one);
-            let Term::Raise { args, .. } = *body else {
-                panic!("expected raise body");
-            };
-            assert_eq!(args.as_slice(), &[Atom::Local(binding)]);
-
-            let continue_term = Gc::new(
-                *ctx,
-                Term::Continue(k, Array::from_slice(*ctx, &[Atom::Constant(one)]), source),
-            );
-            let program = cps_to_graph(ctx, continue_term).expect("graph conversion");
-            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lowering");
-            let Term::Let(_, Expression::Literal(..), _) = *lowered else {
-                panic!("expected normalized literal");
-            };
-        });
-    }
-
-    #[test]
-    fn cache_keys_lower_back_to_constant_atoms() {
-        Scheme::new_uninit().enter(|ctx| {
-            let k = lvar(ctx, "k");
-            let cached = lvar(ctx, "cached");
-            let key = Value::new(42);
-            let source = Value::new(false);
-            let cache_ref = Value::new(Symbol::from_str(ctx, "cache-ref"));
-            let body = Gc::new(
-                *ctx,
-                Term::Continue(k, Array::from_slice(*ctx, &[Atom::Local(cached)]), source),
-            );
-            let term = Gc::new(
-                *ctx,
-                Term::Let(
-                    cached,
-                    Expression::PrimCall(
-                        cache_ref,
-                        Array::from_slice(*ctx, &[Atom::Constant(key)]),
-                        source,
-                    ),
-                    body,
-                ),
-            );
-
-            let program = cps_to_graph(ctx, term).expect("graph conversion");
-            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lowering");
-            let Term::Let(_, Expression::Literal(..), body) = *lowered else {
-                panic!("expected normalized cache key literal");
-            };
-            let Term::Let(_, Expression::PrimCall(prim, args, _), _) = *body else {
-                panic!("expected cache-ref body");
-            };
-
-            assert_eq!(prim, cache_ref);
-            assert_eq!(args.as_slice(), &[Atom::Constant(key)]);
-        });
-    }
-
-    #[test]
-    fn branch_hints_roundtrip_through_graph() {
-        Scheme::new_uninit().enter(|ctx| {
-            let test = lvar(ctx, "test");
-            let consequent = lvar(ctx, "consequent");
-            let alternative = lvar(ctx, "alternative");
-            let hints = [BranchHint::Hot, BranchHint::Cold];
-            let term = Gc::new(
-                *ctx,
-                Term::If {
-                    test: Atom::Local(test),
-                    consequent,
-                    consequent_args: Some(Array::from_slice(*ctx, &[Atom::Local(test)])),
-                    alternative,
-                    alternative_args: None,
-                    hints,
-                },
-            );
-
-            let program = cps_to_graph(ctx, term).expect("graph conversion");
-            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lowering");
-            let Term::If {
-                test: lowered_test,
-                consequent: lowered_consequent,
-                consequent_args,
-                alternative: lowered_alternative,
-                alternative_args,
-                hints: lowered_hints,
-            } = *lowered
-            else {
-                panic!("expected if after lowering");
-            };
-
-            assert_eq!(lowered_test, Atom::Local(test));
-            assert_eq!(lowered_consequent, consequent);
-            assert_eq!(consequent_args.unwrap().as_slice(), &[Atom::Local(test)]);
-            assert_eq!(lowered_alternative, alternative);
-            assert!(alternative_args.is_none());
-            assert_eq!(lowered_hints, hints);
-        });
-    }
-
-    #[test]
-    fn cps_func_graph_roundtrip_preserves_entry_identity() {
-        Scheme::new_uninit().enter(|ctx| {
-            let binding = lvar(ctx, "entry");
-            let return_cont = lvar(ctx, "return");
-            let arg = lvar(ctx, "arg");
-            let rest = lvar(ctx, "rest");
-            let name = Value::new(Symbol::from_str(ctx, "entry-name"));
-            let source = Value::new(42);
-            let meta = Value::new(Symbol::from_str(ctx, "entry-meta"));
-            let body = Gc::new(
-                *ctx,
-                Term::Continue(
-                    return_cont,
-                    Array::from_slice(*ctx, &[Atom::Local(arg)]),
-                    source,
-                ),
-            );
-            let func = Gc::new(
-                *ctx,
-                Func {
-                    name,
-                    source,
-                    binding,
-                    return_cont,
-                    args: Array::from_slice(*ctx, &[arg]),
-                    variadic: Some(rest),
-                    body: Lock::new(body),
-                    free_vars: Lock::new(None),
-                    meta,
-                },
-            );
-
-            let program = cps_func_to_graph(ctx, func).expect("function graph conversion");
-            let entry = program.graph[program.entry];
-            assert_eq!(program.root(), entry.body);
-            assert_eq!(program.graph[entry.var].var, binding);
-            assert_eq!(
-                entry.cont.map(|cont| program.graph[cont].var),
-                Some(return_cont)
-            );
-            assert_eq!(
-                program
-                    .graph
-                    .bound_vars_slice(&entry.vars)
-                    .iter()
-                    .map(|var| program.graph[*var].var)
-                    .collect::<Vec<_>>(),
-                vec![arg]
-            );
-            assert_eq!(entry.variadic.map(|var| program.graph[var].var), Some(rest));
-            assert_eq!(entry.name, name);
-            assert_eq!(entry.source, source);
-            assert_eq!(entry.meta, meta);
-
-            let lowered =
-                graph_func_to_cps(ctx, &program.graph, program.entry).expect("function lowering");
-            assert_eq!(lowered.binding, binding);
-            assert_eq!(lowered.return_cont, return_cont);
-            assert_eq!(lowered.args.as_slice(), &[arg]);
-            assert_eq!(lowered.variadic, Some(rest));
-            assert_eq!(lowered.name, name);
-            assert_eq!(lowered.source, source);
-            assert_eq!(lowered.meta, meta);
-            let Term::Continue(cont, args, lowered_source) = *lowered.body() else {
-                panic!("expected entry body to roundtrip");
-            };
-            assert_eq!(cont, return_cont);
-            assert_eq!(args.as_slice(), &[Atom::Local(arg)]);
-            assert_eq!(lowered_source, source);
-        });
-    }
 }

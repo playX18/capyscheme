@@ -16,7 +16,6 @@ use std::sync::OnceLock;
 pub mod assignment_elimination;
 pub mod cenv;
 pub mod compile_cps;
-pub mod compile_cps_bytecode;
 pub mod core;
 pub mod eta_expand;
 pub mod fix_letrec;

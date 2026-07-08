@@ -15,11 +15,19 @@ use crate::{
 
 use super::{
     graph::{
-        BoundVar, ContVar, ExprId, ExprKind, FreeVar, FreeVars, FunctionId, FunctionLinks, Graph,
-        Subterm, TermId, TermKind,
+        BranchHint, BoundVar, ContVar, ExprId, ExprKind, FreeVar, FreeVars, FunctionId,
+        FunctionLinks, Graph, Subterm, TermId, TermKind,
     },
     reify::{BinderSet, GraphReifyInfo},
 };
+
+fn convert_branch_hint(hint: BranchHint) -> crate::cps::term::BranchHint {
+    match hint {
+        BranchHint::Normal => crate::cps::term::BranchHint::Normal,
+        BranchHint::Hot => crate::cps::term::BranchHint::Hot,
+        BranchHint::Cold => crate::cps::term::BranchHint::Cold,
+    }
+}
 
 pub fn linearize_graph<'gc>(graph: &Graph<'gc>, reify: &GraphReifyInfo) -> LinearProgram<'gc> {
     let mut procedures = Vec::new();
@@ -875,7 +883,10 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
                 test: self.atom(test),
                 consequent: self.branch_target(consequent),
                 alternative: self.branch_target(alternative),
-                hints,
+                hints: [
+                    convert_branch_hint(hints[0]),
+                    convert_branch_hint(hints[1]),
+                ],
             },
         }
     }

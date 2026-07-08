@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::compiler::{
-    CompilationOptions, LoweredProgram, compile_cps_to_fasl_bytes, compile_file,
+    CompilationOptions, LoweredProgram, compile_file,
     compile_lowered_to_fasl_bytes,
 };
 use crate::runtime::Context;
@@ -225,17 +225,6 @@ fn compile_and_load_source<'gc>(
     )?;
 
     load_artifact(ctx, libs, &build_destination)
-}
-
-pub(super) fn compile_cps_to_destination<'gc>(
-    ctx: Context<'gc>,
-    cps: crate::cps::term::FuncRef<'gc>,
-    options: CompilationOptions,
-    destination: &LoadArtifact,
-) -> Result<(), Value<'gc>> {
-    compile_to_destination(ctx, destination, || {
-        compile_cps_to_fasl_bytes(ctx, cps, options)
-    })
 }
 
 pub(super) fn compile_lowered_to_destination<'gc>(

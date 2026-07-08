@@ -1,5 +1,6 @@
 //! Functions and types for maintaining mutable graph.
 
+use serde::{Deserialize, Serialize};
 use std::{
     fmt,
     hash::Hash,
@@ -7,7 +8,6 @@ use std::{
     ops::{Index, IndexMut},
 };
 
-use crate::cps::term::BranchHint;
 use crate::runtime::vm::exceptions::RaiseKind;
 use crate::{expander::core::LVarRef, runtime::value::Value};
 use cranelift_entity::{
@@ -16,6 +16,22 @@ use cranelift_entity::{
 };
 
 pub use super::worklist::{GraphWorklist, WorklistQueue};
+
+/// A branch hint given to `if` term in CPS code.
+///
+/// This is mainly used to generate efficient code for type-checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BranchHint {
+    /// Normal branch, block will be reordered as needed.
+    Normal,
+    /// Hot branch. This is equivalent to `likely` in C. At the moment
+    /// is equivalent to `Normal`, but may be used in the future
+    /// to generate more efficient code.
+    Hot,
+    /// Cold branch. This will try to move resulting block
+    /// of code to the end of the function.
+    Cold,
+}
 
 pub const VERBOSE: bool = false;
 

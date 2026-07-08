@@ -1,11 +1,29 @@
 use cranelift_entity::{EntitySet, SecondaryMap};
 
-use crate::cps::SingleValueSet;
-
 use super::{
     graph::{BoundVar, FreeVar, FunctionId, FunctionLink, Graph, Subterm, TermId, TermKind},
     optimize::{ContifyCandidate, ContifySource, OptimizerState},
 };
+
+pub(crate) enum SingleValueSet<K> {
+    Bottom,
+    Singleton(K),
+    Top,
+}
+
+impl<K> SingleValueSet<K> {
+    pub(crate) fn join(self, other: Self) -> Self
+    where
+        K: PartialEq,
+    {
+        match (self, other) {
+            (Self::Top, _) | (_, Self::Top) => Self::Top,
+            (Self::Singleton(e1), Self::Singleton(e2)) if e1 == e2 => Self::Singleton(e1),
+            (Self::Singleton(_), Self::Singleton(_)) => Self::Top,
+            (Self::Bottom, other) | (other, Self::Bottom) => other,
+        }
+    }
+}
 
 macro_rules! verbose_log {
     ($($arg:tt)*) => {

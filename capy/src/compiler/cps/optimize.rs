@@ -8,17 +8,14 @@ use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
     compiler::ssa::LinearProgram,
-    cps::{
-        fold::folding_table,
-        term::{Atom as CpsAtom, FuncRef},
-    },
+    cps::fold::folding_table,
     runtime::{Context, value::Value},
     utils::pass_profile::ProfileScope,
 };
 
 use super::{
     clone::GraphClone,
-    convert::{ConvertResult, GraphFunctionProgram, cps_func_to_graph, graph_func_to_cps},
+    convert::{ConvertResult, GraphFunctionProgram},
     dom_contify,
     graph::{
         ActiveLinkStatus, BoundVar, ContVar, ExprKind, FreeVar, FunctionId, FunctionLink,
@@ -105,12 +102,6 @@ impl<'gc> OptimizedGraphFunctionProgram<'gc> {
     }
 }
 
-pub struct OptimizedGraphLinearProgram<'gc> {
-    pub cps: FuncRef<'gc>,
-    pub linear: LinearProgram<'gc>,
-    pub stats: OptimizationStats,
-}
-
 pub struct OptimizedDirectGraphLinearProgram<'gc> {
     pub linear: LinearProgram<'gc>,
     pub stats: OptimizationStats,
@@ -155,76 +146,6 @@ fn optimize_graph_program<'gc>(
         entry: program.entry,
         stats,
     }
-}
-
-pub fn optimize_func_to_graph<'gc>(
-    ctx: Context<'gc>,
-    func: FuncRef<'gc>,
-) -> ConvertResult<OptimizedGraphFunctionProgram<'gc>> {
-    let mut convert_profile = ProfileScope::new("compiler.lower.gcps.convert");
-    let mut program = cps_func_to_graph(ctx, func)?;
-    if convert_profile.is_enabled() {
-        let stats = program.graph.stats();
-        convert_profile.field("terms", stats.terms);
-        convert_profile.field("functions", stats.functions);
-        convert_profile.field("free_occurrences", stats.free_occurrences);
-        convert_profile.field("bound_vars", stats.bound_vars);
-        convert_profile.field("term_links", stats.term_links);
-    }
-    drop(convert_profile);
-
-    Ok(optimize_graph_program(ctx, program))
-}
-
-pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResult<FuncRef<'gc>> {
-    let program = optimize_func_to_graph(ctx, func)?;
-    let mut reify_profile = ProfileScope::new("compiler.lower.gcps.reify");
-    let func = graph_func_to_cps(ctx, &program.graph, program.entry)?;
-    if reify_profile.is_enabled() {
-        let stats = program.graph.stats();
-        reify_profile.field("terms", stats.terms);
-        reify_profile.field("functions", stats.functions);
-        reify_profile.field("free_occurrences", stats.free_occurrences);
-    }
-    Ok(func)
-}
-
-pub fn optimize_func_to_graph_linear<'gc>(
-    ctx: Context<'gc>,
-    func: FuncRef<'gc>,
-) -> ConvertResult<OptimizedGraphLinearProgram<'gc>> {
-    let mut program = optimize_func_to_graph(ctx, func)?;
-
-    let mut graph_reify_profile = ProfileScope::new("compiler.lower.gcps.graph_reify");
-    let graph_reify = reify_graph(&mut program.graph, program.entry);
-    if graph_reify_profile.is_enabled() {
-        graph_reify_profile.field("functions", graph_reify.functions.len());
-        graph_reify_profile.field("continuations", graph_reify.continuations.len());
-    }
-    drop(graph_reify_profile);
-
-    let mut linearize_profile = ProfileScope::new("compiler.lower.gcps.linearize");
-    let linear = linearize_graph(&program.graph, &graph_reify);
-    if linearize_profile.is_enabled() {
-        linearize_profile.field("procedures", linear.procedures.len());
-    }
-    drop(linearize_profile);
-
-    let mut reify_profile = ProfileScope::new("compiler.lower.gcps.reify_tree_dump");
-    let cps = graph_func_to_cps(ctx, &program.graph, program.entry)?;
-    if reify_profile.is_enabled() {
-        let stats = program.graph.stats();
-        reify_profile.field("terms", stats.terms);
-        reify_profile.field("functions", stats.functions);
-        reify_profile.field("free_occurrences", stats.free_occurrences);
-    }
-    drop(reify_profile);
-
-    Ok(OptimizedGraphLinearProgram {
-        cps,
-        linear,
-        stats: program.stats,
-    })
 }
 
 pub fn optimize_graph_func_to_linear<'gc>(
@@ -634,10 +555,10 @@ impl OptimizerState {
                 return;
             };
             arg_binders.push(binder);
-            args.push(CpsAtom::Constant(value));
+            args.push(value);
         }
 
-        let Some(value) = folding_table(ctx).try_fold(ctx, prim, &args) else {
+        let Some(value) = folding_table(ctx).try_fold_values(ctx, prim, &args) else {
             return;
         };
 

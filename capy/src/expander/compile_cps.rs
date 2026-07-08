@@ -2,15 +2,14 @@ use std::collections::HashMap;
 use std::mem::offset_of;
 use std::sync::OnceLock;
 
-use crate::cps::term::BranchHint;
 use crate::expander::core::{
     LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, fresh_lvar, seq_from_slice,
 };
 use crate::compiler::cps::{
     convert::{ConvertResult, GraphFunctionProgram},
     graph::{
-        BoundVar, ExprKind, FreeVar, Function, FunctionId, FunctionLinks, Graph, Parent, Subexpr,
-        Subterm, TermId, TermKind as GraphTermKind, TermLink,
+        BranchHint, BoundVar, ExprKind, FreeVar, Function, FunctionId, FunctionLinks, Graph,
+        Parent, Subexpr, Subterm, TermId, TermKind as GraphTermKind, TermLink,
     },
 };
 use crate::list;

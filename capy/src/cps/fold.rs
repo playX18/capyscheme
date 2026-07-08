@@ -49,6 +49,18 @@ impl<'gc> FoldingTable<'gc> {
 
         None
     }
+
+    pub fn try_fold_values(
+        &self,
+        ctx: Context<'gc>,
+        prim: Value<'gc>,
+        args: &[Value<'gc>],
+    ) -> Option<Value<'gc>> {
+        let Some(entry) = self.table.get(&prim) else {
+            return None;
+        };
+        entry.apply(ctx, args)
+    }
 }
 
 // SAFETY: FoldingTable stores `Value` keys in a HashMap. During GC tracing we must update
