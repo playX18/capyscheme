@@ -27,7 +27,7 @@ struct SwitchNode<'gc> {
     instruction_count: usize,
 }
 
-pub(super) fn infer_switches<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
+pub(crate) fn infer_switches<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
     loop {
         let predecessors = local_predecessor_counts(&procedure);
         let Some(candidate) = procedure

@@ -55,6 +55,7 @@ pub mod direct;
 pub mod linkutils;
 mod object;
 mod pipeline;
+pub mod ssa;
 mod symbols;
 pub mod tree;
 

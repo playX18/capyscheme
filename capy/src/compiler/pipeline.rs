@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::cps::linear::LinearProgram;
+use crate::compiler::ssa::LinearProgram;
 use crate::expander::core::TermRef;
 use crate::expander::{
     assignment_elimination, compile_cps, eta_expand::eta_expand, fix_letrec::fix_letrec,

@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
 use crate::{
-    compiler::cranelift::primitive::Primitive,
-    cps::linear::{
-        Block, BlockId, BranchTarget, ClosureKind, CodeId, GraphCodeId, Instruction, LinearAtom,
-        LinearProgram, Procedure, ProcedureKind, Terminator, ValueId, finish_procedure,
+    compiler::{
+        cranelift::primitive::Primitive,
+        ssa::{
+            Block, BlockId, BranchTarget, ClosureKind, CodeId, GraphCodeId, Instruction,
+            LinearAtom, LinearProgram, Procedure, ProcedureKind, Terminator, ValueId,
+            finish_procedure,
+        },
     },
     expander::core::LVarRef,
     runtime::value::Value,
@@ -46,16 +49,16 @@ mod tests {
     use std::cell::Cell;
 
     use crate::{
-        cps::{
-            linear::{BranchTarget, ClosureKind, CodeId, Instruction, LinearProgram, Terminator},
-            term::{Atom, BranchHint, Cont, Expression, Func, Term},
+        compiler::{
+            cps::{
+                convert::cps_func_to_graph,
+                graph::{FunctionId, Graph},
+                reify::{GraphReifyInfo, reify_graph},
+            },
+            ssa::{BranchTarget, ClosureKind, CodeId, Instruction, LinearProgram, Terminator},
         },
+        cps::term::{Atom, BranchHint, Cont, Expression, Func, Term},
         expander::core::{LVarRef, fresh_lvar},
-        compiler::cps::{
-            convert::cps_func_to_graph,
-            graph::{FunctionId, Graph},
-            reify::{GraphReifyInfo, reify_graph},
-        },
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Context, Scheme,
@@ -97,7 +100,7 @@ mod tests {
     fn procedure<'a, 'gc>(
         program: &'a LinearProgram<'gc>,
         code: CodeId<'gc>,
-    ) -> &'a crate::cps::linear::Procedure<'gc> {
+    ) -> &'a crate::compiler::ssa::Procedure<'gc> {
         program
             .procedures
             .iter()
@@ -258,7 +261,7 @@ mod tests {
             let entry = procedure(&linear, linear.entry);
             let graph_k = find_function(&graph, &reify.continuations, k);
             let k_code =
-                CodeId::GraphContinuation(crate::cps::linear::GraphCodeId(graph_k.as_u32()));
+                CodeId::GraphContinuation(crate::compiler::ssa::GraphCodeId(graph_k.as_u32()));
 
             assert!(graph[graph_k].is_reified);
             assert!(entry.blocks[0].instructions.iter().any(|instruction| {
@@ -423,7 +426,7 @@ mod tests {
                     matches!(
                         instruction,
                         Instruction::CacheRef {
-                            cache_key: crate::cps::linear::LinearAtom::Constant(value),
+                            cache_key: crate::compiler::ssa::LinearAtom::Constant(value),
                             ..
                         } if *value == key
                     )
@@ -503,7 +506,7 @@ mod tests {
                     matches!(
                         instruction,
                         Instruction::CacheSet {
-                            cache_key: crate::cps::linear::LinearAtom::Constant(value),
+                            cache_key: crate::compiler::ssa::LinearAtom::Constant(value),
                             ..
                         } if *value == key
                     )

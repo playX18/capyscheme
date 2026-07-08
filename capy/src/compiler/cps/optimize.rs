@@ -7,9 +7,9 @@ use std::{
 use cranelift_entity::{EntitySet, SecondaryMap};
 
 use crate::{
+    compiler::ssa::LinearProgram,
     cps::{
         fold::folding_table,
-        linear::LinearProgram,
         term::{Atom as CpsAtom, FuncRef},
     },
     runtime::{Context, value::Value},
