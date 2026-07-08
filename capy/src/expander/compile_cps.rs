@@ -6,7 +6,7 @@ use crate::cps::term::BranchHint;
 use crate::expander::core::{
     LVarRef, LetStyle, Proc, TermKind, TermRef as CoreTermRef, fresh_lvar, seq_from_slice,
 };
-use crate::gcps::{
+use crate::compiler::cps::{
     convert::{ConvertResult, GraphFunctionProgram},
     graph::{
         BoundVar, ExprKind, FreeVar, Function, FunctionId, FunctionLinks, Graph, Parent, Subexpr,
@@ -125,7 +125,7 @@ impl<'gc> GraphCpsBuilder<'gc> {
         source: Value<'gc>,
         owner: Subterm,
         binds: &mut Vec<LiteralBind<'gc>>,
-    ) -> crate::gcps::graph::FreeVars {
+    ) -> crate::compiler::cps::graph::FreeVars {
         let vars = atoms
             .into_iter()
             .map(|atom| self.use_atom(atom, source, owner, binds))

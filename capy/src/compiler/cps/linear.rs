@@ -51,7 +51,7 @@ mod tests {
             term::{Atom, BranchHint, Cont, Expression, Func, Term},
         },
         expander::core::{LVarRef, fresh_lvar},
-        gcps::{
+        compiler::cps::{
             convert::cps_func_to_graph,
             graph::{FunctionId, Graph},
             reify::{GraphReifyInfo, reify_graph},

@@ -48,6 +48,7 @@ macro_rules! call_signature {
 mod artifact;
 mod bootstrap;
 pub mod codegen;
+pub mod cps;
 mod cranelift;
 pub mod debuginfo;
 pub mod direct;

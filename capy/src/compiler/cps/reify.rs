@@ -268,7 +268,7 @@ mod tests {
             term::{Atom, Cont, Func, Term},
         },
         expander::core::{LVarRef, fresh_lvar},
-        gcps::convert::cps_func_to_graph,
+        compiler::cps::convert::cps_func_to_graph,
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Context, Scheme,

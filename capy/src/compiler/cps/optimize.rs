@@ -2525,7 +2525,7 @@ mod tests {
     use crate::{
         cps::term::{Atom, BranchHint, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
         expander::core::{LVarRef, fresh_lvar},
-        gcps::convert::{cps_to_graph, graph_to_cps},
+        compiler::cps::convert::{cps_to_graph, graph_to_cps},
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Scheme,

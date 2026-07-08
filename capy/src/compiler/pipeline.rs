@@ -6,7 +6,7 @@ use crate::expander::{
     assignment_elimination, compile_cps, eta_expand::eta_expand, fix_letrec::fix_letrec,
     free_vars::resolve_free_vars, letrectify::letrectify, primitives,
 };
-use crate::gcps::optimize::optimize_graph_func_to_linear;
+use crate::compiler::cps::optimize::optimize_graph_func_to_linear;
 use crate::rsgc::Gc;
 use crate::runtime::stats::{CompilationBreakdownPhase, CompilationBreakdownScope};
 use crate::runtime::{Context, modules::Module, value::Value};
