@@ -49,13 +49,12 @@ mod artifact;
 mod bootstrap;
 pub mod codegen;
 pub mod cps;
-mod cranelift;
+pub mod cranelift;
 pub mod debuginfo;
 pub mod direct;
 pub mod linkutils;
 mod object;
 mod pipeline;
-pub mod ssa;
 mod symbols;
 pub mod tree;
 

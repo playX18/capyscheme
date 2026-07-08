@@ -475,7 +475,7 @@ fn render_source_file<'gc>(value: Value<'gc>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        compiler::ssa::primitive::Primitive,
+        compiler::cranelift::primitive::Primitive,
         cps::{
             linear::{
                 Block, BlockId, ClosureKind, CodeId, GraphCodeId, Instruction, LinearAtom,

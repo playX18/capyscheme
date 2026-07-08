@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    compiler::ssa::primitive::Primitive,
+    compiler::cranelift::primitive::Primitive,
     runtime::value::{Symbol, Value},
 };
 use std::collections::{HashMap, HashSet};

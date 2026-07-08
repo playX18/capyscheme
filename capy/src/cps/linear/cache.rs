@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler::ssa::primitive::Primitive;
+use crate::compiler::cranelift::primitive::Primitive;
 pub(super) fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Procedure<'gc> {
     for block in &mut procedure.blocks {
         let mut lowered = Vec::with_capacity(block.instructions.len());

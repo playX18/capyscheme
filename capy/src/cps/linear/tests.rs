@@ -3,7 +3,7 @@ use super::{
     SwitchCaseValue, SwitchKind, Terminator, ValueId, infer_switches, linearize,
 };
 use crate::{
-    compiler::ssa::primitive::Primitive,
+    compiler::cranelift::primitive::Primitive,
     cps::{
         reify::reify,
         term::{Atom, BranchHint, Expression, Func, Term},

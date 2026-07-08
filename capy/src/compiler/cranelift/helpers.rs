@@ -4,7 +4,7 @@ use cranelift::prelude::{InstBuilder, IntCC, MemFlags, types};
 use cranelift_codegen::ir::{self, BlockArg};
 
 use crate::{
-    compiler::ssa::{AllocationHeaderPreset, SSABuilder},
+    compiler::cranelift::{AllocationHeaderPreset, SSABuilder},
     cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
     rsgc::{

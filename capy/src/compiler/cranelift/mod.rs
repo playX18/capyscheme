@@ -1,20 +1,116 @@
 //! SSA (Static Single Assignment) code generation using Cranelift.
 
+use std::sync::Arc;
+
+use cranelift::prelude::Configurable;
+use cranelift_codegen::{
+    Context as ClifContext,
+    control::ControlPlane,
+    isa::TargetIsa,
+    settings::{self, Flags},
+};
+
+use crate::compiler::symbols::{DataKind, DataSymbol, Symbol};
+use crate::runtime::symbols::RuntimeData;
+
+pub fn declare_function(
+    function: &mut cranelift_codegen::ir::Function,
+    symbol: Symbol,
+    signature: cranelift_codegen::ir::SigRef,
+    colocated: bool,
+) -> cranelift_codegen::ir::FuncRef {
+    let name_ref = function.declare_imported_user_function(symbol.to_external_name());
+    function.import_function(cranelift_codegen::ir::ExtFuncData {
+        name: cranelift_codegen::ir::ExternalName::user(name_ref),
+        signature,
+        colocated,
+    })
+}
+
+pub fn declare_data(
+    function: &mut cranelift_codegen::ir::Function,
+    symbol: Symbol,
+    colocated: bool,
+    tls: bool,
+) -> cranelift_codegen::ir::GlobalValue {
+    let name_ref = function.declare_imported_user_function(symbol.to_external_name());
+    function.create_global_value(cranelift_codegen::ir::GlobalValueData::Symbol {
+        name: cranelift_codegen::ir::ExternalName::user(name_ref),
+        offset: cranelift_codegen::ir::immediates::Imm64::new(0),
+        colocated,
+        tls,
+    })
+}
+
+pub fn runtime_data(data: RuntimeData) -> Symbol {
+    Symbol::data(DataKind::RuntimeData, DataSymbol::new(data.id()))
+}
+
+pub fn declare_runtime_data(function: &mut cranelift_codegen::ir::Function, data: RuntimeData) -> cranelift_codegen::ir::GlobalValue {
+    declare_data(function, runtime_data(data), false, false)
+}
+
+pub fn host_isa() -> Arc<dyn TargetIsa> {
+    let mut shared_builder = settings::builder();
+    shared_builder.set("enable_probestack", "false").unwrap();
+    shared_builder
+        .set("enable_heap_access_spectre_mitigation", "false")
+        .unwrap();
+    shared_builder.set("opt_level", "speed_and_size").unwrap();
+    shared_builder.enable("preserve_frame_pointers").unwrap();
+    shared_builder.enable("enable_pinned_reg").unwrap();
+    shared_builder.enable("enable_alias_analysis").unwrap();
+
+    let shared_flags = Flags::new(shared_builder);
+    cranelift_codegen::isa::lookup(target_lexicon::Triple::host())
+        .expect("host target should be supported by Cranelift")
+        .finish(shared_flags)
+        .expect("host ISA should finish")
+}
+
+pub struct CompileContext {
+    pub ctx: ClifContext,
+    pub builder_ctx: cranelift::prelude::FunctionBuilderContext,
+    pub ctrl: ControlPlane,
+}
+
+impl CompileContext {
+    pub fn new() -> Self {
+        Self {
+            ctx: ClifContext::new(),
+            builder_ctx: cranelift::prelude::FunctionBuilderContext::new(),
+            ctrl: ControlPlane::default(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.ctx.clear();
+        self.builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
+        self.ctrl = ControlPlane::default();
+    }
+}
+
+impl Default for CompileContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// End of low-level Cranelift helpers.
+// Below: SSA builder and ModuleBuilder (formerly in compiler/ssa/).
+
 #[cfg(test)]
-use crate::compiler::codegen::declare_function;
+use crate::compiler::codegen::declare_function as codegen_declare_function;
 use crate::{
     compiler::{
         BackendDumpOptions,
-        codegen::{
-            CompileContext, DataKind, DataSymbol, FunctionSymbol, Symbol, declare_data,
-            declare_runtime_data, host_isa,
-        },
         debuginfo::{DebugContext, DebugSourceLocation, FunctionDebugContext},
         direct::{
             CompiledFunction, Relocation as DirectRelocation, Target as DirectTarget,
             compile_function,
         },
-        ssa::primitive::PrimitiveLowerer,
+        cranelift::primitive::PrimitiveLowerer,
+        symbols::FunctionSymbol,
     },
     cps::{
         ReifyInfo,
@@ -31,7 +127,6 @@ use crate::{
             GraphValueSpec, ProgramSpec,
             reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
         },
-        symbols::RuntimeData,
         value::{Closure, ReturnCode, Symbol as SchemeSymbol, Value, ValueEqual},
     },
 };
@@ -514,7 +609,7 @@ impl<'gc> ModuleBuilder<'gc> {
         function: &mut ir::Function,
     ) -> ir::FuncRef {
         let signature = function.import_signature(compiled_scheme_signature());
-        declare_function(function, Symbol::function(symbol), signature, false)
+        codegen_declare_function(function, Symbol::function(symbol), signature, false)
     }
 
     pub(crate) fn declare_data_in_func(
@@ -1712,7 +1807,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
 mod tests {
     use super::*;
     use crate::{
-        compiler::codegen::{DataKind, ImportKind, ImportedSymbol, Symbol as CodeSymbol},
+        compiler::{
+            codegen::{ImportKind, ImportedSymbol},
+            symbols::Symbol as CodeSymbol,
+        },
         cps::{
             linear::linearize,
             reify,

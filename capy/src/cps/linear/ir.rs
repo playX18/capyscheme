@@ -1,5 +1,5 @@
 use crate::{
-    compiler::ssa::primitive::Primitive,
+    compiler::cranelift::primitive::Primitive,
     cps::term::{BranchHint, ContRef, FuncRef},
     expander::core::LVarRef,
     runtime::{value::Value, vm::exceptions::RaiseKind},

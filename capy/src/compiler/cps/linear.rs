@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    compiler::ssa::primitive::Primitive,
+    compiler::cranelift::primitive::Primitive,
     cps::linear::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, GraphCodeId, Instruction, LinearAtom,
         LinearProgram, Procedure, ProcedureKind, Terminator, ValueId, finish_procedure,

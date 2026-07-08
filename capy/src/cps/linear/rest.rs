@@ -1,6 +1,6 @@
 use super::graph::loop_blocks;
 use super::*;
-use crate::compiler::ssa::primitive::Primitive;
+use crate::compiler::cranelift::primitive::Primitive;
 use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RestAlias {

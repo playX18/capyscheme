@@ -192,7 +192,7 @@ mod tests {
         DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, render_lcps_dump,
     };
     use crate::{
-        compiler::ssa::primitive::Primitive,
+        compiler::cranelift::primitive::Primitive,
         cps::{
             linear::{
                 Block, BlockId, CodeId, GraphCodeId, LinearAtom, LinearProgram, Procedure,

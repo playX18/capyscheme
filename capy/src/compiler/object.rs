@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::compiler::LoweredProgram;
-use crate::compiler::ssa::ModuleBuilder;
+use crate::compiler::cranelift::ModuleBuilder;
 use crate::cps::{
     ReifyInfo,
     linear::{LinearProgram, linearize},

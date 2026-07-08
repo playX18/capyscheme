@@ -1,5 +1,5 @@
 use crate::{
-    compiler::ssa::primitive::Primitive,
+    compiler::cranelift::primitive::Primitive,
     cps::{
         ReifyInfo,
         term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},

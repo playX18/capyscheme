@@ -8,7 +8,7 @@ use crate::rsgc::{
 
 use crate::compiler::codegen::{DataSymbol, FunctionSymbol};
 use crate::{
-    compiler::ssa::{
+    compiler::cranelift::{
         LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
         primitive::PrimValue,
     },
