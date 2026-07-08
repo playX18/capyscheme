@@ -1252,7 +1252,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 return Callee::SelfRec(self.entry_block);
             }
 
-            if let Some(func) = self.module_builder.reify_info.free_vars.funcs.get(&var)
+            if let Some(reify_info) = &self.module_builder.reify_info
+                && let Some(func) = reify_info.free_vars.funcs.get(&var)
                 && let Some(func_id) = self.module_builder.func_for_func.get(func).copied()
             {
                 let closure = self.linear_atom(callee);
@@ -1296,7 +1297,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
         if let LinearAtom::Local(var_id) = callee
             && let Some(var) = self.linear_source(var_id)
-            && let Some(cont) = self.module_builder.reify_info.free_vars.conts.get(&var)
+            && let Some(reify_info) = &self.module_builder.reify_info
+            && let Some(cont) = reify_info.free_vars.conts.get(&var)
             && let Some(func_id) = self.module_builder.func_for_cont.get(cont).copied()
         {
             let closure = self.linear_atom(callee);

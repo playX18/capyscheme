@@ -18,7 +18,7 @@ use crate::{
 
 use super::{
     clone::GraphClone,
-    convert::{ConvertResult, cps_func_to_graph, graph_func_to_cps},
+    convert::{ConvertResult, GraphFunctionProgram, cps_func_to_graph, graph_func_to_cps},
     dom_contify,
     graph::{
         ActiveLinkStatus, BoundVar, ContVar, ExprKind, FreeVar, FunctionId, FunctionLink,
@@ -111,22 +111,15 @@ pub struct OptimizedGraphLinearProgram<'gc> {
     pub stats: OptimizationStats,
 }
 
-pub fn optimize_func_to_graph<'gc>(
-    ctx: Context<'gc>,
-    func: FuncRef<'gc>,
-) -> ConvertResult<OptimizedGraphFunctionProgram<'gc>> {
-    let mut convert_profile = ProfileScope::new("compiler.lower.gcps.convert");
-    let mut program = cps_func_to_graph(ctx, func)?;
-    if convert_profile.is_enabled() {
-        let stats = program.graph.stats();
-        convert_profile.field("terms", stats.terms);
-        convert_profile.field("functions", stats.functions);
-        convert_profile.field("free_occurrences", stats.free_occurrences);
-        convert_profile.field("bound_vars", stats.bound_vars);
-        convert_profile.field("term_links", stats.term_links);
-    }
-    drop(convert_profile);
+pub struct OptimizedDirectGraphLinearProgram<'gc> {
+    pub linear: LinearProgram<'gc>,
+    pub stats: OptimizationStats,
+}
 
+fn optimize_graph_program<'gc>(
+    ctx: Context<'gc>,
+    mut program: GraphFunctionProgram<'gc>,
+) -> OptimizedGraphFunctionProgram<'gc> {
     let mut optimize_profile = ProfileScope::new("compiler.lower.gcps.run");
     let root = program.root();
     let stats = optimize_graph(ctx, &mut program.graph, root, Some(DEFAULT_GAS));
@@ -157,11 +150,30 @@ pub fn optimize_func_to_graph<'gc>(
     }
     drop(optimize_profile);
 
-    Ok(OptimizedGraphFunctionProgram {
+    OptimizedGraphFunctionProgram {
         graph: program.graph,
         entry: program.entry,
         stats,
-    })
+    }
+}
+
+pub fn optimize_func_to_graph<'gc>(
+    ctx: Context<'gc>,
+    func: FuncRef<'gc>,
+) -> ConvertResult<OptimizedGraphFunctionProgram<'gc>> {
+    let mut convert_profile = ProfileScope::new("compiler.lower.gcps.convert");
+    let mut program = cps_func_to_graph(ctx, func)?;
+    if convert_profile.is_enabled() {
+        let stats = program.graph.stats();
+        convert_profile.field("terms", stats.terms);
+        convert_profile.field("functions", stats.functions);
+        convert_profile.field("free_occurrences", stats.free_occurrences);
+        convert_profile.field("bound_vars", stats.bound_vars);
+        convert_profile.field("term_links", stats.term_links);
+    }
+    drop(convert_profile);
+
+    Ok(optimize_graph_program(ctx, program))
 }
 
 pub fn optimize_func<'gc>(ctx: Context<'gc>, func: FuncRef<'gc>) -> ConvertResult<FuncRef<'gc>> {
@@ -215,6 +227,33 @@ pub fn optimize_func_to_graph_linear<'gc>(
     })
 }
 
+pub fn optimize_graph_func_to_linear<'gc>(
+    ctx: Context<'gc>,
+    program: GraphFunctionProgram<'gc>,
+) -> ConvertResult<OptimizedDirectGraphLinearProgram<'gc>> {
+    let mut program = optimize_graph_program(ctx, program);
+
+    let mut graph_reify_profile = ProfileScope::new("compiler.lower.gcps.graph_reify");
+    let graph_reify = reify_graph(&mut program.graph, program.entry);
+    if graph_reify_profile.is_enabled() {
+        graph_reify_profile.field("functions", graph_reify.functions.len());
+        graph_reify_profile.field("continuations", graph_reify.continuations.len());
+    }
+    drop(graph_reify_profile);
+
+    let mut linearize_profile = ProfileScope::new("compiler.lower.gcps.linearize");
+    let linear = linearize_graph(&program.graph, &graph_reify);
+    if linearize_profile.is_enabled() {
+        linearize_profile.field("procedures", linear.procedures.len());
+    }
+    drop(linearize_profile);
+
+    Ok(OptimizedDirectGraphLinearProgram {
+        linear,
+        stats: program.stats,
+    })
+}
+
 pub fn optimize_graph<'gc>(
     ctx: Context<'gc>,
     graph: &mut Graph<'gc>,
@@ -261,8 +300,34 @@ pub(super) struct OptimizerState {
 pub(super) struct ContifyCandidate {
     pub(super) binders: EntitySet<BoundVar>,
     pub(super) return_cont: BoundVar,
-    pub(super) site: Subterm,
+    pub(super) insertion: ContifyInsertion,
     pub(super) source: ContifySource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ContifyInsertion {
+    Wrap(Subterm),
+    ExtendLetk(Subterm),
+}
+
+impl ContifyInsertion {
+    fn site(self) -> Subterm {
+        match self {
+            Self::Wrap(site) | Self::ExtendLetk(site) => site,
+        }
+    }
+
+    fn set_site(&mut self, site: Subterm) {
+        match self {
+            Self::Wrap(current) | Self::ExtendLetk(current) => *current = site,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ContifyAvailability {
+    AtTerm,
+    Wrapper,
 }
 
 impl OptimizerState {
@@ -1545,7 +1610,7 @@ impl OptimizerState {
                 index,
                 "before",
                 active_link,
-                candidate.site,
+                candidate.insertion.site(),
                 body,
                 candidate.return_cont,
                 candidate.source,
@@ -1555,12 +1620,12 @@ impl OptimizerState {
             );
         }
 
-        let mut site = candidate.site;
+        let mut insertion = candidate.insertion;
         let contified = graph.new_function_links(contified_links.iter().copied());
         if untouched_links.is_empty() {
             self.replace_with_existing_body(graph, active_link, term, body);
-            if site == body {
-                site = active_link;
+            if insertion.site() == body {
+                insertion.set_site(active_link);
             }
         } else {
             let untouched = graph.new_function_links(untouched_links.iter().copied());
@@ -1568,6 +1633,7 @@ impl OptimizerState {
             let subterms = graph.subterms_of(term);
             graph.backpatch_subterms(term, &subterms);
         }
+        let site = insertion.site();
 
         verbose_log!(
             "gcps optimize: contify {} functions at {}",
@@ -1601,7 +1667,7 @@ impl OptimizerState {
             self.return_cont_owners[old_ret] = None;
         }
 
-        let wrapper = self.wrap_link_with_letk(graph, site, contified);
+        let insertion_term = self.insert_contified_functions(graph, insertion, contified);
         for function in contified_functions.iter().copied() {
             let binder = graph[function].var;
             self.function_defs[binder] = Some(site);
@@ -1631,8 +1697,8 @@ impl OptimizerState {
             );
         }
         verbose_log!(
-            "gcps optimize: inserted contification wrapper {}",
-            graph.pretty_term(wrapper)
+            "gcps optimize: inserted contification {}",
+            graph.pretty_term(insertion_term)
         );
     }
 
@@ -1736,6 +1802,40 @@ impl OptimizerState {
         wrapper
     }
 
+    fn insert_contified_functions<'gc>(
+        &mut self,
+        graph: &mut Graph<'gc>,
+        insertion: ContifyInsertion,
+        functions: super::graph::FunctionLinks,
+    ) -> TermId {
+        match insertion {
+            ContifyInsertion::Wrap(site) => self.wrap_link_with_letk(graph, site, functions),
+            ContifyInsertion::ExtendLetk(site) => {
+                self.extend_letk_with_functions(graph, site, functions)
+            }
+        }
+    }
+
+    fn extend_letk_with_functions<'gc>(
+        &mut self,
+        graph: &mut Graph<'gc>,
+        link: Subterm,
+        functions: super::graph::FunctionLinks,
+    ) -> TermId {
+        let term = graph
+            .read_term_link(link)
+            .expect("contification insertion site must be live");
+        let TermKind::Letk(existing, body) = graph[term].kind else {
+            unreachable!("extended contification insertion must target a Letk term");
+        };
+
+        let mut links = graph.function_links_slice(&existing).to_vec();
+        links.extend(graph.function_links_slice(&functions).iter().copied());
+        let functions = graph.new_function_links(links);
+        graph[term].kind = TermKind::Letk(functions, body);
+        term
+    }
+
     fn transform_apps_to_continues<'gc>(
         &mut self,
         graph: &mut Graph<'gc>,
@@ -1773,6 +1873,79 @@ impl OptimizerState {
                 self.worklist.add_subterm(link);
             }
             TermKind::App(..) | TermKind::Continue(..) | TermKind::Raise(..) => {}
+        }
+    }
+
+    pub(super) fn choose_contification_insertion<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        site: Subterm,
+        return_cont: BoundVar,
+        binders: &EntitySet<BoundVar>,
+        functions: &[FunctionId],
+    ) -> Option<ContifyInsertion> {
+        let site_term = graph.read_term_link(site)?;
+
+        if self.contification_bindings_are_available_at(
+            graph,
+            site_term,
+            return_cont,
+            binders,
+            functions,
+            ContifyAvailability::Wrapper,
+        ) {
+            return Some(ContifyInsertion::Wrap(site));
+        }
+
+        if matches!(graph[site_term].kind, TermKind::Letk(..))
+            && self.contification_bindings_are_available_at(
+                graph,
+                site_term,
+                return_cont,
+                binders,
+                functions,
+                ContifyAvailability::AtTerm,
+            )
+        {
+            return Some(ContifyInsertion::ExtendLetk(site));
+        }
+
+        None
+    }
+
+    fn contification_bindings_are_available_at<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        site_term: TermId,
+        return_cont: BoundVar,
+        binders: &EntitySet<BoundVar>,
+        functions: &[FunctionId],
+        availability: ContifyAvailability,
+    ) -> bool {
+        self.binder_is_available_for_contification(graph, site_term, return_cont, availability)
+            && functions.iter().copied().all(|function| {
+                self.function_uses_only_available_scope(
+                    graph,
+                    function,
+                    binders,
+                    site_term,
+                    availability,
+                )
+            })
+    }
+
+    fn binder_is_available_for_contification<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        term: TermId,
+        binder: BoundVar,
+        availability: ContifyAvailability,
+    ) -> bool {
+        match availability {
+            ContifyAvailability::AtTerm => self.binder_is_available_at_term(graph, term, binder),
+            ContifyAvailability::Wrapper => {
+                self.binder_is_available_at_contification_wrapper(graph, term, binder)
+            }
         }
     }
 
@@ -1815,12 +1988,52 @@ impl OptimizerState {
         true
     }
 
-    pub(super) fn function_uses_only_available_scope_at_term<'gc>(
+    fn binder_is_available_at_contification_wrapper<'gc>(
+        &self,
+        graph: &Graph<'gc>,
+        term: TermId,
+        binder: BoundVar,
+    ) -> bool {
+        if let Some(owner) = self.return_cont_owners[binder] {
+            return self.term_is_inside_function(graph, term, owner);
+        }
+
+        if let Some(expr) = self.known_exprs[binder] {
+            let Some(expr) = graph.read_expr_link(expr) else {
+                return false;
+            };
+            let Some(Parent::Term(def_term)) = graph.read_parent_link(graph[expr].link) else {
+                return false;
+            };
+            let TermKind::LetVal((def_binder, _), body) = graph[def_term].kind else {
+                return false;
+            };
+            if def_binder != binder {
+                return false;
+            }
+            let Some(body_term) = graph.read_term_link(body) else {
+                return false;
+            };
+            return self.term_is_inside_term_scope(graph, term, body_term);
+        }
+
+        if let Some(def) = self.function_defs[binder] {
+            let Some(scope_term) = graph.read_term_link(def) else {
+                return false;
+            };
+            return term != scope_term && self.term_is_inside_term_scope(graph, term, scope_term);
+        }
+
+        true
+    }
+
+    fn function_uses_only_available_scope<'gc>(
         &self,
         graph: &Graph<'gc>,
         function: FunctionId,
         group_binders: &EntitySet<BoundVar>,
         site_term: TermId,
+        availability: ContifyAvailability,
     ) -> bool {
         let data = graph[function];
         let mut local = group_binders.clone();
@@ -1831,7 +2044,13 @@ impl OptimizerState {
         if let Some(variadic) = data.variadic {
             local.insert(variadic);
         }
-        self.term_uses_only_available_scope_at_term(graph, data.body, &local, site_term)
+        self.term_uses_only_available_scope_at_term(
+            graph,
+            data.body,
+            &local,
+            site_term,
+            availability,
+        )
     }
 
     fn term_uses_only_available_scope_at_term<'gc>(
@@ -1840,6 +2059,7 @@ impl OptimizerState {
         link: Subterm,
         local: &EntitySet<BoundVar>,
         site_term: TermId,
+        availability: ContifyAvailability,
     ) -> bool {
         let Some(term) = graph.read_term_link(link) else {
             return true;
@@ -1849,14 +2069,24 @@ impl OptimizerState {
             TermKind::LetVal((binding, expr), body) => {
                 if let Some(expr_id) = graph.read_expr_link(expr) {
                     if !self.expr_free_occurrences_are_available_at_term(
-                        graph, expr_id, local, site_term,
+                        graph,
+                        expr_id,
+                        local,
+                        site_term,
+                        availability,
                     ) {
                         return false;
                     }
                 }
                 let mut body_local = local.clone();
                 body_local.insert(binding);
-                self.term_uses_only_available_scope_at_term(graph, body, &body_local, site_term)
+                self.term_uses_only_available_scope_at_term(
+                    graph,
+                    body,
+                    &body_local,
+                    site_term,
+                    availability,
+                )
             }
             TermKind::Fix(functions, body) | TermKind::Letk(functions, body) => {
                 let mut nested_functions = Vec::new();
@@ -1883,30 +2113,48 @@ impl OptimizerState {
                         data.body,
                         &function_local,
                         site_term,
+                        availability,
                     ) {
                         return false;
                     }
                 }
-                self.term_uses_only_available_scope_at_term(graph, body, &body_local, site_term)
+                self.term_uses_only_available_scope_at_term(
+                    graph,
+                    body,
+                    &body_local,
+                    site_term,
+                    availability,
+                )
             }
             TermKind::If(test, then_branch, else_branch, _) => {
-                self.free_occurrences_are_available_at_term(graph, [test], local, site_term)
-                    && self.term_uses_only_available_scope_at_term(
-                        graph,
-                        then_branch,
-                        local,
-                        site_term,
-                    )
-                    && self.term_uses_only_available_scope_at_term(
-                        graph,
-                        else_branch,
-                        local,
-                        site_term,
-                    )
+                self.free_occurrences_are_available_at_term(
+                    graph,
+                    [test],
+                    local,
+                    site_term,
+                    availability,
+                ) && self.term_uses_only_available_scope_at_term(
+                    graph,
+                    then_branch,
+                    local,
+                    site_term,
+                    availability,
+                ) && self.term_uses_only_available_scope_at_term(
+                    graph,
+                    else_branch,
+                    local,
+                    site_term,
+                    availability,
+                )
             }
-            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => {
-                self.direct_free_occurrences_are_available_at_term(graph, term, local, site_term)
-            }
+            TermKind::Continue(..) | TermKind::App(..) | TermKind::Raise(..) => self
+                .direct_free_occurrences_are_available_at_term(
+                    graph,
+                    term,
+                    local,
+                    site_term,
+                    availability,
+                ),
         }
     }
 
@@ -1916,12 +2164,18 @@ impl OptimizerState {
         expr: super::graph::ExprId,
         local: &EntitySet<BoundVar>,
         site_term: TermId,
+        availability: ContifyAvailability,
     ) -> bool {
         let mut available = true;
         graph.for_each_free_var_of_expr(expr, |var| {
             let binder = graph.free_binder(var);
             available &= local.contains(binder)
-                || self.binder_is_available_at_term(graph, site_term, binder);
+                || self.binder_is_available_for_contification(
+                    graph,
+                    site_term,
+                    binder,
+                    availability,
+                );
         });
         available
     }
@@ -1932,12 +2186,18 @@ impl OptimizerState {
         term: TermId,
         local: &EntitySet<BoundVar>,
         site_term: TermId,
+        availability: ContifyAvailability,
     ) -> bool {
         let mut available = true;
         graph.for_each_direct_free_var_of_term(term, |var| {
             let binder = graph.free_binder(var);
             available &= local.contains(binder)
-                || self.binder_is_available_at_term(graph, site_term, binder);
+                || self.binder_is_available_for_contification(
+                    graph,
+                    site_term,
+                    binder,
+                    availability,
+                );
         });
         available
     }
@@ -1948,10 +2208,17 @@ impl OptimizerState {
         vars: impl IntoIterator<Item = FreeVar>,
         local: &EntitySet<BoundVar>,
         site_term: TermId,
+        availability: ContifyAvailability,
     ) -> bool {
         vars.into_iter().all(|var| {
             let binder = graph.free_binder(var);
-            local.contains(binder) || self.binder_is_available_at_term(graph, site_term, binder)
+            local.contains(binder)
+                || self.binder_is_available_for_contification(
+                    graph,
+                    site_term,
+                    binder,
+                    availability,
+                )
         })
     }
 
@@ -4288,6 +4555,102 @@ mod tests {
                 scc_stats.scc_contified_functions
             );
             assert_eq!(dom_stats.dom_contified_functions, 3);
+        });
+    }
+
+    #[test]
+    fn contification_extends_local_letk_when_return_cont_is_sibling() {
+        Scheme::new_uninit().enter(|ctx| {
+            let f = lvar(ctx, "f");
+            let ret = lvar(ctx, "ret");
+            let target = lvar(ctx, "target");
+            let left = lvar(ctx, "left");
+            let right = lvar(ctx, "right");
+            let source = Value::new(false);
+
+            let continue_to = |cont| {
+                Gc::new(
+                    *ctx,
+                    Term::Continue(cont, Array::from_slice(*ctx, &[]), source),
+                )
+            };
+            let app_f = || {
+                Gc::new(
+                    *ctx,
+                    Term::App(Atom::Local(f), target, Array::from_slice(*ctx, &[]), source),
+                )
+            };
+
+            let func = fixed_func(ctx, f, ret, &[], continue_to(ret));
+            let target_cont = fixed_cont(ctx, target, &[], continue_to(target), false);
+            let left_cont = fixed_cont(ctx, left, &[], app_f(), false);
+            let right_cont = fixed_cont(ctx, right, &[], app_f(), false);
+            let term = Gc::new(
+                *ctx,
+                Term::Fix(
+                    Array::from_slice(*ctx, &[func]),
+                    Gc::new(
+                        *ctx,
+                        Term::Letk(
+                            Array::from_slice(*ctx, &[target_cont, left_cont, right_cont]),
+                            continue_to(left),
+                        ),
+                    ),
+                ),
+            );
+
+            let mut program = cps_to_graph(ctx, term).expect("convert");
+            let stats = optimize_graph_with_mode(
+                ctx,
+                &mut program.graph,
+                program.root,
+                GcpsContifyMode::Dom,
+                1,
+            );
+            assert_eq!(stats.dom_contified_functions, 1);
+
+            let lowered = graph_to_cps(ctx, &program.graph, program.root).expect("lower");
+            let Term::Letk(conts, body) = *lowered else {
+                panic!("expected original local continuations to be extended");
+            };
+            assert_eq!(conts.len(), 4);
+            assert!(conts.iter().any(|cont| cont.binding == target));
+
+            let f_cont = conts
+                .iter()
+                .find(|cont| cont.binding == f)
+                .expect("contified function in local Letk");
+            let Term::Continue(cont, args, _) = *f_cont.body() else {
+                panic!("expected contified function to jump to sibling target");
+            };
+            assert_eq!(cont, target);
+            assert!(args.is_empty());
+
+            let left_cont = conts
+                .iter()
+                .find(|cont| cont.binding == left)
+                .expect("left continuation");
+            let Term::Continue(cont, args, _) = *left_cont.body() else {
+                panic!("expected left call to become a local jump");
+            };
+            assert_eq!(cont, f);
+            assert!(args.is_empty());
+
+            let right_cont = conts
+                .iter()
+                .find(|cont| cont.binding == right)
+                .expect("right continuation");
+            let Term::Continue(cont, args, _) = *right_cont.body() else {
+                panic!("expected right call to become a local jump");
+            };
+            assert_eq!(cont, f);
+            assert!(args.is_empty());
+
+            let Term::Continue(cont, args, _) = *body else {
+                panic!("expected original Letk body");
+            };
+            assert_eq!(cont, left);
+            assert!(args.is_empty());
         });
     }
 

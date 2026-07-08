@@ -386,24 +386,17 @@ fn choose_candidate<'gc>(
         };
         let site = scc_contify::contification_site(graph, active_link, live, body, &binders)?;
 
-        let Some(site_term) = graph.read_term_link(site) else {
-            continue;
-        };
-        if !state.binder_is_available_at_term(graph, site_term, return_cont) {
+        let Some(insertion) =
+            state.choose_contification_insertion(graph, site, return_cont, &binders, &functions)
+        else {
             verbose_log!("gcps dom contify: skip contification out of target scope");
             continue;
-        }
-        if functions.iter().copied().any(|function| {
-            !state.function_uses_only_available_scope_at_term(graph, function, &binders, site_term)
-        }) {
-            verbose_log!("gcps dom contify: skip contification with unavailable free binders");
-            continue;
-        }
+        };
 
         return Some(ContifyCandidate {
             binders,
             return_cont,
-            site,
+            insertion,
             source: ContifySource::Dominator,
         });
     }

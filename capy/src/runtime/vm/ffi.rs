@@ -14,8 +14,8 @@ use crate::{
     prelude::*,
     runtime::{
         modules::define,
-        vm::VMResult,
         prelude::*,
+        vm::VMResult,
         vm::thunks::make_assertion_violation,
         vmthread::{VM_THREAD, VMThreadTask},
     },

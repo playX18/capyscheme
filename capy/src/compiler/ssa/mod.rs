@@ -155,7 +155,7 @@ fn fasl_relocation_from_direct_relocation(
 pub struct ModuleBuilder<'gc> {
     pub ctx: Context<'gc>,
     pub(crate) debug_context: DebugContext<'gc>,
-    pub reify_info: ReifyInfo<'gc>,
+    pub reify_info: Option<ReifyInfo<'gc>>,
     pub linear: LinearProgram<'gc>,
     pub constants: HashMap<ValueEqual<'gc>, DataSymbol>,
     pub cache_cells: HashMap<ValueEqual<'gc>, DataSymbol>,
@@ -264,9 +264,34 @@ impl FaslDataSlot {
 
 impl<'gc> ModuleBuilder<'gc> {
     pub fn new(ctx: Context<'gc>, reify_info: ReifyInfo<'gc>, linear: LinearProgram<'gc>) -> Self {
-        let prims = PrimitiveLowerer::new(ctx);
         let isa = host_isa();
         let debug_context = DebugContext::new(&reify_info, &*isa);
+        Self::new_with_debug_context(ctx, Some(reify_info), linear, debug_context)
+    }
+
+    pub fn new_graph_linear(ctx: Context<'gc>, linear: LinearProgram<'gc>) -> Self {
+        let isa = host_isa();
+        let entry = linear
+            .procedures
+            .iter()
+            .find(|procedure| procedure.code == linear.entry)
+            .expect("linear program should contain its entry procedure");
+        let debug_context = DebugContext::new_for_entry(
+            entry.source,
+            entry.name,
+            entry.sources[&entry.binding],
+            &*isa,
+        );
+        Self::new_with_debug_context(ctx, None, linear, debug_context)
+    }
+
+    fn new_with_debug_context(
+        ctx: Context<'gc>,
+        reify_info: Option<ReifyInfo<'gc>>,
+        linear: LinearProgram<'gc>,
+        debug_context: DebugContext<'gc>,
+    ) -> Self {
+        let prims = PrimitiveLowerer::new(ctx);
         let mut next_function_symbol = 0;
         let mut data_kinds = HashMap::new();
         let mut next_data_symbol = 0;

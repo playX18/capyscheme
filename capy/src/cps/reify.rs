@@ -1,8 +1,8 @@
-use crate::rsgc::{alloc::ArrayRef, barrier, traits::IterGc, Gc};
+use crate::rsgc::{Gc, alloc::ArrayRef, barrier, traits::IterGc};
 
 use crate::{
     cps::{
-        free_vars::{get_fvf, FreeVars},
+        free_vars::{FreeVars, get_fvf},
         term::{Cont, ContRef, Func, FuncRef},
     },
     runtime::Context,
@@ -94,11 +94,11 @@ mod tests {
     use super::reify;
     use crate::{
         cps::term::{Atom, Cont, Func, Term},
-        expander::core::{fresh_lvar, LVarRef},
-        rsgc::{alloc::Array, cell::Lock, Gc},
+        expander::core::{LVarRef, fresh_lvar},
+        rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
-            value::{Symbol, Value},
             Context, Scheme,
+            value::{Symbol, Value},
         },
     };
     use std::cell::Cell;

@@ -216,8 +216,13 @@ fn compile_and_load_source<'gc>(
     };
     let module = current_module(ctx).get(ctx).downcast();
     let _phase = CompilationPhase::new(ctx);
-    let cps = compile_file(ctx, &source_path, Some(module))?;
-    compile_cps_to_destination(ctx, cps, CompilationOptions::default(), &build_destination)?;
+    let lowered = compile_file(ctx, &source_path, Some(module))?;
+    compile_lowered_to_destination(
+        ctx,
+        &lowered,
+        CompilationOptions::default(),
+        &build_destination,
+    )?;
 
     load_artifact(ctx, libs, &build_destination)
 }

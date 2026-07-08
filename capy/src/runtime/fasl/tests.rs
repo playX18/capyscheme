@@ -579,7 +579,10 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         let mut bytes = Vec::new();
         let payload_start = put_fasl_header(&mut bytes);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        put_u32(
+            &mut bytes,
+            (ret_bytes().len() + std::mem::size_of::<usize>()) as u32,
+        ); // ret plus one word patch slot
         bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
@@ -603,7 +606,9 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         let code_block = value.downcast::<CodeBlock>();
         // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let patched = unsafe {
-            std::ptr::read_unaligned((code_block.entrypoint.as_usize() + ret_bytes().len()) as *const usize)
+            std::ptr::read_unaligned(
+                (code_block.entrypoint.as_usize() + ret_bytes().len()) as *const usize,
+            )
         };
         assert_eq!(patched, global_side_metadata_vm_base_address().as_usize());
     });
@@ -704,7 +709,10 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        put_u32(
+            &mut bytes,
+            (ret_bytes().len() + std::mem::size_of::<usize>()) as u32,
+        ); // ret plus one word patch slot
         bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
@@ -730,7 +738,9 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         let code_block = values[1].get().downcast::<CodeBlock>();
         // SAFETY: The target pointer is valid, aligned, and points to initialized memory
         let slot_address = unsafe {
-            std::ptr::read_unaligned((code_block.entrypoint.as_usize() + ret_bytes().len()) as *const usize)
+            std::ptr::read_unaligned(
+                (code_block.entrypoint.as_usize() + ret_bytes().len()) as *const usize,
+            )
         };
         assert_eq!(slot_address, code_block.loaded_data_base.as_usize());
         // SAFETY: The target pointer is valid, aligned, and points to initialized memory
@@ -763,7 +773,10 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        put_u32(
+            &mut bytes,
+            (ret_bytes().len() + std::mem::size_of::<usize>()) as u32,
+        ); // ret plus one word patch slot
         bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
@@ -835,7 +848,10 @@ fn fasl_reader_keeps_raw_data_slots_out_of_value_bitmap() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, (ret_bytes().len() + 2 * std::mem::size_of::<usize>()) as u32); // ret plus two word patch slots
+        put_u32(
+            &mut bytes,
+            (ret_bytes().len() + 2 * std::mem::size_of::<usize>()) as u32,
+        ); // ret plus two word patch slots
         bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
@@ -896,7 +912,10 @@ fn fasl_reader_resolves_forward_data_slot_address_relocation() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        put_u32(
+            &mut bytes,
+            (ret_bytes().len() + std::mem::size_of::<usize>()) as u32,
+        ); // ret plus one word patch slot
         bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
@@ -958,7 +977,10 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 0);
         bytes.push(FASL_TAG_CODE_BLOCK);
-        put_u32(&mut bytes, (ret_bytes().len() + std::mem::size_of::<usize>()) as u32); // ret plus one word patch slot
+        put_u32(
+            &mut bytes,
+            (ret_bytes().len() + std::mem::size_of::<usize>()) as u32,
+        ); // ret plus one word patch slot
         bytes.extend_from_slice(ret_bytes());
         bytes.extend_from_slice(&0usize.to_le_bytes());
         put_u32(&mut bytes, 0); // entry offset
@@ -1219,8 +1241,9 @@ fn fasl_reader_accepts_more_than_64_value_data_slots() {
             // SAFETY: The target pointer is valid, aligned, and points to initialized memory
             let slot_address = unsafe {
                 std::ptr::read_unaligned(
-                    (code_block.entrypoint.as_usize() + ret_bytes().len() + index * std::mem::size_of::<usize>())
-                        as *const usize,
+                    (code_block.entrypoint.as_usize()
+                        + ret_bytes().len()
+                        + index * std::mem::size_of::<usize>()) as *const usize,
                 )
             };
             // SAFETY: The target pointer is valid, aligned, and points to initialized memory

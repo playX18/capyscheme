@@ -31,16 +31,16 @@
 use std::cell::Cell;
 
 use crate::rsgc::{
+    Gc,
     alloc::{Array, ArrayRef},
     cell::Lock,
     traits::IterGc,
-    Gc,
 };
 
 use crate::{
     cps::{
-        term::{Atom, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
         Map, Set, SingleValueSet, Substitute,
+        term::{Atom, Cont, ContRef, Expression, Func, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
     runtime::Context,

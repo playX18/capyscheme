@@ -82,10 +82,7 @@ pub mod persistent_set_ops {
 
     #[scheme(name = "core-persistent-set->list")]
     pub fn persistent_set_to_list(set: Gc<'gc, PersistentSet<'gc>>) -> Value<'gc> {
-        let ls = set.fold(
-            |acc, key, _| Value::cons(nctx.ctx, key, acc),
-            Value::null(),
-        );
+        let ls = set.fold(|acc, key, _| Value::cons(nctx.ctx, key, acc), Value::null());
         nctx.return_(ls)
     }
 
@@ -123,11 +120,21 @@ pub mod persistent_set_ops {
 
     #[scheme(name = "list->core-persistent-set-eqv")]
     pub fn list_to_persistent_set_eqv(lst: Value<'gc>) -> Value<'gc> {
-        list_to_set_impl(nctx, lst, HashTableType::Eqv, "list->core-persistent-set-eqv")
+        list_to_set_impl(
+            nctx,
+            lst,
+            HashTableType::Eqv,
+            "list->core-persistent-set-eqv",
+        )
     }
 
     #[scheme(name = "list->core-persistent-set-equal")]
     pub fn list_to_persistent_set_equal(lst: Value<'gc>) -> Value<'gc> {
-        list_to_set_impl(nctx, lst, HashTableType::Equal, "list->core-persistent-set-equal")
+        list_to_set_impl(
+            nctx,
+            lst,
+            HashTableType::Equal,
+            "list->core-persistent-set-equal",
+        )
     }
 }

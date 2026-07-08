@@ -53,18 +53,21 @@ pub(super) fn find_candidate<'gc>(
         };
 
         let site = contification_site(graph, active_link, live, body, &binders)?;
-        let Some(site_term) = graph.read_term_link(site) else {
-            continue;
-        };
-        if !state.binder_is_available_at_term(graph, site_term, return_cont) {
+        let functions = live
+            .iter()
+            .filter_map(|(_, function)| binders.contains(graph[*function].var).then_some(*function))
+            .collect::<Vec<_>>();
+        let Some(insertion) =
+            state.choose_contification_insertion(graph, site, return_cont, &binders, &functions)
+        else {
             verbose_log!("gcps scc contify: skip contification out of target scope");
             continue;
-        }
+        };
 
         return Some(ContifyCandidate {
             binders,
             return_cont,
-            site,
+            insertion,
             source: ContifySource::Scc,
         });
     }

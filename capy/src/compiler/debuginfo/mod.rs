@@ -40,6 +40,20 @@ pub(crate) struct FunctionDebugContext<'gc> {
 
 impl<'gc> DebugContext<'gc> {
     pub(crate) fn new(reify_info: &ReifyInfo<'gc>, isa: &dyn TargetIsa) -> Self {
+        Self::new_for_entry(
+            reify_info.entrypoint.source(),
+            reify_info.entrypoint.name,
+            reify_info.entrypoint.binding,
+            isa,
+        )
+    }
+
+    pub(crate) fn new_for_entry(
+        entry_source: Value<'gc>,
+        entry_name: Value<'gc>,
+        _entry_binding: LVarRef<'gc>,
+        isa: &dyn TargetIsa,
+    ) -> Self {
         let encoding = Encoding {
             format: Format::Dwarf32,
             version: 5,
@@ -62,7 +76,7 @@ impl<'gc> DebugContext<'gc> {
 
         let mut dwarf = DwarfUnit::new(encoding);
 
-        let main_srcloc = reify_info.entrypoint.source();
+        let main_srcloc = entry_source;
         let file_name = if main_srcloc == Value::new(false) {
             "<unknown>".to_owned()
         } else if main_srcloc.is::<Vector>() {
@@ -84,10 +98,10 @@ impl<'gc> DebugContext<'gc> {
         dwarf.unit.line_program = line_program;
 
         {
-            let name = if reify_info.entrypoint.name == Value::new(false) {
+            let name = if entry_name == Value::new(false) {
                 "<entrypoint>".to_owned()
             } else {
-                reify_info.entrypoint.name.to_string()
+                entry_name.to_string()
             };
             let name = dwarf.strings.add(name);
 

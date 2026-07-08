@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::cps::term::FuncRef;
+use crate::compiler::LoweredProgram;
 use crate::rsgc::Gc;
 use crate::runtime::{Context, modules::Module, value::Value};
 
@@ -17,7 +17,7 @@ pub fn compile_file<'gc>(
     _: Context<'gc>,
     file: impl AsRef<Path>,
     _: Option<Gc<'gc, Module<'gc>>>,
-) -> Result<FuncRef<'gc>, Value<'gc>> {
+) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     unreachable!(
         "compile_file should not be called after bootstrap is complete, trying to compile: {}",
         file.as_ref().display()
@@ -29,7 +29,7 @@ pub fn compile_file<'gc>(
     ctx: Context<'gc>,
     file: impl AsRef<Path>,
     env: Option<Gc<'gc, Module<'gc>>>,
-) -> Result<FuncRef<'gc>, Value<'gc>> {
+) -> Result<LoweredProgram<'gc>, Value<'gc>> {
     let module = env.unwrap_or_else(|| ctx.globals().root_module());
     let file = file.as_ref();
 

@@ -1,8 +1,8 @@
 use crate::{
     compiler::ssa::primitive::Primitive,
     cps::{
-        term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
         ReifyInfo,
+        term::{Atom, ContRef, Expression, FuncRef, Term, TermRef},
     },
     expander::core::LVarRef,
     runtime::value::Value,

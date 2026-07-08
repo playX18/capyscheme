@@ -2,15 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::{cell::Cell, hash::Hash};
 
 use crate::rsgc::{
-    alloc::{array::ArrayRef, Array},
+    Gc, Trace,
+    alloc::{Array, array::ArrayRef},
     barrier,
     cell::Lock,
-    Gc, Trace,
 };
 
 use crate::{
     expander::core::LVarRef,
-    runtime::{value::Value, vm::exceptions::RaiseKind, Context},
+    runtime::{Context, value::Value, vm::exceptions::RaiseKind},
 };
 
 /// Array of CPS atom references.

@@ -92,10 +92,7 @@ pub mod persistent_map_ops {
     }
 
     #[scheme(name = "core-persistent-map-dissoc")]
-    pub fn persistent_map_dissoc(
-        map: Gc<'gc, PersistentMap<'gc>>,
-        key: Value<'gc>,
-    ) -> Value<'gc> {
+    pub fn persistent_map_dissoc(map: Gc<'gc, PersistentMap<'gc>>, key: Value<'gc>) -> Value<'gc> {
         let ctx = nctx.ctx;
         nctx.return_(map.dissoc(ctx, key).into())
     }
@@ -121,16 +118,31 @@ pub mod persistent_map_ops {
 
     #[scheme(name = "alist->core-persistent-map-eq")]
     pub fn alist_to_persistent_map_eq(lst: Value<'gc>) -> Value<'gc> {
-        alist_to_map_impl(nctx, lst, HashTableType::Eq, "alist->core-persistent-map-eq")
+        alist_to_map_impl(
+            nctx,
+            lst,
+            HashTableType::Eq,
+            "alist->core-persistent-map-eq",
+        )
     }
 
     #[scheme(name = "alist->core-persistent-map-eqv")]
     pub fn alist_to_persistent_map_eqv(lst: Value<'gc>) -> Value<'gc> {
-        alist_to_map_impl(nctx, lst, HashTableType::Eqv, "alist->core-persistent-map-eqv")
+        alist_to_map_impl(
+            nctx,
+            lst,
+            HashTableType::Eqv,
+            "alist->core-persistent-map-eqv",
+        )
     }
 
     #[scheme(name = "alist->core-persistent-map-equal")]
     pub fn alist_to_persistent_map_equal(lst: Value<'gc>) -> Value<'gc> {
-        alist_to_map_impl(nctx, lst, HashTableType::Equal, "alist->core-persistent-map-equal")
+        alist_to_map_impl(
+            nctx,
+            lst,
+            HashTableType::Equal,
+            "alist->core-persistent-map-equal",
+        )
     }
 }

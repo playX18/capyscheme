@@ -41,13 +41,8 @@ pub(crate) fn compile_lowered_to_fasl_bytes<'gc>(
     lowered: &LoweredProgram<'gc>,
     opts: CompilationOptions,
 ) -> Result<Vec<u8>, Value<'gc>> {
-    if let Some(linear) = lowered.linear_cps.clone() {
-        let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
-        let reify_info = reify(ctx, lowered.cps);
-        compile_linear_cps_to_fasl_bytes(ctx, reify_info, linear, opts)
-    } else {
-        compile_cps_to_fasl_bytes(ctx, lowered.cps, opts)
-    }
+    let _stats = CompilationBreakdownScope::new(CompilationBreakdownPhase::Cranelift);
+    compile_graph_linear_cps_to_fasl_bytes(ctx, lowered.linear_cps.clone(), opts)
 }
 
 fn compile_linear_cps_to_fasl_bytes<'gc>(
@@ -57,6 +52,23 @@ fn compile_linear_cps_to_fasl_bytes<'gc>(
     opts: CompilationOptions,
 ) -> Result<Vec<u8>, Value<'gc>> {
     let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
+    module_builder.stacktraces = opts.backtraces;
+    module_builder.compile_loaded_fasl_bytes().map_err(|err| {
+        make_io_error(
+            ctx,
+            "compile",
+            Str::new(*ctx, format!("Cannot compile unified FASL: {err}"), true).into(),
+            &[],
+        )
+    })
+}
+
+fn compile_graph_linear_cps_to_fasl_bytes<'gc>(
+    ctx: Context<'gc>,
+    linear: LinearProgram<'gc>,
+    opts: CompilationOptions,
+) -> Result<Vec<u8>, Value<'gc>> {
+    let mut module_builder = ModuleBuilder::new_graph_linear(ctx, linear);
     module_builder.stacktraces = opts.backtraces;
     module_builder.compile_loaded_fasl_bytes().map_err(|err| {
         make_io_error(

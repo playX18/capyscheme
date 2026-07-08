@@ -824,9 +824,13 @@ fn apply_runtime_relocation(
         Reloc::Arm64Call => {
             apply_arm64_call_reloc(memory, site, reloc.offset, target.as_usize(), reloc.addend)
         }
-        Reloc::RiscvCallPlt => {
-            apply_riscv64_call_plt_reloc(memory, site, reloc.offset, target.as_usize(), reloc.addend)
-        }
+        Reloc::RiscvCallPlt => apply_riscv64_call_plt_reloc(
+            memory,
+            site,
+            reloc.offset,
+            target.as_usize(),
+            reloc.addend,
+        ),
         _ => Err(invalid_data("unsupported trampoline relocation kind")),
     }
 }
@@ -913,11 +917,17 @@ fn absolute_jump_stub(target: usize) -> std::io::Result<Vec<u8>> {
         let addr = target as u64;
         let mut stub = Vec::with_capacity(ABSOLUTE_JUMP_STUB_LEN);
         // movz x16, #imm16
-        stub.extend_from_slice(&((0xd2800000u32 | (((addr & 0xffff) as u32) << 5)) | 16).to_le_bytes());
+        stub.extend_from_slice(
+            &((0xd2800000u32 | (((addr & 0xffff) as u32) << 5)) | 16).to_le_bytes(),
+        );
         // movk x16, #imm16, lsl #16
-        stub.extend_from_slice(&((0xf2a00000u32 | ((((addr >> 16) & 0xffff) as u32) << 5)) | 16).to_le_bytes());
+        stub.extend_from_slice(
+            &((0xf2a00000u32 | ((((addr >> 16) & 0xffff) as u32) << 5)) | 16).to_le_bytes(),
+        );
         // movk x16, #imm16, lsl #32
-        stub.extend_from_slice(&((0xf2c00000u32 | ((((addr >> 32) & 0xffff) as u32) << 5)) | 16).to_le_bytes());
+        stub.extend_from_slice(
+            &((0xf2c00000u32 | ((((addr >> 32) & 0xffff) as u32) << 5)) | 16).to_le_bytes(),
+        );
         // br x16
         stub.extend_from_slice(&0xd61f0200u32.to_le_bytes());
         Ok(stub)
@@ -931,14 +941,24 @@ fn absolute_jump_stub(target: usize) -> std::io::Result<Vec<u8>> {
         // lui x1, %hi20
         stub.extend_from_slice(&((hi20 << 12) | 0x37).to_le_bytes());
         // addi x1, x1, %lo12
-        stub.extend_from_slice(&((lo12 << 20) | (1 << 15) | (0 << 12) | (1 << 7) | 0x13).to_le_bytes());
+        stub.extend_from_slice(
+            &((lo12 << 20) | (1 << 15) | (0 << 12) | (1 << 7) | 0x13).to_le_bytes(),
+        );
         // jalr x0, x1, 0
-        stub.extend_from_slice(&((0u32 << 20) | (1 << 15) | (0 << 12) | (0 << 7) | 0x67).to_le_bytes());
+        stub.extend_from_slice(
+            &((0u32 << 20) | (1 << 15) | (0 << 12) | (0 << 7) | 0x67).to_le_bytes(),
+        );
         Ok(stub)
     }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")))]
+    #[cfg(not(any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "riscv64"
+    )))]
     {
-        Err(invalid_data("absolute jump stubs are not supported on this architecture"))
+        Err(invalid_data(
+            "absolute jump stubs are not supported on this architecture",
+        ))
     }
 }
 
@@ -1021,9 +1041,7 @@ fn apply_riscv64_call_plt_reloc(
             .call_stub_offsets
             .get(&offset)
             .copied()
-            .ok_or_else(|| {
-                invalid_data("missing riscv call stub for out-of-range relocation")
-            })?;
+            .ok_or_else(|| invalid_data("missing riscv call stub for out-of-range relocation"))?;
         let stub_address = add_i64_to_usize(site.base.as_usize(), stub_offset as i64)?;
         let stub_delta = stub_address as i128 - patch_address as i128;
         if !(-(1i128 << 31)..(1i128 << 31)).contains(&stub_delta) {
