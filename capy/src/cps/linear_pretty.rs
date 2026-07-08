@@ -1,5 +1,5 @@
 use crate::{
-    cps::linear::{
+    compiler::ssa::{
         Block, BlockId, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom, LinearProgram,
         Procedure, ProcedureKind, RestPredicate, SwitchKind, Terminator, ValueId,
     },
@@ -315,10 +315,10 @@ fn render_switch_kind(kind: SwitchKind) -> &'static str {
     }
 }
 
-fn render_switch_case_value<'gc>(value: crate::cps::linear::SwitchCaseValue<'gc>) -> String {
+fn render_switch_case_value<'gc>(value: crate::compiler::ssa::SwitchCaseValue<'gc>) -> String {
     match value {
-        crate::cps::linear::SwitchCaseValue::Integer(value) => value.to_string(),
-        crate::cps::linear::SwitchCaseValue::Symbol { value, .. } => render_value(value),
+        crate::compiler::ssa::SwitchCaseValue::Integer(value) => value.to_string(),
+        crate::compiler::ssa::SwitchCaseValue::Symbol { value, .. } => render_value(value),
     }
 }
 

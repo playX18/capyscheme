@@ -1440,7 +1440,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn jump_to_linear_block(
         &mut self,
         procedure: &Procedure<'gc>,
-        target: crate::cps::linear::BlockId,
+        target: crate::compiler::ssa::BlockId,
         args: &[LinearAtom<'gc>],
     ) {
         let block = procedure
@@ -1570,7 +1570,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         procedure: &Procedure<'gc>,
         kind: SwitchKind,
         scrutinee: LinearAtom<'gc>,
-        cases: &[crate::cps::linear::SwitchCase<'gc>],
+        cases: &[crate::compiler::ssa::SwitchCase<'gc>],
         default: &BranchTarget<'gc>,
     ) {
         let value = self.linear_atom(scrutinee);
@@ -1584,7 +1584,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         } else {
             self.builder.create_block()
         };
-        let mut case_blocks: Vec<(ir::Block, Vec<&crate::cps::linear::SwitchCase<'gc>>)> =
+        let mut case_blocks: Vec<(ir::Block, Vec<&crate::compiler::ssa::SwitchCase<'gc>>)> =
             Vec::with_capacity(cases.len());
         let mut case_block_by_key: HashMap<u128, usize> = HashMap::new();
         let mut switch = Switch::new();
@@ -1707,7 +1707,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     fn linear_fixnum_switch_error_or_default(
         &mut self,
         scrutinee: ir::Value,
-        cases: &[crate::cps::linear::SwitchCase<'gc>],
+        cases: &[crate::compiler::ssa::SwitchCase<'gc>],
         procedure: &Procedure<'gc>,
         default: &BranchTarget<'gc>,
     ) {
@@ -1740,7 +1740,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         &mut self,
         procedure: &Procedure<'gc>,
         scrutinee: ir::Value,
-        cases: &[crate::cps::linear::SwitchCase<'gc>],
+        cases: &[crate::compiler::ssa::SwitchCase<'gc>],
         default: &BranchTarget<'gc>,
     ) {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);

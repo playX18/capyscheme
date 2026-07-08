@@ -179,7 +179,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
     }
 }
 
-fn render_lcps_dump<'gc>(linear_cps: &crate::cps::linear::LinearProgram<'gc>) -> String {
+fn render_lcps_dump<'gc>(linear_cps: &crate::compiler::ssa::LinearProgram<'gc>) -> String {
     let mut rendered = crate::cps::linear_pretty::render_program(linear_cps);
     rendered.push('\n');
 
@@ -433,7 +433,7 @@ mod tests {
                     id: BlockId(0),
                     params: vec![p0],
                     variadic: None,
-                    instructions: vec![crate::cps::linear::Instruction::PrimCall {
+                    instructions: vec![crate::compiler::ssa::Instruction::PrimCall {
                         dst: tmp,
                         prim: Primitive::car,
                         args: vec![LinearAtom::Local(p0)],
