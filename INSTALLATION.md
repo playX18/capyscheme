@@ -1,8 +1,6 @@
 # Installation
 
-To install & run CapyScheme you need additonal dependencies:
-- lld on macOS to link Scheme files after they were built
-- Makefile
+To install & run CapyScheme you need GNU make to be installed.
 
 After they are installed simply run:
 ```sh
