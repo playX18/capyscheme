@@ -9,11 +9,11 @@ use crate::rsgc::{
 use crate::compiler::codegen::{DataSymbol, FunctionSymbol};
 use crate::{
     compiler::{
+        cps::graph::Atom,
         cranelift::{
             LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
             primitive::PrimValue,
         },
-        cps::graph::Atom,
         ssa::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
             Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
