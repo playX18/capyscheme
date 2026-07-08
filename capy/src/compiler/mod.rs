@@ -56,6 +56,7 @@ mod object;
 mod pipeline;
 pub mod ssa;
 mod symbols;
+pub mod tree;
 
 pub use bootstrap::compile_file;
 pub use object::{BackendDumpOptions, CompilationOptions, compile_cps_to_fasl_bytes};
