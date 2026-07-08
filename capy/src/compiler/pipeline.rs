@@ -180,7 +180,7 @@ pub(crate) fn dump_lowered_program_artifacts<'gc>(
 }
 
 fn render_lcps_dump<'gc>(linear_cps: &crate::compiler::ssa::LinearProgram<'gc>) -> String {
-    let mut rendered = crate::cps::linear_pretty::render_program(linear_cps);
+    let mut rendered = crate::compiler::cps::linear_pretty::render_program(linear_cps);
     rendered.push('\n');
 
     rendered
@@ -192,19 +192,18 @@ mod tests {
         DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts, render_lcps_dump,
     };
     use crate::{
-        compiler::cranelift::primitive::Primitive,
-        cps::{
-            linear::{
+        compiler::{
+            cranelift::primitive::Primitive,
+            ssa::{
                 Block, BlockId, CodeId, GraphCodeId, LinearAtom, LinearProgram, Procedure,
                 ProcedureKind, Terminator, ValueId,
             },
-            term::{Func, Term},
         },
         expander::{
             core::{LVarRef, fresh_lvar},
             term::{Term as IlTerm, TermKind as IlTermKind},
         },
-        rsgc::{Gc, alloc::Array, cell::Lock},
+        rsgc::{Gc, cell::Lock},
         runtime::{
             Context, Scheme,
             value::{Str, Symbol, Value, Vector},
@@ -214,41 +213,6 @@ mod tests {
     fn with_ctx(f: impl for<'gc> FnOnce(Context<'gc>)) {
         let scm = Scheme::new_uninit();
         scm.enter(f);
-    }
-
-    fn vars<'gc>(ctx: Context<'gc>, vars: &[LVarRef<'gc>]) -> crate::cps::term::Vars<'gc> {
-        Array::from_slice(*ctx, vars)
-    }
-
-    fn atoms<'gc>(
-        ctx: Context<'gc>,
-        atoms: &[crate::cps::term::Atom<'gc>],
-    ) -> crate::cps::term::Atoms<'gc> {
-        Array::from_slice(*ctx, atoms)
-    }
-
-    fn dummy_func<'gc>(ctx: Context<'gc>) -> Gc<'gc, Func<'gc>> {
-        let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "lcps-dump-test").into());
-        let retk = fresh_lvar(ctx, Symbol::from_str(ctx, "lcps-dump-retk").into());
-        let body = Gc::new(
-            *ctx,
-            Term::Continue(retk, atoms(ctx, &[]), Value::new(false)),
-        );
-
-        Gc::new(
-            *ctx,
-            Func {
-                name: Symbol::from_str(ctx, "lcps-dump-test").into(),
-                source: Value::new(false),
-                binding,
-                return_cont: retk,
-                args: vars(ctx, &[]),
-                variadic: None,
-                body: Lock::new(body),
-                free_vars: Lock::new(Some(vars(ctx, &[]))),
-                meta: Value::new(false),
-            },
-        )
     }
 
     fn dummy_il<'gc>(ctx: Context<'gc>) -> crate::expander::core::TermRef<'gc> {
@@ -413,11 +377,13 @@ mod tests {
     #[test]
     fn lcps_dump_includes_slot_allocation() {
         with_ctx(|ctx| {
-            let entry = dummy_func(ctx);
+            let binding = fresh_lvar(ctx, Symbol::from_str(ctx, "lcps-dump-test").into());
             let p0 = ValueId(0);
             let tmp = ValueId(1);
+            let mut sources = std::collections::HashMap::new();
+            sources.insert(ValueId(10_000), binding);
             let procedure = Procedure {
-                code: CodeId::Function(entry),
+                code: CodeId::GraphFunction(GraphCodeId(7)),
                 kind: ProcedureKind::Function,
                 binding: ValueId(10_000),
                 name: Value::new(false),
@@ -427,7 +393,7 @@ mod tests {
                 params: vec![p0],
                 variadic: None,
                 free_vars: vec![],
-                sources: Default::default(),
+                sources,
                 entry: BlockId(0),
                 blocks: vec![Block {
                     id: BlockId(0),
@@ -448,14 +414,14 @@ mod tests {
                 }],
             };
             let linear = LinearProgram {
-                entry: CodeId::Function(entry),
+                entry: CodeId::GraphFunction(GraphCodeId(7)),
                 procedures: vec![procedure],
             };
 
             let rendered = render_lcps_dump(&linear);
 
             assert!(rendered.contains("(linear-program"));
-            assert!(rendered.contains("(procedure function"));
+            assert!(rendered.contains("(procedure graph-function"));
             assert!(rendered.contains("(binding %v10000)"));
             assert!(rendered.contains("(params %v0)"));
             assert!(rendered.contains("(prim-call %v1 car %v0)"));

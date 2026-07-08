@@ -17,6 +17,34 @@ use cranelift_entity::{
 
 pub use super::worklist::{GraphWorklist, WorklistQueue};
 
+/// A CPS atom — either a bound local variable or a constant value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Atom<'gc> {
+    Constant(Value<'gc>),
+    Local(LVarRef<'gc>),
+}
+
+impl<'gc> std::fmt::Display for Atom<'gc> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constant(c) => write!(f, "{}", c),
+            Self::Local(l) => write!(f, "{}:{}", l.name, l.id),
+        }
+    }
+}
+
+impl<'gc, T: Into<Value<'gc>>> From<T> for Atom<'gc> {
+    fn from(value: T) -> Self {
+        Atom::Constant(Value::new(value))
+    }
+}
+
+impl<'gc> From<LVarRef<'gc>> for Atom<'gc> {
+    fn from(value: LVarRef<'gc>) -> Self {
+        Atom::Local(value)
+    }
+}
+
 /// A branch hint given to `if` term in CPS code.
 ///
 /// This is mainly used to generate efficient code for type-checks.

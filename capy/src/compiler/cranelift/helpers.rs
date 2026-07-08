@@ -5,7 +5,6 @@ use cranelift_codegen::ir::{self, BlockArg};
 
 use crate::{
     compiler::cranelift::{AllocationHeaderPreset, SSABuilder},
-    cps::term::{Atom, ContRef, FuncRef},
     expander::core::LVarRef,
     rsgc::{
         mmtk::BarrierSelector,
@@ -613,15 +612,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         let srcloc = self.get_srcloc(src);
         let label = self.func_debug_cx.add_variable(lvar, srcloc);
         self.builder.set_val_label(val, label);
-    }
-
-    /// Given CPS function, construct metadata value for it.
-    pub fn meta_for_func(&mut self, f: FuncRef<'gc>) -> ir::Value {
-        self.atom(Atom::Constant(f.meta))
-    }
-
-    pub fn meta_for_cont(&mut self, c: ContRef<'gc>) -> ir::Value {
-        self.atom(Atom::Constant(c.meta))
     }
 
     pub fn ireduce(&mut self, to: types::Type, v: ir::Value) -> ir::Value {

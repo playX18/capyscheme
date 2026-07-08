@@ -1,6 +1,5 @@
 use crate::{
-    compiler::cranelift::primitive::Primitive,
-    cps::term::{BranchHint, ContRef, FuncRef},
+    compiler::{cranelift::primitive::Primitive, cps::graph::BranchHint},
     expander::core::LVarRef,
     runtime::{value::Value, vm::exceptions::RaiseKind},
 };
@@ -35,22 +34,20 @@ pub enum ClosureKind {
 pub struct GraphCodeId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CodeId<'gc> {
-    Function(FuncRef<'gc>),
-    Continuation(ContRef<'gc>),
+pub enum CodeId {
     GraphFunction(GraphCodeId),
     GraphContinuation(GraphCodeId),
 }
 
 #[derive(Debug, Clone)]
 pub struct LinearProgram<'gc> {
-    pub entry: CodeId<'gc>,
+    pub entry: CodeId,
     pub procedures: Vec<Procedure<'gc>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Procedure<'gc> {
-    pub code: CodeId<'gc>,
+    pub code: CodeId,
     pub kind: ProcedureKind,
     pub binding: ValueId,
     pub name: Value<'gc>,
@@ -90,7 +87,7 @@ pub enum Instruction<'gc> {
     },
     MakeClosure {
         dst: ValueId,
-        code: CodeId<'gc>,
+        code: CodeId,
         kind: ClosureKind,
         free_count: usize,
     },

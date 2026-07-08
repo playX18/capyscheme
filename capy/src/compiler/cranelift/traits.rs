@@ -1,6 +1,6 @@
 use cranelift_codegen::ir;
 
-use crate::{compiler::cranelift::SSABuilder, cps::term::Atom, runtime::value::Value};
+use crate::{compiler::{cranelift::SSABuilder, cps::graph::Atom}, runtime::value::Value};
 
 pub trait IntoSSA<'gc, 'a, 'f> {
     fn into_ssa(self, builder: &mut SSABuilder<'gc, 'a, 'f>) -> ir::Value;

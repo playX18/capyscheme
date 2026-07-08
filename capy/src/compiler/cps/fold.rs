@@ -12,10 +12,7 @@ use crate::rsgc::ptr::ObjectSlot;
 use crate::runtime::Context;
 use crate::runtime::value::*;
 use crate::runtime::vm::syntax::Syntax;
-use crate::{
-    cps::term::Atom,
-    runtime::value::{Number, Value},
-};
+use crate::runtime::value::{Number, Value};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -26,30 +23,6 @@ pub struct FoldingTable<'gc> {
 }
 
 impl<'gc> FoldingTable<'gc> {
-    pub fn try_fold(
-        &self,
-        ctx: Context<'gc>,
-        prim: Value<'gc>,
-        args: &[Atom<'gc>],
-    ) -> Option<Value<'gc>> {
-        if args.iter().all(|arg| matches!(arg, Atom::Constant(_)))
-            && let Some(entry) = self.table.get(&prim)
-        {
-            let args = args
-                .iter()
-                .map(|arg| match arg {
-                    Atom::Constant(val) => *val,
-                    _ => unreachable!(),
-                })
-                .collect::<Vec<_>>();
-            let result = entry.apply(ctx, &args)?;
-
-            return Some(result);
-        }
-
-        None
-    }
-
     pub fn try_fold_values(
         &self,
         ctx: Context<'gc>,
@@ -126,7 +99,6 @@ macro_rules! folding {
             let _ = stringify!($arg);
             argc += 1;
         )*
-
 
             fn $name<'gc>($ctx: Context<'gc>, values: &[Value<'gc>]) -> Option<Value<'gc>> {
                 let mut i = 0;
@@ -231,45 +203,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
 
-        /*"tuple-ref" => tuple_ref(ctx, tuple, ix) {
-            let Some(tuple) = tuple.try_as::<Tuple>() else {
-                return None;
-            };
-
-            let Some(ix) = ix.number().filter(|n| n.is_fixnum()).map(|n| n.coerce_exact_integer_to_usize()) else {
-                return None;
-            };
-
-            if ix >= tuple.len() {
-                return None;
-            }
-
-            Some(tuple[ix].get())
-        }*/
-
-        /*"make-tuple" => make_tuple(ctx, count, init) {
-            let Some(count) = count.number().filter(|n| n.is_fixnum()).map(|n| n.coerce_exact_integer_to_usize()) else {
-                return None;
-            };
-
-            // Do not fold too large tuples
-            if count > 32 {
-                return None;
-            }
-            let tup = Tuple::new(ctx, count, init);
-
-            Some(tup.into())
-        }
-
-        "tuple-size" => tuple_size(ctx, tuple) {
-            let Some(tuple) = tuple.try_as::<Tuple>() else {
-                return None;
-            };
-
-            Some(Value::new(tuple.len() as i32))
-        }*/
-
-
         "not" => not(ctx, a) {
             Some(Value::new(!a.as_bool()))
         }
@@ -348,7 +281,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         }
 
         "cons" => cons(ctx, a, b) {
-            //return None;
             Some(Value::cons(ctx, a, b))
         }
 
@@ -363,10 +295,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
         "immediate?" => is_immediate(ctx, a) {
             let _ = a;
             return None;
-            //   Some(Value::new(a.is_immediate()))
         }
-
-
 
         "make-syntax" => make_syntax(ctx, exp, wrap, module, source, properties) {
             Some(Syntax::new(
@@ -378,15 +307,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 properties,
             ).into())
         }
-
-
-        /*
-            raw primitive operations
-
-            We need to be careful with these, they do not per-se check types,
-            but we try to check them here to avoid runtime undefined behavior.
-         */
-
 
         ".is-cell" => is_cell(ctx, a) {
             Some(Value::new(a.is_cell()))
@@ -461,8 +381,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             let offset = offset.as_int32() as isize;
 
-            // SAFETY: `a.is_cell()` check above guarantees `a` is a valid GC heap pointer.
-            // The offset is validated as int32; caller must ensure it's within the object bounds.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 Some(Value::from_raw(addr.load::<u8>() as u64))
@@ -480,7 +398,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             let offset = offset.as_int32() as isize;
 
-            // SAFETY: Same as ref8 — `a` is a valid cell, offset is within int32 range.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 Some(Value::from_raw(addr.load::<u16>() as u64))
@@ -498,7 +415,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             let offset = offset.as_int32() as isize;
 
-            // SAFETY: Same as ref8 — `a` is a valid cell, offset is within int32 range.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 Some(Value::from_raw(addr.load::<u32>() as u64))
@@ -516,7 +432,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             let offset = offset.as_int32() as isize;
 
-            // SAFETY: Same as ref8 — `a` is a valid cell, offset is within int32 range.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 Some(Value::from_raw(addr.load::<u64>()))
@@ -534,7 +449,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             let offset = offset.as_int32() as isize;
 
-            // SAFETY: Same as ref8 — `a` is a valid cell, offset is within int32 range.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 Some(Value::from_raw(addr.load::<usize>() as u64))
@@ -553,8 +467,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             let offset = offset.as_int32() as isize;
             let value = value.bits() as u8;
 
-            // SAFETY: `a.is_cell()` ensures valid heap pointer; offset validated as int32.
-            // Caller must ensure offset is within the object's allocated bounds.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 addr.store(value);
@@ -574,7 +486,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             let offset = offset.as_int32() as isize;
             let value = value.bits() as u16;
 
-            // SAFETY: Same as set8 — valid cell pointer, validated offset.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 addr.store(value);
@@ -594,7 +505,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             let offset = offset.as_int32() as isize;
             let value = value.bits() as u32;
 
-            // SAFETY: Same as set8 — valid cell pointer, validated offset.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 addr.store(value);
@@ -614,7 +524,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
             let offset = offset.as_int32() as isize;
             let value = value.bits();
 
-            // SAFETY: Same as set8 — valid cell pointer, validated offset.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset;
                 addr.store(value);
@@ -631,9 +540,6 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 return None;
             }
 
-
-            // SAFETY: Same as set8, but also issues a GC write barrier via
-            // `raw_object_reference_write` since this stores a GC-managed reference.
             unsafe {
                 let addr = Address::from_usize(a.bits() as usize) + offset.as_int32() as isize;
                 addr.store(value.bits());
@@ -657,7 +563,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "u8/" => u8_div(ctx, a, b) {
             if b.bits() as u8 == 0 {
-                return None; // Division by zero
+                return None;
             }
             Some(Value::from_raw((a.bits() as u8).wrapping_div(b.bits() as u8) as u64))
         }
@@ -732,7 +638,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "u16/" => u16_div(ctx, a, b) {
             if b.bits() as u16 == 0 {
-            return None; // Division by zero
+            return None;
             }
             Some(Value::from_raw((a.bits() as u16).wrapping_div(b.bits() as u16) as u64))
         }
@@ -807,7 +713,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "u32/" => u32_div(ctx, a, b) {
             if b.bits() as u32 == 0 {
-            return None; // Division by zero
+            return None;
             }
             Some(Value::from_raw((a.bits() as u32).wrapping_div(b.bits() as u32) as u64))
         }
@@ -882,7 +788,7 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
         "u64/" => u64_div(ctx, a, b) {
             if b.bits() == 0 {
-            return None; // Division by zero
+            return None;
             }
             Some(Value::from_raw(a.bits().wrapping_div(b.bits())))
         }

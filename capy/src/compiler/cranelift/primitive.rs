@@ -1,5 +1,5 @@
 use super::{AllocationHeaderPreset, SSABuilder};
-use crate::cps::term::Atom;
+use crate::compiler::cps::graph::Atom;
 use crate::rsgc::object::builtin_class_ids;
 use crate::runtime::Context;
 use crate::runtime::State;

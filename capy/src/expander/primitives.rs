@@ -1,4 +1,4 @@
-use crate::cps::Set;
+use crate::compiler::cps::Set;
 use crate::expander::core::{
     LetStyle, Term, TermKind, TermRef, call_term, constant, fresh_lvar, if_term, let_term, lref,
     prim_call_term, seq_from_slice,

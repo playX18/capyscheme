@@ -2,8 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::cps::ReifyInfo;
-use crate::cps::term::{ContRef, FuncRef};
+
 use crate::expander::core::LVarRef;
 use crate::runtime::value::{Value, Vector};
 use cranelift_codegen::binemit::CodeOffset;
@@ -46,15 +45,6 @@ pub(crate) struct DebugSourceLocation {
 }
 
 impl<'gc> DebugContext<'gc> {
-    pub(crate) fn new(reify_info: &ReifyInfo<'gc>, isa: &dyn TargetIsa) -> Self {
-        Self::new_for_entry(
-            reify_info.entrypoint.source(),
-            reify_info.entrypoint.name,
-            reify_info.entrypoint.binding,
-            isa,
-        )
-    }
-
     pub(crate) fn new_for_entry(
         entry_source: Value<'gc>,
         entry_name: Value<'gc>,
@@ -159,22 +149,6 @@ impl<'gc> DebugContext<'gc> {
             value_type: value_type_id,
             usize_type: usize_type_id,
         }
-    }
-
-    pub(crate) fn define_function(
-        &mut self,
-        func: FuncRef<'gc>,
-        linkage_name: &str,
-    ) -> FunctionDebugContext<'gc> {
-        self.define_procedure(func.source(), func.name, func.binding, linkage_name)
-    }
-
-    pub(crate) fn define_cont(
-        &mut self,
-        func: ContRef<'gc>,
-        linkage_name: &str,
-    ) -> FunctionDebugContext<'gc> {
-        self.define_procedure(func.source(), func.name, func.binding, linkage_name)
     }
 
     pub(crate) fn define_procedure(

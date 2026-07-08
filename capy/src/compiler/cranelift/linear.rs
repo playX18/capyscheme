@@ -8,17 +8,17 @@ use crate::rsgc::{
 
 use crate::compiler::codegen::{DataSymbol, FunctionSymbol};
 use crate::{
-    compiler::cranelift::{
-        LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
-        primitive::PrimValue,
-    },
-    cps::{
-        linear::{
+    compiler::{
+        cranelift::{
+            LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
+            primitive::PrimValue,
+        },
+        cps::graph::Atom,
+        ssa::{
             Block as LinearBlock, BranchTarget, ClosureKind, CodeId, Instruction, LinearAtom,
             Procedure, ProcedureKind, RestPredicate, SwitchCaseValue, SwitchKind, Terminator,
             ValueId,
         },
-        term::Atom,
     },
     expander::core::{LVarRef, fresh_lvar},
     runtime::{
@@ -1047,11 +1047,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn code_block_data(&self, code: CodeId<'gc>) -> DataSymbol {
+    fn code_block_data(&self, code: CodeId) -> DataSymbol {
         self.module_builder.code_block_for_code[&code]
     }
 
-    fn code_function_symbol(&self, code: CodeId<'gc>) -> FunctionSymbol {
+    fn code_function_symbol(&self, code: CodeId) -> FunctionSymbol {
         self.module_builder.func_for_code[&code]
     }
 
@@ -1251,17 +1251,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             if self.is_self_reference(var) {
                 return Callee::SelfRec(self.entry_block);
             }
-
-            if let Some(reify_info) = &self.module_builder.reify_info
-                && let Some(func) = reify_info.free_vars.funcs.get(&var)
-                && let Some(func_id) = self.module_builder.func_for_func.get(func).copied()
-            {
-                let closure = self.linear_atom(callee);
-                return Callee::Direct {
-                    target: self.load_function_entrypoint(func_id),
-                    closure,
-                };
-            }
         }
 
         let callee = self.linear_atom(callee);
@@ -1295,19 +1284,6 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     }
 
     fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
-        if let LinearAtom::Local(var_id) = callee
-            && let Some(var) = self.linear_source(var_id)
-            && let Some(reify_info) = &self.module_builder.reify_info
-            && let Some(cont) = reify_info.free_vars.conts.get(&var)
-            && let Some(func_id) = self.module_builder.func_for_cont.get(cont).copied()
-        {
-            let closure = self.linear_atom(callee);
-            return Callee::Direct {
-                target: self.load_function_entrypoint(func_id),
-                closure,
-            };
-        }
-
         let closure = self.linear_atom(callee);
         let code = self.builder.ins().load(
             types::I64,
