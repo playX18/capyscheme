@@ -47,6 +47,10 @@
     syntax-violation?
     syntax-violation-form
     syntax-violation-subform
+    &expansion-trace
+    make-expansion-trace-condition
+    expansion-trace?
+    condition-expansion-trace
     &undefined
     make-undefined-violation
     undefined-violation?

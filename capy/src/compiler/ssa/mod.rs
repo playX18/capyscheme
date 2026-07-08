@@ -4,12 +4,16 @@
 use crate::compiler::codegen::declare_function;
 use crate::{
     compiler::{
+        BackendDumpOptions,
         codegen::{
             CompileContext, DataKind, DataSymbol, FunctionSymbol, Symbol, declare_data,
             declare_runtime_data, host_isa,
         },
-        debuginfo::{DebugContext, FunctionDebugContext},
-        direct::{Relocation as DirectRelocation, Target as DirectTarget, compile_function},
+        debuginfo::{DebugContext, DebugSourceLocation, FunctionDebugContext},
+        direct::{
+            CompiledFunction, Relocation as DirectRelocation, Target as DirectTarget,
+            compile_function,
+        },
         ssa::primitive::PrimitiveLowerer,
     },
     cps::{
@@ -17,17 +21,18 @@ use crate::{
         linear::{BlockId, CodeId, LinearProgram, Procedure, ValueId},
         term::{ContRef, FuncRef},
     },
+    disassembly::{DisassemblySource, SourceAnnotation, SourceRangeAnnotation},
     expander::core::LVarRef,
     rsgc::object::{OBJECT_HEADER_OFFSET, builtin_class_ids},
     runtime::{
         CallData, Context, REGISTER_ARG_COUNT, State,
         fasl::{
-            CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec, GraphValueSpec,
-            ProgramSpec,
+            CodeSourceMapEntry, CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec,
+            GraphValueSpec, ProgramSpec,
             reloc::{RelocKind, RelocTarget, Relocation, SideMetadataSlot},
         },
         symbols::RuntimeData,
-        value::{Closure, ReturnCode, Value, ValueEqual},
+        value::{Closure, ReturnCode, Symbol as SchemeSymbol, Value, ValueEqual},
     },
 };
 
@@ -41,7 +46,10 @@ use cranelift_codegen::{
 
 use std::{
     collections::{HashMap, HashSet},
+    fs::File,
+    io::Write,
     mem::offset_of,
+    path::Path,
 };
 
 use crate::runtime::vm::thunks::*;
@@ -70,6 +78,129 @@ fn declare_direct_data(next_data_symbol: &mut u32, _name: &str) -> DataSymbol {
     let symbol = DataSymbol::new(*next_data_symbol);
     *next_data_symbol += 1;
     symbol
+}
+
+fn open_dump_file(path: Option<&Path>) -> Result<Option<File>, String> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create dump directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    File::create(path)
+        .map(Some)
+        .map_err(|err| format!("failed to create dump file {}: {err}", path.display()))
+}
+
+fn write_cranelift_dump(
+    file: &mut File,
+    symbol_id: u32,
+    name: &str,
+    function: &ir::Function,
+) -> Result<(), String> {
+    writeln!(file, ";; function {symbol_id} {name}")
+        .map_err(|err| format!("failed to write Cranelift dump for {name}: {err}"))?;
+    writeln!(file, "{}", function.display())
+        .map_err(|err| format!("failed to write Cranelift dump for {name}: {err}"))?;
+    Ok(())
+}
+
+fn write_disassembly_dump(
+    file: &mut File,
+    symbol_id: u32,
+    name: &str,
+    bytes: &[u8],
+    source: Option<&DisassemblySource>,
+) -> Result<(), String> {
+    writeln!(file, ";; function {symbol_id} {name}")
+        .map_err(|err| format!("failed to write disassembly dump for {name}: {err}"))?;
+    let rendered = crate::disassembly::disassemble_host_with_annotations(bytes, 0, source)
+        .map_err(|err| format!("failed to disassemble {name}: {err}"))?;
+    writeln!(file, "{rendered}")
+        .map_err(|err| format!("failed to write disassembly dump for {name}: {err}"))?;
+    Ok(())
+}
+
+fn disassembly_source<'gc>(
+    func_debug_cx: &FunctionDebugContext<'gc>,
+    debug_context: &DebugContext<'gc>,
+    compiled: &CompiledFunction,
+) -> DisassemblySource {
+    let function = source_annotation(func_debug_cx.default_source_location(debug_context));
+    let instructions = compiled
+        .source_locs
+        .iter()
+        .filter_map(|source_loc| {
+            if source_loc.start == source_loc.end {
+                return None;
+            }
+            let source = func_debug_cx.source_location(debug_context, source_loc.loc);
+            source_annotation(source)
+                .map(|source| SourceRangeAnnotation::new(source_loc.start, source_loc.end, source))
+        })
+        .collect();
+
+    DisassemblySource::new(function, instructions)
+}
+
+fn code_source_map(source: &DisassemblySource) -> Vec<CodeSourceMapEntry> {
+    source
+        .instructions()
+        .iter()
+        .map(|range| {
+            CodeSourceMapEntry::new(
+                range.start(),
+                range.end(),
+                range.source().to_code_source_location(),
+            )
+        })
+        .collect()
+}
+
+fn source_annotation(source: DebugSourceLocation) -> Option<SourceAnnotation> {
+    if source.file == "<unknown>" || source.line == 0 {
+        return None;
+    }
+
+    Some(SourceAnnotation::new(
+        source.file,
+        source.line,
+        source.column,
+        None,
+        None,
+    ))
+}
+
+fn metadata_with_source<'gc>(
+    ctx: Context<'gc>,
+    metadata: Value<'gc>,
+    source: Value<'gc>,
+) -> Value<'gc> {
+    if source == Value::new(false) {
+        return metadata;
+    }
+
+    let source_key = SchemeSymbol::from_str(ctx, "source").into();
+    if metadata.is_pair() && metadata.assq(source_key).is_some() {
+        return metadata;
+    }
+
+    let metadata = if metadata == Value::new(false) {
+        Value::null()
+    } else {
+        metadata
+    };
+    if !metadata.is_alist() {
+        return metadata;
+    }
+
+    let source_entry = Value::cons(ctx, source_key, source);
+    Value::cons(ctx, source_entry, metadata)
 }
 
 fn fasl_relocation_from_direct_relocation(
@@ -197,6 +328,7 @@ struct CompiledFaslFunction {
     arity: i32,
     is_cont: bool,
     metadata_constant: Option<u32>,
+    source_map: Vec<CodeSourceMapEntry>,
 }
 
 #[derive(Clone, Copy)]
@@ -331,7 +463,7 @@ impl<'gc> ModuleBuilder<'gc> {
         Self {
             debug_context,
             ctx,
-            stacktraces: true,
+            stacktraces: false,
             reify_info,
             linear,
             constants: HashMap::new(),
@@ -508,6 +640,13 @@ impl<'gc> ModuleBuilder<'gc> {
     }
 
     pub fn compile_loaded_fasl_bytes(&mut self) -> Result<Vec<u8>, String> {
+        self.compile_loaded_fasl_bytes_with_dumps(&BackendDumpOptions::default())
+    }
+
+    pub fn compile_loaded_fasl_bytes_with_dumps(
+        &mut self,
+        backend_dumps: &BackendDumpOptions,
+    ) -> Result<Vec<u8>, String> {
         let declared_procedures = self.declare_procedures();
         let debug_entry_function_ids = declared_procedures
             .iter()
@@ -517,8 +656,11 @@ impl<'gc> ModuleBuilder<'gc> {
         let mut cache = CompileContext::new();
         let mut functions = Vec::with_capacity(declared_procedures.len());
         let mut pending_metadata = Vec::with_capacity(declared_procedures.len());
+        let mut cranelift_dump = open_dump_file(backend_dumps.cranelift.as_deref())?;
+        let mut disassembly_dump = open_dump_file(backend_dumps.disassembly.as_deref())?;
 
         self.compile_fasl_trampolines(&*isa, &mut cache, &mut functions)?;
+        let procedure_function_start = functions.len();
 
         for declared in declared_procedures.iter() {
             cache.ctx.func = ir::Function::with_name_signature(
@@ -563,20 +705,44 @@ impl<'gc> ModuleBuilder<'gc> {
                     declared.procedure.meta,
                 ),
             };
-            let mut ssa = SSABuilder::new(
-                self,
-                builder,
-                declared.procedure.clone(),
-                thunks,
-                func_debug_cx,
-            );
+            let metadata = metadata_with_source(self.ctx, metadata, declared.procedure.source);
+            let func_debug_cx = {
+                let mut ssa = SSABuilder::new(
+                    self,
+                    builder,
+                    declared.procedure.clone(),
+                    thunks,
+                    func_debug_cx,
+                );
 
-            ssa.linear_procedure(&declared.procedure);
-            ssa.finalize();
-            ssa.builder.seal_all_blocks();
-            ssa.builder.finalize();
+                ssa.linear_procedure(&declared.procedure);
+                ssa.finalize();
+                ssa.builder.seal_all_blocks();
+                ssa.builder.finalize();
+                ssa.func_debug_cx
+            };
+
+            if let Some(file) = cranelift_dump.as_mut() {
+                write_cranelift_dump(
+                    file,
+                    declared.function.index(),
+                    &declared.name,
+                    &cache.ctx.func,
+                )?;
+            }
 
             let compiled = compile_function(&*isa, &mut cache)?;
+            let source = disassembly_source(&func_debug_cx, &self.debug_context, &compiled);
+            let source_map = code_source_map(&source);
+            if let Some(file) = disassembly_dump.as_mut() {
+                write_disassembly_dump(
+                    file,
+                    declared.function.index(),
+                    &declared.name,
+                    &compiled.bytes,
+                    Some(&source),
+                )?;
+            }
             pending_metadata.push(metadata);
             functions.push(CompiledFaslFunction {
                 symbol: declared.function,
@@ -585,8 +751,13 @@ impl<'gc> ModuleBuilder<'gc> {
                 arity,
                 is_cont,
                 metadata_constant: None,
+                source_map,
             });
             cache.clear();
+        }
+
+        for metadata in &pending_metadata {
+            let _ = self.intern_constant(*metadata);
         }
 
         let constant_indices = self.constant_indices();
@@ -601,7 +772,11 @@ impl<'gc> ModuleBuilder<'gc> {
                 constants_by_index[*index as usize] = *value;
             }
         }
-        for (function, metadata) in functions.iter_mut().zip(pending_metadata) {
+        let procedure_functions = &mut functions[procedure_function_start..];
+        if procedure_functions.len() != pending_metadata.len() {
+            return Err("procedure metadata count does not match compiled procedure count".into());
+        }
+        for (function, metadata) in procedure_functions.iter_mut().zip(pending_metadata) {
             function.metadata_constant = self
                 .intern_constant(metadata)
                 .and_then(|symbol| constant_indices.get(&symbol).copied());
@@ -747,6 +922,7 @@ impl<'gc> ModuleBuilder<'gc> {
                     function.is_cont,
                     metadata,
                     relocations,
+                    &function.source_map,
                 ),
             ));
         }
@@ -841,6 +1017,7 @@ impl<'gc> ModuleBuilder<'gc> {
             arity: 0,
             is_cont: false,
             metadata_constant: None,
+            source_map: Vec::new(),
         });
         cache.clear();
         Ok(())
@@ -1033,7 +1210,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let overflow = overflow_base_from_argc(&mut builder, state, argc);
         let from = builder.ins().iconst(clif_types::I64, 1);
         let condition = builder.ins().call(
-            thunks.raise_condition_regs,
+            thunks.raise_condition_with_source_regs,
             &[ctx, code, argc, arg0, arg1, arg2, arg3, overflow, from],
         );
         let condition = builder.inst_results(condition)[0];
@@ -1546,7 +1723,7 @@ mod tests {
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Context, Scheme,
-            value::{Str, Symbol, Value},
+            value::{Str, Symbol, Value, Vector},
         },
     };
     use cranelift_codegen::ir::{ExternalName, Function, UserFuncName};
@@ -1565,25 +1742,78 @@ mod tests {
         fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
     }
 
+    fn source_vector<'gc>(ctx: Context<'gc>, file: &str) -> Value<'gc> {
+        Vector::from_slice(
+            *ctx,
+            &[
+                Str::from_str(*ctx, file).into(),
+                Value::new(1),
+                Value::new(1),
+                Value::new(1),
+                Value::new(10),
+                Value::new(false),
+                Value::new(false),
+                Symbol::from_str(ctx, "read").into(),
+                Value::null(),
+            ],
+        )
+        .into()
+    }
+
+    #[test]
+    fn metadata_with_source_adds_missing_source() {
+        with_ctx(|ctx| {
+            let source = source_vector(ctx, "metadata-source.scm");
+            let metadata = metadata_with_source(ctx, Value::null(), source);
+            let source_entry = metadata
+                .assq(Symbol::from_str(ctx, "source").into())
+                .expect("metadata source entry");
+
+            assert_eq!(source_entry.cdr(), source);
+        });
+    }
+
+    #[test]
+    fn metadata_with_source_preserves_existing_source() {
+        with_ctx(|ctx| {
+            let existing_source = source_vector(ctx, "existing-source.scm");
+            let new_source = source_vector(ctx, "new-source.scm");
+            let source_key = Symbol::from_str(ctx, "source").into();
+            let metadata = Value::cons(
+                ctx,
+                Value::cons(ctx, source_key, existing_source),
+                Value::null(),
+            );
+
+            let metadata = metadata_with_source(ctx, metadata, new_source);
+            let source_entry = metadata.assq(source_key).expect("metadata source entry");
+
+            assert_eq!(source_entry.cdr(), existing_source);
+        });
+    }
+
     fn one_arg_identity_func<'gc>(
         ctx: Context<'gc>,
+    ) -> (Gc<'gc, Func<'gc>>, LVarRef<'gc>, LVarRef<'gc>, LVarRef<'gc>) {
+        one_arg_identity_func_with_source(ctx, Value::new(false))
+    }
+
+    fn one_arg_identity_func_with_source<'gc>(
+        ctx: Context<'gc>,
+        source: Value<'gc>,
     ) -> (Gc<'gc, Func<'gc>>, LVarRef<'gc>, LVarRef<'gc>, LVarRef<'gc>) {
         let f = lvar(ctx, "f");
         let retk = lvar(ctx, "retk");
         let arg = lvar(ctx, "arg");
         let body = Gc::new(
             *ctx,
-            Term::Continue(
-                retk,
-                Array::from_slice(*ctx, [Atom::Local(arg)]),
-                Value::new(false),
-            ),
+            Term::Continue(retk, Array::from_slice(*ctx, [Atom::Local(arg)]), source),
         );
         let func = Gc::new(
             *ctx,
             Func {
                 name: Symbol::from_str(ctx, "identity").into(),
-                source: Value::new(false),
+                source,
                 binding: f,
                 return_cont: retk,
                 args: Array::from_slice(*ctx, [arg]),
@@ -2143,6 +2373,59 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    fn module_builder_writes_backend_dumps() {
+        with_ctx(|ctx| {
+            let dir =
+                std::env::temp_dir().join(format!("capy-backend-dump-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let source_path = dir.join("source.scm");
+            std::fs::write(&source_path, "(define (identity arg) arg)\n").unwrap();
+            let source = Vector::from_slice(
+                *ctx,
+                &[
+                    Str::from_str(*ctx, source_path.display().to_string()).into(),
+                    Value::new(0),
+                    Value::new(0),
+                    Value::new(0),
+                    Value::new(26),
+                    Value::new(false),
+                    Value::new(false),
+                    Symbol::from_str(ctx, "read").into(),
+                    Value::null(),
+                ],
+            )
+            .into();
+            let (func, _, _, _) = one_arg_identity_func_with_source(ctx, source);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
+            let clif_path = dir.join("out.clif");
+            let asm_path = dir.join("out.asm");
+            let dumps = BackendDumpOptions {
+                cranelift: Some(clif_path.clone()),
+                disassembly: Some(asm_path.clone()),
+            };
+
+            module_builder
+                .compile_loaded_fasl_bytes_with_dumps(&dumps)
+                .expect("compile unified FASL with dumps");
+
+            let clif = std::fs::read_to_string(&clif_path).expect("Cranelift dump");
+            let asm = std::fs::read_to_string(&asm_path).expect("disassembly dump");
+            assert!(clif.contains(";; function"));
+            assert!(clif.contains("fn0:identity:f"));
+            assert!(asm.contains(";; function"));
+            assert!(asm.contains("fn0:identity:f"));
+            assert!(asm.contains(";; source:"));
+            assert!(asm.contains(";;      1 | (define (identity arg) arg)"));
+
+            std::fs::remove_dir_all(&dir).unwrap();
+        });
+    }
+
+    #[test]
     fn direct_import_uses_numeric_function_and_data_symbols() {
         with_ctx(|ctx| {
             let (func, _, _, _) = one_arg_identity_func(ctx);
@@ -2295,6 +2578,31 @@ mod tests {
                 .expect("load unified FASL");
 
             assert!(value.is::<Closure>());
+        });
+    }
+
+    #[test]
+    fn module_builder_preserves_source_metadata_for_loaded_closure() {
+        with_ctx(|ctx| {
+            let source = source_vector(ctx, "loaded-source.scm");
+            let (func, _, _, _) = one_arg_identity_func_with_source(ctx, source);
+            let reify_info = reify(ctx, func);
+            let linear = linearize(&reify_info);
+            let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
+
+            let bytes = module_builder
+                .compile_loaded_fasl_bytes()
+                .expect("compile unified FASL with source metadata");
+            let value = crate::runtime::fasl::FaslReader::new(ctx, std::io::Cursor::new(bytes))
+                .read()
+                .expect("load unified FASL with source metadata");
+
+            let closure = value.downcast::<Closure>();
+            let metadata = closure.meta.get();
+            let source_entry = metadata
+                .assq(Symbol::from_str(ctx, "source").into())
+                .expect("loaded closure source metadata");
+            assert!(source_entry.cdr().equal(source, &mut Default::default()));
         });
     }
 

@@ -64,7 +64,9 @@
 
 ;; First, initial compiler is the default one.
 (%%file-compiler
-  (lambda (filename compiled-path env load-thunk?)
+  (lambda (filename compiled-path env load-thunk? . maybe-dump-options)
+    (define dump-options
+      (if (null? maybe-dump-options) '() (car maybe-dump-options)))
     (define (read-all in)
       (let lp ([exps '()])
         (let ([exp (%runtime-stats-timed-reader (lambda () (read-syntax in)))])
@@ -89,7 +91,7 @@
             (define reader (get-port-reader in #f))
             (with-continuation-mark *compile-backtrace-key* (not (reader-nobacktrace? reader))
               (receive (code mod new-mod) (compile-tree-il exps module)
-                (%compile code output-file mod load-thunk?))))))
+                (%compile code output-file mod load-thunk? dump-options))))))
       (lambda ()
         ((@@ (capy) %runtime-stats-end-compilation))))))
 
@@ -97,8 +99,13 @@
 ;; Env is a module where the file is being compiled.
 ;; load-thunk? indicates whether to return a thunk to initialize compiled
 ;; file or just compile and return. If its #f use load-thunk-in-vicinity
-(define (compile-file filename compiled-path env load-thunk?)
-  ((%%file-compiler) filename compiled-path env load-thunk?))
+(define (compile-file filename compiled-path env load-thunk? . maybe-dump-options)
+  ((%%file-compiler)
+   filename
+   compiled-path
+   env
+   load-thunk?
+   (if (null? maybe-dump-options) '() (car maybe-dump-options))))
 
 (define load-in-vicinity
   (lambda (filename directory)

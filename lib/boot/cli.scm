@@ -311,6 +311,18 @@
     (define runtime-stats (arg-results-ref res "runtime-stats"))
     (define version (arg-results-ref res "version"))
     (define backtrace #t)
+    (define dump-options
+      (let ([options '()])
+        (when (arg-results-ref res "dump-graph")
+          (set! options (cons 'graph options)))
+        (when (arg-results-ref res "dump-lcps")
+          (set! options (cons 'lcps options)))
+        (when (arg-results-ref res "dump-cranelift")
+          (set! options (cons 'cranelift options)))
+        (when (arg-results-ref res "dump-disassembly")
+          (set! options (cons 'disassembly options)))
+        (reverse options)))
+
     (when version (format #t "CapyScheme Compiler ~a~%" (implementation-version)) (exit 0))
     (if (and r7rs-mode r6rs-mode)
       (error "Cannot specify both --r7rs and --r6rs modes"))
@@ -365,7 +377,8 @@
                                file
                                out-file
                                (or (and module-name (resolve-module module-name #f #t)) #f)
-                               #f))
+                               #f
+                               dump-options))
                   (when verbose
                     (format #t ";; Compiled ~a -> ~a~%" file out))))))
           source-files)
@@ -401,6 +414,24 @@
     "runtime-stats"
     (defaults-to #f)
     (help "Enable runtime timing/counter statistics"))
+
+  (argparser-add-separator! parser "Compiler dump options:")
+  (add-flag! parser
+    "dump-graph"
+    (defaults-to #f)
+    (help "Dump graph CPS for each compiled file"))
+  (add-flag! parser
+    "dump-lcps"
+    (defaults-to #f)
+    (help "Dump linear CPS for each compiled file"))
+  (add-flag! parser
+    "dump-cranelift"
+    (defaults-to #f)
+    (help "Dump Cranelift IR for each compiled file"))
+  (add-flag! parser
+    "dump-disassembly"
+    (defaults-to #f)
+    (help "Dump native-code disassembly for each compiled file"))
 
   (argparser-add-separator! parser "Garbage collection options:")
   (add-option! parser

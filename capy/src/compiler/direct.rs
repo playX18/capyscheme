@@ -6,6 +6,7 @@ use crate::compiler::codegen::{CompileContext, Symbol};
 pub struct CompiledFunction {
     pub bytes: Vec<u8>,
     pub relocs: Vec<Relocation>,
+    pub source_locs: Vec<SourceLocRange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +21,13 @@ pub struct Relocation {
 pub enum Target {
     Symbol(Symbol),
     FunctionOffset(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceLocRange {
+    pub start: u32,
+    pub end: u32,
+    pub loc: ir::SourceLoc,
 }
 
 pub fn compile_function(
@@ -46,7 +54,21 @@ pub fn compile_function(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok(CompiledFunction { bytes, relocs })
+    let source_locs = compiled
+        .buffer
+        .get_srclocs_sorted()
+        .iter()
+        .map(|source_loc| SourceLocRange {
+            start: source_loc.start,
+            end: source_loc.end,
+            loc: source_loc.loc,
+        })
+        .collect();
+    Ok(CompiledFunction {
+        bytes,
+        relocs,
+        source_locs,
+    })
 }
 
 fn direct_relocation_target(

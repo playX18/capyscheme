@@ -57,8 +57,28 @@
     (apply make-source-condition (vector->list x))
     (condition)))
 
+(define (source-ref source index default)
+  (if (and (vector? source) (< index (vector-length source)))
+    (vector-ref source index)
+    default))
+
 (define (reader-source r)
-  (vector (reader-file r) (reader-saved-line r) (reader-saved-column r)))
+  (vector (reader-file r) (reader-saved-line r) (reader-saved-column r)
+    #f #f #f #f 'read '()))
+
+(define (finish-source reader source)
+  (if (and (vector? source) (>= (vector-length source) 3))
+    (vector (vector-ref source 0)
+      (vector-ref source 1)
+      (vector-ref source 2)
+      (reader-line reader)
+      (reader-column reader)
+      (source-ref source 5 #f)
+      (source-ref source 6 #f)
+      (source-ref source 7 'read)
+      (source-ref source 8 '()))
+    source))
+
 (define (annotate source stripped datum)
   (datum->syntax #f datum source))
 
@@ -745,13 +765,13 @@
                   (let ([s (list->vector head)]
                         [s^ (list->vector head^)])
                     (set! vec s)
-                    (set! vec^ (annotate src s s^))
+                    (set! vec^ (annotate (finish-source p src) s s^))
                     (values vec vec^))]
                 [(list)
-                  (values head (annotate src head head^))]
+                  (values head (annotate (finish-source p src) head head^))]
                 [(bytevector)
                   (let ([s (u8-list->bytevector head)])
-                    (values s (annotate src s s)))]
+                    (values s (annotate (finish-source p src) s s)))]
                 [else (reader-error p "internal error in get-compound-datum" type)])]
             [(dot)
               (cond
@@ -769,7 +789,7 @@
                             (set-cdr! prev d)
                             (set-cdr! prev^ d^)]
                           [else (reader-warning p "unexpected dot")])
-                        (values head (annotate src head head^)))))]
+                        (values head (annotate (finish-source p src) head head^)))))]
                 [else
                   (reader-warning p "Dot used in non-list datum")
                   (lp head head^ prev prev^ len)])]
@@ -803,7 +823,7 @@
         [(bytevector)
           (get-compound-datum p src 'closep 'bytevector labels)]
         [(value eof identifier)
-          (values x (annotate src x x))]
+          (values x (annotate (finish-source p src) x x))]
         [(abbrev)
           (receive (type lex) (get-lexeme p)
             (cond
@@ -813,7 +833,7 @@
               [else
                 (receive (d d^) (handle-lexeme p type lex labels #t)
                   (let ([s (list x d)])
-                    (values s (annotate src s (list x d^)))))]))]
+                    (values s (annotate (finish-source p src) s (list x d^)))))]))]
         [else (reader-warning p "unexpected lexeme" lextype x)])))
 
   (set! read-datum (lambda (reader)

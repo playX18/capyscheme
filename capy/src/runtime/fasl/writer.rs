@@ -18,11 +18,11 @@ use crate::runtime::{
 };
 
 use super::{
-    CodeSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC, FASL_TAG_BEGIN,
-    FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_COMPLEX,
-    FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
-    FASL_TAG_GRAPH_DEF, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL,
-    FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR,
+    CodeSourceLocation, CodeSpec, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC,
+    FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE,
+    FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM,
+    FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP,
+    FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR,
     FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
     FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, ProgramSpec, checked_u32_len,
 };
@@ -494,7 +494,28 @@ impl<'gc, W: Write> FaslWriter<'gc, W> {
         for relocation in spec.relocations {
             relocation.encode(&mut self.writer)?;
         }
+        self.put_source_map(spec.source_map)?;
         Ok(())
+    }
+
+    fn put_source_map(&mut self, source_map: &[super::CodeSourceMapEntry]) -> io::Result<()> {
+        self.put32(checked_u32_len(source_map.len())?)?;
+        for entry in source_map {
+            self.put32(entry.start)?;
+            self.put32(entry.end)?;
+            self.put_source_location(&entry.source)?;
+        }
+        Ok(())
+    }
+
+    fn put_source_location(&mut self, source: &CodeSourceLocation) -> io::Result<()> {
+        let file = source.file.as_bytes();
+        self.put32(checked_u32_len(file.len())?)?;
+        self.put_many(file)?;
+        self.put32(source.line)?;
+        self.put32(source.column)?;
+        self.put32(source.end_line.unwrap_or(0))?;
+        self.put32(source.end_column.unwrap_or(0))
     }
 
     pub fn new(ctx: Context<'gc>, writer: W) -> Self {

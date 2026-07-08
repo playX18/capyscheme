@@ -106,14 +106,49 @@
 (define (make-condition-uid) #f)
 
 (define (print-condition exn p)
+  (define (sourcev-ref src index default)
+    (if (and (vector? src) (< index (vector-length src)))
+      (vector-ref src index)
+      default))
+  (define (fmt-source src)
+    (define file (sourcev-ref src 0 #f))
+    (define line (sourcev-ref src 1 #f))
+    (define col (sourcev-ref src 2 #f))
+    (define end-line (sourcev-ref src 3 #f))
+    (define end-col (sourcev-ref src 4 #f))
+    (cond
+      [(and file line col end-line end-col)
+        (format p "~a:~a:~a-~a:~a" file line col end-line end-col)]
+      [(and file line col)
+        (format p "~a:~a:~a" file line col)]
+      [else (write src p)]))
+  (define (alist-ref alist key)
+    (let ((entry (and (pair? alist) (assq key alist))))
+      (and entry (cdr entry))))
+  (define (print-expansion-frame frame index)
+    (let ((name (alist-ref frame 'macro))
+          (use-source (alist-ref frame 'use-site))
+          (transformer-source (alist-ref frame 'transformer-site)))
+      (format p "~%       ~a. " index)
+      (if name
+        (format p "while expanding ~a" name)
+        (format p "while expanding macro"))
+      (when use-source
+        (format p " at ")
+        (fmt-source use-source))
+      (when transformer-source
+        (format p "~%          transformer defined at ")
+        (fmt-source transformer-source))))
+  (define (print-expansion-trace frames)
+    (if (pair? frames)
+      (let loop ([frames (reverse frames)] [index 1])
+        (unless (null? frames)
+          (print-expansion-frame (car frames) index)
+          (loop (cdr frames) (+ index 1))))
+      (write frames p)))
   (define (print-syntax form subform)
     (define form-src (if (syntax? form) (syntax-sourcev form) #f))
     (define subform-src (if (and subform (syntax? subform)) (syntax-sourcev subform) #f))
-    (define (fmt-source src)
-      (define file (vector-ref src 0))
-      (define line (vector-ref src 1))
-      (define col (vector-ref src 2))
-      (format p "~a:~a:~a" file line col))
     (format p "~a" (syntax->datum form))
     (when form-src
       (format p "~%       in ")
@@ -128,10 +163,9 @@
     [(condition? exn)
       (let ((src (condition-sourcev exn)))
         (when src
-          (format p "At: ~a:~a:~a~%"
-            (vector-ref src 0)
-            (vector-ref src 1)
-            (vector-ref src 2))))
+          (format p "At: ")
+          (fmt-source src)
+          (newline p)))
       (let ([c* (simple-conditions exn)])
         (format p "The condition has ~a components:~%" (length c*))
         (do ([i 1 (+ 1 i)]
@@ -174,6 +208,8 @@
                         (print-syntax (syntax-violation-form c) (syntax-violation-subform c))]
                       [(and (eq? rtd (record-type-rtd &syntax)) (eqv? i 1))
                         (values)]
+                      [(and (eq? rtd (record-type-rtd &expansion-trace)) (eqv? i 0))
+                        (print-expansion-trace x)]
                       [(and (eq? rtd (record-type-rtd &irritants))
                           (pair? x)
                           (list? x))

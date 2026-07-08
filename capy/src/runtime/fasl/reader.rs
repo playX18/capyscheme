@@ -13,19 +13,20 @@ use crate::runtime::{
     symbols::{RuntimeData, RuntimeThunk},
     value::{
         BigInt, ByteVector, Closure, CodeArity, CodeBlock, Complex, HashTable, HashTableType,
-        LoadedCodeBlockInit, Pair, Rational, RelocatableCodeBlock, Str, Symbol, Tuple, Value,
-        Vector,
+        IntoValue, LoadedCodeBlockInit, Pair, Rational, RelocatableCodeBlock, Str, Symbol, Tuple,
+        Value, Vector,
     },
     vm::{syntax::Syntax, trampolines::get_debug_trampoline_from_scheme},
 };
 
 use super::{
-    FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE, FASL_MAGIC, FASL_TAG_BEGIN, FASL_TAG_BIGINT,
-    FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE, FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX,
-    FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F, FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH,
-    FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF, FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP,
-    FASL_TAG_NIL, FASL_TAG_PLIST, FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR,
-    FASL_TAG_SYMBOL, FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
+    CodeSourceLocation, CodeSourceMapEntry, FASL_COMPRESSION_GZIP, FASL_COMPRESSION_NONE,
+    FASL_MAGIC, FASL_TAG_BEGIN, FASL_TAG_BIGINT, FASL_TAG_BVECTOR, FASL_TAG_CHAR, FASL_TAG_CLOSURE,
+    FASL_TAG_CODE_BLOCK, FASL_TAG_COMPLEX, FASL_TAG_DLIST, FASL_TAG_ENTRY, FASL_TAG_F,
+    FASL_TAG_FIXNUM, FASL_TAG_FLONUM, FASL_TAG_GRAPH, FASL_TAG_GRAPH_DEF, FASL_TAG_GRAPH_REF,
+    FASL_TAG_IMMEDIATE, FASL_TAG_KEYWORD, FASL_TAG_LOOKUP, FASL_TAG_NIL, FASL_TAG_PLIST,
+    FASL_TAG_RATIONAL, FASL_TAG_REF, FASL_TAG_REF_INIT, FASL_TAG_STR, FASL_TAG_SYMBOL,
+    FASL_TAG_SYNTAX, FASL_TAG_T, FASL_TAG_TUPLE, FASL_TAG_UNINTERNED_SYMBOL,
     FASL_TAG_UNLINKED_CODEBLOCK, FASL_TAG_VECTOR, FASL_VERSION, MIN_SUPPORTED_FASL_VERSION, graph,
     patch, reloc,
 };
@@ -42,6 +43,7 @@ pub struct FaslReader<'gc, R: io::Read> {
     pending_code_entry_relocations: Vec<Vec<PendingCodeEntryRelocation>>,
     pending_data_slot_fills: Vec<Vec<PendingDataSlotFill>>,
     pending_code_entry_slot_fills: Vec<Vec<PendingCodeEntrySlotFill>>,
+    format_version: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +111,23 @@ struct PendingCodeEntrySlotFill {
     slot_address: Address,
 }
 
+fn nonzero_u32(value: u32) -> Option<u32> {
+    if value == 0 { None } else { Some(value) }
+}
+
+fn source_map_u32<'gc>(value: u32, label: &'static str) -> io::Result<Value<'gc>> {
+    i32::try_from(value).map(Value::new).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("FASL {label} is too large for a Scheme fixnum"),
+        )
+    })
+}
+
+fn option_u32_value<'gc>(value: Option<u32>, label: &'static str) -> io::Result<Value<'gc>> {
+    value.map_or(Ok(Value::new(false)), |value| source_map_u32(value, label))
+}
+
 struct ReadCodeBlockSpec<'gc> {
     bytes: Vec<u8>,
     entry_offset: u32,
@@ -116,6 +135,7 @@ struct ReadCodeBlockSpec<'gc> {
     is_cont: bool,
     metadata: Value<'gc>,
     relocations: Vec<reloc::Relocation>,
+    source_map: Vec<CodeSourceMapEntry>,
 }
 
 impl<'gc, R: io::Read> FaslReader<'gc, R> {
@@ -600,6 +620,11 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
         for _ in 0..relocation_count {
             relocations.push(reloc::Relocation::decode(&mut self.reader)?);
         }
+        let source_map = if self.format_version >= 6 {
+            self.read_source_map()?
+        } else {
+            Vec::new()
+        };
         Ok(ReadCodeBlockSpec {
             bytes,
             entry_offset,
@@ -607,6 +632,48 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
             is_cont,
             metadata,
             relocations,
+            source_map,
+        })
+    }
+
+    fn read_source_map(&mut self) -> io::Result<Vec<CodeSourceMapEntry>> {
+        let count = self.read32()? as usize;
+        let mut source_map = Vec::with_capacity(count);
+        for _ in 0..count {
+            let start = self.read32()?;
+            let end = self.read32()?;
+            if start >= end {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "FASL code source-map range is empty or reversed",
+                ));
+            }
+            let source = self.read_source_location()?;
+            source_map.push(CodeSourceMapEntry::new(start, end, source));
+        }
+        Ok(source_map)
+    }
+
+    fn read_source_location(&mut self) -> io::Result<CodeSourceLocation> {
+        let file = self.read_utf8_string("source file")?;
+        let line = self.read32()?;
+        let column = self.read32()?;
+        let end_line = nonzero_u32(self.read32()?);
+        let end_column = nonzero_u32(self.read32()?);
+        Ok(CodeSourceLocation::new(
+            file, line, column, end_line, end_column,
+        ))
+    }
+
+    fn read_utf8_string(&mut self, label: &'static str) -> io::Result<String> {
+        let len = self.read32()? as usize;
+        let mut buf = vec![0; len];
+        self.reader.read_exact(&mut buf)?;
+        String::from_utf8(buf).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid UTF-8 in FASL {label}: {err}"),
+            )
         })
     }
 
@@ -648,13 +715,14 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
                 &data_slots.value_bitmap,
             );
             self.keep_value(Value::from(unlinked));
+            let metadata = self.metadata_with_source_map(spec.metadata, &spec.source_map)?;
             let code_block = CodeBlock::new_loaded_with_data(
                 self.ctx,
                 LoadedCodeBlockInit {
                     entrypoint: loaded.entrypoint + spec.entry_offset as usize,
                     arity: CodeArity::new(spec.arity),
                     is_continuation: spec.is_cont,
-                    metadata: spec.metadata,
+                    metadata,
                     unlinked,
                     span: loaded.take_span().ok_or_else(|| {
                         io::Error::other("loaded code span has already been moved")
@@ -692,6 +760,74 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
         }
     }
 
+    fn metadata_with_source_map(
+        &self,
+        metadata: Value<'gc>,
+        source_map: &[CodeSourceMapEntry],
+    ) -> io::Result<Value<'gc>> {
+        if source_map.is_empty() {
+            return Ok(metadata);
+        }
+
+        let source_map_key = Symbol::from_str(self.ctx, "source-map").into();
+        if metadata.is_pair() && metadata.assq(source_map_key).is_some() {
+            return Ok(metadata);
+        }
+
+        let metadata = if metadata == Value::new(false) {
+            Value::null()
+        } else {
+            metadata
+        };
+        if !metadata.is_alist() {
+            return Ok(metadata);
+        }
+
+        let source_map = self.source_map_value(source_map)?;
+        let source_map_entry = Value::cons(self.ctx, source_map_key, source_map);
+        Ok(Value::cons(self.ctx, source_map_entry, metadata))
+    }
+
+    fn source_map_value(&self, source_map: &[CodeSourceMapEntry]) -> io::Result<Value<'gc>> {
+        let mut values = Value::null();
+        for entry in source_map.iter().rev() {
+            let source = self.source_location_value(&entry.source)?;
+            let record = Vector::from_slice(
+                *self.ctx,
+                &[
+                    source_map_u32(entry.start, "source-map start offset")?,
+                    source_map_u32(entry.end, "source-map end offset")?,
+                    source,
+                ],
+            )
+            .into_value(self.ctx);
+            values = Value::cons(self.ctx, record, values);
+        }
+        Ok(values)
+    }
+
+    fn source_location_value(&self, source: &CodeSourceLocation) -> io::Result<Value<'gc>> {
+        let file = Str::from_str(*self.ctx, &source.file).into_value(self.ctx);
+        let origin = Symbol::from_str(self.ctx, "cranelift").into_value(self.ctx);
+        let end_line = option_u32_value(source.end_line, "source-map end line")?;
+        let end_column = option_u32_value(source.end_column, "source-map end column")?;
+        Ok(Vector::from_slice(
+            *self.ctx,
+            &[
+                file,
+                source_map_u32(source.line, "source-map line")?,
+                source_map_u32(source.column, "source-map column")?,
+                end_line,
+                end_column,
+                Value::new(false),
+                Value::new(false),
+                origin,
+                Value::null(),
+            ],
+        )
+        .into_value(self.ctx))
+    }
+
     pub fn read_header(&mut self) -> io::Result<()> {
         let mut magic = [0u8; 8];
         self.reader.read_exact(&mut magic)?;
@@ -714,6 +850,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
                 ),
             ));
         }
+        self.format_version = version;
         Ok(())
     }
 
@@ -756,6 +893,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
             pending_code_entry_relocations: Vec::new(),
             pending_data_slot_fills: Vec::new(),
             pending_code_entry_slot_fills: Vec::new(),
+            format_version: 0,
         }
     }
 
@@ -795,6 +933,7 @@ impl<'gc, R: io::Read> FaslReader<'gc, R> {
     fn read_payload_value(&self, payload: Vec<u8>) -> io::Result<Value<'gc>> {
         let mut reader = FaslReader::new_with_options(self.ctx, Cursor::new(payload), self.options);
         reader.lites = self.lites;
+        reader.format_version = self.format_version;
         reader.keep_value(Value::from(reader.lites));
         let value = reader.read_value()?;
         reader.keep_value(value);

@@ -94,6 +94,15 @@
 (define syntax-violation-form (condition-accessor (record-type-rtd &syntax) &syntax-form))
 (define syntax-violation-subform (condition-accessor (record-type-rtd &syntax) &syntax-subform))
 
+(define &expansion-trace
+  (let ((rtd (make-record-type-descriptor '&expansion-trace (record-type-rtd &condition) (make-condition-uid) #f #f '#((immutable frames)))))
+    (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &condition) #f)))
+      (make-record-type '&expansion-trace rtd rcd))))
+(define &expansion-trace-frames (record-accessor (record-type-rtd &expansion-trace) 0))
+(define make-expansion-trace-condition (record-constructor (record-type-rcd &expansion-trace)))
+(define expansion-trace? (condition-predicate (record-type-rtd &expansion-trace)))
+(define condition-expansion-trace (condition-accessor (record-type-rtd &expansion-trace) &expansion-trace-frames))
+
 (define &undefined
   (let ((rtd (make-record-type-descriptor '&undefined (record-type-rtd &violation) (make-condition-uid) #f #f '#())))
     (let ((rcd (make-record-constructor-descriptor rtd (record-type-rcd &violation) #f)))

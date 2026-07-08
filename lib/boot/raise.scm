@@ -48,6 +48,19 @@
       [(vector? lst) (list->vector (map loop (vector->list lst)))]
       [else lst])))
 
+(define macro-expansion-stack-key '|macro-expansion-stack 5ddbd8ce-0ba4-4715-a609-daf4271c8a61|)
+
+(define (current-macro-expansion-trace)
+  (continuation-mark-set-first
+    (current-continuation-marks)
+    macro-expansion-stack-key
+    '()))
+
+(define (make-current-expansion-trace-condition)
+  (let ((trace (current-macro-expansion-trace)))
+    (and (pair? trace)
+      (make-expansion-trace-condition trace))))
+
 (define (syntax-violation who message form . subform)
   (define (get-who-from-form form)
     (define obj (if (syntax? form) (unwrap-syntax form) form))
@@ -68,6 +81,7 @@
               (if who
                 (make-who-condition who)
                 (get-who-from-form form))
+              (make-current-expansion-trace-condition)
               (make-message-condition message)))))
       (assertion-violation 'syntax-violation "expected string as message" message))
     (assertion-violation 'syntax-violation "expected string or symbol or #f as who" who)))

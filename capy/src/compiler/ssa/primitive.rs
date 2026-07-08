@@ -27,7 +27,11 @@ macro_rules! prim {
 
         $(
 
-            pub fn $name<'gc_, 'a, 'f>($ssa: &mut SSABuilder<'gc_, 'a, 'f>, $args: &[Atom<'gc_>]) -> PrimValue $b
+            pub fn $name<'gc_, 'a, 'f>(
+                $ssa: &mut SSABuilder<'gc_, 'a, 'f>,
+                $args: &[Atom<'gc_>],
+                $h: Value<'gc_>,
+            ) -> PrimValue $b
         )*
 
         impl Primitive {
@@ -48,9 +52,10 @@ macro_rules! prim {
                 self,
                 ssa: &mut SSABuilder<'gc_, 'a, 'f>,
                 args: &[Atom<'gc_>],
+                source: Value<'gc_>,
             ) -> PrimValue {
                 match self {
-                    $(Self::$name => $name(ssa, args)),*
+                    $(Self::$name => $name(ssa, args, source)),*
                 }
             }
         }
@@ -1507,7 +1512,7 @@ prim!(
         PrimValue::Value(var)
     },
 
-    "lookup" => lookup(ssa, args, handler) {
+    "lookup" => lookup(ssa, args, _h) {
         let module = ssa.atom(args[0]);
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
@@ -1515,7 +1520,7 @@ prim!(
         PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup, &[ctx, module, name]))
     },
 
-    "lookup-bound" => lookup_bound(ssa, args, handler) {
+    "lookup-bound" => lookup_bound(ssa, args, _h) {
         let module = ssa.atom(args[0]);
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
@@ -1523,7 +1528,7 @@ prim!(
         PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound, &[ctx, module, name]))
     },
 
-    "lookup-bound-public" => lookup_bound_public(ssa, args, handler) {
+    "lookup-bound-public" => lookup_bound_public(ssa, args, _h) {
         let module = ssa.atom(args[0]);
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
@@ -1531,7 +1536,7 @@ prim!(
         PrimValue::Value(ssa.handle_thunk_call_result(ssa.thunks.lookup_bound_public, &[ctx, module, name]))
     },
 
-    "lookup-bound-private" => lookup_bound_private(ssa, args, handler) {
+    "lookup-bound-private" => lookup_bound_private(ssa, args, _h) {
         let module = ssa.atom(args[0]);
         let name = ssa.atom(args[1]);
         let ctx = ssa.builder.ins().get_pinned_reg(types::I64);
@@ -1716,7 +1721,7 @@ prim!(
     },
 
     "tuple" => tuple(ssa, args, _h) {
-        let PrimValue::Value(tup) = make_tuple(ssa, &[Atom::Constant(Value::new(args.len() as i32))]) else {
+        let PrimValue::Value(tup) = make_tuple(ssa, &[Atom::Constant(Value::new(args.len() as i32))], Value::new(false)) else {
             panic!("tuple: make-tuple failed to return a Value for {} elements", args.len())
         };
 
@@ -2488,7 +2493,7 @@ prim!(
 
             ssa.builder.switch_to_block(not_pair);
             {
-                ssa.emit_raise(RaiseKind::CarNotPair, &[pair], Value::new(false));
+                ssa.emit_raise(RaiseKind::CarNotPair, &[pair], _h);
             }
             ssa.builder.switch_to_block(is_pair);
         }
@@ -2509,7 +2514,7 @@ prim!(
 
             ssa.builder.switch_to_block(not_pair);
             {
-                ssa.emit_raise(RaiseKind::CdrNotPair, &[pair], Value::new(false));
+                ssa.emit_raise(RaiseKind::CdrNotPair, &[pair], _h);
             }
             ssa.builder.switch_to_block(is_pair);
         }

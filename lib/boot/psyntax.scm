@@ -191,17 +191,45 @@
   (define (global-extend type sym val)
     (module-define! (current-module) sym (make-syntax-transformer sym type val)))
   (define no-source #f)
-  (define (sourcev-filename s) (vector-ref s 0))
-  (define (sourcev-line s) (vector-ref s 1))
-  (define (sourcev-column s) (vector-ref s 2))
+  (define macro-expansion-stack-key '|macro-expansion-stack 5ddbd8ce-0ba4-4715-a609-daf4271c8a61|)
+  (define (sourcev-ref s index default)
+    (if (and (vector? s) (< index (vector-length s)))
+      (vector-ref s index)
+      default))
+  (define (sourcev-filename s) (sourcev-ref s 0 #f))
+  (define (sourcev-line s) (sourcev-ref s 1 #f))
+  (define (sourcev-column s) (sourcev-ref s 2 #f))
+  (define (sourcev-end-line s) (sourcev-ref s 3 #f))
+  (define (sourcev-end-column s) (sourcev-ref s 4 #f))
+  (define (sourcev-start-byte s) (sourcev-ref s 5 #f))
+  (define (sourcev-end-byte s) (sourcev-ref s 6 #f))
+  (define (sourcev-origin s) (sourcev-ref s 7 #f))
+  (define (sourcev-related-spans s) (sourcev-ref s 8 #f))
   (define sourcev->alist
     (lambda (sourcev)
       (letrec* ((maybe-acons (lambda (k v tail) (if v (acons k v tail) tail))))
         (and sourcev
-          (maybe-acons
-            'filename
-            (sourcev-filename sourcev)
-            (list (cons 'line (sourcev-line sourcev)) (cons 'column (sourcev-column sourcev))))))))
+          (maybe-acons 'related-spans
+            (let ((spans (sourcev-related-spans sourcev)))
+              (and (not (null? spans)) spans))
+            (maybe-acons 'origin (sourcev-origin sourcev)
+              (maybe-acons 'end-byte (sourcev-end-byte sourcev)
+                (maybe-acons 'start-byte (sourcev-start-byte sourcev)
+                  (maybe-acons 'end-column (sourcev-end-column sourcev)
+                    (maybe-acons 'end-line (sourcev-end-line sourcev)
+                      (maybe-acons
+                        'filename
+                        (sourcev-filename sourcev)
+                        (list (cons 'line (sourcev-line sourcev)) (cons 'column (sourcev-column sourcev))))))))))))))
+  (define (current-macro-expansion-stack)
+    (continuation-mark-set-first
+      (current-continuation-marks)
+      macro-expansion-stack-key
+      '()))
+  (define (with-macro-expansion-frame frame thunk)
+    (call-with-continuation-mark macro-expansion-stack-key
+      (cons frame (current-macro-expansion-stack))
+      thunk))
   (define maybe-name-value
     (lambda (name val)
       (if (proc? val)
@@ -1855,6 +1883,30 @@
     (define transformer-stx (cdr p))
     (define (decorate-source x)
       (source-wrap x empty-wrap s #f))
+    (define (macro-frame-name use-site)
+      (cond
+        ((identifier? transformer-stx) (syntax->datum transformer-stx))
+        ((symbol? transformer-stx) transformer-stx)
+        ((and (syntax? use-site) (pair? (syntax-expression use-site)))
+          (let ((head (car (syntax-expression use-site))))
+            (cond
+              ((identifier? head) (syntax->datum head))
+              ((syntax? head) (syntax->datum head))
+              ((symbol? head) head)
+              (else #f))))
+        ((identifier? use-site) (syntax->datum use-site))
+        ((symbol? use-site) use-site)
+        (else #f)))
+    (define (macro-expansion-frame use-site)
+      (let ((name (macro-frame-name use-site))
+            (use-source (source-annotation use-site))
+            (transformer-source (source-annotation transformer-stx)))
+        (filter
+          values
+          (list
+            (and name (cons 'macro name))
+            (and use-source (cons 'use-site use-source))
+            (and transformer-source (cons 'transformer-site transformer-source))))))
     (define (map* f x)
       (match x
         [() '()]
@@ -1937,11 +1989,14 @@
       (dynamic-wind
         (lambda () (fluid-set! transformer-environment (lambda (k) (k e r w s rib mod))))
         (lambda ()
-          (cond
-            ((procedure? transformer) (apply-transformer transformer (source-wrap e (anti-mark w) s mod)))
-            ((variable-transformer? transformer) (apply-transformer (variable-transformer-procedure transformer) (source-wrap e (anti-mark w) s mod)))
-
-            (else (syntax-violation #f "invalid transformer" p))))
+          (let ((use-site (source-wrap e (anti-mark w) s mod)))
+            (with-macro-expansion-frame
+              (macro-expansion-frame use-site)
+              (lambda ()
+                (cond
+                  ((procedure? transformer) (apply-transformer transformer use-site))
+                  ((variable-transformer? transformer) (apply-transformer (variable-transformer-procedure transformer) use-site))
+                  (else (syntax-violation #f "invalid transformer" p)))))))
         ;(lambda () (rebuild-macro-output (p (source-wrap e (anti-mark w) s mod)) (new-mark)))
         (lambda () (fluid-set! transformer-environment old)))))
 
@@ -3096,11 +3151,20 @@
   (set! identifier? (lambda (x) (nonsymbol-id? x)))
   (set! datum->syntax (lambda (id datum . opt-source)
                        (define source (if (null? opt-source) #f (car opt-source)))
-                       (define (props->sourcev alist)
-                         (and (pair? alist)
-                           (vector (assq-ref alist 'filename)
-                             (assq-ref alist 'line)
-                             (assq-ref alist 'column))))
+                       (define (props->sourcev props)
+                         (cond
+                           ((and (vector? props) (>= (vector-length props) 3)) props)
+                           ((pair? props)
+                             (vector (assq-ref props 'filename)
+                               (assq-ref props 'line)
+                               (assq-ref props 'column)
+                               (assq-ref props 'end-line)
+                               (assq-ref props 'end-column)
+                               (assq-ref props 'start-byte)
+                               (assq-ref props 'end-byte)
+                               (assq-ref props 'origin)
+                               (assq-ref props 'related-spans)))
+                           (else #f)))
 
                        (define (wrap e)
                          (make-syntax
@@ -3111,7 +3175,7 @@
                              ((and (not source) id (syntax-sourcev id)) (syntax-sourcev id))
                              ((not source) (props->sourcev (source-properties datum)))
                              ((and (alist? source)) (props->sourcev source))
-                             ((and (vector? source) (= (vector-length source) 3)) source)
+                             ((and (vector? source) (>= (vector-length source) 3)) source)
                              (else (if (not (vector? (syntax-sourcev source)))
                                     (assertion-violation 'datum->syntax "invalid source vector" for datum))
                                (syntax-sourcev source)))))

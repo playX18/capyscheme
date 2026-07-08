@@ -38,6 +38,13 @@ pub(crate) struct FunctionDebugContext<'gc> {
     label_to_lvar: HashMap<ValueLabel, LVarRef<'gc>>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DebugSourceLocation {
+    pub(crate) file: String,
+    pub(crate) line: u32,
+    pub(crate) column: u32,
+}
+
 impl<'gc> DebugContext<'gc> {
     pub(crate) fn new(reify_info: &ReifyInfo<'gc>, isa: &dyn TargetIsa) -> Self {
         Self::new_for_entry(
@@ -237,8 +244,9 @@ impl<'gc> DebugContext<'gc> {
         let filename = span.downcast::<Vector>()[0].get();
         let line = span.downcast::<Vector>()[1].get().as_int32() as u64;
         let column = span.downcast::<Vector>()[2].get().as_int32() as u64;
+        let line = if line == 0 { 1 } else { line };
 
-        (self.add_file(filename), line + 1, column + 1)
+        (self.add_file(filename), line, column + 1)
     }
 
     pub(crate) fn add_file(&mut self, filename: Value<'gc>) -> FileId {
@@ -281,6 +289,33 @@ impl<'gc> DebugContext<'gc> {
                 line_program.add_file(file_name, dir, None)
             }
         })
+    }
+
+    pub(crate) fn source_location(
+        &self,
+        file_id: FileId,
+        line: u64,
+        column: u64,
+    ) -> DebugSourceLocation {
+        DebugSourceLocation {
+            file: self.file_name(file_id),
+            line: u32::try_from(line).unwrap_or(u32::MAX),
+            column: u32::try_from(column).unwrap_or(u32::MAX),
+        }
+    }
+
+    fn file_name(&self, file_id: FileId) -> String {
+        for (file, id) in self.created_files.iter() {
+            if *id == file_id {
+                return if *file == Value::new(false) {
+                    "<unknown>".to_string()
+                } else {
+                    file.to_string()
+                };
+            }
+        }
+
+        "<unknown>".to_string()
     }
 }
 
@@ -476,6 +511,30 @@ impl<'gc> FunctionDebugContext<'gc> {
         let src = SourceLoc::new(self.source_loc_set.len() as u32);
         self.source_loc_set.insert(src, (file_id, line, column));
         src
+    }
+
+    pub(crate) fn default_source_location(
+        &self,
+        debug_context: &DebugContext<'gc>,
+    ) -> DebugSourceLocation {
+        let (file_id, line, column) = self.srcloc;
+        debug_context.source_location(file_id, line, column)
+    }
+
+    pub(crate) fn source_location(
+        &self,
+        debug_context: &DebugContext<'gc>,
+        loc: SourceLoc,
+    ) -> DebugSourceLocation {
+        let (file_id, line, column) = if loc.is_default() {
+            self.srcloc
+        } else {
+            self.source_loc_set
+                .get(&loc)
+                .copied()
+                .unwrap_or(self.srcloc)
+        };
+        debug_context.source_location(file_id, line, column)
     }
 
     pub(crate) fn add_variable(&mut self, var: LVarRef<'gc>, src: Option<SourceLoc>) -> ValueLabel {

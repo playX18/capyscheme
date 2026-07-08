@@ -21,6 +21,7 @@ pub mod api;
 pub mod bin_support;
 pub mod compiler;
 pub mod cps;
+pub(crate) mod disassembly;
 pub mod expander;
 pub mod frontend;
 pub mod gcps;

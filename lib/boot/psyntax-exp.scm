@@ -120,9 +120,31 @@
            sym
            (make-syntax-transformer sym type val))))
      (no-source '#f)
-     (sourcev-filename (lambda (s) (vector-ref s '0)))
-     (sourcev-line (lambda (s) (vector-ref s '1)))
-     (sourcev-column (lambda (s) (vector-ref s '2)))
+     (macro-expansion-stack-key
+       '|macro-expansion-stack 5ddbd8ce-0ba4-4715-a609-daf4271c8a61|)
+     (sourcev-ref
+       (lambda (s index default)
+         (if (if (vector? s) (< index (vector-length s)) '#f)
+             (vector-ref s index)
+             default)))
+     (sourcev-filename
+       (lambda (s) (sourcev-ref s '0 '#f)))
+     (sourcev-line
+       (lambda (s) (sourcev-ref s '1 '#f)))
+     (sourcev-column
+       (lambda (s) (sourcev-ref s '2 '#f)))
+     (sourcev-end-line
+       (lambda (s) (sourcev-ref s '3 '#f)))
+     (sourcev-end-column
+       (lambda (s) (sourcev-ref s '4 '#f)))
+     (sourcev-start-byte
+       (lambda (s) (sourcev-ref s '5 '#f)))
+     (sourcev-end-byte
+       (lambda (s) (sourcev-ref s '6 '#f)))
+     (sourcev-origin
+       (lambda (s) (sourcev-ref s '7 '#f)))
+     (sourcev-related-spans
+       (lambda (s) (sourcev-ref s '8 '#f)))
      (sourcev->alist
        (lambda (sourcev)
          (letrec*
@@ -130,11 +152,43 @@
               (lambda (k v tail) (if v (acons k v tail) tail))))
            (if sourcev
                (maybe-acons
-                 'filename
-                 (sourcev-filename sourcev)
-                 (list (cons 'line (sourcev-line sourcev))
-                       (cons 'column (sourcev-column sourcev))))
+                 'related-spans
+                 (let ((spans (sourcev-related-spans sourcev)))
+                   (if (not (null? spans)) spans '#f))
+                 (maybe-acons
+                   'origin
+                   (sourcev-origin sourcev)
+                   (maybe-acons
+                     'end-byte
+                     (sourcev-end-byte sourcev)
+                     (maybe-acons
+                       'start-byte
+                       (sourcev-start-byte sourcev)
+                       (maybe-acons
+                         'end-column
+                         (sourcev-end-column sourcev)
+                         (maybe-acons
+                           'end-line
+                           (sourcev-end-line sourcev)
+                           (maybe-acons
+                             'filename
+                             (sourcev-filename sourcev)
+                             (list (cons 'line (sourcev-line sourcev))
+                                   (cons 'column
+                                         (sourcev-column sourcev))))))))))
                '#f))))
+     (current-macro-expansion-stack
+       (lambda ()
+         (continuation-mark-set-first
+           (current-continuation-marks)
+           macro-expansion-stack-key
+           '())))
+     (with-macro-expansion-frame
+       (lambda (frame thunk)
+         (call-with-continuation-mark
+           macro-expansion-stack-key
+           (cons frame (current-macro-expansion-stack))
+           thunk)))
      (maybe-name-value
        (lambda (name val)
          (if (proc? val)
@@ -2234,7 +2288,7 @@
                                                                          #(expand)
                                                                          #((top))
                                                                          #(#((capy)
-                                                                             id851))))
+                                                                             id717))))
                                                                      '(hygiene
                                                                         capy))
                                                                    (make-syntax
@@ -3793,7 +3847,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id851))))
+                                                                                     id717))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -3818,7 +3872,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4177))))
+                                                                                                       id4072))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (list (list (make-syntax
@@ -3855,7 +3909,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4177))))
+                                                                                                       id4072))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -3910,7 +3964,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id851))))
+                                                                                     id717))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -3935,7 +3989,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4177))))
+                                                                                                       id4072))))
                                                                                                '(hygiene
                                                                                                   capy))
                                                                                              (cons (list (make-syntax
@@ -3973,7 +4027,7 @@
                                                                                                    #(m)
                                                                                                    #((top))
                                                                                                    #(#((capy)
-                                                                                                       id4177))))
+                                                                                                       id4072))))
                                                                                                '(hygiene
                                                                                                   capy)))))))
                                                                (map (lambda (tmp.2)
@@ -4023,7 +4077,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id851))))
+                                                                                     id717))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4082,7 +4136,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id851))))
+                                                                                     id717))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4141,7 +4195,7 @@
                                                                                  #(expand)
                                                                                  #((top))
                                                                                  #(#((capy)
-                                                                                     id851))))
+                                                                                     id717))))
                                                                              '(hygiene
                                                                                 capy))
                                                                            (make-syntax
@@ -4518,6 +4572,35 @@
             (transformer-stx (cdr p))
             (decorate-source
               (lambda (x) (source-wrap x empty-wrap s '#f)))
+            (macro-frame-name
+              (lambda (use-site)
+                (cond ((identifier? transformer-stx)
+                       (syntax->datum transformer-stx))
+                      ((symbol? transformer-stx) transformer-stx)
+                      ((if (syntax? use-site)
+                           (pair? (syntax-expression use-site))
+                           '#f)
+                       (let ((head (car (syntax-expression use-site))))
+                         (cond ((identifier? head) (syntax->datum head))
+                               ((syntax? head) (syntax->datum head))
+                               ((symbol? head) head)
+                               (else '#f))))
+                      ((identifier? use-site) (syntax->datum use-site))
+                      ((symbol? use-site) use-site)
+                      (else '#f))))
+            (macro-expansion-frame
+              (lambda (use-site)
+                (let ((name (macro-frame-name use-site))
+                      (use-source (source-annotation use-site))
+                      (transformer-source
+                        (source-annotation transformer-stx)))
+                  (filter
+                    values
+                    (list (if name (cons 'macro name) '#f)
+                          (if use-source (cons 'use-site use-source) '#f)
+                          (if transformer-source
+                              (cons 'transformer-site transformer-source)
+                              '#f))))))
             (map* (lambda (f x)
                     (let ((v x))
                       (let ((fk (lambda ()
@@ -4667,16 +4750,21 @@
                    transformer-environment
                    (lambda (k) (k e r w s rib mod))))
                (lambda ()
-                 (cond ((procedure? transformer)
-                        (apply-transformer
-                          transformer
-                          (source-wrap e (anti-mark w) s mod)))
-                       ((variable-transformer? transformer)
-                        (apply-transformer
-                          (variable-transformer-procedure transformer)
-                          (source-wrap e (anti-mark w) s mod)))
-                       (else
-                        (syntax-violation '#f '"invalid transformer" p))))
+                 (let ((use-site (source-wrap e (anti-mark w) s mod)))
+                   (with-macro-expansion-frame
+                     (macro-expansion-frame use-site)
+                     (lambda ()
+                       (cond ((procedure? transformer)
+                              (apply-transformer transformer use-site))
+                             ((variable-transformer? transformer)
+                              (apply-transformer
+                                (variable-transformer-procedure transformer)
+                                use-site))
+                             (else
+                              (syntax-violation
+                                '#f
+                                '"invalid transformer"
+                                p)))))))
                (lambda ()
                  (fluid-set! transformer-environment old)))))))
      (eval-local-transformer
@@ -6962,13 +7050,23 @@
                   ((source
                      (if (null? opt-source) '#f (car opt-source)))
                    (props->sourcev
-                     (lambda (alist)
-                       (if (pair? alist)
-                           (vector
-                             (assq-ref alist 'filename)
-                             (assq-ref alist 'line)
-                             (assq-ref alist 'column))
-                           '#f)))
+                     (lambda (props)
+                       (cond ((if (vector? props)
+                                  (>= (vector-length props) '3)
+                                  '#f)
+                              props)
+                             ((pair? props)
+                              (vector
+                                (assq-ref props 'filename)
+                                (assq-ref props 'line)
+                                (assq-ref props 'column)
+                                (assq-ref props 'end-line)
+                                (assq-ref props 'end-column)
+                                (assq-ref props 'start-byte)
+                                (assq-ref props 'end-byte)
+                                (assq-ref props 'origin)
+                                (assq-ref props 'related-spans)))
+                             (else '#f))))
                    (wrap.1
                      (lambda (e)
                        (make-syntax
@@ -6983,7 +7081,7 @@
                                 (props->sourcev (source-properties datum)))
                                ((alist? source) (props->sourcev source))
                                ((if (vector? source)
-                                    (= (vector-length source) '3)
+                                    (>= (vector-length source) '3)
                                     '#f)
                                 source)
                                (else

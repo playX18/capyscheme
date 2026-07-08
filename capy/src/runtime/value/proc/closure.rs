@@ -182,7 +182,7 @@ impl<'gc> Closure<'gc> {
         let src = meta.assq(Symbol::from_str(ctx, "source").into())?;
         let src = src.cdr();
 
-        if src.is::<Vector>() && src.downcast::<Vector>().len() == 3 {
+        if src.is::<Vector>() && src.downcast::<Vector>().len() >= 3 {
             let vec = src.downcast::<Vector>();
             let file = vec[0].get();
             let line = vec[1].get();

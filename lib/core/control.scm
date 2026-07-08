@@ -100,6 +100,23 @@
     "Print the stacktrace from marks K to port P. If K is #f, use the current stacktrace."
     (define who 'stack-trace)
     (define (print . x) (for-each (lambda (x) (display x p)) x) (newline p))
+    (define (sourcev-ref src index default)
+      (if (and (vector? src) (< index (vector-length src)))
+        (vector-ref src index)
+        default))
+    (define (print-source src)
+      (let ([file (sourcev-ref src 0 #f)]
+            [line (sourcev-ref src 1 #f)]
+            [col (sourcev-ref src 2 #f)]
+            [end-line (sourcev-ref src 3 #f)]
+            [end-col (sourcev-ref src 4 #f)])
+        (cond
+          [(and file line col end-line end-col)
+            (format p "  at ~a:~a:~a-~a:~a:~%" file line col end-line end-col)]
+          [(and file line col)
+            (format p "  at ~a:~a:~a:~%" file line col)]
+          [else
+            (format p "  at <unknown file>:~%")])))
     (define marks (if k k (current-continuation-marks)))
     (define stack (continuation-mark-set->list marks %stacktrace-key))
 
@@ -113,11 +130,7 @@
                  [proc (vector-ref fp 1)]
                  [args (vector-ref fp 2)])
 
-            (cond
-              [src
-                (format p "  at ~a:~a:~a:~%" (vector-ref src 0) (vector-ref src 1) (vector-ref src 2))]
-              [else
-                (format p "  at <unknown file>:~%")])
+            (print-source src)
 
             (cond
               [(interpreted-procedure? proc)

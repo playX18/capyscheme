@@ -1157,7 +1157,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     .copied()
                     .map(|arg| self.linear_atom_as_term_atom(arg))
                     .collect::<Vec<_>>();
-                let val = match prim.lower(self, &args) {
+                let val = match prim.lower(self, &args, *source) {
                     PrimValue::Value(val) => VarDef::Value(val),
                     PrimValue::Comparison(val) => VarDef::Comparison(val),
                 };
@@ -1398,8 +1398,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
         let code = self.builder.ins().iconst(types::I64, kind.code() as i64);
         let retk = self.current_retk_value();
+        let source = self.atom(Atom::Constant(source));
         let rands = std::iter::once(retk)
             .chain(args.iter().copied())
+            .chain(std::iter::once(source))
             .collect::<Vec<_>>();
         let call_args = self.prepare_call_args(&rands);
         let trampoline_id = self.module_builder.raise_trampolines[args.len()];

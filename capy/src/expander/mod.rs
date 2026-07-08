@@ -32,20 +32,10 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
         return Value::new(false);
     };
 
-    if props.is_pair() {
-        let filename = props
-            .assq(sym_filename(ctx).into())
-            .map(|pair| pair.cdr())
-            .unwrap_or(Value::new(false));
-        let line = props
-            .assq(sym_line(ctx).into())
-            .map(|pair| pair.cdr())
-            .unwrap_or(Value::new(false));
-        let column = props
-            .assq(sym_column(ctx).into())
-            .map(|pair| pair.cdr())
-            .unwrap_or(Value::new(false));
-        Vector::from_slice(*ctx, &[filename, line, column]).into()
+    if props.is::<Vector>() {
+        props
+    } else if props.is_pair() {
+        source_props_to_vector(ctx, props)
     } else {
         Value::new(false)
     }
@@ -84,8 +74,21 @@ pub fn add_source<'gc>(
     filename: Value<'gc>,
     line: i32,
     column: i32,
+    end_line: i32,
+    end_column: i32,
 ) {
-    let alist = crate::vector![ctx, filename, Value::new(line), Value::new(column)];
+    let alist = crate::vector![
+        ctx,
+        filename,
+        Value::new(line),
+        Value::new(column),
+        Value::new(end_line),
+        Value::new(end_column),
+        Value::new(false),
+        Value::new(false),
+        Value::from(Symbol::from_str(ctx, "read")),
+        Value::null()
+    ];
     set_source_property(ctx, obj, alist.into());
 }
 
@@ -97,7 +100,38 @@ static_symbols!(
     SYM_FILENAME = "filename"
     SYM_LINE = "line"
     SYM_COLUMN = "column"
+    SYM_END_LINE = "end-line"
+    SYM_END_COLUMN = "end-column"
+    SYM_START_BYTE = "start-byte"
+    SYM_END_BYTE = "end-byte"
+    SYM_ORIGIN = "origin"
+    SYM_RELATED_SPANS = "related-spans"
 );
+
+fn source_prop<'gc>(props: Value<'gc>, key: Value<'gc>) -> Value<'gc> {
+    props
+        .assq(key)
+        .map(|pair| pair.cdr())
+        .unwrap_or(Value::new(false))
+}
+
+fn source_props_to_vector<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
+    Vector::from_slice(
+        *ctx,
+        &[
+            source_prop(props, sym_filename(ctx).into()),
+            source_prop(props, sym_line(ctx).into()),
+            source_prop(props, sym_column(ctx).into()),
+            source_prop(props, sym_end_line(ctx).into()),
+            source_prop(props, sym_end_column(ctx).into()),
+            source_prop(props, sym_start_byte(ctx).into()),
+            source_prop(props, sym_end_byte(ctx).into()),
+            source_prop(props, sym_origin(ctx).into()),
+            source_prop(props, sym_related_spans(ctx).into()),
+        ],
+    )
+    .into()
+}
 
 pub fn source_property<'gc>(
     ctx: Context<'gc>,

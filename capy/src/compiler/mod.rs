@@ -58,7 +58,7 @@ pub mod ssa;
 mod symbols;
 
 pub use bootstrap::compile_file;
-pub use object::{CompilationOptions, compile_cps_to_fasl_bytes};
+pub use object::{BackendDumpOptions, CompilationOptions, compile_cps_to_fasl_bytes};
 pub use pipeline::lower_to_cps;
 
 pub(crate) use object::compile_lowered_to_fasl_bytes;

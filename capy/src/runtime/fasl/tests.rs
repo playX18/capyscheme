@@ -205,15 +205,23 @@ fn put_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-fn put_fasl_header(out: &mut Vec<u8>) -> usize {
+fn put_empty_source_map(out: &mut Vec<u8>) {
+    put_u32(out, 0);
+}
+
+fn put_fasl_header_version(out: &mut Vec<u8>, version: u32) -> usize {
     out.extend_from_slice(super::FASL_MAGIC);
-    out.extend_from_slice(&super::FASL_VERSION.to_le_bytes());
+    out.extend_from_slice(&version.to_le_bytes());
     out.push(super::FASL_COMPRESSION_NONE);
     put_u32(out, 0); // lites
     let payload_start = out.len() + 8;
     put_u32(out, 0);
     put_u32(out, 0);
     payload_start
+}
+
+fn put_fasl_header(out: &mut Vec<u8>) -> usize {
+    put_fasl_header_version(out, super::FASL_VERSION)
 }
 
 fn finish_fasl_image(out: &mut [u8], payload_start: usize) {
@@ -240,6 +248,7 @@ fn put_test_relocatable_code_block(out: &mut Vec<u8>, code: &[u8], entry_offset:
     out.push(0);
     out.push(super::FASL_TAG_F);
     put_u32(out, 0);
+    put_empty_source_map(out);
 }
 
 #[test]
@@ -350,7 +359,7 @@ fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
-        let code = CodeSpec::new(ret_bytes(), 0, 0, false, Value::new(false), &[]);
+        let code = CodeSpec::new(ret_bytes(), 0, 0, false, Value::new(false), &[], &[]);
         let code_blocks = [GraphCodeSpec::new(0, code)];
         let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
         FaslWriter::new(ctx, &mut bytes)
@@ -377,6 +386,62 @@ fn fasl_writer_emits_loadable_zero_relocation_closure_with_code_block() {
 }
 
 #[test]
+fn fasl_roundtrips_code_block_source_map_metadata() {
+    use super::{
+        CodeSourceLocation, CodeSourceMapEntry, CodeSpec, FaslCompression, FaslImage, FaslReader,
+        FaslWriter, GraphCodeSpec, ProgramSpec,
+    };
+    use crate::runtime::{
+        Scheme,
+        value::{Closure, Str, Symbol, Value, Vector},
+    };
+
+    let scm = Scheme::new_uninit();
+    scm.enter(|ctx| {
+        let source_map = [CodeSourceMapEntry::new(
+            0,
+            1,
+            CodeSourceLocation::new("/tmp/fasl-source-map.scm", 3, 4, None, None),
+        )];
+        let code = CodeSpec::new(
+            ret_bytes(),
+            0,
+            0,
+            false,
+            Value::new(false),
+            &[],
+            &source_map,
+        );
+        let code_blocks = [GraphCodeSpec::new(0, code)];
+        let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
+        let mut bytes = Vec::new();
+        FaslWriter::new(ctx, &mut bytes)
+            .write_image(FaslImage::Program(&program), FaslCompression::None)
+            .expect("write source-mapped FASL closure");
+
+        let closure = FaslReader::new(ctx, std::io::Cursor::new(bytes))
+            .read()
+            .expect("load source-mapped closure")
+            .downcast::<Closure>();
+        let metadata = closure.code_block.metadata.get();
+        let source_map = metadata
+            .assq(Symbol::from_str(ctx, "source-map").into())
+            .expect("source-map metadata")
+            .cdr();
+        let record = source_map.car().downcast::<Vector>();
+        assert_eq!(record[0].get(), Value::new(0));
+        assert_eq!(record[1].get(), Value::new(1));
+        let source = record[2].get().downcast::<Vector>();
+        assert_eq!(
+            source[0].get().downcast::<Str>().to_string(),
+            "/tmp/fasl-source-map.scm"
+        );
+        assert_eq!(source[1].get(), Value::new(3));
+        assert_eq!(source[2].get(), Value::new(4));
+    });
+}
+
+#[test]
 fn fasl_reader_debug_load_uses_trampoline_without_rewriting_artifact() {
     use super::{CodeSpec, FaslCompression, FaslImage, FaslWriter, GraphCodeSpec, ProgramSpec};
     use crate::runtime::{
@@ -388,7 +453,7 @@ fn fasl_reader_debug_load_uses_trampoline_without_rewriting_artifact() {
     let scm = Scheme::new_uninit();
     scm.enter(|ctx| {
         let mut bytes = Vec::new();
-        let code = CodeSpec::new(ret_bytes(), 0, 0, false, Value::new(false), &[]);
+        let code = CodeSpec::new(ret_bytes(), 0, 0, false, Value::new(false), &[], &[]);
         let code_blocks = [GraphCodeSpec::new(0, code)];
         let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
         FaslWriter::new(ctx, &mut bytes)
@@ -469,6 +534,7 @@ fn fasl_reader_reads_zero_relocation_closure_with_code_block() {
         bytes.push(0); // code-block is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
+        put_empty_source_map(&mut bytes);
         put_u32(&mut bytes, 0); // closure free count
         bytes.push(0); // closure is_cont
         finish_fasl_image(&mut bytes, payload_start);
@@ -518,6 +584,7 @@ fn fasl_reader_entry_resolves_graph_defined_code_block() {
         bytes.push(0); // code-block is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
+        put_empty_source_map(&mut bytes);
         bytes.push(FASL_TAG_CLOSURE);
         bytes.push(FASL_TAG_ENTRY);
         put_u32(&mut bytes, 0); // graph-defined code block
@@ -555,11 +622,38 @@ fn fasl_reader_reads_code_block_as_value() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
             .read()
             .expect("read code block through normal FASL reader");
+        assert!(value.is::<CodeBlock>());
+    });
+}
+
+#[test]
+fn fasl_reader_loads_v5_code_block_without_source_map_suffix() {
+    use super::{FASL_TAG_CODE_BLOCK, FASL_TAG_F};
+    use crate::runtime::{Scheme, value::CodeBlock};
+
+    let scm = Scheme::new_uninit();
+    scm.enter(|ctx| {
+        let mut bytes = Vec::new();
+        let payload_start = put_fasl_header_version(&mut bytes, 5);
+        bytes.push(FASL_TAG_CODE_BLOCK);
+        put_u32(&mut bytes, ret_bytes().len() as u32);
+        bytes.extend_from_slice(ret_bytes());
+        put_u32(&mut bytes, 0);
+        bytes.extend_from_slice(&0i32.to_le_bytes());
+        bytes.push(0);
+        bytes.push(FASL_TAG_F);
+        put_u32(&mut bytes, 0);
+        finish_fasl_image(&mut bytes, payload_start);
+
+        let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
+            .read()
+            .expect("read v5 code block without source map");
         assert!(value.is::<CodeBlock>());
     });
 }
@@ -598,6 +692,7 @@ fn fasl_reader_applies_asmkit_abs8_code_block_relocation() {
         }
         .encode(&mut bytes)
         .expect("encode relocation");
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
@@ -646,6 +741,7 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
+        put_empty_source_map(&mut bytes);
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
@@ -665,6 +761,7 @@ fn fasl_reader_applies_asmkit_x86_pc_rel4_code_entry_relocation() {
         }
         .encode(&mut bytes)
         .expect("encode relocation");
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
@@ -728,6 +825,7 @@ fn fasl_reader_applies_data_slot_address_relocation_to_graph_object() {
         }
         .encode(&mut bytes)
         .expect("encode relocation");
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
@@ -792,6 +890,7 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         }
         .encode(&mut bytes)
         .expect("encode relocation");
+        put_empty_source_map(&mut bytes);
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
@@ -802,6 +901,7 @@ fn fasl_reader_resolves_forward_code_entry_data_slot_address_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
@@ -876,6 +976,7 @@ fn fasl_reader_keeps_raw_data_slots_out_of_value_bitmap() {
         }
         .encode(&mut bytes)
         .expect("encode raw relocation");
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
@@ -931,6 +1032,7 @@ fn fasl_reader_resolves_forward_data_slot_address_relocation() {
         }
         .encode(&mut bytes)
         .expect("encode relocation");
+        put_empty_source_map(&mut bytes);
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_VECTOR);
@@ -996,6 +1098,7 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         }
         .encode(&mut bytes)
         .expect("encode relocation");
+        put_empty_source_map(&mut bytes);
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
@@ -1006,6 +1109,7 @@ fn fasl_reader_resolves_forward_code_entry_relocation() {
         bytes.push(0); // is_cont
         bytes.push(FASL_TAG_F); // metadata
         put_u32(&mut bytes, 0); // relocation count
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))
@@ -1061,6 +1165,7 @@ fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
         }
         .encode(&mut bytes)
         .expect("encode debug-entry relocation");
+        put_empty_source_map(&mut bytes);
         bytes.push(FASL_TAG_GRAPH_DEF);
         put_u32(&mut bytes, 1);
         bytes.push(FASL_TAG_CODE_BLOCK);
@@ -1071,6 +1176,7 @@ fn fasl_reader_debug_entry_relocation_is_load_mode_sensitive() {
         bytes.push(0);
         bytes.push(FASL_TAG_F);
         put_u32(&mut bytes, 0);
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let normal = FaslReader::new(ctx, std::io::Cursor::new(bytes.clone()))
@@ -1146,6 +1252,7 @@ fn fasl_reader_shares_cache_cell_slots_across_code_blocks() {
             }
             .encode(&mut bytes)
             .expect("encode relocation");
+            put_empty_source_map(&mut bytes);
         }
         finish_fasl_image(&mut bytes, payload_start);
 
@@ -1230,6 +1337,7 @@ fn fasl_reader_accepts_more_than_64_value_data_slots() {
             .encode(&mut bytes)
             .expect("encode relocation");
         }
+        put_empty_source_map(&mut bytes);
         finish_fasl_image(&mut bytes, payload_start);
 
         let value = FaslReader::new(ctx, std::io::Cursor::new(bytes))

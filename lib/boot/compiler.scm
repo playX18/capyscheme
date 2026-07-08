@@ -19,7 +19,9 @@
         ((@@ (capy) %runtime-stats-end-reader) token)))))
 
 (%%file-compiler
-  (lambda (filename compiled-path env load-thunk?)
+  (lambda (filename compiled-path env load-thunk? . maybe-dump-options)
+    (define dump-options
+      (if (null? maybe-dump-options) '() (car maybe-dump-options)))
     (define (read-all in)
       (let lp ([exps '()])
         (let ([exp (%runtime-stats-timed-reader (lambda () (read-syntax in)))])
@@ -48,6 +50,6 @@
                        [code (expand-primitives code)]
                        [code (resolve-free-vars code)]
                        [code (letrectify code #t)])
-                  (%compile code output-file mod load-thunk?)))))))
+                  (%compile code output-file mod load-thunk? dump-options)))))))
       (lambda ()
         ((@@ (capy) %runtime-stats-end-compilation))))))

@@ -1,7 +1,7 @@
 use crate::{
     prelude::{Tuple, Value},
     rsgc::Trace,
-    runtime::Context,
+    runtime::{Context, value::Vector},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Trace)]
@@ -244,6 +244,33 @@ impl<'gc> ConditionBuilder<'gc> {
         self
     }
 
+    pub fn source(mut self, source: Value<'gc>) -> Self {
+        let Some([file, line, column]) = source_condition_fields(source) else {
+            return self;
+        };
+        let record_type = self
+            .ctx
+            .public_ref("capy", "&source")
+            .expect("failed to get &source record type");
+        let rtd = record_type.downcast::<Tuple>()[2].get();
+
+        self.simple
+            .push(Tuple::from_slice(*self.ctx, &[rtd, file, line, column]).into());
+        self
+    }
+
+    pub fn expansion_trace(mut self, frames: Value<'gc>) -> Self {
+        let record_type = self
+            .ctx
+            .public_ref("capy", "&expansion-trace")
+            .expect("failed to get &expansion-trace record type");
+        let rtd = record_type.downcast::<Tuple>()[2].get();
+
+        self.simple
+            .push(Tuple::from_slice(*self.ctx, &[rtd, frames]).into());
+        self
+    }
+
     pub fn undefined(mut self) -> Self {
         let record_type = self
             .ctx
@@ -274,6 +301,32 @@ impl<'gc> ConditionBuilder<'gc> {
             .into_iter()
             .rfold(Value::null(), |acc, item| Value::cons(self.ctx, item, acc));
         Tuple::from_slice(*self.ctx, &[self.ctx.intern("type:condition"), ls]).into()
+    }
+}
+
+fn source_condition_fields<'gc>(source: Value<'gc>) -> Option<[Value<'gc>; 3]> {
+    if !source.is::<Vector>() {
+        return None;
+    }
+    let source = source.downcast::<Vector>();
+    if source.len() < 3 {
+        return None;
+    }
+
+    let file = source[0].get();
+    let line = source[1].get();
+    let column = source[2].get();
+    (file != Value::new(false) && line != Value::new(false) && column != Value::new(false))
+        .then_some([file, line, column])
+}
+
+fn finish_condition<'gc>(
+    condition: ConditionBuilder<'gc>,
+    source: Option<Value<'gc>>,
+) -> Value<'gc> {
+    match source {
+        Some(source) => condition.source(source).build(),
+        None => condition.build(),
     }
 }
 
@@ -380,6 +433,24 @@ pub fn make_raise_condition<'gc>(
     code: usize,
     values: &[Value<'gc>],
 ) -> Value<'gc> {
+    make_raise_condition_impl(ctx, code, values, None)
+}
+
+pub fn make_raise_condition_with_source<'gc>(
+    ctx: Context<'gc>,
+    code: usize,
+    values: &[Value<'gc>],
+    source: Value<'gc>,
+) -> Value<'gc> {
+    make_raise_condition_impl(ctx, code, values, Some(source))
+}
+
+fn make_raise_condition_impl<'gc>(
+    ctx: Context<'gc>,
+    code: usize,
+    values: &[Value<'gc>],
+    source: Option<Value<'gc>>,
+) -> Value<'gc> {
     match RaiseKind::from_code(code).expect("invalid raise kind code") {
         kind @ (RaiseKind::WrongNumberOfArgumentsCar
         | RaiseKind::WrongNumberOfArgumentsCdr
@@ -392,7 +463,23 @@ pub fn make_raise_condition<'gc>(
                 .primitive_wrong_arity()
                 .expect("primitive wrong arity kind should have static arity data");
             let got = values.first().and_then(|value| value.int32()).unwrap_or(0) as usize;
-            make_primitive_wrong_number_of_arguments_violation(ctx, who, got, expected)
+            let message = if expected < 0 {
+                format!(
+                    "procedure expected at least {} arguments, got {}",
+                    -expected, got
+                )
+            } else {
+                format!("procedure expected {} arguments, got {}", expected, got)
+            };
+            finish_condition(
+                ConditionBuilder::new(ctx)
+                    .assertion()
+                    .who(who)
+                    .message(&message)
+                    .irritants(&[])
+                    .marks(),
+                source,
+            )
         }
         RaiseKind::AssertionViolation => {
             let who = values.first().copied().unwrap_or(Value::new(false));
@@ -401,25 +488,75 @@ pub fn make_raise_condition<'gc>(
                 .copied()
                 .unwrap_or_else(|| ctx.str("assertion violation"));
             let irritants = values.get(2..).unwrap_or(&[]);
-            make_assertion_violation_value(ctx, who, message, irritants)
+            let mut cc = ConditionBuilder::new(ctx).assertion();
+            if who != Value::new(false) {
+                cc = cc.who_value(who);
+            }
+            finish_condition(
+                cc.message_value(message).irritants(irritants).marks(),
+                source,
+            )
         }
         RaiseKind::WrongNumberOfArguments => {
             let subr = values.first().copied().unwrap_or(Value::new(false));
             let got = values.get(1).and_then(|value| value.int32()).unwrap_or(0) as usize;
             let expected = values.get(2).and_then(|value| value.int32()).unwrap_or(0) as isize;
-            make_wrong_number_of_arguments_violation(ctx, subr, got, expected)
+            let message = if expected < 0 {
+                format!(
+                    "procedure expected at least {} arguments, got {}",
+                    -expected, got
+                )
+            } else {
+                format!("procedure expected {} arguments, got {}", expected, got)
+            };
+            let meta = if subr.is::<crate::runtime::value::Closure>() {
+                subr.downcast::<crate::runtime::value::Closure>().meta.get()
+            } else {
+                Value::new(false)
+            };
+            finish_condition(
+                ConditionBuilder::new(ctx)
+                    .assertion()
+                    .message_value(ctx.str(&message))
+                    .irritants(&[subr, meta])
+                    .marks(),
+                source,
+            )
         }
         RaiseKind::NonApplicable => {
             let subr = values.first().copied().unwrap_or(Value::new(false));
-            make_non_applicable_violation(ctx, subr)
+            finish_condition(
+                ConditionBuilder::new(ctx)
+                    .assertion()
+                    .message_value(ctx.str("attempt to call non-procedure"))
+                    .irritants(&[subr])
+                    .marks(),
+                source,
+            )
         }
         RaiseKind::CarNotPair => {
             let value = values.first().copied().unwrap_or(Value::new(false));
-            make_primitive_assertion_violation(ctx, "car", "not a pair", &[value])
+            finish_condition(
+                ConditionBuilder::new(ctx)
+                    .assertion()
+                    .who("car")
+                    .message("not a pair")
+                    .irritants(&[value])
+                    .marks(),
+                source,
+            )
         }
         RaiseKind::CdrNotPair => {
             let value = values.first().copied().unwrap_or(Value::new(false));
-            make_primitive_assertion_violation(ctx, "cdr", "not a pair", &[value])
+            finish_condition(
+                ConditionBuilder::new(ctx)
+                    .assertion()
+                    .who("cdr")
+                    .message("not a pair")
+                    .irritants(&[value])
+                    .marks(),
+                source,
+            )
         }
         RaiseKind::Undefined => {
             let who = values.first().copied();
@@ -434,10 +571,10 @@ pub fn make_raise_condition<'gc>(
             {
                 cc = cc.who_value(who);
             }
-            cc.message_value(message)
-                .irritants(irritants)
-                .marks()
-                .build()
+            finish_condition(
+                cc.message_value(message).irritants(irritants).marks(),
+                source,
+            )
         }
     }
 }
@@ -453,4 +590,28 @@ pub fn make_undefined_violation<'gc>(
         cc = cc.who_value(who);
     }
     cc.message(message).irritants(irritants).marks().build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::{Scheme, value::Vector};
+
+    #[test]
+    fn source_condition_fields_accepts_extended_source_vector() {
+        Scheme::new_uninit().enter(|ctx| {
+            let file = ctx.str("source-condition.scm");
+            let source = Vector::from_slice(
+                *ctx,
+                &[file, Value::new(2), Value::new(9), Value::new(false)],
+            )
+            .into();
+            let [actual_file, actual_line, actual_column] =
+                source_condition_fields(source).expect("valid source vector");
+
+            assert_eq!(actual_file, file);
+            assert_eq!(actual_line, Value::new(2));
+            assert_eq!(actual_column, Value::new(9));
+        });
+    }
 }

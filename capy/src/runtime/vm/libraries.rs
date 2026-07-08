@@ -141,7 +141,7 @@ mod tests {
         let scm = Scheme::new_uninit();
         scm.enter(|ctx| {
             let mut bytes = Vec::new();
-            let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]);
+            let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[], &[]);
             let code_blocks = [GraphCodeSpec::new(0, code)];
             let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
             FaslWriter::new(ctx, &mut bytes)
@@ -181,7 +181,7 @@ mod tests {
         scm.enter(|ctx| {
             set_fasl_debug_entries(false);
             let mut bytes = Vec::new();
-            let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[]);
+            let code = CodeSpec::new(&[0xc3], 0, 0, false, Value::new(false), &[], &[]);
             let code_blocks = [GraphCodeSpec::new(0, code)];
             let program = ProgramSpec::new(1, &[], &code_blocks, 0, false);
             FaslWriter::new(ctx, &mut bytes)

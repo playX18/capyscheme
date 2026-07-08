@@ -88,6 +88,7 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             return;
         }
         let start_point = node.start_position();
+        let end_point = node.end_position();
 
         add_source(
             self.ctx,
@@ -95,6 +96,8 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
             self.source_file,
             start_point.row as i32,
             start_point.column as i32,
+            end_point.row as i32,
+            end_point.column as i32,
         );
     }
 
@@ -721,7 +724,22 @@ impl<'a, 'gc> TreeSitter<'a, 'gc> {
         let filename = self.source_file;
         let line = node.start_position().row as i32;
         let column = node.start_position().column as i32;
-        let v = Vector::from_slice(*self.ctx, &[filename, line.into(), column.into()]);
+        let end_line = node.end_position().row as i32;
+        let end_column = node.end_position().column as i32;
+        let v = Vector::from_slice(
+            *self.ctx,
+            &[
+                filename,
+                line.into(),
+                column.into(),
+                end_line.into(),
+                end_column.into(),
+                Value::new(false),
+                Value::new(false),
+                Value::from(Symbol::from_str(self.ctx, "read")),
+                Value::null(),
+            ],
+        );
 
         let stx = Syntax::new(
             self.ctx,

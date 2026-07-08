@@ -45,6 +45,7 @@ unicode-general-category = "1.1.0"
 unicode-normalization = "0.1.25"
 capy-derive = { path = "capy-derive" }
 serde = { version = "1.0.228", features = ["derive"] }
+capstone = { version = "0.14.0", default-features = false, features = ["std", "full", "arch_x86", "arch_arm64"] }
 
 [profile.release]
 incremental = true

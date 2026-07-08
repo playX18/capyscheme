@@ -1,9 +1,11 @@
 use crate::{
+    disassembly::{DisassemblySource, SourceAnnotation, SourceRangeAnnotation},
     expander::{sym_column, sym_filename, sym_line},
     prelude::*,
     runtime::{
         Context,
         value::{Closure, IntoValue, Str, Symbol, Value, Vector},
+        vm::thunks::make_io_error,
     },
     static_symbols,
 };
@@ -154,6 +156,207 @@ pub mod debug_ops {
         });
         nctx.return_(result)
     }
+
+    #[scheme(name = "disassembly")]
+    pub fn disassembly(proc: Gc<'gc, Closure<'gc>>) -> Result<Value<'gc>, Value<'gc>> {
+        let ctx = nctx.ctx;
+        let bytes = proc.code_block.unlinked.code();
+        if bytes.is_empty() {
+            return nctx.return_(Err(make_io_error(
+                ctx,
+                "disassembly",
+                Str::new(*ctx, "procedure has no unlinked code bytes", true).into(),
+                &[],
+            )));
+        }
+
+        let function_source = proc.source(ctx).map(|(file, line, column)| {
+            SourceAnnotation::new(file.to_string(), line, column, None, None)
+        });
+        let source =
+            disassembly_source_from_metadata(ctx, function_source, proc.code_block.metadata.get());
+        let rendered = match crate::disassembly::disassemble_host_with_annotations(
+            bytes,
+            proc.code_block.entrypoint.as_usize() as u64,
+            source.as_ref(),
+        ) {
+            Ok(rendered) => rendered,
+            Err(err) => {
+                return nctx.return_(Err(make_io_error(
+                    ctx,
+                    "disassembly",
+                    Str::new(*ctx, err, true).into(),
+                    &[],
+                )));
+            }
+        };
+
+        nctx.return_(Ok(Str::new(*ctx, rendered, true).into()))
+    }
+}
+
+fn disassembly_source_from_metadata<'gc>(
+    ctx: Context<'gc>,
+    function_source: Option<SourceAnnotation>,
+    metadata: Value<'gc>,
+) -> Option<DisassemblySource> {
+    let ranges = source_map_from_metadata(ctx, metadata);
+    if function_source.is_none() && ranges.is_empty() {
+        return None;
+    }
+    Some(DisassemblySource::new(function_source, ranges))
+}
+
+fn source_map_from_metadata<'gc>(
+    ctx: Context<'gc>,
+    metadata: Value<'gc>,
+) -> Vec<SourceRangeAnnotation> {
+    if !metadata.is_pair() {
+        return Vec::new();
+    }
+
+    let key = Symbol::from_str(ctx, "source-map").into();
+    let Some(source_map) = metadata.assq(key) else {
+        return Vec::new();
+    };
+
+    let mut source_map = source_map.cdr();
+    let mut ranges = Vec::new();
+    while source_map.is_pair() {
+        if let Some(range) = source_range_from_metadata_record(source_map.car()) {
+            ranges.push(range);
+        }
+        source_map = source_map.cdr();
+    }
+    ranges
+}
+
+pub(crate) fn stacktrace_source_for_closure<'gc>(
+    ctx: Context<'gc>,
+    closure: Gc<'gc, Closure<'gc>>,
+) -> Value<'gc> {
+    let code_metadata = closure.code_block.metadata.get();
+    metadata_source(ctx, code_metadata)
+        .or_else(|| source_map_primary_source(ctx, code_metadata))
+        .or_else(|| {
+            let closure_metadata = closure.meta.get();
+            metadata_source(ctx, closure_metadata)
+                .or_else(|| source_map_primary_source(ctx, closure_metadata))
+        })
+        .unwrap_or_else(|| Value::new(false))
+}
+
+fn metadata_source<'gc>(ctx: Context<'gc>, metadata: Value<'gc>) -> Option<Value<'gc>> {
+    if !metadata.is_pair() {
+        return None;
+    }
+
+    let source = metadata.assq(Symbol::from_str(ctx, "source").into())?.cdr();
+    valid_stacktrace_source(source).then_some(source)
+}
+
+fn source_map_primary_source<'gc>(ctx: Context<'gc>, metadata: Value<'gc>) -> Option<Value<'gc>> {
+    if !metadata.is_pair() {
+        return None;
+    }
+
+    let key = Symbol::from_str(ctx, "source-map").into();
+    let mut source_map = metadata.assq(key)?.cdr();
+    while source_map.is_pair() {
+        let record = source_map.car();
+        if record.is::<Vector>() {
+            let record = record.downcast::<Vector>();
+            if record.len() >= 3 {
+                let source = record[2].get();
+                if valid_stacktrace_source(source) {
+                    return Some(source);
+                }
+            }
+        }
+        source_map = source_map.cdr();
+    }
+
+    None
+}
+
+fn valid_stacktrace_source<'gc>(source: Value<'gc>) -> bool {
+    if !source.is::<Vector>() {
+        return false;
+    }
+    let source = source.downcast::<Vector>();
+    if source.len() < 3 {
+        return false;
+    }
+
+    source[0].get().is::<Str>() && source[1].get().is_int32() && source[2].get().is_int32()
+}
+
+fn source_range_from_metadata_record<'gc>(record: Value<'gc>) -> Option<SourceRangeAnnotation> {
+    if !record.is::<Vector>() {
+        return None;
+    }
+    let record = record.downcast::<Vector>();
+    if record.len() < 3 {
+        return None;
+    }
+
+    let start = value_u32(record[0].get())?;
+    let end = value_u32(record[1].get())?;
+    if start >= end {
+        return None;
+    }
+    let source = source_annotation_from_value(record[2].get())?;
+    Some(SourceRangeAnnotation::new(start, end, source))
+}
+
+fn source_annotation_from_value<'gc>(source: Value<'gc>) -> Option<SourceAnnotation> {
+    if !source.is::<Vector>() {
+        return None;
+    }
+    let source = source.downcast::<Vector>();
+    if source.len() < 3 {
+        return None;
+    }
+
+    let file = source[0].get();
+    let line = value_u32(source[1].get())?;
+    let column = value_u32(source[2].get())?;
+    if !file.is::<Str>() {
+        return None;
+    }
+    let end_line = if source.len() >= 4 {
+        optional_u32(source[3].get())
+    } else {
+        None
+    };
+    let end_column = if source.len() >= 5 {
+        optional_u32(source[4].get())
+    } else {
+        None
+    };
+
+    Some(SourceAnnotation::new(
+        file.to_string(),
+        line,
+        column,
+        end_line,
+        end_column,
+    ))
+}
+
+fn optional_u32<'gc>(value: Value<'gc>) -> Option<u32> {
+    if value == Value::new(false) {
+        None
+    } else {
+        value_u32(value)
+    }
+}
+
+fn value_u32<'gc>(value: Value<'gc>) -> Option<u32> {
+    if !value.is_int32() {
+        return None;
+    }
+    u32::try_from(value.as_int32()).ok()
 }
 
 pub const DEBUG_STACKTRACE_KEY: &str = "stacktrace-key b8bec3ca-8174-4219-a964-b1aa2aa53ed5";

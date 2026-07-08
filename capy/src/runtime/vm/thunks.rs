@@ -7,7 +7,8 @@
 #![allow(dead_code, unused_variables)]
 use crate::prelude::PROCEDURES;
 use crate::runtime::vm::exceptions::{
-    make_raise_condition, make_undefined_violation as undefined_violation,
+    make_raise_condition, make_raise_condition_with_source,
+    make_undefined_violation as undefined_violation,
 };
 use crate::runtime::vm::load::policy::get_fasl_load_options;
 use crate::runtime::vm::{default_exception_handler, default_retk as vm_default_retk};
@@ -520,6 +521,36 @@ thunks! {
         }
         .collect_range(argc, from, count);
         make_raise_condition(ctx, code, &values)
+    }
+
+    pub fn raise_condition_with_source_regs(
+        ctx: Context<'gc>,
+        code: usize,
+        argc: usize,
+        arg0: Value<'gc>,
+        arg1: Value<'gc>,
+        arg2: Value<'gc>,
+        arg3: Value<'gc>,
+        overflow: *const Value<'gc>,
+        from: usize
+    ) -> Value<'gc> {
+        save_register_args(ctx, argc, arg0, arg1, arg2, arg3);
+        let args = RegisterArgs {
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            overflow,
+        };
+        let source_index = argc.saturating_sub(1);
+        let source = if argc > from {
+            args.get(source_index)
+        } else {
+            Value::new(false)
+        };
+        let count = source_index.saturating_sub(from);
+        let values = args.collect_range(argc, from, count);
+        make_raise_condition_with_source(ctx, code, &values, source)
     }
 
     pub fn non_applicable(
@@ -4142,14 +4173,7 @@ thunks! {
             Value::cons(ctx, arg, acc)
         });
 
-        let meta = rator_closure.meta.get();
-        let src = if meta.is_pair() {
-            meta.assq(Symbol::from_str(ctx, "source").into())
-                .map(|source| source.cdr())
-                .unwrap_or(Value::new(false))
-        } else {
-            Value::new(false)
-        };
+        let src = debug::stacktrace_source_for_closure(ctx, rator_closure);
         let info = Vector::from_slice(*ctx, &[src, rator, call_args]);
         let key = crate::runtime::vm::debug::sym_stacktrace_key(ctx);
 

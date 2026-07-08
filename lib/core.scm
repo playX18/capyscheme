@@ -34,6 +34,7 @@
     &non-continuable
     &serious
     &syntax
+    &expansion-trace
     &undefined
     &violation
     &warning
@@ -317,6 +318,7 @@
     cond
     condition
     condition-accessor
+    condition-expansion-trace
     condition-irritants
     condition-message
     condition-predicate
@@ -378,6 +380,7 @@
     destructuring-bind
     destructuring-match
     directory-list
+    disassembly
     display
     display-backtrace
     display-codegen-statistics
@@ -428,6 +431,7 @@
     error?
     eval
     even?
+    expansion-trace?
     exact
     exact->inexact
     exact-integer-sqrt
@@ -704,6 +708,7 @@
     make-eq-hashtable
     make-eqv-hashtable
     make-error
+    make-expansion-trace-condition
     make-hashtable
     make-i/o-decoding-error
     make-i/o-encoding-error

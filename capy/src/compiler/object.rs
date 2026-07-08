@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::compiler::LoweredProgram;
 use crate::compiler::ssa::ModuleBuilder;
 use crate::cps::{
@@ -13,15 +15,16 @@ use crate::runtime::{
     value::{Str, Value},
 };
 
-#[derive(Clone, Copy, Debug)]
-pub struct CompilationOptions {
-    pub backtraces: bool,
+#[derive(Clone, Debug, Default)]
+pub struct BackendDumpOptions {
+    pub cranelift: Option<PathBuf>,
+    pub disassembly: Option<PathBuf>,
 }
 
-impl Default for CompilationOptions {
-    fn default() -> Self {
-        Self { backtraces: false }
-    }
+#[derive(Clone, Debug, Default)]
+pub struct CompilationOptions {
+    pub backtraces: bool,
+    pub backend_dumps: BackendDumpOptions,
 }
 
 pub fn compile_cps_to_fasl_bytes<'gc>(
@@ -53,14 +56,16 @@ fn compile_linear_cps_to_fasl_bytes<'gc>(
 ) -> Result<Vec<u8>, Value<'gc>> {
     let mut module_builder = ModuleBuilder::new(ctx, reify_info, linear);
     module_builder.stacktraces = opts.backtraces;
-    module_builder.compile_loaded_fasl_bytes().map_err(|err| {
-        make_io_error(
-            ctx,
-            "compile",
-            Str::new(*ctx, format!("Cannot compile unified FASL: {err}"), true).into(),
-            &[],
-        )
-    })
+    module_builder
+        .compile_loaded_fasl_bytes_with_dumps(&opts.backend_dumps)
+        .map_err(|err| {
+            make_io_error(
+                ctx,
+                "compile",
+                Str::new(*ctx, format!("Cannot compile unified FASL: {err}"), true).into(),
+                &[],
+            )
+        })
 }
 
 fn compile_graph_linear_cps_to_fasl_bytes<'gc>(
@@ -70,12 +75,14 @@ fn compile_graph_linear_cps_to_fasl_bytes<'gc>(
 ) -> Result<Vec<u8>, Value<'gc>> {
     let mut module_builder = ModuleBuilder::new_graph_linear(ctx, linear);
     module_builder.stacktraces = opts.backtraces;
-    module_builder.compile_loaded_fasl_bytes().map_err(|err| {
-        make_io_error(
-            ctx,
-            "compile",
-            Str::new(*ctx, format!("Cannot compile unified FASL: {err}"), true).into(),
-            &[],
-        )
-    })
+    module_builder
+        .compile_loaded_fasl_bytes_with_dumps(&opts.backend_dumps)
+        .map_err(|err| {
+            make_io_error(
+                ctx,
+                "compile",
+                Str::new(*ctx, format!("Cannot compile unified FASL: {err}"), true).into(),
+                &[],
+            )
+        })
 }

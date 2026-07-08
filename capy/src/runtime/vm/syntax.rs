@@ -1,5 +1,8 @@
 use crate::{
-    expander::{get_source_property, sym_column, sym_filename, sym_line},
+    expander::{
+        get_source_property, sym_column, sym_end_byte, sym_end_column, sym_end_line, sym_filename,
+        sym_line, sym_origin, sym_related_spans, sym_start_byte,
+    },
     list,
     prelude::*,
     rsgc::{
@@ -297,19 +300,7 @@ pub fn datum_sourcev<'gc>(ctx: Context<'gc>, obj: Value<'gc>) -> Value<'gc> {
     };
 
     if props.is_pair() {
-        let filename = props
-            .assq(sym_filename(ctx).into())
-            .map(|pair| pair.cdr())
-            .unwrap_or(Value::new(false));
-        let line = props
-            .assq(sym_line(ctx).into())
-            .map(|pair| pair.cdr())
-            .unwrap_or(Value::new(false));
-        let column = props
-            .assq(sym_column(ctx).into())
-            .map(|pair| pair.cdr())
-            .unwrap_or(Value::new(false));
-        Vector::from_slice(*ctx, &[filename, line, column]).into()
+        source_props_to_vector(ctx, props)
     } else if props.is::<Vector>() {
         props
     } else {
@@ -325,29 +316,88 @@ pub fn props_to_sourcev<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc>
         return Value::new(false);
     }
 
-    let filename = props
-        .assq(sym_filename(ctx).into())
-        .map(|pair| pair.cdr())
-        .unwrap_or(Value::new(false));
-    let line = props
-        .assq(sym_line(ctx).into())
-        .map(|pair| pair.cdr())
-        .unwrap_or(Value::new(false));
-    let column = props
-        .assq(sym_column(ctx).into())
-        .map(|pair| pair.cdr())
-        .unwrap_or(Value::new(false));
-
-    Vector::from_slice(*ctx, &[filename, line, column]).into()
+    source_props_to_vector(ctx, props)
 }
+
+fn source_prop<'gc>(props: Value<'gc>, key: Value<'gc>) -> Value<'gc> {
+    props
+        .assq(key)
+        .map(|pair| pair.cdr())
+        .unwrap_or(Value::new(false))
+}
+
+fn source_props_to_vector<'gc>(ctx: Context<'gc>, props: Value<'gc>) -> Value<'gc> {
+    Vector::from_slice(
+        *ctx,
+        &[
+            source_prop(props, sym_filename(ctx).into()),
+            source_prop(props, sym_line(ctx).into()),
+            source_prop(props, sym_column(ctx).into()),
+            source_prop(props, sym_end_line(ctx).into()),
+            source_prop(props, sym_end_column(ctx).into()),
+            source_prop(props, sym_start_byte(ctx).into()),
+            source_prop(props, sym_end_byte(ctx).into()),
+            source_prop(props, sym_origin(ctx).into()),
+            source_prop(props, sym_related_spans(ctx).into()),
+        ],
+    )
+    .into()
+}
+
+fn sourcev_field<'gc>(vec: Gc<'gc, Vector<'gc>>, index: usize) -> Value<'gc> {
+    if index < vec.len() {
+        vec[index].get()
+    } else {
+        Value::new(false)
+    }
+}
+
+fn add_source_prop<'gc>(
+    ctx: Context<'gc>,
+    props: Value<'gc>,
+    key: Value<'gc>,
+    value: Value<'gc>,
+) -> Value<'gc> {
+    if value == Value::new(false) || value.is_null() {
+        props
+    } else {
+        let cell = Value::cons(ctx, key, value);
+        Value::cons(ctx, cell, props)
+    }
+}
+
 pub fn sourcev_to_props<'gc>(ctx: Context<'gc>, sourcev: Value<'gc>) -> Value<'gc> {
     if sourcev.is::<Vector>() {
         let vec = sourcev.downcast::<Vector>();
-        if vec.len() == 3 {
+        if vec.len() >= 3 {
             let filename_cell = Value::cons(ctx, sym_filename(ctx).into(), vec[0].get());
             let line_cell = Value::cons(ctx, sym_line(ctx).into(), vec[1].get());
             let column_cell = Value::cons(ctx, sym_column(ctx).into(), vec[2].get());
-            return list!(ctx, filename_cell, line_cell, column_cell);
+            let props = list!(ctx, filename_cell, line_cell, column_cell);
+            let props = add_source_prop(
+                ctx,
+                props,
+                sym_related_spans(ctx).into(),
+                sourcev_field(vec, 8),
+            );
+            let props = add_source_prop(ctx, props, sym_origin(ctx).into(), sourcev_field(vec, 7));
+            let props =
+                add_source_prop(ctx, props, sym_end_byte(ctx).into(), sourcev_field(vec, 6));
+            let props = add_source_prop(
+                ctx,
+                props,
+                sym_start_byte(ctx).into(),
+                sourcev_field(vec, 5),
+            );
+            let props = add_source_prop(
+                ctx,
+                props,
+                sym_end_column(ctx).into(),
+                sourcev_field(vec, 4),
+            );
+            let props =
+                add_source_prop(ctx, props, sym_end_line(ctx).into(), sourcev_field(vec, 3));
+            return props;
         }
     }
     Value::new(false)

@@ -4,7 +4,7 @@ use crate::{
         Procedure, ProcedureKind, RestPredicate, SwitchKind, Terminator, ValueId,
     },
     expander::core::LVarRef,
-    runtime::value::{Symbol, Value},
+    runtime::value::{Str, Symbol, Value, Vector},
 };
 use std::fmt::Write;
 
@@ -23,9 +23,10 @@ fn render_procedure<'gc>(out: &mut String, procedure: &Procedure<'gc>, indent: u
     let pad = " ".repeat(indent);
     writeln!(
         out,
-        "{pad}(procedure {} {}",
+        "{pad}(procedure {} {}{}",
         render_procedure_kind(procedure.kind),
-        render_code_id(&procedure.code)
+        render_code_id(&procedure.code),
+        render_source_suffix(procedure.source)
     )
     .unwrap();
     writeln!(
@@ -70,10 +71,11 @@ fn render_block<'gc>(out: &mut String, block: &Block<'gc>, indent: usize) {
     let pad = " ".repeat(indent);
     writeln!(
         out,
-        "{pad}(block {} (params{}) (variadic {})",
+        "{pad}(block {} (params{}) (variadic {}){}",
         render_block_id(block.id),
         render_value_ids(&block.params),
-        render_optional_value_id(block.variadic)
+        render_optional_value_id(block.variadic),
+        render_source_suffix(block.source)
     )
     .unwrap();
     for instruction in &block.instructions {
@@ -120,63 +122,97 @@ fn render_instruction<'gc>(instruction: &Instruction<'gc>) -> String {
             index,
             render_linear_atom(*value)
         ),
-        Instruction::CacheRef { dst, cache_key, .. } => format!(
-            "(cache-ref {} {})",
-            render_value_id(*dst),
-            render_linear_atom(*cache_key)
+        Instruction::CacheRef {
+            dst,
+            cache_key,
+            source,
+        } => with_source_suffix(
+            format!(
+                "(cache-ref {} {})",
+                render_value_id(*dst),
+                render_linear_atom(*cache_key)
+            ),
+            *source,
         ),
         Instruction::CacheSet {
             dst,
             cache_key,
             value,
-            ..
-        } => format!(
-            "(cache-set! {} {} {})",
-            render_value_id(*dst),
-            render_linear_atom(*cache_key),
-            render_linear_atom(*value)
+            source,
+        } => with_source_suffix(
+            format!(
+                "(cache-set! {} {} {})",
+                render_value_id(*dst),
+                render_linear_atom(*cache_key),
+                render_linear_atom(*value)
+            ),
+            *source,
         ),
         Instruction::PrimCall {
-            dst, prim, args, ..
-        } => format!(
-            "(prim-call {} {}{})",
-            render_value_id(*dst),
+            dst,
             prim,
-            render_linear_atoms(args)
+            args,
+            source,
+        } => with_source_suffix(
+            format!(
+                "(prim-call {} {}{})",
+                render_value_id(*dst),
+                prim,
+                render_linear_atoms(args)
+            ),
+            *source,
         ),
-        Instruction::RestToList { dst, rest, .. } => format!(
-            "(rest->list {} {})",
-            render_value_id(*dst),
-            render_value_id(*rest)
+        Instruction::RestToList { dst, rest, source } => with_source_suffix(
+            format!(
+                "(rest->list {} {})",
+                render_value_id(*dst),
+                render_value_id(*rest)
+            ),
+            *source,
         ),
         Instruction::RestRef {
-            dst, rest, index, ..
-        } => format!(
-            "(rest-ref {} {} {})",
-            render_value_id(*dst),
-            render_value_id(*rest),
-            index
+            dst,
+            rest,
+            index,
+            source,
+        } => with_source_suffix(
+            format!(
+                "(rest-ref {} {} {})",
+                render_value_id(*dst),
+                render_value_id(*rest),
+                index
+            ),
+            *source,
         ),
         Instruction::RestLength {
-            dst, rest, skip, ..
-        } => format!(
-            "(rest-length {} {} {})",
-            render_value_id(*dst),
-            render_value_id(*rest),
-            skip
+            dst,
+            rest,
+            skip,
+            source,
+        } => with_source_suffix(
+            format!(
+                "(rest-length {} {} {})",
+                render_value_id(*dst),
+                render_value_id(*rest),
+                skip
+            ),
+            *source,
         ),
         Instruction::RestPredicate {
             dst,
             rest,
             predicate,
             skip,
-            ..
-        } => format!(
-            "(rest-{} {} {} {})",
-            render_rest_predicate(*predicate),
-            render_value_id(*dst),
-            render_value_id(*rest),
-            skip
+            source,
+        } => with_source_suffix(
+            format!(
+                "(rest-{} {} {} {})",
+                render_rest_predicate(*predicate),
+                render_value_id(*dst),
+                render_value_id(*rest),
+                skip
+            ),
+            *source,
         ),
     }
 }
@@ -192,21 +228,35 @@ fn render_rest_predicate(predicate: RestPredicate) -> &'static str {
 fn render_terminator<'gc>(terminator: &Terminator<'gc>) -> String {
     match terminator {
         Terminator::Call {
-            callee, retk, args, ..
-        } => format!(
-            "(call {} {}{})",
-            render_linear_atom(*callee),
-            render_linear_atom(*retk),
-            render_linear_atoms(args)
+            callee,
+            retk,
+            args,
+            source,
+        } => with_source_suffix(
+            format!(
+                "(call {} {}{})",
+                render_linear_atom(*callee),
+                render_linear_atom(*retk),
+                render_linear_atoms(args)
+            ),
+            *source,
         ),
-        Terminator::TailCall { callee, args, .. } => format!(
-            "(tail-call {}{})",
-            render_linear_atom(*callee),
-            render_linear_atoms(args)
+        Terminator::TailCall {
+            callee,
+            args,
+            source,
+        } => with_source_suffix(
+            format!(
+                "(tail-call {}{})",
+                render_linear_atom(*callee),
+                render_linear_atoms(args)
+            ),
+            *source,
         ),
-        Terminator::Raise { kind, args, .. } => {
-            format!("(%raise {:?}{})", kind, render_linear_atoms(args))
-        }
+        Terminator::Raise { kind, args, source } => with_source_suffix(
+            format!("(%raise {:?}{})", kind, render_linear_atoms(args)),
+            *source,
+        ),
         Terminator::Jump { target, args } => {
             format!(
                 "(jump {}{})",
@@ -364,9 +414,68 @@ fn render_value<'gc>(value: Value<'gc>) -> String {
     }
 }
 
+fn with_source_suffix<'gc>(rendered: String, source: Value<'gc>) -> String {
+    format!("{rendered}{}", render_source_suffix(source))
+}
+
+fn render_source_suffix<'gc>(source: Value<'gc>) -> String {
+    render_source_location(source)
+        .map(|location| format!(" ; @ {location}"))
+        .unwrap_or_default()
+}
+
+fn render_source_location<'gc>(source: Value<'gc>) -> Option<String> {
+    if !source.is::<Vector>() {
+        return None;
+    }
+
+    let source = source.downcast::<Vector>();
+    if source.len() < 3 {
+        return None;
+    }
+
+    let file = render_source_file(source[0].get())?;
+    let line = source_i32(source[1].get())?;
+    let column = source_i32(source[2].get())?;
+    let start = format!("{file}:{line}:{column}");
+    let Some(end_line) = source_field_i32(source, 3) else {
+        return Some(start);
+    };
+    let Some(end_column) = source_field_i32(source, 4) else {
+        return Some(start);
+    };
+
+    Some(format!("{start}-{end_line}:{end_column}"))
+}
+
+fn source_field_i32<'gc>(source: crate::rsgc::Gc<'gc, Vector<'gc>>, index: usize) -> Option<i32> {
+    if index < source.len() {
+        source_i32(source[index].get())
+    } else {
+        None
+    }
+}
+
+fn source_i32<'gc>(value: Value<'gc>) -> Option<i32> {
+    value.is_int32().then(|| value.as_int32())
+}
+
+fn render_source_file<'gc>(value: Value<'gc>) -> Option<String> {
+    if value == Value::new(false) {
+        None
+    } else if value.is::<Str>() {
+        Some(value.downcast::<Str>().as_str().into_owned())
+    } else if value.is::<Symbol>() {
+        Some(value.downcast::<Symbol>().to_string())
+    } else {
+        Some(render_value(value))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
+        compiler::ssa::primitive::Primitive,
         cps::{
             linear::{
                 Block, BlockId, ClosureKind, CodeId, GraphCodeId, Instruction, LinearAtom,
@@ -378,7 +487,7 @@ mod tests {
         rsgc::{Gc, alloc::Array, cell::Lock},
         runtime::{
             Context, Scheme,
-            value::{Symbol, Value, init_symbols},
+            value::{Str, Symbol, Value, Vector, init_symbols},
         },
     };
 
@@ -397,6 +506,24 @@ mod tests {
 
     fn lvar<'gc>(ctx: Context<'gc>, name: &str) -> LVarRef<'gc> {
         fresh_lvar(ctx, Symbol::from_str(ctx, name).into())
+    }
+
+    fn source<'gc>(ctx: Context<'gc>) -> Value<'gc> {
+        Vector::from_slice(
+            *ctx,
+            &[
+                Str::from_str(*ctx, "dump.scm").into(),
+                Value::new(2),
+                Value::new(4),
+                Value::new(2),
+                Value::new(12),
+                Value::new(false),
+                Value::new(false),
+                Symbol::from_str(ctx, "read").into(),
+                Value::null(),
+            ],
+        )
+        .into()
     }
 
     #[test]
@@ -507,6 +634,75 @@ mod tests {
 
             assert!(rendered.contains("(entry (graph-function 7))"));
             assert!(rendered.contains("(procedure continuation (graph-continuation 9)"));
+        });
+    }
+
+    #[test]
+    fn pretty_renders_source_annotations() {
+        with_ctx(|ctx| {
+            let src = source(ctx);
+            let binding = lvar(ctx, "entry");
+            let retk = lvar(ctx, "retk");
+            let body = Gc::new(*ctx, Term::Continue(retk, Array::from_slice(*ctx, []), src));
+            let entry = Gc::new(
+                *ctx,
+                Func {
+                    name: Symbol::from_str(ctx, "entry").into(),
+                    source: src,
+                    binding,
+                    return_cont: retk,
+                    args: Array::from_slice(*ctx, []),
+                    variadic: None,
+                    body: Lock::new(body),
+                    free_vars: Lock::new(Some(Array::from_slice(*ctx, []))),
+                    meta: Value::new(false),
+                },
+            );
+            let program = LinearProgram {
+                entry: CodeId::Function(entry),
+                procedures: vec![Procedure {
+                    code: CodeId::Function(entry),
+                    kind: ProcedureKind::Function,
+                    binding: ValueId(0),
+                    name: Symbol::from_str(ctx, "entry").into(),
+                    source: src,
+                    meta: Value::new(false),
+                    return_cont: None,
+                    params: vec![ValueId(0)],
+                    variadic: None,
+                    free_vars: vec![],
+                    sources: Default::default(),
+                    entry: BlockId(0),
+                    blocks: vec![Block {
+                        id: BlockId(0),
+                        params: vec![ValueId(0)],
+                        variadic: None,
+                        instructions: vec![Instruction::PrimCall {
+                            dst: ValueId(1),
+                            prim: Primitive::car,
+                            args: vec![LinearAtom::Local(ValueId(0))],
+                            source: src,
+                        }],
+                        terminator: Terminator::TailCall {
+                            callee: LinearAtom::Local(ValueId(1)),
+                            args: vec![LinearAtom::Local(ValueId(0))],
+                            source: src,
+                        },
+                        source: src,
+                    }],
+                }],
+            };
+
+            let rendered = super::render_program(&program);
+
+            assert!(
+                rendered.contains("(procedure function (function %entry) ; @ dump.scm:2:4-2:12")
+            );
+            assert!(
+                rendered.contains("(block block0 (params %v0) (variadic #f) ; @ dump.scm:2:4-2:12")
+            );
+            assert!(rendered.contains("(prim-call %v1 car %v0) ; @ dump.scm:2:4-2:12"));
+            assert!(rendered.contains("(tail-call %v1 %v0) ; @ dump.scm:2:4-2:12"));
         });
     }
 }

@@ -1,13 +1,13 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::compiler::{
-    CompilationOptions, DumpArtifactsOptions, LoweredProgram, dump_lowered_program_artifacts,
-    lower_expanded_to_cps,
+    BackendDumpOptions, CompilationOptions, DumpArtifactsOptions, LoweredProgram,
+    dump_lowered_program_artifacts, lower_expanded_to_cps,
 };
 use crate::list;
 use crate::prelude::*;
 use crate::runtime::modules::{Module, current_module};
-use crate::runtime::value::{Closure, Str, Value};
+use crate::runtime::value::{Closure, Str, Symbol, Value};
 use crate::runtime::vm::base::scm_log_level;
 use crate::runtime::vm::expand::ScmTermToRsTerm;
 use crate::runtime::vm::libraries::LIBRARY_COLLECTION;
@@ -60,9 +60,11 @@ pub(super) mod load_ops {
         destination: StringRef<'gc>,
         m: Option<Value<'gc>>,
         load_thunk: Option<bool>,
+        dump_selections: Option<Value<'gc>>,
     ) -> LoadResult<'gc> {
         let ctx = nctx.ctx;
         let module = resolve_module_value(ctx, m);
+        let dump_options = compile_dump_options(ctx, dump_selections);
         let result = compile_expanded_to_destination(
             ctx,
             expanded,
@@ -70,12 +72,10 @@ pub(super) mod load_ops {
             module,
             CompilationOptions {
                 backtraces: compile_backtraces_enabled(ctx),
+                ..CompilationOptions::default()
             },
             load_thunk.unwrap_or(true),
-            DumpArtifactsOptions {
-                enabled: scm_log_level(ctx) >= 5,
-                include_unoptimized: true,
-            },
+            dump_options,
         );
         nctx.return_(result)
     }
@@ -304,6 +304,8 @@ fn compile_expanded_to_destination<'gc>(
     let _phase = CompilationPhase::new(ctx);
     let lowered = lower_expanded_scheme(ctx, expanded, module)?;
     let destination = destination_artifact_for_current_policy(destination);
+    let mut options = options;
+    configure_backend_dump_paths(&mut options.backend_dumps, &destination.path, dump_options);
     dump_lowered_program_artifacts(ctx, &destination.path, &lowered, dump_options);
     compile_lowered_to_destination(ctx, &lowered, options, &destination)?;
 
@@ -312,6 +314,51 @@ fn compile_expanded_to_destination<'gc>(
     }
 
     load_compiled_library(ctx, &destination)
+}
+
+fn compile_dump_options<'gc>(
+    ctx: Context<'gc>,
+    dump_selections: Option<Value<'gc>>,
+) -> DumpArtifactsOptions {
+    let mut options = if scm_log_level(ctx) >= 5 {
+        DumpArtifactsOptions::trace()
+    } else {
+        DumpArtifactsOptions::default()
+    };
+    let Some(mut selections) = dump_selections else {
+        return options;
+    };
+
+    while selections.is_pair() {
+        let selection = selections.car();
+        if selection.is::<Symbol>() {
+            let name = selection.downcast::<Symbol>().to_string();
+            options.enable(&name);
+        }
+        selections = selections.cdr();
+    }
+
+    options
+}
+
+fn configure_backend_dump_paths(
+    options: &mut BackendDumpOptions,
+    destination: &Path,
+    dump_options: DumpArtifactsOptions,
+) {
+    if !dump_options.enabled {
+        return;
+    }
+    if dump_options.dump_cranelift {
+        options.cranelift = Some(dump_artifact_path(destination, ".clif"));
+    }
+    if dump_options.dump_disassembly {
+        options.disassembly = Some(dump_artifact_path(destination, ".asm"));
+    }
+}
+
+fn dump_artifact_path(destination: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}{}", destination.display(), suffix))
 }
 
 fn lower_expanded_scheme<'gc>(

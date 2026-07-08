@@ -73,8 +73,48 @@ pub const FASL_TAG_REF_INIT: u8 = 0xFE;
 /// FASL file magic bytes.
 pub const FASL_MAGIC: &[u8; 8] = b"CAPYFSL\0";
 /// Current FASL file format version.
-pub const FASL_VERSION: u32 = 5;
+pub const FASL_VERSION: u32 = 6;
 pub const MIN_SUPPORTED_FASL_VERSION: u32 = 4;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodeSourceLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub end_line: Option<u32>,
+    pub end_column: Option<u32>,
+}
+
+impl CodeSourceLocation {
+    pub fn new(
+        file: impl Into<String>,
+        line: u32,
+        column: u32,
+        end_line: Option<u32>,
+        end_column: Option<u32>,
+    ) -> Self {
+        Self {
+            file: file.into(),
+            line,
+            column,
+            end_line,
+            end_column,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodeSourceMapEntry {
+    pub start: u32,
+    pub end: u32,
+    pub source: CodeSourceLocation,
+}
+
+impl CodeSourceMapEntry {
+    pub fn new(start: u32, end: u32, source: CodeSourceLocation) -> Self {
+        Self { start, end, source }
+    }
+}
 
 pub struct CodeSpec<'a, 'gc> {
     pub bytes: &'a [u8],
@@ -83,6 +123,7 @@ pub struct CodeSpec<'a, 'gc> {
     pub is_cont: bool,
     pub metadata: crate::runtime::value::Value<'gc>,
     pub relocations: &'a [reloc::Relocation],
+    pub source_map: &'a [CodeSourceMapEntry],
 }
 
 impl<'a, 'gc> CodeSpec<'a, 'gc> {
@@ -93,6 +134,7 @@ impl<'a, 'gc> CodeSpec<'a, 'gc> {
         is_cont: bool,
         metadata: crate::runtime::value::Value<'gc>,
         relocations: &'a [reloc::Relocation],
+        source_map: &'a [CodeSourceMapEntry],
     ) -> Self {
         Self {
             bytes,
@@ -101,6 +143,7 @@ impl<'a, 'gc> CodeSpec<'a, 'gc> {
             is_cont,
             metadata,
             relocations,
+            source_map,
         }
     }
 }
