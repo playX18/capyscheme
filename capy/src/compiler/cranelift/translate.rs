@@ -11,7 +11,7 @@ use crate::{
     compiler::{
         cps::graph::Atom,
         cranelift::{
-            LinearRestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
+            RestSource, MAX_RAISE_ARITY, RegisterCallArgs, SSABuilder, VarDef,
             primitive::PrimValue,
         },
         ssa::{
@@ -110,7 +110,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         )
     }
 
-    fn target_linear_variadic(&self) -> Option<ValueId> {
+    fn target_variadic(&self) -> Option<ValueId> {
         self.target.variadic
     }
 
@@ -268,7 +268,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         got: ir::Value,
         expected: isize,
     ) {
-        let got = self.linear_fixnum_from_usize_value(got);
+        let got = self.fixnum_from_usize_value(got);
         let expected = self
             .builder
             .ins()
@@ -314,7 +314,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         args: [ir::Value; REGISTER_ARG_COUNT],
     ) -> bool {
         let (params, rest) = self.target_params();
-        if rest.is_some() || self.target_linear_variadic().is_some() {
+        if rest.is_some() || self.target_variadic().is_some() {
             return false;
         }
 
@@ -626,10 +626,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             self.variables.insert(return_cont, VarDef::Value(retk));
         }
 
-        if let Some(rest) = self.target_linear_variadic() {
-            self.linear_rest_sources.insert(
+        if let Some(rest) = self.target_variadic() {
+            self.rest_sources.insert(
                 rest,
-                LinearRestSource {
+                RestSource {
                     argc,
                     args,
                     overflow,
@@ -882,10 +882,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    pub fn linear_procedure(&mut self, procedure: &Procedure<'gc>) {
+    pub fn translate_procedure(&mut self, procedure: &Procedure<'gc>) {
         for block in &procedure.blocks {
             if block.id == procedure.entry {
-                self.linear_blockmap.insert(block.id, self.entry_block);
+                self.block_map.insert(block.id, self.entry_block);
                 continue;
             }
 
@@ -893,7 +893,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             for _ in &block.params {
                 self.builder.append_block_param(clif_block, types::I64);
             }
-            self.linear_blockmap.insert(block.id, clif_block);
+            self.block_map.insert(block.id, clif_block);
         }
 
         let entry = procedure
@@ -901,20 +901,20 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             .iter()
             .find(|block| block.id == procedure.entry)
             .expect("linear procedure should contain its entry block");
-        self.lower_linear_block(procedure, entry, true);
+        self.lower_block(procedure, entry, true);
 
         for block in &procedure.blocks {
             if block.id == procedure.entry {
                 continue;
             }
 
-            let clif_block = self.linear_blockmap[&block.id];
+            let clif_block = self.block_map[&block.id];
             self.builder.switch_to_block(clif_block);
-            self.lower_linear_block(procedure, block, false);
+            self.lower_block(procedure, block, false);
         }
     }
 
-    fn lower_linear_block(
+    fn lower_block(
         &mut self,
         procedure: &Procedure<'gc>,
         block: &LinearBlock<'gc>,
@@ -922,30 +922,30 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     ) {
         self.set_debug_loc(block.source);
         if is_entry {
-            self.bind_linear_var(procedure.binding, VarDef::Value(self.rator));
+            self.bind_ssa_var(procedure.binding, VarDef::Value(self.rator));
             for (var, source) in procedure.sources.iter() {
                 if let Some(def) = self.variables.get(source).copied() {
-                    self.bind_linear_var(*var, def);
+                    self.bind_ssa_var(*var, def);
                 }
             }
         } else {
-            let clif_block = self.linear_blockmap[&block.id];
+            let clif_block = self.block_map[&block.id];
             let params = self.builder.block_params(clif_block).to_vec();
             for (var, value) in block.params.iter().copied().zip(params.iter().copied()) {
-                self.bind_linear_var(var, VarDef::Value(value));
+                self.bind_ssa_var(var, VarDef::Value(value));
             }
         }
 
         for instruction in &block.instructions {
-            self.linear_instruction(instruction);
+            self.translate_instruction(instruction);
         }
 
-        self.linear_terminator(procedure, &block.terminator);
+        self.translate_terminator(procedure, &block.terminator);
     }
 
-    fn bind_linear_var(&mut self, var: ValueId, def: VarDef) {
-        self.linear_variables.insert(var, def);
-        if let Some(source) = self.linear_source(var) {
+    fn bind_ssa_var(&mut self, var: ValueId, def: VarDef) {
+        self.ssa_variables.insert(var, def);
+        if let Some(source) = self.ssa_source(var) {
             self.variables.insert(source, def);
             if let VarDef::Value(value) = def {
                 self.debug_local(source, value);
@@ -953,7 +953,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn linear_source(&self, var: ValueId) -> Option<LVarRef<'gc>> {
+    fn ssa_source(&self, var: ValueId) -> Option<LVarRef<'gc>> {
         self.target.sources.get(&var).copied()
     }
 
@@ -963,9 +963,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.builder.ins().select(val, true_, false_)
     }
 
-    fn linear_var(&mut self, var: ValueId) -> ir::Value {
+    fn ssa_var(&mut self, var: ValueId) -> ir::Value {
         let def = self
-            .linear_variables
+            .ssa_variables
             .get(&var)
             .copied()
             .unwrap_or_else(|| panic!("linear variable {var:?} not found"));
@@ -975,46 +975,46 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn linear_rest_source(&self, rest: ValueId) -> LinearRestSource {
+    fn rest_source(&self, rest: ValueId) -> RestSource {
         *self
-            .linear_rest_sources
+            .rest_sources
             .get(&rest)
             .unwrap_or_else(|| panic!("linear rest source {rest:?} not found"))
     }
 
-    fn linear_rest_suffix_len(&mut self, rest: ValueId, skip: usize) -> ir::Value {
-        let source = self.linear_rest_source(rest);
+    fn rest_suffix_len(&mut self, rest: ValueId, skip: usize) -> ir::Value {
+        let source = self.rest_source(rest);
         self.builder
             .ins()
             .iadd_imm(source.argc, -((source.first_rest + skip) as i64))
     }
 
-    fn linear_fixnum_from_usize_value(&mut self, value: ir::Value) -> ir::Value {
+    fn fixnum_from_usize_value(&mut self, value: ir::Value) -> ir::Value {
         let value = self.ireduce(types::I32, value);
         let value = self.zextend(types::I64, value);
         self.builder.ins().bor_imm(value, Value::NUMBER_TAG)
     }
 
-    fn linear_atom(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
+    fn emit_atom(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
         match atom {
             LinearAtom::Constant(value) => self.atom(Atom::Constant(value)),
-            LinearAtom::Local(var) => self.linear_var(var),
+            LinearAtom::Local(var) => self.ssa_var(var),
         }
     }
 
-    fn linear_atom_for_cond(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
+    fn emit_atom_for_cond(&mut self, atom: LinearAtom<'gc>) -> ir::Value {
         match atom {
-            LinearAtom::Local(var) => match self.linear_variables.get(&var).copied() {
+            LinearAtom::Local(var) => match self.ssa_variables.get(&var).copied() {
                 Some(VarDef::Comparison(val)) => val,
                 _ => {
-                    let val = self.linear_var(var);
+                    let val = self.ssa_var(var);
                     self.builder
                         .ins()
                         .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
                 }
             },
             LinearAtom::Constant(_) => {
-                let val = self.linear_atom(atom);
+                let val = self.emit_atom(atom);
                 self.builder
                     .ins()
                     .icmp_imm(IntCC::NotEqual, val, Value::VALUE_FALSE)
@@ -1022,11 +1022,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn linear_atom_as_term_atom(&mut self, atom: LinearAtom<'gc>) -> Atom<'gc> {
+    fn emit_atom_as_term_arg(&mut self, atom: LinearAtom<'gc>) -> Atom<'gc> {
         match atom {
             LinearAtom::Constant(value) => Atom::Constant(value),
             LinearAtom::Local(var) => {
-                let alias = self.linear_source(var).unwrap_or_else(|| {
+                let alias = self.ssa_source(var).unwrap_or_else(|| {
                     if let Some(alias) = self.synthetic_aliases.get(&var).copied() {
                         alias
                     } else {
@@ -1038,7 +1038,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     }
                 });
                 let def = *self
-                    .linear_variables
+                    .ssa_variables
                     .get(&var)
                     .unwrap_or_else(|| panic!("linear variable {var:?} not found"));
                 self.variables.insert(alias, def);
@@ -1055,11 +1055,11 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.module_builder.func_for_code[&code]
     }
 
-    fn linear_instruction(&mut self, instruction: &Instruction<'gc>) {
+    fn translate_instruction(&mut self, instruction: &Instruction<'gc>) {
         match instruction {
             Instruction::Const { dst, value } => {
                 let value = self.atom(Atom::Constant(*value));
-                self.bind_linear_var(*dst, VarDef::Value(value));
+                self.bind_ssa_var(*dst, VarDef::Value(value));
             }
             Instruction::MakeClosure {
                 dst,
@@ -1075,7 +1075,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     *free_count,
                     matches!(kind, ClosureKind::Continuation),
                 );
-                self.bind_linear_var(*dst, VarDef::Value(clos));
+                self.bind_ssa_var(*dst, VarDef::Value(clos));
             }
             Instruction::ClosureRef {
                 dst,
@@ -1086,26 +1086,26 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     && let Some(source) = self.target.free_vars.get(*index)
                     && self.is_self_reference(self.target.sources[source])
                 {
-                    self.bind_linear_var(*dst, VarDef::Value(self.rator));
+                    self.bind_ssa_var(*dst, VarDef::Value(self.rator));
                     return;
                 }
 
-                let closure = self.linear_atom(*closure);
+                let closure = self.emit_atom(*closure);
                 let value = self.builder.ins().load(
                     types::I64,
                     ir::MemFlags::trusted().with_can_move(),
                     closure,
                     Closure::DATA_OFFSET as i32 + (*index * 8) as i32,
                 );
-                self.bind_linear_var(*dst, VarDef::Value(value));
+                self.bind_ssa_var(*dst, VarDef::Value(value));
             }
             Instruction::ClosureSet {
                 closure,
                 index,
                 value,
             } => {
-                let closure = self.linear_atom(*closure);
-                let value = self.linear_atom(*value);
+                let closure = self.emit_atom(*closure);
+                let value = self.emit_atom(*value);
                 self.builder.ins().store(
                     ir::MemFlags::trusted().with_can_move(),
                     value,
@@ -1124,7 +1124,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 };
                 let cell = self.module_builder.intern_cache_cell(*cache_key);
                 let value = self.load_data_value(cell);
-                self.bind_linear_var(*dst, VarDef::Value(value));
+                self.bind_ssa_var(*dst, VarDef::Value(value));
             }
             Instruction::CacheSet {
                 dst,
@@ -1136,14 +1136,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let LinearAtom::Constant(cache_key) = cache_key else {
                     panic!("invalid cache-set!: expected constant cache key, got {cache_key:?}");
                 };
-                let value = self.linear_atom(*value);
+                let value = self.emit_atom(*value);
                 let cell = self.module_builder.intern_cache_cell(*cache_key);
                 self.store_data_value(cell, value);
                 let undefined = self
                     .builder
                     .ins()
                     .iconst(types::I64, Value::undefined().bits() as i64);
-                self.bind_linear_var(*dst, VarDef::Value(undefined));
+                self.bind_ssa_var(*dst, VarDef::Value(undefined));
             }
             Instruction::PrimCall {
                 dst,
@@ -1155,17 +1155,17 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 let args = args
                     .iter()
                     .copied()
-                    .map(|arg| self.linear_atom_as_term_atom(arg))
+                    .map(|arg| self.emit_atom_as_term_arg(arg))
                     .collect::<Vec<_>>();
                 let val = match prim.lower(self, &args, *source) {
                     PrimValue::Value(val) => VarDef::Value(val),
                     PrimValue::Comparison(val) => VarDef::Comparison(val),
                 };
-                self.bind_linear_var(*dst, val);
+                self.bind_ssa_var(*dst, val);
             }
             Instruction::RestToList { dst, rest, source } => {
                 self.set_debug_loc(*source);
-                let rest_source = self.linear_rest_source(*rest);
+                let rest_source = self.rest_source(*rest);
                 let ctx = self.builder.ins().get_pinned_reg(types::I64);
                 let from = self
                     .builder
@@ -1185,7 +1185,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     ],
                 );
                 let list = self.builder.inst_results(call)[0];
-                self.bind_linear_var(*dst, VarDef::Value(list));
+                self.bind_ssa_var(*dst, VarDef::Value(list));
             }
             Instruction::RestRef {
                 dst,
@@ -1194,13 +1194,13 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 source,
             } => {
                 self.set_debug_loc(*source);
-                let rest_source = self.linear_rest_source(*rest);
+                let rest_source = self.rest_source(*rest);
                 let value = self.raw_arg_at(
                     rest_source.args,
                     rest_source.overflow,
                     rest_source.first_rest + *index,
                 );
-                self.bind_linear_var(*dst, VarDef::Value(value));
+                self.bind_ssa_var(*dst, VarDef::Value(value));
             }
             Instruction::RestLength {
                 dst,
@@ -1209,9 +1209,9 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 source,
             } => {
                 self.set_debug_loc(*source);
-                let len = self.linear_rest_suffix_len(*rest, *skip);
-                let len = self.linear_fixnum_from_usize_value(len);
-                self.bind_linear_var(*dst, VarDef::Value(len));
+                let len = self.rest_suffix_len(*rest, *skip);
+                let len = self.fixnum_from_usize_value(len);
+                self.bind_ssa_var(*dst, VarDef::Value(len));
             }
             Instruction::RestPredicate {
                 dst,
@@ -1221,7 +1221,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 source,
             } => {
                 self.set_debug_loc(*source);
-                let rest_source = self.linear_rest_source(*rest);
+                let rest_source = self.rest_source(*rest);
                 let threshold = (rest_source.first_rest + *skip) as i64;
                 let val = match predicate {
                     RestPredicate::Null => VarDef::Comparison(self.builder.ins().icmp_imm(
@@ -1239,21 +1239,21 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         VarDef::Value(true_)
                     }
                 };
-                self.bind_linear_var(*dst, val);
+                self.bind_ssa_var(*dst, val);
             }
         }
     }
 
-    fn get_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
+    fn resolve_callee(&mut self, callee: LinearAtom<'gc>) -> Callee {
         if let LinearAtom::Local(var_id) = callee
-            && let Some(var) = self.linear_source(var_id)
+            && let Some(var) = self.ssa_source(var_id)
         {
             if self.is_self_reference(var) {
                 return Callee::SelfRec(self.entry_block);
             }
         }
 
-        let callee = self.linear_atom(callee);
+        let callee = self.emit_atom(callee);
         let get_closure_code = self.builder.create_block();
         let error = self.builder.create_block();
         self.builder.func.layout.set_cold(error);
@@ -1283,8 +1283,8 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn get_tail_callee_linear(&mut self, callee: LinearAtom<'gc>) -> Callee {
-        let closure = self.linear_atom(callee);
+    fn resolve_tail_callee(&mut self, callee: LinearAtom<'gc>) -> Callee {
+        let closure = self.emit_atom(callee);
         let code = self.builder.ins().load(
             types::I64,
             ir::MemFlags::trusted().with_can_move(),
@@ -1297,7 +1297,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn linear_call(
+    fn emit_call(
         &mut self,
         callee: LinearAtom<'gc>,
         retk: LinearAtom<'gc>,
@@ -1305,10 +1305,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        let callee = self.get_callee_linear(callee);
-        let retk = self.linear_atom(retk);
+        let callee = self.resolve_callee(callee);
+        let retk = self.emit_atom(retk);
         let rands = std::iter::once(retk)
-            .chain(args.iter().copied().map(|arg| self.linear_atom(arg)))
+            .chain(args.iter().copied().map(|arg| self.emit_atom(arg)))
             .collect::<Vec<_>>();
         let mut call_args = self.prepare_call_args(&rands);
 
@@ -1337,28 +1337,28 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         self.emit_callee_jump(callee, call_args);
     }
 
-    fn linear_tail_call(
+    fn emit_tail_call(
         &mut self,
         callee: LinearAtom<'gc>,
         args: &[LinearAtom<'gc>],
         source: Value<'gc>,
     ) {
         self.set_debug_loc(source);
-        let callee = self.get_tail_callee_linear(callee);
+        let callee = self.resolve_tail_callee(callee);
         let args = args
             .iter()
             .copied()
-            .map(|arg| self.linear_atom(arg))
+            .map(|arg| self.emit_atom(arg))
             .collect::<Vec<_>>();
         let call_args = self.prepare_call_args(&args);
         self.emit_callee_jump(callee, call_args);
     }
 
-    fn linear_raise(&mut self, kind: RaiseKind, args: &[LinearAtom<'gc>], source: Value<'gc>) {
+    fn emit_raise_to_handler(&mut self, kind: RaiseKind, args: &[LinearAtom<'gc>], source: Value<'gc>) {
         let args = args
             .iter()
             .copied()
-            .map(|arg| self.linear_atom(arg))
+            .map(|arg| self.emit_atom(arg))
             .collect::<Vec<_>>();
         self.emit_raise(kind, &args, source);
     }
@@ -1413,7 +1413,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         }
     }
 
-    fn jump_to_linear_block(
+    fn jump_to_block(
         &mut self,
         procedure: &Procedure<'gc>,
         target: crate::compiler::ssa::BlockId,
@@ -1430,14 +1430,14 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             block.params.len()
         };
         if args.len() < fixed_count {
-            self.raise_wrong_linear_block_arity(args, -(fixed_count as isize));
+            self.raise_wrong_block_arity(args, -(fixed_count as isize));
             return;
         }
 
         let mut block_args = args[..fixed_count]
             .iter()
             .copied()
-            .map(|arg| BlockArg::Value(self.linear_atom(arg)))
+            .map(|arg| BlockArg::Value(self.emit_atom(arg)))
             .collect::<Vec<_>>();
 
         if let Some(variadic) = block.variadic {
@@ -1451,7 +1451,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                     .ins()
                     .iconst(types::I64, Value::null().bits() as i64);
                 for arg in args[fixed_count..].iter().rev().copied() {
-                    let arg = self.linear_atom(arg);
+                    let arg = self.emit_atom(arg);
                     ls = self.cons(arg, ls);
                 }
                 block_args.push(BlockArg::Value(ls));
@@ -1463,15 +1463,15 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 block_args.push(BlockArg::Value(null));
             }
         } else if args.len() != fixed_count {
-            self.raise_wrong_linear_block_arity(args, fixed_count as isize);
+            self.raise_wrong_block_arity(args, fixed_count as isize);
             return;
         }
 
-        let clif_block = self.linear_blockmap[&target];
+        let clif_block = self.block_map[&target];
         self.builder.ins().jump(clif_block, &block_args);
     }
 
-    fn raise_wrong_linear_block_arity(&mut self, args: &[LinearAtom<'gc>], expected: isize) {
+    fn raise_wrong_block_arity(&mut self, args: &[LinearAtom<'gc>], expected: isize) {
         let got = self
             .builder
             .ins()
@@ -1487,33 +1487,33 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         );
     }
 
-    fn linear_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
+    fn emit_branch_target(&mut self, procedure: &Procedure<'gc>, target: &BranchTarget<'gc>) {
         match target {
             BranchTarget::Local { block, args } => {
-                self.jump_to_linear_block(procedure, *block, args)
+                self.jump_to_block(procedure, *block, args)
             }
             BranchTarget::Reified { continuation, args } => {
-                self.linear_tail_call(*continuation, args, Value::new(false));
+                self.emit_tail_call(*continuation, args, Value::new(false));
             }
         }
     }
 
-    fn linear_terminator(&mut self, procedure: &Procedure<'gc>, terminator: &Terminator<'gc>) {
+    fn translate_terminator(&mut self, procedure: &Procedure<'gc>, terminator: &Terminator<'gc>) {
         match terminator {
             Terminator::Call {
                 callee,
                 retk,
                 args,
                 source,
-            } => self.linear_call(*callee, *retk, args, *source),
+            } => self.emit_call(*callee, *retk, args, *source),
             Terminator::TailCall {
                 callee,
                 args,
                 source,
-            } => self.linear_tail_call(*callee, args, *source),
-            Terminator::Raise { kind, args, source } => self.linear_raise(*kind, args, *source),
+            } => self.emit_tail_call(*callee, args, *source),
+            Terminator::Raise { kind, args, source } => self.emit_raise_to_handler(*kind, args, *source),
             Terminator::Jump { target, args } => {
-                self.jump_to_linear_block(procedure, *target, args);
+                self.jump_to_block(procedure, *target, args);
             }
             Terminator::Branch {
                 test,
@@ -1521,27 +1521,27 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                 alternative,
                 hints: _,
             } => {
-                let truthy = self.linear_atom_for_cond(*test);
+                let truthy = self.emit_atom_for_cond(*test);
                 let kcons = self.builder.create_block();
                 let kalt = self.builder.create_block();
 
                 self.builder.ins().brif(truthy, kcons, &[], kalt, &[]);
                 self.builder.switch_to_block(kalt);
-                self.linear_branch_target(procedure, alternative);
+                self.emit_branch_target(procedure, alternative);
 
                 self.builder.switch_to_block(kcons);
-                self.linear_branch_target(procedure, consequent);
+                self.emit_branch_target(procedure, consequent);
             }
             Terminator::Switch {
                 kind,
                 scrutinee,
                 cases,
                 default,
-            } => self.linear_switch(procedure, *kind, *scrutinee, cases, default),
+            } => self.emit_switch(procedure, *kind, *scrutinee, cases, default),
         }
     }
 
-    fn linear_switch(
+    fn emit_switch(
         &mut self,
         procedure: &Procedure<'gc>,
         kind: SwitchKind,
@@ -1549,7 +1549,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         cases: &[crate::compiler::ssa::SwitchCase<'gc>],
         default: &BranchTarget<'gc>,
     ) {
-        let value = self.linear_atom(scrutinee);
+        let value = self.emit_atom(scrutinee);
         let switch_block = self.builder.create_block();
         let switch_default_block = self.builder.create_block();
         let type_miss_block = if matches!(
@@ -1621,7 +1621,7 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         switch.emit(&mut self.builder, switch_value, switch_default_block);
 
         self.builder.switch_to_block(switch_default_block);
-        self.linear_branch_target(procedure, default);
+        self.emit_branch_target(procedure, default);
 
         if type_miss_block != switch_default_block {
             self.builder.switch_to_block(type_miss_block);
@@ -1629,16 +1629,16 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         match kind {
             SwitchKind::Eq | SwitchKind::CharEq | SwitchKind::SymbolEq { .. } => {}
             SwitchKind::Fixnum => {
-                let scrutinee = self.linear_atom(scrutinee);
-                self.linear_fixnum_switch_error_or_default(scrutinee, cases, procedure, default)
+                let scrutinee = self.emit_atom(scrutinee);
+                self.emit_fixnum_switch_error_or_default(scrutinee, cases, procedure, default)
             }
             SwitchKind::Numeric => {
-                let scrutinee = self.linear_atom(scrutinee);
-                self.linear_numeric_switch_fallback(procedure, scrutinee, cases, default)
+                let scrutinee = self.emit_atom(scrutinee);
+                self.emit_numeric_switch_fallback(procedure, scrutinee, cases, default)
             }
             SwitchKind::Char => {
-                let scrutinee = self.linear_atom(scrutinee);
-                self.linear_char_switch_error_or_default(procedure, scrutinee, default)
+                let scrutinee = self.emit_atom(scrutinee);
+                self.emit_char_switch_error_or_default(procedure, scrutinee, default)
             }
         }
 
@@ -1665,22 +1665,22 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
                         .ins()
                         .brif(matched, matched_block, &[], next_block, &[]);
                     self.builder.switch_to_block(matched_block);
-                    self.linear_branch_target(procedure, &case.target);
+                    self.emit_branch_target(procedure, &case.target);
                     if index + 1 != cases.len() {
                         self.builder.switch_to_block(next_block);
                     }
                 }
             } else {
                 let Some(case) = cases.first() else {
-                    self.linear_branch_target(procedure, default);
+                    self.emit_branch_target(procedure, default);
                     continue;
                 };
-                self.linear_branch_target(procedure, &case.target);
+                self.emit_branch_target(procedure, &case.target);
             }
         }
     }
 
-    fn linear_fixnum_switch_error_or_default(
+    fn emit_fixnum_switch_error_or_default(
         &mut self,
         scrutinee: ir::Value,
         cases: &[crate::compiler::ssa::SwitchCase<'gc>],
@@ -1688,20 +1688,20 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
         default: &BranchTarget<'gc>,
     ) {
         let Some(case) = cases.first() else {
-            self.linear_branch_target(procedure, default);
+            self.emit_branch_target(procedure, default);
             return;
         };
         let SwitchCaseValue::Integer(value) = case.value else {
-            self.linear_branch_target(procedure, default);
+            self.emit_branch_target(procedure, default);
             return;
         };
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let constant = self.atom(Atom::Constant(Value::new(value)));
         let _ = self.handle_thunk_call_result(self.thunks.fxeq, &[ctx, scrutinee, constant]);
-        self.linear_branch_target(procedure, default);
+        self.emit_branch_target(procedure, default);
     }
 
-    fn linear_char_switch_error_or_default(
+    fn emit_char_switch_error_or_default(
         &mut self,
         procedure: &Procedure<'gc>,
         scrutinee: ir::Value,
@@ -1709,10 +1709,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
     ) {
         let ctx = self.builder.ins().get_pinned_reg(types::I64);
         let _ = self.handle_thunk_call_result(self.thunks.char_to_integer, &[ctx, scrutinee]);
-        self.linear_branch_target(procedure, default);
+        self.emit_branch_target(procedure, default);
     }
 
-    fn linear_numeric_switch_fallback(
+    fn emit_numeric_switch_fallback(
         &mut self,
         procedure: &Procedure<'gc>,
         scrutinee: ir::Value,
@@ -1732,10 +1732,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             let truthy = self.to_boolean(result);
             self.builder.ins().brif(truthy, matched, &[], next, &[]);
             self.builder.switch_to_block(matched);
-            self.linear_branch_target(procedure, &case.target);
+            self.emit_branch_target(procedure, &case.target);
             self.builder.switch_to_block(next);
         }
-        self.linear_branch_target(procedure, default);
+        self.emit_branch_target(procedure, default);
     }
 
     pub fn finalize(&mut self) {

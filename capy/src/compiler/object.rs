@@ -36,7 +36,7 @@ fn compile_graph_linear_cps_to_fasl_bytes<'gc>(
     linear: LinearProgram<'gc>,
     opts: CompilationOptions,
 ) -> Result<Vec<u8>, Value<'gc>> {
-    let mut module_builder = ModuleBuilder::new_graph_linear(ctx, linear);
+    let mut module_builder = ModuleBuilder::new_with_program(ctx, linear);
     module_builder.stacktraces = opts.backtraces;
     module_builder
         .compile_loaded_fasl_bytes_with_dumps(&opts.backend_dumps)

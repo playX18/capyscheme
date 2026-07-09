@@ -146,13 +146,13 @@ use std::{
 use crate::runtime::vm::thunks::*;
 
 pub mod helpers;
-pub mod linear;
+pub mod translate;
 pub mod primitive;
 pub mod traits;
 mod types;
 
-pub(crate) use linear::AllocationHeaderPreset;
-pub use types::{LinearRestSource, RegisterCallArgs, VarDef};
+pub(crate) use translate::AllocationHeaderPreset;
+pub use types::{RestSource, RegisterCallArgs, VarDef};
 pub(crate) use types::{MAX_RAISE_ARITY, compiled_scheme_signature, overflow_base_from_argc};
 
 fn declare_direct_function(
@@ -377,7 +377,7 @@ fn fasl_relocation_from_direct_relocation(
 pub struct ModuleBuilder<'gc> {
     pub ctx: Context<'gc>,
     pub(crate) debug_context: DebugContext<'gc>,
-    pub linear: LinearProgram<'gc>,
+    pub program: LinearProgram<'gc>,
     pub constants: HashMap<ValueEqual<'gc>, DataSymbol>,
     pub cache_cells: HashMap<ValueEqual<'gc>, DataSymbol>,
 
@@ -481,25 +481,25 @@ impl FaslDataSlot {
 }
 
 impl<'gc> ModuleBuilder<'gc> {
-    pub fn new_graph_linear(ctx: Context<'gc>, linear: LinearProgram<'gc>) -> Self {
+    pub fn new_with_program(ctx: Context<'gc>, program: LinearProgram<'gc>) -> Self {
         let isa = host_isa();
-        let entry = linear
+        let entry = program
             .procedures
             .iter()
-            .find(|procedure| procedure.code == linear.entry)
-            .expect("linear program should contain its entry procedure");
+            .find(|procedure| procedure.code == program.entry)
+            .expect("program should contain its entry procedure");
         let debug_context = DebugContext::new_for_entry(
             entry.source,
             entry.name,
             entry.sources[&entry.binding],
             &*isa,
         );
-        Self::new_with_debug_context(ctx, linear, debug_context)
+        Self::new_with_debug_context(ctx, program, debug_context)
     }
 
     fn new_with_debug_context(
         ctx: Context<'gc>,
-        linear: LinearProgram<'gc>,
+        program: LinearProgram<'gc>,
         debug_context: DebugContext<'gc>,
     ) -> Self {
         let prims = PrimitiveLowerer::new(ctx);
@@ -543,7 +543,7 @@ impl<'gc> ModuleBuilder<'gc> {
             debug_context,
             ctx,
             stacktraces: false,
-            linear,
+            program,
             constants: HashMap::new(),
             cache_cells: HashMap::new(),
             next_function_symbol,
@@ -628,7 +628,7 @@ impl<'gc> ModuleBuilder<'gc> {
     }
 
     pub(crate) fn declare_procedures(&mut self) -> Vec<DeclaredProcedure<'gc>> {
-        let procedures = self.linear.procedures.clone();
+        let procedures = self.program.procedures.clone();
 
         let sig = compiled_scheme_signature();
         let mut function_index = 0;
@@ -740,7 +740,7 @@ impl<'gc> ModuleBuilder<'gc> {
                     func_debug_cx,
                 );
 
-                ssa.linear_procedure(&declared.procedure);
+                ssa.translate_procedure(&declared.procedure);
                 ssa.finalize();
                 ssa.builder.seal_all_blocks();
                 ssa.builder.finalize();
@@ -809,7 +809,7 @@ impl<'gc> ModuleBuilder<'gc> {
         let data_slots = self.fasl_data_slots(&constant_indices);
         let entry_code = self
             .func_for_code
-            .get(&self.linear.entry)
+            .get(&self.program.entry)
             .copied()
             .ok_or_else(|| "entry function was not declared".to_string())?;
 
@@ -1466,7 +1466,7 @@ impl<'gc> ModuleBuilder<'gc> {
 
     fn constant_indices(&mut self) -> HashMap<DataSymbol, u32> {
         let metadata = self
-            .linear
+            .program
             .procedures
             .iter()
             .map(|procedure| procedure.meta)
@@ -1595,10 +1595,10 @@ pub struct SSABuilder<'gc, 'a, 'f> {
     pub builder: FunctionBuilder<'f>,
     pub(crate) func_debug_cx: FunctionDebugContext<'gc>,
 
-    pub linear_blockmap: HashMap<BlockId, ir::Block>,
+    pub block_map: HashMap<BlockId, ir::Block>,
     pub variables: HashMap<LVarRef<'gc>, VarDef>,
-    pub linear_variables: HashMap<ValueId, VarDef>,
-    pub linear_rest_sources: HashMap<ValueId, LinearRestSource>,
+    pub ssa_variables: HashMap<ValueId, VarDef>,
+    pub rest_sources: HashMap<ValueId, RestSource>,
     pub synthetic_aliases: HashMap<ValueId, LVarRef<'gc>>,
 
     pub target: Procedure<'gc>,
@@ -1698,10 +1698,10 @@ impl<'gc, 'a, 'f> SSABuilder<'gc, 'a, 'f> {
             func_debug_cx,
             entry_block,
             variables,
-            linear_variables: HashMap::new(),
-            linear_rest_sources: HashMap::new(),
+            ssa_variables: HashMap::new(),
+            rest_sources: HashMap::new(),
             synthetic_aliases: HashMap::new(),
-            linear_blockmap: HashMap::new(),
+            block_map: HashMap::new(),
             thunks,
 
             sig_call,

@@ -12,7 +12,7 @@ pub enum VarDef {
 }
 
 #[derive(Clone, Copy)]
-pub struct LinearRestSource {
+pub struct RestSource {
     pub argc: ir::Value,
     pub args: [ir::Value; REGISTER_ARG_COUNT],
     pub overflow: ir::Value,
