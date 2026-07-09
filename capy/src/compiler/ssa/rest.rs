@@ -49,7 +49,7 @@ fn collect_rest_aliases<'gc>(
                 else {
                     continue;
                 };
-                if *prim != Primitive::cdr || args.len() != 1 {
+                if *prim != Primitive::Cdr || args.len() != 1 {
                     continue;
                 }
                 if let Some(alias) = rest_alias_for_atom(args[0], rest, &aliases) {
@@ -93,12 +93,12 @@ fn rest_rewrite_for_prim<'gc>(
     }
     let alias = rest_alias_for_atom(args[0], rest, aliases)?;
     match prim {
-        Primitive::cdr => Some(RestRewrite::Cdr),
-        Primitive::car => Some(RestRewrite::Ref(alias)),
-        Primitive::length => Some(RestRewrite::Length(alias)),
-        Primitive::is_null => Some(RestRewrite::Predicate(alias, RestPredicate::Null)),
-        Primitive::is_pair => Some(RestRewrite::Predicate(alias, RestPredicate::Pair)),
-        Primitive::is_list => Some(RestRewrite::Predicate(alias, RestPredicate::List)),
+        Primitive::Cdr => Some(RestRewrite::Cdr),
+        Primitive::Car => Some(RestRewrite::Ref(alias)),
+        Primitive::Length => Some(RestRewrite::Length(alias)),
+        Primitive::IsNull => Some(RestRewrite::Predicate(alias, RestPredicate::Null)),
+        Primitive::IsPair => Some(RestRewrite::Predicate(alias, RestPredicate::Pair)),
+        Primitive::IsList => Some(RestRewrite::Predicate(alias, RestPredicate::List)),
         _ => None,
     }
 }

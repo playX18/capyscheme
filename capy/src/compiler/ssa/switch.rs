@@ -300,9 +300,9 @@ fn switch_fixnum_node<'gc>(
 
 fn switch_kind_for_primitive(prim: Primitive) -> Option<SwitchKind> {
     match prim {
-        Primitive::is_eq | Primitive::is_eqv | Primitive::is_equal => Some(SwitchKind::Eq),
-        Primitive::fx_eq => Some(SwitchKind::Fixnum),
-        Primitive::numeric_equal => Some(SwitchKind::Numeric),
+        Primitive::IsEq | Primitive::IsEqv | Primitive::IsEqual => Some(SwitchKind::Eq),
+        Primitive::FxEq => Some(SwitchKind::Fixnum),
+        Primitive::NumericEqual => Some(SwitchKind::Numeric),
         _ => None,
     }
 }
@@ -394,7 +394,7 @@ fn switch_eq_symbol_node<'gc>(
 fn is_eq_like_primitive(prim: Primitive) -> bool {
     matches!(
         prim,
-        Primitive::is_eq | Primitive::is_eqv | Primitive::is_equal
+        Primitive::IsEq | Primitive::IsEqv | Primitive::IsEqual
     )
 }
 
@@ -568,9 +568,9 @@ fn switch_char_node<'gc>(
         return None;
     };
 
-    if *scrutinee_prim != Primitive::char_to_integer
-        || *case_prim != Primitive::char_to_integer
-        || *cmp_prim != Primitive::numeric_equal
+    if *scrutinee_prim != Primitive::CharToInteger
+        || *case_prim != Primitive::CharToInteger
+        || *cmp_prim != Primitive::NumericEqual
         || scrutinee_args.len() != 1
         || case_args.len() != 1
         || *cmp != test

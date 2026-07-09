@@ -148,6 +148,7 @@ use crate::runtime::vm::thunks::*;
 pub mod helpers;
 pub mod translate;
 pub mod primitive;
+pub use primitive::{PrimValue, Primitive};
 pub mod traits;
 mod types;
 

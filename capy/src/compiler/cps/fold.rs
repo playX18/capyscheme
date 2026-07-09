@@ -6,9 +6,6 @@ use crate::expander::primitives::sym_tuple;
 use crate::rsgc::Gc;
 use crate::rsgc::Global;
 use crate::rsgc::Trace;
-use crate::rsgc::mmtk::util::Address;
-use crate::rsgc::object::GCObject;
-use crate::rsgc::ptr::ObjectSlot;
 use crate::runtime::Context;
 use crate::runtime::value::*;
 use crate::runtime::vm::syntax::Syntax;
@@ -127,31 +124,28 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             Some(Value::new(a.is_zero()))
         }
-        "+" => plus(ctx, a,b) {
+"+" => plus(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::add(ctx, a, b).into_value(ctx))
         }
-
-        "-" => minus(ctx, a,b) {
+"-" => minus(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::sub(ctx, a, b).into_value(ctx))
         }
-
-        "*" => mul(ctx, a,b) {
+"*" => mul(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::mul(ctx, a, b).into_value(ctx))
         }
-
-        "/" => div(ctx, a,b) {
+"/" => div(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
@@ -162,104 +156,85 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
 
             Some(Number::div(ctx, a, b).into_value(ctx))
         }
-
-        "=" => eq(ctx, a,b) {
+"=" => eq(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some(Number::equal(ctx, a, b).into_value(ctx))
         }
-
-        ">" => gt(ctx, a,b) {
+">" => gt(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) == Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
-
-        "<" => lt(ctx, a,b) {
+"<" => lt(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) == Some(std::cmp::Ordering::Less)).into_value(ctx))
         }
-
-        ">=" => ge(ctx, a,b) {
+">=" => ge(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Less)).into_value(ctx))
         }
-
-        "<=" => le(ctx, a,b) {
+"<=" => le(ctx, a,b) {
 
             let a = a.number()?;
             let b = b.number()?;
 
             Some((Number::compare(ctx, a, b) != Some(std::cmp::Ordering::Greater)).into_value(ctx))
         }
-
-        "not" => not(ctx, a) {
+"not" => not(ctx, a) {
             Some(Value::new(!a.as_bool()))
         }
-
-        "pair?" => is_pair(ctx, a) {
+"pair?" => is_pair(ctx, a) {
             Some(Value::new(a.is_pair()))
         }
-
-        "null?" => is_null(ctx, a) {
+"null?" => is_null(ctx, a) {
             Some(Value::new(a.is_null()))
         }
-
-        "unspecified?" => is_unspecified(ctx, a) {
+"unspecified?" => is_unspecified(ctx, a) {
             Some(Value::new(a == Value::undefined()))
         }
-
-        "list?" => is_list(ctx, a) {
+"list?" => is_list(ctx, a) {
             Some(Value::new(a.is_list()))
         }
-
-        "vector?" => is_vector(ctx, a) {
+"vector?" => is_vector(ctx, a) {
             Some(Value::new(a.is::<Vector>()))
         }
-
-        "bytevector?" => is_bytevector(ctx, a) {
+"bytevector?" => is_bytevector(ctx, a) {
             Some(Value::new(a.is::<ByteVector>()))
         }
-
-        "symbol?" => is_symbol(ctx, a) {
+"symbol?" => is_symbol(ctx, a) {
             Some(Value::new(a.is::<Symbol>()))
         }
-
-        "string?" => is_string(ctx, a) {
+"string?" => is_string(ctx, a) {
             Some(Value::new(a.is::<Str>()))
         }
-
-        "boolean?" => is_boolean(ctx, a) {
+"boolean?" => is_boolean(ctx, a) {
             Some(Value::new(a.is_bool()))
         }
-
-        "number?" => is_number(ctx, a) {
+"number?" => is_number(ctx, a) {
             Some(Value::new(a.is_number()))
         }
-
-        "char?" => is_char(ctx, a) {
+"char?" => is_char(ctx, a) {
             Some(Value::new(a.is_char()))
         }
-
-        "char->integer" => char_to_integer(ctx, a) {
+"char->integer" => char_to_integer(ctx, a) {
             if a.is_char() {
                 Some(Value::new(a.char() as u32 as i32))
             } else {
                 None
             }
         }
-
-        "integer->char" => integer_to_char(ctx, a) {
+"integer->char" => integer_to_char(ctx, a) {
             if a.is_int32() {
                 let c = a.as_int32();
                 if (0..=0x10FFFF).contains(&c) {
@@ -271,33 +246,27 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 None
             }
         }
-
-        "string->symbol" => string_to_symbol(ctx, a) {
+"string->symbol" => string_to_symbol(ctx, a) {
             a.try_as::<Str>().map(|s| Value::new(Symbol::from_string(ctx, s)))
         }
-
-        "symbol->string" => symbol_to_string(ctx, a) {
+"symbol->string" => symbol_to_string(ctx, a) {
             a.try_as::<Symbol>().map(|sym| Value::new(sym.to_str(*ctx)))
         }
-
-        "cons" => cons(ctx, a, b) {
+"cons" => cons(ctx, a, b) {
             Some(Value::cons(ctx, a, b))
         }
-
-        "%class-id?" => class_idp(ctx, a, b) {
+"%class-id?" => class_idp(ctx, a, b) {
             let class_id = b.int32()?;
             Some(Value::new(
                 a.class_id()
                     .is_some_and(|actual| actual.bits() == class_id as u32),
             ))
         }
-
-        "immediate?" => is_immediate(ctx, a) {
+"immediate?" => is_immediate(ctx, a) {
             let _ = a;
             return None;
         }
-
-        "make-syntax" => make_syntax(ctx, exp, wrap, module, source, properties) {
+"make-syntax" => make_syntax(ctx, exp, wrap, module, source, properties) {
             Some(Syntax::new(
                 ctx,
                 exp,
@@ -307,561 +276,10 @@ fn build_table<'gc>(ctx: Context<'gc>) -> FoldingTable<'gc> {
                 properties,
             ).into())
         }
-
-        ".is-cell" => is_cell(ctx, a) {
+".is-cell" => is_cell(ctx, a) {
             Some(Value::new(a.is_cell()))
         }
-
-        ".iconst" => iconst(ctx, a) {
-            if let Some(n) = a.number() {
-                match n {
-                    Number::Fixnum(fix) => Some(Value::from_raw(fix as u64)),
-                    Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst constant is too big"))),
-                    Number::Flonum(flonum) => Some(Value::from_raw(flonum.to_bits())),
-
-                    Number::Rational(_) | Number::Complex(_) => {
-                        panic!("BUG: .iconst called on non-integer value")
-                    }
-                }
-            } else {
-                panic!("BUG: .iconst called on non-number value")
-            }
-        }
-
-        ".iconst16" => iconst16(ctx, a) {
-            if let Some(n) = a.number() {
-                match n {
-                    Number::Fixnum(fix) => Some(Value::from_raw((fix & 0xFFFF) as u64)),
-                    Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst16 constant is too big") & 0xFFFF)),
-                    Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
-                        panic!("BUG: .iconst16 called on non-integer value")
-                    }
-                }
-            } else {
-                panic!("BUG: .iconst16 called on non-number value")
-            }
-        }
-
-        ".iconst32" => iconst32(ctx, a) {
-            if let Some(n) = a.number() {
-                match n {
-                    Number::Fixnum(fix) => Some(Value::from_raw(fix as u32 as u64)),
-                    Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst32 constant is too big") & 0xFFFFFFFF)),
-                    Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
-                        panic!("BUG: .iconst32 called on non-integer value")
-                    }
-                }
-            } else {
-                panic!("BUG: .iconst32 called on non-number value")
-            }
-        }
-
-        ".iconst64" => iconst64(ctx, a) {
-            if let Some(n) = a.number() {
-                match n {
-                    Number::Fixnum(fix) => Some(Value::from_raw(fix as u64)),
-                    Number::BigInt(bignum) => Some(Value::from_raw(bignum.try_as_u64().expect("BUG: .iconst64 constant is too big"))),
-                    Number::Flonum(_) | Number::Rational(_) | Number::Complex(_) => {
-                        panic!("BUG: .iconst64 called on non-integer value")
-                    }
-                }
-            } else {
-                panic!("BUG: .iconst64 called on non-number value")
-            }
-        }
-
-        ".ref8" => ref8(ctx, a, offset) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to load reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                Some(Value::from_raw(addr.load::<u8>() as u64))
-            }
-        }
-
-        ".ref16" => ref16(ctx, a, offset) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to load reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                Some(Value::from_raw(addr.load::<u16>() as u64))
-            }
-        }
-
-        ".ref32" => ref32(ctx, a, offset) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to load reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                Some(Value::from_raw(addr.load::<u32>() as u64))
-            }
-        }
-
-        ".ref64" => ref64(ctx, a, offset) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to load reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                Some(Value::from_raw(addr.load::<u64>()))
-            }
-        }
-
-        ".refptr" => refptr(ctx, a, offset) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to load reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                Some(Value::from_raw(addr.load::<usize>() as u64))
-            }
-        }
-
-        ".set8" => set8(ctx, a, offset, value) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to store reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-            let value = value.bits() as u8;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                addr.store(value);
-            }
-            Some(Value::undefined())
-        }
-
-        ".set16" => set16(ctx, a, offset, value) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to store reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-            let value = value.bits() as u16;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                addr.store(value);
-            }
-            Some(Value::undefined())
-        }
-
-        ".set32" => set32(ctx, a, offset, value) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to store reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-            let value = value.bits() as u32;
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                addr.store(value);
-            }
-            Some(Value::undefined())
-        }
-
-        ".set64" => set64(ctx, a, offset, value) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to store reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            let offset = offset.as_int32() as isize;
-            let value = value.bits();
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset;
-                addr.store(value);
-            }
-            Some(Value::undefined())
-        }
-
-        ".set-ref64" => set_ref64(ctx, a, offset, value) {
-            if !a.is_cell() {
-                panic!("BUG: attempt to store reference on non-cell value");
-            }
-
-            if !offset.is_int32() {
-                return None;
-            }
-
-            unsafe {
-                let addr = Address::from_usize(a.bits() as usize) + offset.as_int32() as isize;
-                addr.store(value.bits());
-                let slot = ObjectSlot::from_address(addr);
-                ctx.mutation().raw_object_reference_write(a.as_cell_raw(), slot, GCObject::NULL);
-            }
-            Some(Value::undefined())
-        }
-
-        "u8+" => u8_add(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u8).wrapping_add(b.bits() as u8) as u64))
-        }
-
-        "u8-" => u8_sub(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u8).wrapping_sub(b.bits() as u8) as u64))
-        }
-
-        "u8*" => u8_mul(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u8).wrapping_mul(b.bits() as u8) as u64))
-        }
-
-        "u8/" => u8_div(ctx, a, b) {
-            if b.bits() as u8 == 0 {
-                return None;
-            }
-            Some(Value::from_raw((a.bits() as u8).wrapping_div(b.bits() as u8) as u64))
-        }
-
-        "u8=" => u8_eq(ctx, a, b) {
-            Some(Value::new((a.bits() as u8) == (b.bits() as u8)))
-        }
-
-        "u8>" => u8_gt(ctx, a, b) {
-            Some(Value::new((a.bits() as u8) > (b.bits() as u8)))
-        }
-
-        "u8<" => u8_lt(ctx, a, b) {
-            Some(Value::new((a.bits() as u8) < (b.bits() as u8)))
-        }
-
-        "u8>=" => u8_ge(ctx, a, b) {
-            Some(Value::new((a.bits() as u8) >= (b.bits() as u8)))
-        }
-
-        "u8<=" => u8_le(ctx, a, b) {
-            Some(Value::new((a.bits() as u8) <= (b.bits() as u8)))
-        }
-
-        "u8not" => u8_not(ctx, a) {
-            Some(Value::from_raw(!(a.bits() as u8) as u64))
-        }
-
-        "u8<<" => u8_shl(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u8).wrapping_shl(b.bits() as u32) as u64))
-        }
-
-        "u8>>" => u8_shr(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u8).wrapping_shr(b.bits() as u32) as u64))
-        }
-
-        "u8and" => u8_and(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u8) & (b.bits() as u8)) as u64))
-        }
-
-        "u8or" => u8_or(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u8) | (b.bits() as u8)) as u64))
-        }
-
-        "u8xor" => u8_xor(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u8) ^ (b.bits() as u8)) as u64))
-        }
-
-        "u8->u16" => u8_to_u16(ctx, a) {
-            Some(Value::from_raw((a.bits() as u8) as u16 as u64))
-        }
-
-        "u8->u32" => u8_to_u32(ctx, a) {
-            Some(Value::from_raw((a.bits() as u8) as u32 as u64))
-        }
-
-        "u8->u64" => u8_to_u64(ctx, a) {
-            Some(Value::from_raw((a.bits() as u8) as u64))
-        }
-
-        "u16+" => u16_add(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u16).wrapping_add(b.bits() as u16) as u64))
-        }
-
-        "u16-" => u16_sub(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u16).wrapping_sub(b.bits() as u16) as u64))
-        }
-
-        "u16*" => u16_mul(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u16).wrapping_mul(b.bits() as u16) as u64))
-        }
-
-        "u16/" => u16_div(ctx, a, b) {
-            if b.bits() as u16 == 0 {
-            return None;
-            }
-            Some(Value::from_raw((a.bits() as u16).wrapping_div(b.bits() as u16) as u64))
-        }
-
-        "u16<<" => u16_shl(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u16).wrapping_shl(b.bits() as u32) as u64))
-        }
-
-        "u16>>" => u16_shr(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u16).wrapping_shr(b.bits() as u32) as u64))
-        }
-
-        "u16and" => u16_and(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u16) & (b.bits() as u16)) as u64))
-        }
-
-        "u16or" => u16_or(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u16) | (b.bits() as u16)) as u64))
-        }
-
-        "u16xor" => u16_xor(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u16) ^ (b.bits() as u16)) as u64))
-        }
-
-        "u16not" => u16_not(ctx, a) {
-            Some(Value::from_raw(!(a.bits() as u16) as u64))
-        }
-
-        "u16=" => u16_eq(ctx, a, b) {
-            Some(Value::new((a.bits() as u16) == (b.bits() as u16)))
-        }
-
-        "u16>" => u16_gt(ctx, a, b) {
-            Some(Value::new((a.bits() as u16) > (b.bits() as u16)))
-        }
-
-        "u16<" => u16_lt(ctx, a, b) {
-            Some(Value::new((a.bits() as u16) < (b.bits() as u16)))
-        }
-
-        "u16>=" => u16_ge(ctx, a, b) {
-            Some(Value::new((a.bits() as u16) >= (b.bits() as u16)))
-        }
-
-        "u16<=" => u16_le(ctx, a, b) {
-            Some(Value::new((a.bits() as u16) <= (b.bits() as u16)))
-        }
-
-        "u16->u8" => u16_to_u8(ctx, a) {
-            Some(Value::from_raw((a.bits() as u16) as u8 as u64))
-        }
-
-        "u16->u32" => u16_to_u32(ctx, a) {
-            Some(Value::from_raw((a.bits() as u16) as u32 as u64))
-        }
-
-        "u16->u64" => u16_to_u64(ctx, a) {
-            Some(Value::from_raw((a.bits() as u16) as u64))
-        }
-
-        "u32+" => u32_add(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u32).wrapping_add(b.bits() as u32) as u64))
-        }
-
-        "u32-" => u32_sub(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u32).wrapping_sub(b.bits() as u32) as u64))
-        }
-
-        "u32*" => u32_mul(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u32).wrapping_mul(b.bits() as u32) as u64))
-        }
-
-        "u32/" => u32_div(ctx, a, b) {
-            if b.bits() as u32 == 0 {
-            return None;
-            }
-            Some(Value::from_raw((a.bits() as u32).wrapping_div(b.bits() as u32) as u64))
-        }
-
-        "u32<<" => u32_shl(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u32).wrapping_shl(b.bits() as u32) as u64))
-        }
-
-        "u32>>" => u32_shr(ctx, a, b) {
-            Some(Value::from_raw((a.bits() as u32).wrapping_shr(b.bits() as u32) as u64))
-        }
-
-        "u32and" => u32_and(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u32) & (b.bits() as u32)) as u64))
-        }
-
-        "u32or" => u32_or(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u32) | (b.bits() as u32)) as u64))
-        }
-
-        "u32xor" => u32_xor(ctx, a, b) {
-            Some(Value::from_raw(((a.bits() as u32) ^ (b.bits() as u32)) as u64))
-        }
-
-        "u32not" => u32_not(ctx, a) {
-            Some(Value::from_raw(!(a.bits() as u32) as u64))
-        }
-
-        "u32=" => u32_eq(ctx, a, b) {
-            Some(Value::new((a.bits() as u32) == (b.bits() as u32)))
-        }
-
-        "u32>" => u32_gt(ctx, a, b) {
-            Some(Value::new((a.bits() as u32) > (b.bits() as u32)))
-        }
-
-        "u32<" => u32_lt(ctx, a, b) {
-            Some(Value::new((a.bits() as u32) < (b.bits() as u32)))
-        }
-
-        "u32>=" => u32_ge(ctx, a, b) {
-            Some(Value::new((a.bits() as u32) >= (b.bits() as u32)))
-        }
-
-        "u32<=" => u32_le(ctx, a, b) {
-            Some(Value::new((a.bits() as u32) <= (b.bits() as u32)))
-        }
-
-        "u32->u8" => u32_to_u8(ctx, a) {
-            Some(Value::from_raw((a.bits() as u32) as u8 as u64))
-        }
-
-        "u32->u16" => u32_to_u16(ctx, a) {
-            Some(Value::from_raw((a.bits() as u32) as u16 as u64))
-        }
-
-        "u32->u64" => u32_to_u64(ctx, a) {
-            Some(Value::from_raw((a.bits() as u32) as u64))
-        }
-
-        "u64+" => u64_add(ctx, a, b) {
-            Some(Value::from_raw(a.bits().wrapping_add(b.bits())))
-        }
-
-        "u64-" => u64_sub(ctx, a, b) {
-            Some(Value::from_raw(a.bits().wrapping_sub(b.bits())))
-        }
-
-        "u64*" => u64_mul(ctx, a, b) {
-            Some(Value::from_raw(a.bits().wrapping_mul(b.bits())))
-        }
-
-        "u64/" => u64_div(ctx, a, b) {
-            if b.bits() == 0 {
-            return None;
-            }
-            Some(Value::from_raw(a.bits().wrapping_div(b.bits())))
-        }
-
-        "u64<<" => u64_shl(ctx, a, b) {
-            Some(Value::from_raw(a.bits().wrapping_shl(b.bits() as u32)))
-        }
-
-        "u64>>" => u64_shr(ctx, a, b) {
-            Some(Value::from_raw(a.bits().wrapping_shr(b.bits() as u32)))
-        }
-
-        "u64and" => u64_and(ctx, a, b) {
-            Some(Value::from_raw(a.bits() & b.bits()))
-        }
-
-        "u64or" => u64_or(ctx, a, b) {
-            Some(Value::from_raw(a.bits() | b.bits()))
-        }
-
-        "u64xor" => u64_xor(ctx, a, b) {
-            Some(Value::from_raw(a.bits() ^ b.bits()))
-        }
-
-        "u64not" => u64_not(ctx, a) {
-            Some(Value::from_raw(!a.bits()))
-        }
-
-        "u64=" => u64_eq(ctx, a, b) {
-            Some(Value::new(a.bits() == b.bits()))
-        }
-
-        "u64>" => u64_gt(ctx, a, b) {
-            Some(Value::new(a.bits() > b.bits()))
-        }
-
-        "u64<" => u64_lt(ctx, a, b) {
-            Some(Value::new(a.bits() < b.bits()))
-        }
-
-        "u64>=" => u64_ge(ctx, a, b) {
-            Some(Value::new(a.bits() >= b.bits()))
-        }
-
-        "u64<=" => u64_le(ctx, a, b) {
-            Some(Value::new(a.bits() <= b.bits()))
-        }
-
-        "u64->u8" => u64_to_u8(ctx, a) {
-            Some(Value::from_raw(a.bits() as u8 as u64))
-        }
-
-        "u64->u16" => u64_to_u16(ctx, a) {
-            Some(Value::from_raw(a.bits() as u16 as u64))
-        }
-
-        "u64->u32" => u64_to_u32(ctx, a) {
-            Some(Value::from_raw(a.bits() as u32 as u64))
-        }
-
-        "u64->u64" => u64_to_u64(ctx, a) {
-            Some(Value::from_raw(a.bits()))
-        }
-
-        "u32->value" => u32_to_value(ctx, a) {
-            Some(Number::from_u32(ctx, a.bits() as u32).into_value(ctx))
-        }
-
-        "u64->value" => u64_to_value(ctx, a) {
-            Some(Number::from_u64(ctx, a.bits()).into_value(ctx))
-        }
-
-        "usize->value" => usize_to_value(ctx, a) {
+"usize->value" => usize_to_value(ctx, a) {
             Some(Number::from_usize(ctx, a.bits() as usize).into_value(ctx))
         }
 

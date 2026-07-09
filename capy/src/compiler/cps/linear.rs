@@ -247,7 +247,7 @@ impl<'a, 'gc> ProcedureBuilder<'a, 'gc> {
 
     fn atoms_for_prim(&mut self, prim: Primitive, vars: &FreeVars) -> Vec<LinearAtom<'gc>> {
         let mut args = self.atoms(vars);
-        if matches!(prim, Primitive::cache_ref | Primitive::cache_set) {
+        if matches!(prim, Primitive::CacheRef | Primitive::CacheSet) {
             if let Some(first) = self.graph.free_vars_slice(vars).first().copied() {
                 if let Some(literal) = self.literal_atom(first) {
                     args[0] = literal;

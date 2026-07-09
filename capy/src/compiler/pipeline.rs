@@ -401,7 +401,7 @@ mod tests {
                     variadic: None,
                     instructions: vec![crate::compiler::ssa::Instruction::PrimCall {
                         dst: tmp,
-                        prim: Primitive::car,
+                        prim: Primitive::Car,
                         args: vec![LinearAtom::Local(p0)],
                         source: Value::new(false),
                     }],

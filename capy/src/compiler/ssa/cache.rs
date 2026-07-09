@@ -7,7 +7,7 @@ pub(super) fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Proc
             match instruction {
                 Instruction::PrimCall {
                     dst,
-                    prim: Primitive::cache_ref,
+                    prim: Primitive::CacheRef,
                     args,
                     source,
                 } => {
@@ -22,7 +22,7 @@ pub(super) fn lower_cache_operations<'gc>(mut procedure: Procedure<'gc>) -> Proc
                 }
                 Instruction::PrimCall {
                     dst,
-                    prim: Primitive::cache_set,
+                    prim: Primitive::CacheSet,
                     args,
                     source,
                 } => {
