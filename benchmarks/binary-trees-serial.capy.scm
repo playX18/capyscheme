@@ -1,5 +1,3 @@
-#!nobacktrace
-
 (import (core arithmetic) (scheme process-context))
 
 (define (item-check tree)

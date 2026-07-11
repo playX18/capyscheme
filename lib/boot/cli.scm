@@ -315,8 +315,8 @@
       (let ([options '()])
         (when (arg-results-ref res "dump-graph")
           (set! options (cons 'graph options)))
-        (when (arg-results-ref res "dump-lcps")
-          (set! options (cons 'lcps options)))
+        (when (arg-results-ref res "dump-ssa")
+          (set! options (cons 'ssa options)))
         (when (arg-results-ref res "dump-cranelift")
           (set! options (cons 'cranelift options)))
         (when (arg-results-ref res "dump-disassembly")
@@ -421,9 +421,9 @@
     (defaults-to #f)
     (help "Dump graph CPS for each compiled file"))
   (add-flag! parser
-    "dump-lcps"
+    "dump-ssa"
     (defaults-to #f)
-    (help "Dump linear CPS for each compiled file"))
+    (help "Dump SSA for each compiled file"))
   (add-flag! parser
     "dump-cranelift"
     (defaults-to #f)

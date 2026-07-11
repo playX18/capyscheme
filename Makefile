@@ -26,7 +26,11 @@ PROFILE ?= release
 TARGET  ?= $(shell rustc --print host-tuple)
 HOST_TARGET := $(shell rustc --print host-tuple)
 
-TARGET_DIR  := target/$(TARGET)
+# Always build into the workspace target dir. Cursor/sandbox agents often set
+# CARGO_TARGET_DIR to a cache path; without this, `cargo build` writes elsewhere
+# while recipes still `cp` from `target/$(TARGET)/...` and stage a stale binary.
+export CARGO_TARGET_DIR := $(CURDIR)/target
+TARGET_DIR  := $(CARGO_TARGET_DIR)/$(TARGET)
 TARGET_PATH := $(TARGET_DIR)/$(PROFILE)
 
 # Compile psyntax during stage-0 creation. By default set to 0 as
@@ -56,14 +60,34 @@ endif
 
 PORTABLE ?= 1
 
-# Environment used when invoking capyc to compile libraries (mirrors Justfile defaults)
+# Environment used when invoking capy/capyc (mirrors Justfile defaults).
+# Optional dump knobs (pass on the make command line), e.g.:
+#   make PROFILE=release stage-0 CAPY_SBBV_DUMP=1 CAPY_SBBV_DUMP_DIR=capy-dumps/sbbv
 MMTK_PLAN ?= StickyImmix
 XDG_CACHE_HOME = stage-0/cache
 CAPY_LOAD_PATH ?= ./lib
+CAPY_GC_MAX_HEAP ?= 8G
+RUST_MIN_STACK ?= 134217728
+CAPY_SBBV_DUMP ?=
+CAPY_SBBV_DUMP_DIR ?=
+CAPY_SBBV_DUMP_LIMIT ?=
+CAPY_SBBV_VERSION_LIMIT ?=
+CAPY_COMPILE_DUMP ?=
+CAPY_COMPILE_DUMP_DIR ?=
+CAPY_DUMP_DIR ?=
 CAPY_ENV = \
 	MMTK_PLAN="$(MMTK_PLAN)" \
 	XDG_CACHE_HOME="$(XDG_CACHE_HOME)" \
-	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)"
+	CAPY_LOAD_PATH="$(CAPY_LOAD_PATH)" \
+	CAPY_GC_MAX_HEAP="$(CAPY_GC_MAX_HEAP)" \
+	RUST_MIN_STACK="$(RUST_MIN_STACK)" \
+	$(if $(CAPY_SBBV_DUMP),CAPY_SBBV_DUMP="$(CAPY_SBBV_DUMP)") \
+	$(if $(CAPY_SBBV_DUMP_DIR),CAPY_SBBV_DUMP_DIR="$(CAPY_SBBV_DUMP_DIR)") \
+	$(if $(CAPY_SBBV_DUMP_LIMIT),CAPY_SBBV_DUMP_LIMIT="$(CAPY_SBBV_DUMP_LIMIT)") \
+	$(if $(CAPY_SBBV_VERSION_LIMIT),CAPY_SBBV_VERSION_LIMIT="$(CAPY_SBBV_VERSION_LIMIT)") \
+	$(if $(CAPY_COMPILE_DUMP),CAPY_COMPILE_DUMP="$(CAPY_COMPILE_DUMP)") \
+	$(if $(CAPY_COMPILE_DUMP_DIR),CAPY_COMPILE_DUMP_DIR="$(CAPY_COMPILE_DUMP_DIR)") \
+	$(if $(CAPY_DUMP_DIR),CAPY_DUMP_DIR="$(CAPY_DUMP_DIR)")
 
 
 BOOT_SRCS := \
@@ -389,14 +413,14 @@ stage-0: build-runtime-bootstrap
 	printf '%s\n' '#!/usr/bin/env sh' 'exec "$$(dirname "$$0")/capy" --capy-compiler-entrypoint "$$@"' > stage-0/capyc
 	chmod +x stage-0/capyc
 	
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c 42
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix CAPY_GC_MAX_HEAP=8G XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
+	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c 42
+	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (rnrs))'
+	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base))'
+	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 1))'
+	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (srfi 13))'
 ifeq ($(COMPILE_PSYNTAX),1)
-	MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
-	RUST_MIN_STACK=134217728 MMTK_PLAN=StickyImmix  XDG_CACHE_HOME="stage-0/cache" CAPY_LOAD_PATH=./lib stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
+	$(CAPY_ENV) stage-0/capy -L lib -s lib/boot/compile-psyntax.scm lib/boot/psyntax.scm lib/boot/psyntax-exp.scm
+	$(CAPY_ENV) stage-0/capy -L lib --fresh-auto-compile -c '(import (scheme base) (rnrs))'
 endif
 	
 

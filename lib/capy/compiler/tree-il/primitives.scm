@@ -49,6 +49,8 @@
       acos
       atan
       not
+      fixnum?
+      flonum?
       pair?
       null?
       list?
@@ -543,10 +545,14 @@
   (define-primitive-expander acos (x) (acos x))
   (define-primitive-expander atan (x) (atan x))
   (define-primitive-expander not (x) (not x))
+  (define-primitive-expander fixnum? (x) (fixnum? x))
+  (define-primitive-expander flonum? (x) (flonum? x))
   (define-primitive-expander pair? (x) (pair? x))
   (define-primitive-expander null? (x) (null? x))
   (define-primitive-expander list? (x) (list? x))
+  (define-primitive-expander symbol? (x) (symbol? x))
   (define-primitive-expander vector? (x) (vector? x))
+  (define-primitive-expander string? (x) (string? x))
   (define-primitive-expander number? (x) (number? x))
   (define-primitive-expander char? (x) (char? x))
   (define-primitive-expander boolean? (x) (boolean? x))
