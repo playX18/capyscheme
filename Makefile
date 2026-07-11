@@ -453,45 +453,45 @@ OUT ?=
 # Boot
 $(OUT)/boot/%.$(COMPILED_SCM_EXT): lib/boot/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy" -L lib $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy" -L lib $<
 
 # Core
 $(OUT)/core/%.$(COMPILED_SCM_EXT): lib/core/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 $(OUT)/core.$(COMPILED_SCM_EXT): lib/core.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # RNRS
 $(OUT)/rnrs/%.$(COMPILED_SCM_EXT): lib/rnrs/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 $(OUT)/rnrs.$(COMPILED_SCM_EXT): lib/rnrs.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # Capy
 $(OUT)/capy/%.$(COMPILED_SCM_EXT): lib/capy/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # SRFI
 $(OUT)/srfi/%.$(COMPILED_SCM_EXT): lib/srfi/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # R7RS
 $(OUT)/scheme/%.$(COMPILED_SCM_EXT): lib/scheme/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 # Common
 $(OUT)/common/%.$(COMPILED_SCM_EXT): lib/common/%.scm
 	@mkdir -p $(dir $@)
-	$(CAPY_ENV) $(COMPILER) --nobacktrace -o $@ -m "capy user" $<
+	$(CAPY_ENV) $(COMPILER) -o $@ -m "capy user" $<
 
 $(OUT)/capy/args/option.$(COMPILED_SCM_EXT): $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT)
 $(OUT)/capy/args/grammar.$(COMPILED_SCM_EXT): $(OUT)/capy/args/option.$(COMPILED_SCM_EXT) $(OUT)/capy/args/help/optional.$(COMPILED_SCM_EXT) $(OUT)/capy/args/string.$(COMPILED_SCM_EXT)

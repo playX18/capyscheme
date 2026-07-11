@@ -8,7 +8,7 @@ R6RS/R7RS compiler and runtime written in Rust.
 
 Capy 2.0.0 is a large compiler, runtime, and library release.
 
-- Compiler work now centers on the linear CPS pipeline, SSA lowering, native x64 code generation, and FASL code artifacts.
+- Compiler work now centers on the SSA pipeline, SSA lowering, and FASL code artifacts.
 - Runtime work includes FFI callbacks, native extension loading, thread interrupts, yieldpoints, conservative stack scanning, UTF-8 API helpers, and improved source/error handling.
 - GC work includes configurable trigger policies, adaptive/compact/aggressive heuristics, benchmarks, cache locking, and alignment fixes.
 - The object system now has `define-class`, `define-generic`, `define-method`, next-method dispatch, sealed/locked generics, class redefinition, slot helpers, and runtime class/generic descriptors.
