@@ -12,7 +12,7 @@ Capy 2.0.0 is a large compiler, runtime, and library release.
 - Runtime work includes FFI callbacks, native extension loading, thread interrupts, yieldpoints, conservative stack scanning, UTF-8 API helpers, and improved source/error handling.
 - GC work includes configurable trigger policies, adaptive/compact/aggressive heuristics, benchmarks, cache locking, and alignment fixes.
 - The object system now has `define-class`, `define-generic`, `define-method`, next-method dispatch, sealed/locked generics, class redefinition, slot helpers, and runtime class/generic descriptors.
-- Language and library additions include implicit `#%app` routing, `define-property`, `call-in-continuation`, terminal support, SRFI-213, SRFI-64 comparator support, and automatic Capy prelim imports.
+- Language and library additions include implicit `#%app`, `define-property`, `call-in-continuation`, terminal support, SRFI-213, and SRFI-64 comparator support.
 - The fancy REPL, test runner, package builds, and CI/release automation also received updates for this release.
 
 # Goals
@@ -24,11 +24,11 @@ Capy 2.0.0 is a large compiler, runtime, and library release.
 
 # R6RS/R7RS support
 
-Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment 99.3% of tests are passing.
+Most of R6RS and R7RS-small should be "just working" apart from some bugs. R6RS test-suite from [racket/r6rs](https://github.com/racket/r6rs) is used to guide development and at the moment 100% of tests are passing.
 
 To run tests yourself:
 ```sh 
-$ capy -L . -s tests/r6rs/run-via-eval.sps
+$ capy --r6rs -L . -s tests/r6rs/run-via-eval.sps
 ```
 
 ## Thanks
