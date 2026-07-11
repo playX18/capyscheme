@@ -1433,11 +1433,11 @@ impl<'gc, 'a, 'f> SsaBuilder<'gc, 'a, 'f> {
             .collect::<Vec<_>>();
 
         if let Some(variadic) = block.variadic {
-            let variadic_is_referenced = procedure
-                .sources
-                .get(&variadic)
-                .is_some_and(|source| source.is_referenced());
-            if variadic_is_referenced {
+            // Materialize the rest list when this block's SSA body uses it.
+            // Do not consult `procedure.sources`: SBBV renames non-procedure
+            // variadics to fresh ValueIds that are absent from that map, and
+            // LVar reference flags are the wrong layer for block-local SSA.
+            if block.uses_local(variadic) {
                 let mut ls = self
                     .builder
                     .ins()

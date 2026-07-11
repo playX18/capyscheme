@@ -98,7 +98,9 @@ pub(super) fn cmp_op(prim: Primitive) -> Option<CmpOp> {
         Primitive::NumericLte | Primitive::FxLe => Some(CmpOp::Le),
         Primitive::NumericGt | Primitive::FxGt => Some(CmpOp::Gt),
         Primitive::NumericGte | Primitive::FxGe => Some(CmpOp::Ge),
-        Primitive::NumericEqual | Primitive::FxEq | Primitive::FxEqU => Some(CmpOp::Eq),
+        Primitive::NumericEqual | Primitive::FxEq | Primitive::FxEqU | Primitive::IsEqv => {
+            Some(CmpOp::Eq)
+        }
         Primitive::FlLt => Some(CmpOp::Lt),
         Primitive::FlLe => Some(CmpOp::Le),
         Primitive::FlGt => Some(CmpOp::Gt),
@@ -577,6 +579,22 @@ pub(super) fn specialize_prim<'gc>(prim: Primitive, args: &[Type]) -> PrimSpec<'
             unchanged(boolean_type())
         }
 
+        // `case` expands to `eqv?`; RestLength is a fixnum, so rewrite to fx=?.
+        Primitive::IsEqv => {
+            if args.len() == 2
+                && is_definitely_fixnum(&args[0])
+                && is_definitely_fixnum(&args[1])
+            {
+                let fold = fold_compare(CmpOp::Eq, &args[0], &args[1]);
+                return PrimSpec {
+                    result: boolean_type(),
+                    prim: Primitive::FxEqU,
+                    fold,
+                };
+            }
+            unchanged(boolean_type())
+        }
+
         Primitive::Car | Primitive::Cdr | Primitive::SetCar | Primitive::SetCdr => {
             let definitely_pair = args.first().is_some_and(|arg| arg.kinds == KIND_PAIR);
             let specialized = match (prim, definitely_pair) {
@@ -832,5 +850,27 @@ mod tests {
             assert_eq!(true_ctx.get(value).kinds, KIND_OTHER);
             assert_eq!(false_ctx.get(value).kinds, KIND_OTHER);
         }
+    }
+
+    #[test]
+    fn eqv_on_fixnums_specializes_to_fx_eq() {
+        let a = Type::constant(1);
+        let b = Type::constant(1);
+        let spec = specialize_prim(Primitive::IsEqv, &[a.clone(), b.clone()]);
+        assert_eq!(spec.prim, Primitive::FxEqU);
+        assert_eq!(spec.fold, Some(Value::from_bool(true)));
+
+        let c = Type::constant(2);
+        let spec = specialize_prim(Primitive::IsEqv, &[a, c]);
+        assert_eq!(spec.prim, Primitive::FxEqU);
+        assert_eq!(spec.fold, Some(Value::from_bool(false)));
+
+        // Non-fixnum eqv? stays generic.
+        let spec = specialize_prim(
+            Primitive::IsEqv,
+            &[Type::kind(TypeKind::Symbol), Type::kind(TypeKind::Symbol)],
+        );
+        assert_eq!(spec.prim, Primitive::IsEqv);
+        assert!(spec.fold.is_none());
     }
 }

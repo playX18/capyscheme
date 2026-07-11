@@ -8,7 +8,9 @@
     (test-equal "(< x 2)" (filter (lambda (x) (< x 2)) '(1 2 3)) '(1))
     (test-error "dot list errors" &assertion-violation (filter (lambda (x) #t) '(1 2 . 3)))
     (test-error "non list errors" &assertion-violation (filter (lambda (x) #t) 1))
-    (define circular-list '(1 2 3))
+    ;; Use `list` (not a quoted literal) so set-cdr! cannot poison other
+    ;; `'(1 2 3)` constants in this compilation unit.
+    (define circular-list (list 1 2 3))
     (set-cdr! circular-list circular-list)
     ;; TODO: Fix
     ;;(test-error "circular list errors" &assertion-violation (filter (lambda (x) #t) circular-list))
@@ -36,7 +38,7 @@
     (define circular-list (eval ''(1 2 3)))
     (set-cdr! circular-list circular-list)
     (test-equal "equal?: circular list" circular-list circular-list)
-    (define circular-vec #(1 2 3))
+    (define circular-vec (vector 1 2 3))
     (vector-set! circular-vec 0 circular-vec)
     (test-equal "equal?: circular vector" circular-vec circular-vec))
 

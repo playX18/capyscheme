@@ -16,10 +16,14 @@ use rest::lower_rest_arguments;
 pub(crate) use switch::infer_switches;
 
 pub(crate) fn finish_procedure<'gc>(procedure: Procedure<'gc>) -> Procedure<'gc> {
-    let after_sbbv = bbv::run(procedure);
-    let finished = hoist_constants(lower_cache_operations(lower_rest_arguments(
-        infer_switches(after_sbbv),
-    )));
+    // Rest lowering must run before SBBV expand. Otherwise `car`/`cdr` on a rest
+    // formal become `pair?` + `car/unchecked` (and a raise that mentions rest),
+    // which `lower_rest_arguments` treats as incompatible and falls back to
+    // RestToList — defeating RestLength/RestRef for `(lambda args (case (length
+    // args) ...))` and similar shapes.
+    let after_rest = lower_rest_arguments(procedure);
+    let after_sbbv = bbv::run(after_rest);
+    let finished = hoist_constants(lower_cache_operations(infer_switches(after_sbbv)));
     // Dump the IR that actually reaches Cranelift (after all SSA finish passes).
     if crate::compiler::dump::sbbv_dump_stage_enabled("post-finish")
         || crate::compiler::dump::sbbv_dump_stage_enabled("all")

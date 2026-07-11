@@ -482,10 +482,28 @@ impl TypeContext {
         let narrow_value = |ctx: &mut Self, id: ValueId, base: &Type, interval: Interval| {
             let mut ty = base.clone();
             ty.fixnum_range = Some(interval);
-            if let Some(value) = ty.singleton
+            // Concrete intervals become singletons so later compares/folds see them.
+            if let (Bound::Int(lo), Bound::Int(hi)) = (interval.lo, interval.hi) {
+                ty.singleton = (lo == hi).then_some(lo);
+            } else if let Some(value) = ty.singleton
                 && !interval_contains_int(interval, value)
             {
                 ty.singleton = None;
+            }
+            // When a symbolic length `[[v]]-offset` collapses to a constant `n`,
+            // record `v`'s length as `n+offset` so RestPredicate can fold.
+            if let (Some(old), Bound::Int(n), Bound::Int(m)) =
+                (base.fixnum_range, interval.lo, interval.hi)
+                && n == m
+                && let (Bound::VecLenMinus(v, offset), Bound::VecLenMinus(w, offset2)) =
+                    (old.lo, old.hi)
+                && v == w
+                && offset == offset2
+            {
+                let mut container = ctx.get(v);
+                container.length_range =
+                    Some(Interval::singleton(n.saturating_add(offset)));
+                ctx.set(v, container);
             }
             ctx.set(id, ty);
         };

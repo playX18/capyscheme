@@ -19,13 +19,14 @@
 //! used, which is exact when such escaping values are block parameters (as they
 //! are for the CPS-contified join points this IR produces).
 
-use super::types::{Bound, CmpOp, Type, TypeContext, TypeKind, exclude_kind};
+use super::types::{Bound, CmpOp, Interval, Type, TypeContext, TypeKind, exclude_kind};
 use super::{infer, merge};
 use crate::compiler::cranelift::primitive::Primitive;
 use crate::compiler::ssa::{
-    Block, BlockId, BranchTarget, Instruction, Operand, Procedure, SwitchCase, SwitchCaseValue,
-    SwitchKind, Terminator, ValueId,
+    Block, BlockId, BranchTarget, Instruction, Operand, Procedure, RestPredicate, SwitchCase,
+    SwitchCaseValue, SwitchKind, Terminator, ValueId,
 };
+use crate::runtime::value::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// How a boolean-valued instruction can narrow the context when branched on.
@@ -373,15 +374,15 @@ impl<'gc> Specializer<'gc> {
                     ctx.set(*dst, spec.result);
                 }
 
-                if let Some(op) = infer::cmp_op(*prim) {
+                if let Some(op) = infer::cmp_op(spec.prim) {
                     if let (Some(lhs), Some(rhs)) = (local_of(args.first()), local_of(args.get(1)))
                     {
                         pred_of.insert(*dst, Predicate::Cmp(op, lhs, rhs));
                     }
-                } else if infer::is_type_test(*prim)
+                } else if infer::is_type_test(spec.prim)
                     && let Some(arg) = local_of(args.first())
                 {
-                    pred_of.insert(*dst, Predicate::TypeTest(*prim, arg));
+                    pred_of.insert(*dst, Predicate::TypeTest(spec.prim, arg));
                 }
 
                 if let Some(value) = spec.fold {
@@ -477,7 +478,16 @@ impl<'gc> Specializer<'gc> {
                 let rest = remap_value(map, *rest);
                 let new_dst = self.fresh_value();
                 map.insert(*dst, new_dst);
-                ctx.set(*dst, Type::TOP);
+                // Materialized rest is always a proper list.
+                ctx.set(
+                    *dst,
+                    Type {
+                        kinds: super::types::KIND_PAIR | super::types::KIND_NULL,
+                        fixnum_range: None,
+                        length_range: Some(Interval::TOP_LENGTH),
+                        singleton: None,
+                    },
+                );
                 out.push(Instruction::RestToList {
                     dst: new_dst,
                     rest,
@@ -510,13 +520,35 @@ impl<'gc> Specializer<'gc> {
                 let rest = remap_value(map, *rest);
                 let new_dst = self.fresh_value();
                 map.insert(*dst, new_dst);
-                ctx.set(*dst, Type::kind(TypeKind::Fixnum));
-                out.push(Instruction::RestLength {
-                    dst: new_dst,
-                    rest,
-                    skip: *skip,
-                    source: *source,
-                });
+                // Track that `rest` is a length-bearing value (like vector-length).
+                let mut rest_ty = ctx.get(rest);
+                if rest_ty.length_range.is_none() {
+                    rest_ty.length_range = Some(Interval::TOP_LENGTH);
+                    ctx.set(rest, rest_ty);
+                }
+                if let Some(len) = length_singleton(&ctx.get(rest)) {
+                    let n = (len - *skip as i64).max(0);
+                    ctx.set(*dst, Type::constant(n));
+                    out.push(Instruction::Const {
+                        dst: new_dst,
+                        value: Value::from_i32(n as i32),
+                    });
+                } else {
+                    // Symbolic `[[rest]] - skip`, matching vector-length.
+                    ctx.set(
+                        *dst,
+                        Type::fixnum(
+                            Bound::VecLenMinus(rest, *skip as i64),
+                            Bound::VecLenMinus(rest, *skip as i64),
+                        ),
+                    );
+                    out.push(Instruction::RestLength {
+                        dst: new_dst,
+                        rest,
+                        skip: *skip,
+                        source: *source,
+                    });
+                }
             }
             Instruction::RestPredicate {
                 dst,
@@ -528,14 +560,37 @@ impl<'gc> Specializer<'gc> {
                 let rest = remap_value(map, *rest);
                 let new_dst = self.fresh_value();
                 map.insert(*dst, new_dst);
-                ctx.set(*dst, infer::boolean_type());
-                out.push(Instruction::RestPredicate {
-                    dst: new_dst,
-                    rest,
-                    predicate: *predicate,
-                    skip: *skip,
-                    source: *source,
-                });
+                match fold_rest_predicate(&ctx.get(rest), *predicate, *skip) {
+                    Some(value) => {
+                        ctx.set(
+                            *dst,
+                            Type {
+                                kinds: if value {
+                                    super::types::KIND_BOOL_TRUE
+                                } else {
+                                    super::types::KIND_BOOL_FALSE
+                                },
+                                fixnum_range: None,
+                                length_range: None,
+                                singleton: None,
+                            },
+                        );
+                        out.push(Instruction::Const {
+                            dst: new_dst,
+                            value: Value::from_bool(value),
+                        });
+                    }
+                    None => {
+                        ctx.set(*dst, infer::boolean_type());
+                        out.push(Instruction::RestPredicate {
+                            dst: new_dst,
+                            rest,
+                            predicate: *predicate,
+                            skip: *skip,
+                            source: *source,
+                        });
+                    }
+                }
             }
         }
     }
@@ -779,6 +834,51 @@ fn remap_atom<'gc>(map: &HashMap<ValueId, ValueId>, atom: &Operand<'gc>) -> Oper
 
 fn remap_atoms<'gc>(map: &HashMap<ValueId, ValueId>, atoms: &[Operand<'gc>]) -> Vec<Operand<'gc>> {
     atoms.iter().map(|atom| remap_atom(map, atom)).collect()
+}
+
+fn length_singleton(ty: &Type) -> Option<i64> {
+    let interval = ty.length_range?;
+    match (interval.lo, interval.hi) {
+        (Bound::Int(lo), Bound::Int(hi)) if lo == hi => Some(lo),
+        _ => None,
+    }
+}
+
+/// Fold `RestPredicate` when the rest value's length interval proves the answer.
+///
+/// Rest formals are always proper lists, so `list?` is unconditionally true.
+fn fold_rest_predicate(rest_ty: &Type, predicate: RestPredicate, skip: usize) -> Option<bool> {
+    let skip = skip as i64;
+    match predicate {
+        RestPredicate::List => Some(true),
+        RestPredicate::Null | RestPredicate::Pair => {
+            let interval = rest_ty.length_range?;
+            let (Bound::Int(lo), Bound::Int(hi)) = (interval.lo, interval.hi) else {
+                return None;
+            };
+            match predicate {
+                RestPredicate::Null => {
+                    if hi <= skip {
+                        Some(true)
+                    } else if lo > skip {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                }
+                RestPredicate::Pair => {
+                    if lo > skip {
+                        Some(true)
+                    } else if hi <= skip {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                }
+                RestPredicate::List => unreachable!(),
+            }
+        }
+    }
 }
 
 fn narrow_contexts(
@@ -1120,5 +1220,60 @@ mod tests {
                 )
             })
         }));
+    }
+
+    #[test]
+    fn fold_rest_predicate_uses_length_interval() {
+        let unknown = Type {
+            kinds: super::super::types::KIND_OTHER,
+            fixnum_range: None,
+            length_range: Some(Interval::TOP_LENGTH),
+            singleton: None,
+        };
+        assert_eq!(
+            fold_rest_predicate(&unknown, RestPredicate::List, 0),
+            Some(true)
+        );
+        assert_eq!(
+            fold_rest_predicate(&unknown, RestPredicate::Null, 0),
+            None
+        );
+
+        let empty = Type {
+            kinds: super::super::types::KIND_OTHER,
+            fixnum_range: None,
+            length_range: Some(Interval::singleton(0)),
+            singleton: None,
+        };
+        assert_eq!(
+            fold_rest_predicate(&empty, RestPredicate::Null, 0),
+            Some(true)
+        );
+        assert_eq!(
+            fold_rest_predicate(&empty, RestPredicate::Pair, 0),
+            Some(false)
+        );
+
+        let nonempty = Type {
+            kinds: super::super::types::KIND_OTHER,
+            fixnum_range: None,
+            length_range: Some(Interval {
+                lo: Bound::Int(2),
+                hi: Bound::Int(5),
+            }),
+            singleton: None,
+        };
+        assert_eq!(
+            fold_rest_predicate(&nonempty, RestPredicate::Null, 0),
+            Some(false)
+        );
+        assert_eq!(
+            fold_rest_predicate(&nonempty, RestPredicate::Pair, 0),
+            Some(true)
+        );
+        assert_eq!(
+            fold_rest_predicate(&nonempty, RestPredicate::Null, 2),
+            None
+        );
     }
 }

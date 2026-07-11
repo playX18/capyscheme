@@ -72,6 +72,20 @@ pub struct Block<'gc> {
     pub source: Value<'gc>,
 }
 
+impl<'gc> Block<'gc> {
+    /// Whether `id` appears as an SSA use in this block's body or terminator.
+    ///
+    /// Used when deciding whether a variadic block parameter must be materialized
+    /// as a rest list on an incoming edge (as opposed to passing `'()`).
+    pub fn uses_local(&self, id: ValueId) -> bool {
+        let is_use = |atom: &Operand<'gc>| matches!(atom, Operand::Local(v) if *v == id);
+        self.instructions
+            .iter()
+            .any(|instruction| instruction.uses().iter().any(is_use))
+            || self.terminator.uses().iter().any(is_use)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestPredicate {
     Null,
@@ -258,7 +272,7 @@ impl<'gc> Instruction<'gc> {
                 cache_key, value, ..
             } => vec![*cache_key, *value],
             Self::PrimCall { args, .. } => args.clone(),
-            Self::RestToList { .. } => vec![],
+            Self::RestToList { rest, .. } => vec![Operand::Local(*rest)],
             Self::RestRef { rest, .. }
             | Self::RestLength { rest, .. }
             | Self::RestPredicate { rest, .. } => vec![Operand::Local(*rest)],
@@ -361,5 +375,121 @@ impl<'gc> Terminator<'gc> {
                 .chain(default.local_successor())
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_block(
+        params: Vec<ValueId>,
+        variadic: Option<ValueId>,
+        instructions: Vec<Instruction<'static>>,
+        terminator: Terminator<'static>,
+    ) -> Block<'static> {
+        Block {
+            id: BlockId(0),
+            params,
+            variadic,
+            instructions,
+            terminator,
+            source: Value::new(false),
+        }
+    }
+
+    #[test]
+    fn uses_local_detects_closure_set_of_variadic() {
+        // gf42-shaped block: rest-only param captured into a closure free slot.
+        let rest = ValueId(1);
+        let closure = ValueId(2);
+        let block = empty_block(
+            vec![rest],
+            Some(rest),
+            vec![
+                Instruction::MakeClosure {
+                    dst: closure,
+                    code: CodeId::GraphFunction(GraphCodeId(0)),
+                    kind: ClosureKind::Function,
+                    free_count: 1,
+                },
+                Instruction::ClosureSet {
+                    closure: Operand::Local(closure),
+                    index: 0,
+                    value: Operand::Local(rest),
+                },
+            ],
+            Terminator::TailCall {
+                callee: Operand::Local(closure),
+                args: vec![],
+                source: Value::new(false),
+            },
+        );
+        assert!(block.uses_local(rest));
+        assert!(block.uses_local(closure));
+        assert!(!block.uses_local(ValueId(99)));
+    }
+
+    #[test]
+    fn uses_local_detects_variadic_passed_on_jump() {
+        let rest = ValueId(1);
+        let block = empty_block(
+            vec![rest],
+            Some(rest),
+            vec![],
+            Terminator::Jump {
+                target: BlockId(1),
+                args: vec![Operand::Local(rest)],
+            },
+        );
+        assert!(block.uses_local(rest));
+    }
+
+    #[test]
+    fn uses_local_false_when_variadic_is_dead() {
+        let fixed = ValueId(1);
+        let rest = ValueId(2);
+        let block = empty_block(
+            vec![fixed, rest],
+            Some(rest),
+            vec![],
+            Terminator::TailCall {
+                callee: Operand::Local(fixed),
+                args: vec![],
+                source: Value::new(false),
+            },
+        );
+        assert!(block.uses_local(fixed));
+        assert!(!block.uses_local(rest));
+    }
+
+    #[test]
+    fn rest_to_list_uses_includes_rest() {
+        let rest = ValueId(3);
+        let instruction = Instruction::RestToList {
+            dst: rest,
+            rest,
+            source: Value::new(false),
+        };
+        assert_eq!(instruction.uses(), vec![Operand::Local(rest)]);
+    }
+
+    #[test]
+    fn uses_local_detects_rest_to_list() {
+        let rest = ValueId(4);
+        let block = empty_block(
+            vec![rest],
+            Some(rest),
+            vec![Instruction::RestToList {
+                dst: rest,
+                rest,
+                source: Value::new(false),
+            }],
+            Terminator::Jump {
+                target: BlockId(1),
+                args: vec![],
+            },
+        );
+        assert!(block.uses_local(rest));
     }
 }
